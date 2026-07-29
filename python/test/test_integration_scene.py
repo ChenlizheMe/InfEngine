@@ -2256,3 +2256,47 @@ class TestSceneSerialization:
 
         assert root._commit_document(candidate) is True
         assert scene.main_camera is None
+
+    def test_main_camera_preference_survives_temporary_disable(self, scene):
+        preferred_owner = scene.create_game_object("PreferredCamera")
+        preferred = preferred_owner.add_component("Camera")
+        preferred.depth = 20.0
+        fallback_owner = scene.create_game_object("FallbackCamera")
+        fallback = fallback_owner.add_component("Camera")
+        fallback.depth = -10.0
+
+        scene.main_camera = preferred
+        assert scene.effective_game_camera.component_id == preferred.component_id
+
+        preferred.enabled = False
+        assert scene.main_camera.component_id == preferred.component_id
+        assert scene.effective_game_camera.component_id == fallback.component_id
+
+        preferred.enabled = True
+        assert scene.effective_game_camera.component_id == preferred.component_id
+
+    def test_automatic_camera_selection_reacts_to_depth_without_becoming_authored(self, scene):
+        first_owner = scene.create_game_object("FirstCamera")
+        first = first_owner.add_component("Camera")
+        first.depth = 5.0
+        second_owner = scene.create_game_object("SecondCamera")
+        second = second_owner.add_component("Camera")
+        second.depth = 10.0
+
+        assert scene.main_camera is None
+        assert scene.effective_game_camera.component_id == first.component_id
+        second.depth = 0.0
+        assert scene.effective_game_camera.component_id == second.component_id
+        assert scene.main_camera is None
+
+        first.enabled = False
+        second.enabled = False
+        assert scene.effective_game_camera is None
+
+    def test_main_camera_rejects_cross_scene_reference(self, scene):
+        other = SceneManager.instance().create_scene("OtherCameraScene")
+        owner = other.create_game_object("ForeignCamera")
+        foreign = owner.add_component("Camera")
+
+        with pytest.raises(ValueError, match="owned by this Scene"):
+            scene.main_camera = foreign

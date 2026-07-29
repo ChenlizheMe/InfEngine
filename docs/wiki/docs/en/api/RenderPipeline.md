@@ -61,7 +61,7 @@ Example::
 
 | Method | Description |
 |------|------|
-| `render(context: Any, cameras: Any) → None` | Render all cameras. |
+| `render(context: Any, camera: Any) → None` | Render one camera through its dedicated context and RenderView. |
 | `should_render_camera(camera: Any) → bool` | Decide whether *camera* should be rendered this frame. |
 | `render_camera(context: Any, camera: Any, culling: Any) → None` | Per-camera render hook. |
 | `define_topology(graph: RenderGraph) → None` | Define the rendering topology on *graph*. |

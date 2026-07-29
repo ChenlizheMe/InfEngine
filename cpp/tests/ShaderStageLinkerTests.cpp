@@ -1,6 +1,5 @@
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
-#include <function/renderer/particle/ParticleGpuEventDomain.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
 #include <function/renderer/particle/ParticleGpuRibbonRenderer.h>
 #include <function/renderer/particle/ParticleGpuRibbonTopology.h>
@@ -869,22 +868,6 @@ void main() { }
     assert(infernux::particle::GpuParticleCullShaderSources::Cull().find("visible_segments") == std::string_view::npos);
     assert(infernux::particle::GpuParticleCullShaderSources::Cull().find("ribbon_segments") != std::string_view::npos);
     for (const auto &[source, name] : particleCullShaders) {
-        const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
-        assert(spirv.size() >= 5 * sizeof(uint32_t));
-        uint32_t magic = 0;
-        std::memcpy(&magic, spirv.data(), sizeof(magic));
-        assert(magic == 0x07230203u);
-    }
-
-    const std::array<std::pair<std::string_view, const char *>, 2> particleEventShaders = {{
-        {infernux::particle::GpuParticleEventShaderSource::Prepare(), "ParticleEventPrepare.comp"},
-        {infernux::particle::GpuParticleEventShaderSource::Allocate(), "ParticleEventAllocate.comp"},
-    }};
-    const auto eventAllocateSource = infernux::particle::GpuParticleEventShaderSource::Allocate();
-    assert(eventAllocateSource.find("TargetSimulationControl") != std::string_view::npos);
-    assert(eventAllocateSource.find("pause_when_offscreen") != std::string_view::npos);
-    assert(eventAllocateSource.find("spawn_indices[destination] = INX_INVALID_INDEX") != std::string_view::npos);
-    for (const auto &[source, name] : particleEventShaders) {
         const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
         assert(spirv.size() >= 5 * sizeof(uint32_t));
         uint32_t magic = 0;

@@ -14,6 +14,7 @@ class ParticleSpawnScheduleState:
     """Advance rate and burst sources without touching particle attributes."""
 
     settings: EmitterSettings
+    system_seed: int = 0
     elapsed: float = 0.0
     accumulator: float = 0.0
     distance_accumulator: float = 0.0
@@ -23,6 +24,8 @@ class ParticleSpawnScheduleState:
     def __post_init__(self) -> None:
         if not isinstance(self.settings, EmitterSettings):
             raise TypeError("particle spawn schedule requires EmitterSettings")
+        if type(self.system_seed) is not int or not 0 <= self.system_seed <= 0xFFFFFFFF:
+            raise ValueError("particle system seed must be an unsigned 32-bit integer")
 
     def reset(self) -> None:
         self.elapsed = 0.0
@@ -43,6 +46,7 @@ class ParticleSpawnScheduleState:
             raise ValueError("particle schedule topology changes require an emitter restart")
         return ParticleSpawnScheduleState(
             settings,
+            self.system_seed,
             elapsed=self.elapsed,
             accumulator=self.accumulator,
             distance_accumulator=self.distance_accumulator,
@@ -65,12 +69,12 @@ class ParticleSpawnScheduleState:
             raise ValueError("particle delta_time must be finite and non-negative")
         previous = self.elapsed
         self.elapsed += delta_time
+        current_position = self._position(position)
         active_seconds = self._active_seconds(previous, self.elapsed)
         self.accumulator += self.settings.spawn_rate * active_seconds
         spawn_count = int(self.accumulator)
         self.accumulator -= spawn_count
 
-        current_position = self._position(position)
         if current_position is not None:
             if self.previous_position is not None and active_seconds > 0.0:
                 distance = math.dist(self.previous_position, current_position)
@@ -146,6 +150,7 @@ class ParticleSpawnScheduleState:
             return True
         value = (
             int(self.settings.seed)
+            ^ int(self.system_seed)
             ^ ((burst_index + 1) * 0x9E3779B9)
             ^ ((loop_index + 1) * 0x85EBCA6B)
             ^ ((burst_cycle + 1) * 0xC2B2AE35)

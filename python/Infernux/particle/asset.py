@@ -353,6 +353,8 @@ _PARTICLE_PARAMETER_TYPES = frozenset(
         ValueType.VEC3,
         ValueType.VEC4,
         ValueType.COLOR,
+        ValueType.CURVE,
+        ValueType.GRADIENT,
         ValueType.TEXTURE2D,
     }
 )
@@ -596,10 +598,66 @@ def optional_particle_attributes() -> tuple[ParticleAttribute, ...]:
             [0.0, 0.0, 0.0],
         ),
         ParticleAttribute(
+            "builtin.collision_point",
+            "collision_point",
+            TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+            [0.0, 0.0, 0.0],
+        ),
+        ParticleAttribute(
+            "builtin.collision_relative_velocity",
+            "collision_relative_velocity",
+            TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+            [0.0, 0.0, 0.0],
+        ),
+        ParticleAttribute(
+            "builtin.collision_penetration",
+            "collision_penetration",
+            TypeRef(ValueType.F32),
+            0.0,
+        ),
+        ParticleAttribute(
+            "builtin.collision_is_trigger",
+            "collision_is_trigger",
+            TypeRef(ValueType.BOOL),
+            False,
+        ),
+        ParticleAttribute(
+            "builtin.collision_material",
+            "collision_material",
+            TypeRef(ValueType.VEC4),
+            [0.0, 0.0, 0.0, 0.0],
+        ),
+        # Exact collider identity stays split into uint words so the GPU path
+        # does not require optional 64-bit shader integer support.
+        ParticleAttribute(
+            "internal.collision_current_id_low",
+            "collision_current_id_low",
+            TypeRef(ValueType.U32),
+            0,
+        ),
+        ParticleAttribute(
+            "internal.collision_current_id_high",
+            "collision_current_id_high",
+            TypeRef(ValueType.U32),
+            0,
+        ),
+        ParticleAttribute(
             "builtin.collision_active",
             "collision_active",
             TypeRef(ValueType.BOOL),
             False,
+        ),
+        ParticleAttribute(
+            "internal.collision_active_id_low",
+            "collision_active_id_low",
+            TypeRef(ValueType.U32),
+            0,
+        ),
+        ParticleAttribute(
+            "internal.collision_active_id_high",
+            "collision_active_id_high",
+            TypeRef(ValueType.U32),
+            0,
         ),
     )
 
@@ -612,6 +670,11 @@ def particle_attribute_capture_id(stage: str, node_uid: str) -> str:
 def particle_attribute_cache_id(stage: str, node_uid: str) -> str:
     """Return the stable storage identity owned by one Attribute Cache node."""
     return f"cache.{str(stage)}.{str(node_uid)}"
+
+
+def _particle_storage_stage(stage: str) -> str:
+    """Map an authored flow path to its runtime lifecycle storage domain."""
+    return str(stage)
 
 
 def particle_attribute_zero(value_type: TypeRef):
@@ -643,15 +706,17 @@ def particle_cache_attributes(emitter) -> tuple[ParticleAttribute, ...]:
     """Derive persistent per-particle storage directly from cache nodes."""
     caches: list[ParticleAttribute] = []
     known: dict[str, ParticleAttribute] = {}
-    for stage in (
-        "init",
-        "update",
-        "collision_enter",
-        "collision_stay",
-        "collision_exit",
-        "rendering",
-    ):
-        document = getattr(emitter, stage)
+    documents = [
+        (stage, getattr(emitter, stage))
+        for stage in (
+            "init", "update", "collision_enter", "collision_stay",
+            "collision_exit", "rendering",
+        )
+    ]
+    documents.extend(
+        (f"event.{flow.stable_id}", flow.graph) for flow in emitter.event_flows
+    )
+    for stage, document in documents:
         if document is None:
             continue
         for node in document.nodes:
@@ -664,7 +729,9 @@ def particle_cache_attributes(emitter) -> tuple[ParticleAttribute, ...]:
                 )
                 name = str(node.properties.get("name", "Attribute Cache")).strip()
                 attribute = ParticleAttribute(
-                    particle_attribute_cache_id(stage, node.uid),
+                    particle_attribute_cache_id(
+                        _particle_storage_stage(stage), node.uid
+                    ),
                     name or "Attribute Cache",
                     value_type,
                     particle_attribute_zero(value_type),
@@ -696,15 +763,17 @@ def captured_particle_attributes(emitter) -> tuple[ParticleAttribute, ...]:
     }
     captures: list[ParticleAttribute] = []
     pending = []
-    for stage in (
-        "init",
-        "update",
-        "collision_enter",
-        "collision_stay",
-        "collision_exit",
-        "rendering",
-    ):
-        document = getattr(emitter, stage)
+    documents = [
+        (stage, getattr(emitter, stage))
+        for stage in (
+            "init", "update", "collision_enter", "collision_stay",
+            "collision_exit", "rendering",
+        )
+    ]
+    documents.extend(
+        (f"event.{flow.stable_id}", flow.graph) for flow in emitter.event_flows
+    )
+    for stage, document in documents:
         if document is None:
             continue
         sampled = {
@@ -727,7 +796,9 @@ def captured_particle_attributes(emitter) -> tuple[ParticleAttribute, ...]:
             if source is None:
                 deferred.append((stage, node))
                 continue
-            stable_id = particle_attribute_capture_id(stage, node.uid)
+            stable_id = particle_attribute_capture_id(
+                _particle_storage_stage(stage), node.uid
+            )
             capture = ParticleAttribute(
                 stable_id,
                 f"{node.uid}_sample",
@@ -774,11 +845,68 @@ def particle_attribute_catalog(emitter) -> tuple[ParticleAttribute, ...]:
 
 
 @dataclass(frozen=True)
+class ParticleEventFlow:
+    stable_id: str
+    graph: GraphDocument
+
+    def __post_init__(self) -> None:
+        if type(self.stable_id) is not str or not self.stable_id:
+            raise ParticleGraphSchemaError("particle event flow stable_id cannot be empty")
+        if not isinstance(self.graph, GraphDocument):
+            raise ParticleGraphSchemaError("particle event flow graph is invalid")
+        roots = [
+            node
+            for node in self.graph.nodes
+            if node.type_id == _particle_nodes.PARTICLE_EVENT_ACTIVE_TYPE_ID
+        ]
+        if (
+            self.graph.domain != "particle.event"
+            or len(roots) != 1
+            or roots[0].uid != "root.event"
+        ):
+            raise ParticleGraphSchemaError(
+                "particle event flow requires exactly one immutable Active Event root"
+            )
+        event_id = roots[0].properties.get("event", "")
+        if type(event_id) is not str:
+            raise ParticleGraphSchemaError("Active Event selection must be a string")
+
+    @property
+    def event_id(self) -> str:
+        root = next(node for node in self.graph.nodes if node.uid == "root.event")
+        return str(root.properties.get("event", ""))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"stable_id": self.stable_id, "graph": self.graph.to_dict()}
+
+    @classmethod
+    def from_dict(cls, value, location: str) -> "ParticleEventFlow":
+        _exact_object(value, {"stable_id", "graph"}, location)
+        return cls(
+            value["stable_id"],
+            _parse_stage_document(value["graph"], f"{location}.graph"),
+        )
+
+
+def default_event_graph(event_id: str = "") -> GraphDocument:
+    return GraphDocument(
+        "particle.event",
+        (
+            GraphNodeRecord(
+                "root.event",
+                _particle_nodes.PARTICLE_EVENT_ACTIVE_TYPE_ID,
+                (0.0, 0.0),
+                {"event": str(event_id)},
+            ),
+        ),
+        (),
+    )
+
+
+@dataclass(frozen=True)
 class ParticleEmitterAsset:
     stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     name: str = "Emitter"
-    enabled: bool = True
-    play_on_start: bool = True
     settings: EmitterSettings = EmitterSettings()
     attributes: tuple[ParticleAttribute, ...] = field(default_factory=standard_particle_attributes)
     data_interfaces: tuple[ParticleDataInterface, ...] = ()
@@ -788,6 +916,7 @@ class ParticleEmitterAsset:
     collision_stay: GraphDocument | None = None
     collision_exit: GraphDocument | None = None
     rendering: GraphDocument = field(default_factory=lambda: default_stage_graph("rendering"))
+    event_flows: tuple[ParticleEventFlow, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -797,10 +926,6 @@ class ParticleEmitterAsset:
             or not self.name
         ):
             raise ParticleGraphSchemaError("particle emitter requires stable_id and name")
-        if type(self.enabled) is not bool or type(self.play_on_start) is not bool:
-            raise ParticleGraphSchemaError(
-                "particle emitter enabled and play_on_start must be booleans"
-            )
         if not isinstance(self.settings, EmitterSettings):
             raise ParticleGraphSchemaError("particle emitter settings are invalid")
         if not all(
@@ -822,12 +947,18 @@ class ParticleEmitterAsset:
         }
         attributes = tuple(self.attributes)
         data_interfaces = tuple(self.data_interfaces)
+        event_flows = tuple(self.event_flows)
         if not all(isinstance(value, ParticleAttribute) for value in attributes):
             raise ParticleGraphSchemaError("particle emitter attributes are invalid")
         if not all(isinstance(value, (VectorField, SdfVolume)) for value in data_interfaces):
             raise ParticleGraphSchemaError("particle emitter data interfaces are invalid")
+        if not all(isinstance(value, ParticleEventFlow) for value in event_flows):
+            raise ParticleGraphSchemaError("particle emitter event flows are invalid")
+        if len({value.stable_id for value in event_flows}) != len(event_flows):
+            raise ParticleGraphSchemaError("particle event flow stable ids must be unique")
         object.__setattr__(self, "attributes", attributes)
         object.__setattr__(self, "data_interfaces", data_interfaces)
+        object.__setattr__(self, "event_flows", event_flows)
         _validate_stage_root("init", self.init)
         _validate_stage_root("update", self.update)
         for stage, document in collision_stages.items():
@@ -860,8 +991,6 @@ class ParticleEmitterAsset:
         return {
             "stable_id": self.stable_id,
             "name": self.name,
-            "enabled": self.enabled,
-            "play_on_start": self.play_on_start,
             "settings": self.settings.to_dict(),
             "attribute_defaults": {
                 attribute.stable_id: attribute.default
@@ -870,6 +999,7 @@ class ParticleEmitterAsset:
                 and attribute.default != standard_defaults[attribute.stable_id]
             },
             "data_interfaces": [interface.to_dict() for interface in self.data_interfaces],
+            "events": [value.to_dict() for value in self.event_flows],
             "stages": {
                 "init": self.init.to_dict(),
                 "update": self.update.to_dict(),
@@ -899,11 +1029,10 @@ class ParticleEmitterAsset:
             {
                 "stable_id",
                 "name",
-                "enabled",
-                "play_on_start",
                 "settings",
                 "attribute_defaults",
                 "data_interfaces",
+                "events",
                 "stages",
             },
             location,
@@ -923,6 +1052,7 @@ class ParticleEmitterAsset:
         if (
             type(value["attribute_defaults"]) is not dict
             or type(value["data_interfaces"]) is not list
+            or type(value["events"]) is not list
         ):
             raise ParticleGraphSchemaError(
                 f"{location}.attribute_defaults must be an object and data_interfaces must be an array"
@@ -946,8 +1076,6 @@ class ParticleEmitterAsset:
         return cls(
             stable_id=value["stable_id"],
             name=value["name"],
-            enabled=value["enabled"],
-            play_on_start=value["play_on_start"],
             settings=EmitterSettings.from_dict(value["settings"], f"{location}.settings"),
             attributes=builtin_attributes,
             data_interfaces=tuple(
@@ -955,6 +1083,10 @@ class ParticleEmitterAsset:
                     item, f"{location}.data_interfaces[{index}]"
                 )
                 for index, item in enumerate(value["data_interfaces"])
+            ),
+            event_flows=tuple(
+                ParticleEventFlow.from_dict(item, f"{location}.events[{index}]")
+                for index, item in enumerate(value["events"])
             ),
             init=_parse_stage_document(value["stages"]["init"], f"{location}.stages.init"),
             update=_parse_stage_document(value["stages"]["update"], f"{location}.stages.update"),
@@ -1015,7 +1147,7 @@ class ParticleEventField:
 class ParticleEventType:
     stable_id: str
     name: str
-    capacity_per_step: int
+    queue_capacity: int = 8
     fields: tuple[ParticleEventField, ...] = ()
 
     def __post_init__(self) -> None:
@@ -1023,8 +1155,8 @@ class ParticleEventType:
             raise ParticleGraphSchemaError("particle event type stable_id cannot be empty")
         if type(self.name) is not str or not self.name:
             raise ParticleGraphSchemaError("particle event type name cannot be empty")
-        if type(self.capacity_per_step) is not int or self.capacity_per_step <= 0:
-            raise ParticleGraphSchemaError("particle event capacity_per_step must be positive")
+        if type(self.queue_capacity) is not int or not 1 <= self.queue_capacity <= 64:
+            raise ParticleGraphSchemaError("particle event queue_capacity must be between 1 and 64")
         fields = tuple(self.fields)
         if not all(isinstance(value, ParticleEventField) for value in fields):
             raise ParticleGraphSchemaError("particle event fields are invalid")
@@ -1036,80 +1168,23 @@ class ParticleEventType:
         return {
             "stable_id": self.stable_id,
             "name": self.name,
-            "capacity_per_step": self.capacity_per_step,
+            "queue_capacity": self.queue_capacity,
             "fields": [value.to_dict() for value in self.fields],
         }
 
     @classmethod
     def from_dict(cls, value, location: str) -> "ParticleEventType":
-        _exact_object(value, {"stable_id", "name", "capacity_per_step", "fields"}, location)
+        _exact_object(value, {"stable_id", "name", "queue_capacity", "fields"}, location)
         if type(value["fields"]) is not list:
             raise ParticleGraphSchemaError(f"{location}.fields must be an array")
         return cls(
             value["stable_id"],
             value["name"],
-            value["capacity_per_step"],
+            value["queue_capacity"],
             tuple(
                 ParticleEventField.from_dict(item, f"{location}.fields[{index}]")
                 for index, item in enumerate(value["fields"])
             ),
-        )
-
-
-@dataclass(frozen=True)
-class ParticleEventRoute:
-    stable_id: str
-    event_type_id: str
-    source_emitter_id: str
-    source_stage: str
-    target_emitter_id: str
-    spawn_count: int = 1
-
-    def __post_init__(self) -> None:
-        identities = (
-            self.stable_id,
-            self.event_type_id,
-            self.source_emitter_id,
-            self.target_emitter_id,
-        )
-        if any(type(value) is not str or not value for value in identities):
-            raise ParticleGraphSchemaError("particle event route identities cannot be empty")
-        if self.source_stage not in _ROOTS:
-            raise ParticleGraphSchemaError("particle event route source_stage is invalid")
-        if type(self.spawn_count) is not int or self.spawn_count <= 0:
-            raise ParticleGraphSchemaError("particle event route spawn_count must be positive")
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "stable_id": self.stable_id,
-            "event_type_id": self.event_type_id,
-            "source_emitter_id": self.source_emitter_id,
-            "source_stage": self.source_stage,
-            "target_emitter_id": self.target_emitter_id,
-            "spawn_count": self.spawn_count,
-        }
-
-    @classmethod
-    def from_dict(cls, value, location: str) -> "ParticleEventRoute":
-        _exact_object(
-            value,
-            {
-                "stable_id",
-                "event_type_id",
-                "source_emitter_id",
-                "source_stage",
-                "target_emitter_id",
-                "spawn_count",
-            },
-            location,
-        )
-        return cls(
-            value["stable_id"],
-            value["event_type_id"],
-            value["source_emitter_id"],
-            value["source_stage"],
-            value["target_emitter_id"],
-            value["spawn_count"],
         )
 
 
@@ -1120,7 +1195,6 @@ class ParticleGraphAsset:
     emitters: tuple[ParticleEmitterAsset, ...] = field(default_factory=lambda: (ParticleEmitterAsset(),))
     parameters: tuple[ParticleParameter, ...] = ()
     event_types: tuple[ParticleEventType, ...] = ()
-    event_routes: tuple[ParticleEventRoute, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -1133,7 +1207,6 @@ class ParticleGraphAsset:
         emitters = tuple(self.emitters)
         parameters = tuple(self.parameters)
         event_types = tuple(self.event_types)
-        event_routes = tuple(self.event_routes)
         if not emitters:
             raise ParticleGraphSchemaError("particle graph requires at least one emitter")
         if not all(isinstance(value, ParticleEmitterAsset) for value in emitters):
@@ -1142,8 +1215,6 @@ class ParticleGraphAsset:
             raise ParticleGraphSchemaError("particle graph parameters are invalid")
         if not all(isinstance(value, ParticleEventType) for value in event_types):
             raise ParticleGraphSchemaError("particle graph event types are invalid")
-        if not all(isinstance(value, ParticleEventRoute) for value in event_routes):
-            raise ParticleGraphSchemaError("particle graph event routes are invalid")
         if len({emitter.stable_id for emitter in emitters}) != len(emitters):
             raise ParticleGraphSchemaError("particle emitter stable ids must be unique")
         if len({parameter.stable_id for parameter in parameters}) != len(parameters):
@@ -1152,24 +1223,19 @@ class ParticleGraphAsset:
             raise ParticleGraphSchemaError("particle parameter names must be unique")
         if len({value.stable_id for value in event_types}) != len(event_types):
             raise ParticleGraphSchemaError("particle event type stable ids must be unique")
-        if len({value.stable_id for value in event_routes}) != len(event_routes):
-            raise ParticleGraphSchemaError("particle event route stable ids must be unique")
-        emitter_ids = {emitter.stable_id for emitter in emitters}
         event_type_ids = {value.stable_id for value in event_types}
-        for route in event_routes:
-            if route.event_type_id not in event_type_ids:
+        for emitter in emitters:
+            unknown_event_flows = {
+                value.event_id for value in emitter.event_flows if value.event_id
+            } - event_type_ids
+            if unknown_event_flows:
                 raise ParticleGraphSchemaError(
-                    f"particle event route {route.stable_id!r} references an unknown event type"
+                    f"particle emitter {emitter.stable_id!r} has flows for unknown events: "
+                    f"{sorted(unknown_event_flows)}"
                 )
-            if route.source_emitter_id not in emitter_ids or route.target_emitter_id not in emitter_ids:
-                raise ParticleGraphSchemaError(
-                    f"particle event route {route.stable_id!r} references an unknown emitter"
-                )
-        _validate_event_route_cycles(event_routes)
         object.__setattr__(self, "emitters", emitters)
         object.__setattr__(self, "parameters", parameters)
         object.__setattr__(self, "event_types", event_types)
-        object.__setattr__(self, "event_routes", event_routes)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1179,7 +1245,6 @@ class ParticleGraphAsset:
             "emitters": [emitter.to_dict() for emitter in self.emitters],
             "parameters": [parameter.to_dict() for parameter in self.parameters],
             "event_types": [value.to_dict() for value in self.event_types],
-            "event_routes": [value.to_dict() for value in self.event_routes],
         }
 
     def canonical_json(self) -> str:
@@ -1188,17 +1253,9 @@ class ParticleGraphAsset:
     def save(self, path: str) -> None:
         if not path:
             raise ParticleGraphSchemaError("particle graph save path cannot be empty")
-        from Infernux.core.document_store import write_document_text
         from .artifact import ParticleArtifactRegistry
 
-        # Never replace the last valid source with a graph that cannot become a
-        # portable runtime artifact. write_document_text performs the atomic swap.
-        ParticleArtifactRegistry.validate_graph_asset(self)
-        write_document_text(
-            path,
-            json.dumps(self.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        )
-        ParticleArtifactRegistry.compile_path(path)
+        ParticleArtifactRegistry.save_graph_asset(self, path)
 
     def semantic_hash(self) -> str:
         value = self.to_dict()
@@ -1213,12 +1270,12 @@ class ParticleGraphAsset:
     @classmethod
     def from_dict(cls, value) -> "ParticleGraphAsset":
         expected = {
-            "$schema", "stable_id", "name", "emitters", "parameters", "event_types", "event_routes",
+            "$schema", "stable_id", "name", "emitters", "parameters", "event_types",
         }
         _exact_object(value, expected, "$")
         if value["$schema"] != PARTICLE_GRAPH_SCHEMA:
             raise ParticleGraphSchemaError("unsupported particle graph schema")
-        if any(type(value[name]) is not list for name in ("emitters", "parameters", "event_types", "event_routes")):
+        if any(type(value[name]) is not list for name in ("emitters", "parameters", "event_types")):
             raise ParticleGraphSchemaError("particle graph collections must be arrays")
         return cls(
             stable_id=value["stable_id"],
@@ -1234,10 +1291,6 @@ class ParticleGraphAsset:
             event_types=tuple(
                 ParticleEventType.from_dict(item, f"$.event_types[{index}]")
                 for index, item in enumerate(value["event_types"])
-            ),
-            event_routes=tuple(
-                ParticleEventRoute.from_dict(item, f"$.event_routes[{index}]")
-                for index, item in enumerate(value["event_routes"])
             ),
         )
 
@@ -1282,31 +1335,6 @@ def _parse_optional_stage_document(
     return _parse_stage_document(value, location)
 
 
-def _validate_event_route_cycles(routes: tuple[ParticleEventRoute, ...]) -> None:
-    adjacency: dict[str, set[str]] = {}
-    for route in routes:
-        adjacency.setdefault(route.source_emitter_id, set()).add(route.target_emitter_id)
-
-    visiting: set[str] = set()
-    visited: set[str] = set()
-
-    def visit(emitter_id: str) -> None:
-        if emitter_id in visiting:
-            raise ParticleGraphSchemaError(
-                "particle event routes cannot form a cycle without an explicit delay"
-            )
-        if emitter_id in visited:
-            return
-        visiting.add(emitter_id)
-        for target_id in adjacency.get(emitter_id, ()):
-            visit(target_id)
-        visiting.remove(emitter_id)
-        visited.add(emitter_id)
-
-    for emitter_id in adjacency:
-        visit(emitter_id)
-
-
 def _exact_object(value: Any, expected: set[str], location: str) -> Mapping[str, Any]:
     if type(value) is not dict:
         raise ParticleGraphSchemaError(f"{location} must be an object")
@@ -1329,7 +1357,7 @@ __all__ = [
     "ParticleBurst",
     "ParticleEmitterAsset",
     "ParticleEventField",
-    "ParticleEventRoute",
+    "ParticleEventFlow",
     "ParticleEventType",
     "ParticleGraphAsset",
     "ParticleGraphSchemaError",
@@ -1338,6 +1366,7 @@ __all__ = [
     "SimulationSpace",
     "VectorField",
     "default_stage_graph",
+    "default_event_graph",
     "optional_particle_attributes",
     "captured_particle_attributes",
     "particle_attribute_cache_id",

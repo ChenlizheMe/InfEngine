@@ -805,18 +805,23 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         {migrationCode[0].data(), migrationCode[0].size()},
         {migrationCode[1].data(), migrationCode[1].size()},
     };
+    const std::array<std::string_view, 2> spawnSources = {
+        infernux::particle::GpuParticleSpawnShaderSources::Advance(),
+        infernux::particle::GpuParticleSpawnShaderSources::Prepare(),
+    };
+    std::array<std::vector<uint32_t>, 2> spawnCode;
+    for (size_t index = 0; index < spawnSources.size(); ++index) {
+        spawnCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
+            std::string(spawnSources[index]), "Tests/ParticleSpawn" + std::to_string(index) + ".comp"));
+        if (!Require(!spawnCode[index].empty(), "Failed to compile GPU particle spawn-domain fixture"))
+            return false;
+    }
+    const infernux::particle::GpuParticleSpawnProgram spawnProgram = {
+        {spawnCode[0].data(), spawnCode[0].size()},
+        {spawnCode[1].data(), spawnCode[1].size()},
+    };
     if (!VerifyGpuParticleMigration(resources, migrationProgram))
         return false;
-    const auto eventPrepareCode = SpirvWords(sortCompiler.CompileComputeGlsl(
-        std::string(infernux::particle::GpuParticleEventShaderSource::Prepare()), "Tests/ParticleEventPrepare.comp"));
-    const auto eventAllocateCode = SpirvWords(sortCompiler.CompileComputeGlsl(
-        std::string(infernux::particle::GpuParticleEventShaderSource::Allocate()), "Tests/ParticleEventAllocate.comp"));
-    if (!Require(!eventPrepareCode.empty() && !eventAllocateCode.empty(),
-                 "Failed to compile GPU particle event fixture"))
-        return false;
-    const infernux::particle::GpuParticleEventProgram eventProgram = {
-        eventPrepareCode.data(), eventPrepareCode.size(), eventAllocateCode.data(), eventAllocateCode.size()};
-
     auto initialLinkedParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>();
     initialLinkedParticleProgram->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 10};
     initialLinkedParticleProgram->domain = infernux::ShaderProgramDomain::ParticleSprite;
@@ -841,7 +846,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::ParticleGpuSystemManager particleSystems;
     if (!Require(particleSystems.Initialize(resources.context, resources.pipelines, resources.resources,
                                             particleDeletionQueue, particleDrawRegistry, {}, {}, sortProgram,
-                                            cullProgram, boundsProgram, migrationProgram, eventProgram),
+                                            cullProgram, boundsProgram, migrationProgram, spawnProgram),
                  "GPU particle system manager initialization failed"))
         return false;
 
@@ -855,7 +860,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     managedProgram.stateStride = 16;
     for (auto &kernel : managedProgram.kernels)
         kernel = particleComputeCode;
-    managedProgram.eventInitKernel = particleComputeCode;
     managedProgram.billboardVertexShader = particleVertexCode;
     managedProgram.billboardFragmentShader = particleFragmentCode;
     infernux::particle::GpuParticleOutputProgram primaryOutput;
@@ -1033,6 +1037,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     auto companionProgram = managedProgram;
     companionProgram.id = 92;
     companionProgram.stableId = "managed-companion";
+    companionProgram.graphEmitterIndex = 1;
     companionProgram.preserveState = false;
     companionProgram.outputs.resize(1);
     companionProgram.outputs[0].id = 921;
@@ -1084,8 +1089,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(particleSystems.Reset(managedProgram.id) && !particleSystems.Reset(999999),
                  "GPU particle manager reset lookup is incorrect"))
         return false;
-    const infernux::particle::GpuParticleBatchFrameItem managedBatchItem{managedProgram.id, managedFrame,
-                                                                         managedTransforms};
+    const infernux::particle::GpuParticleBatchFrameItem managedBatchItem{
+        managedProgram.id, {}, managedFrame, managedTransforms};
     if (!Require(particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {managedBatchItem}),
                  "GPU particle manager rejected a valid graph-instance frame batch"))
         return false;
@@ -1215,7 +1220,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     particleDesc.collisionSceneMeshBvhNodes = particleCollisionMeshBvhNodes;
     for (auto &kernel : particleDesc.kernels)
         kernel = {particleComputeCode.data(), particleComputeCode.size()};
-    particleDesc.eventInitKernel = {particleComputeCode.data(), particleComputeCode.size()};
     infernux::particle::ParticleGpuRuntime particleRuntime;
     if (!Require(particleRuntime.Create(rhi, particleDesc), "Particle GPU runtime creation failed"))
         return false;
@@ -1255,6 +1259,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(managedViewSorter.Create(rhi, managedSorterDesc), "Managed particle view sorter creation failed"))
         return false;
     infernux::particle::ParticleRenderGraph particleGraph;
+    infernux::particle::ParticleGpuGraphSpawnDomain particleSpawnDomain;
+    if (!Require(particleSpawnDomain.Create(rhi, 4200, 1, spawnProgram) &&
+                     particleSpawnDomain.RegisterEmitter(0, particleRuntime) &&
+                     particleSpawnDomain.SetEmitterAcceptingBurstRequests(0, true) &&
+                     particleSpawnDomain.Attach(resources.graph, "Particle/TestGraph"),
+                 "Particle graph spawn domain creation failed"))
+        return false;
     infernux::particle::GpuParticleFrameRequest particleFrame;
     particleFrame.frameIndex = 42;
     particleFrame.spawnCount = 3;
@@ -1340,7 +1351,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         };
     });
 
-    if (!Require(particleGraph.Attach(resources.graph, particleRuntime, particleBounds, "Particle/TestEmitter"),
+    if (!Require(particleGraph.Attach(resources.graph, particleRuntime, particleBounds, particleSpawnDomain, 0,
+                                      "Particle/TestEmitter"),
                  "Particle RenderGraph attachment failed"))
         return false;
     if (!Require(particleGraph.BeginFrame(particleFrame), "Particle frame request was rejected"))
@@ -1650,22 +1662,24 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     const auto executionNames = resources.graph.GetExecutionPassNames();
-    constexpr size_t sortGenerateIndex = 15;
+    constexpr size_t sortGenerateIndex = 17;
     constexpr size_t sortTailIndex = sortGenerateIndex + infernux::particle::ParticleGpuSorter::PassCount * 3;
     constexpr size_t expectedExecutionCount = sortTailIndex + 5;
     const auto finalRadixScatter =
         "ManagedParticleSort/Radix" + std::to_string(infernux::particle::ParticleGpuSorter::PassCount - 1) + "/Scatter";
     const bool executionOrderValid =
-        executionNames.size() == expectedExecutionCount && executionNames[0] == "BuildIndirectArguments" &&
-        executionNames[1] == "CopyIndirectArguments" && executionNames[2] == "Particle/TestEmitter/Bootstrap" &&
-        executionNames[3] == "Particle/TestEmitter/VisibilityPrepare" &&
-        executionNames[4] == "Particle/TestEmitter/Init" && executionNames[5] == "Particle/TestEmitter/Update" &&
-        executionNames[6] == "Particle/TestEmitter/RenderReset" &&
-        executionNames[7] == "Particle/TestEmitter/Rendering" &&
-        executionNames[8] == "Particle/TestEmitter/BoundsReset" &&
-        executionNames[9] == "Particle/TestEmitter/BoundsReduce" && executionNames[10] == "ManagedParticleCull/Reset" &&
-        executionNames[11] == "ManagedParticleCull/Cull" && executionNames[12] == "ManagedParticleCull/Finalize" &&
-        executionNames[13] == "OffscreenParticleCull/Reset" && executionNames[14] == "OffscreenParticleCull/Cull" &&
+        executionNames.size() == expectedExecutionCount &&
+        executionNames[0] == "Particle/TestGraph/SpawnDomainAdvance" && executionNames[1] == "BuildIndirectArguments" &&
+        executionNames[2] == "CopyIndirectArguments" && executionNames[3] == "Particle/TestEmitter/Bootstrap" &&
+        executionNames[4] == "Particle/TestEmitter/VisibilityPrepare" &&
+        executionNames[5] == "Particle/TestEmitter/SpawnPrepare" && executionNames[6] == "Particle/TestEmitter/Init" &&
+        executionNames[7] == "Particle/TestEmitter/Update" && executionNames[8] == "Particle/TestEmitter/RenderReset" &&
+        executionNames[9] == "Particle/TestEmitter/Rendering" &&
+        executionNames[10] == "Particle/TestEmitter/BoundsReset" &&
+        executionNames[11] == "Particle/TestEmitter/BoundsReduce" &&
+        executionNames[12] == "ManagedParticleCull/Reset" && executionNames[13] == "ManagedParticleCull/Cull" &&
+        executionNames[14] == "ManagedParticleCull/Finalize" && executionNames[15] == "OffscreenParticleCull/Reset" &&
+        executionNames[16] == "OffscreenParticleCull/Cull" &&
         executionNames[sortGenerateIndex] == "ManagedParticleSort/Generate" &&
         executionNames[sortTailIndex] == finalRadixScatter && executionNames[sortTailIndex + 1] == "ParticleTexture" &&
         executionNames[sortTailIndex + 2] == "IndirectDraw" &&
@@ -2049,82 +2063,67 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     infernux::particle::GpuParticleGraphProgram managedGraphProgram;
     managedGraphProgram.graphInstanceId = managedProgram.graphInstanceId;
-    auto eventCompanionProgram = companionProgram;
-    eventCompanionProgram.graphEmitterIndex = 1;
-    managedGraphProgram.emitters = {managedProgram, eventCompanionProgram};
-    infernux::particle::GpuParticleEventDomainDesc managedEvents;
-    managedEvents.graphInstanceId = managedProgram.graphInstanceId;
-    managedEvents.eventAbiHash = 0xfeed1234u;
-    managedEvents.framesInFlight = 2;
-    managedEvents.channels.push_back({0x44u, 0, 1, 0, 3, 64});
-    managedGraphProgram.eventDomain = managedEvents;
-    if (!Require(particleSystems.ApplyGraph(managedGraphProgram, &managedError) &&
-                     particleSystems.ActiveEventAbiHash(managedProgram.graphInstanceId) == managedEvents.eventAbiHash &&
-                     particleSystems.ActiveEventPageCount(managedProgram.graphInstanceId) == 2,
-                 "GPU particle graph event domain was not published atomically"))
+    auto companionBatchProgram = companionProgram;
+    companionBatchProgram.graphEmitterIndex = 1;
+    managedGraphProgram.emitters = {managedProgram, companionBatchProgram};
+    if (!Require(particleSystems.ApplyGraph(managedGraphProgram, &managedError),
+                 "GPU particle multi-emitter graph was not published atomically"))
         return false;
-    const uint64_t initialEventDomainSerial = particleSystems.ActiveEventDomainSerial(managedProgram.graphInstanceId);
     managedGraphProgram.emitters[1].preserveState = true;
-    if (!Require(initialEventDomainSerial != 0 && particleSystems.ApplyGraph(managedGraphProgram, &managedError) &&
-                     particleSystems.ActiveEventDomainSerial(managedProgram.graphInstanceId) ==
-                         initialEventDomainSerial,
-                 "Compatible GPU particle hot reload replaced its event domain"))
+    if (!Require(particleSystems.ApplyGraph(managedGraphProgram, &managedError),
+                 "Compatible GPU particle multi-emitter hot reload failed"))
         return false;
-    const std::vector<uint32_t> externalEventRecord = {
-        0u, 0u, 0xffffffffu, 0u, 0x3f800000u, 0x40000000u, 0x40400000u,
-    };
-    if (!Require(particleSystems.QueueExternalEvents(managedProgram.graphInstanceId, 0, externalEventRecord, 1,
-                                                     &managedError) &&
-                     managedError.empty(),
-                 "GPU particle manager rejected a valid external event record") ||
-        !Require(!particleSystems.QueueExternalEvents(managedProgram.graphInstanceId, 1, externalEventRecord, 1,
-                                                      &managedError) &&
-                     !managedError.empty(),
-                 "GPU particle manager accepted an invalid external event channel"))
-        return false;
-    auto eventFrame = postMigrationFrame;
-    eventFrame.frameIndex = 46;
-    auto pausedCompanionFrame = eventFrame;
+
+    auto batchFrame = postMigrationFrame;
+    batchFrame.frameIndex = 46;
+    auto pausedCompanionFrame = batchFrame;
     pausedCompanionFrame.simulationStep = 7;
     pausedCompanionFrame.simulate = false;
     pausedCompanionFrame.render = false;
-    if (!Require(particleSystems.BeginFrameBatch(managedProgram.graphInstanceId,
-                                                 {{managedProgram.id, eventFrame, managedTransforms},
-                                                  {eventCompanionProgram.id, pausedCompanionFrame, managedTransforms}}),
-                 "GPU particle manager rejected an event-domain batch with a paused target") ||
-        !executeManagedFrame("GPU particle event preparation frame failed"))
+    if (!Require(
+            particleSystems.BeginFrameBatch(managedProgram.graphInstanceId,
+                                            {{managedProgram.id, {}, batchFrame, managedTransforms},
+                                             {companionBatchProgram.id, {}, pausedCompanionFrame, managedTransforms}}),
+            "GPU particle manager rejected a multi-emitter batch with a paused emitter") ||
+        !executeManagedFrame("GPU particle multi-emitter frame failed"))
         return false;
-    ++eventFrame.frameIndex;
-    ++eventFrame.simulationStep;
-    ++pausedCompanionFrame.frameIndex;
-    pausedCompanionFrame.simulate = true;
-    if (!Require(particleSystems.BeginFrameBatch(managedProgram.graphInstanceId,
-                                                 {{managedProgram.id, eventFrame, managedTransforms},
-                                                  {eventCompanionProgram.id, pausedCompanionFrame, managedTransforms}}),
-                 "GPU particle manager rejected divergent per-emitter simulation steps") ||
-        !executeManagedFrame("GPU particle event allocate/init frame failed"))
+
+    if (!Require(particleSystems.Reset(managedProgram.id),
+                 "GPU particle manager rejected reset before a fixed-step preroll sequence"))
+        return false;
+    auto prewarmStep0 = batchFrame;
+    prewarmStep0.frameIndex = 47;
+    prewarmStep0.substepIndex = 0;
+    prewarmStep0.simulationStep = 8;
+    prewarmStep0.render = false;
+    prewarmStep0.forceSimulation = true;
+    auto prewarmStep1 = prewarmStep0;
+    prewarmStep1.substepIndex = 1;
+    prewarmStep1.simulationStep = 9;
+    auto postPrewarmFrame = prewarmStep1;
+    postPrewarmFrame.substepIndex = 2;
+    postPrewarmFrame.simulationStep = 10;
+    postPrewarmFrame.render = true;
+    postPrewarmFrame.forceSimulation = false;
+    const infernux::particle::GpuParticleBatchFrameItem prewarmBatchItem{
+        managedProgram.id, {prewarmStep0, prewarmStep1}, postPrewarmFrame, managedTransforms};
+    if (!Require(particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {prewarmBatchItem}) &&
+                     !particleSystems.CanExecuteAsync(),
+                 "GPU particle manager rejected or asynchronously split a fixed-step preroll sequence") ||
+        !executeManagedFrame("GPU particle preroll sequence failed") ||
+        !Require(!particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {prewarmBatchItem}),
+                 "GPU particle manager accepted an already consumed preroll sequence"))
         return false;
 
     auto foreignGraphProgram = managedGraphProgram;
     foreignGraphProgram.graphInstanceId += 1;
-    foreignGraphProgram.eventDomain.reset();
-    foreignGraphProgram.removeEmitterIds = {managedProgram.id, eventCompanionProgram.id};
+    foreignGraphProgram.removeEmitterIds = {managedProgram.id, companionBatchProgram.id};
     if (!Require(!particleSystems.ApplyGraph(foreignGraphProgram, &managedError) &&
-                     particleSystems.Contains(managedProgram.id) &&
-                     particleSystems.ActiveEventAbiHash(managedProgram.graphInstanceId) == managedEvents.eventAbiHash,
+                     particleSystems.Contains(managedProgram.id),
                  "GPU particle graph crossed another graph's emitter ownership boundary"))
         return false;
-
-    managedEvents.eventAbiHash += 1;
-    managedGraphProgram.eventDomain = managedEvents;
-    if (!Require(particleSystems.ApplyGraph(managedGraphProgram, &managedError) &&
-                     particleSystems.ActiveEventAbiHash(managedProgram.graphInstanceId) == managedEvents.eventAbiHash &&
-                     particleSystems.ActiveEventDomainSerial(managedProgram.graphInstanceId) !=
-                         initialEventDomainSerial,
-                 "GPU particle event ABI replacement did not publish the new domain"))
-        return false;
     particleDeletionQueue.FlushAll();
-    if (!Require(publishManagedGraph({}, {managedProgram.id, eventCompanionProgram.id}) &&
+    if (!Require(publishManagedGraph({}, {managedProgram.id, companionBatchProgram.id}) &&
                      particleSystems.Size() == 0 && particleDrawRegistry.Size() == 0 &&
                      particleDeletionQueue.PendingCount() == 1,
                  "GPU particle manager removal did not retire graph resources"))
@@ -2134,6 +2133,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     billboardRenderer.Destroy();
     resources.graph.Destroy();
+    particleSpawnDomain.Destroy();
     managedViewSorter.Destroy();
     offscreenViewCuller.Destroy();
     managedViewCuller.Destroy();

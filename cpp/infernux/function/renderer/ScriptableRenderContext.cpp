@@ -464,7 +464,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
             m_graph->ClearCachedShadowDrawCalls();
         }
         if (m_activeCamera) {
-            m_graph->SetCachedCameraVP(m_cachedView, m_cachedProj);
+            m_graph->SetCachedCameraVP(m_activeCamera, m_cachedView, m_cachedProj);
         }
         // Point VkCore at the graph's cached copy (survives this scope).
         m_vkCore->SetDrawCalls(&m_graph->GetCachedDrawCalls());

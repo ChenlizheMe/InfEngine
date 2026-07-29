@@ -6,6 +6,7 @@
 #include <limits>
 #include <numeric>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace infernux::particle
 {
@@ -29,6 +30,27 @@ bool EqualRecords(const std::vector<GpuParticleColliderRecord> &left,
 uint64_t RecordIdentity(const GpuParticleColliderRecord &record)
 {
     return static_cast<uint64_t>(record.identity[0]) | (static_cast<uint64_t>(record.identity[1]) << 32u);
+}
+
+bool RecordIdentityLess(const GpuParticleColliderRecord &left, const GpuParticleColliderRecord &right)
+{
+    return left.identity < right.identity;
+}
+
+bool ValidateRecordIdentities(const std::vector<GpuParticleColliderRecord> &staticRecords,
+                              const std::vector<GpuParticleColliderRecord> &dynamicRecords)
+{
+    std::unordered_set<uint64_t> identities;
+    identities.reserve(staticRecords.size() + dynamicRecords.size());
+    const auto append = [&identities](const auto &records) {
+        for (const auto &record : records) {
+            const uint64_t identity = RecordIdentity(record);
+            if (identity == 0 || !identities.insert(identity).second)
+                return false;
+        }
+        return true;
+    };
+    return append(staticRecords) && append(dynamicRecords);
 }
 
 struct BuiltMeshTopology
@@ -482,6 +504,12 @@ bool ParticleGpuCollisionScene::Publish(const GpuParticleCollisionSceneSnapshot 
     effectiveSnapshot.topologyRevision = snapshot.topologyRevision;
     effectiveSnapshot.staticColliders = snapshot.staticColliders;
     effectiveSnapshot.dynamicColliders = snapshot.dynamicColliders;
+    std::sort(effectiveSnapshot.staticColliders.begin(), effectiveSnapshot.staticColliders.end(), RecordIdentityLess);
+    std::sort(effectiveSnapshot.dynamicColliders.begin(), effectiveSnapshot.dynamicColliders.end(), RecordIdentityLess);
+    if (!ValidateRecordIdentities(effectiveSnapshot.staticColliders, effectiveSnapshot.dynamicColliders)) {
+        SetError(error, "GPU particle collision snapshot contains a zero or duplicate collider identity");
+        return false;
+    }
     if (!PatchMeshGeometry(effectiveSnapshot.staticColliders, *geometryByIdentity, error) ||
         !PatchMeshGeometry(effectiveSnapshot.dynamicColliders, *geometryByIdentity, error))
         return false;

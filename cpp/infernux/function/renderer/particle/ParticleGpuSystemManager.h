@@ -4,7 +4,6 @@
 #include "ParticleGpuBounds.h"
 #include "ParticleGpuCollisionScene.h"
 #include "ParticleGpuCuller.h"
-#include "ParticleGpuEventDomain.h"
 #include "ParticleGpuMeshRenderer.h"
 #include "ParticleGpuMigrator.h"
 #include "ParticleGpuRibbonRenderer.h"
@@ -119,7 +118,7 @@ struct GpuParticleEmitterProgram
     std::string stableId;
     uint32_t capacity = 0;
     uint32_t stateStride = 0;
-    uint32_t eventOutputStageMask = 0;
+    uint32_t eventTypeCount = 0;
     std::vector<uint32_t> parameterWords;
     bool preserveState = false;
     struct StateMigration
@@ -131,7 +130,6 @@ struct GpuParticleEmitterProgram
     };
     std::optional<StateMigration> migration;
     std::array<std::vector<uint32_t>, static_cast<size_t>(GpuKernelStage::Count)> kernels;
-    std::vector<uint32_t> eventInitKernel;
     uint32_t continuationCapacity = 0;
     uint32_t continuationRecordStride = 0;
     uint32_t continuationLaneCount = 0;
@@ -158,18 +156,19 @@ struct GpuParticleEmitterProgram
 struct GpuParticleBatchFrameItem
 {
     uint64_t emitterId = 0;
+    /// Ordered fixed-step simulation requests that must complete before the
+    /// visible frame request. Used by both Prewarm and deterministic Seek.
+    std::vector<GpuParticleFrameRequest> prerollRequests;
     GpuParticleFrameRequest request;
     GpuParticleTransforms transforms;
 };
 
 /// One authoritative publication transaction for a live ParticleGraph.
-/// Event transport belongs to the graph, never to an individual emitter.
 struct GpuParticleGraphProgram
 {
     uint64_t graphInstanceId = 0;
     std::vector<GpuParticleEmitterProgram> emitters;
     std::vector<uint64_t> removeEmitterIds;
-    std::optional<GpuParticleEventDomainDesc> eventDomain;
 };
 
 /// CPU-side scheduling telemetry for the resident GPU particle world.
@@ -217,28 +216,17 @@ struct GpuParticleEmitterDiagnostic
     uint32_t aliveCount = 0;
     uint32_t visibleCount = 0;
     uint32_t droppedCount = 0;
+    uint32_t preparedSpawnCount = 0;
+    uint32_t preparedSpawnBaseId = 0;
+    uint32_t preparedSpawnGeneration = 0;
+    uint32_t spawnOverflowCount = 0;
+    std::vector<uint32_t> eventOverflowCounts;
+    std::vector<uint32_t> eventEnqueueCounts;
+    std::vector<uint32_t> eventCompleteCounts;
     GpuParticleBoundsMode boundsMode = GpuParticleBoundsMode::Automatic;
     bool boundsValid = false;
     std::array<float, 3> boundsLower{};
     std::array<float, 3> boundsUpper{};
-};
-
-struct GpuParticleEventDiagnostic
-{
-    uint32_t channelIndex = 0;
-    uint64_t stableEventTypeHash = 0;
-    uint32_t sourceEmitterIndex = 0;
-    uint32_t targetEmitterIndex = 0;
-    uint32_t eventTypeIndex = 0;
-    uint32_t spawnCount = 0;
-    uint64_t preparedEpoch = 0;
-    uint32_t readPageIndex = 0;
-    uint32_t writePageIndex = 0;
-    uint32_t producedCount = 0;
-    uint32_t producerDroppedCount = 0;
-    uint32_t consumedCount = 0;
-    uint32_t targetDroppedCount = 0;
-    uint64_t spawnedCount = 0;
 };
 
 struct GpuParticleDiagnosticSnapshot
@@ -247,7 +235,6 @@ struct GpuParticleDiagnosticSnapshot
     uint64_t graphInstanceId = 0;
     GpuParticleDiagnosticStatus status = GpuParticleDiagnosticStatus::Unknown;
     std::vector<GpuParticleEmitterDiagnostic> emitters;
-    std::vector<GpuParticleEventDiagnostic> events;
     std::string error;
 };
 
@@ -271,23 +258,18 @@ class ParticleGpuSystemManager
         GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver = {},
         const GpuParticleSortProgram &sortProgram = {}, const GpuParticleCullProgram &cullProgram = {},
         const GpuParticleBoundsProgram &boundsProgram = {}, const GpuParticleMigrationProgram &migrationProgram = {},
-        const GpuParticleEventProgram &eventProgram = {}, const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
+        const GpuParticleSpawnProgram &spawnProgram = {}, const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
         const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {}, uint32_t framesInFlight = 2);
     void Shutdown() noexcept;
 
     /// Compile then publish one complete graph transaction. The active graph
-    /// remains untouched when any runtime, renderer, event ABI, or RenderGraph
+    /// remains untouched when any runtime, renderer, or RenderGraph
     /// compilation step fails.
     [[nodiscard]] bool ApplyGraph(const GpuParticleGraphProgram &program, std::string *error = nullptr);
     /// Update graph-instance parameters in place. No shader, pipeline, or
     /// particle-state resource is rebuilt.
     [[nodiscard]] bool UpdateGraphParameters(uint64_t graphInstanceId, const std::vector<uint32_t> &parameterWords,
                                              std::string *error = nullptr);
-    /// Queue ABI-packed gameplay events for a graph route. Records are copied
-    /// into the next GPU event page at the simulation boundary.
-    [[nodiscard]] bool QueueExternalEvents(uint64_t graphInstanceId, uint32_t channelIndex,
-                                           const std::vector<uint32_t> &recordWords, uint32_t recordCount,
-                                           std::string *error = nullptr);
     /// Publish a scene-owned collider snapshot. No GPU work is recorded until
     /// the next particle simulation boundary.
     [[nodiscard]] bool PublishCollisionScene(const GpuParticleCollisionSceneSnapshot &snapshot,
@@ -329,9 +311,6 @@ class ParticleGpuSystemManager
     [[nodiscard]] int32_t ActiveOutputRenderQueue(uint64_t emitterId, uint64_t outputId) const;
     [[nodiscard]] std::optional<ParticleOutputSemantics> ActiveOutputSemantics(uint64_t emitterId,
                                                                                uint64_t outputId) const;
-    [[nodiscard]] uint64_t ActiveEventAbiHash(uint64_t graphInstanceId) const;
-    [[nodiscard]] uint64_t ActiveEventDomainSerial(uint64_t graphInstanceId) const;
-    [[nodiscard]] uint32_t ActiveEventPageCount(uint64_t graphInstanceId) const;
     /// Arm one counter-and-bounds snapshot. No transfer or readback resource
     /// exists until this method is called, and completion never stalls the renderer.
     [[nodiscard]] uint64_t RequestDiagnostics(uint64_t graphInstanceId);

@@ -84,7 +84,8 @@ lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const s
 bool TextureDescEquals(const GraphTextureDesc &a, const GraphTextureDesc &b)
 {
     return a.name == b.name && a.format == b.format && a.isBackbuffer == b.isBackbuffer && a.isDepth == b.isDepth &&
-           a.width == b.width && a.height == b.height && a.sizeDivisor == b.sizeDivisor && a.samples == b.samples;
+           a.width == b.width && a.height == b.height && a.sizeDivisor == b.sizeDivisor && a.samples == b.samples &&
+           a.role == b.role && a.temporalKey == b.temporalKey;
 }
 
 uint32_t EffectiveTextureSamples(const GraphTextureDesc &texture, uint32_t frameSamples)
@@ -199,6 +200,12 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
     const uint32_t frameSamples = desc.msaaSamples > 0 ? static_cast<uint32_t>(desc.msaaSamples) : activeFrameSamples;
     std::unordered_map<std::string, const GraphTextureDesc *> textures;
     textures.reserve(desc.textures.size());
+    struct TemporalPair
+    {
+        const GraphTextureDesc *read = nullptr;
+        const GraphTextureDesc *write = nullptr;
+    };
+    std::unordered_map<std::string, TemporalPair> temporalPairs;
 
     for (const auto &tex : desc.textures) {
         if (tex.name.empty()) {
@@ -246,6 +253,34 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
         if (!tex.isBackbuffer && tex.isDepth != rhi::IsDepthFormat(tex.format)) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name,
                          "' depth flag does not match its pixel format");
+            return false;
+        }
+        if (tex.role == GraphTextureRole::Transient) {
+            if (!tex.temporalKey.empty()) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: transient texture '", tex.name,
+                             "' cannot declare a temporal key");
+                return false;
+            }
+            continue;
+        }
+        if (tex.temporalKey.empty() || tex.isBackbuffer || tex.isDepth || tex.width != 0 || tex.height != 0 ||
+            tex.sizeDivisor != 0 || tex.samples != 1) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: temporal texture '", tex.name,
+                         "' must be a scene-sized, single-sample color texture with a temporal key");
+            return false;
+        }
+        auto &pair = temporalPairs[tex.temporalKey];
+        const GraphTextureDesc **slot = tex.role == GraphTextureRole::TemporalRead ? &pair.read : &pair.write;
+        if (*slot != nullptr) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: duplicate temporal role for '", tex.temporalKey, "'");
+            return false;
+        }
+        *slot = &tex;
+    }
+    for (const auto &[key, pair] : temporalPairs) {
+        if (!pair.read || !pair.write || pair.read->format != pair.write->format) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: temporal history '", key,
+                         "' requires one matching read/write pair");
             return false;
         }
     }
@@ -773,6 +808,47 @@ void SceneRenderGraph::ReplaceSceneTarget(SceneRenderTarget *sceneTarget)
     m_importedDepthTarget = {};
     m_previousViewProj = glm::mat4(1.0f);
     m_cameraHistoryValid = false;
+    RetireTemporalHistoryResources();
+}
+
+void SceneRenderGraph::InvalidateTemporalHistory()
+{
+    m_cameraHistoryValid = false;
+    m_temporalSampleIndex = 0;
+    m_temporalJitterNdc = glm::vec2(0.0f);
+    for (auto &[key, history] : m_temporalHistories) {
+        (void)key;
+        history.valid = false;
+        history.readIndex = 0;
+    }
+    m_renderView.history = {};
+}
+
+bool SceneRenderGraph::UsesTemporalHistory() const
+{
+    return std::any_of(m_pythonGraphDesc.textures.begin(), m_pythonGraphDesc.textures.end(),
+                       [](const GraphTextureDesc &texture) { return texture.role != GraphTextureRole::Transient; });
+}
+
+void SceneRenderGraph::RetireTemporalHistoryResources()
+{
+    if (m_temporalHistories.empty())
+        return;
+    auto retired = std::move(m_temporalHistories);
+    m_temporalHistories.clear();
+    m_renderView.history = {};
+    if (!m_vkCore)
+        return;
+    rhi::Device *device = &m_vkCore->GetDeviceContext().GetRhiDevice();
+    m_vkCore->GetRetirementQueue().Retire([device, retired = std::move(retired)]() mutable {
+        for (auto &[key, history] : retired) {
+            (void)key;
+            for (const auto view : history.views)
+                device->Release(view);
+            for (const auto texture : history.textures)
+                device->Release(texture);
+        }
+    });
 }
 
 void SceneRenderGraph::Destroy()
@@ -791,6 +867,7 @@ void SceneRenderGraph::Destroy()
     m_particleCullers.clear();
     m_particleSorters.clear();
     m_fullscreenRenderer.Destroy();
+    RetireTemporalHistoryResources();
     m_sceneDepthResolver.Destroy();
     m_forwardPlusGeometryGrid.Shutdown();
     m_forwardPlusParticleGrid.Shutdown();
@@ -1015,13 +1092,76 @@ rhi::BindGroupHandle SceneRenderGraph::GetPerViewBindGroup() const
     return m_perViewFrames[frameIndex].geometryGroup;
 }
 
-void SceneRenderGraph::SetCachedCameraVP(const glm::mat4 &view, const glm::mat4 &proj)
+void SceneRenderGraph::SetCachedCameraVP(const Camera *camera, const glm::mat4 &view, const glm::mat4 &proj)
 {
+    bool cameraCut = m_hasCachedCameraVP && camera != m_cachedCamera;
+    if (m_hasCachedCameraVP && !cameraCut) {
+        const glm::mat4 previousInverseView = glm::inverse(m_cachedView);
+        const glm::mat4 currentInverseView = glm::inverse(view);
+        const glm::vec3 previousPosition = glm::vec3(previousInverseView[3]);
+        const glm::vec3 currentPosition = glm::vec3(currentInverseView[3]);
+        const glm::vec3 previousForward = -glm::normalize(glm::vec3(previousInverseView[2]));
+        const glm::vec3 currentForward = -glm::normalize(glm::vec3(currentInverseView[2]));
+
+        float projectionDelta = 0.0f;
+        for (glm::length_t column = 0; column < 4; ++column) {
+            for (glm::length_t row = 0; row < 4; ++row) {
+                projectionDelta =
+                    std::max(projectionDelta, std::abs(proj[column][row] - m_cachedUnjitteredProj[column][row]));
+            }
+        }
+
+        constexpr float kCameraCutDistance = 10.0f;
+        constexpr float kCameraCutDirectionCosine = 0.70710678f;
+        const glm::vec3 cameraDelta = currentPosition - previousPosition;
+        cameraCut = glm::dot(cameraDelta, cameraDelta) > kCameraCutDistance * kCameraCutDistance ||
+                    glm::dot(previousForward, currentForward) < kCameraCutDirectionCosine || projectionDelta > 1e-3f;
+    }
+    if (cameraCut) {
+        m_cameraHistoryValid = false;
+        InvalidateTemporalHistory();
+    }
+
+    m_cachedCamera = camera;
     m_cachedView = view;
     m_drawView = view;
-    m_cachedProj = proj;
+    m_cachedUnjitteredProj = proj;
+    m_temporalJitterNdc =
+        UsesTemporalHistory() ? ComputeTemporalJitterNdc(m_temporalSampleIndex, m_width, m_height) : glm::vec2(0.0f);
+    m_cachedProj = ApplyTemporalJitter(proj, m_temporalJitterNdc);
     m_hasCachedCameraVP = true;
-    (void)StageCameraMatrices(view, proj);
+    (void)StageCameraMatrices(view, m_cachedProj);
+}
+
+glm::vec2 SceneRenderGraph::ComputeTemporalJitterNdc(uint32_t sampleIndex, uint32_t width, uint32_t height)
+{
+    if (width == 0 || height == 0)
+        return glm::vec2(0.0f);
+
+    const auto halton = [](uint32_t index, uint32_t base) {
+        float value = 0.0f;
+        float fraction = 1.0f;
+        while (index > 0) {
+            fraction /= static_cast<float>(base);
+            value += fraction * static_cast<float>(index % base);
+            index /= base;
+        }
+        return value;
+    };
+
+    const uint32_t sequenceIndex = sampleIndex % kTemporalJitterSampleCount + 1u;
+    const glm::vec2 pixelOffset{halton(sequenceIndex, 2u) - 0.5f, halton(sequenceIndex, 3u) - 0.5f};
+    return {2.0f * pixelOffset.x / static_cast<float>(width), 2.0f * pixelOffset.y / static_cast<float>(height)};
+}
+
+glm::mat4 SceneRenderGraph::ApplyTemporalJitter(const glm::mat4 &projection, const glm::vec2 &jitterNdc)
+{
+    glm::mat4 result = projection;
+    for (glm::length_t column = 0; column < 4; ++column) {
+        result[column][0] += jitterNdc.x * projection[column][3];
+        result[column][1] += jitterNdc.y * projection[column][3];
+    }
+    return result;
 }
 
 bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat4 &proj,
@@ -1723,6 +1863,8 @@ bool SceneRenderGraph::PrepareSubmissionExecution()
     if (!m_graphBuilt)
         return false;
 
+    BindTemporalHistoryResources();
+
     if (m_hasCameraClearOverride && !m_mainClearPassName.empty()) {
         if (m_cameraClearFlags == CameraClearFlags::SolidColor) {
             m_renderGraph->UpdatePassClearColor(m_mainClearPassName, m_cameraBgColor.r, m_cameraBgColor.g,
@@ -1756,6 +1898,7 @@ bool SceneRenderGraph::CompleteSubmissionExecution(VkCommandBuffer commandBuffer
         return false;
 
     RecordParticleViewDiagnostics(commandBuffer);
+    CommitTemporalHistory();
     ++m_executionCount;
     m_lastExecutedBuildRevision = m_graphBuildRevision;
     return true;
@@ -1843,7 +1986,8 @@ std::string SceneRenderGraph::GetDebugString() const
             result += "  " + pass.name + "\n";
         }
         if (!m_parameterBlocks.empty()) {
-            result += "Parameter blocks (" + std::to_string(m_parameterBlocks.size()) + "):\n";
+            result += "Parameter blocks (authored defaults, before native runtime overrides) (" +
+                      std::to_string(m_parameterBlocks.size()) + "):\n";
             for (const auto &[id, block] : m_parameterBlocks) {
                 result += "  " + id + " [";
                 for (size_t index = 0; index < block.names.size(); ++index) {
@@ -1854,6 +1998,27 @@ std::string SceneRenderGraph::GetDebugString() const
                 result += "]\n";
             }
         }
+    }
+
+    if (!m_temporalHistories.empty()) {
+        std::vector<std::string> temporalKeys;
+        temporalKeys.reserve(m_temporalHistories.size());
+        for (const auto &[key, history] : m_temporalHistories) {
+            (void)history;
+            temporalKeys.push_back(key);
+        }
+        std::sort(temporalKeys.begin(), temporalKeys.end());
+
+        result += "Temporal histories (" + std::to_string(temporalKeys.size()) + "):\n";
+        for (const auto &key : temporalKeys) {
+            const auto &history = m_temporalHistories.at(key);
+            result += "  " + key + " [" + std::to_string(history.width) + "x" + std::to_string(history.height) +
+                      ", valid=" + (history.valid ? "Yes" : "No") + ", read=" + std::to_string(history.readIndex) +
+                      ", write=" + std::to_string(history.readIndex ^ 1u) + "]\n";
+        }
+        result += "Temporal jitter: sample=" + std::to_string(m_temporalSampleIndex) + "/" +
+                  std::to_string(kTemporalJitterSampleCount) + ", ndc=(" + std::to_string(m_temporalJitterNdc.x) +
+                  ", " + std::to_string(m_temporalJitterNdc.y) + ")\n";
     }
 
     // Add underlying RenderGraph debug info
@@ -1892,6 +2057,150 @@ void SceneRenderGraph::ImportSceneTargetResources()
     }
 }
 
+void SceneRenderGraph::ImportTemporalHistoryResources(std::unordered_map<std::string, vk::ResourceHandle> &handles)
+{
+    if (!m_vkCore || !m_renderGraph || m_width == 0 || m_height == 0)
+        return;
+
+    struct RequestedHistory
+    {
+        const GraphTextureDesc *read = nullptr;
+        const GraphTextureDesc *write = nullptr;
+    };
+    std::unordered_map<std::string, RequestedHistory> requested;
+    for (const auto &texture : m_pythonGraphDesc.textures) {
+        if (texture.role == GraphTextureRole::Transient)
+            continue;
+        auto &pair = requested[texture.temporalKey];
+        if (texture.role == GraphTextureRole::TemporalRead)
+            pair.read = &texture;
+        else
+            pair.write = &texture;
+    }
+
+    auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+    for (auto it = m_temporalHistories.begin(); it != m_temporalHistories.end();) {
+        const auto request = requested.find(it->first);
+        const bool reusable = request != requested.end() && request->second.read && request->second.write &&
+                              it->second.width == m_width && it->second.height == m_height &&
+                              it->second.format == request->second.read->format;
+        if (reusable) {
+            ++it;
+            continue;
+        }
+        TemporalHistoryResource retired = std::move(it->second);
+        it = m_temporalHistories.erase(it);
+        rhi::Device *retiredDevice = &device;
+        m_vkCore->GetRetirementQueue().Retire([retiredDevice, retired = std::move(retired)]() mutable {
+            for (const auto view : retired.views)
+                retiredDevice->Release(view);
+            for (const auto texture : retired.textures)
+                retiredDevice->Release(texture);
+        });
+    }
+
+    for (const auto &[key, request] : requested) {
+        if (!request.read || !request.write)
+            continue;
+        auto [it, inserted] = m_temporalHistories.try_emplace(key);
+        auto &history = it->second;
+        if (inserted) {
+            rhi::TextureDesc textureDesc;
+            textureDesc.width = m_width;
+            textureDesc.height = m_height;
+            textureDesc.format = request.read->format;
+            textureDesc.samples = rhi::SampleCount::One;
+            textureDesc.usage = rhi::TextureUsageFlags::Sampled | rhi::TextureUsageFlags::TransferSource |
+                                rhi::TextureUsageFlags::TransferDestination;
+            bool created = true;
+            for (uint32_t index = 0; index < 2; ++index) {
+                history.textures[index] = device.CreateTexture(textureDesc);
+                if (!history.textures[index].IsValid()) {
+                    created = false;
+                    break;
+                }
+                rhi::TextureViewDesc viewDesc;
+                viewDesc.texture = history.textures[index];
+                viewDesc.format = textureDesc.format;
+                history.views[index] = device.CreateTextureView(viewDesc);
+                if (!history.views[index].IsValid()) {
+                    created = false;
+                    break;
+                }
+            }
+            if (!created) {
+                for (const auto view : history.views)
+                    device.Release(view);
+                for (const auto texture : history.textures)
+                    device.Release(texture);
+                m_temporalHistories.erase(it);
+                INXLOG_ERROR("SceneRenderGraph: failed to allocate temporal history '", key, "'");
+                continue;
+            }
+            history.format = textureDesc.format;
+            history.width = m_width;
+            history.height = m_height;
+        }
+
+        history.readName = request.read->name;
+        history.writeName = request.write->name;
+        const uint32_t writeIndex = history.readIndex ^ 1u;
+        history.readHandle =
+            m_renderGraph->ImportTexture(history.readName, device.Resolve(history.textures[history.readIndex]),
+                                         device.Resolve(history.views[history.readIndex]),
+                                         rhi::ToVkFormat(history.format), history.width, history.height);
+        history.writeHandle = m_renderGraph->ImportTexture(
+            history.writeName, device.Resolve(history.textures[writeIndex]), device.Resolve(history.views[writeIndex]),
+            rhi::ToVkFormat(history.format), history.width, history.height);
+        handles[history.readName] = history.readHandle;
+        handles[history.writeName] = history.writeHandle;
+        if (!m_renderView.history.IsValid())
+            m_renderView.history = history.views[history.readIndex];
+    }
+}
+
+void SceneRenderGraph::BindTemporalHistoryResources()
+{
+    if (!m_vkCore || !m_renderGraph)
+        return;
+    auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+    m_renderView.history = {};
+    for (auto &[key, history] : m_temporalHistories) {
+        (void)key;
+        const uint32_t writeIndex = history.readIndex ^ 1u;
+        if (!m_renderGraph->UpdateImportedTexture(history.readHandle,
+                                                  device.Resolve(history.textures[history.readIndex]),
+                                                  device.Resolve(history.views[history.readIndex])) ||
+            !m_renderGraph->UpdateImportedTexture(history.writeHandle, device.Resolve(history.textures[writeIndex]),
+                                                  device.Resolve(history.views[writeIndex]))) {
+            history.valid = false;
+            continue;
+        }
+        if (history.valid) {
+            m_renderGraph->SetResourceInitialState(history.readHandle, rhi::TextureLayout::TransferDestination,
+                                                   rhi::Access::TransferWrite, rhi::PipelineStage::Transfer);
+            m_renderGraph->SetResourceInitialState(history.writeHandle, rhi::TextureLayout::ShaderReadOnly,
+                                                   rhi::Access::ShaderRead, rhi::PipelineStage::FragmentShader);
+        } else {
+            m_renderGraph->SetResourceInitialState(history.readHandle, rhi::TextureLayout::Undefined, rhi::Access::None,
+                                                   rhi::PipelineStage::Top);
+            m_renderGraph->SetResourceInitialState(history.writeHandle, rhi::TextureLayout::Undefined,
+                                                   rhi::Access::None, rhi::PipelineStage::Top);
+        }
+        if (!m_renderView.history.IsValid())
+            m_renderView.history = history.views[history.readIndex];
+    }
+}
+
+void SceneRenderGraph::CommitTemporalHistory()
+{
+    for (auto &[key, history] : m_temporalHistories) {
+        (void)key;
+        history.valid = true;
+        history.readIndex ^= 1u;
+    }
+}
+
 void SceneRenderGraph::UpdateMainPassClearSettings(CameraClearFlags clearFlags, const glm::vec4 &bgColor)
 {
     m_hasCameraClearOverride = true;
@@ -1914,7 +2223,7 @@ void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
 {
     // Non-backbuffer, non-depth color textures
     for (const auto &tex : m_pythonGraphDesc.textures) {
-        if (!tex.isBackbuffer && !tex.isDepth) {
+        if (tex.role == GraphTextureRole::Transient && !tex.isBackbuffer && !tex.isDepth) {
             uint32_t texW = (tex.width > 0) ? tex.width : width;
             uint32_t texH = (tex.height > 0) ? tex.height : height;
             if (tex.sizeDivisor > 1) {
@@ -1932,7 +2241,8 @@ void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
 
     // Custom-size depth textures (shadow maps and offscreen depth targets)
     for (const auto &tex : m_pythonGraphDesc.textures) {
-        if (tex.isDepth && ((tex.width > 0 && tex.height > 0) || tex.sizeDivisor > 1)) {
+        if (tex.role == GraphTextureRole::Transient && tex.isDepth &&
+            ((tex.width > 0 && tex.height > 0) || tex.sizeDivisor > 1)) {
             uint32_t texW = tex.width > 0 ? tex.width : std::max(1u, width / tex.sizeDivisor);
             uint32_t texH = tex.height > 0 ? tex.height : std::max(1u, height / tex.sizeDivisor);
             const uint32_t requestedSamples =
@@ -2125,6 +2435,7 @@ void SceneRenderGraph::BuildRenderGraph()
         });
     }
     m_renderGraph->Reset();
+    InvalidateTemporalHistory();
     m_renderView.color = {};
     m_renderView.depth = {};
     m_renderView.motion = {};
@@ -2271,6 +2582,7 @@ void SceneRenderGraph::BuildRenderGraph()
 
     std::unordered_map<std::string, vk::ResourceHandle> customRTHandles;
     std::unordered_map<std::string, vk::ResourceHandle> bufferHandles;
+    ImportTemporalHistoryResources(customRTHandles);
     if (!m_pythonGraphDesc.passes.empty()) {
         std::unordered_map<std::string, const GraphTextureDesc *> texDescMap;
         for (const auto &tex : m_pythonGraphDesc.textures) {
@@ -3060,6 +3372,51 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                 }
 
+                vk::ResourceHandle fullscreenResolvedDepth;
+                bool sampledDepthResolveUnavailable = false;
+                if (msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
+                    for (const auto &[samplerName, textureName] : commandInputBindings) {
+                        (void)samplerName;
+                        const auto texture = texDescMap.find(textureName);
+                        if (texture == texDescMap.end() || !texture->second->isDepth)
+                            continue;
+                        const auto source = customRTHandles.find(textureName);
+                        if (source == customRTHandles.end() || !source->second.IsValid())
+                            continue;
+                        if (!m_sceneDepthResolver.IsValid()) {
+                            INXLOG_ERROR("SceneRenderGraph: sampled MSAA depth resolve is unavailable for pass '",
+                                         passDesc.name, "'");
+                            sampledDepthResolveUnavailable = true;
+                            break;
+                        }
+                        if (!resolvedParticleSceneDepth.IsValid() || resolvedParticleDepthSource != source->second) {
+                            const auto sourceDepth = source->second;
+                            const std::string resolvePassName =
+                                "_SceneDepthResolve/" + std::to_string(depthResolvePassCounter++);
+                            m_renderGraph->AddComputePass(resolvePassName, [&, sourceDepth](vk::PassBuilder &builder) {
+                                builder.ReadSampledDepth(sourceDepth, rhi::PipelineStage::ComputeShader);
+                                auto target = builder.CreateTexture("SceneDepthResolved", width, height,
+                                                                    VK_FORMAT_R32_SFLOAT, VK_SAMPLE_COUNT_1_BIT);
+                                resolvedParticleSceneDepth = builder.WriteStorageTexture(target);
+                                const auto outputDepth = resolvedParticleSceneDepth;
+                                return [this, sourceDepth, outputDepth, width, height,
+                                        sampleCount = static_cast<uint32_t>(msaaSamples)](vk::RenderContext &ctx) {
+                                    if (!m_sceneDepthResolver.Record(
+                                            ctx.GetComputeCommandEncoder(), ctx.GetTextureView(sourceDepth),
+                                            ctx.GetTextureView(outputDepth), width, height, sampleCount)) {
+                                        INXLOG_ERROR("SceneRenderGraph: failed to record the MSAA scene-depth resolve");
+                                    }
+                                };
+                            });
+                            resolvedParticleDepthSource = sourceDepth;
+                        }
+                        fullscreenResolvedDepth = resolvedParticleSceneDepth;
+                        break;
+                    }
+                }
+                if (sampledDepthResolveUnavailable)
+                    continue;
+
                 // Capture references for the execute lambda
                 FullscreenRenderer *fsRenderer = &m_fullscreenRenderer;
                 vk::RenderGraph *renderGraphPtr = m_renderGraph.get();
@@ -3067,8 +3424,11 @@ void SceneRenderGraph::BuildRenderGraph()
                 std::string parameterBlock = command->parameterBlock;
                 FullscreenPushConstants packedPushConstants{};
                 uint32_t packedPushConstantSize = 0;
+                int32_t historyValidParameterIndex = -1;
                 for (const auto &[name, value] : command->pushConstants) {
                     if (packedPushConstantSize / sizeof(float) < 32) {
+                        if (name == "_InfernuxHistoryValid")
+                            historyValidParameterIndex = static_cast<int32_t>(packedPushConstantSize / sizeof(float));
                         packedPushConstants.values[packedPushConstantSize / sizeof(float)] = value;
                         packedPushConstantSize += sizeof(float);
                     } else {
@@ -3092,20 +3452,25 @@ void SceneRenderGraph::BuildRenderGraph()
                     bool depthRead = false;
                 };
                 std::vector<FullscreenReadResource> fsReadInputs;
+                std::string temporalHistoryKey;
                 if (!commandInputBindings.empty()) {
                     // Use inputBindings order for deterministic sampler→binding mapping
                     for (const auto &[samplerName, textureName] : commandInputBindings) {
                         auto texIt = texDescMap.find(textureName);
                         if (texIt == texDescMap.end())
                             continue;
+                        if (texIt->second->role == GraphTextureRole::TemporalRead)
+                            temporalHistoryKey = texIt->second->temporalKey;
                         if (texIt->second->isBackbuffer) {
                             if (msaaSamples > VK_SAMPLE_COUNT_1_BIT && m_importedResolveTarget.IsValid()) {
-                                fsReadInputs.push_back(
-                                    {m_importedResolveTarget, rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
+                                fsReadInputs.push_back({m_importedResolveTarget,
+                                                        rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
                             } else {
                                 fsReadInputs.push_back(
                                     {m_importedColorTarget, rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
                             }
+                        } else if (texIt->second->isDepth && fullscreenResolvedDepth.IsValid()) {
+                            fsReadInputs.push_back({fullscreenResolvedDepth, rhi::PixelFormat::R32SFloat, false});
                         } else {
                             // Allow both color and depth textures as sampler inputs
                             // for fullscreen effects (e.g. SSAO reads depth as sampler2D).
@@ -3115,8 +3480,7 @@ void SceneRenderGraph::BuildRenderGraph()
                             // combined-image-sampler descriptor, not as depth attachments.
                             auto rtIt = customRTHandles.find(textureName);
                             if (rtIt != customRTHandles.end()) {
-                                fsReadInputs.push_back(
-                                    {rtIt->second, texIt->second->format, texIt->second->isDepth});
+                                fsReadInputs.push_back({rtIt->second, texIt->second->format, texIt->second->isDepth});
                             }
                         }
                     }
@@ -3135,8 +3499,8 @@ void SceneRenderGraph::BuildRenderGraph()
                         auto texIt = texDescMap.find(readTex);
                         if (texIt != texDescMap.end() && texIt->second->isBackbuffer) {
                             if (msaaSamples > VK_SAMPLE_COUNT_1_BIT && m_importedResolveTarget.IsValid()) {
-                                fsReadInputs.push_back(
-                                    {m_importedResolveTarget, rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
+                                fsReadInputs.push_back({m_importedResolveTarget,
+                                                        rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
                             } else {
                                 fsReadInputs.push_back(
                                     {m_importedColorTarget, rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
@@ -3234,8 +3598,8 @@ void SceneRenderGraph::BuildRenderGraph()
                             return;
 
                         // Allocate descriptor set for input textures
-                        const auto bindGroup = fsRenderer->AllocateBindGroup(
-                            entry.inputLayout, inputs, inputCount, fsRenderer->GetLinearSampler());
+                        const auto bindGroup = fsRenderer->AllocateBindGroup(entry.inputLayout, inputs, inputCount,
+                                                                             fsRenderer->GetLinearSampler());
                         if (!bindGroup.IsValid()) {
                             INXLOG_ERROR("FullscreenQuad '", shaderName, "': descriptor pool exhausted, skipping pass");
                             return;
@@ -3251,6 +3615,12 @@ void SceneRenderGraph::BuildRenderGraph()
                                 drawPushConstants = blockIt->second.values;
                                 drawPushConstantSize = blockIt->second.byteSize;
                             }
+                        }
+                        if (historyValidParameterIndex >= 0 &&
+                            static_cast<uint32_t>(historyValidParameterIndex) < drawPushConstantSize / sizeof(float)) {
+                            const auto history = m_temporalHistories.find(temporalHistoryKey);
+                            drawPushConstants.values[historyValidParameterIndex] =
+                                history != m_temporalHistories.end() && history->second.valid ? 1.0f : 0.0f;
                         }
 
                         fsRenderer->Draw(ctx.GetGraphicsCommandEncoder(), entry, bindGroup, GetPerViewBindGroup(),

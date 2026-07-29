@@ -96,8 +96,15 @@ void SkinnedMeshRenderer::SetActiveTakeName(const std::string &name)
 
 void SkinnedMeshRenderer::SetRuntimeAnimationTime(float t)
 {
+    if (std::abs(m_runtimeAnimationTime - t) <= kEpsilon)
+        return;
     m_runtimeAnimationTime = t;
     RefreshRuntimeSkinnedMesh();
+}
+
+void SkinnedMeshRenderer::SetRuntimeAnimationNormalizedTime(float n)
+{
+    m_runtimeAnimationNormalized = n;
 }
 
 void SkinnedMeshRenderer::SubmitAnimationPose(const std::string &takeName, float timeSeconds, float normalizedTime,

@@ -132,17 +132,17 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
     # Standalone render entry point (without RenderStack)
     # ==================================================================
 
-    def render(self, context, cameras):
-        """Render all cameras.
+    def render(self, context, camera):
+        """Render one camera through its dedicated context.
 
         The base implementation builds the graph once from
-        ``define_topology()``, filters cameras via ``should_render_camera()``,
-        then calls ``render_camera()`` for each accepted camera.
+        ``define_topology()``, filters the camera via
+        ``should_render_camera()``, then calls ``render_camera()``.
 
-        Override this method entirely if you need fully custom loop logic
-        (e.g. multi-pass techniques that interleave multiple cameras).
-        For simple camera filtering, override ``should_render_camera()``
-        instead.
+        The renderer owns multi-camera enumeration and creates a distinct
+        context and RenderView for every camera. Pipelines must never loop
+        cameras inside one context. For camera filtering, override
+        ``should_render_camera()``.
         """
         from Infernux.rendergraph.graph import RenderGraph
 
@@ -151,12 +151,11 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
             self.define_topology(g)
             self._standalone_desc = g.build()
 
-        for camera in cameras:
-            if not self.should_render_camera(camera):
-                continue
-            context.setup_camera_properties(camera)
-            culling = context.cull(camera)
-            self.render_camera(context, camera, culling)
+        if not self.should_render_camera(camera):
+            return
+        context.setup_camera_properties(camera)
+        culling = context.cull(camera)
+        self.render_camera(context, camera, culling)
 
     def should_render_camera(self, camera) -> bool:
         """Decide whether *camera* should be rendered this frame.
@@ -167,7 +166,7 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
             def should_render_camera(self, camera):
                 return not camera.is_editor_camera
 
-        Returns ``True`` by default (render all cameras).
+        Returns ``True`` by default.
         """
         return True
 

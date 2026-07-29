@@ -740,6 +740,13 @@ class RenderGraph
     ResourceHandle ImportResolveTarget(VkImage image, VkImageView view, VkFormat format, uint32_t width,
                                        uint32_t height);
 
+    /// Import a persistent texture owned outside the graph.
+    ResourceHandle ImportTexture(const std::string &name, VkImage image, VkImageView view, VkFormat format,
+                                 uint32_t width, uint32_t height);
+
+    /// Rebind an imported texture to another image with the same description.
+    bool UpdateImportedTexture(ResourceHandle handle, VkImage image, VkImageView view);
+
     /// Import a stable host-side renderer list object. Its contents may change every frame.
     ResourceHandle ImportRendererList(const std::string &name, const RendererList *rendererList);
 

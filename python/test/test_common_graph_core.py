@@ -324,8 +324,8 @@ def test_curve_and_gradient_nodes_compile_strict_authored_literals():
     program = ExpressionCompiler().compile(document, outputs=(("curve", "value"), ("gradient", "color")))
 
     assert [instruction.opcode for instruction in program.instructions] == ["sample_curve", "sample_gradient"]
-    assert program.instructions[0].immediate_dict()["curve"] == curve
-    assert program.instructions[1].immediate_dict()["gradient"] == gradient
+    assert program.instructions[0].operands[0].literal == curve
+    assert program.instructions[1].operands[0].literal == gradient
 
     invalid = dict(curve)
     invalid["keys"] = [dict(curve["keys"][0]), dict(curve["keys"][0])]

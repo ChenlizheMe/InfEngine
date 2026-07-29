@@ -12,7 +12,6 @@ from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 
 from .hir import (
     ParticleEmitterHIR,
-    ParticleEventRouteHIR,
     ParticleEventSchedule,
     ParticleEventTypeHIR,
     ParticleProgramHIR,
@@ -473,6 +472,7 @@ class KernelJoinAll:
 class KernelLifecycleFlow:
     lifecycle_stage: ParticleStage
     kernel_stage: KernelStage
+    flow_id: str
     entry_node_uid: str
     lanes: tuple[KernelExecutionLane, ...]
     blocks: tuple[KernelFlowBlock, ...]
@@ -487,10 +487,15 @@ class KernelLifecycleFlow:
             ParticleStage.COLLISION_ENTER: KernelStage.UPDATE,
             ParticleStage.COLLISION_STAY: KernelStage.UPDATE,
             ParticleStage.COLLISION_EXIT: KernelStage.UPDATE,
+            ParticleStage.EVENT: KernelStage.UPDATE,
             ParticleStage.RENDERING: KernelStage.RENDERING,
         }[self.lifecycle_stage]
         if self.kernel_stage is not expected_kernel_stage:
             raise KernelCompileError("kernel lifecycle flow targets the wrong function stage")
+        if type(self.flow_id) is not str or (
+            self.lifecycle_stage is ParticleStage.EVENT and not self.flow_id
+        ):
+            raise KernelCompileError("kernel lifecycle flow identity is invalid")
         if type(self.entry_node_uid) is not str or not self.entry_node_uid:
             raise KernelCompileError("kernel lifecycle flow entry cannot be empty")
         if not self.lanes or not all(isinstance(item, KernelExecutionLane) for item in self.lanes):
@@ -538,6 +543,7 @@ class KernelLifecycleFlow:
         return {
             "lifecycle_stage": self.lifecycle_stage.value,
             "kernel_stage": self.kernel_stage.value,
+            "flow_id": self.flow_id,
             "entry_node_uid": self.entry_node_uid if include_source else "",
             "lanes": [
                 lane.to_dict(include_source=include_source) for lane in self.lanes
@@ -557,6 +563,7 @@ class KernelLifecycleFlow:
             {
                 "lifecycle_stage",
                 "kernel_stage",
+                "flow_id",
                 "entry_node_uid",
                 "lanes",
                 "blocks",
@@ -570,6 +577,7 @@ class KernelLifecycleFlow:
         return cls(
             value["lifecycle_stage"],
             value["kernel_stage"],
+            value["flow_id"],
             value["entry_node_uid"],
             tuple(KernelExecutionLane.from_dict(item) for item in value["lanes"]),
             tuple(KernelFlowBlock.from_dict(item) for item in value["blocks"]),
@@ -580,6 +588,7 @@ class KernelLifecycleFlow:
 @dataclass(frozen=True)
 class KernelSuspensionPoint:
     lifecycle_stage: ParticleStage
+    flow_id: str
     kind: ParticleSuspensionKind
     lane_index: int
     lane_stable_id: str
@@ -598,7 +607,9 @@ class KernelSuspensionPoint:
             and self.resume_node_uid == ""
         )
         if (
-            type(self.lane_index) is not int
+            type(self.flow_id) is not str
+            or (self.lifecycle_stage is ParticleStage.EVENT and not self.flow_id)
+            or type(self.lane_index) is not int
             or self.lane_index < 0
             or type(self.lane_stable_id) is not str
             or not self.lane_stable_id
@@ -629,6 +640,7 @@ class KernelSuspensionPoint:
     def to_dict(self, *, include_source: bool = True) -> dict[str, Any]:
         return {
             "lifecycle_stage": self.lifecycle_stage.value,
+            "flow_id": self.flow_id,
             "kind": self.kind.value,
             "lane_index": self.lane_index,
             "lane_stable_id": self.lane_stable_id,
@@ -646,6 +658,7 @@ class KernelSuspensionPoint:
             value,
             {
                 "lifecycle_stage",
+                "flow_id",
                 "kind",
                 "lane_index",
                 "lane_stable_id",
@@ -660,6 +673,7 @@ class KernelSuspensionPoint:
         )
         return cls(
             value["lifecycle_stage"],
+            value["flow_id"],
             value["kind"],
             value["lane_index"],
             value["lane_stable_id"],
@@ -723,15 +737,17 @@ class ParticleEmitterKernelIR:
             self._validate_data_interface_access(function)
         if not all(isinstance(item, KernelLifecycleFlow) for item in flows):
             raise KernelCompileError("kernel emitter lifecycle flow metadata is invalid")
-        flow_by_stage = {flow.lifecycle_stage: flow for flow in flows}
+        flow_by_stage = {
+            (flow.lifecycle_stage, flow.flow_id): flow for flow in flows
+        }
         if len(flow_by_stage) != len(flows):
-            raise KernelCompileError("kernel emitter lifecycle stages must be unique")
+            raise KernelCompileError("kernel emitter lifecycle flow identities must be unique")
         mandatory_stages = {
             ParticleStage.INIT,
             ParticleStage.UPDATE,
             ParticleStage.RENDERING,
         }
-        if not mandatory_stages.issubset(flow_by_stage):
+        if not {(stage, "") for stage in mandatory_stages}.issubset(flow_by_stage):
             raise KernelCompileError("kernel emitter is missing a mandatory lifecycle flow")
         lifecycle_order = {
             ParticleStage.INIT: 0,
@@ -739,10 +755,14 @@ class ParticleEmitterKernelIR:
             ParticleStage.COLLISION_ENTER: 2,
             ParticleStage.COLLISION_STAY: 3,
             ParticleStage.COLLISION_EXIT: 4,
-            ParticleStage.RENDERING: 5,
+            ParticleStage.EVENT: 5,
+            ParticleStage.RENDERING: 6,
         }
-        if tuple(flow.lifecycle_stage for flow in flows) != tuple(
-            sorted(flow_by_stage, key=lifecycle_order.__getitem__)
+        if tuple((flow.lifecycle_stage, flow.flow_id) for flow in flows) != tuple(
+            sorted(
+                flow_by_stage,
+                key=lambda value: (lifecycle_order[value[0]], value[1]),
+            )
         ):
             raise KernelCompileError("kernel emitter lifecycle flows are not canonically ordered")
         function_by_kernel_stage = {
@@ -769,11 +789,12 @@ class ParticleEmitterKernelIR:
             ParticleStage.COLLISION_ENTER: self.update,
             ParticleStage.COLLISION_STAY: self.update,
             ParticleStage.COLLISION_EXIT: self.update,
+            ParticleStage.EVENT: self.update,
             ParticleStage.RENDERING: self.rendering,
         }
         for suspension in suspensions:
             function = function_by_stage.get(suspension.lifecycle_stage)
-            flow = flow_by_stage.get(suspension.lifecycle_stage)
+            flow = flow_by_stage.get((suspension.lifecycle_stage, suspension.flow_id))
             if (
                 function is None
                 or flow is None
@@ -877,6 +898,13 @@ class ParticleEmitterKernelIR:
                         immediate["velocity_attribute"],
                         immediate["hit_attribute"],
                         immediate["normal_attribute"],
+                        immediate["point_attribute"],
+                        immediate["relative_velocity_attribute"],
+                        immediate["penetration_attribute"],
+                        immediate["trigger_attribute"],
+                        immediate["material_attribute"],
+                        immediate["collider_id_low_attribute"],
+                        immediate["collider_id_high_attribute"],
                     )
                     if stable_id
                 )
@@ -1038,7 +1066,7 @@ class KernelEventType:
     stable_id: str
     type_index: int
     stable_type_hash: int
-    capacity_per_step: int
+    queue_capacity: int
     payload_stride_words: int
     fields: tuple[KernelEventField, ...]
 
@@ -1052,8 +1080,8 @@ class KernelEventType:
             or not 0 <= self.stable_type_hash <= 0xFFFFFFFFFFFFFFFF
         ):
             raise KernelCompileError("kernel event stable type hash is invalid")
-        if type(self.capacity_per_step) is not int or self.capacity_per_step <= 0:
-            raise KernelCompileError("kernel event capacity is invalid")
+        if type(self.queue_capacity) is not int or not 1 <= self.queue_capacity <= 64:
+            raise KernelCompileError("kernel event queue capacity is invalid")
         if type(self.payload_stride_words) is not int or self.payload_stride_words < 0:
             raise KernelCompileError("kernel event payload stride is invalid")
         if not all(isinstance(field, KernelEventField) for field in self.fields):
@@ -1073,7 +1101,7 @@ class KernelEventType:
             "stable_id": self.stable_id,
             "type_index": self.type_index,
             "stable_type_hash": self.stable_type_hash,
-            "capacity_per_step": self.capacity_per_step,
+            "queue_capacity": self.queue_capacity,
             "payload_stride_words": self.payload_stride_words,
             "fields": [field.to_dict() for field in self.fields],
         }
@@ -1086,7 +1114,7 @@ class KernelEventType:
                 "stable_id",
                 "type_index",
                 "stable_type_hash",
-                "capacity_per_step",
+                "queue_capacity",
                 "payload_stride_words",
                 "fields",
             },
@@ -1098,66 +1126,9 @@ class KernelEventType:
             value["stable_id"],
             value["type_index"],
             value["stable_type_hash"],
-            value["capacity_per_step"],
+            value["queue_capacity"],
             value["payload_stride_words"],
             tuple(KernelEventField.from_dict(field) for field in value["fields"]),
-        )
-
-
-@dataclass(frozen=True)
-class KernelEventRoute:
-    stable_id: str
-    event_type_index: int
-    source_emitter_index: int
-    source_stage: KernelStage
-    target_emitter_index: int
-    spawn_count: int
-
-    def __post_init__(self) -> None:
-        if type(self.stable_id) is not str or not self.stable_id:
-            raise KernelCompileError("kernel event route stable_id cannot be empty")
-        for label, value in (
-            ("event type", self.event_type_index),
-            ("source emitter", self.source_emitter_index),
-            ("target emitter", self.target_emitter_index),
-        ):
-            if type(value) is not int or value < 0:
-                raise KernelCompileError(f"kernel event route {label} index is invalid")
-        object.__setattr__(self, "source_stage", KernelStage(self.source_stage))
-        if type(self.spawn_count) is not int or self.spawn_count <= 0:
-            raise KernelCompileError("kernel event route spawn_count is invalid")
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "stable_id": self.stable_id,
-            "event_type_index": self.event_type_index,
-            "source_emitter_index": self.source_emitter_index,
-            "source_stage": self.source_stage.value,
-            "target_emitter_index": self.target_emitter_index,
-            "spawn_count": self.spawn_count,
-        }
-
-    @classmethod
-    def from_dict(cls, value: Any) -> "KernelEventRoute":
-        _exact_dict(
-            value,
-            {
-                "stable_id",
-                "event_type_index",
-                "source_emitter_index",
-                "source_stage",
-                "target_emitter_index",
-                "spawn_count",
-            },
-            "kernel event route",
-        )
-        return cls(
-            value["stable_id"],
-            value["event_type_index"],
-            value["source_emitter_index"],
-            value["source_stage"],
-            value["target_emitter_index"],
-            value["spawn_count"],
         )
 
 
@@ -1165,7 +1136,6 @@ class KernelEventRoute:
 class KernelEventABI:
     abi_hash: str
     event_types: tuple[KernelEventType, ...]
-    routes: tuple[KernelEventRoute, ...]
 
     def __post_init__(self) -> None:
         if type(self.abi_hash) is not str or len(self.abi_hash) != 64 or any(
@@ -1174,36 +1144,27 @@ class KernelEventABI:
             raise KernelCompileError("kernel event ABI hash must be a lowercase SHA-256")
         if not all(isinstance(value, KernelEventType) for value in self.event_types):
             raise KernelCompileError("kernel event types are invalid")
-        if not all(isinstance(value, KernelEventRoute) for value in self.routes):
-            raise KernelCompileError("kernel event routes are invalid")
         if tuple(value.type_index for value in self.event_types) != tuple(
             range(len(self.event_types))
         ):
             raise KernelCompileError("kernel event type indices must be dense and ordered")
         if len({value.stable_id for value in self.event_types}) != len(self.event_types):
             raise KernelCompileError("kernel event type stable ids must be unique")
-        if len({value.stable_id for value in self.routes}) != len(self.routes):
-            raise KernelCompileError("kernel event route stable ids must be unique")
-        for route in self.routes:
-            if route.event_type_index >= len(self.event_types):
-                raise KernelCompileError("kernel event route references an unknown event type")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "abi_hash": self.abi_hash,
             "event_types": [value.to_dict() for value in self.event_types],
-            "routes": [value.to_dict() for value in self.routes],
         }
 
     @classmethod
     def from_dict(cls, value: Any) -> "KernelEventABI":
-        _exact_dict(value, {"abi_hash", "event_types", "routes"}, "kernel event ABI")
-        if type(value["event_types"]) is not list or type(value["routes"]) is not list:
-            raise KernelCompileError("kernel event ABI types and routes must be arrays")
+        _exact_dict(value, {"abi_hash", "event_types"}, "kernel event ABI")
+        if type(value["event_types"]) is not list:
+            raise KernelCompileError("kernel event ABI types must be an array")
         return cls(
             value["abi_hash"],
             tuple(KernelEventType.from_dict(item) for item in value["event_types"]),
-            tuple(KernelEventRoute.from_dict(item) for item in value["routes"]),
         )
 
 
@@ -1288,6 +1249,7 @@ class ParticleKernelProgram:
             raise KernelCompileError("particle kernel runtime contract is invalid")
         self._validate_parameter_access()
         self._validate_event_access()
+        self._validate_spawn_access()
         if self.kernel_hash != _kernel_semantic_hash(
             self.parameters, self.emitters, self.events, self.contract
         ):
@@ -1310,34 +1272,34 @@ class ParticleKernelProgram:
                         )
 
     def _validate_event_access(self) -> None:
-        for route in self.events.routes:
-            if (
-                route.source_emitter_index >= len(self.emitters)
-                or route.target_emitter_index >= len(self.emitters)
-            ):
-                raise KernelCompileError("kernel event route references an unknown emitter")
-        for emitter_index, emitter in enumerate(self.emitters):
+        for emitter in self.emitters:
             for function in (emitter.init, emitter.update, emitter.rendering):
                 for instruction in function.instructions:
-                    if instruction.opcode == "event_payload":
-                        channel_index = instruction.immediate_dict()["channel_index"]
-                        if (
-                            type(channel_index) is not int
-                            or not 0 <= channel_index < len(self.events.routes)
+                    if instruction.opcode not in {
+                        "event_payload",
+                        "event_enqueue",
+                        "event_begin",
+                        "event_complete",
+                    }:
+                        continue
+                    immediate = instruction.immediate_dict()
+                    event_index = immediate.get("event_type_index")
+                    if type(event_index) is not int or not 0 <= event_index < len(
+                        self.events.event_types
+                    ):
+                        raise KernelCompileError("kernel event instruction references an unknown event")
+                    event_type = self.events.event_types[event_index]
+                    if instruction.opcode == "event_enqueue":
+                        payload_types = tuple(
+                            operand.value_type for operand in instruction.operands[1:]
+                        )
+                        if payload_types != tuple(
+                            field.value_type for field in event_type.fields
                         ):
                             raise KernelCompileError(
-                                "kernel event_payload references an unknown channel"
+                                "kernel event enqueue payload does not match its event"
                             )
-                        route = self.events.routes[channel_index]
-                        if (
-                            route.target_emitter_index != emitter_index
-                            or function.stage is not KernelStage.INIT
-                        ):
-                            raise KernelCompileError(
-                                "kernel event_payload does not match its target route"
-                            )
-                        event_type = self.events.event_types[route.event_type_index]
-                        immediate = instruction.immediate_dict()
+                    elif instruction.opcode == "event_payload":
                         field = next(
                             (
                                 value
@@ -1346,35 +1308,23 @@ class ParticleKernelProgram:
                             ),
                             None,
                         )
-                        if (
-                            field is None
-                            or field.word_count != immediate["word_count"]
-                            or field.value_type != instruction.result_type
-                            or field.default != immediate["default"]
-                        ):
+                        if field is None or field.value_type != instruction.result_type:
                             raise KernelCompileError(
-                                "kernel event_payload does not match its event field"
+                                "kernel event payload does not match its event field"
                             )
+
+    def _validate_spawn_access(self) -> None:
+        for emitter in self.emitters:
+            for function in (emitter.init, emitter.update, emitter.rendering):
+                for instruction in function.instructions:
+                    if instruction.opcode != "burst_enqueue":
                         continue
-                    if instruction.opcode != "event_append":
-                        continue
-                    channel_index = instruction.immediate_dict()["channel_index"]
-                    if type(channel_index) is not int or not 0 <= channel_index < len(
-                        self.events.routes
-                    ):
-                        raise KernelCompileError("kernel event_append references an unknown channel")
-                    route = self.events.routes[channel_index]
-                    if (
-                        route.source_emitter_index != emitter_index
-                        or route.source_stage is not function.stage
-                    ):
-                        raise KernelCompileError("kernel event_append does not match its source route")
-                    event_type = self.events.event_types[route.event_type_index]
-                    payload_types = tuple(
-                        operand.value_type for operand in instruction.operands[1:]
-                    )
-                    if payload_types != tuple(field.value_type for field in event_type.fields):
-                        raise KernelCompileError("kernel event_append payload does not match its event type")
+                    immediate = instruction.immediate_dict()
+                    target_index = immediate["target_emitter_index"]
+                    if not 0 <= target_index < len(self.emitters):
+                        raise KernelCompileError(
+                            "kernel Burst instruction references an unknown emitter"
+                        )
 
     def to_dict(self, *, include_source: bool = True) -> dict[str, Any]:
         return {
@@ -1461,16 +1411,12 @@ class ParticleKernelLowerer:
             parameter.stable_id: parameter.value_type
             for parameter in parameters
         }
-        routes = {
-            route.stable_id: (index, route)
-            for index, route in enumerate(program.events.routes)
-        }
         event_types = {
             event_type.type_index: event_type
             for event_type in program.events.event_types
         }
         emitters = tuple(
-            self._lower_emitter(emitter, routes, event_types, parameter_types)
+            self._lower_emitter(emitter, event_types, parameter_types)
             for emitter in program.emitters
         )
         events = _lower_event_abi(program.events)
@@ -1487,14 +1433,42 @@ class ParticleKernelLowerer:
     def _lower_emitter(
         self,
         emitter: ParticleEmitterHIR,
-        routes: Mapping[str, tuple[int, ParticleEventRouteHIR]],
         event_types: Mapping[int, ParticleEventTypeHIR],
         parameter_types: Mapping[str, TypeRef],
     ) -> ParticleEmitterKernelIR:
-        schema = tuple(
+        schema = list(
             (attribute.stable_id, attribute.value_type, attribute.default)
             for attribute in emitter.attributes
         )
+        event_type_by_id = {
+            event_type.stable_id: event_type for event_type in event_types.values()
+        }
+        event_flows = tuple(
+            sorted(emitter.event_flows, key=lambda value: value.flow_id)
+        )
+        for event_flow in event_flows:
+            event_type = event_type_by_id[event_flow.flow_id]
+            prefix = _event_state_prefix(event_type.type_index)
+            schema.extend(
+                (
+                    (f"{prefix}.head", TypeRef(ValueType.U32), 0),
+                    (f"{prefix}.tail", TypeRef(ValueType.U32), 0),
+                    (f"{prefix}.count", TypeRef(ValueType.U32), 0),
+                    (f"{prefix}.active", TypeRef(ValueType.BOOL), False),
+                )
+            )
+            for slot in range(event_type.queue_capacity):
+                for field in event_type.fields:
+                    schema.append(
+                        (
+                            _event_payload_state_id(
+                                event_type.type_index, slot, field.stable_id
+                            ),
+                            field.value_type,
+                            field.default,
+                        )
+                    )
+        schema = tuple(schema)
         types = {stable_id: value_type for stable_id, value_type, _default in schema}
         defaults = {stable_id: default for stable_id, _value_type, default in schema}
         lifecycle_stages = tuple(
@@ -1505,6 +1479,7 @@ class ParticleKernelLowerer:
                 emitter.collision_enter,
                 emitter.collision_stay,
                 emitter.collision_exit,
+                *event_flows,
                 emitter.rendering,
             )
             if stage is not None
@@ -1519,7 +1494,7 @@ class ParticleKernelLowerer:
             ),
             start=1,
         ):
-            key = (stage.stage, suspension.node_uid)
+            key = (stage.stage, stage.flow_id, suspension.node_uid)
             continuation_program_counters[key] = program_counter
             suspension_sources.append((stage, suspension, program_counter))
         operation_instruction_ranges = {}
@@ -1527,7 +1502,6 @@ class ParticleKernelLowerer:
             emitter,
             types,
             defaults,
-            routes,
             event_types,
             parameter_types,
             continuation_program_counters,
@@ -1536,7 +1510,6 @@ class ParticleKernelLowerer:
         update = self._lower_update(
             emitter,
             types,
-            routes,
             event_types,
             parameter_types,
             continuation_program_counters,
@@ -1545,7 +1518,6 @@ class ParticleKernelLowerer:
         rendering = self._lower_rendering(
             emitter,
             types,
-            routes,
             event_types,
             parameter_types,
             continuation_program_counters,
@@ -1560,13 +1532,16 @@ class ParticleKernelLowerer:
                     ParticleStage.COLLISION_ENTER: update,
                     ParticleStage.COLLISION_STAY: update,
                     ParticleStage.COLLISION_EXIT: update,
+                    ParticleStage.EVENT: update,
                     ParticleStage.RENDERING: rendering,
                 }[stage.stage],
                 operation_instruction_ranges,
             )
             for stage in lifecycle_stages
         )
-        flow_by_stage = {flow.lifecycle_stage: flow for flow in flows}
+        flow_by_stage = {
+            (flow.lifecycle_stage, flow.flow_id): flow for flow in flows
+        }
         instruction_locations = {}
         for function in (init, update, rendering):
             for instruction_index, instruction in enumerate(function.instructions):
@@ -1580,12 +1555,14 @@ class ParticleKernelLowerer:
                 lifecycle_stage = ParticleStage(
                     instruction.immediate_dict()["lifecycle_stage"]
                 )
-                instruction_locations[(lifecycle_stage, instruction.source.node_uid)] = (
+                flow_id = str(instruction.immediate_dict().get("flow_id", ""))
+                instruction_locations[(lifecycle_stage, flow_id, instruction.source.node_uid)] = (
                     instruction_index
                 )
         suspensions = tuple(
             KernelSuspensionPoint(
                 stage.stage,
+                stage.flow_id,
                 suspension.kind,
                 suspension.lane_index,
                 suspension.lane_stable_id,
@@ -1594,13 +1571,13 @@ class ParticleKernelLowerer:
                 (
                     next(
                         block.instruction_begin
-                        for block in flow_by_stage[stage.stage].blocks
+                        for block in flow_by_stage[(stage.stage, stage.flow_id)].blocks
                         if block.source_node_uid == suspension.resume_node_uid
                     )
                     if suspension.resume_node_uid
                     else -1
                 ),
-                instruction_locations[(stage.stage, suspension.node_uid)],
+                instruction_locations[(stage.stage, stage.flow_id, suspension.node_uid)],
                 suspension.node_uid,
                 suspension.resume_node_uid,
             )
@@ -1623,7 +1600,7 @@ class ParticleKernelLowerer:
         stage_hir: ParticleStageHIR,
         function: ParticleKernelFunction,
         operation_instruction_ranges: Mapping[
-            tuple[ParticleStage, str], tuple[int, int]
+            tuple[ParticleStage, str, str], tuple[int, int]
         ],
     ) -> KernelLifecycleFlow:
         block_ranges: list[tuple[int, int] | None] = []
@@ -1631,7 +1608,7 @@ class ParticleKernelLowerer:
             ranges = []
             for operation in block.operations:
                 instruction_range = operation_instruction_ranges.get(
-                    (stage_hir.stage, operation.source_node_uid)
+                    (stage_hir.stage, stage_hir.flow_id, operation.source_node_uid)
                 )
                 if instruction_range is None:
                     raise KernelCompileError(
@@ -1664,6 +1641,7 @@ class ParticleKernelLowerer:
         return KernelLifecycleFlow(
             stage_hir.stage,
             function.stage,
+            stage_hir.flow_id,
             stage_hir.flow.entry_node_uid,
             tuple(
                 KernelExecutionLane(
@@ -1708,7 +1686,7 @@ class ParticleKernelLowerer:
                 f"Wait operation {operation.source_node_uid!r} has no HIR suspension descriptor"
             )
         program_counter = continuation_program_counters.get(
-            (stage_hir.stage, operation.source_node_uid)
+            (stage_hir.stage, stage_hir.flow_id, operation.source_node_uid)
         )
         if program_counter is None:
             raise KernelCompileError(
@@ -1738,6 +1716,7 @@ class ParticleKernelLowerer:
             (duration,),
             {
                 "lifecycle_stage": stage_hir.stage.value,
+                "flow_id": stage_hir.flow_id,
                 "lane_index": suspension.lane_index,
                 "lane_stable_id": suspension.lane_stable_id,
                 "resume_program_counter": program_counter,
@@ -1964,6 +1943,8 @@ class ParticleKernelLowerer:
     def _prepare_collision_lifecycle(builder, attribute_types) -> None:
         source = KernelSourceRef(operation="update.collision_lifecycle")
         previous_active = builder.load("builtin.collision_active", source)
+        previous_id_low = builder.load("internal.collision_active_id_low", source)
+        previous_id_high = builder.load("internal.collision_active_id_high", source)
         position = builder.load("builtin.position", source)
         velocity = builder.load("builtin.velocity", source)
         size = builder.load("builtin.size", source)
@@ -1972,7 +1953,7 @@ class ParticleKernelLowerer:
             "multiply", TypeRef(ValueType.F32), (size, half), {}, source
         )
         layer_mask = builder.constant(TypeRef(ValueType.U32), 0xFFFFFFFF, source)
-        include_triggers = builder.constant(TypeRef(ValueType.BOOL), False, source)
+        include_triggers = builder.constant(TypeRef(ValueType.BOOL), True, source)
         one = builder.constant(TypeRef(ValueType.F32), 1.0, source)
         builder.emit_void(
             "collide_scene",
@@ -1990,6 +1971,13 @@ class ParticleKernelLowerer:
                 "velocity_attribute": "builtin.velocity",
                 "hit_attribute": "builtin.collision_hit",
                 "normal_attribute": "builtin.collision_normal",
+                "point_attribute": "builtin.collision_point",
+                "relative_velocity_attribute": "builtin.collision_relative_velocity",
+                "penetration_attribute": "builtin.collision_penetration",
+                "trigger_attribute": "builtin.collision_is_trigger",
+                "material_attribute": "builtin.collision_material",
+                "collider_id_low_attribute": "internal.collision_current_id_low",
+                "collider_id_high_attribute": "internal.collision_current_id_high",
             },
             source,
         )
@@ -1999,9 +1987,39 @@ class ParticleKernelLowerer:
                 "builtin.velocity",
                 "builtin.collision_hit",
                 "builtin.collision_normal",
+                "builtin.collision_point",
+                "builtin.collision_relative_velocity",
+                "builtin.collision_penetration",
+                "builtin.collision_is_trigger",
+                "builtin.collision_material",
+                "internal.collision_current_id_low",
+                "internal.collision_current_id_high",
             }
         )
         current_active = builder.load("builtin.collision_hit", source)
+        current_id_low = builder.load("internal.collision_current_id_low", source)
+        current_id_high = builder.load("internal.collision_current_id_high", source)
+        same_id_low = builder.emit(
+            "equal",
+            TypeRef(ValueType.BOOL),
+            (current_id_low, previous_id_low),
+            {},
+            source,
+        )
+        same_id_high = builder.emit(
+            "equal",
+            TypeRef(ValueType.BOOL),
+            (current_id_high, previous_id_high),
+            {},
+            source,
+        )
+        same_collider = builder.emit(
+            "logical_and",
+            TypeRef(ValueType.BOOL),
+            (same_id_low, same_id_high),
+            {},
+            source,
+        )
         not_previous = builder.emit(
             "logical_not",
             TypeRef(ValueType.BOOL),
@@ -2009,17 +2027,38 @@ class ParticleKernelLowerer:
             {},
             source,
         )
+        changed_collider = builder.emit(
+            "logical_not",
+            TypeRef(ValueType.BOOL),
+            (same_collider,),
+            {},
+            source,
+        )
+        fresh_or_changed = builder.emit(
+            "logical_or",
+            TypeRef(ValueType.BOOL),
+            (not_previous, changed_collider),
+            {},
+            source,
+        )
         entered = builder.emit(
             "logical_and",
             TypeRef(ValueType.BOOL),
-            (current_active, not_previous),
+            (current_active, fresh_or_changed),
+            {},
+            source,
+        )
+        active_and_same = builder.emit(
+            "logical_and",
+            TypeRef(ValueType.BOOL),
+            (previous_active, same_collider),
             {},
             source,
         )
         stayed = builder.emit(
             "logical_and",
             TypeRef(ValueType.BOOL),
-            (current_active, previous_active),
+            (current_active, active_and_same),
             {},
             source,
         )
@@ -2030,10 +2069,17 @@ class ParticleKernelLowerer:
             {},
             source,
         )
+        missing_or_changed = builder.emit(
+            "logical_or",
+            TypeRef(ValueType.BOOL),
+            (not_current, changed_collider),
+            {},
+            source,
+        )
         exited = builder.emit(
             "logical_and",
             TypeRef(ValueType.BOOL),
-            (not_current, previous_active),
+            (previous_active, missing_or_changed),
             {},
             source,
         )
@@ -2041,13 +2087,14 @@ class ParticleKernelLowerer:
         builder.set_runtime_predicate("collision_stay", stayed)
         builder.set_runtime_predicate("collision_exit", exited)
         builder.store("builtin.collision_active", current_active, source)
+        builder.store("internal.collision_active_id_low", current_id_low, source)
+        builder.store("internal.collision_active_id_high", current_id_high, source)
 
     def _lower_init(
         self,
         emitter,
         attribute_types,
         defaults,
-        routes,
         event_types,
         parameter_types,
         continuation_program_counters,
@@ -2078,12 +2125,11 @@ class ParticleKernelLowerer:
             bindings = dict(operation.value_bindings)
             if operation.opcode in {"control.if", "control.join_all"}:
                 operation_instruction_ranges[
-                    (emitter.init.stage, operation.source_node_uid)
+                    (emitter.init.stage, emitter.init.flow_id, operation.source_node_uid)
                 ] = (instruction_begin, len(builder.instructions))
                 continue
             guard = builder.execution_guard(operation, expression_values, source)
-            if operation.opcode != "event.emit":
-                builder.begin_guard(guard, source)
+            builder.begin_guard(guard, source)
             if operation.opcode in {
                 "control.wait_frames",
                 "control.wait_seconds",
@@ -2141,21 +2187,21 @@ class ParticleKernelLowerer:
                 )
             elif operation.opcode == "attribute.capture":
                 self._lower_attribute_capture(builder, operation, source)
-            elif operation.opcode == "event.emit":
-                self._lower_event_output(
+            elif operation.opcode == "event.trigger":
+                self._lower_event_trigger(
                     builder,
                     operation,
                     expression_values,
-                    routes,
                     event_types,
                     source,
                 )
+            elif operation.opcode == "emitter.burst":
+                self._lower_emitter_burst(builder, operation, expression_values, source)
             else:
                 raise KernelCompileError(f"unsupported Init operation {operation.opcode!r}")
-            if operation.opcode != "event.emit":
-                builder.end_guard(guard, source)
+            builder.end_guard(guard, source)
             operation_instruction_ranges[
-                (emitter.init.stage, operation.source_node_uid)
+                (emitter.init.stage, emitter.init.flow_id, operation.source_node_uid)
             ] = (instruction_begin, len(builder.instructions))
         return builder.finish()
 
@@ -2163,7 +2209,6 @@ class ParticleKernelLowerer:
         self,
         emitter,
         attribute_types,
-        routes,
         event_types,
         parameter_types,
         continuation_program_counters,
@@ -2192,16 +2237,6 @@ class ParticleKernelLowerer:
                 ),
                 KernelSourceRef(operation="update.reset_collision"),
             )
-        if "builtin.collision_normal" in attribute_types:
-            builder.store(
-                "builtin.collision_normal",
-                builder.constant(
-                    attribute_types["builtin.collision_normal"],
-                    [0.0, 0.0, 0.0],
-                    KernelSourceRef(operation="update.reset_collision"),
-                ),
-                KernelSourceRef(operation="update.reset_collision"),
-            )
         collision_opcodes = {
             "collision.plane",
             "collision.sphere",
@@ -2219,7 +2254,27 @@ class ParticleKernelLowerer:
             )
             if lifecycle is not None
             for operation in lifecycle.flow.iter_operations()
+        ) + tuple(
+            (event_flow, operation)
+            for event_flow in emitter.event_flows
+            for operation in event_flow.flow.iter_operations()
         )
+        event_types_by_id = {
+            event_type.stable_id: event_type for event_type in event_types.values()
+        }
+        event_guards = {
+            event_flow.flow_id: builder.emit(
+                "event_begin",
+                TypeRef(ValueType.BOOL),
+                (),
+                {
+                    "event_type_index": event_types_by_id[event_flow.flow_id].type_index,
+                    "queue_capacity": event_types_by_id[event_flow.flow_id].queue_capacity,
+                },
+                KernelSourceRef(operation=f"event.{event_flow.flow_id}.begin"),
+            )
+            for event_flow in emitter.event_flows
+        }
         position_integrated = False
         collision_lifecycle_ready = False
 
@@ -2250,12 +2305,24 @@ class ParticleKernelLowerer:
             bindings = dict(operation.value_bindings)
             if operation.opcode in {"control.if", "control.join_all"}:
                 operation_instruction_ranges[
-                    (stage_hir.stage, operation.source_node_uid)
+                    (stage_hir.stage, stage_hir.flow_id, operation.source_node_uid)
                 ] = (instruction_begin, len(builder.instructions))
                 continue
             guard = builder.execution_guard(operation, expression_values, source)
-            if operation.opcode != "event.emit":
-                builder.begin_guard(guard, source)
+            if stage_hir.stage is ParticleStage.EVENT:
+                event_guard = event_guards[stage_hir.flow_id]
+                guard = (
+                    builder.emit(
+                        "logical_and",
+                        TypeRef(ValueType.BOOL),
+                        (event_guard, guard),
+                        {},
+                        source,
+                    )
+                    if guard
+                    else event_guard
+                )
+            builder.begin_guard(guard, source)
             if operation.opcode in {
                 "control.wait_frames",
                 "control.wait_seconds",
@@ -2290,15 +2357,16 @@ class ParticleKernelLowerer:
                     source,
                 )
                 builder.emit_void("kill_if", (condition,), {}, source)
-            elif operation.opcode == "event.emit":
-                self._lower_event_output(
+            elif operation.opcode == "event.trigger":
+                self._lower_event_trigger(
                     builder,
                     operation,
                     expression_values,
-                    routes,
                     event_types,
                     source,
                 )
+            elif operation.opcode == "emitter.burst":
+                self._lower_emitter_burst(builder, operation, expression_values, source)
             elif operation.opcode in collision_opcodes:
                 self._lower_update_collision(
                     builder,
@@ -2309,11 +2377,23 @@ class ParticleKernelLowerer:
                 )
             else:
                 raise KernelCompileError(f"unsupported Update operation {operation.opcode!r}")
-            if operation.opcode != "event.emit":
-                builder.end_guard(guard, source)
+            builder.end_guard(guard, source)
             operation_instruction_ranges[
-                (stage_hir.stage, operation.source_node_uid)
+                (stage_hir.stage, stage_hir.flow_id, operation.source_node_uid)
             ] = (instruction_begin, len(builder.instructions))
+
+        for event_flow in emitter.event_flows:
+            event_type = event_types_by_id[event_flow.flow_id]
+            builder.emit_void(
+                "event_complete",
+                (event_guards[event_flow.flow_id],),
+                {
+                    "event_type_index": event_type.type_index,
+                    "queue_capacity": event_type.queue_capacity,
+                    "flow_id": event_flow.flow_id,
+                },
+                KernelSourceRef(operation=f"event.{event_flow.flow_id}.complete"),
+            )
 
         if emitter.settings.collision_enabled and not collision_lifecycle_ready:
             if not position_integrated:
@@ -2350,7 +2430,6 @@ class ParticleKernelLowerer:
         self,
         emitter,
         attribute_types,
-        routes,
         event_types,
         parameter_types,
         continuation_program_counters,
@@ -2371,12 +2450,11 @@ class ParticleKernelLowerer:
                 "render."
             ):
                 operation_instruction_ranges[
-                    (emitter.rendering.stage, operation.source_node_uid)
+                    (emitter.rendering.stage, emitter.rendering.flow_id, operation.source_node_uid)
                 ] = (instruction_begin, len(builder.instructions))
                 continue
             guard = builder.execution_guard(operation, expression_values, source)
-            if operation.opcode != "event.emit":
-                builder.begin_guard(guard, source)
+            builder.begin_guard(guard, source)
             if operation.opcode in {
                 "control.wait_frames",
                 "control.wait_seconds",
@@ -2401,23 +2479,23 @@ class ParticleKernelLowerer:
                 )
             elif operation.opcode == "attribute.capture":
                 self._lower_attribute_capture(builder, operation, source)
-            elif operation.opcode == "event.emit":
-                self._lower_event_output(
+            elif operation.opcode == "event.trigger":
+                self._lower_event_trigger(
                     builder,
                     operation,
                     expression_values,
-                    routes,
                     event_types,
                     source,
                 )
+            elif operation.opcode == "emitter.burst":
+                self._lower_emitter_burst(builder, operation, expression_values, source)
             else:
                 raise KernelCompileError(
                     f"unsupported Rendering operation {operation.opcode!r}"
                 )
-            if operation.opcode != "event.emit":
-                builder.end_guard(guard, source)
+            builder.end_guard(guard, source)
             operation_instruction_ranges[
-                (emitter.rendering.stage, operation.source_node_uid)
+                (emitter.rendering.stage, emitter.rendering.flow_id, operation.source_node_uid)
             ] = (instruction_begin, len(builder.instructions))
         for stable_id in (
             "builtin.position",
@@ -2447,24 +2525,26 @@ class ParticleKernelLowerer:
         return builder.finish()
 
     @staticmethod
-    def _lower_event_output(
+    def _lower_event_trigger(
         builder,
         operation,
         expression_values,
-        routes,
         event_types,
         source,
     ) -> None:
         parameters = operation.parameter_dict()
         bindings = dict(operation.value_bindings)
-        route_id = str(parameters["route"])
-        try:
-            channel_index, route = routes[route_id]
-            event_type = event_types[route.event_type_index]
-        except KeyError as exc:
+        event_id = str(parameters.get("event", ""))
+        if not event_id:
+            return
+        event_type = next(
+            (value for value in event_types.values() if value.stable_id == event_id),
+            None,
+        )
+        if event_type is None:
             raise KernelCompileError(
-                f"Event Output references unavailable route {route_id!r}"
-            ) from exc
+                f"Trigger Event references unavailable event {event_id!r}"
+            )
         condition = builder.operation_value(
             "condition",
             bindings,
@@ -2473,15 +2553,6 @@ class ParticleKernelLowerer:
             TypeRef(ValueType.BOOL),
             source,
         )
-        guard = builder.execution_guard(operation, expression_values, source)
-        if guard:
-            condition = builder.emit(
-                "logical_and",
-                TypeRef(ValueType.BOOL),
-                (condition, guard),
-                {},
-                source,
-            )
         payload_values = []
         payload_layout = []
         for field in event_type.fields:
@@ -2505,11 +2576,33 @@ class ParticleKernelLowerer:
                 }
             )
         builder.emit_void(
-            "event_append",
+            "event_enqueue",
             (condition, *payload_values),
             {
-                "channel_index": channel_index,
+                "event_type_index": event_type.type_index,
+                "queue_capacity": event_type.queue_capacity,
                 "payload_layout": payload_layout,
+            },
+            source,
+        )
+
+    @staticmethod
+    def _lower_emitter_burst(builder, operation, expression_values, source) -> None:
+        parameters = operation.parameter_dict()
+        count = builder.operation_value(
+            "count",
+            dict(operation.value_bindings),
+            expression_values,
+            parameters,
+            TypeRef(ValueType.U32),
+            source,
+        )
+        builder.emit_void(
+            "burst_enqueue",
+            (count,),
+            {
+                "target_emitter_index": int(parameters["target_emitter_index"]),
+                "target_capacity": int(parameters["target_capacity"]),
             },
             source,
         )
@@ -2778,6 +2871,46 @@ class _KernelBuilder:
                     {"name": "delta_time"},
                     source,
                 )
+            elif instruction.opcode in {"sample_curve", "sample_gradient"}:
+                ramp_operand, sample_operand = instruction.operands
+                if sample_operand.value_id:
+                    try:
+                        sample_value = lowered[sample_operand.value_id]
+                    except KeyError as exc:
+                        raise KernelCompileError(
+                            f"expression reads unavailable value {sample_operand.value_id!r}"
+                        ) from exc
+                else:
+                    sample_value = self.constant(
+                        sample_operand.value_type,
+                        sample_operand.literal,
+                        source,
+                    )
+                if ramp_operand.value_id:
+                    try:
+                        ramp_value = lowered[ramp_operand.value_id]
+                    except KeyError as exc:
+                        raise KernelCompileError(
+                            f"expression reads unavailable value {ramp_operand.value_id!r}"
+                        ) from exc
+                    value = self.emit(
+                        f"{instruction.opcode}_parameter",
+                        instruction.result_type,
+                        (ramp_value, sample_value),
+                        {},
+                        source,
+                    )
+                else:
+                    immediate_name = (
+                        "curve" if instruction.opcode == "sample_curve" else "gradient"
+                    )
+                    value = self.emit(
+                        instruction.opcode,
+                        instruction.result_type,
+                        (sample_value,),
+                        {immediate_name: ramp_operand.literal},
+                        source,
+                    )
             else:
                 values = []
                 for operand in instruction.operands:
@@ -2856,20 +2989,23 @@ def _finite_json(value: Any) -> Any:
         raise KernelCompileError("kernel values must be finite JSON data") from exc
 
 
+def _event_state_prefix(event_type_index: int) -> str:
+    return f"internal.event.{int(event_type_index)}"
+
+
+def _event_payload_state_id(
+    event_type_index: int, slot: int, field_stable_id: str
+) -> str:
+    digest = hashlib.sha256(str(field_stable_id).encode("utf-8")).hexdigest()[:16]
+    return f"{_event_state_prefix(event_type_index)}.payload.{int(slot)}.{digest}"
+
+
 def _exact_dict(value: Any, expected: set[str], label: str) -> None:
     if type(value) is not dict or set(value) != expected:
         raise KernelCompileError(f"{label} keys do not match the schema")
 
 
 def _lower_event_abi(events: ParticleEventSchedule) -> KernelEventABI:
-    kernel_stage_by_particle_stage = {
-        ParticleStage.INIT: KernelStage.INIT,
-        ParticleStage.UPDATE: KernelStage.UPDATE,
-        ParticleStage.COLLISION_ENTER: KernelStage.UPDATE,
-        ParticleStage.COLLISION_STAY: KernelStage.UPDATE,
-        ParticleStage.COLLISION_EXIT: KernelStage.UPDATE,
-        ParticleStage.RENDERING: KernelStage.RENDERING,
-    }
     return KernelEventABI(
         events.event_abi_hash,
         tuple(
@@ -2877,7 +3013,7 @@ def _lower_event_abi(events: ParticleEventSchedule) -> KernelEventABI:
                 event_type.stable_id,
                 event_type.type_index,
                 event_type.stable_type_hash,
-                event_type.capacity_per_step,
+                event_type.queue_capacity,
                 event_type.payload_stride_words,
                 tuple(
                     KernelEventField(
@@ -2891,17 +3027,6 @@ def _lower_event_abi(events: ParticleEventSchedule) -> KernelEventABI:
                 ),
             )
             for event_type in events.event_types
-        ),
-        tuple(
-            KernelEventRoute(
-                route.stable_id,
-                route.event_type_index,
-                route.source_emitter_index,
-                kernel_stage_by_particle_stage[route.source_stage],
-                route.target_emitter_index,
-                route.spawn_count,
-            )
-            for route in events.routes
         ),
     )
 
@@ -2938,7 +3063,6 @@ __all__ = [
     "KernelExecutionLane",
     "KernelEventABI",
     "KernelEventField",
-    "KernelEventRoute",
     "KernelEventType",
     "KernelOperand",
     "KernelParameter",

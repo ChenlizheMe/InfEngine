@@ -52,7 +52,6 @@ set(INFERNUX_PARTICLE_RUNTIME_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuCollisionScene.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuCuller.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuDrawRegistry.cpp"
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuEventDomain.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuMigrator.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuRibbonTopology.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuRuntime.cpp"
@@ -705,7 +704,6 @@ if(INFERNUX_BUILD_TESTS)
         cpp/infernux/function/renderer/particle/ParticleGpuContinuationRuntime.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuCollisionScene.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuDrawRegistry.cpp
-        cpp/infernux/function/renderer/particle/ParticleGpuEventDomain.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuMigrator.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuRibbonRenderer.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuRibbonTopology.cpp

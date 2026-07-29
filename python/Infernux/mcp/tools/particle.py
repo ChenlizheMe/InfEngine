@@ -258,13 +258,13 @@ def register_particle_tools(mcp, project_path: str) -> None:
             },
         )
 
-    @mcp.tool(name="particle_graph_disconnect_exec")
-    def particle_graph_disconnect_exec(link_uid: str) -> dict:
-        """Disconnect one Exec link in the live ParticleGraph document."""
+    @mcp.tool(name="particle_graph_disconnect_link")
+    def particle_graph_disconnect_link(link_uid: str) -> dict:
+        """Disconnect one Exec or value link in the live ParticleGraph document."""
 
         def _disconnect():
             panel = _require_particle_graph_panel()
-            result = panel.disconnect_exec(link_uid)
+            result = panel.disconnect_link(link_uid)
             return {
                 **result,
                 "editor": _portable_snapshot(
@@ -273,7 +273,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
             }
 
         return main_thread(
-            "particle_graph_disconnect_exec",
+            "particle_graph_disconnect_link",
             _disconnect,
             arguments={"link_uid": link_uid},
         )
@@ -502,7 +502,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
 
     @mcp.tool(name="particle_graph_remove_emitter")
     def particle_graph_remove_emitter(emitter_id: str) -> dict:
-        """Remove an emitter and event routes that reference it."""
+        """Remove an emitter and its graph-owned event flows."""
 
         def _remove():
             panel = _require_particle_graph_panel()
@@ -523,14 +523,14 @@ def register_particle_tools(mcp, project_path: str) -> None:
     @mcp.tool(name="particle_graph_add_event_type")
     def particle_graph_add_event_type(
         name: str,
-        capacity_per_step: int,
+        queue_capacity: int,
         fields: list[dict],
     ) -> dict:
         """Add a typed event schema through the live ParticleGraph document."""
 
         def _add():
             panel = _require_particle_graph_panel()
-            event_type = panel.add_event_type(name, capacity_per_step, fields)
+            event_type = panel.add_event_type(name, queue_capacity, fields)
             return {
                 "event_type_id": event_type["stable_id"],
                 "event_type": event_type,
@@ -544,99 +544,36 @@ def register_particle_tools(mcp, project_path: str) -> None:
             _add,
             arguments={
                 "name": name,
-                "capacity_per_step": capacity_per_step,
+                "queue_capacity": queue_capacity,
                 "fields": fields,
             },
         )
 
-    @mcp.tool(name="particle_graph_add_event_route")
-    def particle_graph_add_event_route(
-        event_type_id: str,
-        source_emitter_id: str,
-        source_stage: str,
-        target_emitter_id: str,
-        spawn_count: int = 1,
-    ) -> dict:
-        """Add a directed typed route through the live ParticleGraph document."""
+    @mcp.tool(name="particle_graph_implement_event")
+    def particle_graph_implement_event(event_type_id: str) -> dict:
+        """Create a new empty Active Event flow on the selected emitter."""
 
-        def _add():
+        def _implement():
             panel = _require_particle_graph_panel()
-            route = panel.add_event_route(
-                event_type_id,
-                source_emitter_id,
-                source_stage,
-                target_emitter_id,
-                spawn_count,
-            )
+            result = panel.add_authoring_event_flow(event_type_id)
             return {
-                "event_route_id": route["stable_id"],
-                "event_route": route,
+                **result,
                 "editor": _portable_snapshot(
                     panel.authoring_snapshot(), project_path
                 ),
             }
 
         return main_thread(
-            "particle_graph_add_event_route",
-            _add,
-            arguments={
-                "event_type_id": event_type_id,
-                "source_emitter_id": source_emitter_id,
-                "source_stage": source_stage,
-                "target_emitter_id": target_emitter_id,
-                "spawn_count": spawn_count,
-            },
-        )
-
-    @mcp.tool(name="particle_graph_add_event_output")
-    def particle_graph_add_event_output(
-        route_id: str, x: float = 0.0, y: float = 0.0
-    ) -> dict:
-        """Add an Event Output in the route's source emitter and stage."""
-
-        def _add():
-            panel = _require_particle_graph_panel()
-            node = panel.add_event_output_node(route_id, x, y)
-            return {
-                "node": node,
-                "editor": _portable_snapshot(
-                    panel.authoring_snapshot(), project_path
-                ),
-            }
-
-        return main_thread(
-            "particle_graph_add_event_output",
-            _add,
-            arguments={"route_id": route_id, "x": x, "y": y},
-        )
-
-    @mcp.tool(name="particle_graph_add_event_payload")
-    def particle_graph_add_event_payload(
-        route_id: str, x: float = 0.0, y: float = 0.0
-    ) -> dict:
-        """Add an Event Payload in the route's target Init graph."""
-
-        def _add():
-            panel = _require_particle_graph_panel()
-            node = panel.add_event_payload_node(route_id, x, y)
-            return {
-                "node": node,
-                "editor": _portable_snapshot(
-                    panel.authoring_snapshot(), project_path
-                ),
-            }
-
-        return main_thread(
-            "particle_graph_add_event_payload",
-            _add,
-            arguments={"route_id": route_id, "x": x, "y": y},
+            "particle_graph_implement_event",
+            _implement,
+            arguments={"event_type_id": event_type_id},
         )
 
     @mcp.tool(name="particle_graph_update_event_type")
     def particle_graph_update_event_type(
         event_type_id: str,
         name: str,
-        capacity_per_step: int,
+        queue_capacity: int,
         fields: list[dict],
     ) -> dict:
         """Update a typed event schema without changing its stable identity."""
@@ -644,7 +581,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
         def _update():
             panel = _require_particle_graph_panel()
             event_type = panel.update_event_type(
-                event_type_id, name, capacity_per_step, fields
+                event_type_id, name, queue_capacity, fields
             )
             return {
                 "event_type": event_type,
@@ -659,75 +596,14 @@ def register_particle_tools(mcp, project_path: str) -> None:
             arguments={
                 "event_type_id": event_type_id,
                 "name": name,
-                "capacity_per_step": capacity_per_step,
+                "queue_capacity": queue_capacity,
                 "fields": fields,
             },
         )
 
-    @mcp.tool(name="particle_graph_update_event_route")
-    def particle_graph_update_event_route(
-        route_id: str,
-        event_type_id: str,
-        source_emitter_id: str,
-        source_stage: str,
-        target_emitter_id: str,
-        spawn_count: int = 1,
-    ) -> dict:
-        """Update an event route without changing its stable identity."""
-
-        def _update():
-            panel = _require_particle_graph_panel()
-            route = panel.update_event_route(
-                route_id,
-                event_type_id,
-                source_emitter_id,
-                source_stage,
-                target_emitter_id,
-                spawn_count,
-            )
-            return {
-                "event_route": route,
-                "editor": _portable_snapshot(
-                    panel.authoring_snapshot(), project_path
-                ),
-            }
-
-        return main_thread(
-            "particle_graph_update_event_route",
-            _update,
-            arguments={
-                "route_id": route_id,
-                "event_type_id": event_type_id,
-                "source_emitter_id": source_emitter_id,
-                "source_stage": source_stage,
-                "target_emitter_id": target_emitter_id,
-                "spawn_count": spawn_count,
-            },
-        )
-
-    @mcp.tool(name="particle_graph_remove_event_route")
-    def particle_graph_remove_event_route(route_id: str) -> dict:
-        """Remove one event route and its route-private graph nodes."""
-
-        def _remove():
-            panel = _require_particle_graph_panel()
-            route = panel.remove_event_route(route_id)
-            return {
-                "event_route": route,
-                "editor": _portable_snapshot(
-                    panel.authoring_snapshot(), project_path
-                ),
-            }
-
-        return main_thread(
-            "particle_graph_remove_event_route",
-            _remove,
-            arguments={"route_id": route_id},
-        )
-
     @mcp.tool(name="particle_graph_remove_event_type")
     def particle_graph_remove_event_type(event_type_id: str) -> dict:
-        """Remove one event schema and cascade all dependent routes and nodes."""
+        """Remove one event schema and clear references without deleting nodes."""
 
         def _remove():
             panel = _require_particle_graph_panel()
@@ -933,49 +809,6 @@ def register_particle_runtime_tools(mcp) -> None:
             arguments={"object_id": object_id, "ordinal": ordinal},
         )
 
-    @mcp.tool(name="particle_system_send_event")
-    def particle_system_send_event(
-        object_id: int,
-        event: str,
-        payload: dict | None = None,
-        count: int = 1,
-        target: str = "",
-        ordinal: int = 0,
-    ) -> dict:
-        """Queue a typed gameplay event for the next GPU simulation boundary."""
-
-        def _send():
-            obj = find_game_object(object_id)
-            component = _require_particle_system(obj, int(ordinal))
-            accepted = component.send_event(
-                str(event),
-                payload,
-                int(count),
-                target=(str(target) if target else None),
-            )
-            return {
-                "object_id": int(obj.id),
-                "object_name": str(obj.name),
-                "event": str(event),
-                "target": str(target),
-                "count": int(count),
-                "accepted": bool(accepted),
-                "runtime": component.runtime_diagnostics(),
-            }
-
-        return main_thread(
-            "particle_system_send_event",
-            _send,
-            arguments={
-                "object_id": object_id,
-                "event": event,
-                "payload": payload,
-                "count": count,
-                "target": target,
-                "ordinal": ordinal,
-            },
-        )
-
     def _control_emitter(
         operation: str,
         method_name: str,
@@ -1044,6 +877,44 @@ def register_particle_runtime_tools(mcp) -> None:
         """Restart one emitter; invalid indices are harmless no-ops."""
         return _control_emitter(
             "restart", "restart", object_id, emitter_index, ordinal
+        )
+
+    @mcp.tool(name="particle_system_seek")
+    def particle_system_seek(
+        object_id: int,
+        time_seconds: float,
+        emitter_index: int = -1,
+        ordinal: int = 0,
+    ) -> dict:
+        """Seek all emitters, or one indexed emitter, using deterministic GPU replay."""
+
+        def _seek():
+            obj = find_game_object(object_id)
+            component = _find_particle_system(obj, int(ordinal))
+            if component is None:
+                raise FileNotFoundError(
+                    f"ParticleSystem {ordinal} was not found on GameObject {object_id}."
+                )
+            target = None if int(emitter_index) == -1 else int(emitter_index)
+            accepted = bool(component.seek(float(time_seconds), target))
+            return {
+                "object_id": int(obj.id),
+                "object_name": str(obj.name),
+                "emitter_index": target,
+                "time_seconds": float(time_seconds),
+                "accepted": accepted,
+                "runtime": component.runtime_diagnostics(),
+            }
+
+        return main_thread(
+            "particle_system_seek",
+            _seek,
+            arguments={
+                "object_id": object_id,
+                "time_seconds": time_seconds,
+                "emitter_index": emitter_index,
+                "ordinal": ordinal,
+            },
         )
 
     @mcp.tool(name="particle_system_request_gpu_diagnostics")
@@ -1327,7 +1198,7 @@ def _register_authoring_metadata() -> None:
         aliases=["add particle parameter", "添加粒子参数"],
         preconditions=[
             "A .particlegraph asset must be open.",
-            "value_type must be bool, i32, u32, f32, vec2, vec3, vec4, or color.",
+            "value_type must be bool, i32, u32, f32, vec2, vec3, vec4, color, curve, gradient, or texture2d.",
         ],
         side_effects=[
             "Records Undo, selects the new Blackboard field, and republishes the live draft."
@@ -1396,19 +1267,19 @@ def _register_authoring_metadata() -> None:
         next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
     )
     register_tool_metadata(
-        "particle_graph_disconnect_exec",
-        summary="Disconnect one Exec link through the live ParticleGraph authoring model.",
+        "particle_graph_disconnect_link",
+        summary="Disconnect one Exec or value link through the live ParticleGraph authoring model.",
         category="assets/particle_graph",
-        tags=["particle", "graph", "editor", "exec", "disconnect"],
+        tags=["particle", "graph", "editor", "link", "disconnect"],
         aliases=["disconnect particle nodes", "断开粒子节点"],
         preconditions=[
-            "The link UID must identify an existing Exec link in the open ParticleGraph."
+            "The link UID must identify an existing link in the open ParticleGraph."
         ],
         side_effects=[
             "Records Undo, marks the panel dirty, and republishes the live draft."
         ],
         recovery=[
-            "Inspect the current links and retry with an existing Exec link UID."
+            "Inspect the current links and retry with an existing link UID."
         ],
         next_suggested_tools=[
             "particle_graph_connect_exec",
@@ -1457,7 +1328,7 @@ def _register_authoring_metadata() -> None:
         preconditions=["Use the complete settings object returned by particle_graph_inspect_editor."],
         side_effects=["Records Undo, marks the document dirty, and republishes the live draft."],
         recovery=["Inspect the emitter and retry with the exact current settings field set."],
-        next_suggested_tools=["particle_graph_add_event_route", "editor_save_document"],
+        next_suggested_tools=["particle_graph_implement_event", "editor_save_document"],
     )
     register_tool_metadata(
         "particle_graph_patch_emitter_settings",
@@ -1522,12 +1393,12 @@ def _register_authoring_metadata() -> None:
     )
     register_tool_metadata(
         "particle_graph_remove_emitter",
-        summary="Remove one emitter and cascade every event route that references it.",
+        summary="Remove one emitter and its private lifecycle/event flows.",
         category="assets/particle_graph",
         tags=["particle", "graph", "editor", "emitter", "remove"],
         aliases=["remove particle emitter", "移除粒子发射器"],
         preconditions=["The graph must keep at least one emitter."],
-        side_effects=["Records Undo and removes dependent route-private nodes."],
+        side_effects=["Records Undo and removes the emitter-owned event implementations."],
         recovery=["Inspect emitters and retry with a current stable ID."],
         next_suggested_tools=["particle_graph_inspect_editor", "editor_save_document"],
     )
@@ -1540,40 +1411,18 @@ def _register_authoring_metadata() -> None:
         preconditions=["Field types use the current TypeRef object shape."],
         side_effects=["Records Undo, rebuilds derived node definitions, and republishes the draft."],
         recovery=["Fix invalid field types/defaults and retry; no partial schema is retained."],
-        next_suggested_tools=["particle_graph_add_event_route"],
+        next_suggested_tools=["particle_graph_implement_event"],
     )
     register_tool_metadata(
-        "particle_graph_add_event_route",
-        summary="Route one typed event between two ParticleGraph emitters.",
+        "particle_graph_implement_event",
+        summary="Create a new empty Active Event flow on the selected emitter.",
         category="assets/particle_graph",
-        tags=["particle", "graph", "event", "route"],
-        aliases=["route particle event", "连接粒子事件"],
-        preconditions=["Event and emitter stable IDs must exist; routes must remain acyclic."],
-        side_effects=["Records Undo and exposes route-specific Event Output/Payload nodes."],
-        recovery=["Inspect event_types, event_routes, and emitters before retrying."],
+        tags=["particle", "graph", "event", "flow"],
+        aliases=["implement particle event", "实现粒子事件流"],
+        preconditions=["The event stable ID must exist and an emitter must be selected."],
+        side_effects=["Records Undo and always creates one new no-input Active Event root."],
+        recovery=["Inspect event_types and the selected emitter before retrying."],
         next_suggested_tools=["particle_graph_add_node", "particle_graph_inspect_editor"],
-    )
-    register_tool_metadata(
-        "particle_graph_add_event_output",
-        summary="Add a route-specific Event Output to the correct source emitter and stage.",
-        category="assets/particle_graph",
-        tags=["particle", "graph", "event", "output", "authoring"],
-        aliases=["add event output", "添加粒子事件输出"],
-        preconditions=["The route stable ID must appear in particle_graph_inspect_editor."],
-        side_effects=["Selects the source emitter and records one node-add Undo transaction."],
-        recovery=["Create or inspect the event route, then retry with its stable ID."],
-        next_suggested_tools=["particle_graph_connect_exec", "editor_save_document"],
-    )
-    register_tool_metadata(
-        "particle_graph_add_event_payload",
-        summary="Add a route-specific Event Payload to the correct target Init graph.",
-        category="assets/particle_graph",
-        tags=["particle", "graph", "event", "payload", "authoring"],
-        aliases=["add event payload", "添加粒子事件载荷"],
-        preconditions=["The route stable ID must appear in particle_graph_inspect_editor."],
-        side_effects=["Selects the target emitter and records one node-add Undo transaction."],
-        recovery=["Create or inspect the event route, then retry with its stable ID."],
-        next_suggested_tools=["particle_graph_connect_value", "editor_save_document"],
     )
     register_tool_metadata(
         "particle_graph_update_event_type",
@@ -1586,45 +1435,20 @@ def _register_authoring_metadata() -> None:
             "Every field object must include stable_id, name, type, and default.",
         ],
         side_effects=[
-            "Records Undo and preserves unaffected route nodes and links.",
+            "Records Undo and preserves unaffected Event roots and Trigger Event nodes.",
             "Removed fields or type changes disconnect only links using those payload ports.",
         ],
         recovery=["Inspect the current event schema and retry with its stable IDs."],
         next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
     )
     register_tool_metadata(
-        "particle_graph_update_event_route",
-        summary="Edit an event route in place while preserving its stable route identity.",
-        category="assets/particle_graph",
-        tags=["particle", "graph", "event", "route", "edit", "hot reload"],
-        aliases=["edit particle event route", "修改粒子事件路由"],
-        preconditions=["Route, event, and emitter stable IDs must be current."],
-        side_effects=[
-            "A spawn-count-only edit preserves route-private nodes and links.",
-            "Changing type/source/stage/target removes route-private nodes whose context is no longer valid.",
-        ],
-        recovery=["Inspect the route and re-add its context-specific nodes after endpoint changes."],
-        next_suggested_tools=["particle_graph_add_node", "editor_save_document"],
-    )
-    register_tool_metadata(
-        "particle_graph_remove_event_route",
-        summary="Remove a typed event route and its route-private nodes through the editor.",
-        category="assets/particle_graph",
-        tags=["particle", "graph", "event", "route", "remove"],
-        aliases=["remove particle event route", "移除粒子事件路由"],
-        preconditions=["The route stable ID must appear in particle_graph_inspect_editor."],
-        side_effects=["Records one Undo transaction and removes derived Output/Payload nodes."],
-        recovery=["Inspect event_routes and retry with a current stable ID."],
-        next_suggested_tools=["particle_graph_inspect_editor", "editor_save_document"],
-    )
-    register_tool_metadata(
         "particle_graph_remove_event_type",
-        summary="Remove a typed event schema and cascade its routes through the editor.",
+        summary="Remove a typed event schema and clear dependent event selections.",
         category="assets/particle_graph",
         tags=["particle", "graph", "event", "schema", "remove"],
         aliases=["remove particle event type", "移除粒子事件类型"],
         preconditions=["The event type stable ID must appear in particle_graph_inspect_editor."],
-        side_effects=["Records one Undo transaction and cascades dependent routes and nodes."],
+        side_effects=["Records one Undo transaction; dependent Active/Trigger nodes remain and select None."],
         recovery=["Inspect event_types and retry with a current stable ID."],
         next_suggested_tools=["particle_graph_inspect_editor", "editor_save_document"],
     )
@@ -1750,34 +1574,13 @@ def _register_runtime_metadata() -> None:
     )
     register_tool_metadata(
         "particle_system_list_events",
-        summary="List typed gameplay-event routes accepted by one live GPU ParticleSystem.",
+        summary="List typed per-particle events defined by one live GPU ParticleSystem.",
         category="runtime/particles",
         tags=["particle", "runtime", "event", "schema", "gpu"],
         aliases=["list particle events", "列出粒子事件"],
-        preconditions=["object_id must own a live ParticleSystem with event routes."],
-        recovery=["Open the Particle Graph Event page and verify its saved routes."],
-        next_suggested_tools=["particle_system_send_event"],
-    )
-    register_tool_metadata(
-        "particle_system_send_event",
-        summary="Queue a typed gameplay event into the graph-owned GPU event ring.",
-        category="runtime/particles",
-        tags=["particle", "runtime", "event", "write", "gpu"],
-        aliases=["send particle event", "发送粒子事件"],
-        preconditions=[
-            "event must be a unique event type name/stable ID or a route stable ID.",
-            "Payload values must match the listed field schema.",
-        ],
-        side_effects=[
-            "Batches the event into the next simulated GPU page without CPU particle state or readback."
-        ],
-        recovery=[
-            "List events, specify target when a type has multiple routes, and keep count within route capacity."
-        ],
-        next_suggested_tools=[
-            "particle_system_request_gpu_diagnostics",
-            "capture_request",
-        ],
+        preconditions=["object_id must own a live ParticleSystem with defined events."],
+        recovery=["Open the Particle Graph Event page and verify its saved definitions."],
+        next_suggested_tools=["particle_graph_inspect_editor"],
     )
     for tool_name, verb in (
         ("particle_system_start_emitter", "start"),
@@ -1796,6 +1599,27 @@ def _register_runtime_metadata() -> None:
             recovery=["An invalid emitter index is a harmless no-op with accepted=false."],
             next_suggested_tools=["particle_system_inspect_runtime"],
         )
+    register_tool_metadata(
+        "particle_system_seek",
+        summary="Deterministically seek GPU particles from time zero with fixed-step replay.",
+        category="runtime/particles",
+        tags=["particle", "runtime", "seek", "deterministic", "gpu"],
+        aliases=["seek particle system", "定位粒子时间"],
+        preconditions=[
+            "object_id must own a live ParticleSystem component.",
+            "time_seconds must be finite, non-negative, and within the bounded preroll budget.",
+            "emitter_index=-1 targets all enabled emitters.",
+        ],
+        side_effects=[
+            "Resets the selected GPU emitter state and replays fixed simulation steps while preserving play/pause state."
+        ],
+        recovery=["Inspect runtime diagnostics and retry with a shorter target time."],
+        next_suggested_tools=[
+            "particle_system_inspect_runtime",
+            "particle_system_request_gpu_diagnostics",
+            "capture_request",
+        ],
+    )
     register_tool_metadata(
         "particle_system_request_gpu_diagnostics",
         summary="Request one asynchronous GPU particle/event counter snapshot.",

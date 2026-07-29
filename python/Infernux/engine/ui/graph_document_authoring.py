@@ -44,6 +44,9 @@ _PIN_COLORS = {
     "vec3": (0.90, 0.58, 0.24, 1.0),
     "vec4": (0.72, 0.45, 0.88, 1.0),
     "color": (0.88, 0.78, 0.28, 1.0),
+    "curve": (0.42, 0.78, 0.62, 1.0),
+    "gradient": (0.86, 0.48, 0.68, 1.0),
+    "texture2d": (0.62, 0.48, 0.86, 1.0),
     "asset_ref": (0.48, 0.62, 0.90, 1.0),
     "exec": (0.76, 0.76, 0.78, 1.0),
     "event": (0.84, 0.44, 0.40, 1.0),
@@ -118,8 +121,11 @@ def _canvas_definition(
                 ),
             )
         )
-    is_root = definition.type_id.startswith("particle.root.")
-    is_mandatory_root = definition.type_id in {
+    is_event_root = definition.type_id == "particle.event.active" or definition.type_id.startswith(
+        "internal.particle.event.active."
+    )
+    is_root = definition.type_id.startswith("particle.root.") or is_event_root
+    is_mandatory_root = is_event_root or definition.type_id in {
         "particle.root.init",
         "particle.root.update",
         "particle.root.rendering",
@@ -169,6 +175,12 @@ def _canvas_definition(
             and port.id not in property_by_id
         ):
             resolved_type = port_type_overrides.get(port.id) or port.value_type
+            if (
+                resolved_type is not None
+                and resolved_type.value_type
+                in {ValueType.CURVE, ValueType.GRADIENT}
+            ):
+                continue
             inline_fields.append(
                 NodeInlineFieldDef(
                     port.id,
@@ -191,6 +203,8 @@ def _canvas_definition(
         root_header = (0.42, 0.34, 0.18, 1.0)
     elif definition.type_id.endswith(".rendering"):
         root_header = (0.46, 0.24, 0.28, 1.0)
+    elif is_event_root:
+        root_header = (0.48, 0.28, 0.54, 1.0)
     return NodeTypeDef(
         type_id=definition.type_id,
         label=display_name_override or definition.display_name,
@@ -427,8 +441,27 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             if definition_set is not None
             else {}
         )
+        self._event_catalog = (
+            dict(definition_set.event_type_by_id)
+            if definition_set is not None
+            else {}
+        )
         self._dynamic_type_cache: dict[str, NodeTypeDef] = {}
+        event_stages = tuple(
+            f"event.{flow.stable_id}" for flow in emitter.event_flows
+        )
+        self._stages = (*self.STAGES, *event_stages)
+        self._stage_y = dict(self._STAGE_Y)
+        next_y = max(self._STAGE_Y.values()) + 230.0
+        for index, stage in enumerate(event_stages):
+            self._stage_y[stage] = next_y + index * 230.0
         self._documents = {stage: getattr(emitter, stage) for stage in self.STAGES}
+        self._documents.update(
+            {
+                f"event.{flow.stable_id}": flow.graph
+                for flow in emitter.event_flows
+            }
+        )
         self._creatable_type_ids: list[str] = []
         self._allowed_stages: dict[str, set[str]] = {}
         self._authoring_stage = "init"
@@ -437,44 +470,31 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         for definition in registry.definitions():
             stages = {
                 stage
-                for stage in self.STAGES
-                if particle_stage_definition_filter(f"particle.{stage}")(definition)
+                for stage in self._stages
+                if particle_stage_definition_filter(
+                    "particle.event" if stage.startswith("event.") else f"particle.{stage}"
+                )(definition)
             }
-            if (
-                definition_set is not None
-                and definition.type_id in definition_set.event_source_by_type_id
-            ):
-                source_emitter_id, source_stage = (
-                    definition_set.event_source_by_type_id[definition.type_id]
-                )
-                stages = (
-                    {source_stage}
-                    if source_emitter_id == emitter.stable_id and source_stage in stages
-                    else set()
-                )
-            if (
-                definition_set is not None
-                and definition.type_id in definition_set.event_target_by_type_id
-            ):
-                target_emitter_id = definition_set.event_target_by_type_id[
-                    definition.type_id
-                ]
-                stages = {"init"} if target_emitter_id == emitter.stable_id else set()
+            if definition.type_id.startswith("internal.particle.event."):
+                continue
+            if definition.type_id == "particle.event.active":
+                stages = set(event_stages)
             if not stages:
                 continue
             self.register_type(_canvas_definition(definition))
             self._allowed_stages[definition.type_id] = stages
             if (
-                not definition.type_id.startswith("particle.root.")
+                definition.type_id != "particle.event.active"
+                and not definition.type_id.startswith("particle.root.")
                 or definition.type_id in _PARTICLE_COLLISION_ROOT_TYPES
             ):
                 self._creatable_type_ids.append(definition.type_id)
 
-        for stage in self.STAGES:
+        for stage in self._stages:
             document = self._documents[stage]
             if document is None:
                 continue
-            y_offset = self._STAGE_Y[stage]
+            y_offset = self._stage_y[stage]
             for record in document.nodes:
                 if self.get_type(record.type_id) is None:
                     definition = registry.get(record.type_id)
@@ -515,18 +535,18 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
     @classmethod
     def stage_for_uid(cls, uid: str) -> str:
         stage = str(uid).split(cls._UID_SEPARATOR, 1)[0]
-        return stage if stage in cls.STAGES else ""
+        return stage if stage in cls.STAGES or stage.startswith("event.") else ""
 
     @property
     def authoring_stage(self) -> str:
         return self._authoring_stage
 
     def set_authoring_stage(self, stage: str) -> None:
-        if stage in self.STAGES:
+        if stage in self._stages:
             self._authoring_stage = stage
 
     def prepare_node_creation(self, stage: str) -> None:
-        self._pending_creation_stage = stage if stage in self.STAGES else ""
+        self._pending_creation_stage = stage if stage in self._stages else ""
 
     def set_collision_enabled(self, enabled: bool) -> None:
         self._collision_enabled = bool(enabled)
@@ -628,7 +648,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         return True, ""
 
     def stage_nearest_y(self, y: float) -> str:
-        return min(self.STAGES, key=lambda stage: abs(float(y) - self._STAGE_Y[stage]))
+        return min(self._stages, key=lambda stage: abs(float(y) - self._stage_y[stage]))
 
     def registered_types(self) -> list[NodeTypeDef]:
         return [
@@ -640,11 +660,39 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
     def definition_for_type(self, type_id: str) -> NodeDef | None:
         return self._definitions.get(type_id)
 
+    def event_entries(self) -> tuple[tuple[str, str], ...]:
+        return (("None", ""),) + tuple(
+            (item.name, item.stable_id) for item in self._event_catalog.values()
+        )
+
+    def definition_for_node(self, node) -> NodeDef | None:
+        if node is None:
+            return None
+        from Infernux.particle.nodes import (
+            PARTICLE_EVENT_ACTIVE_TYPE_ID,
+            PARTICLE_EVENT_TRIGGER_TYPE_ID,
+            particle_event_node_definition,
+        )
+
+        if node.type_id in {
+            PARTICLE_EVENT_ACTIVE_TYPE_ID,
+            PARTICLE_EVENT_TRIGGER_TYPE_ID,
+        }:
+            if self._definition_set is None:
+                return self._definitions.get(node.type_id)
+            return particle_event_node_definition(
+                self._definition_set,
+                node.type_id,
+                str(node.data.get("event", "")),
+            )
+        return self._definitions.get(node.type_id)
+
     def attribute_entries(self) -> tuple[tuple[str, str], ...]:
         self._ensure_attribute_catalog()
         return tuple(
             (item.name.replace("_", " ").title(), item.stable_id)
             for item in self._attribute_catalog.values()
+            if not item.stable_id.startswith("internal.")
         )
 
     def attribute_cache_entries(self) -> tuple[tuple[str, str], ...]:
@@ -677,6 +725,39 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             unavailable.label = f"{value.label} (Unavailable)"
             unavailable.header_color = (0.62, 0.18, 0.16, 1.0)
             return unavailable
+
+        from Infernux.particle.nodes import (
+            PARTICLE_EVENT_ACTIVE_TYPE_ID,
+            PARTICLE_EVENT_TRIGGER_TYPE_ID,
+        )
+
+        if node.type_id in {
+            PARTICLE_EVENT_ACTIVE_TYPE_ID,
+            PARTICLE_EVENT_TRIGGER_TYPE_ID,
+        }:
+            event_id = str(node.data.get("event", ""))
+            event_type = self._event_catalog.get(event_id)
+            event_name = event_type.name if event_type is not None else "None"
+            cache_key = f"event:{node.type_id}:{event_id}"
+            cached = self._dynamic_type_cache.get(cache_key)
+            if cached is None:
+                definition = self.definition_for_node(node)
+                if definition is None:
+                    return None
+                prefix = (
+                    "Active Event"
+                    if node.type_id == PARTICLE_EVENT_ACTIVE_TYPE_ID
+                    else "Trigger Event"
+                )
+                cached = _canvas_definition(
+                    definition,
+                    property_enum_entries={"event": self.event_entries()},
+                    display_name_override=f"{prefix}: {event_name}",
+                )
+                # Compiler-only definitions shape the ports; assets keep one stable type.
+                cached.type_id = node.type_id
+                self._dynamic_type_cache[cache_key] = cached
+            return with_lifecycle_state(cached)
 
         base = super().get_node_type(node)
         if base is None:
@@ -821,12 +902,12 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         if self._pending_creation_stage in allowed:
             return self._pending_creation_stage
         if self._authoring_stage in allowed:
-            selected_y = self._STAGE_Y[self._authoring_stage]
-            nearest = min(allowed, key=lambda stage: abs(float(y) - self._STAGE_Y[stage]))
-            if abs(float(y) - self._STAGE_Y[nearest]) + 40.0 < abs(float(y) - selected_y):
+            selected_y = self._stage_y[self._authoring_stage]
+            nearest = min(allowed, key=lambda stage: abs(float(y) - self._stage_y[stage]))
+            if abs(float(y) - self._stage_y[nearest]) + 40.0 < abs(float(y) - selected_y):
                 return nearest
             return self._authoring_stage
-        return min(allowed, key=lambda stage: abs(float(y) - self._STAGE_Y[stage]))
+        return min(allowed, key=lambda stage: abs(float(y) - self._stage_y[stage]))
 
     def add_node(self, type_id: str, x=0.0, y=0.0, uid=None, **data):
         if type_id not in self._creatable_type_ids:
@@ -947,8 +1028,8 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             return basic
         source = self.find_node(src_node)
         target = self.find_node(dst_node)
-        source_def = self._definitions.get(source.type_id) if source else None
-        target_def = self._definitions.get(target.type_id) if target else None
+        source_def = self.definition_for_node(source)
+        target_def = self.definition_for_node(target)
         source_port = source_def.port(src_pin) if source_def else None
         target_port = target_def.port(dst_pin) if target_def else None
         if source_port is None or target_port is None:
@@ -1061,12 +1142,12 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
 
     def to_documents(self) -> dict[str, GraphDocument | None]:
         result = {}
-        for stage in self.STAGES:
+        for stage in self._stages:
             nodes = tuple(
                 GraphNodeRecord(
                     self._document_uid(node.uid),
                     node.type_id,
-                    (node.pos_x, node.pos_y - self._STAGE_Y[stage]),
+                    (node.pos_x, node.pos_y - self._stage_y[stage]),
                     copy.deepcopy(node.data),
                 )
                 for node in self.nodes
@@ -1077,7 +1158,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 if self.stage_for_uid(link.uid) != stage:
                     continue
                 source = self.find_node(link.source_node)
-                definition = self._definitions.get(source.type_id) if source else None
+                definition = self.definition_for_node(source)
                 port = definition.port(link.source_pin) if definition else None
                 if port is None:
                     raise ValueError(f"link {link.uid!r} has an unknown source port")
@@ -1121,10 +1202,13 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
         type_id = definition.type_id
         if type_id.startswith("common."):
             return True
-        if type_id.startswith("particle.event.output."):
-            return type_id.startswith(f"particle.event.output.{stage}.")
-        if type_id.startswith("particle.event.payload."):
-            return stage == "init"
+        if type_id == "particle.event.active":
+            return stage == "event"
+        if type_id == "particle.event.trigger":
+            return stage in {
+                "init", "update", "collision_enter", "collision_stay",
+                "collision_exit", "event", "rendering",
+            }
         if type_id == "particle.context.delta_time":
             return stage in {
                 "update",
@@ -1137,13 +1221,15 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
             "update",
             "collision_enter",
             "collision_stay",
-            "collision_exit",
-            "rendering",
+                "collision_exit",
+                "event",
+                "rendering",
         } and type_id.startswith(
             (
                 "particle.attribute.",
                 "particle.control.",
                 "particle.context.",
+                "particle.emitter.",
                 "particle.parameter.",
                 "particle.vector_field.",
             )

@@ -21,7 +21,7 @@ from Infernux.particle import (
     ParticleAttribute,
     ParticleEmitterAsset,
     ParticleEventField,
-    ParticleEventRoute,
+    ParticleEventFlow,
     ParticleEventType,
     ParticleGraphAsset,
     ParticleGraphCompiler,
@@ -33,17 +33,18 @@ from Infernux.particle import (
     VectorField,
     build_gpu_particle_migration,
     compile_gpu_particle_spirv,
+    default_event_graph,
     standard_particle_attributes,
     validate_gpu_particle_spirv,
     pack_gpu_particle_parameters,
-    pack_gpu_particle_event_payload,
 )
 from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
+from Infernux.graph.ramp import Curve, CurveKey, Gradient, GradientKey
 from Infernux.particle.nodes import (
-    particle_event_output_type_id,
+    PARTICLE_EVENT_ACTIVE_TYPE_ID,
+    PARTICLE_EVENT_TRIGGER_TYPE_ID,
     particle_event_payload_port_id,
-    particle_event_payload_type_id,
 )
 from Infernux.particle.asset import particle_attribute_cache_id
 
@@ -1091,9 +1092,16 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
         ValueType.F32,
     ]
     assert instruction.immediate_dict() == {
+        "collider_id_high_attribute": "internal.collision_current_id_high",
+        "collider_id_low_attribute": "internal.collision_current_id_low",
         "hit_attribute": "builtin.collision_hit",
+        "material_attribute": "builtin.collision_material",
         "normal_attribute": "builtin.collision_normal",
+        "penetration_attribute": "builtin.collision_penetration",
+        "point_attribute": "builtin.collision_point",
         "position_attribute": "builtin.position",
+        "relative_velocity_attribute": "builtin.collision_relative_velocity",
+        "trigger_attribute": "builtin.collision_is_trigger",
         "velocity_attribute": "builtin.velocity",
     }
 
@@ -1129,6 +1137,16 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
     assert "inx_collide_scene(" in update_source
     assert "bool inx_collide_scene(" in update_source
     assert "out vec3 simulation_collision_normal" in update_source
+    assert "out vec3 simulation_contact_point" in update_source
+    assert "out vec3 simulation_relative_velocity" in update_source
+    assert "out float simulation_penetration" in update_source
+    assert "out bool collision_is_trigger" in update_source
+    assert "out vec4 collision_material" in update_source
+    assert "out uvec2 collision_collider_id" in update_source
+    assert "primary_collider_id = collider_id" in update_source
+    assert "if (is_trigger) continue;" in update_source
+    assert "state.a_internal_collision_current_id_low" in update_source
+    assert "state.a_internal_collision_current_id_high" in update_source
     assert "particle_collision_grid_offsets[cell_index + 1u]" in update_source
     assert "bool inx_sweep_box(" in update_source
     assert "bool inx_sweep_sphere(" in update_source
@@ -1174,9 +1192,9 @@ def test_scene_collision_event_payload_reads_post_collision_state():
                 properties={"attribute": "builtin.collision_normal"},
             ),
             GraphNodeRecord(
-                "impact.output",
-                particle_event_output_type_id("impact-route", "collision_enter"),
-                properties={"condition": True},
+                "impact.trigger",
+                PARTICLE_EVENT_TRIGGER_TYPE_ID,
+                properties={"event": "impact", "condition": True},
             ),
         ),
         links=(
@@ -1184,7 +1202,7 @@ def test_scene_collision_event_payload_reads_post_collision_state():
                 "event.stream",
                 "root.collision_enter",
                 "out",
-                "impact.output",
+                "impact.trigger",
                 "in",
                 PortKind.EXEC,
             ),
@@ -1192,7 +1210,7 @@ def test_scene_collision_event_payload_reads_post_collision_state():
                 "event.condition",
                 "collision.hit",
                 "value",
-                "impact.output",
+                "impact.trigger",
                 "condition",
                 PortKind.VALUE,
             ),
@@ -1200,7 +1218,7 @@ def test_scene_collision_event_payload_reads_post_collision_state():
                 "event.position",
                 "position",
                 "value",
-                "impact.output",
+                "impact.trigger",
                 particle_event_payload_port_id("position"),
                 PortKind.VALUE,
             ),
@@ -1208,8 +1226,32 @@ def test_scene_collision_event_payload_reads_post_collision_state():
                 "event.normal",
                 "collision.normal",
                 "value",
-                "impact.output",
+                "impact.trigger",
                 particle_event_payload_port_id("normal"),
+                PortKind.VALUE,
+            ),
+        ),
+    )
+    event_graph = GraphDocument(
+        "particle.event",
+        nodes=(
+            GraphNodeRecord(
+                "root.event",
+                PARTICLE_EVENT_ACTIVE_TYPE_ID,
+                properties={"event": "impact"},
+            ),
+            GraphNodeRecord("set.velocity", "particle.attribute.velocity"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "event.exec", "root.event", "out", "set.velocity", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "event.normal",
+                "root.event",
+                particle_event_payload_port_id("normal"),
+                "set.velocity",
+                "value",
                 PortKind.VALUE,
             ),
         ),
@@ -1218,8 +1260,8 @@ def test_scene_collision_event_payload_reads_post_collision_state():
         stable_id="source",
         settings=EmitterSettings(collision_enabled=True),
         collision_enter=collision_enter,
+        event_flows=(ParticleEventFlow("impact", event_graph),),
     )
-    target_emitter = ParticleEmitterAsset(stable_id="target")
     event_type = ParticleEventType(
         "impact",
         "Impact",
@@ -1241,24 +1283,15 @@ def test_scene_collision_event_payload_reads_post_collision_state():
     )
     graph = ParticleGraphAsset(
         stable_id="collision-event-order",
-        emitters=(source_emitter, target_emitter),
+        emitters=(source_emitter,),
         event_types=(event_type,),
-        event_routes=(
-            ParticleEventRoute(
-                "impact-route",
-                "impact",
-                "source",
-                "collision_enter",
-                "target",
-            ),
-        ),
     )
 
     hir = ParticleGraphCompiler().compile(graph)
     assert [
         operation.opcode
         for operation in hir.emitters[0].collision_enter.flow.iter_operations()
-    ] == ["event.emit"]
+    ] == ["event.trigger"]
     kernel = ParticleKernelLowerer().lower(hir)
     attribute_ids = {attribute[0] for attribute in kernel.emitters[0].attributes}
     assert "builtin.collision_hit" in attribute_ids
@@ -1272,7 +1305,7 @@ def test_scene_collision_event_payload_reads_post_collision_state():
     event_index = next(
         index
         for index, instruction in enumerate(instructions)
-        if instruction.opcode == "event_append"
+        if instruction.opcode == "event_enqueue"
     )
     post_collision_position_loads = [
         index
@@ -1308,7 +1341,7 @@ def test_scene_collision_event_payload_reads_post_collision_state():
     assert round_trip == kernel
     source = GpuParticleGlslLowerer().lower(kernel).emitters[0].update
     assert source.index("inx_collide_scene(") < source.index(
-        "event_output_record_words["
+        "inx_event_"
     )
     assert "bool inx_scene_hit_" in source
     assert "!= 0u || inx_scene_hit_" in source
@@ -1351,7 +1384,27 @@ def test_gpu_parameters_use_one_stable_uvec4_slot_and_typed_loads():
     assert "uintBitsToFloat(parameter_words[0].xyz)" in source.emitters[0].update
 
 
-def test_external_event_payload_uses_compiled_field_word_layout():
+def test_per_particle_event_queue_uses_compiled_field_word_layout():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "trigger", PARTICLE_EVENT_TRIGGER_TYPE_ID,
+                properties={
+                    "event": "impact",
+                    "condition": True,
+                    particle_event_payload_port_id("enabled"): False,
+                    particle_event_payload_port_id("direction"): [1.0, 2.0, 3.0],
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "trigger.exec", "root.update", "out", "trigger", "in", PortKind.EXEC
+            ),
+        ),
+    )
     asset = ParticleGraphAsset(
         event_types=(
             ParticleEventType(
@@ -1371,30 +1424,38 @@ def test_external_event_payload_uses_compiled_field_word_layout():
                 ),
             ),
         ),
-        event_routes=(
-            ParticleEventRoute(
-                "impact-route", "impact", "source", "update", "target", 1
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="source",
+                update=update,
+                event_flows=(
+                    ParticleEventFlow("impact", default_event_graph("impact")),
+                ),
             ),
         ),
-        emitters=(
-            ParticleEmitterAsset(stable_id="source"),
-            ParticleEmitterAsset(stable_id="target"),
-        ),
     )
-    event_type = ParticleKernelLowerer().lower(
+    kernel = ParticleKernelLowerer().lower(
         ParticleGraphCompiler().compile(asset)
-    ).events.event_types[0]
-    words = pack_gpu_particle_event_payload(
-        event_type,
-        {"enabled": False, "direction": [1.0, 2.0, 3.0]},
     )
-    assert words[0] == 0
-    assert words[1:] == tuple(
-        struct.unpack("<I", struct.pack("<f", value))[0]
-        for value in (1.0, 2.0, 3.0)
+    event_type = kernel.events.event_types[0]
+    assert [(field.word_offset, field.word_count) for field in event_type.fields] == [
+        (0, 1),
+        (1, 3),
+    ]
+    enqueue = next(
+        item for item in kernel.emitters[0].update.instructions
+        if item.opcode == "event_enqueue"
     )
-    with pytest.raises(GpuParticleCompileError, match="unknown fields"):
-        pack_gpu_particle_event_payload(event_type, {"missing": 1.0})
+    assert [operand.value_type for operand in enqueue.operands] == [
+        TypeRef(ValueType.BOOL),
+        TypeRef(ValueType.BOOL),
+        TypeRef(ValueType.VEC3),
+    ]
+    attribute_ids = {item[0] for item in kernel.emitters[0].attributes}
+    assert "internal.event.0.head" in attribute_ids
+    assert "internal.event.0.tail" in attribute_ids
+    assert "internal.event.0.count" in attribute_ids
+    assert "internal.event.0.active" in attribute_ids
 
 
 def test_gpu_texture2d_parameter_lowers_to_rhi_resource_and_sample():
@@ -1594,118 +1655,6 @@ def _kill_if_gpu_source():
     return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
 
 
-def _event_output_program():
-    update = GraphDocument(
-        "particle.update",
-        nodes=(
-            GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord(
-                "impact.position",
-                "common.constant.vec3",
-                properties={"value": [4.0, 5.0, 6.0]},
-            ),
-            GraphNodeRecord(
-                "impact.output",
-                particle_event_output_type_id("impact-route", "update"),
-                properties={"condition": True},
-            ),
-        ),
-        links=(
-            GraphLinkRecord(
-                "event.stream",
-                "root.update",
-                "out",
-                "impact.output",
-                "in",
-                PortKind.EXEC,
-            ),
-            GraphLinkRecord(
-                "event.position",
-                "impact.position",
-                "value",
-                "impact.output",
-                particle_event_payload_port_id("position"),
-                PortKind.VALUE,
-            ),
-        ),
-    )
-    source = ParticleEmitterAsset(stable_id="source", update=update)
-    target_init = GraphDocument(
-        "particle.init",
-        nodes=(
-            GraphNodeRecord("root.init", "particle.root.init"),
-            GraphNodeRecord(
-                "impact.payload",
-                particle_event_payload_type_id("impact-route"),
-            ),
-            GraphNodeRecord("impact.weight", "particle.attribute.size"),
-        ),
-        links=(
-            GraphLinkRecord(
-                "target.stream",
-                "root.init",
-                "out",
-                "impact.weight",
-                "in",
-                PortKind.EXEC,
-            ),
-            GraphLinkRecord(
-                "target.weight",
-                "impact.payload",
-                particle_event_payload_port_id("weight"),
-                "impact.weight",
-                "value",
-                PortKind.VALUE,
-            ),
-        ),
-    )
-    target = ParticleEmitterAsset(stable_id="target", init=target_init)
-    impact = ParticleEventType(
-        "impact",
-        "Impact",
-        64,
-        (
-            ParticleEventField(
-                "position",
-                "Position",
-                TypeRef(ValueType.VEC3),
-                [1.0, 2.0, 3.0],
-            ),
-            ParticleEventField(
-                "kind",
-                "Kind",
-                TypeRef(ValueType.U32),
-                7,
-            ),
-            ParticleEventField(
-                "weight",
-                "Weight",
-                TypeRef(ValueType.F32),
-                2.5,
-            ),
-        ),
-    )
-    hir = ParticleGraphCompiler().compile(
-        ParticleGraphAsset(
-            stable_id="event-output-graph",
-            emitters=(source, target),
-            event_types=(impact,),
-            event_routes=(
-                ParticleEventRoute(
-                    "impact-route",
-                    "impact",
-                    "source",
-                    "update",
-                    "target",
-                    2,
-                ),
-            ),
-        )
-    )
-    kernel = ParticleKernelLowerer().lower(hir)
-    return kernel, GpuParticleGlslLowerer().lower(kernel)
-
-
 def test_gpu_backend_lowers_vector_compose_and_zero_extended_math_inputs():
     update = GraphDocument(
         "particle.update",
@@ -1746,15 +1695,78 @@ def test_gpu_backend_lowers_vector_compose_and_zero_extended_math_inputs():
     assert re.search(r"vec3\(v\d+, 0\.0\)", source)
 
 
-def test_gpu_event_payload_round_trips_from_stage_output_to_event_init():
-    kernel, gpu = _event_output_program()
+def _event_queue_program():
+    impact = ParticleEventType(
+        "impact",
+        "Impact",
+        4,
+        (
+            ParticleEventField("position", "Position", TypeRef(ValueType.VEC3), [1.0, 2.0, 3.0]),
+            ParticleEventField("kind", "Kind", TypeRef(ValueType.U32), 7),
+            ParticleEventField("weight", "Weight", TypeRef(ValueType.F32), 2.5),
+        ),
+    )
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "trigger",
+                PARTICLE_EVENT_TRIGGER_TYPE_ID,
+                properties={
+                    "event": "impact",
+                    "condition": True,
+                    particle_event_payload_port_id("position"): [4.0, 5.0, 6.0],
+                },
+            ),
+        ),
+        links=(GraphLinkRecord("trigger.exec", "root.update", "out", "trigger", "in", PortKind.EXEC),),
+    )
+    event_graph = GraphDocument(
+        "particle.event",
+        nodes=(
+            GraphNodeRecord(
+                "root.event",
+                PARTICLE_EVENT_ACTIVE_TYPE_ID,
+                properties={"event": "impact"},
+            ),
+            GraphNodeRecord("set.size", "particle.attribute.size"),
+        ),
+        links=(
+            GraphLinkRecord("event.exec", "root.event", "out", "set.size", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "event.weight",
+                "root.event",
+                particle_event_payload_port_id("weight"),
+                "set.size",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+    emitter = ParticleEmitterAsset(
+        stable_id="source",
+        update=update,
+        event_flows=(ParticleEventFlow("impact", event_graph),),
+    )
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(stable_id="event-queue-graph", emitters=(emitter,), event_types=(impact,))
+        )
+    )
+    return kernel, GpuParticleGlslLowerer().lower(kernel)
+
+
+def test_gpu_event_payload_round_trips_through_the_per_particle_fifo():
+    kernel, gpu = _event_queue_program()
     instruction = next(
         instruction
         for instruction in kernel.emitters[0].update.instructions
-        if instruction.opcode == "event_append"
+        if instruction.opcode == "event_enqueue"
     )
     immediate = instruction.immediate_dict()
-    assert immediate["channel_index"] == 0
+    assert immediate["event_type_index"] == 0
+    assert immediate["queue_capacity"] == 4
     assert [operand.value_type for operand in instruction.operands] == [
         TypeRef(ValueType.BOOL),
         TypeRef(ValueType.VEC3),
@@ -1769,42 +1781,240 @@ def test_gpu_event_payload_round_trips_from_stage_output_to_event_init():
     assert [field["word_offset"] for field in immediate["payload_layout"]] == [0, 3, 4]
     assert kernel.events.event_types[0].payload_stride_words == 5
     assert kernel.events.event_types[0].fields[0].value_type == TypeRef(ValueType.VEC3)
-    assert kernel.events.routes[0].source_stage.value == "update"
-    target_payload = next(
+    event_payload = next(
         instruction
-        for instruction in kernel.emitters[1].init.instructions
+        for instruction in kernel.emitters[0].update.instructions
         if instruction.opcode == "event_payload"
     )
-    assert target_payload.result_type == TypeRef(ValueType.F32)
-    assert target_payload.immediate_dict() == {
-        "channel_index": 0,
+    assert event_payload.result_type == TypeRef(ValueType.F32)
+    assert event_payload.immediate_dict() == {
+        "event_type_index": 0,
+        "field_stable_id": "weight",
         "word_offset": 4,
         "word_count": 1,
         "default": 2.5,
     }
 
     source = gpu.emitters[0]
-    assert source.event_output_stages == ("update",)
-    assert "layout(std430, set = 4, binding = 1)" in source.update
-    assert "atomicAdd(event_output_counters" in source.update
-    assert "state.spawn_generation" in source.update
-    assert "event_output_record_words" in source.update
+    assert source.event_type_count == 1
+    assert source.to_dict()["event_type_count"] == 1
+    assert "internal_event_0_tail" in source.update
+    assert "internal_event_0_count" in source.update
     assert "vec3(4.0, 5.0, 6.0)" in source.update
-    assert "floatBitsToUint" in source.update
-    assert "ParticleEventOutputChannels" not in source.init
-    target_source = gpu.emitters[1]
-    assert "uintBitsToFloat" not in target_source.init
-    assert "= 2.5;" in target_source.init
-    assert "channel_index == 0u" in target_source.event_init
-    assert "event_record_words[record_base + 8u]" in target_source.event_init
+    assert "internal_event_0_active" in source.update
+    assert (
+        "if (state.a_internal_event_0_count + "
+        "state.a_internal_event_0_active < 4u)"
+    ) in source.update
+    assert "uint event_counters[];" in source.update
+    assert "atomicAdd(counters.event_counters[0u], 1u);" in source.update
+    assert "atomicAdd(counters.event_counters[1u], 1u);" in source.update
+    assert "atomicAdd(counters.event_counters[2u], 1u);" in source.update
+    assert "if (index < 3u) counters.event_counters[index] = 0u;" in source.bootstrap
     restored = type(kernel).from_dict(kernel.to_dict())
     assert GpuParticleGlslLowerer().lower(restored).emitters[0].update == source.update
-    corrupted = copy.deepcopy(kernel.to_dict())
-    corrupted["events"]["routes"][0]["source_stage"] = "init"
-    with pytest.raises(KernelCompileError, match="does not match its source route"):
-        type(kernel).from_dict(corrupted)
     compiled = compile_gpu_particle_spirv(gpu)
     assert set(compiled["emitters"][0]["stages"]) == set(source.stages())
+
+
+def test_gpu_event_wait_keeps_one_fifo_invocation_active_until_resume():
+    source_text = '''\
+from Infernux.particle import (
+    ParticleScript, ParticleEmitter, EmitterSettings, EventField, EventType, event,
+)
+
+class QueuedImpact(ParticleScript):
+    event_types = (
+        EventType(
+            stable_id="impact",
+            name="Impact",
+            queue_capacity=8,
+            fields=(EventField("weight", "Weight", "f32", 1.0),),
+        ),
+    )
+
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            pass
+
+        def update(self, ctx, particles):
+            particles.trigger_event(
+                event="impact", payload={"weight": particles.size}
+            )
+            particles.trigger_event(
+                event="impact", payload={"weight": particles.size}
+            )
+
+        @event("impact")
+        def on_impact(self, ctx, particles):
+            particles.set_size(ctx.event_payload(field="weight"))
+            ctx.wait_frames(3)
+            particles.set_color((1.0, 0.0, 0.0, 1.0))
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    hir = ParticleScriptCompiler().compile(
+        source_text, source_name="QueuedImpact.particle.py"
+    )
+    kernel = ParticleKernelLowerer().lower(hir)
+    update_instructions = kernel.emitters[0].update.instructions
+    assert sum(
+        item.opcode == "event_enqueue" for item in update_instructions
+    ) == 2
+    assert sum(
+        item.opcode == "event_begin" for item in update_instructions
+    ) == 1
+    assert sum(
+        item.opcode == "event_complete" for item in update_instructions
+    ) == 1
+    suspension = next(
+        item for item in kernel.emitters[0].suspensions
+        if item.lifecycle_stage.value == "event"
+    )
+    assert suspension.flow_id == "impact"
+    update = GpuParticleGlslLowerer().lower(kernel).emitters[0].update
+    assert "internal_event_0_active" in update
+    assert "internal_event_0_head" in update
+    assert "internal_event_0_tail" in update
+    assert "internal_event_0_count" in update
+    assert "state.a_internal_event_0_active == 0u" in update
+    assert "inx_continuation_lane_pending" in update
+    gpu = GpuParticleGlslLowerer().lower(kernel)
+    continuation = gpu.emitters[0].continuation.stages()["dispatch"]
+    assert "bool inx_event_begin_" not in continuation
+    assert "if (true)" in continuation
+    assert "state.a_builtin_color =" in continuation
+    assert "a_internal_event_0_active = 0u" in continuation
+    assert validate_gpu_particle_spirv(
+        compile_gpu_particle_spirv(gpu), gpu
+    )
+
+
+def test_gpu_event_fanout_stays_non_reentrant_until_every_waiting_branch_finishes():
+    event_type = ParticleEventType("pulse", "Pulse", queue_capacity=8)
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "trigger",
+                PARTICLE_EVENT_TRIGGER_TYPE_ID,
+                properties={"event": "pulse"},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "trigger.exec",
+                "root.update",
+                "out",
+                "trigger",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+    event_graph = GraphDocument(
+        "particle.event",
+        nodes=(
+            GraphNodeRecord(
+                "root.event",
+                PARTICLE_EVENT_ACTIVE_TYPE_ID,
+                properties={"event": "pulse"},
+            ),
+            GraphNodeRecord(
+                "wait.left",
+                "particle.control.wait_frames",
+                properties={"frames": 2},
+            ),
+            GraphNodeRecord(
+                "wait.right",
+                "particle.control.wait_frames",
+                properties={"frames": 3},
+            ),
+            GraphNodeRecord(
+                "set.size",
+                "particle.attribute.size",
+                properties={"value": 2.0},
+            ),
+            GraphNodeRecord(
+                "set.color",
+                "particle.attribute.color",
+                properties={"value": [1.0, 0.0, 1.0, 1.0]},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "event.left",
+                "root.event",
+                "out",
+                "wait.left",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "event.right",
+                "root.event",
+                "out",
+                "wait.right",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "left.tail",
+                "wait.left",
+                "out",
+                "set.size",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "right.tail",
+                "wait.right",
+                "out",
+                "set.color",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+    emitter = ParticleEmitterAsset(
+        stable_id="event-fanout",
+        update=update,
+        event_flows=(ParticleEventFlow("pulse", event_graph),),
+    )
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(
+                stable_id="event-fanout-graph",
+                emitters=(emitter,),
+                event_types=(event_type,),
+            )
+        )
+    )
+
+    event_suspensions = [
+        item
+        for item in kernel.emitters[0].suspensions
+        if item.lifecycle_stage.value == "event" and item.flow_id == "pulse"
+    ]
+    assert len(event_suspensions) == 2
+    assert len({item.lane_stable_id for item in event_suspensions}) == 2
+
+    gpu = GpuParticleGlslLowerer().lower(kernel)
+    update_source = gpu.emitters[0].update
+    continuation_source = gpu.emitters[0].continuation.stages()["dispatch"]
+    assert update_source.count("!inx_continuation_lane_pending(particle_index") >= 2
+    assert continuation_source.count(
+        "if (!inx_continuation_resuspended && !inx_continuation_lane_pending"
+    ) == 2
+    assert continuation_source.count("a_internal_event_0_active = 0u") == 2
+    assert validate_gpu_particle_spirv(
+        compile_gpu_particle_spirv(gpu), gpu
+    )
 
 
 def _noise_gpu_source():
@@ -2167,18 +2377,12 @@ def test_gpu_lowerer_emits_resident_compute_lifecycle_and_indirect_output():
     assert set(emitter.stages()) == {
         "bootstrap",
         "init",
-        "event_init",
         "update",
         "render_reset",
         "rendering",
     }
     assert "buffer ParticleStates" in emitter.update
     assert "inx_pop_free" in emitter.init
-    assert "layout(std430, set = 3, binding = 3)" in emitter.event_init
-    assert "event_spawn_indices[channel.spawn_base_indices + invocation]" in emitter.event_init
-    assert "uint source_particle_id = event_record_words[record_base + 2u];" in emitter.event_init
-    assert "uint route_seed = inx_random_u32(channel_index" in emitter.event_init
-    assert "state.spawn_generation = inx_random_u32(" in emitter.event_init
     assert "states[index].spawn_generation = 0u;" in emitter.bootstrap
     assert "atomicAdd(indirect_args.instance_count, 1u)" in emitter.rendering
     assert "layout(push_constant)" in emitter.rendering
@@ -2392,6 +2596,118 @@ def test_gpu_curve_and_gradient_sampling_emit_valid_vulkan_glsl():
     assert "mod(" in emitter.update
     assert "abs(" in emitter.update
     compiled = native._compile_compute_glsl_batch({"update": emitter.update}, "particle-curve-gradient-test")
+    assert set(compiled) == {"update"}
+
+
+def test_gpu_curve_and_gradient_parameters_use_fixed_hot_update_layouts():
+    curve = Curve(
+        (
+            CurveKey(0.0, 0.25, 0.0, 1.0),
+            CurveKey(1.0, 2.0, -0.5, 0.0),
+        ),
+        "repeat",
+        "ping_pong",
+    )
+    gradient = Gradient(
+        (
+            GradientKey(0.0, (2.0, 0.0, 0.0, 1.0)),
+            GradientKey(1.0, (0.0, 0.5, 1.0, 0.0)),
+        ),
+        "linear",
+    )
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("set-size", "particle.attribute.size"),
+            GraphNodeRecord("set-color", "particle.attribute.color"),
+            GraphNodeRecord(
+                "curve-parameter",
+                "particle.parameter.get",
+                properties={"parameter": "size-over-life"},
+            ),
+            GraphNodeRecord(
+                "gradient-parameter",
+                "particle.parameter.get",
+                properties={"parameter": "color-over-life"},
+            ),
+            GraphNodeRecord("age", "particle.attribute.normalized_age"),
+            GraphNodeRecord("curve", "common.curve.sample"),
+            GraphNodeRecord("gradient", "common.gradient.sample"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream-size",
+                "root.update",
+                "out",
+                "set-size",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "stream-color",
+                "set-size",
+                "out",
+                "set-color",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord("curve-input", "curve-parameter", "value", "curve", "curve"),
+            GraphLinkRecord(
+                "gradient-input",
+                "gradient-parameter",
+                "value",
+                "gradient",
+                "gradient",
+            ),
+            GraphLinkRecord("curve-time", "age", "value", "curve", "t"),
+            GraphLinkRecord("gradient-time", "age", "value", "gradient", "t"),
+            GraphLinkRecord("curve-size", "curve", "value", "set-size", "value"),
+            GraphLinkRecord("gradient-color", "gradient", "color", "set-color", "value"),
+        ),
+    )
+    asset = ParticleGraphAsset(
+        parameters=(
+            ParticleParameter(
+                "size-over-life",
+                "Size Over Life",
+                TypeRef(ValueType.CURVE),
+                curve.to_dict(),
+            ),
+            ParticleParameter(
+                "color-over-life",
+                "Color Over Life",
+                TypeRef(ValueType.GRADIENT),
+                gradient.to_dict(),
+            ),
+        ),
+        emitters=(ParticleEmitterAsset(update=update),),
+    )
+    kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
+    words = pack_gpu_particle_parameters(kernel.parameters)
+    changed_words = pack_gpu_particle_parameters(
+        kernel.parameters,
+        {
+            "size-over-life": Curve((CurveKey(0.0, 4.0),)).to_dict(),
+            "color-over-life": Gradient(
+                (GradientKey(0.0, (0.0, 1.0, 0.0, 1.0)),),
+                "fixed",
+            ).to_dict(),
+        },
+    )
+
+    assert len(words) == (17 + 33) * 4
+    assert len(changed_words) == len(words)
+    assert changed_words != words
+    source = GpuParticleGlslLowerer().lower(kernel).emitters[0].update
+    # Parameter ABI order is canonical by stable ID: color first, then size.
+    assert "inx_sample_gradient_parameter(0u," in source
+    assert "inx_sample_curve_parameter(33u," in source
+    assert f"index < {gpu_backend.MAX_RAMP_KEYS}u" in source
+    compiled = native._compile_compute_glsl_batch(
+        {"update": source},
+        "particle-dynamic-curve-gradient-test",
+    )
     assert set(compiled) == {"update"}
 
 

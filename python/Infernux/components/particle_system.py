@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -15,6 +16,7 @@ import numpy as np
 from Infernux.core.asset_ref import ParticleGraphRef
 from Infernux.debug import Debug
 from Infernux.graph import AssetReference, ValueType
+from Infernux.graph.ramp import Curve, Gradient
 from Infernux.particle import (
     GpuParticleEmitterController,
     EmitterShapeKind,
@@ -30,7 +32,6 @@ from Infernux.particle import (
     classify_emitter_update,
     decode_gpu_particle_spirv,
     decode_particle_runtime_metadata,
-    pack_gpu_particle_event_payload,
     pack_gpu_particle_parameters,
 )
 from Infernux.gizmos.gizmos import ICON_KIND_PARTICLE
@@ -54,6 +55,8 @@ class ParticleOffscreenPolicy(str, Enum):
 @add_component_menu("VFX/Particle System")
 class ParticleSystem(InxComponent):
     _display_name_key = "component.particle_system"
+    _PREROLL_STEP_SECONDS = 1.0 / 60.0
+    _MAX_PREROLL_STEPS = 4096
 
     # Scene icon: particle burst billboard at the system origin, so an emitter
     # stays selectable even when it is not currently emitting anything.
@@ -74,14 +77,33 @@ class ParticleSystem(InxComponent):
         default=True,
         display_name_key="particle_system.play_on_awake",
     )
+    random_seed: int = serialized_field(
+        default=0,
+        range=(0, 2147483647),
+        display_name_key="particle_system.random_seed",
+        tooltip="Fixed scene-instance seed. Emitter seeds remain part of the ParticleGraph asset.",
+    )
+    prewarm: bool = serialized_field(
+        default=False,
+        display_name_key="particle_system.prewarm",
+        tooltip="Simulate one complete loop on the GPU before the first visible frame.",
+    )
     offscreen_policy: ParticleOffscreenPolicy = serialized_field(
         default=ParticleOffscreenPolicy.ALWAYS_SIMULATE,
         display_name_key="particle_system.offscreen_policy",
+        enum_labels=[
+            "particle_system.offscreen_policy.always_simulate",
+            "particle_system.offscreen_policy.pause_when_offscreen",
+        ],
         tooltip="Always Simulate preserves gameplay timing. Pause When Offscreen skips GPU simulation when no camera sees the system.",
     )
     bounds_mode: ParticleBoundsMode = serialized_field(
         default=ParticleBoundsMode.AUTOMATIC,
         display_name_key="particle_system.bounds_mode",
+        enum_labels=[
+            "particle_system.bounds_mode.automatic",
+            "particle_system.bounds_mode.manual",
+        ],
         tooltip="Automatic reduces live GPU particles; Manual uses the local bounds below.",
     )
     manual_bounds_center: Vector3 = serialized_field(
@@ -103,7 +125,7 @@ class ParticleSystem(InxComponent):
     _particle_kernel = None
     _particle_gpu_layouts: tuple[dict, ...]
     _particle_metadata = None
-    _particle_event_routes: tuple[dict, ...]
+    _particle_event_types: tuple[dict, ...]
     _artifact_revision: int = 0
     _artifact_source_key: str = ""
     _emitter_to_world_cache: Optional[np.ndarray] = None
@@ -113,6 +135,8 @@ class ParticleSystem(InxComponent):
     _gpu_view_diagnostic_requests: set[tuple[str, int]]
     _parameter_overrides: dict[str, object]
     _emitter_overrides: dict[str, dict[str, bool]]
+    _prewarm_pending_emitters: set[str]
+    _pending_seek_seconds: dict[str, float]
     _serialized_parameter_overrides_cache: str
     _serialized_emitter_overrides_cache: str
     _playing: bool = False
@@ -124,6 +148,8 @@ class ParticleSystem(InxComponent):
     _compile_retry_at: float = 0.0
     _last_compile_error: str = ""
     _last_compile_error_log_at: float = 0.0
+    _runtime_definition_signature: tuple
+    _runtime_rebuild_pending: bool = False
 
     def awake(self):
         if hasattr(self, "_gpu_controllers"):
@@ -138,7 +164,7 @@ class ParticleSystem(InxComponent):
         self._particle_kernel = None
         self._particle_gpu_layouts = ()
         self._particle_metadata = None
-        self._particle_event_routes = ()
+        self._particle_event_types = ()
         self._artifact_revision = 0
         self._artifact_source_key = ""
         self._emitter_to_world_cache = None
@@ -153,6 +179,8 @@ class ParticleSystem(InxComponent):
         )
         self._parameter_overrides = self._decode_parameter_overrides()
         self._emitter_overrides = self._decode_emitter_overrides()
+        self._prewarm_pending_emitters = set()
+        self._pending_seek_seconds = {}
         self._batch_id = (int(self.game_object.id) << 16) ^ int(self.component_id)
         if self._batch_id == 0:
             self._batch_id = int(self.component_id) or 1
@@ -165,6 +193,8 @@ class ParticleSystem(InxComponent):
         self._compile_retry_at = 0.0
         self._last_compile_error = ""
         self._last_compile_error_log_at = 0.0
+        self._runtime_definition_signature = self._definition_signature()
+        self._runtime_rebuild_pending = False
 
     def _ensure_runtime_state(self, *, playing: bool = False) -> None:
         if not hasattr(self, "_gpu_controllers"):
@@ -181,19 +211,12 @@ class ParticleSystem(InxComponent):
     def play(self, emitter: int | str | None = None) -> bool:
         if emitter is None:
             self._playing = True
-            played = False
-            for index, runtime in zip(
-                getattr(self, "_gpu_emitter_indices", ()),
-                getattr(self, "_gpu_controllers", ()),
-            ):
-                if self._emitter_is_enabled(index):
-                    runtime.play()
-                    played = True
-            return played
+            runtimes = tuple(getattr(self, "_gpu_controllers", ()))
+            for runtime in runtimes:
+                runtime.play()
+            return bool(runtimes)
         emitter_index = self._resolve_emitter_index(emitter)
         if emitter_index is None:
-            return False
-        if not self._emitter_is_enabled(emitter_index):
             return False
         runtime = self._runtime_at(emitter_index)
         if runtime is None:
@@ -220,6 +243,8 @@ class ParticleSystem(InxComponent):
     def stop(self, emitter: int | str | None = None) -> bool:
         if emitter is None:
             self._playing = False
+            self._prewarm_pending_emitters.clear()
+            self._pending_seek_seconds.clear()
             for runtime in getattr(self, "_gpu_controllers", ()):
                 runtime.reset(playing=False)
             self._reset_gpu_emitters()
@@ -231,6 +256,9 @@ class ParticleSystem(InxComponent):
         if runtime is None:
             return False
         runtime.reset(playing=False)
+        stable_id = self._emitter_stable_id(emitter_index)
+        self._prewarm_pending_emitters.discard(stable_id)
+        self._pending_seek_seconds.pop(stable_id, None)
         self._reset_gpu_emitters(emitter_index)
         return True
 
@@ -255,12 +283,8 @@ class ParticleSystem(InxComponent):
                     "stable_id": parameter.stable_id,
                     "name": parameter.name,
                     "type": parameter.value_type.value_type.value,
-                    "default": list(parameter.default)
-                    if isinstance(parameter.default, (list, tuple))
-                    else parameter.default,
-                    "value": list(value)
-                    if isinstance(value, (list, tuple))
-                    else value,
+                    "default": copy.deepcopy(parameter.default),
+                    "value": copy.deepcopy(value),
                     "category": parameter.category,
                     "tooltip": parameter.tooltip,
                 }
@@ -294,7 +318,7 @@ class ParticleSystem(InxComponent):
         enabled: bool | None = None,
         play_on_start: bool | None = None,
     ) -> bool:
-        """Set scene-instance playback policy without modifying the graph asset."""
+        """Set scene-instance emitter policy without modifying the graph asset."""
         if enabled is not None and type(enabled) is not bool:
             raise TypeError("particle emitter enabled must be a boolean")
         if play_on_start is not None and type(play_on_start) is not bool:
@@ -348,7 +372,7 @@ class ParticleSystem(InxComponent):
     def get_parameter(self, name: str):
         parameter = self._require_exposed_parameter(name)
         value = self._parameter_overrides.get(parameter.stable_id, parameter.default)
-        return list(value) if isinstance(value, (list, tuple)) else value
+        return copy.deepcopy(value)
 
     def reset_parameter(self, name: str) -> bool:
         parameter = self._require_exposed_parameter(name)
@@ -375,6 +399,24 @@ class ParticleSystem(InxComponent):
             name, ValueType.TEXTURE2D, AssetReference().to_dict()
         )
         return AssetReference.from_dict(value)
+
+    def set_curve(self, name: str, value: Curve | dict) -> None:
+        self._set_typed_parameter(name, value, ValueType.CURVE)
+
+    def get_curve(self, name: str) -> Curve:
+        value = self._get_typed_parameter(
+            name, ValueType.CURVE, Curve().to_dict()
+        )
+        return Curve.from_dict(value)
+
+    def set_gradient(self, name: str, value: Gradient | dict) -> None:
+        self._set_typed_parameter(name, value, ValueType.GRADIENT)
+
+    def get_gradient(self, name: str) -> Gradient:
+        value = self._get_typed_parameter(
+            name, ValueType.GRADIENT, Gradient().to_dict()
+        )
+        return Gradient.from_dict(value)
 
     def set_bool(self, name: str, value: bool) -> None:
         self._set_typed_parameter(name, value, ValueType.BOOL)
@@ -433,7 +475,7 @@ class ParticleSystem(InxComponent):
         )
 
     def runtime_event_schema(self) -> list[dict]:
-        """Describe gameplay events accepted by this ParticleGraph instance."""
+        """Describe the graph-defined per-particle event schemas."""
         self._ensure_runtime_state()
         return [
             {
@@ -442,98 +484,11 @@ class ParticleSystem(InxComponent):
                     if key == "fields"
                     else value
                 )
-                for key, value in route.items()
+                for key, value in event_type.items()
                 if not key.startswith("_")
             }
-            for route in getattr(self, "_particle_event_routes", ())
+            for event_type in getattr(self, "_particle_event_types", ())
         ]
-
-    def send_event(
-        self,
-        event: str,
-        payload: dict | None = None,
-        count: int = 1,
-        *,
-        target: int | str | None = None,
-    ) -> bool:
-        """Queue a typed gameplay event for the next GPU simulation boundary."""
-        self._ensure_runtime_state()
-        if type(event) is not str or not event:
-            raise ValueError("particle event name or stable ID cannot be empty")
-        if payload is not None and type(payload) is not dict:
-            raise TypeError("particle event payload must be a dictionary or None")
-        if type(count) is not int or count <= 0:
-            raise ValueError("particle event count must be a positive integer")
-        if not self._has_runtime() and not self._compile_asset():
-            raise RuntimeError("ParticleSystem has no active GPU runtime")
-
-        candidates = []
-        for route in getattr(self, "_particle_event_routes", ()):
-            if event not in {
-                route["stable_id"],
-                route["event_type_id"],
-                route["event_type_name"],
-            }:
-                continue
-            if target is not None and target not in {
-                route["target_emitter_index"],
-                route["target_emitter_id"],
-                route["target_emitter_name"],
-            }:
-                continue
-            candidates.append(route)
-        if not candidates:
-            raise KeyError(f"particle event {event!r} has no matching runtime route")
-        if len(candidates) != 1:
-            raise ValueError(
-                f"particle event {event!r} is ambiguous; pass target= or use a route stable ID"
-            )
-        route = candidates[0]
-
-        supplied = dict(payload or {})
-        field_keys = {}
-        ambiguous = set()
-        for field in route["fields"]:
-            for key in (field["stable_id"], field["name"]):
-                if key in field_keys and field_keys[key] != field["stable_id"]:
-                    ambiguous.add(key)
-                else:
-                    field_keys[key] = field["stable_id"]
-        unknown = set(supplied) - set(field_keys)
-        if unknown:
-            raise KeyError(f"particle event payload has unknown fields: {sorted(unknown)}")
-        if ambiguous.intersection(supplied):
-            raise ValueError("particle event field name is ambiguous; use its stable ID")
-        normalized = {}
-        for key, value in supplied.items():
-            stable_id = field_keys[key]
-            if stable_id in normalized:
-                raise ValueError(f"particle event field {stable_id!r} was supplied twice")
-            normalized[stable_id] = value
-
-        kernel = self._particle_kernel
-        event_type = kernel.events.event_types[route["event_type_index"]]
-        payload_words = pack_gpu_particle_event_payload(event_type, normalized)
-        record = (
-            int(route["event_type_index"]),
-            int(route["source_emitter_index"]),
-            0xFFFFFFFF,
-            0,
-            *payload_words,
-        )
-        record_words = list(record) * count
-        native = self._native_engine()
-        if native is None or not hasattr(native, "_queue_gpu_particle_events"):
-            raise RuntimeError("GPU particle runtime event input is unavailable")
-        error = native._queue_gpu_particle_events(
-            self._batch_id,
-            int(route["channel_index"]),
-            record_words,
-            count,
-        )
-        if error:
-            raise RuntimeError(str(error))
-        return True
 
     def runtime_diagnostics(self) -> dict:
         """Return the on-demand particle control-plane state without GPU readback."""
@@ -572,16 +527,15 @@ class ParticleSystem(InxComponent):
                     native._gpu_particle_state_was_preserved(emitter_id)
                 )
             resident = artifact_revision > 0
-            playing = resident and play_requested
+            enabled = self._emitter_instance_options(emitter.stable_id)["enabled"]
+            playing = resident and enabled and play_requested
             any_resident = any_resident or resident
             any_playing = any_playing or playing
             item = {
                 "index": index,
                 "stable_id": emitter.stable_id,
                 "name": str(getattr(emitter, "name", emitter.stable_id)),
-                "enabled": self._emitter_instance_options(emitter.stable_id)[
-                    "enabled"
-                ],
+                "enabled": enabled,
                 "play_on_start": self._emitter_instance_options(
                     emitter.stable_id
                 )["play_on_start"],
@@ -589,6 +543,13 @@ class ParticleSystem(InxComponent):
                 "resident": resident,
                 "playing": playing,
                 "simulation_step": int(getattr(runtime, "simulation_step", 0)),
+                "simulation_time_seconds": float(
+                    getattr(runtime, "simulation_time_ticks", 0)
+                )
+                / 1_000_000_000.0,
+                "seek_pending_seconds": self._pending_seek_seconds.get(
+                    str(emitter.stable_id)
+                ),
                 "reload_compatibility": (
                     compatibility[index].value
                     if index < len(compatibility)
@@ -602,25 +563,22 @@ class ParticleSystem(InxComponent):
                 item["state_preserved"] = state_preserved
             emitters.append(item)
 
-        event_abi_hash = 0
-        event_domain_serial = 0
-        if native is not None:
-            if hasattr(native, "_gpu_particle_event_abi_hash"):
-                event_abi_hash = int(
-                    native._gpu_particle_event_abi_hash(self._batch_id)
-                )
-            if hasattr(native, "_gpu_particle_event_domain_serial"):
-                event_domain_serial = int(
-                    native._gpu_particle_event_domain_serial(self._batch_id)
-                )
         return {
             "batch_id": int(self._batch_id),
+            "random_seed": self._instance_random_seed(),
             "play_requested": bool(self._playing),
             "resident": any_resident,
             "playing": any_playing,
+            "editor_preview_active": bool(
+                getattr(self, "_editor_preview_active", False)
+            ),
+            "editor_preview_play_requested": bool(
+                getattr(self, "_editor_preview_play_requested", True)
+            ),
+            "editor_preview_controls_allowed": (
+                self._editor_preview_controls_allowed()
+            ),
             "artifact_revision": int(self._artifact_revision),
-            "event_abi_hash": event_abi_hash,
-            "event_domain_serial": event_domain_serial,
             "last_compile_error": str(self._last_compile_error),
             "parameters": self.exposed_parameter_schema(),
             "events": self.runtime_event_schema(),
@@ -660,34 +618,41 @@ class ParticleSystem(InxComponent):
             emitter["stable_id"] = (
                 emitter_names[index] if 0 <= index < len(emitter_names) else ""
             )
+            overflow_counts = tuple(
+                int(value) for value in emitter.pop("event_overflow_counts", ())
+            )
+            enqueue_counts = tuple(
+                int(value) for value in emitter.pop("event_enqueue_counts", ())
+            )
+            complete_counts = tuple(
+                int(value) for value in emitter.pop("event_complete_counts", ())
+            )
+            event_types = getattr(self, "_particle_event_types", ())
+            if not all(
+                len(values) == len(event_types)
+                for values in (overflow_counts, enqueue_counts, complete_counts)
+            ):
+                raise RuntimeError(
+                    "GPU particle event diagnostics do not match the event ABI "
+                    f"for emitter index {index}: expected {len(event_types)} "
+                    "event slots, got "
+                    f"overflow={len(overflow_counts)}, "
+                    f"enqueue={len(enqueue_counts)}, "
+                    f"complete={len(complete_counts)}"
+                )
+            emitter["event_diagnostics"] = [
+                {
+                    "event_type_index": event_index,
+                    "stable_id": event_type["stable_id"],
+                    "name": event_type["name"],
+                    "queue_capacity": int(event_type["queue_capacity"]),
+                    "enqueue_count": enqueue_counts[event_index],
+                    "complete_count": complete_counts[event_index],
+                    "overflow_count": overflow_counts[event_index],
+                }
+                for event_index, event_type in enumerate(event_types)
+            ]
 
-        kernel = getattr(self, "_particle_kernel", None)
-        event_abi = getattr(kernel, "events", None)
-        routes = tuple(getattr(event_abi, "routes", ()))
-        event_types = {
-            event_type.type_index: event_type
-            for event_type in getattr(event_abi, "event_types", ())
-        }
-        for event in result.get("events", ()):
-            channel = int(event.get("channel_index", -1))
-            if not 0 <= channel < len(routes):
-                continue
-            route = routes[channel]
-            event_type = event_types.get(route.event_type_index)
-            event["route_stable_id"] = route.stable_id
-            event["event_type_stable_id"] = (
-                event_type.stable_id if event_type is not None else ""
-            )
-            event["source_emitter_stable_id"] = (
-                emitter_names[route.source_emitter_index]
-                if 0 <= route.source_emitter_index < len(emitter_names)
-                else ""
-            )
-            event["target_emitter_stable_id"] = (
-                emitter_names[route.target_emitter_index]
-                if 0 <= route.target_emitter_index < len(emitter_names)
-                else ""
-            )
         return result
 
     def request_gpu_view_diagnostics(self, view: str) -> int:
@@ -766,20 +731,74 @@ class ParticleSystem(InxComponent):
                     index, honor_play_on_start=honor_play_on_start
                 )
                 runtime.reset(playing=should_play)
+                self._pending_seek_seconds.pop(
+                    self._emitter_stable_id(index), None
+                )
+                self._set_emitter_prewarm_pending(index, should_play)
                 restarted = restarted or should_play
             self._reset_gpu_emitters()
             return restarted
         emitter_index = self._resolve_emitter_index(emitter)
         if emitter_index is None:
             return False
-        if not self._emitter_is_enabled(emitter_index):
-            return False
         runtime = self._runtime_at(emitter_index)
         if runtime is None:
             return False
         runtime.reset(playing=True)
+        self._pending_seek_seconds.pop(
+            self._emitter_stable_id(emitter_index), None
+        )
+        self._set_emitter_prewarm_pending(emitter_index, True)
         self._reset_gpu_emitters(emitter_index)
         return True
+
+    def seek(
+        self,
+        time_seconds: float,
+        emitter: int | str | None = None,
+    ) -> bool:
+        """Deterministically replay enabled GPU emitters from time zero."""
+        if isinstance(time_seconds, bool):
+            raise TypeError("particle seek time must be a number")
+        time_seconds = float(time_seconds)
+        if not math.isfinite(time_seconds) or time_seconds < 0.0:
+            raise ValueError("particle seek time must be finite and non-negative")
+        required_steps = int(math.ceil(time_seconds / self._PREROLL_STEP_SECONDS))
+        if required_steps > self._MAX_PREROLL_STEPS:
+            raise ValueError(
+                f"particle seek requires {required_steps} fixed steps; maximum is "
+                f"{self._MAX_PREROLL_STEPS}"
+            )
+        if not self._has_runtime() and not self._compile_asset():
+            return False
+
+        if emitter is None:
+            targets = list(getattr(self, "_gpu_emitter_indices", ()))
+        else:
+            emitter_index = self._resolve_emitter_index(emitter)
+            targets = [] if emitter_index is None else [emitter_index]
+
+        accepted = False
+        for emitter_index in targets:
+            if not self._emitter_is_enabled(emitter_index):
+                continue
+            runtime = self._runtime_at(emitter_index)
+            if runtime is None:
+                continue
+            stable_id = self._emitter_stable_id(emitter_index)
+            self._pending_seek_seconds[stable_id] = time_seconds
+            self._prewarm_pending_emitters.discard(stable_id)
+            self._reset_gpu_emitters(emitter_index)
+            accepted = True
+        if accepted:
+            from Infernux.lib import SceneManager
+
+            SceneManager.instance().mark_temporal_discontinuity()
+        return accepted
+
+    def reset(self, emitter: int | str | None = None) -> bool:
+        """Reset to time zero while preserving each emitter's play state."""
+        return self.seek(0.0, emitter)
 
     def start_emitter(self, emitter: int | str) -> bool:
         return self.play(emitter)
@@ -805,6 +824,7 @@ class ParticleSystem(InxComponent):
 
     def update(self, delta_time: float):
         self._sync_serialized_instance_overrides()
+        self._apply_pending_runtime_rebuild()
         if not self._has_runtime() and not self._compile_asset():
             return
         self._reload_published_artifact_if_needed()
@@ -816,6 +836,8 @@ class ParticleSystem(InxComponent):
 
     def editor_preview_begin(self) -> bool:
         """Prepare this component for Scene View simulation outside Play mode."""
+        if not self._editor_preview_controls_allowed():
+            return False
         self._ensure_runtime_state(playing=True)
         self._editor_preview_active = True
         if self._editor_preview_play_requested:
@@ -835,6 +857,8 @@ class ParticleSystem(InxComponent):
         return True
 
     def editor_preview_update(self, delta_time: float, speed: float = 1.0) -> bool:
+        if not self._editor_preview_controls_allowed():
+            return False
         if not getattr(self, "_editor_preview_active", False):
             return False
         if not getattr(self, "_editor_preview_play_requested", True):
@@ -848,6 +872,8 @@ class ParticleSystem(InxComponent):
         return self._gpu_runtime_resident()
 
     def editor_preview_play(self) -> bool:
+        if not self._editor_preview_controls_allowed():
+            return False
         self._ensure_runtime_state(playing=True)
         self._editor_preview_active = True
         self._editor_preview_play_requested = True
@@ -858,6 +884,8 @@ class ParticleSystem(InxComponent):
         return self.play()
 
     def editor_preview_pause(self) -> bool:
+        if not self._editor_preview_controls_allowed():
+            return False
         if not getattr(self, "_editor_preview_active", False):
             return False
         self._editor_preview_play_requested = False
@@ -865,13 +893,16 @@ class ParticleSystem(InxComponent):
 
     def editor_preview_suspend(self) -> bool:
         """Pause for editor selection changes without changing user intent."""
+        if not self._editor_preview_controls_allowed():
+            return False
         if not getattr(self, "_editor_preview_active", False):
             return False
         return self.pause()
 
     def editor_preview_is_playing(self) -> bool:
         return bool(
-            getattr(self, "_editor_preview_play_requested", True)
+            self._editor_preview_controls_allowed()
+            and getattr(self, "_editor_preview_play_requested", True)
             and self._gpu_runtime_resident()
             and any(
                 controller.is_playing
@@ -881,11 +912,51 @@ class ParticleSystem(InxComponent):
 
     def editor_preview_is_ready(self) -> bool:
         return bool(
-            getattr(self, "_editor_preview_active", False)
+            self._editor_preview_controls_allowed()
+            and getattr(self, "_editor_preview_active", False)
             and self._gpu_runtime_resident()
         )
 
+    def editor_preview_time_seconds(self) -> float:
+        return max(
+            (
+                float(getattr(controller, "simulation_time_ticks", 0))
+                / 1_000_000_000.0
+                for controller in getattr(self, "_gpu_controllers", ())
+            ),
+            default=0.0,
+        )
+
+    def editor_preview_duration_seconds(self) -> float:
+        metadata = getattr(self, "_particle_metadata", None)
+        return max(
+            (
+                float(emitter.settings.start_delay) + float(emitter.settings.duration)
+                for emitter in getattr(metadata, "emitters", ())
+            ),
+            default=1.0,
+        )
+
+    def editor_preview_seek(self, time_seconds: float) -> bool:
+        if not self._editor_preview_controls_allowed():
+            return False
+        play_requested = bool(
+            getattr(self, "_editor_preview_play_requested", True)
+        )
+        self._ensure_runtime_state(playing=play_requested)
+        self._editor_preview_active = True
+        self._playing = play_requested
+        ready, _rebuilt = self._ensure_editor_preview_runtime()
+        if not ready or not self.seek(time_seconds):
+            return False
+        # A paused preview does not tick, so submit the queued deterministic
+        # replay immediately. The controller restores the prior play state.
+        self.update(0.0)
+        return self._gpu_runtime_resident()
+
     def editor_preview_stop(self) -> bool:
+        if not self._editor_preview_controls_allowed():
+            return False
         self._ensure_runtime_state(playing=False)
         self._editor_preview_active = True
         self._editor_preview_play_requested = False
@@ -900,6 +971,8 @@ class ParticleSystem(InxComponent):
     def editor_preview_set_emitter_muted(
         self, emitter_index: int, muted: bool
     ) -> bool:
+        if not self._editor_preview_controls_allowed():
+            return False
         if not self._valid_emitter_index(emitter_index) or type(muted) is not bool:
             return False
         stable_id = self._emitter_stable_id(emitter_index)
@@ -914,6 +987,8 @@ class ParticleSystem(InxComponent):
     def editor_preview_set_emitter_solo(
         self, emitter_index: int, solo: bool
     ) -> bool:
+        if not self._editor_preview_controls_allowed():
+            return False
         if not self._valid_emitter_index(emitter_index) or type(solo) is not bool:
             return False
         stable_id = self._emitter_stable_id(emitter_index)
@@ -926,6 +1001,8 @@ class ParticleSystem(InxComponent):
         return True
 
     def editor_preview_restart_emitter(self, emitter_index: int) -> bool:
+        if not self._editor_preview_controls_allowed():
+            return False
         if not getattr(self, "_editor_preview_active", False):
             return False
         self._editor_preview_play_requested = True
@@ -958,12 +1035,17 @@ class ParticleSystem(InxComponent):
                     "muted": stable_id in self._editor_preview_muted_emitters,
                     "solo": stable_id in self._editor_preview_solo_emitters,
                     "visible": self._editor_preview_emitter_visible(index),
-                    "playing": bool(getattr(runtime, "is_playing", False)),
+                    "playing": bool(
+                        self._emitter_is_enabled(index)
+                        and getattr(runtime, "is_playing", False)
+                    ),
                 }
             )
         return result
 
     def editor_preview_end(self) -> None:
+        if not self._editor_preview_controls_allowed():
+            return
         if getattr(self, "_editor_preview_active", False):
             self.editor_preview_suspend()
             self._editor_preview_active = False
@@ -1016,8 +1098,41 @@ class ParticleSystem(InxComponent):
         self._clear_runtime_state()
 
     def on_validate(self):
-        self._remove_native_batch()
-        self._clear_runtime_state()
+        signature = self._definition_signature()
+        if signature == getattr(self, "_runtime_definition_signature", None):
+            return
+        self._runtime_definition_signature = signature
+        self._runtime_rebuild_pending = True
+
+    def _definition_signature(self) -> tuple:
+        """Identify authored fields that require a new native particle program."""
+        graph = get_raw_field_value(self, "graph")
+        if isinstance(graph, ParticleGraphAsset):
+            graph_key = ("memory", id(graph))
+        else:
+            graph_key = (
+                "asset",
+                str(getattr(graph, "guid", "") or ""),
+                str(getattr(graph, "path_hint", "") or ""),
+            )
+        return graph_key, int(get_raw_field_value(self, "random_seed") or 0)
+
+    def _apply_pending_runtime_rebuild(self) -> None:
+        if not getattr(self, "_runtime_rebuild_pending", False):
+            return
+        self._runtime_rebuild_pending = False
+        graph = get_raw_field_value(self, "graph")
+        if graph is None or not (
+            isinstance(graph, ParticleGraphAsset)
+            or bool(graph)
+            or getattr(graph, "path_hint", "")
+        ):
+            self._remove_native_batch()
+            self._clear_runtime_state()
+            return
+        # Publication is transactional: a failed compile leaves the previous
+        # valid native graph resident instead of blanking the current frame.
+        self._compile_asset(force=True)
 
     def _compile_asset(self, *, force: bool = False) -> bool:
         now = time.monotonic()
@@ -1155,11 +1270,13 @@ class ParticleSystem(InxComponent):
 
         programs = []
         controllers = []
+        preserve_states = []
         emitter_ids = []
         emitter_indices = []
         previous_controllers = {}
         previous_layouts = {}
         previous_runtime_metadata = {}
+        instance_seed = self._instance_random_seed()
         previous_metadata = getattr(self, "_particle_metadata", None)
         if previous_metadata is not None:
             previous_runtime_metadata = {
@@ -1189,7 +1306,8 @@ class ParticleSystem(InxComponent):
                 type(glsl_emitter) is not dict
                 or glsl_emitter.get("stable_id") != emitter.stable_id
                 or type(glsl_emitter.get("state_stride")) is not int
-                or type(glsl_emitter.get("event_output_stages")) is not list
+                or type(glsl_emitter.get("event_type_count")) is not int
+                or glsl_emitter["event_type_count"] != len(kernel.events.event_types)
                 or "continuation" not in glsl_emitter
             ):
                 raise RuntimeError("ParticleGraph GPU layout does not match its runtime schedule")
@@ -1241,6 +1359,16 @@ class ParticleSystem(InxComponent):
             emitter_id = self._gpu_emitter_id(emitter.stable_id)
             previous_controller = previous_controllers.get(emitter.stable_id)
             migration = None
+            previous_layout = previous_layouts.get(emitter.stable_id)
+            if (
+                previous_controller is not None
+                and isinstance(previous_layout, dict)
+                and previous_layout.get("event_type_count")
+                != glsl_emitter["event_type_count"]
+            ):
+                reload_compatibility[index] = (
+                    ParticleRuntimeCompatibility.EMITTER_RESTART
+                )
             if (
                 previous_controller is not None
                 and reload_compatibility[index]
@@ -1248,7 +1376,7 @@ class ParticleSystem(InxComponent):
             ):
                 try:
                     migration = build_gpu_particle_migration(
-                        previous_layouts[emitter.stable_id],
+                        previous_layout,
                         glsl_emitter,
                         kernel.emitters[index],
                     )
@@ -1276,7 +1404,7 @@ class ParticleSystem(InxComponent):
                     "stable_id": emitter.stable_id,
                     "capacity": emitter.settings.capacity,
                     "state_stride": glsl_emitter["state_stride"],
-                    "event_output_stages": list(glsl_emitter["event_output_stages"]),
+                    "event_type_count": glsl_emitter["event_type_count"],
                     "continuation": continuation_program,
                     "parameter_words": list(
                         pack_gpu_particle_parameters(
@@ -1325,6 +1453,7 @@ class ParticleSystem(InxComponent):
                 )
                 controller = GpuParticleEmitterController(
                     emitter.settings,
+                    system_seed=instance_seed,
                     playing=(
                         previous_controller.is_playing
                         if preserve_play_state
@@ -1336,57 +1465,49 @@ class ParticleSystem(InxComponent):
                     ),
                 )
             controllers.append(controller)
+            preserve_states.append(preserve_state)
             emitter_ids.append(emitter_id)
             emitter_indices.append(index)
 
         removed = sorted(set(getattr(self, "_gpu_emitter_ids", ())) - set(emitter_ids))
-        event_domain = None
         event_metadata = artifact.hir.get("events")
         if type(event_metadata) is not dict:
             raise RuntimeError("ParticleGraph event ABI metadata is missing")
-        event_routes = event_metadata.get("routes")
         event_types = event_metadata.get("event_types")
         event_abi_hash = event_metadata.get("event_abi_hash")
         if (
-            type(event_routes) is not list
-            or type(event_types) is not list
+            type(event_types) is not list
             or type(event_abi_hash) is not str
         ):
             raise RuntimeError("ParticleGraph event ABI metadata is invalid")
-        if event_routes:
-            abi_u64 = int(event_abi_hash[:16], 16) or 1
-            event_domain = {
-                "event_abi_hash": abi_u64,
-                "channels": [
-                    {
-                        "stable_event_type_hash": event_types[
-                            route["event_type_index"]
-                        ]["stable_type_hash"],
-                        "source_emitter_index": route["source_emitter_index"],
-                        "target_emitter_index": route["target_emitter_index"],
-                        "event_type_index": route["event_type_index"],
-                        "payload_stride_words": route["payload_stride_words"],
-                        "capacity": route["capacity"],
-                        "spawn_count": route["spawn_count"],
-                    }
-                    for route in event_routes
-                ],
-            }
-        runtime_event_routes = self._build_runtime_event_schema(
+        runtime_event_types = self._build_runtime_event_schema(
             artifact.hir, kernel
         )
         error = native._replace_gpu_particle_graph(
             self._batch_id,
             programs,
             removed,
-            event_domain,
         )
         if error:
             raise RuntimeError(error)
         self._gpu_controllers = controllers
         self._gpu_emitter_ids = emitter_ids
         self._gpu_emitter_indices = emitter_indices
-        self._particle_event_routes = runtime_event_routes
+        self._particle_event_types = runtime_event_types
+        live_stable_ids = {str(emitter.stable_id) for emitter in metadata.emitters}
+        self._prewarm_pending_emitters.intersection_update(live_stable_ids)
+        self._pending_seek_seconds = {
+            stable_id: seconds
+            for stable_id, seconds in self._pending_seek_seconds.items()
+            if stable_id in live_stable_ids
+        }
+        for index, (emitter, controller, preserved) in enumerate(
+            zip(metadata.emitters, controllers, preserve_states)
+        ):
+            if not preserved:
+                self._set_emitter_prewarm_pending(
+                    index, controller.is_playing, metadata=metadata
+                )
 
     @staticmethod
     def _build_runtime_event_schema(hir: dict, kernel) -> tuple[dict, ...]:
@@ -1395,53 +1516,26 @@ class ParticleSystem(InxComponent):
         if type(events) is not dict or type(emitters) is not list:
             raise RuntimeError("ParticleGraph runtime event metadata is incomplete")
         encoded_types = events.get("event_types")
-        encoded_routes = events.get("routes")
-        if type(encoded_types) is not list or type(encoded_routes) is not list:
+        if type(encoded_types) is not list:
             raise RuntimeError("ParticleGraph runtime event metadata is invalid")
-        emitter_names = {
-            item.get("stable_id"): item.get("name", item.get("stable_id", ""))
-            for item in emitters
-            if type(item) is dict
-        }
-        types_by_index = {
-            int(item["type_index"]): item
-            for item in encoded_types
-            if type(item) is dict and type(item.get("type_index")) is int
-        }
-        if len(encoded_routes) != len(kernel.events.routes):
-            raise RuntimeError("ParticleGraph runtime event routes do not match the GPU ABI")
         result = []
-        for channel_index, (route, kernel_route) in enumerate(
-            zip(encoded_routes, kernel.events.routes)
-        ):
-            if type(route) is not dict or route.get("stable_id") != kernel_route.stable_id:
-                raise RuntimeError("ParticleGraph runtime event route order is invalid")
-            event_type = types_by_index.get(int(route["event_type_index"]))
-            if event_type is None:
-                raise RuntimeError("ParticleGraph runtime event type is missing")
+        if len(encoded_types) != len(kernel.events.event_types):
+            raise RuntimeError("ParticleGraph runtime event types do not match the GPU ABI")
+        for event_type, kernel_type in zip(encoded_types, kernel.events.event_types):
+            if (
+                type(event_type) is not dict
+                or event_type.get("stable_id") != kernel_type.stable_id
+            ):
+                raise RuntimeError("ParticleGraph runtime event type order is invalid")
             fields = event_type.get("fields")
             if type(fields) is not list:
                 raise RuntimeError("ParticleGraph runtime event fields are invalid")
             result.append(
                 {
-                    "channel_index": channel_index,
-                    "stable_id": route["stable_id"],
-                    "event_type_id": event_type["stable_id"],
-                    "event_type_name": event_type["name"],
-                    "event_type_index": int(route["event_type_index"]),
-                    "source_emitter_id": route["source_emitter_id"],
-                    "source_emitter_name": emitter_names.get(
-                        route["source_emitter_id"], route["source_emitter_id"]
-                    ),
-                    "source_emitter_index": int(route["source_emitter_index"]),
-                    "source_stage": route["source_stage"],
-                    "target_emitter_id": route["target_emitter_id"],
-                    "target_emitter_name": emitter_names.get(
-                        route["target_emitter_id"], route["target_emitter_id"]
-                    ),
-                    "target_emitter_index": int(route["target_emitter_index"]),
-                    "spawn_count": int(route["spawn_count"]),
-                    "capacity": int(route["capacity"]),
+                    "stable_id": event_type["stable_id"],
+                    "name": event_type["name"],
+                    "event_type_index": int(kernel_type.type_index),
+                    "queue_capacity": int(event_type["queue_capacity"]),
                     "fields": tuple(
                         {
                             "stable_id": field["stable_id"],
@@ -1481,19 +1575,80 @@ class ParticleSystem(InxComponent):
             )
         except ValueError:
             offscreen_policy = ParticleOffscreenPolicy.ALWAYS_SIMULATE
-        for emitter_id, emitter_index, controller in zip(
-            self._gpu_emitter_ids,
-            self._gpu_emitter_indices,
-            self._gpu_controllers,
+        transactional_controllers = []
+        completed_prewarm = set()
+        completed_seek = set()
+        instance_seed = self._instance_random_seed()
+        for controller_slot, (emitter_id, emitter_index, controller) in enumerate(
+            zip(
+                self._gpu_emitter_ids,
+                self._gpu_emitter_indices,
+                self._gpu_controllers,
+            )
         ):
             emitter = metadata.emitters[emitter_index]
-            schedule = controller.tick(delta_time, emitter_position)
+            enabled = self._emitter_is_enabled(emitter_index)
+            stable_id = str(emitter.stable_id)
+            seek_seconds = self._pending_seek_seconds.get(stable_id)
+            if seek_seconds is not None and not enabled:
+                self._pending_seek_seconds.pop(stable_id, None)
+                seek_seconds = None
+            wants_prewarm = stable_id in self._prewarm_pending_emitters
+            if wants_prewarm and (
+                not bool(get_raw_field_value(self, "prewarm"))
+                or not bool(emitter.settings.loop)
+            ):
+                self._prewarm_pending_emitters.discard(stable_id)
+                wants_prewarm = False
+            preroll_steps = []
+            force_render_after_preroll = False
+            if seek_seconds is not None:
+                was_playing = controller.is_playing
+                working_controller = GpuParticleEmitterController(
+                    emitter.settings,
+                    playing=True,
+                    system_seed=instance_seed,
+                )
+                preroll_steps = self._build_gpu_preroll_steps(
+                    working_controller,
+                    seek_seconds,
+                    emitter_position,
+                    operation="seek",
+                )
+                if not was_playing:
+                    working_controller.pause()
+                transactional_controllers.append(
+                    (controller_slot, working_controller)
+                )
+                completed_seek.add(stable_id)
+                force_render_after_preroll = True
+            elif wants_prewarm and enabled and controller.is_playing:
+                working_controller = copy.deepcopy(controller)
+                preroll_steps = self._build_gpu_preroll_steps(
+                    working_controller,
+                    float(emitter.settings.start_delay)
+                    + float(emitter.settings.duration),
+                    emitter_position,
+                    operation="prewarm",
+                )
+                transactional_controllers.append(
+                    (controller_slot, working_controller)
+                )
+                completed_prewarm.add(stable_id)
+            else:
+                working_controller = controller
+            schedule = working_controller.tick(
+                delta_time,
+                emitter_position,
+                enabled=enabled,
+            )
             transforms = self._gpu_transform_buffer(
                 emitter.settings.simulation_space.value == "local"
             )
             frame_items.append(
                 {
                     "emitter_id": emitter_id,
+                    "preroll_steps": preroll_steps,
                     "spawn_count": schedule.spawn_count,
                     "spawn_base_id": schedule.spawn_base_id,
                     "spawn_generation": schedule.spawn_generation,
@@ -1503,17 +1658,65 @@ class ParticleSystem(InxComponent):
                     "delta_time": schedule.delta_time,
                     "transforms": transforms,
                     "simulate": schedule.simulate,
-                    "render": schedule.render
+                    "render": (schedule.render or force_render_after_preroll)
+                    and enabled
                     and self._editor_preview_emitter_visible(emitter_index),
                     "offscreen_policy": offscreen_policy.value,
-                    "force_simulation": False,
+                    # A paused seek still needs one export-only GPU pass.
+                    # Force visibility policy for that pass while keeping
+                    # simulate=False, so state/time do not advance again.
+                    "force_simulation": force_render_after_preroll
+                    and not schedule.simulate,
                     "bounds_mode": bounds_mode,
                     "manual_bounds_lower": manual_bounds_lower,
                     "manual_bounds_upper": manual_bounds_upper,
                 }
             )
         if frame_items:
-            native._begin_gpu_particle_batch(self._batch_id, frame_items)
+            accepted = bool(
+                native._begin_gpu_particle_batch(self._batch_id, frame_items)
+            )
+            if accepted:
+                for controller_slot, controller in transactional_controllers:
+                    self._gpu_controllers[controller_slot] = controller
+                self._prewarm_pending_emitters.difference_update(completed_prewarm)
+                for stable_id in completed_seek:
+                    self._pending_seek_seconds.pop(stable_id, None)
+
+    def _build_gpu_preroll_steps(
+        self,
+        controller,
+        total_seconds: float,
+        emitter_position,
+        *,
+        operation: str,
+    ) -> list[dict]:
+        total_seconds = float(total_seconds)
+        step_seconds = float(self._PREROLL_STEP_SECONDS)
+        step_count = int(math.ceil(total_seconds / step_seconds))
+        if step_count > self._MAX_PREROLL_STEPS:
+            raise RuntimeError(
+                f"particle {operation} requires {step_count} fixed steps; maximum is "
+                f"{self._MAX_PREROLL_STEPS}"
+            )
+        result = []
+        remaining = total_seconds
+        for _ in range(step_count):
+            delta_time = min(step_seconds, remaining)
+            schedule = controller.tick(delta_time, emitter_position, enabled=True)
+            result.append(
+                {
+                    "spawn_count": schedule.spawn_count,
+                    "spawn_base_id": schedule.spawn_base_id,
+                    "spawn_generation": schedule.spawn_generation,
+                    "system_seed": schedule.system_seed,
+                    "simulation_step": schedule.simulation_step,
+                    "simulation_time_ticks": schedule.simulation_time_ticks,
+                    "delta_time": schedule.delta_time,
+                }
+            )
+            remaining = max(0.0, remaining - delta_time)
+        return result
 
     def _gpu_bounds_request(
         self, emitter_to_world: np.ndarray
@@ -1729,7 +1932,33 @@ class ParticleSystem(InxComponent):
         metadata = getattr(self, "_particle_metadata", None)
         return str(metadata.emitters[emitter_index].stable_id)
 
+    def _instance_random_seed(self) -> int:
+        value = get_raw_field_value(self, "random_seed")
+        if type(value) is not int or not 0 <= value <= 0x7FFFFFFF:
+            raise ValueError("particle random_seed must be an integer from 0 to 2147483647")
+        return value
+
+    def _set_emitter_prewarm_pending(
+        self, emitter_index: int, should_play: bool, *, metadata=None
+    ) -> None:
+        metadata = metadata or getattr(self, "_particle_metadata", None)
+        emitters = getattr(metadata, "emitters", ())
+        if not 0 <= emitter_index < len(emitters):
+            return
+        emitter = emitters[emitter_index]
+        stable_id = str(emitter.stable_id)
+        if (
+            bool(get_raw_field_value(self, "prewarm"))
+            and bool(should_play)
+            and bool(emitter.settings.loop)
+        ):
+            self._prewarm_pending_emitters.add(stable_id)
+        else:
+            self._prewarm_pending_emitters.discard(stable_id)
+
     def _editor_preview_emitter_visible(self, emitter_index: int) -> bool:
+        if not self._editor_preview_controls_allowed():
+            return True
         if not getattr(self, "_editor_preview_active", False):
             return True
         if not self._valid_emitter_index(emitter_index):
@@ -1738,6 +1967,17 @@ class ParticleSystem(InxComponent):
         if self._editor_preview_solo_emitters:
             return stable_id in self._editor_preview_solo_emitters
         return stable_id not in self._editor_preview_muted_emitters
+
+    @staticmethod
+    def _editor_preview_controls_allowed() -> bool:
+        """Keep Scene preview controls completely outside Play Mode."""
+        try:
+            from Infernux.engine.play_mode import PlayModeManager
+
+            manager = PlayModeManager.instance()
+            return manager is None or bool(manager.is_edit_mode)
+        except (AttributeError, RuntimeError):
+            return False
 
     def _apply_editor_preview_visibility(
         self, emitter_index: int | None = None
@@ -1772,7 +2012,6 @@ class ParticleSystem(InxComponent):
         options = self._emitter_instance_options(emitter.stable_id)
         return bool(
             self._playing
-            and options["enabled"]
             and (options["play_on_start"] or not honor_play_on_start)
         )
 
@@ -2150,7 +2389,7 @@ class ParticleSystem(InxComponent):
             and native is not None
             and hasattr(native, "_replace_gpu_particle_graph")
         ):
-            native._replace_gpu_particle_graph(self._batch_id, [], emitter_ids, None)
+            native._replace_gpu_particle_graph(self._batch_id, [], emitter_ids)
         self._gpu_emitter_ids = []
         self._gpu_emitter_indices = []
         self._gpu_controllers = []
@@ -2163,7 +2402,7 @@ class ParticleSystem(InxComponent):
         self._particle_kernel = None
         self._particle_gpu_layouts = ()
         self._particle_metadata = None
-        self._particle_event_routes = ()
+        self._particle_event_types = ()
         self._artifact_revision = 0
         self._artifact_source_key = ""
         self._emitter_to_world_cache = None
@@ -2281,19 +2520,9 @@ class ParticleSystem(InxComponent):
         }
 
     def _apply_emitter_instance_options(self, emitter_index: int) -> None:
-        runtime = self._runtime_at(emitter_index)
-        if runtime is None:
-            return
-        options = self._emitter_instance_options(
-            self._emitter_stable_id(emitter_index)
-        )
-        if not options["enabled"]:
-            runtime.reset(playing=False)
-            self._reset_gpu_emitters(emitter_index)
-        elif self._playing and options["play_on_start"]:
-            runtime.play()
-        else:
-            runtime.pause()
+        # Enabled is consumed with playback state when the next frame request
+        # is built. No second user-facing Active state exists.
+        return
 
     def _reconcile_parameter_overrides(self, parameters) -> None:
         by_id = {
@@ -2353,6 +2582,26 @@ class ParticleSystem(InxComponent):
     @staticmethod
     def _normalize_parameter_value(parameter, value):
         kind = parameter.value_type.value_type
+        if kind is ValueType.CURVE:
+            try:
+                curve = value if isinstance(value, Curve) else Curve.from_dict(value)
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    f"particle parameter {parameter.name!r} requires a Curve"
+                ) from exc
+            return curve.to_dict()
+        if kind is ValueType.GRADIENT:
+            try:
+                gradient = (
+                    value
+                    if isinstance(value, Gradient)
+                    else Gradient.from_dict(value)
+                )
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    f"particle parameter {parameter.name!r} requires a Gradient"
+                ) from exc
+            return gradient.to_dict()
         if kind is ValueType.TEXTURE2D:
             if isinstance(value, AssetReference):
                 reference = value

@@ -15,6 +15,8 @@ from Infernux.particle import (
     KernelOperand,
     KernelStage,
     ParticleEmitterAsset,
+    ParticleEventFlow,
+    ParticleEventType,
     ParticleGraphAsset,
     ParticleGraphCompiler,
     ParticleKernelFunction,
@@ -24,6 +26,7 @@ from Infernux.particle import (
     SdfVolume,
     VectorField,
     classify_emitter_update,
+    default_event_graph,
     particle_random_f32,
     particle_random_u32,
 )
@@ -648,6 +651,61 @@ def test_enabling_collision_is_a_layout_migratable_kernel_change():
     previous_emitter = ParticleEmitterAsset(
         stable_id="collision-toggle",
         settings=EmitterSettings(collision_enabled=False),
+    )
+
+
+def test_event_queue_abi_change_restarts_the_owning_emitter():
+    event_flow = ParticleEventFlow("impact", default_event_graph("impact"))
+    previous_emitter = ParticleEmitterAsset(
+        stable_id="event-abi",
+        event_flows=(event_flow,),
+    )
+    next_emitter = replace(previous_emitter)
+    previous = _lower(
+        ParticleGraphAsset(
+            emitters=(previous_emitter,),
+            event_types=(ParticleEventType("impact", "Impact", 4),),
+        )
+    ).emitters[0]
+    current = _lower(
+        ParticleGraphAsset(
+            emitters=(next_emitter,),
+            event_types=(ParticleEventType("impact", "Impact", 8),),
+        )
+    ).emitters[0]
+
+    assert (
+        classify_emitter_update(
+            previous,
+            current,
+            previous_emitter.settings,
+            next_emitter.settings,
+        )
+        is ParticleRuntimeCompatibility.EMITTER_RESTART
+    )
+
+
+def test_emitter_seed_change_rebuilds_kernel_without_discarding_state():
+    previous_emitter = ParticleEmitterAsset(
+        stable_id="seeded-emitter",
+        settings=EmitterSettings(seed=11),
+    )
+    next_emitter = replace(
+        previous_emitter,
+        settings=replace(previous_emitter.settings, seed=17),
+    )
+    previous = _lower(ParticleGraphAsset(emitters=(previous_emitter,))).emitters[0]
+    current = _lower(ParticleGraphAsset(emitters=(next_emitter,))).emitters[0]
+
+    assert previous.random_seed != current.random_seed
+    assert (
+        classify_emitter_update(
+            previous,
+            current,
+            previous_emitter.settings,
+            next_emitter.settings,
+        )
+        is ParticleRuntimeCompatibility.KERNEL_COMPATIBLE
     )
     next_emitter = replace(
         previous_emitter,

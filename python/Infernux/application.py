@@ -7,7 +7,7 @@ import threading
 import weakref
 from typing import Any
 
-from Infernux.engine.path_utils import resolved_path
+from Infernux.engine.path_utils import is_path_within, resolved_path
 
 _lock = threading.RLock()
 _engine_ref: weakref.ReferenceType | None = None
@@ -69,6 +69,40 @@ class Application:
         engine = Application._current_engine()
         native = engine.get_native_engine() if engine is not None else None
         return _renderer_state_from_native(native)
+
+    @staticmethod
+    def request_render_target_capture(source: str, output_path: str) -> int:
+        """Queue an engine-native Scene/Game capture under persistent data."""
+        normalized_source = str(source).strip().lower()
+        if normalized_source not in {"scene", "game"}:
+            raise ValueError("Render target capture source must be 'scene' or 'game'")
+        root = Application.persistent_data_path()
+        if not root:
+            raise RuntimeError("Render target capture requires an active project")
+        target = resolved_path(output_path)
+        if not is_path_within(target, root, allow_root=False):
+            raise ValueError("Render target capture output must stay under persistent_data_path")
+        engine = Application._current_engine()
+        if engine is None:
+            raise RuntimeError("Render target capture requires a running graphical application")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        return int(engine.request_capture(normalized_source, target))
+
+    @staticmethod
+    def query_render_target_capture(capture_id: int) -> dict[str, Any]:
+        """Poll a capture requested with request_render_target_capture()."""
+        engine = Application._current_engine()
+        if engine is None:
+            raise RuntimeError("Render target capture requires a running graphical application")
+        return dict(engine.query_capture(int(capture_id)))
+
+    @staticmethod
+    def cancel_render_target_capture(capture_id: int) -> bool:
+        """Cancel an unfinished render-target capture."""
+        engine = Application._current_engine()
+        if engine is None:
+            return False
+        return bool(engine.cancel_capture(int(capture_id)))
 
     @staticmethod
     def quit(exit_code: int = 0) -> bool:

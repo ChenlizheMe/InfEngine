@@ -292,16 +292,17 @@ class ScriptableRenderContext
  * @brief Abstract base for render pipelines.
  *
  * Python classes override Render() via pybind11 trampoline.
- * The engine calls Render() once per frame with a ScriptableRenderContext
- * and the list of active cameras.
+ * The engine calls Render() once for one camera with a dedicated
+ * ScriptableRenderContext. Multi-camera rendering is owned by the renderer:
+ * every camera receives a separate context and RenderView state.
  */
 class RenderPipelineCallback
 {
   public:
     virtual ~RenderPipelineCallback() = default;
 
-    /// @brief Called once per frame to define the rendering pass sequence.
-    virtual void Render(ScriptableRenderContext &context, const std::vector<Camera *> &cameras) = 0;
+    /// @brief Render one camera through its dedicated context and RenderView.
+    virtual void Render(ScriptableRenderContext &context, Camera *camera) = 0;
 
     /// @brief Called when the pipeline is being replaced or engine is shutting down.
     virtual void Dispose()

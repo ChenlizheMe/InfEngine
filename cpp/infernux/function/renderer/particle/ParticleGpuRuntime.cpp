@@ -19,15 +19,6 @@ constexpr size_t StageIndex(GpuKernelStage stage) noexcept
     return static_cast<size_t>(stage);
 }
 
-constexpr uint32_t EventOutputStageBit(GpuKernelStage stage) noexcept
-{
-    return 1u << static_cast<uint32_t>(stage);
-}
-
-constexpr uint32_t ValidEventOutputStageMask = EventOutputStageBit(GpuKernelStage::Init) |
-                                               EventOutputStageBit(GpuKernelStage::Update) |
-                                               EventOutputStageBit(GpuKernelStage::Rendering);
-
 bool CheckedBufferSize(uint32_t capacity, uint32_t stride, uint64_t &result) noexcept
 {
     result = static_cast<uint64_t>(capacity) * stride;
@@ -100,8 +91,6 @@ struct ParticleGpuRuntime::ResidentState
             return;
         device->Release(transforms);
         device->Release(simulationControl);
-        device->Release(eventInputLayout);
-        device->Release(eventOutputLayout);
         device->Release(renderIndices);
         device->Release(indirect);
         device->Release(instances);
@@ -119,8 +108,6 @@ struct ParticleGpuRuntime::ResidentState
     rhi::BufferHandle renderIndices;
     rhi::BufferHandle transforms;
     rhi::BufferHandle simulationControl;
-    rhi::BindingLayoutHandle eventInputLayout;
-    rhi::BindingLayoutHandle eventOutputLayout;
     bool bootstrapRecorded = false;
 };
 
@@ -180,7 +167,7 @@ bool ParticleGpuRuntime::CreateCompatible(rhi::Device &device, const GpuEmitterD
                                           const ParticleGpuRuntime &previous)
 {
     if (!previous.IsValid() || previous.m_device != &device || previous.Capacity() != desc.capacity ||
-        previous.StateStride() != desc.stateStride)
+        previous.StateStride() != desc.stateStride || previous.EventTypeCount() != desc.eventTypeCount)
         return false;
     if ((desc.continuation.capacity == 0) != !previous.HasContinuations())
         return false;
@@ -191,6 +178,7 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
 {
     if (!IsValid() || !replacement.IsValid() || m_device != replacement.m_device ||
         m_capacity != replacement.m_capacity || m_stateStride != replacement.m_stateStride ||
+        m_eventTypeCount != replacement.m_eventTypeCount ||
         m_residentState != replacement.m_residentState)
         return false;
     std::swap(m_layout, replacement.m_layout);
@@ -201,10 +189,7 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
     std::swap(m_vectorFields, replacement.m_vectorFields);
     std::swap(m_emptyDataInterfaceLayout, replacement.m_emptyDataInterfaceLayout);
     std::swap(m_emptyDataInterfaceGroup, replacement.m_emptyDataInterfaceGroup);
-    std::swap(m_eventInputLayout, replacement.m_eventInputLayout);
-    std::swap(m_eventOutputLayout, replacement.m_eventOutputLayout);
-    std::swap(m_eventOutputStageMask, replacement.m_eventOutputStageMask);
-    std::swap(m_eventInitPipeline, replacement.m_eventInitPipeline);
+    std::swap(m_graphSpawnLayout, replacement.m_graphSpawnLayout);
     std::swap(m_pipelines, replacement.m_pipelines);
     std::swap(m_continuation, replacement.m_continuation);
     return true;
@@ -218,20 +203,16 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     uint64_t stateBytes = 0;
     uint64_t instanceBytes = 0;
     if (!CheckedBufferSize(desc.capacity, desc.stateStride, stateBytes) ||
-        !CheckedBufferSize(desc.capacity, RenderInstanceStride, instanceBytes) ||
-        (desc.eventOutputStageMask & ~ValidEventOutputStageMask) != 0u)
+        !CheckedBufferSize(desc.capacity, RenderInstanceStride, instanceBytes))
         return false;
     for (const auto &kernel : desc.kernels) {
         if (!kernel.words || kernel.wordCount == 0)
             return false;
     }
-    if (!desc.eventInitKernel.words || desc.eventInitKernel.wordCount == 0)
-        return false;
-
     m_device = &device;
     m_capacity = desc.capacity;
     m_stateStride = desc.stateStride;
-    m_eventOutputStageMask = desc.eventOutputStageMask;
+    m_eventTypeCount = desc.eventTypeCount;
     if (residentState) {
         if (residentState->device != &device) {
             Destroy();
@@ -245,7 +226,8 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         m_residentState->states = device.CreateBuffer({stateBytes, storage});
         m_residentState->freeList =
             device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
-        m_residentState->counters = device.CreateBuffer({16, storage | rhi::BufferUsageFlags::TransferSource});
+        m_residentState->counters =
+            device.CreateBuffer({CounterBufferByteSize(), storage | rhi::BufferUsageFlags::TransferSource});
         const auto createRenderExport = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
             rhi::BufferDesc bufferDesc;
             bufferDesc.byteSize = bytes;
@@ -271,23 +253,9 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         // allocation and respects the RHI rule that DeviceLocal buffers cannot
         // be created with direct initialData.
         m_residentState->simulationControl = device.CreateBuffer(simulationControlDesc);
-        rhi::BindingLayoutDesc eventLayoutDesc;
-        for (uint32_t binding = 0; binding < 4; ++binding) {
-            eventLayoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-        }
-        eventLayoutDesc.entryCount = 4;
-        m_residentState->eventInputLayout = device.CreateBindingLayout(eventLayoutDesc);
-        rhi::BindingLayoutDesc eventOutputLayoutDesc;
-        for (uint32_t binding = 0; binding < 3; ++binding) {
-            eventOutputLayoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer,
-                                                      rhi::ShaderStage::Compute, 1};
-        }
-        eventOutputLayoutDesc.entryCount = 3;
-        m_residentState->eventOutputLayout = device.CreateBindingLayout(eventOutputLayoutDesc);
         if (!StateBuffer().IsValid() || !FreeListBuffer().IsValid() || !CounterBuffer().IsValid() ||
             !InstanceBuffer().IsValid() || !IndirectBuffer().IsValid() || !RenderIndexBuffer().IsValid() ||
-            !TransformBuffer().IsValid() || !SimulationControlBuffer().IsValid() ||
-            !m_residentState->eventInputLayout.IsValid() || !m_residentState->eventOutputLayout.IsValid()) {
+            !TransformBuffer().IsValid() || !SimulationControlBuffer().IsValid()) {
             Destroy();
             return false;
         }
@@ -383,8 +351,15 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         return false;
     }
 
-    m_eventInputLayout = m_residentState->eventInputLayout;
-    m_eventOutputLayout = m_residentState->eventOutputLayout;
+    rhi::BindingLayoutDesc graphSpawnLayoutDesc;
+    graphSpawnLayoutDesc.entries[0] = {0, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    graphSpawnLayoutDesc.entries[1] = {1, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    graphSpawnLayoutDesc.entryCount = 2;
+    m_graphSpawnLayout = device.CreateBindingLayout(graphSpawnLayoutDesc);
+    if (!m_graphSpawnLayout.IsValid()) {
+        Destroy();
+        return false;
+    }
 
     if (desc.meshShape) {
         constexpr uint32_t metadataBinding = 0;
@@ -552,10 +527,9 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         continuationDesc.dataInterfaceGroup = m_dataInterfaces ? m_dataInterfaces->group : m_emptyDataInterfaceGroup;
         continuationDesc.vectorFieldLayout = m_vectorFields ? m_vectorFields->layout : m_emptyDataInterfaceLayout;
         continuationDesc.vectorFieldGroup = m_vectorFields ? m_vectorFields->group : m_emptyDataInterfaceGroup;
+        continuationDesc.graphSpawnLayout = m_graphSpawnLayout;
         continuationDesc.emptyLayout = m_emptyDataInterfaceLayout;
         continuationDesc.emptyGroup = m_emptyDataInterfaceGroup;
-        continuationDesc.eventOutputLayout = m_eventOutputLayout;
-        continuationDesc.emitsEvents = m_eventOutputStageMask != 0;
         m_continuation = std::make_unique<ParticleGpuContinuationRuntime>();
         const bool continuationCreated =
             previousContinuation ? m_continuation->CreateCompatible(device, continuationDesc, *previousContinuation)
@@ -580,11 +554,8 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         pipelineDesc.bindingLayouts[0] = m_layout;
         pipelineDesc.bindingLayouts[1] = m_dataInterfaces ? m_dataInterfaces->layout : m_emptyDataInterfaceLayout;
         pipelineDesc.bindingLayouts[2] = m_vectorFields ? m_vectorFields->layout : m_emptyDataInterfaceLayout;
-        pipelineDesc.bindingLayouts[3] = m_emptyDataInterfaceLayout;
-        pipelineDesc.bindingLayouts[4] =
-            (m_eventOutputStageMask & EventOutputStageBit(static_cast<GpuKernelStage>(index))) != 0u
-                ? m_eventOutputLayout
-                : m_emptyDataInterfaceLayout;
+        pipelineDesc.bindingLayouts[3] = m_graphSpawnLayout;
+        pipelineDesc.bindingLayouts[4] = m_emptyDataInterfaceLayout;
         pipelineDesc.bindingLayoutCount = 5;
         if (m_continuation) {
             pipelineDesc.bindingLayouts[5] = m_continuation->Layout();
@@ -599,32 +570,6 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         }
     }
 
-    const auto eventInitShader =
-        device.CreateShaderModule({desc.eventInitKernel.words, desc.eventInitKernel.wordCount});
-    if (!eventInitShader.IsValid()) {
-        Destroy();
-        return false;
-    }
-    rhi::ComputePipelineDesc eventPipelineDesc;
-    eventPipelineDesc.computeShader = eventInitShader;
-    eventPipelineDesc.bindingLayouts[0] = m_layout;
-    eventPipelineDesc.bindingLayouts[1] = m_dataInterfaces ? m_dataInterfaces->layout : m_emptyDataInterfaceLayout;
-    eventPipelineDesc.bindingLayouts[2] = m_vectorFields ? m_vectorFields->layout : m_emptyDataInterfaceLayout;
-    eventPipelineDesc.bindingLayouts[3] = m_eventInputLayout;
-    eventPipelineDesc.bindingLayouts[4] =
-        HasEventOutput(GpuKernelStage::Init) ? m_eventOutputLayout : m_emptyDataInterfaceLayout;
-    eventPipelineDesc.bindingLayoutCount = 5;
-    if (m_continuation) {
-        eventPipelineDesc.bindingLayouts[5] = m_continuation->Layout();
-        eventPipelineDesc.bindingLayoutCount = 6;
-    }
-    eventPipelineDesc.pushConstantBytes = sizeof(GpuParticlePushConstants);
-    m_eventInitPipeline = device.CreateComputePipeline(eventPipelineDesc);
-    device.Release(eventInitShader);
-    if (!m_eventInitPipeline.IsValid()) {
-        Destroy();
-        return false;
-    }
     return true;
 }
 
@@ -632,7 +577,6 @@ void ParticleGpuRuntime::Destroy() noexcept
 {
     m_continuation.reset();
     if (m_device) {
-        m_device->Release(m_eventInitPipeline);
         for (auto pipeline : m_pipelines)
             m_device->Release(pipeline);
         m_device->Release(m_group);
@@ -640,6 +584,7 @@ void ParticleGpuRuntime::Destroy() noexcept
         m_device->Release(m_parameterBuffer);
         m_device->Release(m_emptyDataInterfaceGroup);
         m_device->Release(m_emptyDataInterfaceLayout);
+        m_device->Release(m_graphSpawnLayout);
     }
     m_dataInterfaces.reset();
     m_vectorFields.reset();
@@ -647,24 +592,22 @@ void ParticleGpuRuntime::Destroy() noexcept
     m_device = nullptr;
     m_capacity = 0;
     m_stateStride = 0;
-    m_eventOutputStageMask = 0;
+    m_eventTypeCount = 0;
     m_layout = {};
     m_group = {};
     m_parameterBuffer = {};
     m_parameterWordCount = 0;
     m_emptyDataInterfaceLayout = {};
     m_emptyDataInterfaceGroup = {};
-    m_eventInputLayout = {};
-    m_eventOutputLayout = {};
-    m_eventInitPipeline = {};
+    m_graphSpawnLayout = {};
     m_pipelines.fill({});
 }
 
 bool ParticleGpuRuntime::IsValid() const noexcept
 {
     if (!m_device || !m_residentState || m_capacity == 0 || !m_group.IsValid() || !m_parameterBuffer.IsValid() ||
-        m_parameterWordCount == 0 || !m_eventInputLayout.IsValid() || !m_eventOutputLayout.IsValid() ||
-        !m_eventInitPipeline.IsValid() || !m_emptyDataInterfaceLayout.IsValid() || !m_emptyDataInterfaceGroup.IsValid())
+        m_parameterWordCount == 0 || !m_emptyDataInterfaceLayout.IsValid() || !m_emptyDataInterfaceGroup.IsValid() ||
+        !m_graphSpawnLayout.IsValid())
         return false;
     if (m_dataInterfaces && (!m_dataInterfaces->layout.IsValid() || !m_dataInterfaces->group.IsValid() ||
                              !m_dataInterfaces->metadataBuffer.IsValid()))
@@ -682,11 +625,6 @@ bool ParticleGpuRuntime::IsValid() const noexcept
             return false;
     }
     return true;
-}
-
-bool ParticleGpuRuntime::HasEventOutput(GpuKernelStage stage) const noexcept
-{
-    return (m_eventOutputStageMask & EventOutputStageBit(stage)) != 0u;
 }
 
 bool ParticleGpuRuntime::HasContinuations() const noexcept
@@ -729,11 +667,11 @@ bool ParticleGpuRuntime::RecordContinuationClassify(const rhi::ComputeCommandEnc
 }
 
 bool ParticleGpuRuntime::RecordContinuationDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                                                    uint64_t elapsedTimeTicks, uint32_t systemSeed, float deltaTime,
-                                                    rhi::BindGroupHandle eventOutput) const
+                                                    uint64_t elapsedTimeTicks, uint32_t systemSeed,
+                                                    float deltaTime, rhi::BindGroupHandle graphSpawnGroup) const
 {
     return m_continuation && m_continuation->RecordDispatch(encoder, simulationStep, elapsedTimeTicks, systemSeed,
-                                                            deltaTime, eventOutput);
+                                                            deltaTime, graphSpawnGroup);
 }
 
 bool ParticleGpuRuntime::SharesStateWith(const ParticleGpuRuntime &other) const noexcept
@@ -850,65 +788,43 @@ rhi::BufferHandle ParticleGpuRuntime::SimulationControlBuffer() const noexcept
     return m_residentState ? m_residentState->simulationControl : rhi::BufferHandle{};
 }
 
-void ParticleGpuRuntime::RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed)
+void ParticleGpuRuntime::RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+                                         rhi::BindGroupHandle graphSpawnGroup)
 {
     if (!IsValid() || !encoder.IsValid())
         return;
     GpuParticlePushConstants constants;
     constants.capacity = m_capacity;
-    constants.invocationCount = m_capacity;
+    constants.invocationCount = (std::max)(m_capacity, m_eventTypeCount);
     constants.systemSeed = systemSeed;
-    Record(encoder, GpuKernelStage::Bootstrap, constants, m_capacity);
+    Record(encoder, GpuKernelStage::Bootstrap, constants, constants.invocationCount, graphSpawnGroup);
     m_residentState->bootstrapRecorded = true;
 }
 
-void ParticleGpuRuntime::RecordInit(const rhi::ComputeCommandEncoder &encoder, uint32_t spawnCount,
-                                    uint32_t spawnBaseId, uint32_t spawnGeneration, uint32_t systemSeed,
-                                    uint32_t simulationStep, float deltaTime, rhi::BindGroupHandle eventOutput) const
+void ParticleGpuRuntime::RecordInitIndirect(const rhi::ComputeCommandEncoder &encoder, uint32_t cpuSpawnCount,
+                                            uint32_t spawnBaseId, uint32_t spawnGeneration, uint32_t systemSeed,
+                                            uint32_t simulationStep, float deltaTime,
+                                            rhi::BindGroupHandle graphSpawnGroup,
+                                            rhi::BufferHandle spawnMetadata, uint64_t indirectOffset) const
 {
     GpuParticlePushConstants constants;
     constants.capacity = m_capacity;
-    constants.invocationCount = spawnCount;
+    // Until the generated Init kernel consumes set=3,binding=1 directly, this
+    // remains the CPU count as a conservative compatibility guard. The GPU
+    // indirect command is authoritative for dispatch size.
+    constants.invocationCount = cpuSpawnCount;
     constants.spawnBaseId = spawnBaseId;
     constants.spawnGeneration = spawnGeneration;
     constants.systemSeed = systemSeed;
     constants.simulationStep = simulationStep;
     constants.deltaTime = deltaTime;
     constants.reserved = 1;
-    Record(encoder, GpuKernelStage::Init, constants, spawnCount, eventOutput);
-}
-
-void ParticleGpuRuntime::RecordEventInit(const rhi::ComputeCommandEncoder &encoder, rhi::BindGroupHandle eventInput,
-                                         rhi::BufferHandle indirectArguments, uint64_t indirectOffset,
-                                         uint32_t channelIndex, uint32_t systemSeed, uint32_t simulationStep,
-                                         float deltaTime, rhi::BindGroupHandle eventOutput) const
-{
-    if (!IsValid() || !encoder.IsValid() || !eventInput.IsValid() || !indirectArguments.IsValid())
-        return;
-    if (HasEventOutput(GpuKernelStage::Init) && !eventOutput.IsValid())
-        return;
-    GpuParticlePushConstants constants;
-    constants.capacity = m_capacity;
-    constants.spawnBaseId = channelIndex;
-    constants.systemSeed = systemSeed;
-    constants.simulationStep = simulationStep;
-    constants.deltaTime = deltaTime;
-    constants.reserved = 1;
-    encoder.BindPipeline(m_eventInitPipeline);
-    encoder.BindGroup(m_eventInitPipeline, 0, m_group);
-    encoder.BindGroup(m_eventInitPipeline, 1, m_dataInterfaces ? m_dataInterfaces->group : m_emptyDataInterfaceGroup);
-    encoder.BindGroup(m_eventInitPipeline, 2, m_vectorFields ? m_vectorFields->group : m_emptyDataInterfaceGroup);
-    encoder.BindGroup(m_eventInitPipeline, 3, eventInput);
-    encoder.BindGroup(m_eventInitPipeline, 4,
-                      HasEventOutput(GpuKernelStage::Init) ? eventOutput : m_emptyDataInterfaceGroup);
-    if (m_continuation)
-        encoder.BindGroup(m_eventInitPipeline, 5, m_continuation->Group());
-    encoder.PushConstants(m_eventInitPipeline, sizeof(constants), &constants);
-    encoder.DispatchIndirect(indirectArguments, indirectOffset);
+    Record(encoder, GpuKernelStage::Init, constants, 1, graphSpawnGroup, spawnMetadata, indirectOffset);
 }
 
 void ParticleGpuRuntime::RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
-                                      uint32_t simulationStep, float deltaTime, rhi::BindGroupHandle eventOutput) const
+                                      uint32_t simulationStep, float deltaTime,
+                                      rhi::BindGroupHandle graphSpawnGroup) const
 {
     GpuParticlePushConstants constants;
     constants.capacity = m_capacity;
@@ -917,49 +833,50 @@ void ParticleGpuRuntime::RecordUpdate(const rhi::ComputeCommandEncoder &encoder,
     constants.simulationStep = simulationStep;
     constants.deltaTime = deltaTime;
     constants.reserved = 1;
-    Record(encoder, GpuKernelStage::Update, constants, m_capacity, eventOutput);
+    Record(encoder, GpuKernelStage::Update, constants, m_capacity, graphSpawnGroup);
 }
 
-void ParticleGpuRuntime::RecordRenderReset(const rhi::ComputeCommandEncoder &encoder) const
+void ParticleGpuRuntime::RecordRenderReset(const rhi::ComputeCommandEncoder &encoder,
+                                           rhi::BindGroupHandle graphSpawnGroup) const
 {
     GpuParticlePushConstants constants;
     constants.capacity = m_capacity;
     constants.invocationCount = 1;
-    Record(encoder, GpuKernelStage::RenderReset, constants, 1);
+    Record(encoder, GpuKernelStage::RenderReset, constants, 1, graphSpawnGroup);
 }
 
 void ParticleGpuRuntime::RecordRendering(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
-                                         uint32_t simulationStep, rhi::BindGroupHandle eventOutput,
-                                         bool emitEvents) const
+                                         uint32_t simulationStep, rhi::BindGroupHandle graphSpawnGroup) const
 {
     GpuParticlePushConstants constants;
     constants.capacity = m_capacity;
     constants.invocationCount = m_capacity;
     constants.systemSeed = systemSeed;
     constants.simulationStep = simulationStep;
-    constants.reserved = emitEvents ? 1u : 0u;
-    Record(encoder, GpuKernelStage::Rendering, constants, m_capacity, eventOutput);
+    Record(encoder, GpuKernelStage::Rendering, constants, m_capacity, graphSpawnGroup);
 }
 
 void ParticleGpuRuntime::Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
                                 const GpuParticlePushConstants &constants, uint32_t invocationCount,
-                                rhi::BindGroupHandle eventOutput) const
+                                rhi::BindGroupHandle graphSpawnGroup, rhi::BufferHandle indirectArguments,
+                                uint64_t indirectOffset) const
 {
-    if (!IsValid() || !encoder.IsValid() || invocationCount == 0)
-        return;
-    if (HasEventOutput(stage) && !eventOutput.IsValid())
+    if (!IsValid() || !encoder.IsValid() || invocationCount == 0 || !graphSpawnGroup.IsValid())
         return;
     const auto pipeline = m_pipelines[StageIndex(stage)];
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, m_group);
     encoder.BindGroup(pipeline, 1, m_dataInterfaces ? m_dataInterfaces->group : m_emptyDataInterfaceGroup);
     encoder.BindGroup(pipeline, 2, m_vectorFields ? m_vectorFields->group : m_emptyDataInterfaceGroup);
-    encoder.BindGroup(pipeline, 3, m_emptyDataInterfaceGroup);
-    encoder.BindGroup(pipeline, 4, HasEventOutput(stage) ? eventOutput : m_emptyDataInterfaceGroup);
+    encoder.BindGroup(pipeline, 3, graphSpawnGroup);
+    encoder.BindGroup(pipeline, 4, m_emptyDataInterfaceGroup);
     if (m_continuation)
         encoder.BindGroup(pipeline, 5, m_continuation->Group());
     encoder.PushConstants(pipeline, sizeof(constants), &constants);
-    encoder.Dispatch(GroupCount(invocationCount), 1, 1);
+    if (indirectArguments.IsValid())
+        encoder.DispatchIndirect(indirectArguments, indirectOffset);
+    else
+        encoder.Dispatch(GroupCount(invocationCount), 1, 1);
 }
 
 uint32_t ParticleGpuRuntime::GroupCount(uint32_t invocationCount) noexcept

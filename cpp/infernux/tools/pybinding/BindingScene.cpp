@@ -1017,9 +1017,15 @@ void RegisterSceneBindings(py::module_ &m)
              py::arg("blend_time_seconds") = 0.0f, py::arg("blend_weight") = 0.0f, py::arg("loop") = true,
              "Submit active and blend animation state in one native call. "
              "Empty take_name renders the bind pose; loop=False holds the end pose.")
-        .def_property("runtime_animation_time", &SkinnedMeshRenderer::GetRuntimeAnimationTime,
-                      &SkinnedMeshRenderer::SetRuntimeAnimationTime,
-                      "Current clip time in seconds (runtime; driven by SkeletalAnimator)")
+        .def_property(
+            "runtime_animation_time", &SkinnedMeshRenderer::GetRuntimeAnimationTime,
+            [](SkinnedMeshRenderer &renderer, float time) {
+                const float previous = renderer.GetRuntimeAnimationTime();
+                renderer.SetRuntimeAnimationTime(time);
+                if (previous != renderer.GetRuntimeAnimationTime())
+                    SceneManager::Instance().MarkActiveSceneTemporalDiscontinuity();
+            },
+            "Explicitly seek the current clip time in seconds")
         .def_property("runtime_animation_normalized_time", &SkinnedMeshRenderer::GetRuntimeAnimationNormalizedTime,
                       &SkinnedMeshRenderer::SetRuntimeAnimationNormalizedTime,
                       "Normalized clip time 0..1 (runtime; driven when duration is known)")
@@ -2104,10 +2110,16 @@ void RegisterSceneBindings(py::module_ &m)
              "Get and clear pending Python components for restoration")
         .def_property_readonly("structure_version", &Scene::GetStructureVersion,
                                "Monotonic counter bumped on structural changes (add/remove/reparent)")
+        .def_property_readonly("temporal_discontinuity_revision", &Scene::GetTemporalDiscontinuityRevision,
+                               "Monotonic counter bumped only by explicit world-time jumps")
         .def_property_readonly("world_id", &Scene::GetWorldId, "Unique identity of this native Scene world")
         // Camera management
         .def_property("main_camera", &Scene::GetMainCamera, &Scene::SetMainCamera, py::return_value_policy::reference,
-                      "Get/set the main Camera component for this scene (used by Game View)");
+                      "Get/set the explicitly preferred Camera component for this scene")
+        .def_property_readonly(
+            "effective_game_camera", [](Scene &scene) { return scene.FindGameCamera(nullptr); },
+            py::return_value_policy::reference,
+            "Get the active Camera currently selected for Game View after fallback resolution");
 
     // ========================================================================
     // SceneManager binding (singleton - use nodelete to prevent pybind11 from deleting)
@@ -2122,6 +2134,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def("get_active_scene", &SceneManager::GetActiveScene, py::return_value_policy::reference,
              "Get the currently active scene")
         .def("set_active_scene", &SceneManager::SetActiveScene, py::arg("scene"), "Set the active scene")
+        .def("mark_temporal_discontinuity", &SceneManager::MarkActiveSceneTemporalDiscontinuity,
+             "Mark an explicit time jump in the active scene for temporal render effects")
         .def("get_scene", &SceneManager::GetScene, py::return_value_policy::reference, py::arg("name"),
              "Get a scene by name")
         .def_property_readonly("scene_count", &SceneManager::GetSceneCount, "Number of currently loaded scenes")

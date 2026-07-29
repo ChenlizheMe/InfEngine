@@ -17,10 +17,10 @@ class PyRenderPipelineCallback : public RenderPipelineCallback
   public:
     using RenderPipelineCallback::RenderPipelineCallback;
 
-    void Render(ScriptableRenderContext &context, const std::vector<Camera *> &cameras) override
+    void Render(ScriptableRenderContext &context, Camera *camera) override
     {
         // Look for Python method "render" (lowercase, matching Python convention)
-        PYBIND11_OVERRIDE_PURE_NAME(void, RenderPipelineCallback, "render", Render, &context, cameras);
+        PYBIND11_OVERRIDE_PURE_NAME(void, RenderPipelineCallback, "render", Render, &context, camera);
     }
 
     void Dispose() override
@@ -91,8 +91,8 @@ void RegisterRenderPipelineBindings(py::module_ &m)
     py::class_<RenderPipelineCallback, PyRenderPipelineCallback, std::shared_ptr<RenderPipelineCallback>>(
         m, "RenderPipelineCallback")
         .def(py::init<>())
-        .def("render", &RenderPipelineCallback::Render, py::arg("context"), py::arg("cameras"),
-             "Called once per frame to define rendering pass sequence")
+        .def("render", &RenderPipelineCallback::Render, py::arg("context"), py::arg("camera"),
+             "Render one camera through its dedicated context and RenderView")
         .def("dispose", &RenderPipelineCallback::Dispose, "Called when the pipeline is being replaced");
 }
 } // namespace infernux

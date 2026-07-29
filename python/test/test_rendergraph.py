@@ -9,6 +9,7 @@ from Infernux.lib import (
     CommandBuffer,
     RenderGraphDescription, GraphPassDesc, GraphTextureDesc,
     GraphBufferUsage, GraphCommandType,
+    GraphTextureRole,
     GraphPassType,
     MaterialPassType, PixelFormat, SampleCount,
 )
@@ -402,6 +403,33 @@ class TestGraphTextures:
         graph = RenderGraph("Samples")
         with pytest.raises(ValueError, match="samples"):
             graph.create_texture("bad", samples=3)
+
+    def test_temporal_history_builds_typed_single_sample_pair(self):
+        graph = RenderGraph("Temporal")
+        history_read, history_write = graph.create_temporal_history("taa")
+        with graph.add_copy_pass("Commit") as commit:
+            commit.copy_texture(history_read, history_write)
+            commit.set_side_effect()
+        graph.set_output(history_read)
+
+        description = graph.build()
+        textures = {texture.name: texture for texture in description.textures}
+
+        assert history_read.name == "taa/read"
+        assert history_write.name == "taa/write"
+        assert textures["taa/read"].role == GraphTextureRole.TEMPORAL_READ
+        assert textures["taa/write"].role == GraphTextureRole.TEMPORAL_WRITE
+        assert textures["taa/read"].temporal_key == "taa"
+        assert textures["taa/write"].temporal_key == "taa"
+        assert textures["taa/read"].samples == 1
+
+    def test_temporal_history_rejects_depth_and_duplicate_identity(self):
+        graph = RenderGraph("Temporal")
+        with pytest.raises(ValueError, match="color format"):
+            graph.create_temporal_history("depth", format=Format.D32_SFLOAT)
+        graph.create_temporal_history("taa")
+        with pytest.raises(ValueError, match="already exists"):
+            graph.create_temporal_history("taa")
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -139,6 +139,35 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
         active_category = category
         kind = str(parameter["type"])
         stable_id = str(parameter["stable_id"])
+        if kind in {"curve", "gradient"}:
+            from .particle_graph_editor_panel import ParticleGraphEditorPanel
+
+            render_compact_section_title(
+                ctx,
+                str(parameter["name"]),
+                level="secondary",
+            )
+            editor = (
+                ParticleGraphEditorPanel._render_curve_property
+                if kind == "curve"
+                else ParticleGraphEditorPanel._render_gradient_property
+            )
+            current = dict(parameter["value"])
+            changed = editor(
+                ctx,
+                f"particle_system_parameter_{stable_id}",
+                "value",
+                current,
+                semantic_prefix=(
+                    f"inspector.particle_system.parameter.{stable_id}"
+                ),
+            )
+            if changed != current:
+                try:
+                    comp.set_parameter(stable_id, changed)
+                except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+                    Debug.log_error(f"Particle parameter edit failed: {exc}")
+            continue
         if kind == "texture2d":
             reference = dict(parameter["value"])
             path_hint = str(reference.get("path_hint") or "")

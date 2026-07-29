@@ -71,6 +71,11 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .value("TRANSFER_READ", GraphBufferAccessType::TransferRead)
         .value("TRANSFER_WRITE", GraphBufferAccessType::TransferWrite);
 
+    py::enum_<GraphTextureRole>(m, "GraphTextureRole", "Lifetime role of a graph texture")
+        .value("TRANSIENT", GraphTextureRole::Transient)
+        .value("TEMPORAL_READ", GraphTextureRole::TemporalRead)
+        .value("TEMPORAL_WRITE", GraphTextureRole::TemporalWrite);
+
     py::class_<GraphCommandDesc>(m, "GraphCommandDesc", "Typed command in the Python-defined graph IR")
         .def(py::init<>())
         .def_readwrite("type", &GraphCommandDesc::type)
@@ -109,7 +114,9 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("height", &GraphTextureDesc::height, "Custom height (0 = use scene target size)")
         .def_readwrite("size_divisor", &GraphTextureDesc::sizeDivisor,
                        "Size divisor relative to scene target (>0: actual = scene / divisor)")
-        .def_readwrite("samples", &GraphTextureDesc::samples, "Sample count (0=inherit frame MSAA, otherwise 1/2/4/8)");
+        .def_readwrite("samples", &GraphTextureDesc::samples, "Sample count (0=inherit frame MSAA, otherwise 1/2/4/8)")
+        .def_readwrite("role", &GraphTextureDesc::role, "Transient, temporal read, or temporal write")
+        .def_readwrite("temporal_key", &GraphTextureDesc::temporalKey, "Stable identity shared by a temporal pair");
 
     py::class_<GraphBufferDesc>(m, "GraphBufferDesc", "Description of a buffer resource in the graph")
         .def(py::init<>())

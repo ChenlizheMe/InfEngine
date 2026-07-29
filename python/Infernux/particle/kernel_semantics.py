@@ -77,8 +77,8 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "event_payload": KernelOpcodeSpec(
         True,
         0,
-        frozenset({"channel_index", "word_offset", "word_count", "default"}),
-        _INIT_ONLY,
+        frozenset({"event_type_index", "field_stable_id", "word_offset", "word_count", "default"}),
+        _UPDATE_ONLY,
     ),
     "numeric_resize": KernelOpcodeSpec(True, 1),
     "compose_vec2": KernelOpcodeSpec(True, 2),
@@ -94,7 +94,9 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "normalize": KernelOpcodeSpec(True, 1),
     "random_f32": KernelOpcodeSpec(True, 3, frozenset({"random_slot"})),
     "sample_curve": KernelOpcodeSpec(True, 1, frozenset({"curve"})),
+    "sample_curve_parameter": KernelOpcodeSpec(True, 2),
     "sample_gradient": KernelOpcodeSpec(True, 1, frozenset({"gradient"})),
+    "sample_gradient_parameter": KernelOpcodeSpec(True, 2),
     "sample_texture2d": KernelOpcodeSpec(True, 2),
     "value_noise_3d": KernelOpcodeSpec(True, 3),
     "vector_noise_3d": KernelOpcodeSpec(True, 3),
@@ -123,6 +125,7 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         frozenset(
             {
                 "lifecycle_stage",
+                "flow_id",
                 "lane_index",
                 "lane_stable_id",
                 "resume_program_counter",
@@ -136,6 +139,7 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         frozenset(
             {
                 "lifecycle_stage",
+                "flow_id",
                 "lane_index",
                 "lane_stable_id",
                 "resume_program_counter",
@@ -149,6 +153,7 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         frozenset(
             {
                 "lifecycle_stage",
+                "flow_id",
                 "lane_index",
                 "lane_stable_id",
                 "resume_program_counter",
@@ -162,6 +167,7 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         frozenset(
             {
                 "lifecycle_stage",
+                "flow_id",
                 "lane_index",
                 "lane_stable_id",
                 "resume_program_counter",
@@ -170,11 +176,26 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         _SUSPEND_STAGES,
     ),
     "kill_if": KernelOpcodeSpec(False, 1, stages=_UPDATE_ONLY),
-    "event_append": KernelOpcodeSpec(
+    "event_begin": KernelOpcodeSpec(
+        True, 0, frozenset({"event_type_index", "queue_capacity"}), _UPDATE_ONLY
+    ),
+    "event_enqueue": KernelOpcodeSpec(
         False,
         -1,
-        frozenset({"channel_index", "payload_layout"}),
+        frozenset({"event_type_index", "queue_capacity", "payload_layout"}),
         _ALL_STAGES,
+    ),
+    "burst_enqueue": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset({"target_emitter_index", "target_capacity"}),
+        _ALL_STAGES,
+    ),
+    "event_complete": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset({"event_type_index", "queue_capacity", "flow_id"}),
+        _UPDATE_ONLY,
     ),
     "collide_plane_position": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
     "collide_plane_velocity": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
@@ -201,6 +222,13 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
                 "velocity_attribute",
                 "hit_attribute",
                 "normal_attribute",
+                "point_attribute",
+                "relative_velocity_attribute",
+                "penetration_attribute",
+                "trigger_attribute",
+                "material_attribute",
+                "collider_id_low_attribute",
+                "collider_id_high_attribute",
             }
         ),
         _UPDATE_ONLY,
@@ -355,8 +383,8 @@ def validate_instruction_semantics(
         raise KernelSemanticError(
             f"kernel opcode {opcode!r} requires {spec.operand_count} operands"
         )
-    if opcode == "event_append" and not operand_types:
-        raise KernelSemanticError("kernel event_append requires a condition operand")
+    if opcode == "event_enqueue" and not operand_types:
+        raise KernelSemanticError("kernel event_enqueue requires a condition operand")
     if set(immediates) != set(spec.immediate_names):
         raise KernelSemanticError(
             f"kernel opcode {opcode!r} immediates must be {sorted(spec.immediate_names)}"
@@ -390,7 +418,9 @@ def _validate_opcode_types(
         if expected is None or result_type != expected:
             raise KernelSemanticError("kernel uniform name or result type is invalid")
     elif opcode == "event_payload":
-        _validate_u32(immediates["channel_index"], "event channel index")
+        _validate_u32(immediates["event_type_index"], "event type index")
+        if type(immediates["field_stable_id"]) is not str or not immediates["field_stable_id"]:
+            raise KernelSemanticError("kernel event payload field identity is invalid")
         _validate_u32(immediates["word_offset"], "event payload word offset")
         _validate_u32(immediates["word_count"], "event payload word count")
         expected_words = {
@@ -496,6 +526,14 @@ def _validate_opcode_types(
             Curve.from_dict(immediates["curve"])
         except (TypeError, ValueError) as exc:
             raise KernelSemanticError(f"invalid curve literal: {exc}") from exc
+    elif opcode == "sample_curve_parameter":
+        if result_type != f32 or operands != (
+            TypeRef(ValueType.CURVE),
+            f32,
+        ):
+            raise KernelSemanticError(
+                "dynamic curve sampling requires a curve, one f32 input and an f32 result"
+            )
     elif opcode == "sample_gradient":
         if result_type != TypeRef(ValueType.COLOR) or operands != (f32,):
             raise KernelSemanticError(
@@ -505,6 +543,14 @@ def _validate_opcode_types(
             Gradient.from_dict(immediates["gradient"])
         except (TypeError, ValueError) as exc:
             raise KernelSemanticError(f"invalid gradient literal: {exc}") from exc
+    elif opcode == "sample_gradient_parameter":
+        if result_type != TypeRef(ValueType.COLOR) or operands != (
+            TypeRef(ValueType.GRADIENT),
+            f32,
+        ):
+            raise KernelSemanticError(
+                "dynamic gradient sampling requires a gradient, one f32 input and a color result"
+            )
     elif opcode == "sample_texture2d":
         if result_type != TypeRef(ValueType.COLOR) or operands != (
             TypeRef(ValueType.TEXTURE2D),
@@ -612,8 +658,14 @@ def _validate_opcode_types(
                 "collision_enter",
                 "collision_stay",
                 "collision_exit",
+                "event",
                 "rendering",
             }
+            or type(immediates["flow_id"]) is not str
+            or (
+                immediates["lifecycle_stage"] == "event"
+                and not immediates["flow_id"]
+            )
             or type(immediates["lane_index"]) is not int
             or immediates["lane_index"] < 0
             or type(immediates["lane_stable_id"]) is not str
@@ -625,14 +677,24 @@ def _validate_opcode_types(
     elif opcode == "kill_if":
         if operands != (bool_type,):
             raise KernelSemanticError("kernel kill_if requires one bool operand")
-    elif opcode == "event_append":
+    elif opcode == "event_begin":
+        if result_type != bool_type or operands:
+            raise KernelSemanticError("kernel event_begin requires a bool result")
+        _validate_u32(immediates["event_type_index"], "event type index")
+        capacity = immediates["queue_capacity"]
+        if type(capacity) is not int or not 1 <= capacity <= 64:
+            raise KernelSemanticError("kernel event queue capacity is invalid")
+    elif opcode == "event_enqueue":
         if operands[0] != bool_type:
-            raise KernelSemanticError("kernel event_append condition must be bool")
-        _validate_u32(immediates["channel_index"], "event channel index")
+            raise KernelSemanticError("kernel event_enqueue condition must be bool")
+        _validate_u32(immediates["event_type_index"], "event type index")
+        capacity = immediates["queue_capacity"]
+        if type(capacity) is not int or not 1 <= capacity <= 64:
+            raise KernelSemanticError("kernel event queue capacity is invalid")
         layout = immediates["payload_layout"]
         if type(layout) is not list or len(layout) != len(operands) - 1:
             raise KernelSemanticError(
-                "kernel event_append payload layout must match its operands"
+                "kernel event_enqueue payload layout must match its operands"
             )
         next_word = 0
         for index, (field, operand) in enumerate(zip(layout, operands[1:])):
@@ -642,18 +704,18 @@ def _validate_opcode_types(
                 "word_offset",
                 "word_count",
             }:
-                raise KernelSemanticError("kernel event_append field layout is invalid")
+                raise KernelSemanticError("kernel event_enqueue field layout is invalid")
             if type(field["stable_id"]) is not str or not field["stable_id"]:
-                raise KernelSemanticError("kernel event_append field identity is invalid")
+                raise KernelSemanticError("kernel event_enqueue field identity is invalid")
             try:
                 field_type = TypeRef.from_dict(field["type"])
             except (TypeError, ValueError) as exc:
                 raise KernelSemanticError(
-                    "kernel event_append field type is invalid"
+                    "kernel event_enqueue field type is invalid"
                 ) from exc
             if field_type != operand:
                 raise KernelSemanticError(
-                    f"kernel event_append field {index} type does not match its operand"
+                    f"kernel event_enqueue field {index} type does not match its operand"
                 )
             expected_words = {
                 ValueType.BOOL: 1,
@@ -674,9 +736,25 @@ def _validate_opcode_types(
                 or field["word_count"] != expected_words
             ):
                 raise KernelSemanticError(
-                    "kernel event_append field word layout is invalid"
+                    "kernel event_enqueue field word layout is invalid"
                 )
             next_word += expected_words
+    elif opcode == "event_complete":
+        if operands != (bool_type,):
+            raise KernelSemanticError("kernel event_complete requires one bool operand")
+        _validate_u32(immediates["event_type_index"], "event type index")
+        capacity = immediates["queue_capacity"]
+        if type(capacity) is not int or not 1 <= capacity <= 64:
+            raise KernelSemanticError("kernel event queue capacity is invalid")
+        if type(immediates["flow_id"]) is not str or not immediates["flow_id"]:
+            raise KernelSemanticError("kernel event flow identity is invalid")
+    elif opcode == "burst_enqueue":
+        if operands != (TypeRef(ValueType.U32),):
+            raise KernelSemanticError("kernel burst_enqueue requires one u32 count operand")
+        _validate_u32(immediates["target_emitter_index"], "target emitter index")
+        capacity = immediates["target_capacity"]
+        if type(capacity) is not int or capacity <= 0:
+            raise KernelSemanticError("kernel burst_enqueue target capacity is invalid")
     elif opcode in {"collide_plane_position", "collide_plane_velocity"}:
         simulation_vec3 = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
         if result_type != simulation_vec3 or operands != (
@@ -744,6 +822,13 @@ def _validate_opcode_types(
             "velocity_attribute",
             "hit_attribute",
             "normal_attribute",
+            "point_attribute",
+            "relative_velocity_attribute",
+            "penetration_attribute",
+            "trigger_attribute",
+            "material_attribute",
+            "collider_id_low_attribute",
+            "collider_id_high_attribute",
         ):
             if type(immediates[name]) is not str:
                 raise KernelSemanticError(

@@ -25,12 +25,21 @@ class GpuParticleFrameSchedule:
 class GpuParticleEmitterController:
     """Schedules emitter-level work without storing or reading back particles."""
 
-    def __init__(self, settings: EmitterSettings, *, playing: bool = True) -> None:
+    def __init__(
+        self,
+        settings: EmitterSettings,
+        *,
+        playing: bool = True,
+        system_seed: int = 0,
+    ) -> None:
         if not isinstance(settings, EmitterSettings):
             raise TypeError("GPU particle controller requires EmitterSettings")
+        if type(system_seed) is not int or not 0 <= system_seed <= 0xFFFFFFFF:
+            raise ValueError("GPU particle system seed must be an unsigned 32-bit integer")
         self.settings = settings
+        self.system_seed = system_seed
         self._playing = bool(playing)
-        self._spawn_schedule = ParticleSpawnScheduleState(settings)
+        self._spawn_schedule = ParticleSpawnScheduleState(settings, system_seed)
         self._simulation_step = 0
         self._simulation_time_ticks = 0
         self._next_particle_id = 0
@@ -76,7 +85,11 @@ class GpuParticleEmitterController:
             or settings.start_delay != self.settings.start_delay
         ):
             raise ValueError("GPU particle controller settings require an emitter restart")
-        migrated = GpuParticleEmitterController(settings, playing=self._playing)
+        migrated = GpuParticleEmitterController(
+            settings,
+            playing=self._playing,
+            system_seed=self.system_seed,
+        )
         migrated._spawn_schedule = self._spawn_schedule.migrate_to(settings)
         migrated._simulation_step = self._simulation_step
         migrated._simulation_time_ticks = self._simulation_time_ticks
@@ -84,21 +97,34 @@ class GpuParticleEmitterController:
         migrated._spawn_generation = self._spawn_generation
         return migrated
 
-    def tick(self, delta_time: float, emitter_position=None) -> GpuParticleFrameSchedule:
+    def tick(
+        self,
+        delta_time: float,
+        emitter_position=None,
+        *,
+        enabled: bool = True,
+    ) -> GpuParticleFrameSchedule:
         delta_time = float(delta_time)
         if not math.isfinite(delta_time) or delta_time < 0.0:
             raise ValueError("particle delta_time must be finite and non-negative")
+        if type(enabled) is not bool:
+            raise TypeError("particle emitter enabled must be a boolean")
 
         spawn_count = 0
         base_id = self._next_particle_id
         generation = self._spawn_generation
         step = self._simulation_step
-        if self._playing:
+        executing = self._playing and enabled
+        if executing:
             spawn_count = min(
                 self._spawn_schedule.advance(delta_time, emitter_position),
                 self.settings.capacity,
             )
-            base_id, generation = self._advance_particle_ids(spawn_count)
+            # Graph Burst counts are finalized on the GPU after this frame
+            # request is published. Reserve one full-capacity ID range so
+            # every accepted automatic or queued spawn remains unique without
+            # a GPU readback or a second Python/native synchronization point.
+            base_id, generation = self._advance_particle_ids(self.settings.capacity)
             self._simulation_step = (self._simulation_step + 1) & 0xFFFFFFFF
             elapsed_ticks = int(round(delta_time * 1_000_000_000.0))
             self._simulation_time_ticks = min(
@@ -112,11 +138,12 @@ class GpuParticleEmitterController:
             spawn_count,
             base_id,
             generation,
-            self.settings.seed,
+            self.system_seed,
             step,
             self._simulation_time_ticks,
             delta_time,
-            self._playing,
+            executing,
+            executing,
         )
 
     def _advance_particle_ids(self, count: int) -> tuple[int, int]:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 from types import MappingProxyType
@@ -20,8 +20,10 @@ from Infernux.graph.registry import (
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 
 
-_EVENT_OUTPUT_PREFIX = "particle.event.output"
-_EVENT_PAYLOAD_PREFIX = "particle.event.payload"
+PARTICLE_EVENT_ACTIVE_TYPE_ID = "particle.event.active"
+PARTICLE_EVENT_TRIGGER_TYPE_ID = "particle.event.trigger"
+_EVENT_ACTIVE_COMPILE_PREFIX = "internal.particle.event.active"
+_EVENT_TRIGGER_COMPILE_PREFIX = "internal.particle.event.trigger"
 
 ATTRIBUTE_COMPOSITION_CHOICES = (
     ("Set", "set"),
@@ -70,14 +72,14 @@ def particle_event_payload_port_id(field_stable_id: str) -> str:
     return f"payload.{digest}"
 
 
-def particle_event_output_type_id(route_stable_id: str, source_stage: str) -> str:
-    digest = hashlib.sha256(str(route_stable_id).encode("utf-8")).hexdigest()
-    return f"{_EVENT_OUTPUT_PREFIX}.{source_stage}.{digest}"
+def _event_active_compile_type_id(event_stable_id: str) -> str:
+    digest = hashlib.sha256(str(event_stable_id).encode("utf-8")).hexdigest()
+    return f"{_EVENT_ACTIVE_COMPILE_PREFIX}.{digest}"
 
 
-def particle_event_payload_type_id(route_stable_id: str) -> str:
-    digest = hashlib.sha256(str(route_stable_id).encode("utf-8")).hexdigest()
-    return f"{_EVENT_PAYLOAD_PREFIX}.{digest}"
+def _event_trigger_compile_type_id(event_stable_id: str) -> str:
+    digest = hashlib.sha256(str(event_stable_id).encode("utf-8")).hexdigest()
+    return f"{_EVENT_TRIGGER_COMPILE_PREFIX}.{digest}"
 
 
 @dataclass(frozen=True)
@@ -85,11 +87,13 @@ class ParticleGraphNodeDefinitionSet:
     registry: NodeDefinitionRegistry
     parameter_type_by_id: Mapping[str, TypeRef]
     parameter_by_id: Mapping[str, object]
-    event_route_by_type_id: Mapping[str, str]
-    event_source_by_type_id: Mapping[str, tuple[str, str]]
-    event_input_route_by_type_id: Mapping[str, str]
-    event_target_by_type_id: Mapping[str, str]
+    event_type_by_id: Mapping[str, object]
+    event_active_compile_type_by_id: Mapping[str, str]
+    event_trigger_compile_type_by_id: Mapping[str, str]
+    event_id_by_compile_type: Mapping[str, str]
     event_field_by_port: Mapping[tuple[str, str], str]
+    emitter_index_by_id: Mapping[str, int]
+    emitter_capacity_by_id: Mapping[str, int]
     abi_fingerprint: str
 
 
@@ -100,28 +104,112 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
     for definition in COMMON_NODE_REGISTRY.definitions():
         registry.register(definition)
 
-    event_types = {event_type.stable_id: event_type for event_type in asset.event_types}
-    emitter_names = {emitter.stable_id: emitter.name for emitter in asset.emitters}
-    route_by_type_id = {}
-    source_by_type_id = {}
-    input_route_by_type_id = {}
-    target_by_type_id = {}
+    emitter_choices = tuple(
+        (emitter.name, emitter.stable_id) for emitter in asset.emitters
+    )
+    registry.register(
+        NodeDef(
+            "particle.emitter.burst",
+            "Burst",
+            (
+                _exec("in", PortDirection.INPUT),
+                PortDef(
+                    "count",
+                    PortDirection.INPUT,
+                    value_type=TypeRef(ValueType.U32),
+                    required=False,
+                    default=1,
+                    display_name="Count",
+                ),
+                _exec("out", PortDirection.OUTPUT),
+            ),
+            (
+                PropertyDef(
+                    "emitter",
+                    TypeRef(ValueType.STRING),
+                    asset.emitters[0].stable_id,
+                    emitter_choices,
+                ),
+            ),
+            {"particle_hir": "emitter.burst"},
+        )
+    )
+
+    event_choices = (("None", ""),) + tuple(
+        (event_type.name, event_type.stable_id) for event_type in asset.event_types
+    )
+    event_property = PropertyDef(
+        "event",
+        TypeRef(ValueType.STRING),
+        "",
+        event_choices,
+    )
+    registry.register(
+        NodeDef(
+            PARTICLE_EVENT_ACTIVE_TYPE_ID,
+            "Active Event: None",
+            (_exec("out", PortDirection.OUTPUT),),
+            (event_property,),
+            {"expression": "event_payload", "particle_event_root": True},
+        )
+    )
+    registry.register(
+        NodeDef(
+            PARTICLE_EVENT_TRIGGER_TYPE_ID,
+            "Trigger Event: None",
+            (
+                _exec("in", PortDirection.INPUT),
+                _exec("out", PortDirection.OUTPUT),
+                PortDef(
+                    "condition",
+                    PortDirection.INPUT,
+                    value_type=TypeRef(ValueType.BOOL),
+                    required=False,
+                    default=True,
+                ),
+            ),
+            (event_property,),
+            {"particle_hir": "event.trigger"},
+        )
+    )
+
+    active_compile_type_by_id = {}
+    trigger_compile_type_by_id = {}
+    event_id_by_compile_type = {}
     field_by_port = {}
-    for route in asset.event_routes:
-        event_type = event_types[route.event_type_id]
-        type_id = particle_event_output_type_id(route.stable_id, route.source_stage)
-        if type_id in route_by_type_id:
-            raise ValueError("particle event output node identity collision")
-        route_by_type_id[type_id] = route.stable_id
-        source_by_type_id[type_id] = (
-            route.source_emitter_id,
-            route.source_stage,
+    for event_type in asset.event_types:
+        active_type_id = _event_active_compile_type_id(event_type.stable_id)
+        trigger_type_id = _event_trigger_compile_type_id(event_type.stable_id)
+        if active_type_id in event_id_by_compile_type or trigger_type_id in event_id_by_compile_type:
+            raise ValueError("particle event node identity collision")
+        active_compile_type_by_id[event_type.stable_id] = active_type_id
+        trigger_compile_type_by_id[event_type.stable_id] = trigger_type_id
+        event_id_by_compile_type[active_type_id] = event_type.stable_id
+        event_id_by_compile_type[trigger_type_id] = event_type.stable_id
+        payload_outputs = tuple(
+            PortDef(
+                particle_event_payload_port_id(field.stable_id),
+                PortDirection.OUTPUT,
+                value_type=field.value_type,
+                display_name=field.name,
+            )
+            for field in event_type.fields
+        )
+        for field, port in zip(event_type.fields, payload_outputs):
+            field_by_port[(event_type.stable_id, port.id)] = field.stable_id
+        registry.register(
+            NodeDef(
+                active_type_id,
+                f"Active Event: {event_type.name}",
+                (_exec("out", PortDirection.OUTPUT), *payload_outputs),
+                (event_property,),
+                {"expression": "event_payload", "particle_event_root": True},
+            )
         )
         registry.register(
             NodeDef(
-                type_id,
-                f"Event Output: {event_type.name} -> "
-                f"{emitter_names.get(route.target_emitter_id, route.target_emitter_id)}",
+                trigger_type_id,
+                f"Trigger Event: {event_type.name}",
                 (
                     _exec("in", PortDirection.INPUT),
                     _exec("out", PortDirection.OUTPUT),
@@ -144,37 +232,10 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
                         for field in event_type.fields
                     ),
                 ),
-                (),
-                {"particle_hir": "event.emit"},
+                (event_property,),
+                {"particle_hir": "event.trigger"},
             )
         )
-        if event_type.fields:
-            payload_type_id = particle_event_payload_type_id(route.stable_id)
-            if payload_type_id in input_route_by_type_id:
-                raise ValueError("particle event payload node identity collision")
-            input_route_by_type_id[payload_type_id] = route.stable_id
-            target_by_type_id[payload_type_id] = route.target_emitter_id
-            payload_ports = tuple(
-                PortDef(
-                    particle_event_payload_port_id(field.stable_id),
-                    PortDirection.OUTPUT,
-                    value_type=field.value_type,
-                    display_name=field.name,
-                )
-                for field in event_type.fields
-            )
-            for field, port in zip(event_type.fields, payload_ports):
-                field_by_port[(payload_type_id, port.id)] = field.stable_id
-            registry.register(
-                NodeDef(
-                    payload_type_id,
-                    f"Event Payload: {event_type.name} <- "
-                    f"{emitter_names.get(route.source_emitter_id, route.source_emitter_id)}",
-                    payload_ports,
-                    (),
-                    {"expression": "event_payload"},
-                )
-            )
     abi_payload = {
         "parameters": [
             {
@@ -184,7 +245,13 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
             for parameter in asset.parameters
         ],
         "event_types": [event_type.to_dict() for event_type in asset.event_types],
-        "event_routes": [route.to_dict() for route in asset.event_routes],
+        "emitter_events": {
+            emitter.stable_id: [
+                {"flow_id": flow.stable_id, "event_id": flow.event_id}
+                for flow in emitter.event_flows
+            ]
+            for emitter in asset.emitters
+        },
         "emitter_attributes": {
             emitter.stable_id: [
                 attribute.to_dict()
@@ -192,6 +259,7 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
             ]
             for emitter in asset.emitters
         },
+        "emitter_order": [emitter.stable_id for emitter in asset.emitters],
     }
     encoded = json.dumps(
         abi_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -207,11 +275,17 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
         MappingProxyType(
             {parameter.stable_id: parameter for parameter in asset.parameters}
         ),
-        MappingProxyType(route_by_type_id),
-        MappingProxyType(source_by_type_id),
-        MappingProxyType(input_route_by_type_id),
-        MappingProxyType(target_by_type_id),
+        MappingProxyType({value.stable_id: value for value in asset.event_types}),
+        MappingProxyType(active_compile_type_by_id),
+        MappingProxyType(trigger_compile_type_by_id),
+        MappingProxyType(event_id_by_compile_type),
         MappingProxyType(field_by_port),
+        MappingProxyType(
+            {emitter.stable_id: index for index, emitter in enumerate(asset.emitters)}
+        ),
+        MappingProxyType(
+            {emitter.stable_id: emitter.settings.capacity for emitter in asset.emitters}
+        ),
         hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
     )
 
@@ -323,6 +397,36 @@ def _get_attribute() -> NodeDef:
             "particle_hir": "attribute.capture",
         },
     )
+
+
+def particle_event_node_definition(
+    definitions: ParticleGraphNodeDefinitionSet,
+    type_id: str,
+    event_id: str,
+) -> NodeDef | None:
+    """Resolve the effective ABI-shaped definition of one generic event node."""
+    if type_id == PARTICLE_EVENT_ACTIVE_TYPE_ID and event_id:
+        type_id = definitions.event_active_compile_type_by_id.get(event_id, type_id)
+    elif type_id == PARTICLE_EVENT_TRIGGER_TYPE_ID and event_id:
+        type_id = definitions.event_trigger_compile_type_by_id.get(event_id, type_id)
+    return definitions.registry.get(type_id)
+
+
+def specialize_particle_event_document(document, definitions):
+    """Create the compiler-only event ABI view without changing the asset graph."""
+    nodes = []
+    changed = False
+    for node in document.nodes:
+        type_id = node.type_id
+        event_id = str(node.properties.get("event", ""))
+        if type_id == PARTICLE_EVENT_ACTIVE_TYPE_ID and event_id:
+            type_id = definitions.event_active_compile_type_by_id.get(event_id, type_id)
+        elif type_id == PARTICLE_EVENT_TRIGGER_TYPE_ID and event_id:
+            type_id = definitions.event_trigger_compile_type_by_id.get(event_id, type_id)
+        replacement = replace(node, type_id=type_id)
+        nodes.append(replacement)
+        changed = changed or replacement != node
+    return replace(document, nodes=tuple(nodes)) if changed else document
 
 
 def _attribute_cache_operation() -> NodeDef:
@@ -736,9 +840,11 @@ __all__ = [
     "ATTRIBUTE_NODE_NAMES",
     "ATTRIBUTE_OPERATION_SPECS",
     "PARTICLE_NODE_DEFINITIONS",
+    "PARTICLE_EVENT_ACTIVE_TYPE_ID",
+    "PARTICLE_EVENT_TRIGGER_TYPE_ID",
     "ParticleGraphNodeDefinitionSet",
-    "particle_event_output_type_id",
     "particle_event_payload_port_id",
-    "particle_event_payload_type_id",
+    "particle_event_node_definition",
     "particle_graph_node_definitions",
+    "specialize_particle_event_document",
 ]

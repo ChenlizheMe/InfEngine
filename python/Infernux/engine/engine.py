@@ -709,6 +709,11 @@ class Engine():
         if self._engine:
             self._engine.resize_scene_render_target(width, height)
 
+    def invalidate_temporal_history(self, *, scene_view: bool = True, game_view: bool = True):
+        """Discard accumulated temporal effect history for selected render views."""
+        if self._engine:
+            self._engine.invalidate_temporal_history(bool(scene_view), bool(game_view))
+
     # ========================================================================
     # Game Render Target API - for game camera rendering
     # ========================================================================

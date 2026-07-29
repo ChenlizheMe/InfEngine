@@ -40,6 +40,7 @@ from Infernux.lib import (
     GraphBufferAccessDesc,
     GraphBufferAccessType,
     GraphTextureDesc,
+    GraphTextureRole,
     MaterialPassType,
     PixelFormat,
 )
@@ -67,13 +68,17 @@ class TextureHandle:
     def __init__(self, name: str, format: Format, is_camera_target: bool = False,
                  size: "Optional[Tuple[int, int]]" = None,
                  size_divisor: int = 0,
-                 samples: int = 1):
+                 samples: int = 1,
+                 temporal_role=GraphTextureRole.TRANSIENT,
+                 temporal_key: str = ""):
         self.name = name
         self.format = format
         self.is_camera_target = is_camera_target
         self.size = size  # (width, height) or None for scene target size
         self.size_divisor = size_divisor  # >1: scene_size / divisor
         self.samples = samples  # 0 inherits the graph's frame MSAA setting
+        self.temporal_role = temporal_role
+        self.temporal_key = temporal_key
 
     @property
     def is_depth(self) -> bool:
@@ -803,6 +808,43 @@ class RenderGraph:
         self._textures.append(handle)
         return handle
 
+    def create_temporal_history(
+        self,
+        name: str,
+        *,
+        format: Format = Format.RGBA16_SFLOAT,
+    ) -> Tuple[TextureHandle, TextureHandle]:
+        """Create a per-view, single-sample history read/write pair.
+
+        The native renderer owns and ping-pongs both images. They survive
+        ordinary graph execution but are invalidated by view/target changes.
+        """
+        if format.is_depth:
+            raise ValueError("temporal history must use a color format")
+        base = self._scoped_name(str(name or "").strip())
+        if not base:
+            raise ValueError("temporal history name cannot be empty")
+        read_name = f"{base}/read"
+        write_name = f"{base}/write"
+        if self._find_texture_exact(read_name) or self._find_texture_exact(write_name):
+            raise ValueError(f"Temporal history '{base}' already exists")
+        read = TextureHandle(
+            read_name,
+            format,
+            samples=1,
+            temporal_role=GraphTextureRole.TEMPORAL_READ,
+            temporal_key=base,
+        )
+        write = TextureHandle(
+            write_name,
+            format,
+            samples=1,
+            temporal_role=GraphTextureRole.TEMPORAL_WRITE,
+            temporal_key=base,
+        )
+        self._textures.extend((read, write))
+        return read, write
+
     def get_texture(self, name: str) -> Optional[TextureHandle]:
         """Look up a texture by its string alias.
 
@@ -1459,6 +1501,8 @@ class RenderGraph:
             if tex.size_divisor > 0:
                 td.size_divisor = tex.size_divisor
             td.samples = tex.samples
+            td.role = tex.temporal_role
+            td.temporal_key = tex.temporal_key
             tex_list.append(td)
         desc.textures = tex_list
 
@@ -1580,6 +1624,8 @@ class RenderGraph:
                     "size": tex.size,
                     "size_divisor": tex.size_divisor,
                     "samples": tex.samples,
+                    "role": int(tex.temporal_role),
+                    "temporal_key": tex.temporal_key,
                 }
                 for tex in self._textures
             ],

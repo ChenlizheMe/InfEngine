@@ -102,10 +102,9 @@ struct GpuEmitterDesc
 {
     uint32_t capacity = 0;
     uint32_t stateStride = 0;
-    uint32_t eventOutputStageMask = 0;
+    uint32_t eventTypeCount = 0;
     std::vector<uint32_t> parameterWords;
     std::array<ShaderBytecode, static_cast<size_t>(GpuKernelStage::Count)> kernels{};
-    ShaderBytecode eventInitKernel;
     std::optional<GpuMeshShapeDesc> meshShape;
     GpuVectorFieldLayoutDesc vectorFields;
     rhi::BufferHandle collisionSceneHeader;
@@ -174,20 +173,18 @@ class ParticleGpuRuntime
     [[nodiscard]] bool UpdateTransforms(const GpuParticleTransforms &transforms);
     [[nodiscard]] bool UpdateParameters(const std::vector<uint32_t> &parameterWords);
 
-    void RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed);
-    void RecordInit(const rhi::ComputeCommandEncoder &encoder, uint32_t spawnCount, uint32_t spawnBaseId,
-                    uint32_t spawnGeneration, uint32_t systemSeed, uint32_t simulationStep, float deltaTime,
-                    rhi::BindGroupHandle eventOutput = {}) const;
-    void RecordEventInit(const rhi::ComputeCommandEncoder &encoder, rhi::BindGroupHandle eventInput,
-                         rhi::BufferHandle indirectArguments, uint64_t indirectOffset, uint32_t channelIndex,
-                         uint32_t systemSeed, uint32_t simulationStep, float deltaTime,
-                         rhi::BindGroupHandle eventOutput = {}) const;
+    void RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+                         rhi::BindGroupHandle graphSpawnGroup);
+    void RecordInitIndirect(const rhi::ComputeCommandEncoder &encoder, uint32_t cpuSpawnCount,
+                            uint32_t spawnBaseId, uint32_t spawnGeneration, uint32_t systemSeed,
+                            uint32_t simulationStep, float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
+                            rhi::BufferHandle spawnMetadata, uint64_t indirectOffset) const;
     void RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
-                      float deltaTime, rhi::BindGroupHandle eventOutput = {}) const;
-    void RecordRenderReset(const rhi::ComputeCommandEncoder &encoder) const;
-    void RecordRendering(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
-                         rhi::BindGroupHandle eventOutput = {}, bool emitEvents = true) const;
-    [[nodiscard]] bool HasEventOutput(GpuKernelStage stage) const noexcept;
+                      float deltaTime, rhi::BindGroupHandle graphSpawnGroup) const;
+    void RecordRenderReset(const rhi::ComputeCommandEncoder &encoder,
+                           rhi::BindGroupHandle graphSpawnGroup) const;
+    void RecordRendering(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+                         uint32_t simulationStep, rhi::BindGroupHandle graphSpawnGroup) const;
     [[nodiscard]] bool HasContinuations() const noexcept;
     [[nodiscard]] const GpuParticleContinuationResources &ContinuationResources() const noexcept;
     [[nodiscard]] GpuParticleContinuationTelemetry ContinuationTelemetry() const noexcept;
@@ -198,8 +195,9 @@ class ParticleGpuRuntime
     [[nodiscard]] bool RecordContinuationClassify(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
                                                   uint64_t elapsedTimeTicks) const;
     [[nodiscard]] bool RecordContinuationDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                                                  uint64_t elapsedTimeTicks, uint32_t systemSeed, float deltaTime,
-                                                  rhi::BindGroupHandle eventOutput = {}) const;
+                                                  uint64_t elapsedTimeTicks, uint32_t systemSeed,
+                                                  float deltaTime,
+                                                  rhi::BindGroupHandle graphSpawnGroup) const;
 
     [[nodiscard]] uint32_t Capacity() const noexcept
     {
@@ -208,6 +206,15 @@ class ParticleGpuRuntime
     [[nodiscard]] uint32_t StateStride() const noexcept
     {
         return m_stateStride;
+    }
+    [[nodiscard]] uint32_t EventTypeCount() const noexcept
+    {
+        return m_eventTypeCount;
+    }
+    [[nodiscard]] uint64_t CounterBufferByteSize() const noexcept
+    {
+        const uint64_t eventCounterWords = static_cast<uint64_t>(m_eventTypeCount) * 3u;
+        return 16u + ((eventCounterWords + 3u) / 4u) * 16u;
     }
     [[nodiscard]] rhi::BufferHandle StateBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle FreeListBuffer() const noexcept;
@@ -221,11 +228,10 @@ class ParticleGpuRuntime
     {
         return m_parameterBuffer;
     }
-    [[nodiscard]] rhi::BindingLayoutHandle EventInputLayout() const noexcept
+    [[nodiscard]] rhi::BindingLayoutHandle GraphSpawnLayout() const noexcept
     {
-        return m_eventInputLayout;
+        return m_graphSpawnLayout;
     }
-
   private:
     struct ResidentState;
     struct DataInterfaceState;
@@ -237,27 +243,26 @@ class ParticleGpuRuntime
     [[nodiscard]] bool UpdateVectorFieldMetadata(const GpuParticleTransforms &transforms);
     void Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
                 const GpuParticlePushConstants &constants, uint32_t invocationCount,
-                rhi::BindGroupHandle eventOutput = {}) const;
+                rhi::BindGroupHandle graphSpawnGroup, rhi::BufferHandle indirectArguments = {},
+                uint64_t indirectOffset = 0) const;
     [[nodiscard]] static uint32_t GroupCount(uint32_t invocationCount) noexcept;
 
     rhi::Device *m_device = nullptr;
     uint32_t m_capacity = 0;
     uint32_t m_stateStride = 0;
-    uint32_t m_eventOutputStageMask = 0;
+    uint32_t m_eventTypeCount = 0;
     std::shared_ptr<ResidentState> m_residentState;
     std::unique_ptr<DataInterfaceState> m_dataInterfaces;
     std::unique_ptr<VectorFieldState> m_vectorFields;
     std::unique_ptr<ParticleGpuContinuationRuntime> m_continuation;
     rhi::BindingLayoutHandle m_emptyDataInterfaceLayout;
     rhi::BindGroupHandle m_emptyDataInterfaceGroup;
-    rhi::BindingLayoutHandle m_eventInputLayout;
-    rhi::BindingLayoutHandle m_eventOutputLayout;
+    rhi::BindingLayoutHandle m_graphSpawnLayout;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
     rhi::BufferHandle m_parameterBuffer;
     uint32_t m_parameterWordCount = 0;
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};
-    rhi::ComputePipelineHandle m_eventInitPipeline;
 };
 
 static_assert(sizeof(GpuParticleTransforms) == 256);

@@ -116,7 +116,6 @@ struct ParticleGpuContinuationRuntime::ProgramRevision
     rhi::BindGroupHandle dataInterfaceGroup;
     rhi::BindGroupHandle vectorFieldGroup;
     rhi::BindGroupHandle emptyGroup;
-    bool emitsEvents = false;
     rhi::ComputePipelineHandle preparePipeline;
     rhi::ComputePipelineHandle classifyPipeline;
     rhi::ComputePipelineHandle dispatchPipeline;
@@ -156,8 +155,8 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
         desc.laneCount > MaximumLaneCount || desc.joinCount > MaximumJoinCount || programGeneration == 0 ||
         !desc.program.IsValid() || !desc.ownerLayout.IsValid() || !desc.ownerGroup.IsValid() ||
         !desc.dataInterfaceLayout.IsValid() || !desc.dataInterfaceGroup.IsValid() ||
-        !desc.vectorFieldLayout.IsValid() || !desc.vectorFieldGroup.IsValid() || !desc.emptyLayout.IsValid() ||
-        !desc.emptyGroup.IsValid() || (desc.emitsEvents && !desc.eventOutputLayout.IsValid()))
+        !desc.vectorFieldLayout.IsValid() || !desc.vectorFieldGroup.IsValid() ||
+        !desc.graphSpawnLayout.IsValid() || !desc.emptyLayout.IsValid() || !desc.emptyGroup.IsValid())
         return false;
 
     m_device = &device;
@@ -233,7 +232,6 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
     revision->dataInterfaceGroup = desc.dataInterfaceGroup;
     revision->vectorFieldGroup = desc.vectorFieldGroup;
     revision->emptyGroup = desc.emptyGroup;
-    revision->emitsEvents = desc.emitsEvents;
     rhi::BindingLayoutDesc layoutDesc;
     for (uint32_t binding = 0; binding < 10; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
@@ -277,8 +275,8 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
             pipelineDesc.bindingLayouts[0] = desc.ownerLayout;
             pipelineDesc.bindingLayouts[1] = desc.dataInterfaceLayout;
             pipelineDesc.bindingLayouts[2] = desc.vectorFieldLayout;
-            pipelineDesc.bindingLayouts[3] = desc.emptyLayout;
-            pipelineDesc.bindingLayouts[4] = desc.emitsEvents ? desc.eventOutputLayout : desc.emptyLayout;
+            pipelineDesc.bindingLayouts[3] = desc.graphSpawnLayout;
+            pipelineDesc.bindingLayouts[4] = desc.emptyLayout;
             pipelineDesc.bindingLayouts[5] = revision->layout;
             pipelineDesc.bindingLayoutCount = 6;
         } else {
@@ -459,20 +457,19 @@ bool ParticleGpuContinuationRuntime::RecordClassify(const rhi::ComputeCommandEnc
 }
 
 bool ParticleGpuContinuationRuntime::RecordDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                                                    uint64_t elapsedTimeTicks, uint32_t systemSeed, float deltaTime,
-                                                    rhi::BindGroupHandle eventOutput) const
+                                                    uint64_t elapsedTimeTicks, uint32_t systemSeed,
+                                                    float deltaTime, rhi::BindGroupHandle graphSpawnGroup) const
 {
-    if (!IsValid() || !encoder.IsValid() || m_classifiedEpoch != m_recordEpoch || m_dispatchedEpoch == m_recordEpoch)
+    if (!IsValid() || !encoder.IsValid() || !graphSpawnGroup.IsValid() ||
+        m_classifiedEpoch != m_recordEpoch || m_dispatchedEpoch == m_recordEpoch)
         return false;
-    if (m_revision->emitsEvents && !eventOutput.IsValid())
-        return false;
-    const auto constants = Constants(simulationStep, elapsedTimeTicks, systemSeed, deltaTime, m_revision->emitsEvents);
+    const auto constants = Constants(simulationStep, elapsedTimeTicks, systemSeed, deltaTime);
     encoder.BindPipeline(m_revision->dispatchPipeline);
     encoder.BindGroup(m_revision->dispatchPipeline, 0, m_revision->ownerGroup);
     encoder.BindGroup(m_revision->dispatchPipeline, 1, m_revision->dataInterfaceGroup);
     encoder.BindGroup(m_revision->dispatchPipeline, 2, m_revision->vectorFieldGroup);
-    encoder.BindGroup(m_revision->dispatchPipeline, 3, m_revision->emptyGroup);
-    encoder.BindGroup(m_revision->dispatchPipeline, 4, m_revision->emitsEvents ? eventOutput : m_revision->emptyGroup);
+    encoder.BindGroup(m_revision->dispatchPipeline, 3, graphSpawnGroup);
+    encoder.BindGroup(m_revision->dispatchPipeline, 4, m_revision->emptyGroup);
     encoder.BindGroup(m_revision->dispatchPipeline, 5, m_revision->group);
     encoder.PushConstants(m_revision->dispatchPipeline, sizeof(constants), &constants);
     encoder.DispatchIndirect(m_storage->resources.dispatchIndirectArguments, 0);
@@ -483,8 +480,8 @@ bool ParticleGpuContinuationRuntime::RecordDispatch(const rhi::ComputeCommandEnc
 
 GpuParticleContinuationConstants ParticleGpuContinuationRuntime::Constants(uint32_t simulationStep,
                                                                            uint64_t elapsedTimeTicks,
-                                                                           uint32_t systemSeed, float deltaTime,
-                                                                           bool eventOutputEnabled) const noexcept
+                                                                           uint32_t systemSeed,
+                                                                           float deltaTime) const noexcept
 {
     GpuParticleContinuationConstants result;
     result.capacity = Capacity();
@@ -500,7 +497,6 @@ GpuParticleContinuationConstants ParticleGpuContinuationRuntime::Constants(uint3
     result.recordStrideWords = RecordStride() / sizeof(uint32_t);
     result.systemSeed = systemSeed;
     result.deltaTime = deltaTime;
-    result.eventOutputEnabled = eventOutputEnabled ? 1u : 0u;
     return result;
 }
 

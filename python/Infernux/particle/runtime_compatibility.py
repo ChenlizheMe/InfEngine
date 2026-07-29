@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from enum import Enum
 
 from .asset import EmitterSettings
@@ -34,6 +35,9 @@ def classify_emitter_update(
     ):
         return ParticleRuntimeCompatibility.EMITTER_RESTART
 
+    if _event_runtime_abi(previous_kernel) != _event_runtime_abi(next_kernel):
+        return ParticleRuntimeCompatibility.EMITTER_RESTART
+
     previous_schema = {
         stable_id: value_type
         for stable_id, value_type, _default in previous_kernel.attributes
@@ -63,11 +67,62 @@ def classify_emitter_update(
     return ParticleRuntimeCompatibility.KERNEL_COMPATIBLE
 
 
-def _kernel_code(kernel: ParticleEmitterKernelIR) -> tuple[dict, dict, dict]:
+def _kernel_code(kernel: ParticleEmitterKernelIR) -> tuple[object, ...]:
     return (
+        kernel.random_seed,
         kernel.init.to_dict(include_source=False),
         kernel.update.to_dict(include_source=False),
         kernel.rendering.to_dict(include_source=False),
+        tuple(flow.to_dict(include_source=False) for flow in kernel.flows),
+        tuple(
+            suspension.to_dict(include_source=False)
+            for suspension in kernel.suspensions
+        ),
+    )
+
+
+def _event_runtime_abi(kernel: ParticleEmitterKernelIR) -> str:
+    event_flows = tuple(
+        flow.flow_id
+        for flow in kernel.flows
+        if flow.lifecycle_stage.value == "event"
+    )
+    event_attributes = tuple(
+        (stable_id, value_type.to_dict())
+        for stable_id, value_type, _default in kernel.attributes
+        if stable_id.startswith("internal.event.")
+    )
+    event_instructions = []
+    for instruction in kernel.update.instructions:
+        if instruction.opcode not in {
+            "event_begin",
+            "event_complete",
+            "event_enqueue",
+            "event_payload",
+        }:
+            continue
+        immediate = instruction.immediate_dict()
+        immediate.pop("default", None)
+        event_instructions.append(
+            {
+                "opcode": instruction.opcode,
+                "result_type": (
+                    instruction.result_type.to_dict()
+                    if instruction.result_type is not None
+                    else None
+                ),
+                "immediate": immediate,
+            }
+        )
+    return json.dumps(
+        {
+            "flows": event_flows,
+            "attributes": event_attributes,
+            "instructions": event_instructions,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     )
 
 

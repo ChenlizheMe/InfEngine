@@ -118,9 +118,9 @@ struct alignas(16) GpuParticleContinuationConstants
     uint32_t recordStrideWords = 0;
     uint32_t systemSeed = 0;
     float deltaTime = 0.0f;
-    uint32_t eventOutputEnabled = 0;
     uint32_t reserved0 = 0;
     uint32_t reserved1 = 0;
+    uint32_t reserved2 = 0;
 };
 
 struct GpuParticleContinuationDesc
@@ -138,10 +138,9 @@ struct GpuParticleContinuationDesc
     rhi::BindGroupHandle dataInterfaceGroup;
     rhi::BindingLayoutHandle vectorFieldLayout;
     rhi::BindGroupHandle vectorFieldGroup;
+    rhi::BindingLayoutHandle graphSpawnLayout;
     rhi::BindingLayoutHandle emptyLayout;
     rhi::BindGroupHandle emptyGroup;
-    rhi::BindingLayoutHandle eventOutputLayout;
-    bool emitsEvents = false;
 };
 
 struct GpuParticleContinuationResources
@@ -234,7 +233,7 @@ class ParticleGpuContinuationRuntime
                                       uint64_t elapsedTimeTicks) const;
     [[nodiscard]] bool RecordDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
                                       uint64_t elapsedTimeTicks, uint32_t systemSeed, float deltaTime,
-                                      rhi::BindGroupHandle eventOutput = {}) const;
+                                      rhi::BindGroupHandle graphSpawnGroup) const;
 
   private:
     struct ResidentStorage;
@@ -243,8 +242,8 @@ class ParticleGpuContinuationRuntime
     [[nodiscard]] bool CreateInternal(rhi::Device &device, const GpuParticleContinuationDesc &desc,
                                       std::shared_ptr<ResidentStorage> storage, uint32_t programGeneration);
     [[nodiscard]] GpuParticleContinuationConstants Constants(uint32_t simulationStep, uint64_t elapsedTimeTicks,
-                                                             uint32_t systemSeed = 0, float deltaTime = 0.0f,
-                                                             bool eventOutputEnabled = false) const noexcept;
+                                                             uint32_t systemSeed = 0,
+                                                             float deltaTime = 0.0f) const noexcept;
     [[nodiscard]] static uint32_t NextGeneration(uint32_t value) noexcept;
 
     rhi::Device *m_device = nullptr;

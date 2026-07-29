@@ -1522,45 +1522,50 @@ bool Scene::SaveToFile(const std::string &path) const
     }
 }
 
+void Scene::SetMainCamera(Camera *camera)
+{
+    if (camera) {
+        GameObject *owner = camera->GetGameObject();
+        if (!owner || owner->GetScene() != this)
+            throw std::invalid_argument("Scene.main_camera must reference a Camera owned by this Scene");
+    }
+    m_mainCamera = camera;
+}
+
 Camera *Scene::FindGameCamera(Camera *editorCam)
 {
-    // Fast path: cached main camera is still valid and active
+    // The authored preference is persistent. Disabling it temporarily falls
+    // back to another active camera without destroying the user's selection.
     if (m_mainCamera && m_mainCamera != editorCam) {
-        // Verify the camera's GameObject is still active and the component is enabled
         GameObject *go = m_mainCamera->GetGameObject();
-        if (go && go->IsActiveInHierarchy() && m_mainCamera->IsEnabled()) {
+        if (go && go->GetScene() == this && go->IsActiveInHierarchy() && m_mainCamera->IsEnabled()) {
             return m_mainCamera;
         }
-        // Cached main camera is no longer valid — clear and re-discover
-        m_mainCamera = nullptr;
     }
 
-    // Auto-discover: find highest-priority (lowest depth) active Camera component
-    auto objects = FindObjectsWithComponent<Camera>();
-    Camera *bestCam = nullptr;
-    float bestDepth = std::numeric_limits<float>::max();
+    const auto cameras = GetActiveGameCameras(editorCam);
+    return cameras.empty() ? nullptr : cameras.front();
+}
 
-    for (auto *obj : objects) {
-        if (!obj->IsActiveInHierarchy())
+std::vector<Camera *> Scene::GetActiveGameCameras(Camera *editorCam) const
+{
+    std::vector<Camera *> cameras;
+    const auto objects = FindObjectsWithComponent<Camera>();
+    cameras.reserve(objects.size());
+    for (GameObject *object : objects) {
+        if (!object || !object->IsActiveInHierarchy())
             continue;
-
-        Camera *c = obj->GetComponent<Camera>();
-        if (!c || !c->IsEnabled() || c == editorCam)
+        Camera *camera = object->GetComponent<Camera>();
+        if (!camera || !camera->IsEnabled() || camera == editorCam)
             continue;
-
-        if (c->GetDepth() < bestDepth) {
-            bestDepth = c->GetDepth();
-            bestCam = c;
-        }
+        cameras.push_back(camera);
     }
-
-    if (bestCam) {
-        m_mainCamera = bestCam;
-        INXLOG_DEBUG("Game camera auto-assigned from GameObject '", bestCam->GetGameObject()->GetName(),
-                     "' (depth=", bestDepth, ")");
-    }
-
-    return bestCam;
+    std::sort(cameras.begin(), cameras.end(), [](const Camera *lhs, const Camera *rhs) {
+        if (lhs->GetDepth() != rhs->GetDepth())
+            return lhs->GetDepth() < rhs->GetDepth();
+        return lhs->GetComponentID() < rhs->GetComponentID();
+    });
+    return cameras;
 }
 
 } // namespace infernux

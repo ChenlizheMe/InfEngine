@@ -58,10 +58,7 @@ class SkinnedMeshRenderer : public MeshRenderer
     }
 
     /// Normalized clip progress [0,1] when a duration is known. Runtime-only.
-    void SetRuntimeAnimationNormalizedTime(float n)
-    {
-        m_runtimeAnimationNormalized = n;
-    }
+    void SetRuntimeAnimationNormalizedTime(float n);
     [[nodiscard]] float GetRuntimeAnimationNormalizedTime() const
     {
         return m_runtimeAnimationNormalized;

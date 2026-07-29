@@ -16,7 +16,12 @@ from Infernux.graph.expression_ir import (
     ExpressionInstruction,
     ExpressionProgram,
 )
-from Infernux.graph.document import GraphSourceLocation
+from Infernux.graph.document import (
+    GraphDocument,
+    GraphLinkRecord,
+    GraphNodeRecord,
+    GraphSourceLocation,
+)
 from Infernux.graph.types import AssetReference, TypeRef, ValueType
 
 from .asset import (
@@ -32,9 +37,47 @@ from .asset import (
 from .data_interface import ParticleDataInterface, SdfVolume
 from .nodes import (
     ATTRIBUTE_OPERATION_SPECS,
-    particle_event_output_type_id,
     particle_graph_node_definitions,
+    specialize_particle_event_document,
 )
+
+
+def _merge_active_event_flows(event_id, flows, definitions) -> GraphDocument:
+    """Compile all Active Event roots for one event as one parallel handler flow."""
+    root_type = definitions.event_active_compile_type_by_id[event_id]
+    nodes = [
+        GraphNodeRecord("root.event", root_type, (0.0, 0.0), {"event": event_id})
+    ]
+    links = []
+    source_locations = {}
+    for flow in flows:
+        document = specialize_particle_event_document(flow.graph, definitions)
+        prefix = f"{flow.stable_id}."
+        for node in document.nodes:
+            if node.uid == "root.event":
+                continue
+            uid = prefix + node.uid
+            nodes.append(replace(node, uid=uid))
+            location = document.source_location(node.uid)
+            if location != GraphSourceLocation():
+                source_locations[uid] = location
+        for link in document.links:
+            links.append(
+                GraphLinkRecord(
+                    prefix + link.uid,
+                    "root.event" if link.source_node == "root.event" else prefix + link.source_node,
+                    link.source_port,
+                    "root.event" if link.target_node == "root.event" else prefix + link.target_node,
+                    link.target_port,
+                    link.kind,
+                )
+            )
+    return GraphDocument(
+        "particle.event",
+        tuple(nodes),
+        tuple(links),
+        source_locations=source_locations,
+    )
 
 
 class ParticleStage(str, Enum):
@@ -43,6 +86,7 @@ class ParticleStage(str, Enum):
     COLLISION_ENTER = "collision_enter"
     COLLISION_STAY = "collision_stay"
     COLLISION_EXIT = "collision_exit"
+    EVENT = "event"
     RENDERING = "rendering"
 
 
@@ -232,6 +276,7 @@ class ParticleStageHIR:
     root_uid: str
     expressions: ExpressionProgram
     flow: ParticleFlowProgram
+    flow_id: str = ""
     source_locations: Mapping[str, GraphSourceLocation] = field(
         default_factory=dict,
         compare=False,
@@ -271,8 +316,6 @@ class ParticleRenderPlan:
 class ParticleEmitterHIR:
     stable_id: str
     name: str
-    enabled: bool
-    play_on_start: bool
     settings: EmitterSettings
     attributes: tuple[ParticleAttribute, ...]
     init: ParticleStageHIR
@@ -280,6 +323,7 @@ class ParticleEmitterHIR:
     collision_enter: ParticleStageHIR | None
     collision_stay: ParticleStageHIR | None
     collision_exit: ParticleStageHIR | None
+    event_flows: tuple[ParticleStageHIR, ...]
     rendering: ParticleStageHIR
     render_plan: ParticleRenderPlan
     data_interfaces: tuple[ParticleDataInterface, ...] = ()
@@ -298,6 +342,7 @@ class ParticleEmitterHIR:
                 )
                 if stage is not None
             ),
+            *self.event_flows,
             self.rendering,
         )
 
@@ -323,31 +368,15 @@ class ParticleEventTypeHIR:
     name: str
     type_index: int
     stable_type_hash: int
-    capacity_per_step: int
+    queue_capacity: int
     payload_stride_words: int
     fields: tuple[ParticleEventFieldHIR, ...]
-
-
-@dataclass(frozen=True)
-class ParticleEventRouteHIR:
-    stable_id: str
-    event_type_id: str
-    event_type_index: int
-    source_emitter_id: str
-    source_emitter_index: int
-    source_stage: ParticleStage
-    target_emitter_id: str
-    target_emitter_index: int
-    spawn_count: int
-    capacity: int
-    payload_stride_words: int
 
 
 @dataclass(frozen=True)
 class ParticleEventSchedule:
     event_abi_hash: str
     event_types: tuple[ParticleEventTypeHIR, ...]
-    routes: tuple[ParticleEventRouteHIR, ...]
 
     @property
     def event_abi_u64(self) -> int:
@@ -556,8 +585,6 @@ class ParticleGraphCompiler:
             payload.append(
                 {
                     "stable_id": emitter.stable_id,
-                    "enabled": emitter.enabled,
-                    "play_on_start": emitter.play_on_start,
                     "settings": emitter.settings.to_dict(),
                     "attributes": [attribute.to_dict() for attribute in emitter.attributes],
                     "data_interfaces": [
@@ -581,6 +608,10 @@ class ParticleGraphCompiler:
                             "collision_exit",
                             "rendering",
                         )
+                    },
+                    "events": {
+                        stage.flow_id: stage_payload(stage)
+                        for stage in emitter.event_flows
                     },
                     "outputs": [
                         {
@@ -610,7 +641,7 @@ class ParticleGraphCompiler:
                 "event_types": [
                     {
                         "stable_id": value.stable_id,
-                        "capacity": value.capacity_per_step,
+                        "queue_capacity": value.queue_capacity,
                         "payload_stride_words": value.payload_stride_words,
                         "fields": [
                             {
@@ -625,17 +656,6 @@ class ParticleGraphCompiler:
                     }
                     for value in events.event_types
                 ],
-                "event_routes": [
-                    {
-                        "stable_id": route.stable_id,
-                        "event_type": route.event_type_id,
-                        "source_emitter": route.source_emitter_id,
-                        "source_stage": route.source_stage.value,
-                        "target_emitter": route.target_emitter_id,
-                        "spawn_count": route.spawn_count,
-                    }
-                    for route in events.routes
-                ],
             }
         )
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -643,11 +663,7 @@ class ParticleGraphCompiler:
 
     @staticmethod
     def _compile_events(asset: ParticleGraphAsset) -> ParticleEventSchedule:
-        emitter_indices = {
-            emitter.stable_id: index for index, emitter in enumerate(asset.emitters)
-        }
         event_types = []
-        event_type_by_id = {}
         for type_index, event_type in enumerate(asset.event_types):
             fields = []
             word_offset = 0
@@ -670,31 +686,11 @@ class ParticleGraphCompiler:
                 event_type.name,
                 type_index,
                 stable_type_hash,
-                event_type.capacity_per_step,
+                event_type.queue_capacity,
                 word_offset,
                 tuple(fields),
             )
             event_types.append(lowered)
-            event_type_by_id[event_type.stable_id] = lowered
-
-        routes = []
-        for route in asset.event_routes:
-            event_type = event_type_by_id[route.event_type_id]
-            routes.append(
-                ParticleEventRouteHIR(
-                    route.stable_id,
-                    event_type.stable_id,
-                    event_type.type_index,
-                    route.source_emitter_id,
-                    emitter_indices[route.source_emitter_id],
-                    ParticleStage(route.source_stage),
-                    route.target_emitter_id,
-                    emitter_indices[route.target_emitter_id],
-                    route.spawn_count,
-                    event_type.capacity_per_step,
-                    event_type.payload_stride_words,
-                )
-            )
 
         abi_payload = {
             "emitters": [emitter.stable_id for emitter in asset.emitters],
@@ -702,7 +698,7 @@ class ParticleGraphCompiler:
                 {
                     "stable_id": value.stable_id,
                     "stable_type_hash": value.stable_type_hash,
-                    "capacity": value.capacity_per_step,
+                    "queue_capacity": value.queue_capacity,
                     "payload_stride_words": value.payload_stride_words,
                     "fields": [
                         {
@@ -716,23 +712,11 @@ class ParticleGraphCompiler:
                 }
                 for value in event_types
             ],
-            "routes": [
-                {
-                    "stable_id": route.stable_id,
-                    "event_type_index": route.event_type_index,
-                    "source_emitter_index": route.source_emitter_index,
-                    "source_stage": route.source_stage.value,
-                    "target_emitter_index": route.target_emitter_index,
-                    "spawn_count": route.spawn_count,
-                }
-                for route in routes
-            ],
         }
         encoded = json.dumps(abi_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return ParticleEventSchedule(
             hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
             tuple(event_types),
-            tuple(routes),
         )
 
     def _compile_emitter(
@@ -778,6 +762,29 @@ class ParticleGraphCompiler:
         collision_enter = compile_collision_lifecycle(ParticleStage.COLLISION_ENTER)
         collision_stay = compile_collision_lifecycle(ParticleStage.COLLISION_STAY)
         collision_exit = compile_collision_lifecycle(ParticleStage.COLLISION_EXIT)
+        flows_by_event = {
+            event_type.stable_id: tuple(
+                flow
+                for flow in emitter.event_flows
+                if flow.event_id == event_type.stable_id
+            )
+            for event_type in events.event_types
+        }
+        event_flows = tuple(
+            self._compile_stage(
+                ParticleStage.EVENT,
+                _merge_active_event_flows(event_id, flows, definitions),
+                emitter.settings,
+                definitions,
+                events,
+                emitter,
+                root_type=definitions.event_active_compile_type_by_id[event_id],
+                flow_id=event_id,
+                source_name=source_name,
+            )
+            for event_id, flows in flows_by_event.items()
+            if flows
+        )
         rendering = self._compile_stage(
             ParticleStage.RENDERING,
             emitter.rendering,
@@ -787,54 +794,6 @@ class ParticleGraphCompiler:
             emitter,
             source_name=source_name,
         )
-        routes_by_id = {route.stable_id: route for route in events.routes}
-        event_source_stages = (
-            (init, ParticleStage.INIT, emitter.init),
-            (update, ParticleStage.UPDATE, emitter.update),
-            *(
-                (stage, stage.stage, getattr(emitter, stage.stage.value))
-                for stage in (collision_enter, collision_stay, collision_exit)
-                if stage is not None
-            ),
-            (rendering, ParticleStage.RENDERING, emitter.rendering),
-        )
-        for stage, event_source_stage, stage_document in event_source_stages:
-            for operation in stage.flow.iter_operations():
-                if operation.opcode != "event.emit":
-                    continue
-                route_id = str(operation.parameter_dict()["route"])
-                route = routes_by_id.get(route_id)
-                if route is None:
-                    raise ParticleCompileError(
-                        f"Event Output {operation.source_node_uid!r} references unknown route {route_id!r}"
-                    )
-                if route.source_emitter_id != emitter.stable_id:
-                    raise ParticleCompileError(
-                        f"Event Output route {route_id!r} belongs to emitter "
-                        f"{route.source_emitter_id!r}, not {emitter.stable_id!r}"
-                    )
-                if route.source_stage is not event_source_stage:
-                    raise ParticleCompileError(
-                        f"Event Output route {route_id!r} belongs to the "
-                        f"{route.source_stage.value} stage, not the "
-                        f"{stage.stage.value} lifecycle timing"
-                    )
-                expected_type_id = particle_event_output_type_id(
-                    route.stable_id, route.source_stage.value
-                )
-                source_node = next(
-                    (
-                        node
-                        for node in stage_document.nodes
-                        if node.uid == operation.source_node_uid
-                    ),
-                    None,
-                )
-                if source_node is None or source_node.type_id != expected_type_id:
-                    actual = source_node.type_id if source_node is not None else ""
-                    raise ParticleCompileError(
-                        f"Event Output route {route_id!r} does not match node type {actual!r}"
-                    )
         outputs = tuple(
             self._compile_output(operation)
             for operation in rendering.flow.iter_operations()
@@ -1064,8 +1023,22 @@ class ParticleGraphCompiler:
             init,
             update,
             *(stage for stage in (collision_enter, collision_stay, collision_exit) if stage),
+            *event_flows,
             rendering,
         )
+        event_flow_ids = {stage.flow_id for stage in event_flows}
+        for stage_hir in all_lifecycles:
+            for operation in stage_hir.flow.iter_operations():
+                if operation.opcode != "event.trigger":
+                    continue
+                event_id = str(operation.parameter_dict().get("event", ""))
+                if not event_id:
+                    continue
+                if event_id not in event_flow_ids:
+                    raise ParticleCompileError(
+                        f"Trigger Event {operation.source_node_uid!r} requires event "
+                        f"{event_id!r} to be dragged into emitter {emitter.name!r} first"
+                    )
         needs_orientation = any(output.output_type == "mesh" for output in outputs) or any(
             operation.opcode in orientation_opcodes
             for stage in all_lifecycles
@@ -1156,7 +1129,16 @@ class ParticleGraphCompiler:
         if emitter.settings.collision_enabled:
             allocate("builtin.collision_hit")
             allocate("builtin.collision_normal")
+            allocate("builtin.collision_point")
+            allocate("builtin.collision_relative_velocity")
+            allocate("builtin.collision_penetration")
+            allocate("builtin.collision_is_trigger")
+            allocate("builtin.collision_material")
+            allocate("internal.collision_current_id_low")
+            allocate("internal.collision_current_id_high")
             allocate("builtin.collision_active")
+            allocate("internal.collision_active_id_low")
+            allocate("internal.collision_active_id_high")
         if any(output.output_type == "ribbon" for output in outputs):
             allocate("builtin.ribbon_strip_id")
             allocate("builtin.ribbon_order")
@@ -1164,8 +1146,6 @@ class ParticleGraphCompiler:
         return ParticleEmitterHIR(
             emitter.stable_id,
             emitter.name,
-            emitter.enabled,
-            emitter.play_on_start,
             emitter.settings,
             tuple(attributes),
             init,
@@ -1173,6 +1153,7 @@ class ParticleGraphCompiler:
             collision_enter,
             collision_stay,
             collision_exit,
+            event_flows,
             rendering,
             ParticleRenderPlan(outputs),
             emitter.data_interfaces,
@@ -1217,10 +1198,13 @@ class ParticleGraphCompiler:
         emitter,
         *,
         entry_condition: str = "",
+        root_type: str = "",
+        flow_id: str = "",
         source_name: str = "",
     ) -> ParticleStageHIR:
+        document = specialize_particle_event_document(document, definitions)
         registry = definitions.registry
-        root_type = f"particle.root.{stage.value}"
+        root_type = root_type or f"particle.root.{stage.value}"
         root = next(node for node in document.nodes if node.type_id == root_type)
         value_links = sorted(
             (link for link in document.links if link.kind is PortKind.VALUE),
@@ -1290,7 +1274,7 @@ class ParticleGraphCompiler:
             expressions,
             document,
             stage,
-            emitter.stable_id,
+            flow_id,
             definitions,
             events,
         )
@@ -1332,9 +1316,10 @@ class ParticleGraphCompiler:
             ParticleStage.COLLISION_ENTER,
             ParticleStage.COLLISION_STAY,
             ParticleStage.COLLISION_EXIT,
+            ParticleStage.EVENT,
         }:
             raise ParticleCompileError(
-                "Delta Time is only valid in Update and Collision lifecycle stages"
+                "Delta Time is only valid in Update, Collision, and Event flows"
             )
         value_bindings = {
             (link.target_node, link.target_port): result_id
@@ -1356,6 +1341,7 @@ class ParticleGraphCompiler:
             root.uid,
             expressions,
             flow,
+            flow_id,
             {node.uid: _source_location(node.uid) for node in document.nodes},
         )
 
@@ -1364,7 +1350,7 @@ class ParticleGraphCompiler:
         expressions: ExpressionProgram,
         document,
         stage: ParticleStage,
-        emitter_id: str,
+        event_id: str,
         definitions,
         events: ParticleEventSchedule,
     ) -> ExpressionProgram:
@@ -1373,37 +1359,28 @@ class ParticleGraphCompiler:
             for instruction in expressions.instructions
         ):
             return expressions
-        if stage is not ParticleStage.INIT:
-            raise ParticleCompileError("Event Payload is only valid in the Init stage")
+        if stage is not ParticleStage.EVENT or not event_id:
+            raise ParticleCompileError("Event payload values are only valid in their Event flow")
 
         node_types = {node.uid: node.type_id for node in document.nodes}
-        routes = {
-            route.stable_id: (index, route)
-            for index, route in enumerate(events.routes)
-        }
-        event_types = {
-            event_type.type_index: event_type for event_type in events.event_types
-        }
+        event_type = next(
+            (value for value in events.event_types if value.stable_id == event_id),
+            None,
+        )
+        if event_type is None:
+            raise ParticleCompileError(f"Event flow references unknown event {event_id!r}")
         resolved = []
         for instruction in expressions.instructions:
             if instruction.opcode != "event_payload":
                 resolved.append(instruction)
                 continue
             type_id = node_types.get(instruction.source_node_uid, "")
-            route_id = definitions.event_input_route_by_type_id.get(type_id, "")
+            root_event_id = definitions.event_id_by_compile_type.get(type_id, "")
             field_id = definitions.event_field_by_port.get(
-                (type_id, instruction.source_port_id), ""
+                (event_id, instruction.source_port_id), ""
             )
-            route_entry = routes.get(route_id)
-            if route_entry is None or not field_id:
+            if root_event_id != event_id or not field_id:
                 raise ParticleCompileError("Event Payload node does not match this event ABI")
-            channel_index, route = route_entry
-            if route.target_emitter_id != emitter_id:
-                raise ParticleCompileError(
-                    f"Event Payload route {route_id!r} belongs to target emitter "
-                    f"{route.target_emitter_id!r}, not {emitter_id!r}"
-                )
-            event_type = event_types[route.event_type_index]
             field = next(
                 (value for value in event_type.fields if value.stable_id == field_id),
                 None,
@@ -1421,7 +1398,8 @@ class ParticleGraphCompiler:
                     instruction.source_node_uid,
                     instruction.source_port_id,
                     (
-                        ("channel_index", channel_index),
+                        ("event_type_index", event_type.type_index),
+                        ("field_stable_id", field.stable_id),
                         ("word_offset", field.word_offset),
                         ("word_count", field.word_count),
                         ("default", field.default),
@@ -1560,8 +1538,21 @@ class ParticleGraphCompiler:
                 )
             if opcode == "attribute.capture":
                 properties["snapshot"] = particle_attribute_capture_id(stage.value, node.uid)
-            if node.type_id in definitions.event_route_by_type_id:
-                properties["route"] = definitions.event_route_by_type_id[node.type_id]
+            specialized_event_id = definitions.event_id_by_compile_type.get(
+                node.type_id, ""
+            )
+            if specialized_event_id and opcode == "event.trigger":
+                properties["event"] = specialized_event_id
+            if opcode == "emitter.burst":
+                target_id = str(properties["emitter"])
+                target_index = definitions.emitter_index_by_id.get(target_id)
+                target_capacity = definitions.emitter_capacity_by_id.get(target_id)
+                if target_index is None or target_capacity is None:
+                    raise ParticleCompileError(
+                        f"Burst node {node.uid!r} references unknown emitter {target_id!r}"
+                    )
+                properties["target_emitter_index"] = target_index
+                properties["target_capacity"] = target_capacity
             from Infernux.graph.expression_ir import ExpressionCompiler
 
             for property_def in definition.properties:
@@ -2103,7 +2094,6 @@ __all__ = [
     "ParticleJoinDescriptor",
     "ParticleEmitterHIR",
     "ParticleEventFieldHIR",
-    "ParticleEventRouteHIR",
     "ParticleEventSchedule",
     "ParticleEventTypeHIR",
     "ParticleGraphCompiler",

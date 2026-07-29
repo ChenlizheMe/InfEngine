@@ -74,6 +74,13 @@ enum class GraphBufferAccessType
     TransferWrite
 };
 
+enum class GraphTextureRole : uint8_t
+{
+    Transient,
+    TemporalRead,
+    TemporalWrite
+};
+
 struct GraphCommandDesc
 {
     GraphCommandType type = GraphCommandType::DrawRenderers;
@@ -131,6 +138,8 @@ struct GraphTextureDesc
     uint32_t height = 0;                                    ///< Custom height (0 = use scene target size)
     uint32_t sizeDivisor = 0;                               ///< >0: actual = scene_size / divisor
     uint32_t samples = 1;                                   ///< 0 = inherit frame MSAA, otherwise 1/2/4/8
+    GraphTextureRole role = GraphTextureRole::Transient;    ///< Frame-local or one side of a temporal history pair
+    std::string temporalKey;                                ///< Stable per-view history identity for temporal resources
 };
 
 struct GraphBufferDesc

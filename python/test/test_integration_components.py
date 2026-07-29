@@ -38,6 +38,20 @@ from Infernux.lib import (
 )
 
 
+def test_explicit_skinned_animation_seek_marks_temporal_discontinuity(scene):
+    renderer = scene.create_game_object("AnimationSeekProbe").add_component(
+        "SkinnedMeshRenderer"
+    )
+    native_renderer = renderer._cpp_component
+    revision = scene.temporal_discontinuity_revision
+
+    native_renderer.runtime_animation_time = 1.25
+    assert scene.temporal_discontinuity_revision == revision + 1
+
+    native_renderer.runtime_animation_time = 1.25
+    assert scene.temporal_discontinuity_revision == revision + 1
+
+
 def test_mesh_cpu_payload_prepares_on_worker_and_rejects_stale_publish(engine):
     registry = AssetRegistry.instance()
     asset_database = registry.get_asset_database()

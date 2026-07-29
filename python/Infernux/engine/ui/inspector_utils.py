@@ -265,6 +265,16 @@ def get_enum_member_name(member) -> str:
     return str(name) if name else str(member)
 
 
+def resolve_enum_display_labels(metadata, members) -> list[str]:
+    """Return localized enum labels for Inspector combo widgets."""
+    from Infernux.engine.i18n import t
+
+    labels = getattr(metadata, "enum_labels", None)
+    if labels and len(labels) == len(members):
+        return [t(label) for label in labels]
+    return [get_enum_member_name(member) for member in members]
+
+
 def get_enum_member_value(member):
     """Raw value of an enum member."""
     return member.value if hasattr(member, "value") else member
@@ -384,7 +394,7 @@ def _render_enum_sf(ctx, wid, display_name, metadata, current_value, lw, has_vis
         if (hasattr(metadata, "enum_labels")
                 and metadata.enum_labels
                 and len(metadata.enum_labels) == len(members)):
-            member_names = metadata.enum_labels
+            member_names = resolve_enum_display_labels(metadata, members)
         else:
             member_names = [get_enum_member_name(m) for m in members]
         current_idx = find_enum_index(members, current_value)
@@ -1064,7 +1074,7 @@ def build_scalar_desc(
         if enum_cls is not None:
             members = get_enum_members(enum_cls)
             if hasattr(metadata, "enum_labels") and metadata.enum_labels and len(metadata.enum_labels) == len(members):
-                desc["en"] = metadata.enum_labels
+                desc["en"] = resolve_enum_display_labels(metadata, members)
             else:
                 desc["en"] = [get_enum_member_name(m) for m in members]
             desc["ei"] = find_enum_index(members, current_value)

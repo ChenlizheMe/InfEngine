@@ -131,12 +131,24 @@ class ExpressionCompiler:
                             ]
                         )
                     value_type = port.value_type or TypeRef(ValueType.F32)
+                    literal = node.properties.get(port.id, port.default)
+                    literal_error = self._literal_error(value_type, literal)
+                    if literal_error:
+                        raise ExpressionCompileError(
+                            [
+                                ExpressionDiagnostic(
+                                    "invalid_literal",
+                                    f"{definition.type_id}.{port.id} {literal_error}",
+                                    node_uid,
+                                )
+                            ]
+                        )
                     raw_operands.append(
                         (
                             port,
                             ExpressionOperand(
                                 value_type,
-                                literal=node.properties.get(port.id, port.default),
+                                literal=literal,
                             ),
                         )
                     )

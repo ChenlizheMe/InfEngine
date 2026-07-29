@@ -180,12 +180,31 @@ std::vector<std::string> RenderEffectImporter::ScanDependencies(const ImportRequ
         std::unordered_set<std::string> keys;
         for (const char *key : expected)
             keys.emplace(key);
-        if (value.size() != keys.size())
-            throw std::runtime_error(location + " contains missing or unknown fields");
+        std::vector<std::string> missing;
+        std::vector<std::string> unknown;
+        for (const auto &key : keys) {
+            if (!value.contains(key))
+                missing.push_back(key);
+        }
         for (const auto &[key, ignored] : value.items()) {
             (void)ignored;
             if (keys.find(key) == keys.end())
-                throw std::runtime_error(location + " contains unknown field '" + key + "'");
+                unknown.push_back(key);
+        }
+        if (!missing.empty() || !unknown.empty()) {
+            std::sort(missing.begin(), missing.end());
+            std::sort(unknown.begin(), unknown.end());
+            const auto join = [](const std::vector<std::string> &items) {
+                std::string result;
+                for (const auto &item : items) {
+                    if (!result.empty())
+                        result += ", ";
+                    result += "'" + item + "'";
+                }
+                return result;
+            };
+            throw std::runtime_error(location + " schema mismatch; missing=[" + join(missing) +
+                                     "], unknown=[" + join(unknown) + "]");
         }
     };
 
@@ -288,7 +307,7 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         }
     };
 
-    requireExactKeys(root, {"$schema", "stable_id", "name", "emitters", "parameters", "event_types", "event_routes"},
+    requireExactKeys(root, {"$schema", "stable_id", "name", "emitters", "parameters", "event_types"},
                      "particle graph");
     if (!root["$schema"].is_string() || root["$schema"].get<std::string>() != "infernux.particle_graph")
         throw std::runtime_error("particle graph has an unsupported $schema");
@@ -296,8 +315,8 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         !root["name"].is_string() || root["name"].get_ref<const std::string &>().empty())
         throw std::runtime_error("particle graph stable_id and name must be non-empty strings");
     if (!root["emitters"].is_array() || root["emitters"].empty() || !root["parameters"].is_array() ||
-        !root["event_types"].is_array() || !root["event_routes"].is_array())
-        throw std::runtime_error("particle graph requires emitters, parameters, event_types, and event_routes arrays");
+        !root["event_types"].is_array())
+        throw std::runtime_error("particle graph requires emitters, parameters, and event_types arrays");
 
     std::unordered_set<std::string> dependencies;
     const auto readReference = [&](const nlohmann::json &reference, const std::string &location) {
@@ -315,14 +334,13 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         const auto &emitter = root["emitters"][emitterIndex];
         const std::string emitterLocation = "emitters[" + std::to_string(emitterIndex) + "]";
         requireExactKeys(emitter,
-                         {"stable_id", "name", "enabled", "play_on_start", "settings", "attribute_defaults",
-                          "data_interfaces", "stages"},
+                         {"stable_id", "name", "settings", "attribute_defaults", "data_interfaces", "stages",
+                          "events"},
                          emitterLocation);
-        if (!emitter["enabled"].is_boolean() || !emitter["play_on_start"].is_boolean())
-            throw std::runtime_error(emitterLocation + ".enabled and .play_on_start must be booleans");
-        if (!emitter["attribute_defaults"].is_object() || !emitter["data_interfaces"].is_array())
+        if (!emitter["attribute_defaults"].is_object() || !emitter["data_interfaces"].is_array() ||
+            !emitter["events"].is_array())
             throw std::runtime_error(emitterLocation +
-                                     ".attribute_defaults must be an object and data_interfaces must be an array");
+                                     ".attribute_defaults must be an object and data_interfaces/events must be arrays");
         for (size_t interfaceIndex = 0; interfaceIndex < emitter["data_interfaces"].size(); ++interfaceIndex) {
             const auto &dataInterface = emitter["data_interfaces"][interfaceIndex];
             const std::string interfaceLocation =

@@ -187,7 +187,27 @@ def test_particle_graph_native_importer_rejects_obsolete_emitter_lifecycle_schem
     asset_db = engine.get_asset_database()
     source = tmp_path / "ObsoleteLifecycle.particlegraph"
     document = ParticleGraphAsset(stable_id="obsolete-lifecycle").to_dict()
-    del document["emitters"][0]["play_on_start"]
+    document["emitters"][0]["play_on_start"] = False
+    source.write_text(json.dumps(document), encoding="utf-8")
+
+    try:
+        result = AssetManager.import_asset(str(source), database=asset_db)
+
+        assert not result
+        assert result.error_code == AssetMutationErrorCode.IMPORT_FAILED
+        assert "missing or unknown fields" in result.error
+    finally:
+        if asset_db.contains_path(str(source)):
+            asset_db.delete_asset(str(source))
+
+
+def test_particle_graph_native_importer_rejects_separate_emitter_active_state(
+    engine, tmp_path: Path
+):
+    asset_db = engine.get_asset_database()
+    source = tmp_path / "SeparateActiveState.particlegraph"
+    document = ParticleGraphAsset(stable_id="separate-active-state").to_dict()
+    document["emitters"][0]["active"] = True
     source.write_text(json.dumps(document), encoding="utf-8")
 
     try:

@@ -143,13 +143,23 @@ class SceneViewOverlaysMixin:
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
             return False
 
+    def _can_control_particle_preview(self, component) -> bool:
+        return bool(
+            self._is_particle_preview_edit_mode()
+            and component is self._particle_preview_component
+            and self._particle_preview_is_live(
+                component, self._particle_preview_object
+            )
+        )
+
     def _discard_invalid_particle_preview(self) -> None:
-        component = self._particle_preview_component
-        if component is not None:
-            try:
-                component._remove_native_batch()
-            except (AttributeError, ReferenceError, RuntimeError):
-                pass
+        # A stale wrapper can share stable object/component IDs with the scene
+        # that just replaced it. Component teardown owns GPU lifetime; this
+        # panel only owns the wrapper references.
+        self._forget_particle_preview_selection()
+
+    def _forget_particle_preview_selection(self) -> None:
+        """Drop editor-only handles without touching a Play Mode component."""
         self._particle_preview_component = None
         self._particle_preview_object = None
         self._particle_preview_playing = False
@@ -161,27 +171,54 @@ class SceneViewOverlaysMixin:
             return
         try:
             from Infernux.lib import SceneManager
+            from Infernux.engine.ui.selection_manager import SelectionManager
 
-            object_id = int(self._engine.get_selected_object_id() or 0)
+            object_id = int(SelectionManager.instance().get_primary() or 0)
             scene = SceneManager.instance().get_active_scene()
             selected = scene.find_by_id(object_id) if scene and object_id else None
         except (AttributeError, ReferenceError, RuntimeError):
             selected = None
         self._on_particle_preview_selection(selected)
 
+    def _restore_particle_preview_if_ready(self) -> None:
+        if not self._particle_preview_restore_pending:
+            return
+        if not self._is_particle_preview_edit_mode():
+            self._particle_preview_restore_pending = False
+            return
+        try:
+            from Infernux.engine.deferred_task import DeferredTaskRunner
+
+            runner = DeferredTaskRunner.instance()
+            if runner is not None and runner.is_busy:
+                return
+        except (AttributeError, RuntimeError):
+            return
+        self._particle_preview_restore_pending = False
+        self._restore_particle_preview_selection()
+
     def _on_particle_preview_play_mode_changed(self, event) -> None:
         """Rebind edit preview after Play Mode recreates the scene objects."""
         from Infernux.engine.play_mode import PlayModeState
 
         if event.new_state is PlayModeState.EDIT:
-            # Stop Mode restores a new authoring scene. Never retain component
-            # wrappers from the runtime scene, even when object IDs match.
-            self._release_particle_preview_selection()
-            self._restore_particle_preview_selection()
+            # The EDIT notification precedes the deferred scene restore. Delay
+            # rebinding until that task is idle so the outgoing runtime wrapper
+            # cannot alias the restored scene's stable GPU batch IDs.
+            self._forget_particle_preview_selection()
+            self._particle_preview_restore_pending = True
             return
-        self._release_particle_preview_selection()
+        # Play Mode owns the runtime ParticleSystem. Never call editor preview
+        # controls while entering or running it; scene replacement retires the
+        # old edit-preview graph through normal ownership.
+        self._particle_preview_restore_pending = False
+        self._forget_particle_preview_selection()
 
     def _on_particle_preview_selection(self, game_object) -> None:
+        if not self._is_particle_preview_edit_mode():
+            self._forget_particle_preview_selection()
+            return
+        self._particle_preview_restore_pending = False
         component = self._particle_component_from_object(game_object)
         if component is self._particle_preview_component and self._particle_preview_is_live(
             component, game_object
@@ -217,18 +254,16 @@ class SceneViewOverlaysMixin:
 
     def _release_particle_preview_selection(self) -> None:
         component = self._particle_preview_component
-        if component is not None:
+        if component is not None and self._can_control_particle_preview(component):
             try:
                 component.editor_preview_end()
             except (AttributeError, ReferenceError, RuntimeError):
                 pass
-        self._particle_preview_component = None
-        self._particle_preview_object = None
-        self._particle_preview_playing = False
-        self._particle_preview_prepared = False
-        self._particle_preview_resize_drag = False
+        self._particle_preview_restore_pending = False
+        self._forget_particle_preview_selection()
 
     def _tick_particle_preview(self, delta_time: float) -> None:
+        self._restore_particle_preview_if_ready()
         component = self._particle_preview_component
         if component is None:
             return
@@ -238,12 +273,7 @@ class SceneViewOverlaysMixin:
             self._discard_invalid_particle_preview()
             return
         if not self._is_particle_preview_edit_mode():
-            if self._particle_preview_prepared:
-                try:
-                    component.editor_preview_end()
-                except (AttributeError, ReferenceError, RuntimeError):
-                    pass
-                self._particle_preview_prepared = False
+            self._forget_particle_preview_selection()
             return
         try:
             # The component owns playback intent and GPU residency.  Tick it
@@ -381,6 +411,44 @@ class SceneViewOverlaysMixin:
                     "scene_view.particle_preview.speed",
                     numeric_value=self._particle_preview_speed,
                 )
+            current_time = float(component.editor_preview_time_seconds())
+            duration = max(
+                0.001, float(component.editor_preview_duration_seconds())
+            )
+            if not self._particle_preview_seek_editing:
+                self._particle_preview_seek_time = min(duration, current_time)
+            ctx.align_text_to_frame_padding()
+            ctx.label(t("particle_preview.time"))
+            ctx.same_line(96.0)
+            ctx.set_next_item_width(-1)
+            self._particle_preview_seek_time = float(
+                ctx.drag_float(
+                    "##particle_preview_time",
+                    self._particle_preview_seek_time,
+                    0.01,
+                    0.0,
+                    duration,
+                )
+            )
+            self._particle_preview_seek_editing = bool(ctx.is_item_active())
+            seek_committed = bool(ctx.is_item_deactivated_after_edit())
+            if semantic_capture and callable(record_item):
+                record_item(
+                    "particle_preview_time",
+                    t("particle_preview.time"),
+                    True,
+                    "scene_view.particle_preview.time",
+                    numeric_value=self._particle_preview_seek_time,
+                )
+            if seek_committed and self._can_control_particle_preview(component):
+                try:
+                    self._particle_preview_prepared = bool(
+                        component.editor_preview_seek(
+                            self._particle_preview_seek_time
+                        )
+                    )
+                except (AttributeError, ReferenceError, RuntimeError, ValueError):
+                    self._particle_preview_prepared = False
             if self._particle_preview_playing:
                 pause_label = t("particle_preview.pause")
                 ctx.push_style_color(ImGuiCol.Button, *Theme.PLAY_ACTIVE)
@@ -393,7 +461,7 @@ class SceneViewOverlaysMixin:
                         True,
                         "scene_view.particle_preview.pause",
                     )
-                if pause_clicked:
+                if pause_clicked and self._can_control_particle_preview(component):
                     try:
                         component.editor_preview_pause()
                     finally:
@@ -408,7 +476,7 @@ class SceneViewOverlaysMixin:
                         True,
                         "scene_view.particle_preview.play",
                     )
-                if play_clicked:
+                if play_clicked and self._can_control_particle_preview(component):
                     try:
                         self._particle_preview_prepared = bool(
                             component.editor_preview_play()
@@ -433,7 +501,7 @@ class SceneViewOverlaysMixin:
                     True,
                     "scene_view.particle_preview.stop",
                 )
-            if stop_clicked:
+            if stop_clicked and self._can_control_particle_preview(component):
                 try:
                     component.editor_preview_stop()
                 finally:
@@ -459,7 +527,10 @@ class SceneViewOverlaysMixin:
                         f"scene_view.particle_preview.emitter.{index}.visible",
                         bool_value=preview_visible,
                     )
-                if preview_visible != was_visible:
+                if (
+                    preview_visible != was_visible
+                    and self._can_control_particle_preview(component)
+                ):
                     component.editor_preview_set_emitter_muted(
                         index, not preview_visible
                     )
@@ -478,7 +549,10 @@ class SceneViewOverlaysMixin:
                         f"scene_view.particle_preview.emitter.{index}.solo",
                         bool_value=solo,
                     )
-                if solo != bool(emitter["solo"]):
+                if (
+                    solo != bool(emitter["solo"])
+                    and self._can_control_particle_preview(component)
+                ):
                     component.editor_preview_set_emitter_solo(index, solo)
                 ctx.same_line(0, 8.0)
                 restarted = ctx.button(
@@ -491,7 +565,7 @@ class SceneViewOverlaysMixin:
                         bool(emitter["enabled"]),
                         f"scene_view.particle_preview.emitter.{index}.restart",
                     )
-                if restarted:
+                if restarted and self._can_control_particle_preview(component):
                     try:
                         restarted = bool(
                             component.editor_preview_restart_emitter(index)

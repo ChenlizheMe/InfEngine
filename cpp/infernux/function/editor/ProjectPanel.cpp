@@ -3,9 +3,9 @@
 #include "Infernux.h"
 
 #include <function/editor/EditorThemeRegistry.h>
-#include <function/resources/AssetFormatRegistry.h>
 #include <function/renderer/gui/InxGUISemantics.h>
 #include <function/renderer/gui/InxResourcePreviewer.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
@@ -246,32 +246,32 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
 {
     static const std::unordered_map<std::string, std::string> map = [] {
         std::unordered_map<std::string, std::string> result = {
-        {"__dir__", "folder"},
-        {".py", "script_py"},
-        {".vert", "shader_vert"},
-        {".frag", "shader_frag"},
-        {".hlsl", "shader_hlsl"},
-        {".glsl", "shader_glsl"},
-        {".shadingmodel", "shadingmodel"},
-        {".wav", "audio"},
-        {".ttf", "font"},
-        {".otf", "font"},
-        {".txt", "text"},
-        {".md", "readme"},
-        {".mat", "material"},
-        {".physicmaterial", "physic_material"},
-        {".scene", "scene"},
-        // Scene prefabs still use the mesh-preview pipeline when possible;
-        // this named icon is only the explicit fallback for missing previews.
-        {".animclip2d", "animclip2d"},
-        {".animclip3d", "animclip3d"},
-        {".animfsm", "animfsm"},
-        {".animtimeline", "timeline"},
-        {".timelinefsm", "timeline_fsm"},
-        {".particlegraph", "particle_graph"},
-        {".effect", "render_effect"},
-        {".effectgroup", "render_effect_group"},
-        {".prefab", "prefab"},
+            {"__dir__", "folder"},
+            {".py", "script_py"},
+            {".vert", "shader_vert"},
+            {".frag", "shader_frag"},
+            {".hlsl", "shader_hlsl"},
+            {".glsl", "shader_glsl"},
+            {".shadingmodel", "shadingmodel"},
+            {".wav", "audio"},
+            {".ttf", "font"},
+            {".otf", "font"},
+            {".txt", "text"},
+            {".md", "readme"},
+            {".mat", "material"},
+            {".physicmaterial", "physic_material"},
+            {".scene", "scene"},
+            // Scene prefabs still use the mesh-preview pipeline when possible;
+            // this named icon is only the explicit fallback for missing previews.
+            {".animclip2d", "animclip2d"},
+            {".animclip3d", "animclip3d"},
+            {".animfsm", "animfsm"},
+            {".animtimeline", "timeline"},
+            {".timelinefsm", "timeline_fsm"},
+            {".particlegraph", "particle_graph"},
+            {".effect", "render_effect"},
+            {".effectgroup", "render_effect_group"},
+            {".prefab", "prefab"},
         };
         for (const auto extension : asset_formats::kTextureExtensions)
             result.emplace(std::string(extension), "texture");
@@ -292,26 +292,26 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
 {
     static const std::unordered_map<std::string, DragDropInfo> map = [] {
         std::unordered_map<std::string, DragDropInfo> result = {
-        {".py", {"SCRIPT_FILE", "Script"}},
-        {".mat", {"MATERIAL_FILE", "Material"}},
-        {".physicmaterial", {"PHYSIC_MATERIAL_FILE", "PhysicMaterial"}},
-        {".vert", {"SHADER_FILE", "Shader"}},
-        {".frag", {"SHADER_FILE", "Shader"}},
-        {".glsl", {"SHADER_FILE", "Shader"}},
-        {".hlsl", {"SHADER_FILE", "Shader"}},
-        {".wav", {"AUDIO_FILE", "Audio"}},
-        {".ttf", {"FONT_FILE", "Font"}},
-        {".otf", {"FONT_FILE", "Font"}},
-        {".scene", {"SCENE_FILE", "Scene"}},
-        {".animclip2d", {"ANIMCLIP_FILE", "2D AnimClip"}},
-        {".animclip3d", {"ANIMCLIP3D_FILE", "3D AnimClip"}},
-        {".animfsm", {"ANIMFSM_FILE", "AnimFSM"}},
-        {".particlegraph", {"PARTICLE_GRAPH_FILE", "Particle Graph"}},
-        {".effect", {"RENDER_EFFECT_FILE", "Render Effect"}},
-        // Effect assets and groups occupy the same RenderStack slot type.
-        {".effectgroup", {"RENDER_EFFECT_FILE", "Render Effect Group"}},
-        {".animtimeline", {"ANIMTIMELINE_FILE", "Timeline"}},
-        {".timelinefsm", {"TIMELINEFSM_FILE", "TimelineFSM"}},
+            {".py", {"SCRIPT_FILE", "Script"}},
+            {".mat", {"MATERIAL_FILE", "Material"}},
+            {".physicmaterial", {"PHYSIC_MATERIAL_FILE", "PhysicMaterial"}},
+            {".vert", {"SHADER_FILE", "Shader"}},
+            {".frag", {"SHADER_FILE", "Shader"}},
+            {".glsl", {"SHADER_FILE", "Shader"}},
+            {".hlsl", {"SHADER_FILE", "Shader"}},
+            {".wav", {"AUDIO_FILE", "Audio"}},
+            {".ttf", {"FONT_FILE", "Font"}},
+            {".otf", {"FONT_FILE", "Font"}},
+            {".scene", {"SCENE_FILE", "Scene"}},
+            {".animclip2d", {"ANIMCLIP_FILE", "2D AnimClip"}},
+            {".animclip3d", {"ANIMCLIP3D_FILE", "3D AnimClip"}},
+            {".animfsm", {"ANIMFSM_FILE", "AnimFSM"}},
+            {".particlegraph", {"PARTICLE_GRAPH_FILE", "Particle Graph"}},
+            {".effect", {"RENDER_EFFECT_FILE", "Render Effect"}},
+            // Effect assets and groups occupy the same RenderStack slot type.
+            {".effectgroup", {"RENDER_EFFECT_FILE", "Render Effect Group"}},
+            {".animtimeline", {"ANIMTIMELINE_FILE", "Timeline"}},
+            {".timelinefsm", {"TIMELINEFSM_FILE", "TimelineFSM"}},
         };
         for (const auto extension : asset_formats::kTextureExtensions)
             result.emplace(std::string(extension), DragDropInfo{"TEXTURE_FILE", "Texture"});
@@ -3129,6 +3129,7 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
                        "infernux.post.chromatic_aberration");
             effectItem("project.effect_film_grain", "NewFilmGrain", "infernux.post.film_grain");
             effectItem("project.effect_motion_blur", "NewMotionBlur", "infernux.post.motion_blur");
+            effectItem("project.effect_temporal_aa", "NewTemporalAA", "infernux.post.temporal_aa");
             effectItem("project.effect_sharpen", "NewSharpen", "infernux.post.sharpen");
             effectItem("project.effect_vignette", "NewVignette", "infernux.post.vignette");
             effectItem("project.effect_white_balance", "NewWhiteBalance", "infernux.post.white_balance");

@@ -19,11 +19,13 @@ SERVER_NAME = "Infernux Editor"
 _server_thread: Optional[threading.Thread] = None
 _server = None
 _project_path = ""
+_active_host = HOST
+_active_port = PORT
 
 
 def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bool:
     """Start the embedded HTTP MCP server if it is not already running."""
-    global _server_thread, _server, _project_path
+    global _server_thread, _server, _project_path, _active_host, _active_port
 
     if _server_thread is not None and _server_thread.is_alive():
         return True
@@ -38,6 +40,8 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
         return False
 
     _project_path = project_path
+    _active_host = str(host)
+    _active_port = int(port)
     from Infernux.mcp.capabilities import configure, feature_enabled, is_enabled
     capability_config = configure(project_path, write_default=True)
     if not is_enabled():
@@ -142,24 +146,30 @@ def is_running() -> bool:
     return _server_thread is not None and _server_thread.is_alive()
 
 
-def endpoint_url(*, host: str = HOST, port: int = PORT) -> str:
-    return f"http://{host}:{int(port)}{PATH}"
+def endpoint_url(*, host: str | None = None, port: int | None = None) -> str:
+    resolved_host = _active_host if host is None else host
+    resolved_port = _active_port if port is None else int(port)
+    return f"http://{resolved_host}:{resolved_port}{PATH}"
 
 
-def health_url(*, host: str = HOST, port: int = PORT) -> str:
-    return f"http://{host}:{int(port)}{HEALTH_PATH}"
+def health_url(*, host: str | None = None, port: int | None = None) -> str:
+    resolved_host = _active_host if host is None else host
+    resolved_port = _active_port if port is None else int(port)
+    return f"http://{resolved_host}:{resolved_port}{HEALTH_PATH}"
 
 
-def connection_info(*, host: str = HOST, port: int = PORT) -> dict:
-    url = endpoint_url(host=host, port=int(port))
+def connection_info(*, host: str | None = None, port: int | None = None) -> dict:
+    resolved_host = _active_host if host is None else host
+    resolved_port = _active_port if port is None else int(port)
+    url = endpoint_url(host=resolved_host, port=resolved_port)
     return {
         "name": SERVER_NAME,
         "transport": "streamable-http",
-        "host": host,
-        "port": int(port),
+        "host": resolved_host,
+        "port": resolved_port,
         "path": PATH,
         "url": url,
-        "health_url": health_url(host=host, port=int(port)),
+        "health_url": health_url(host=resolved_host, port=resolved_port),
         "clients": _client_connection_configs(url),
     }
 

@@ -24,8 +24,6 @@ class ParticleRuntimeMetadataError(ValueError):
 class ParticleEmitterRuntimeMetadata:
     stable_id: str
     name: str
-    enabled: bool
-    play_on_start: bool
     settings: EmitterSettings
     outputs: tuple[ParticleOutputDescriptor, ...]
     data_interfaces: tuple[ParticleDataInterface, ...] = ()
@@ -62,8 +60,6 @@ def decode_particle_runtime_metadata(
             emitter.stable_id: ParticleEmitterRuntimeMetadata(
                 emitter.stable_id,
                 emitter.name,
-                emitter.enabled,
-                emitter.play_on_start,
                 emitter.settings,
                 tuple(emitter.render_plan.outputs),
                 tuple(emitter.data_interfaces),
@@ -123,8 +119,6 @@ def decode_particle_runtime_metadata(
             raise ParticleRuntimeMetadataError(f"{location} must be an object")
         stable_id = encoded.get("stable_id")
         name = encoded.get("name")
-        enabled = encoded.get("enabled")
-        play_on_start = encoded.get("play_on_start")
         settings_value = encoded.get("settings")
         render_plan = encoded.get("render_plan")
         data_interfaces_value = encoded.get("data_interfaces")
@@ -132,12 +126,6 @@ def decode_particle_runtime_metadata(
             raise ParticleRuntimeMetadataError(f"{location} stable_id is invalid")
         if type(name) is not str or not name:
             raise ParticleRuntimeMetadataError(f"{location} name is invalid")
-        if type(enabled) is not bool:
-            raise ParticleRuntimeMetadataError(f"{location} enabled must be a boolean")
-        if type(play_on_start) is not bool:
-            raise ParticleRuntimeMetadataError(
-                f"{location} play_on_start must be a boolean"
-            )
         if (
             type(settings_value) is not dict
             or type(render_plan) is not list
@@ -163,8 +151,6 @@ def decode_particle_runtime_metadata(
         by_id[stable_id] = ParticleEmitterRuntimeMetadata(
             stable_id,
             name,
-            enabled,
-            play_on_start,
             settings,
             outputs,
             data_interfaces,

@@ -396,6 +396,7 @@ def _register_builtin_features() -> None:
     from Infernux.renderstack.color_adjustments_effect import ColorAdjustmentsEffect
     from Infernux.renderstack.film_grain_effect import FilmGrainEffect
     from Infernux.renderstack.motion_blur_effect import MotionBlurEffect
+    from Infernux.renderstack.temporal_aa_effect import TemporalAAEffect
     from Infernux.renderstack.pixelation_effect import PixelationEffect
     from Infernux.renderstack.sharpen_effect import SharpenEffect
     from Infernux.renderstack.tonemapping_effect import ToneMappingEffect
@@ -431,6 +432,11 @@ def _register_builtin_features() -> None:
     register_render_effect_feature(
         "infernux.post.motion_blur",
         MotionBlurEffect,
+        route_policy=RoutePolicy.MASK_AND_MODIFY,
+    )
+    register_render_effect_feature(
+        "infernux.post.temporal_aa",
+        TemporalAAEffect,
         route_policy=RoutePolicy.MASK_AND_MODIFY,
     )
     register_render_effect_feature(

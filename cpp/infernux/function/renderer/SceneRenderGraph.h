@@ -29,6 +29,7 @@
 #include "vk/VkDescriptorManager.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
+#include <algorithm>
 #include <array>
 #include <functional>
 #include <map>
@@ -163,6 +164,23 @@ class SceneRenderGraph
     [[nodiscard]] const rhi::RenderViewContext &GetRenderViewContext() const noexcept
     {
         return m_renderView;
+    }
+
+    [[nodiscard]] size_t GetTemporalHistoryCount() const noexcept
+    {
+        return m_temporalHistories.size();
+    }
+
+    [[nodiscard]] size_t GetValidTemporalHistoryCount() const noexcept
+    {
+        return static_cast<size_t>(std::count_if(
+            m_temporalHistories.begin(), m_temporalHistories.end(),
+            [](const auto &entry) { return entry.second.valid; }));
+    }
+
+    [[nodiscard]] uint32_t GetTemporalSampleIndex() const noexcept
+    {
+        return m_temporalSampleIndex;
     }
 
     // ========================================================================
@@ -470,7 +488,15 @@ class SceneRenderGraph
     // ========================================================================
 
     /// @brief Cache camera VP matrices (called by SubmitCulling)
-    void SetCachedCameraVP(const glm::mat4 &view, const glm::mat4 &proj);
+    void SetCachedCameraVP(const Camera *camera, const glm::mat4 &view, const glm::mat4 &proj);
+
+    /// Return the centered sub-pixel projection offset for one temporal sample.
+    /// The result is expressed in NDC and is independent for each RenderView.
+    [[nodiscard]] static glm::vec2 ComputeTemporalJitterNdc(uint32_t sampleIndex, uint32_t width, uint32_t height);
+
+    /// Apply an NDC offset to a projection without assuming perspective or
+    /// orthographic matrix layout. Culling continues to use the source matrix.
+    [[nodiscard]] static glm::mat4 ApplyTemporalJitter(const glm::mat4 &projection, const glm::vec2 &jitterNdc);
 
     /// Upload this view's camera constants into its current frame-local buffer.
     /// This is host-side preparation and must happen before graph recording.
@@ -495,9 +521,12 @@ class SceneRenderGraph
         m_hasCachedShadowDrawCalls = false;
         m_cachedView = glm::mat4(1.0f);
         m_cachedProj = glm::mat4(1.0f);
+        m_cachedUnjitteredProj = glm::mat4(1.0f);
         m_hasCachedCameraVP = false;
+        m_cachedCamera = nullptr;
         m_previousViewProj = glm::mat4(1.0f);
         m_cameraHistoryValid = false;
+        InvalidateTemporalHistory();
     }
 
     /// @brief Clear cached draw calls and camera state.
@@ -556,7 +585,12 @@ class SceneRenderGraph
             return;
         m_previousViewProj = m_cachedProj * m_cachedView;
         m_cameraHistoryValid = true;
+        if (UsesTemporalHistory())
+            m_temporalSampleIndex = (m_temporalSampleIndex + 1u) % kTemporalJitterSampleCount;
     }
+
+    /// Drop accumulated temporal color history for this view.
+    void InvalidateTemporalHistory();
 
     /// @brief Get per-graph shadow descriptor set (set 1) for the current frame-in-flight
     [[nodiscard]] VkDescriptorSet GetPerViewDescriptorSet() const;
@@ -628,6 +662,11 @@ class SceneRenderGraph
      * @brief Import scene target resources into RenderGraph
      */
     void ImportSceneTargetResources();
+    void ImportTemporalHistoryResources(std::unordered_map<std::string, vk::ResourceHandle> &handles);
+    void BindTemporalHistoryResources();
+    void CommitTemporalHistory();
+    void RetireTemporalHistoryResources();
+    [[nodiscard]] bool UsesTemporalHistory() const;
 
     /// @brief Update this frame's per-view shadow descriptor before recording.
     void RefreshPerViewShadowDescriptor();
@@ -699,6 +738,22 @@ class SceneRenderGraph
     // Transient resources created by CreateTransientTexture()
     std::unordered_map<std::string, vk::ResourceHandle> m_transientResources;
 
+    struct TemporalHistoryResource
+    {
+        std::array<rhi::TextureHandle, 2> textures{};
+        std::array<rhi::TextureViewHandle, 2> views{};
+        vk::ResourceHandle readHandle;
+        vk::ResourceHandle writeHandle;
+        std::string readName;
+        std::string writeName;
+        rhi::PixelFormat format = rhi::PixelFormat::Undefined;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t readIndex = 0;
+        bool valid = false;
+    };
+    std::unordered_map<std::string, TemporalHistoryResource> m_temporalHistories;
+
     // Camera-driven clear overrides (set per-frame by UpdateMainPassClearSettings)
     bool m_hasCameraClearOverride = false;
     CameraClearFlags m_cameraClearFlags = {};
@@ -730,11 +785,16 @@ class SceneRenderGraph
     // uses the exact same matrices that were active during SetupCameraProperties.
     glm::mat4 m_cachedView{1.0f};
     glm::mat4 m_cachedProj{1.0f};
+    glm::mat4 m_cachedUnjitteredProj{1.0f};
     std::array<float, 24> m_particleFrustumPlanes{};
     bool m_hasCachedCameraVP = false;
     glm::mat4 m_drawView{1.0f};
     glm::mat4 m_previousViewProj{1.0f};
     bool m_cameraHistoryValid = false;
+    const Camera *m_cachedCamera = nullptr;
+    static constexpr uint32_t kTemporalJitterSampleCount = 8;
+    uint32_t m_temporalSampleIndex = 0;
+    glm::vec2 m_temporalJitterNdc{0.0f};
 
     // Per-graph shadow descriptor sets (set 1) — multi-camera shadow isolation.
     // One set per frame-in-flight to prevent host-side vkUpdateDescriptorSets

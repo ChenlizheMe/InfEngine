@@ -385,21 +385,29 @@ COMMON_NODE_DEFINITIONS = (
         "common.curve.sample",
         "Sample Curve",
         (
+            _input(
+                "curve",
+                TypeRef(ValueType.CURVE),
+                default=Curve().to_dict(),
+            ),
             _input("t", TypeRef(ValueType.F32), default=0.0),
             _output("value", TypeRef(ValueType.F32)),
         ),
-        (PropertyDef("curve", TypeRef(ValueType.CURVE), Curve().to_dict()),),
-        {"expression": "sample_curve"},
+        target_opcodes={"expression": "sample_curve"},
     ),
     NodeDef(
         "common.gradient.sample",
         "Sample Gradient",
         (
+            _input(
+                "gradient",
+                TypeRef(ValueType.GRADIENT),
+                default=Gradient().to_dict(),
+            ),
             _input("t", TypeRef(ValueType.F32), default=0.0),
             _output("color", TypeRef(ValueType.COLOR)),
         ),
-        (PropertyDef("gradient", TypeRef(ValueType.GRADIENT), Gradient().to_dict()),),
-        {"expression": "sample_gradient"},
+        target_opcodes={"expression": "sample_gradient"},
     ),
     NodeDef(
         "common.texture.sample2d",

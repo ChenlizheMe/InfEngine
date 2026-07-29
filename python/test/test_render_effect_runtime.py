@@ -23,6 +23,66 @@ from Infernux.renderstack.render_stack import RenderStack
 from Infernux.renderstack.render_pipeline import RenderPipeline
 
 
+class _SingleCameraPipeline(RenderPipeline):
+    name = "Single Camera Contract"
+
+    def define_topology(self, graph):
+        graph.create_texture("color", camera_target=True)
+        with graph.add_pass("Opaque") as render_pass:
+            render_pass.write_color("color")
+            render_pass.draw_renderers()
+        graph.set_output("color")
+
+
+class _SingleCameraContext:
+    def __init__(self):
+        self.calls = []
+        self.current_revision = 0
+
+    def setup_camera_properties(self, camera):
+        self.calls.append(("setup", camera))
+
+    def cull(self, camera):
+        self.calls.append(("cull", camera))
+        return "culling"
+
+    def is_graph_revision_current(self, revision):
+        self.calls.append(("is_current", revision))
+        return self.current_revision == revision
+
+    def apply_graph(self, description):
+        self.calls.append(("apply", description.source_revision))
+        self.current_revision = description.source_revision
+
+    def submit_culling(self, culling):
+        self.calls.append(("submit", culling))
+
+
+def test_render_pipeline_callback_owns_exactly_one_camera_per_context():
+    pipeline = _SingleCameraPipeline()
+    context = _SingleCameraContext()
+    camera = object()
+
+    pipeline.render(context, camera)
+
+    assert context.calls[0:2] == [("setup", camera), ("cull", camera)]
+    assert context.calls[-1] == ("submit", "culling")
+    assert sum(call[0] == "setup" for call in context.calls) == 1
+    assert sum(call[0] == "cull" for call in context.calls) == 1
+    assert sum(call[0] == "submit" for call in context.calls) == 1
+
+
+def test_render_pipeline_camera_filter_does_not_touch_rejected_context():
+    class _RejectedPipeline(_SingleCameraPipeline):
+        def should_render_camera(self, camera):
+            return False
+
+    context = _SingleCameraContext()
+    _RejectedPipeline().render(context, object())
+
+    assert context.calls == []
+
+
 def test_render_effect_has_material_like_typed_parameter_api():
     effect = RenderEffect(
         RenderEffectAsset(
@@ -688,6 +748,53 @@ def test_motion_blur_parameters_update_without_graph_rebuild():
         dict(update.values).get("maxBlurPixels") == pytest.approx(64.0)
         for update in updates
     )
+
+
+def test_temporal_aa_consumes_motion_and_commits_typed_history():
+    effect = RenderEffect(
+        RenderEffectAsset(
+            feature_type="infernux.post.temporal_aa",
+            parameters={
+                "feedback": 0.92,
+                "motion_rejection": 0.1,
+                "depth_rejection": 128.0,
+            },
+        )
+    )
+    stack = RenderStack()
+    stack.add_effect_slot("final", RenderEffectRef(effect=effect))
+
+    description = stack.build_graph()
+    resolve = next(
+        render_pass
+        for render_pass in description.passes
+        if render_pass.name.endswith("TAA_Resolve")
+    )
+    commit = next(
+        render_pass
+        for render_pass in description.passes
+        if render_pass.name.endswith("TAA_CommitHistory")
+    )
+    command = resolve.commands[0]
+    bindings = dict(command.input_bindings)
+    textures = {texture.name: texture for texture in description.textures}
+    history_read = textures[bindings["_HistoryTex"]]
+    history_write = textures[commit.commands[0].destination_resource]
+
+    assert command.shader_name == "Temporal Anti-Aliasing"
+    assert bindings["_MotionTex"] == "motion"
+    assert bindings["_DepthTex"] == "depth"
+    assert history_read.temporal_key == history_write.temporal_key
+    assert history_read.role.name == "TEMPORAL_READ"
+    assert history_write.role.name == "TEMPORAL_WRITE"
+    assert commit.side_effect is True
+    assert dict(command.push_constants) == {
+        "feedback": pytest.approx(0.92),
+        "motionRejection": pytest.approx(0.1),
+        "depthRejection": pytest.approx(128.0),
+        "_InfernuxHistoryValid": pytest.approx(0.0),
+    }
+    assert stack.effect_compile_errors == ()
 
 
 def test_render_stack_rebuilds_when_effect_topology_parameter_changes():

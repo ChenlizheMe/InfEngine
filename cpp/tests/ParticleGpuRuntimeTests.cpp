@@ -7,7 +7,6 @@
 #include <function/renderer/particle/ParticleGpuCollisionScene.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
-#include <function/renderer/particle/ParticleGpuEventDomain.h>
 #include <function/renderer/particle/ParticleGpuMeshRenderer.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
 #include <function/renderer/particle/ParticleGpuRibbonRenderer.h>
@@ -18,6 +17,7 @@
 #include <function/renderer/rhi/RhiBuffer.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstdint>
@@ -232,6 +232,8 @@ struct CommandTrace
     std::vector<uint32_t> groupSets;
     std::vector<particle::GpuParticlePushConstants> constants;
     std::vector<uint32_t> dispatches;
+    std::vector<rhi::BufferHandle> indirectBuffers;
+    std::vector<uint64_t> indirectOffsets;
 
     static void BindPipeline(void *context, rhi::ComputePipelineHandle pipeline)
     {
@@ -256,8 +258,11 @@ struct CommandTrace
         assert(y == 1 && z == 1);
         static_cast<CommandTrace *>(context)->dispatches.push_back(x);
     }
-    static void DispatchIndirect(void *, rhi::BufferHandle, uint64_t)
+    static void DispatchIndirect(void *context, rhi::BufferHandle buffer, uint64_t offset)
     {
+        auto &trace = *static_cast<CommandTrace *>(context);
+        trace.indirectBuffers.push_back(buffer);
+        trace.indirectOffsets.push_back(offset);
     }
 };
 
@@ -325,36 +330,6 @@ struct DepthResolveTrace
     static void Dispatch(void *context, uint32_t x, uint32_t y, uint32_t z)
     {
         static_cast<DepthResolveTrace *>(context)->dispatch = {x, y, z};
-    }
-    static void DispatchIndirect(void *, rhi::BufferHandle, uint64_t)
-    {
-    }
-};
-
-struct EventTrace
-{
-    rhi::ComputePipelineHandle pipeline;
-    rhi::BindGroupHandle group;
-    particle::GpuParticleEventPrepareConstants constants{};
-    std::array<uint32_t, 3> dispatch{};
-
-    static void BindPipeline(void *context, rhi::ComputePipelineHandle pipeline)
-    {
-        static_cast<EventTrace *>(context)->pipeline = pipeline;
-    }
-    static void BindGroup(void *context, rhi::ComputePipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
-    {
-        assert(setIndex == 0);
-        static_cast<EventTrace *>(context)->group = group;
-    }
-    static void PushConstants(void *context, rhi::ComputePipelineHandle, uint32_t byteSize, const void *data)
-    {
-        assert(byteSize == sizeof(particle::GpuParticleEventPrepareConstants));
-        std::memcpy(&static_cast<EventTrace *>(context)->constants, data, byteSize);
-    }
-    static void Dispatch(void *context, uint32_t x, uint32_t y, uint32_t z)
-    {
-        static_cast<EventTrace *>(context)->dispatch = {x, y, z};
     }
     static void DispatchIndirect(void *, rhi::BufferHandle, uint64_t)
     {
@@ -626,6 +601,7 @@ int main()
         continuationDesc.dataInterfaceGroup = emptyGroup;
         continuationDesc.vectorFieldLayout = emptyLayout;
         continuationDesc.vectorFieldGroup = emptyGroup;
+        continuationDesc.graphSpawnLayout = {0xffe0u, 1};
         continuationDesc.emptyLayout = emptyLayout;
         continuationDesc.emptyGroup = emptyGroup;
         continuationDesc.program = {
@@ -682,13 +658,14 @@ int main()
         assert(current->ProgramGeneration() == 42 && current->ResetSerial() == 2 && current->Telemetry().resetPending);
         constexpr uint64_t Clock = 0x1122334455667788ull;
         assert(!current->RecordClassify(continuationEncoder, 17, Clock));
-        assert(!current->RecordDispatch(continuationEncoder, 17, Clock, 99, 0.125f));
+        const rhi::BindGroupHandle continuationSpawnGroup{0xffe1u, 1};
+        assert(!current->RecordDispatch(continuationEncoder, 17, Clock, 99, 0.125f, continuationSpawnGroup));
         assert(current->RecordPrepare(continuationEncoder, 17, Clock));
-        assert(!current->RecordDispatch(continuationEncoder, 17, Clock, 99, 0.125f));
+        assert(!current->RecordDispatch(continuationEncoder, 17, Clock, 99, 0.125f, continuationSpawnGroup));
         assert(current->RecordClassify(continuationEncoder, 17, Clock));
         assert(!current->RecordClassify(continuationEncoder, 17, Clock));
-        assert(current->RecordDispatch(continuationEncoder, 17, Clock, 99, 0.125f));
-        assert(!current->RecordDispatch(continuationEncoder, 17, Clock, 99, 0.125f));
+        assert(current->RecordDispatch(continuationEncoder, 17, Clock, 99, 0.125f, continuationSpawnGroup));
+        assert(!current->RecordDispatch(continuationEncoder, 17, Clock, 99, 0.125f, continuationSpawnGroup));
         const std::vector<std::array<uint32_t, 3>> expectedContinuationDispatches = {{{6, 1, 1}}};
         assert(continuationTrace.pipelines.size() == 3 &&
                continuationTrace.groupSets == std::vector<uint32_t>({0, 0, 0, 1, 2, 3, 4, 5}) &&
@@ -761,10 +738,10 @@ int main()
         particle::GpuEmitterDesc runtimeDesc;
         runtimeDesc.capacity = 64;
         runtimeDesc.stateStride = 16;
+        runtimeDesc.eventTypeCount = 5;
         runtimeDesc.parameterWords = {0, 0, 0, 0};
         for (auto &kernel : runtimeDesc.kernels)
             kernel = {shader.data(), shader.size()};
-        runtimeDesc.eventInitKernel = {shader.data(), shader.size()};
         runtimeDesc.collisionSceneHeader = {901, 1};
         runtimeDesc.collisionSceneColliders = {902, 1};
         runtimeDesc.collisionSceneGridOffsets = {903, 1};
@@ -786,11 +763,16 @@ int main()
         particle::ParticleGpuRuntime replacement;
         assert(current.Create(runtimeDevice, runtimeDesc));
         assert(current.IsValid() && current.HasContinuations() && current.ContinuationTelemetry().capacity == 32 &&
-               current.ContinuationTelemetry().programGeneration == 7);
+               current.ContinuationTelemetry().programGeneration == 7 && current.EventTypeCount() == 5 &&
+               current.CounterBufferByteSize() == 80);
         assert(replacement.CreateCompatible(runtimeDevice, runtimeDesc, current));
         assert(replacement.IsValid() && replacement.HasContinuations() && replacement.SharesStateWith(current) &&
                replacement.SharesContinuationStateWith(current) &&
                replacement.ContinuationTelemetry().programGeneration == 8);
+        auto incompatibleEventDesc = runtimeDesc;
+        incompatibleEventDesc.eventTypeCount = 6;
+        particle::ParticleGpuRuntime incompatibleEventRuntime;
+        assert(!incompatibleEventRuntime.CreateCompatible(runtimeDevice, incompatibleEventDesc, current));
         const auto continuationRecords = current.ContinuationResources().records;
         assert(current.AdoptCompatibleRevision(replacement));
         assert(current.ContinuationTelemetry().programGeneration == 8 &&
@@ -840,125 +822,6 @@ int main()
         externalSlot.reset();
         assert(cache.GetResidentBytes() == 0 && cache.GetRetiredLeaseCount() == 0 && cacheDevice.textureReleases == 4 &&
                cacheDevice.samplerReleases == 2);
-    }
-
-    {
-        FakeDevice eventDevice;
-        particle::GpuParticleEventDomainDesc eventDesc;
-        eventDesc.graphInstanceId = 71;
-        eventDesc.eventAbiHash = 0x12345678u;
-        eventDesc.framesInFlight = 3;
-        eventDesc.channels = {
-            {0x1001u, 0, 1, 0, 3, 128, 3},
-            {0x1002u, 1, 2, 1, 1, 64, 2},
-        };
-
-        particle::ParticleGpuEventDomain events;
-        std::array<uint32_t, 5> eventShader = {0x07230203u, 0u, 0u, 0u, 0u};
-        const particle::GpuParticleEventProgram eventProgram = {eventShader.data(), eventShader.size(),
-                                                                eventShader.data(), eventShader.size()};
-        rhi::BindingLayoutDesc targetLayoutDesc;
-        for (uint32_t binding = 0; binding < 4; ++binding)
-            targetLayoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute,
-                                                 1};
-        targetLayoutDesc.entryCount = 4;
-        const auto targetLayout = eventDevice.CreateBindingLayout(targetLayoutDesc);
-        const auto targetFreeList = eventDevice.CreateBuffer({512 * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
-        const auto targetCounters = eventDevice.CreateBuffer({16, rhi::BufferUsageFlags::Storage});
-        const auto targetSimulationControl = eventDevice.CreateBuffer({16, rhi::BufferUsageFlags::Storage});
-        const std::vector<particle::GpuParticleEventTargetDesc> eventTargets = {
-            {1, 512, targetFreeList, targetCounters, targetSimulationControl, targetLayout},
-            {2, 512, targetFreeList, targetCounters, targetSimulationControl, targetLayout},
-        };
-        assert(events.Create(eventDevice, eventDesc, eventProgram, eventTargets));
-        assert(events.IsValid() && events.GraphInstanceId() == 71 && events.EventAbiHash() == 0x12345678u &&
-               events.PageCount() == 3 && events.ChannelCount() == 2);
-        assert(events.RecordBufferBytes() == (128u * 7u + 64u * 5u) * sizeof(uint32_t));
-        assert(eventDevice.buffers.size() == 22 && eventDevice.initialBufferBytes[3].size() == 96);
-        std::array<particle::GpuParticleEventChannelRecord, 2> eventRecords{};
-        std::memcpy(eventRecords.data(), eventDevice.initialBufferBytes[3].data(), sizeof(eventRecords));
-        assert(eventRecords[0].spawnCount == 3 && eventRecords[1].spawnCount == 2);
-        assert(eventRecords[0].spawnBaseIndices == 0 && eventRecords[1].spawnBaseIndices == 384);
-        assert(events.SpawnIndexBufferBytes() == (128u * 3u + 64u * 2u) * sizeof(uint32_t));
-        assert(eventDevice.buffers[3].memory == rhi::BufferMemory::Upload &&
-               eventDevice.buffers[3].usage == rhi::BufferUsageFlags::Storage);
-        for (size_t page = 0; page < 3; ++page) {
-            const size_t base = 4 + page * 6;
-            assert(eventDevice.buffers[base].byteSize == events.RecordBufferBytes());
-            assert(rhi::HasBufferUsage(eventDevice.buffers[base].usage, rhi::BufferUsageFlags::TransferDestination));
-            assert(eventDevice.buffers[base + 1].byteSize == 2 * sizeof(particle::GpuParticleEventCounter));
-            assert(rhi::HasBufferUsage(eventDevice.buffers[base + 1].usage, rhi::BufferUsageFlags::TransferSource));
-            assert(
-                rhi::HasBufferUsage(eventDevice.buffers[base + 1].usage, rhi::BufferUsageFlags::TransferDestination));
-            assert(eventDevice.buffers[base + 2].byteSize == 2 * sizeof(particle::GpuParticleEventDispatchArguments) &&
-                   rhi::HasBufferUsage(eventDevice.buffers[base + 2].usage, rhi::BufferUsageFlags::Indirect));
-            assert(eventDevice.buffers[base + 3].byteSize == events.SpawnIndexBufferBytes());
-            assert(eventDevice.buffers[base + 4].memory == rhi::BufferMemory::Upload &&
-                   eventDevice.buffers[base + 4].usage == rhi::BufferUsageFlags::TransferSource);
-            assert(eventDevice.buffers[base + 5].memory == rhi::BufferMemory::Upload &&
-                   eventDevice.buffers[base + 5].usage == rhi::BufferUsageFlags::TransferSource);
-        }
-        assert(events.Page(0) != nullptr && events.Page(2) != nullptr && events.Page(3) == nullptr);
-        assert(eventDevice.layouts.size() == 4 && eventDevice.layouts[1].entryCount == 3 &&
-               eventDevice.layouts[2].entryCount == 5 && eventDevice.layouts[3].entryCount == 6);
-        assert(eventDevice.bindGroups.size() == 18 && eventDevice.bindGroups[0].bufferCount == 3 &&
-               eventDevice.bindGroups[3].bufferCount == 5 && eventDevice.bindGroups[6].bufferCount == 6);
-        assert(eventDevice.computePipelineDescs.size() == 2 && eventDevice.computePipelineDescs[0].pushConstantBytes ==
-                                                                   sizeof(particle::GpuParticleEventPrepareConstants));
-        EventTrace eventTrace;
-        const rhi::ComputeCommandEncoder::DispatchTable eventDispatch = {
-            &EventTrace::BindPipeline, &EventTrace::BindGroup, &EventTrace::PushConstants, &EventTrace::Dispatch,
-            &EventTrace::DispatchIndirect};
-        const rhi::ComputeCommandEncoder eventEncoder(&eventTrace, &eventDispatch);
-        const auto initialOutputGroup = events.CurrentEventOutputGroup();
-        assert(initialOutputGroup.IsValid());
-        std::vector<uint32_t> externalRecords(2u * 7u, 0u);
-        externalRecords[0] = 0u;
-        externalRecords[7] = 0u;
-        std::string externalError;
-        assert(events.QueueExternalEvents(0, externalRecords, 2, &externalError) && externalError.empty() &&
-               events.PendingExternalEventCount(0) == 2);
-        assert(!events.QueueExternalEvents(2, externalRecords, 2, &externalError) && !externalError.empty());
-        events.RecordPrepare(eventEncoder);
-        const std::array<uint32_t, 3> expectedEventDispatch = {1, 1, 1};
-        assert(eventTrace.pipeline.IsValid() && eventTrace.group.IsValid() && eventTrace.constants.channelCount == 2 &&
-               eventTrace.constants.hasInput == 0 && eventTrace.dispatch == expectedEventDispatch);
-        EventTransferTrace transferTrace;
-        const rhi::TransferCommandEncoder::DispatchTable transferDispatch = {
-            &EventTransferTrace::CopyBuffer,
-            &EventTransferTrace::CopyTexture,
-            &EventTransferTrace::ResolveTexture,
-        };
-        const rhi::TransferCommandEncoder transferEncoder(&transferTrace, &transferDispatch);
-        assert(events.RecordExternalInjection(transferEncoder) && transferTrace.copies.size() == 2 &&
-               events.PendingExternalEventCount(0) == 0 && eventDevice.writes == 2);
-        assert(transferTrace.copies[0].region.byteSize == externalRecords.size() * sizeof(uint32_t) &&
-               transferTrace.copies[1].region.byteSize == sizeof(particle::GpuParticleEventCounter));
-        assert(!events.RecordExternalInjection(transferEncoder));
-        const auto firstEventGroup = eventTrace.group;
-        assert(events.CurrentEventOutputGroup() == initialOutputGroup);
-        events.RecordPrepare(eventEncoder);
-        assert(eventTrace.constants.hasInput == 1 && eventTrace.group != firstEventGroup &&
-               events.CurrentEventOutputGroup() != initialOutputGroup);
-        events.RecordAllocate(eventEncoder, 0, true, true);
-        events.Destroy();
-        assert(!events.IsValid() && eventDevice.bufferReleases == 19 && eventDevice.groupReleases == 18 &&
-               eventDevice.layoutReleases == 3 && eventDevice.pipelineReleases == 2);
-
-        eventDesc.framesInFlight = 1;
-        eventDesc.channels[1].eventTypeIndex = eventDesc.channels[0].eventTypeIndex;
-        eventDesc.channels[1].sourceEmitterIndex = eventDesc.channels[0].sourceEmitterIndex;
-        eventDesc.channels[1].targetEmitterIndex = eventDesc.channels[0].targetEmitterIndex;
-        assert(events.Create(eventDevice, eventDesc, eventProgram, eventTargets));
-        assert(events.IsValid() && events.ChannelCount() == 2 && events.PageCount() == 2);
-        assert(events.Channel(0)->sourceEmitterIndex == events.Channel(1)->sourceEmitterIndex &&
-               events.Channel(0)->targetEmitterIndex == events.Channel(1)->targetEmitterIndex &&
-               events.Channel(0)->eventTypeIndex == events.Channel(1)->eventTypeIndex);
-        events.Destroy();
-        eventDevice.Release(targetCounters);
-        eventDevice.Release(targetFreeList);
-        eventDevice.Release(targetSimulationControl);
-        eventDevice.Release(targetLayout);
     }
 
     {
@@ -1065,6 +928,7 @@ int main()
         collisionSnapshot.revision = 2;
         collisionSnapshot.topologyRevision = 1;
         collisionSnapshot.staticColliders.resize(1);
+        collisionSnapshot.staticColliders[0].identity = {1u, 0u, 1u, 0u};
         collisionSnapshot.staticColliders[0].metadata[0] =
             static_cast<uint32_t>(particle::GpuParticleColliderType::Sphere);
         std::string collisionError;
@@ -1094,6 +958,7 @@ int main()
 
         collisionSnapshot.revision = 3;
         collisionSnapshot.dynamicColliders.resize(1);
+        collisionSnapshot.dynamicColliders[0].identity = {2u, 0u, 2u, 0u};
         collisionSnapshot.dynamicColliders[0].metadata[0] =
             static_cast<uint32_t>(particle::GpuParticleColliderType::Box);
         collisionSnapshot.dynamicColliders[0].worldAabbMin = {8.0f, 0.0f, 0.0f, 0.0f};
@@ -1189,6 +1054,33 @@ int main()
         assert(!collisionScene.Publish(collisionSnapshot, &collisionError) && !collisionError.empty());
         collisionScene.Destroy();
         assert(!collisionScene.IsValid() && collisionDevice.bufferReleases == 21);
+
+        FakeDevice sortedCollisionDevice;
+        particle::ParticleGpuCollisionScene sortedCollisionScene;
+        assert(sortedCollisionScene.Create(sortedCollisionDevice, 3, 2));
+        particle::GpuParticleCollisionSceneSnapshot sortedSnapshot;
+        sortedSnapshot.revision = 2;
+        sortedSnapshot.topologyRevision = 1;
+        sortedSnapshot.staticColliders.resize(2);
+        sortedSnapshot.staticColliders[0].identity = {20u, 0u, 2u, 0u};
+        sortedSnapshot.staticColliders[1].identity = {10u, 0u, 1u, 0u};
+        sortedSnapshot.dynamicColliders.resize(1);
+        sortedSnapshot.dynamicColliders[0].identity = {15u, 0u, 3u, 0u};
+        assert(sortedCollisionScene.Publish(sortedSnapshot, &collisionError) && collisionError.empty());
+        const auto staticWrite = std::find_if(
+            sortedCollisionDevice.writtenBytes.begin(), sortedCollisionDevice.writtenBytes.end(),
+            [](const auto &bytes) { return bytes.size() == 2u * sizeof(particle::GpuParticleColliderRecord); });
+        assert(staticWrite != sortedCollisionDevice.writtenBytes.end());
+        std::array<particle::GpuParticleColliderRecord, 2> sortedStatic{};
+        std::memcpy(sortedStatic.data(), staticWrite->data(), staticWrite->size());
+        assert(sortedStatic[0].identity[0] == 10u && sortedStatic[1].identity[0] == 20u);
+
+        sortedSnapshot.revision = 3;
+        sortedSnapshot.replaceMeshTopology = false;
+        sortedSnapshot.staticColliders[1].identity = sortedSnapshot.staticColliders[0].identity;
+        assert(!sortedCollisionScene.Publish(sortedSnapshot, &collisionError));
+        assert(collisionError.find("duplicate collider identity") != std::string::npos);
+        sortedCollisionScene.Destroy();
     }
 
     {
@@ -1197,6 +1089,7 @@ int main()
         particle::GpuEmitterDesc sharingDesc;
         sharingDesc.capacity = 128;
         sharingDesc.stateStride = 32;
+        sharingDesc.eventTypeCount = 3;
         sharingDesc.collisionSceneHeader = {0xfff0u, 1};
         sharingDesc.collisionSceneColliders = {0xfff1u, 1};
         sharingDesc.collisionSceneGridOffsets = {0xfff2u, 1};
@@ -1208,18 +1101,19 @@ int main()
             sharingWords[index][0] = 0x07230203;
             sharingDesc.kernels[index] = {sharingWords[index].data(), sharingWords[index].size()};
         }
-        sharingDesc.eventInitKernel = sharingDesc.kernels[static_cast<size_t>(particle::GpuKernelStage::Init)];
 
         particle::ParticleGpuRuntime previous;
         particle::ParticleGpuRuntime compatible;
         assert(previous.Create(sharingDevice, sharingDesc));
+        assert(previous.EventTypeCount() == 3 && previous.CounterBufferByteSize() == 64);
         assert(previous.NeedsBootstrap());
         CommandTrace sharingTrace;
         const rhi::ComputeCommandEncoder::DispatchTable sharingDispatch = {
             &CommandTrace::BindPipeline, &CommandTrace::BindGroup, &CommandTrace::PushConstants,
             &CommandTrace::Dispatch, &CommandTrace::DispatchIndirect};
         const rhi::ComputeCommandEncoder sharingEncoder(&sharingTrace, &sharingDispatch);
-        previous.RecordBootstrap(sharingEncoder, 13);
+        const rhi::BindGroupHandle sharingSpawnGroup{0xffe2u, 1};
+        previous.RecordBootstrap(sharingEncoder, 13, sharingSpawnGroup);
         assert(!previous.NeedsBootstrap());
         const auto state = previous.StateBuffer();
         const auto counters = previous.CounterBuffer();
@@ -1232,12 +1126,12 @@ int main()
         assert(previous.IsValid() && compatible.IsValid() && previous.SharesStateWith(compatible));
         compatible.RequestBootstrap();
         assert(previous.NeedsBootstrap() && compatible.NeedsBootstrap());
-        compatible.RecordBootstrap(sharingEncoder, 13);
+        compatible.RecordBootstrap(sharingEncoder, 13, sharingSpawnGroup);
         assert(!previous.NeedsBootstrap() && !compatible.NeedsBootstrap());
         previous.Destroy();
         assert(compatible.IsValid() && sharingDevice.bufferReleases == 1);
         compatible.Destroy();
-        assert(sharingDevice.bufferReleases == 10 && sharingDevice.pipelineReleases == 12 &&
+        assert(sharingDevice.bufferReleases == 10 && sharingDevice.pipelineReleases == 10 &&
                sharingDevice.groupReleases == 4 && sharingDevice.layoutReleases == 6);
     }
 
@@ -1248,6 +1142,7 @@ int main()
     particle::GpuEmitterDesc desc;
     desc.capacity = 1000;
     desc.stateStride = 64;
+    desc.eventTypeCount = 5;
     desc.collisionSceneHeader = {0xfff2u, 1};
     desc.collisionSceneColliders = {0xfff3u, 1};
     desc.collisionSceneGridOffsets = {0xfff4u, 1};
@@ -1260,13 +1155,14 @@ int main()
         words[index][0] = 0x07230203;
         desc.kernels[index] = {words[index].data(), words[index].size()};
     }
-    desc.eventInitKernel = desc.kernels[static_cast<size_t>(particle::GpuKernelStage::Init)];
 
     particle::ParticleGpuRuntime runtime;
     assert(runtime.Create(device, desc));
-    assert(runtime.IsValid() && runtime.Capacity() == 1000 && runtime.StateStride() == 64);
+    assert(runtime.IsValid() && runtime.Capacity() == 1000 && runtime.StateStride() == 64 &&
+           runtime.EventTypeCount() == 5 && runtime.CounterBufferByteSize() == 80);
     assert(device.buffers.size() == 9);
     assert(device.buffers[0].byteSize == 64000);
+    assert(device.buffers[2].byteSize == 80);
     assert(rhi::HasBufferUsage(device.buffers[2].usage, rhi::BufferUsageFlags::TransferSource));
     assert(device.buffers[3].byteSize ==
            static_cast<uint64_t>(desc.capacity) * particle::ParticleGpuRuntime::RenderInstanceStride);
@@ -1279,8 +1175,8 @@ int main()
            device.buffers[7].memory == rhi::BufferMemory::DeviceLocal && device.initialBufferBytes[7].empty());
     assert(device.buffers[8].byteSize == 4 * sizeof(uint32_t) && device.buffers[8].memory == rhi::BufferMemory::Upload);
     assert(device.initialBufferBytes[8].size() == 4 * sizeof(uint32_t));
-    assert(device.shaderCreates == 6 && device.shaderReleases == 6);
-    assert(device.layoutCreates == 4 && device.groupCreates == 2 && device.pipelineCreates == 6);
+    assert(device.shaderCreates == 5 && device.shaderReleases == 5);
+    assert(device.layoutCreates == 3 && device.groupCreates == 2 && device.pipelineCreates == 5);
 
     particle::GpuParticleTransforms transforms;
     assert(runtime.UpdateTransforms(transforms));
@@ -1295,15 +1191,20 @@ int main()
                                                                 &CommandTrace::PushConstants, &CommandTrace::Dispatch,
                                                                 &CommandTrace::DispatchIndirect};
     const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
-    runtime.RecordBootstrap(encoder, 7);
-    runtime.RecordInit(encoder, 300, 100, 2, 7, 9, 1.0f / 60.0f);
-    runtime.RecordUpdate(encoder, 7, 9, 1.0f / 60.0f);
-    runtime.RecordRenderReset(encoder);
-    runtime.RecordRendering(encoder, 7, 9);
+    const rhi::BindGroupHandle graphSpawnGroup{0xffe3u, 1};
+    const rhi::BufferHandle spawnMetadata{0xffe4u, 1};
+    runtime.RecordBootstrap(encoder, 7, graphSpawnGroup);
+    runtime.RecordInitIndirect(encoder, 300, 100, 2, 7, 9, 1.0f / 60.0f, graphSpawnGroup,
+                               spawnMetadata, sizeof(uint32_t) * 4u);
+    runtime.RecordUpdate(encoder, 7, 9, 1.0f / 60.0f, graphSpawnGroup);
+    runtime.RecordRenderReset(encoder, graphSpawnGroup);
+    runtime.RecordRendering(encoder, 7, 9, graphSpawnGroup);
     assert(trace.pipelines.size() == 5 && trace.groups.size() == 25 && trace.constants.size() == 5);
     assert(trace.groupSets ==
            std::vector<uint32_t>({0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4}));
-    assert(trace.dispatches == std::vector<uint32_t>({4, 2, 4, 1, 4}));
+    assert(trace.dispatches == std::vector<uint32_t>({4, 4, 1, 4}));
+    assert(trace.indirectBuffers == std::vector<rhi::BufferHandle>({spawnMetadata}));
+    assert(trace.indirectOffsets == std::vector<uint64_t>({sizeof(uint32_t) * 4u}));
     assert(trace.constants[1].spawnBaseId == 100 && trace.constants[1].spawnGeneration == 2);
     assert(trace.constants[2].simulationStep == 9);
 
@@ -1717,7 +1618,7 @@ int main()
     particle::ParticleGpuBillboardRenderer billboard;
     assert(billboard.Create(device, billboardDesc));
     assert(billboard.IsValid() && billboard.RenderQueue() == 3100 && billboard.InstanceBuffer() == instanceBuffer);
-    assert(device.layoutEntryCounts == std::vector<uint32_t>({4, 3, 16, 0, 4}));
+    assert(device.layoutEntryCounts == std::vector<uint32_t>({16, 0, 2, 4}));
     assert(device.groupBufferCounts == std::vector<uint32_t>({16, 0, 2}));
     assert(device.groupTextureCounts == std::vector<uint32_t>({0, 0, 2}));
     assert(device.bindGroups.back().textures[0].binding == 2 && device.bindGroups.back().textures[1].binding == 15 &&
@@ -2208,13 +2109,13 @@ int main()
 
     runtime.Destroy();
     assert(!runtime.IsValid() && runtime.StateStride() == 0);
-    if (device.pipelineReleases != 6 || device.groupReleases != 7 || device.layoutReleases != 6) {
+    if (device.pipelineReleases != 5 || device.groupReleases != 7 || device.layoutReleases != 5) {
         std::cerr << "release counts: pipelines=" << device.pipelineReleases << " groups=" << device.groupReleases
                   << " layouts=" << device.layoutReleases << '\n';
     }
-    assert(device.pipelineReleases == 6 && device.groupReleases == 7 && device.layoutReleases == 6);
+    assert(device.pipelineReleases == 5 && device.groupReleases == 7 && device.layoutReleases == 5);
     assert(device.textureReleases == 3 && device.samplerReleases == 3);
-    assert(device.shaderReleases == 14);
+    assert(device.shaderReleases == 13);
     assert(device.bufferReleases == 9);
     return 0;
 }

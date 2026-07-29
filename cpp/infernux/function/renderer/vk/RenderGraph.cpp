@@ -1162,6 +1162,61 @@ ResourceHandle RenderGraph::ImportResolveTarget(VkImage image, VkImageView view,
     return handle;
 }
 
+ResourceHandle RenderGraph::ImportTexture(const std::string &name, VkImage image, VkImageView view, VkFormat format,
+                                          uint32_t width, uint32_t height)
+{
+    ResourceHandle handle;
+    handle.scope = m_identity.Current();
+    handle.id = static_cast<uint32_t>(m_resources.size());
+    handle.version = 0;
+
+    ResourceData resource;
+    resource.ownerDevice = m_deviceId;
+    resource.name = name;
+    resource.type = ResourceType::Texture2D;
+    resource.textureDesc.name = name;
+    resource.textureDesc.width = width;
+    resource.textureDesc.height = height;
+    resource.textureDesc.format = format;
+    resource.textureDesc.samples = VK_SAMPLE_COUNT_1_BIT;
+    resource.textureDesc.isTransient = false;
+    resource.isExternal = true;
+    resource.externalImage = image;
+    resource.externalView = view;
+    resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
+    resource.rhiTexture = m_rhiDevice ? m_rhiDevice->RegisterTexture(image) : rhi::TextureHandle{};
+
+    m_resources.push_back(std::move(resource));
+    m_resourceVersions.push_back(0);
+    m_resourceStates.resize(m_resources.size());
+    m_initialResourceStates.resize(m_resources.size());
+    SetResourceInitialState(handle, rhi::TextureLayout::Undefined, rhi::Access::None, rhi::PipelineStage::Top);
+    return handle;
+}
+
+bool RenderGraph::UpdateImportedTexture(ResourceHandle handle, VkImage image, VkImageView view)
+{
+    if (!Owns(handle) || image == VK_NULL_HANDLE || view == VK_NULL_HANDLE)
+        return false;
+    auto &resource = m_resources[handle.id];
+    if (!resource.isExternal || resource.type != ResourceType::Texture2D)
+        return false;
+    if (resource.externalImage == image && resource.externalView == view)
+        return true;
+
+    if (m_rhiDevice) {
+        m_rhiDevice->Release(resource.rhiView);
+        m_rhiDevice->Release(resource.rhiTexture);
+        resource.rhiView = m_rhiDevice->RegisterTextureView(view);
+        resource.rhiTexture = m_rhiDevice->RegisterTexture(image);
+        if (!resource.rhiView.IsValid() || !resource.rhiTexture.IsValid())
+            return false;
+    }
+    resource.externalImage = image;
+    resource.externalView = view;
+    return true;
+}
+
 ResourceHandle RenderGraph::ImportRendererList(const std::string &name, const RendererList *rendererList)
 {
     ResourceHandle handle = CreateResource(name, ResourceType::RendererList);

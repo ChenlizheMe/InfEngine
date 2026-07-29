@@ -87,6 +87,16 @@ struct RendererFrameTelemetrySnapshot
     uint64_t canonicalLightGeneration = 0;
     uint32_t canonicalDirectionalLightCount = 0;
     uint32_t canonicalLocalLightCount = 0;
+    uint64_t sceneTemporalDiscontinuityRevision = 0;
+    uint64_t temporalHistoryInvalidationCount = 0;
+    uint64_t sceneRenderViewId = 0;
+    uint64_t gameRenderViewId = 0;
+    size_t sceneTemporalHistoryCount = 0;
+    size_t gameTemporalHistoryCount = 0;
+    size_t sceneValidTemporalHistoryCount = 0;
+    size_t gameValidTemporalHistoryCount = 0;
+    uint32_t sceneTemporalSampleIndex = 0;
+    uint32_t gameTemporalSampleIndex = 0;
     size_t gpuParticleSystemCount = 0;
     size_t gpuParticleOutputCount = 0;
     uint64_t gpuParticleCapacity = 0;
@@ -409,10 +419,13 @@ class InxRenderer
     // ========================================================================
 
     /// @brief Get Game View texture ID for ImGui display
-    uint64_t GetGameTextureId() const;
+    uint64_t GetGameTextureId();
 
     /// @brief Resize the game render target to match Game View panel size
     void ResizeGameRenderTarget(uint32_t width, uint32_t height);
+
+    /// @brief Invalidate accumulated temporal effects for selected render views.
+    void InvalidateTemporalHistory(bool sceneView = true, bool gameView = true);
 
     /// @brief Enable/disable game camera rendering
     void SetGameCameraEnabled(bool enabled);
@@ -551,6 +564,7 @@ class InxRenderer
 
   private:
     void UpdateParticleCollisionScene();
+    void ConsumeSceneTemporalDiscontinuity();
 
     InxAppMetadata m_appMetadata;
     InxAppMetadata m_rendererMetadata;
@@ -574,6 +588,9 @@ class InxRenderer
     uint64_t m_lastSemanticSyntheticInputSequence = 0;
     std::unique_ptr<SceneRenderTarget> m_sceneRenderTarget;
     std::unique_ptr<SceneRenderGraph> m_sceneRenderGraph;
+    uint64_t m_temporalHistoryWorldId = 0;
+    uint64_t m_observedSceneTemporalDiscontinuityRevision = 0;
+    uint64_t m_temporalHistoryInvalidationCount = 0;
     std::unique_ptr<CaptureService> m_captureService;
     std::unique_ptr<ScenePickingService> m_scenePickingService;
     struct PendingCapture
@@ -638,6 +655,7 @@ class InxRenderer
     /// by FindGameCameraCached() and cleared at the start of each DrawFrame.
     class Camera *m_cachedGameCamera = nullptr;
     bool m_gameCameraCacheValid = false;
+    uint64_t m_lastResolvedGameCameraId = 0;
 
     // Scriptable render pipeline (nullptr = default C++ path)
     std::shared_ptr<RenderPipelineCallback> m_renderPipeline;

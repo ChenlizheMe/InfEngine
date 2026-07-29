@@ -62,16 +62,16 @@ class RenderPipeline:
 
     def __init__(self) -> None: ...
 
-    def render(self, context: Any, cameras: Any) -> None:
-        """Render all cameras.
+    def render(self, context: Any, camera: Any) -> None:
+        """Render one camera through its dedicated context and RenderView.
 
         The base implementation builds the graph from ``define_topology()``,
-        filters cameras via ``should_render_camera()``, then calls
-        ``render_camera()`` for each accepted camera.
+        filters the camera via ``should_render_camera()``, then calls
+        ``render_camera()``.
 
         Args:
             context: The render context provided by the engine.
-            cameras: Iterable of camera objects to render.
+            camera: The camera owned by this render context.
         """
         ...
 

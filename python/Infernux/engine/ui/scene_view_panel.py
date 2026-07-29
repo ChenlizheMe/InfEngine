@@ -298,8 +298,11 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._particle_preview_component = None
         self._particle_preview_object = None
         self._particle_preview_speed = 1.0
+        self._particle_preview_seek_time = 0.0
+        self._particle_preview_seek_editing = False
         self._particle_preview_playing = False
         self._particle_preview_prepared = False
+        self._particle_preview_restore_pending = False
         self._particle_preview_height = 150.0
         self._particle_preview_resize_drag = False
         self._particle_preview_resize_start_y = 0.0

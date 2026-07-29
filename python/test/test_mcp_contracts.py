@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from Infernux.mcp import capabilities, session
+from Infernux.mcp import capabilities, server, session
 from Infernux.mcp import client as client_module
 from Infernux.mcp.client import create_loopback_client
 from Infernux.mcp.threading import MainThreadCommandQueue
@@ -65,6 +65,16 @@ class _Vector4:
 
 def test_mcp_value_serialization_preserves_vector4_w_component():
     assert common.serialize_value(_Vector4()) == [0.25, 0.5, 0.75, 0.125]
+
+
+def test_mcp_connection_helpers_report_the_active_bound_endpoint(monkeypatch):
+    monkeypatch.setattr(server, "_active_host", "127.0.0.1")
+    monkeypatch.setattr(server, "_active_port", 9714)
+
+    assert server.endpoint_url() == "http://127.0.0.1:9714/mcp"
+    assert server.health_url() == "http://127.0.0.1:9714/health"
+    assert server.connection_info()["port"] == 9714
+    assert server.endpoint_url(port=9800) == "http://127.0.0.1:9800/mcp"
 
 
 def test_runtime_error_window_ignores_preexisting_errors():
@@ -132,7 +142,7 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "particle_graph_set_node_asset",
         "particle_graph_set_rendering_output",
         "particle_graph_connect_exec",
-        "particle_graph_disconnect_exec",
+        "particle_graph_disconnect_link",
         "particle_graph_reload_editor",
         "scene_pick_request",
         "scene_pick_status",
@@ -165,6 +175,7 @@ def test_global_validation_exposes_blocker_tools_without_script_or_scene_mutatio
         "particle_system_pause_emitter",
         "particle_system_terminate_emitter",
         "particle_system_restart_emitter",
+        "particle_system_seek",
         "input_key",
         "input_text",
         "editor_ui_snapshot",
@@ -181,7 +192,7 @@ def test_global_validation_exposes_blocker_tools_without_script_or_scene_mutatio
     assert "editor_select" not in tools
     assert "editor_play" not in tools
     assert "particle_graph_connect_exec" not in tools
-    assert "particle_graph_disconnect_exec" not in tools
+    assert "particle_graph_disconnect_link" not in tools
 
 
 def test_global_validation_discovery_only_describes_registered_tools(tmp_path):

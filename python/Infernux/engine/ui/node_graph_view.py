@@ -458,7 +458,12 @@ class NodeGraphView:
 
     # ── Main render ───────────────────────────────────────────────────
 
-    def render(self, ctx: InxGUIContext) -> None:
+    def render(
+        self,
+        ctx: InxGUIContext,
+        *,
+        defer_canvas_drop_target: bool = False,
+    ) -> None:
         if self.graph is None:
             return
 
@@ -558,24 +563,8 @@ class NodeGraphView:
         # Header color popup
         self._draw_header_color_popup(ctx)
 
-        # Use an explicit rectangle instead of the last submitted ImGui item.
-        # This keeps the full canvas droppable without stealing interaction
-        # from graph nodes or floating authoring panels rendered above it.
-        if ctx.begin_drag_drop_target_rect(
-            clip_x0,
-            clip_y0,
-            clip_x1,
-            clip_y1,
-            "##node_graph_canvas_drop_target",
-        ):
-            tup = ctx.accept_any_drag_drop_payload()
-            if tup is not None and self.on_canvas_drop:
-                dtype, payload = tup
-                mx = ctx.get_mouse_pos_x()
-                my = ctx.get_mouse_pos_y()
-                gx, gy = self.screen_to_graph(mx, my)
-                self.on_canvas_drop(dtype, payload, gx, gy)
-            ctx.end_drag_drop_target()
+        if not defer_canvas_drop_target:
+            self.render_canvas_drop_target(ctx)
 
         # Context menu
         if ctx.begin_popup_context_window("##node_graph_ctx", 1):
@@ -585,6 +574,30 @@ class NodeGraphView:
         self._draw_node_create_popup(ctx)
 
         ctx.end_child()
+
+    def render_canvas_drop_target(self, ctx: InxGUIContext) -> None:
+        """Submit the canvas target after any floating drag sources."""
+        if self.graph is None or self._canvas_w < 1.0 or self._canvas_h < 1.0:
+            return
+        clip_x0 = self._origin_x
+        clip_y0 = self._origin_y
+        clip_x1 = clip_x0 + self._canvas_w
+        clip_y1 = clip_y0 + self._canvas_h
+        if ctx.begin_drag_drop_target_rect(
+            clip_x0,
+            clip_y0,
+            clip_x1,
+            clip_y1,
+            f"##{self.semantic_namespace}_canvas_drop_target",
+        ):
+            tup = ctx.accept_any_drag_drop_payload()
+            if tup is not None and self.on_canvas_drop:
+                dtype, payload = tup
+                mx = ctx.get_mouse_pos_x()
+                my = ctx.get_mouse_pos_y()
+                gx, gy = self.screen_to_graph(mx, my)
+                self.on_canvas_drop(dtype, payload, gx, gy)
+            ctx.end_drag_drop_target()
 
     # ── Grid ──────────────────────────────────────────────────────────
 

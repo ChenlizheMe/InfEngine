@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import os
 from pathlib import Path
+import threading
 from typing import Any, Mapping
 
 from Infernux.engine.path_utils import path_key, resolved_path
@@ -44,20 +45,36 @@ class ParticleArtifact:
     gpu_spirv: Mapping[str, Any]
 
 
+@dataclass(frozen=True)
+class _CompiledParticleArtifact:
+    source_hash: str
+    source_kind: str
+    stable_id: str
+    semantic_hash: str
+    behavior_hash: str
+    hir: Mapping[str, Any]
+    kernel_ir: Mapping[str, Any]
+    gpu_glsl: Mapping[str, Any]
+    gpu_spirv: Mapping[str, Any]
+
+
 class ParticleArtifactRegistry:
     _artifacts: dict[str, ParticleArtifact] = {}
     _revision = 0
+    _request_generation: dict[str, int] = {}
+    _lock = threading.RLock()
 
     @classmethod
     def clear(cls) -> None:
-        cls._artifacts.clear()
-        cls._revision = 0
+        with cls._lock:
+            cls._artifacts.clear()
+            cls._request_generation.clear()
+            cls._revision = 0
 
     @classmethod
     def get(cls, path: str = "", *, guid: str = "") -> ParticleArtifact | None:
-        return cls._artifacts.get(cls._source_key(path, guid)) or cls._artifacts.get(
-            cls._source_key(path)
-        )
+        with cls._lock:
+            return cls._current_unlocked(path, guid)
 
     @staticmethod
     def validate_graph_asset(asset: ParticleGraphAsset) -> None:
@@ -65,10 +82,7 @@ class ParticleArtifactRegistry:
         if not isinstance(asset, ParticleGraphAsset):
             raise ParticleArtifactError("particle draft must be a ParticleGraphAsset")
         try:
-            program = ParticleGraphCompiler().compile(asset)
-            kernel_program = ParticleKernelLowerer().lower(program)
-            gpu_program = GpuParticleGlslLowerer().lower(kernel_program)
-            compile_gpu_particle_spirv(gpu_program)
+            ParticleArtifactRegistry._compile_graph_asset(asset, "")
         except (TypeError, ValueError) as exc:
             raise ParticleArtifactError(f"particle draft compile failed: {exc}") from exc
 
@@ -84,47 +98,75 @@ class ParticleArtifactRegistry:
         if not isinstance(asset, ParticleGraphAsset):
             raise ParticleArtifactError("particle draft must be a ParticleGraphAsset")
         source_path = resolved_path(path)
-        source = json.dumps(
-            asset.to_dict(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        )
-        source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        source_hash = cls._graph_source_hash(asset)
         path_identity = cls._source_key(source_path)
         key = cls._source_key(source_path, guid)
-        existing = cls._artifacts.get(key) or cls._artifacts.get(path_identity)
-        if existing is not None and existing.source_hash == source_hash:
-            cls._artifacts[key] = existing
-            cls._artifacts[path_identity] = existing
-            return existing
+        ticket = cls._begin_request(path_identity)
+        with cls._lock:
+            existing = cls._current_unlocked(source_path, guid)
+            if existing is not None and existing.source_hash == source_hash:
+                cls._register_unlocked(existing, key, path_identity)
+                return existing
 
         try:
-            program = ParticleGraphCompiler().compile(asset, source_name=source_path)
-            hir = _program_to_dict(program)
-            kernel_program = ParticleKernelLowerer().lower(program)
-            kernel_ir = kernel_program.to_dict()
-            gpu_program = GpuParticleGlslLowerer().lower(kernel_program)
-            gpu_glsl = gpu_program.to_dict()
-            gpu_spirv = compile_gpu_particle_spirv(gpu_program)
+            compiled = cls._compile_graph_asset(asset, source_path)
         except (TypeError, ValueError) as exc:
             raise ParticleArtifactError(f"particle draft compile failed: {exc}") from exc
 
-        revision = cls._revision + 1
-        artifact = ParticleArtifact(
-            key,
-            source_hash,
-            "graph",
-            revision,
-            program.semantic_hash,
-            program.behavior_hash,
-            "",
-            hir,
-            kernel_ir,
-            gpu_glsl,
-            gpu_spirv,
+        return cls._publish_compiled(
+            compiled,
+            source_path=source_path,
+            key=key,
+            path_identity=path_identity,
+            ticket=ticket,
+            artifact_path="",
         )
-        cls._revision = revision
-        cls._artifacts[key] = artifact
-        cls._artifacts[path_identity] = artifact
-        return artifact
+
+    @classmethod
+    def save_graph_asset(
+        cls,
+        asset: ParticleGraphAsset,
+        path: str,
+        *,
+        guid: str = "",
+    ) -> ParticleArtifact:
+        """Compile, atomically save, and publish one exact graph snapshot."""
+        if not isinstance(asset, ParticleGraphAsset):
+            raise ParticleArtifactError("particle draft must be a ParticleGraphAsset")
+        source_path = resolved_path(path)
+        if not source_path:
+            raise ParticleArtifactError("particle graph save path cannot be empty")
+        source_hash = cls._graph_source_hash(asset)
+        path_identity = cls._source_key(source_path)
+        key = cls._source_key(source_path, guid)
+        ticket = cls._begin_request(path_identity)
+
+        with cls._lock:
+            existing = cls._current_unlocked(source_path, guid)
+        if existing is not None and existing.source_hash == source_hash:
+            compiled = cls._compiled_from_artifact(existing, stable_id=asset.stable_id)
+        else:
+            try:
+                compiled = cls._compile_graph_asset(asset, source_path)
+            except (TypeError, ValueError) as exc:
+                raise ParticleArtifactError(
+                    f"particle draft compile failed: {exc}"
+                ) from exc
+
+        artifact_path = cls._artifact_path(asset.stable_id)
+        source_text = (
+            json.dumps(asset.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n"
+        )
+        return cls._publish_compiled(
+            compiled,
+            source_path=source_path,
+            key=key,
+            path_identity=path_identity,
+            ticket=ticket,
+            artifact_path=artifact_path,
+            source_text=source_text,
+        )
 
     @classmethod
     def compile_path(cls, path: str, *, guid: str = "") -> ParticleArtifact:
@@ -134,24 +176,41 @@ class ParticleArtifactRegistry:
         except OSError as exc:
             raise ParticleArtifactError(f"failed to read particle source: {exc}") from exc
         source_kind = "script" if source_path.lower().endswith(".particle.py") else "graph"
-        source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
-        path_key = cls._source_key(source_path)
+        path_identity = cls._source_key(source_path)
         key = cls._source_key(source_path, guid)
-        existing = cls._artifacts.get(key) or cls._artifacts.get(path_key)
-        if (
-            existing is not None
-            and existing.source_hash == source_hash
-            and bool(existing.artifact_path)
-            and (not guid or existing.source_key == key)
-        ):
-            cls._artifacts[key] = existing
-            cls._artifacts[path_key] = existing
-            return existing
+        ticket = cls._begin_request(path_identity)
 
         try:
-            stable_id = cls._source_stable_id(source, source_kind, source_path)
+            graph_asset = (
+                ParticleGraphAsset.from_json(source) if source_kind == "graph" else None
+            )
+            source_hash = (
+                cls._graph_source_hash(graph_asset)
+                if graph_asset is not None
+                else cls._text_source_hash(source)
+            )
+            stable_id = (
+                graph_asset.stable_id
+                if graph_asset is not None
+                else ParticleScriptCompiler()
+                .parse(source, source_name=source_path)
+                .stable_id
+            )
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ParticleArtifactError(f"particle AOT compile failed: {exc}") from exc
+
+        with cls._lock:
+            existing = cls._current_unlocked(source_path, guid)
+            if (
+                cls._request_generation.get(path_identity) == ticket
+                and existing is not None
+                and existing.source_hash == source_hash
+                and bool(existing.artifact_path)
+            ):
+                alias = replace(existing, source_key=key)
+                cls._register_unlocked(alias, key, path_identity)
+                return alias
+
         artifact_path = cls._artifact_path(stable_id)
         if existing is None and artifact_path:
             persisted = cls._load_persisted(
@@ -161,76 +220,213 @@ class ParticleArtifactRegistry:
                 source_kind=source_kind,
             )
             if persisted is not None:
-                cls._artifacts[key] = persisted
-                cls._artifacts[path_key] = persisted
-                cls._revision = max(cls._revision, persisted.revision)
-                return persisted
+                with cls._lock:
+                    if cls._request_generation.get(path_identity) != ticket:
+                        return cls._superseded_unlocked(source_path, guid)
+                    cls._register_unlocked(persisted, key, path_identity)
+                    cls._revision = max(cls._revision, persisted.revision)
+                    return persisted
 
-        try:
-            program = (
-                ParticleScriptCompiler().compile(source, source_name=source_path)
-                if source_kind == "script"
-                else ParticleGraphCompiler().compile(
-                    ParticleGraphAsset.from_json(source),
-                    source_name=source_path,
+        if existing is not None and existing.source_hash == source_hash:
+            compiled = cls._compiled_from_artifact(existing, stable_id=stable_id)
+        else:
+            try:
+                compiled = (
+                    cls._compile_script_source(source, source_path)
+                    if graph_asset is None
+                    else cls._compile_graph_asset(graph_asset, source_path)
                 )
-            )
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ParticleArtifactError(f"particle AOT compile failed: {exc}") from exc
-        try:
-            hir = _program_to_dict(program)
-            kernel_program = ParticleKernelLowerer().lower(program)
-            kernel_ir = kernel_program.to_dict()
-            gpu_program = GpuParticleGlslLowerer().lower(kernel_program)
-            gpu_glsl = gpu_program.to_dict()
-            gpu_spirv = compile_gpu_particle_spirv(gpu_program)
-        except (TypeError, ValueError) as exc:
-            raise ParticleArtifactError(f"particle AOT lowering failed: {exc}") from exc
-        revision = cls._revision + 1
-        payload = {
-            "$schema": PARTICLE_ARTIFACT_SCHEMA,
-            "source_key": key,
-            "source_hash": source_hash,
-            "source_kind": source_kind,
-            "revision": revision,
-            "semantic_hash": program.semantic_hash,
-            "behavior_hash": program.behavior_hash,
-            "hir": hir,
-            "kernel_ir": kernel_ir,
-            "gpu_glsl": gpu_glsl,
-            "gpu_spirv": gpu_spirv,
-        }
-        if artifact_path:
-            from Infernux.core.document_store import write_document_text
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ParticleArtifactError(f"particle AOT compile failed: {exc}") from exc
+        return cls._publish_compiled(
+            compiled,
+            source_path=source_path,
+            key=key,
+            path_identity=path_identity,
+            ticket=ticket,
+            artifact_path=artifact_path,
+        )
 
-            os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
-            write_document_text(
-                artifact_path,
-                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            )
-        artifact = ParticleArtifact(
-            key,
+    @classmethod
+    def _compile_graph_asset(
+        cls, asset: ParticleGraphAsset, source_path: str
+    ) -> _CompiledParticleArtifact:
+        program = ParticleGraphCompiler().compile(asset, source_name=source_path)
+        return cls._lower_program(
+            program,
+            source_hash=cls._graph_source_hash(asset),
+            source_kind="graph",
+            stable_id=asset.stable_id,
+        )
+
+    @classmethod
+    def _compile_script_source(
+        cls, source: str, source_path: str
+    ) -> _CompiledParticleArtifact:
+        program = ParticleScriptCompiler().compile(source, source_name=source_path)
+        return cls._lower_program(
+            program,
+            source_hash=cls._text_source_hash(source),
+            source_kind="script",
+            stable_id=program.stable_id,
+        )
+
+    @staticmethod
+    def _lower_program(
+        program: ParticleProgramHIR,
+        *,
+        source_hash: str,
+        source_kind: str,
+        stable_id: str,
+    ) -> _CompiledParticleArtifact:
+        hir = _program_to_dict(program)
+        kernel_program = ParticleKernelLowerer().lower(program)
+        kernel_ir = kernel_program.to_dict()
+        gpu_program = GpuParticleGlslLowerer().lower(kernel_program)
+        gpu_glsl = gpu_program.to_dict()
+        gpu_spirv = compile_gpu_particle_spirv(gpu_program)
+        return _CompiledParticleArtifact(
             source_hash,
             source_kind,
-            revision,
+            stable_id,
             program.semantic_hash,
             program.behavior_hash,
-            artifact_path,
             hir,
             kernel_ir,
             gpu_glsl,
             gpu_spirv,
         )
-        cls._revision = revision
-        cls._artifacts[key] = artifact
-        cls._artifacts[path_key] = artifact
-        return artifact
 
     @staticmethod
-    def _source_stable_id(source: str, source_kind: str, source_path: str) -> str:
-        if source_kind == "graph":
-            return ParticleGraphAsset.from_json(source).stable_id
-        return ParticleScriptCompiler().parse(source, source_name=source_path).stable_id
+    def _compiled_from_artifact(
+        artifact: ParticleArtifact, *, stable_id: str
+    ) -> _CompiledParticleArtifact:
+        return _CompiledParticleArtifact(
+            artifact.source_hash,
+            artifact.source_kind,
+            stable_id,
+            artifact.semantic_hash,
+            artifact.behavior_hash,
+            artifact.hir,
+            artifact.kernel_ir,
+            artifact.gpu_glsl,
+            artifact.gpu_spirv,
+        )
+
+    @classmethod
+    def _publish_compiled(
+        cls,
+        compiled: _CompiledParticleArtifact,
+        *,
+        source_path: str,
+        key: str,
+        path_identity: str,
+        ticket: int,
+        artifact_path: str,
+        source_text: str | None = None,
+    ) -> ParticleArtifact:
+        with cls._lock:
+            if cls._request_generation.get(path_identity) != ticket:
+                return cls._superseded_unlocked(source_path, key)
+
+            current = cls._artifacts.get(key) or cls._artifacts.get(path_identity)
+            if current is not None and current.source_hash == compiled.source_hash:
+                revision = current.revision
+            else:
+                revision = cls._revision + 1
+
+            artifact = ParticleArtifact(
+                key,
+                compiled.source_hash,
+                compiled.source_kind,
+                revision,
+                compiled.semantic_hash,
+                compiled.behavior_hash,
+                artifact_path,
+                compiled.hir,
+                compiled.kernel_ir,
+                compiled.gpu_glsl,
+                compiled.gpu_spirv,
+            )
+
+            from Infernux.core.document_store import write_document_text
+
+            if source_text is not None:
+                os.makedirs(os.path.dirname(source_path), exist_ok=True)
+                write_document_text(source_path, source_text)
+            if artifact_path:
+                os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
+                write_document_text(
+                    artifact_path,
+                    json.dumps(
+                        cls._artifact_payload(artifact),
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
+                )
+
+            cls._revision = max(cls._revision, revision)
+            cls._register_unlocked(artifact, key, path_identity)
+            return artifact
+
+    @classmethod
+    def _begin_request(cls, path_identity: str) -> int:
+        with cls._lock:
+            ticket = cls._request_generation.get(path_identity, 0) + 1
+            cls._request_generation[path_identity] = ticket
+            return ticket
+
+    @classmethod
+    def _current_unlocked(
+        cls, path: str, guid: str = ""
+    ) -> ParticleArtifact | None:
+        return cls._artifacts.get(cls._source_key(path, guid)) or cls._artifacts.get(
+            cls._source_key(path)
+        )
+
+    @classmethod
+    def _register_unlocked(
+        cls, artifact: ParticleArtifact, key: str, path_identity: str
+    ) -> None:
+        cls._artifacts[key] = artifact
+        cls._artifacts[path_identity] = artifact
+
+    @classmethod
+    def _superseded_unlocked(
+        cls, source_path: str, guid_or_key: str = ""
+    ) -> ParticleArtifact:
+        current = cls._artifacts.get(guid_or_key) or cls._current_unlocked(source_path)
+        if current is not None:
+            return current
+        raise ParticleArtifactError(
+            f"particle compile for {source_path!r} was superseded by a newer request"
+        )
+
+    @staticmethod
+    def _graph_source_hash(asset: ParticleGraphAsset) -> str:
+        return hashlib.sha256(asset.canonical_json().encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _text_source_hash(source: str) -> str:
+        return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _artifact_payload(artifact: ParticleArtifact) -> dict[str, Any]:
+        return {
+            "$schema": PARTICLE_ARTIFACT_SCHEMA,
+            "source_key": artifact.source_key,
+            "source_hash": artifact.source_hash,
+            "source_kind": artifact.source_kind,
+            "revision": artifact.revision,
+            "semantic_hash": artifact.semantic_hash,
+            "behavior_hash": artifact.behavior_hash,
+            "hir": artifact.hir,
+            "kernel_ir": artifact.kernel_ir,
+            "gpu_glsl": artifact.gpu_glsl,
+            "gpu_spirv": artifact.gpu_spirv,
+        }
 
     @staticmethod
     def _source_key(path: str, guid: str = "") -> str:
@@ -272,7 +468,7 @@ class ParticleArtifactRegistry:
                     "semantic_hash", "behavior_hash", "hir", "kernel_ir", "gpu_glsl", "gpu_spirv",
                 }
                 or payload.get("$schema") != PARTICLE_ARTIFACT_SCHEMA
-                or payload.get("source_key") != key
+                or type(payload.get("source_key")) is not str
                 or payload.get("source_hash") != source_hash
                 or payload.get("source_kind") != source_kind
                 or type(payload.get("hir")) is not dict
@@ -323,6 +519,7 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
     def stage(value):
         return {
             "stage": value.stage.value,
+            "flow_id": value.flow_id,
             "root_uid": value.root_uid,
             "expressions": [
                 {
@@ -439,7 +636,7 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                     "name": event_type.name,
                     "type_index": event_type.type_index,
                     "stable_type_hash": event_type.stable_type_hash,
-                    "capacity_per_step": event_type.capacity_per_step,
+                    "queue_capacity": event_type.queue_capacity,
                     "payload_stride_words": event_type.payload_stride_words,
                     "fields": [
                         {
@@ -455,29 +652,11 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                 }
                 for event_type in program.events.event_types
             ],
-            "routes": [
-                {
-                    "stable_id": route.stable_id,
-                    "event_type_id": route.event_type_id,
-                    "event_type_index": route.event_type_index,
-                    "source_emitter_id": route.source_emitter_id,
-                    "source_emitter_index": route.source_emitter_index,
-                    "source_stage": route.source_stage.value,
-                    "target_emitter_id": route.target_emitter_id,
-                    "target_emitter_index": route.target_emitter_index,
-                    "spawn_count": route.spawn_count,
-                    "capacity": route.capacity,
-                    "payload_stride_words": route.payload_stride_words,
-                }
-                for route in program.events.routes
-            ],
         },
         "emitters": [
             {
                 "stable_id": emitter.stable_id,
                 "name": emitter.name,
-                "enabled": emitter.enabled,
-                "play_on_start": emitter.play_on_start,
                 "settings": emitter.settings.to_dict(),
                 "attributes": [attribute.to_dict() for attribute in emitter.attributes],
                 "data_interfaces": [
@@ -500,6 +679,7 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                     if emitter.collision_exit is not None
                     else None
                 ),
+                "events": [stage(event_flow) for event_flow in emitter.event_flows],
                 "rendering": stage(emitter.rendering),
                 "render_plan": [
                     {

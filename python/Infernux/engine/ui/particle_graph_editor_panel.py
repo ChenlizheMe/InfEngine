@@ -31,12 +31,13 @@ from Infernux.particle.asset import (
     ParticleBurst,
     ParticleEmitterAsset,
     ParticleEventField,
-    ParticleEventRoute,
+    ParticleEventFlow,
     ParticleEventType,
     ParticleGraphAsset,
     ParticleGraphSchemaError,
     ParticleParameter,
     SimulationSpace,
+    default_event_graph,
 )
 from Infernux.particle.artifact import ParticleArtifactRegistry
 from Infernux.particle.data_interface import (
@@ -48,9 +49,9 @@ from Infernux.particle.data_interface import (
     particle_data_interface_from_dict,
 )
 from Infernux.particle.nodes import (
-    particle_event_output_type_id,
+    PARTICLE_EVENT_ACTIVE_TYPE_ID,
+    PARTICLE_EVENT_TRIGGER_TYPE_ID,
     particle_event_payload_port_id,
-    particle_event_payload_type_id,
     particle_graph_node_definitions,
 )
 
@@ -100,7 +101,12 @@ _EVENT_VALUE_TYPES = (
     ValueType.VEC4,
     ValueType.COLOR,
 )
-_PARAMETER_VALUE_TYPES = (*_EVENT_VALUE_TYPES, ValueType.TEXTURE2D)
+_PARAMETER_VALUE_TYPES = (
+    *_EVENT_VALUE_TYPES,
+    ValueType.CURVE,
+    ValueType.GRADIENT,
+    ValueType.TEXTURE2D,
+)
 _PARAMETER_CREATE_TYPES = (
     ValueType.F32,
     ValueType.VEC2,
@@ -110,6 +116,8 @@ _PARAMETER_CREATE_TYPES = (
     ValueType.BOOL,
     ValueType.I32,
     ValueType.U32,
+    ValueType.CURVE,
+    ValueType.GRADIENT,
     ValueType.TEXTURE2D,
 )
 _PARAMETER_TYPE_COLORS = {
@@ -121,20 +129,26 @@ _PARAMETER_TYPE_COLORS = {
     ValueType.VEC3: (0.90, 0.58, 0.24, 1.0),
     ValueType.VEC4: (0.72, 0.45, 0.88, 1.0),
     ValueType.COLOR: (0.88, 0.78, 0.28, 1.0),
+    ValueType.CURVE: (0.42, 0.78, 0.62, 1.0),
+    ValueType.GRADIENT: (0.86, 0.48, 0.68, 1.0),
     ValueType.TEXTURE2D: (0.62, 0.48, 0.86, 1.0),
     ValueType.MAT3: (0.44, 0.62, 0.84, 1.0),
     ValueType.MAT4: (0.36, 0.54, 0.78, 1.0),
 }
 _PARAMETER_DRAG_PAYLOAD = "PARTICLE_PARAMETER"
+_EVENT_DRAG_PAYLOAD = "PARTICLE_EVENT"
 
 # Shared workspace list row chrome (Emitters / Parameters / Events tabs).
 _WORKSPACE_EMITTER_ON = (0.34, 0.72, 0.42, 1.0)
 _WORKSPACE_EMITTER_OFF = (0.42, 0.42, 0.45, 1.0)
 _WORKSPACE_EVENT_TYPE = (0.72, 0.45, 0.88, 1.0)
-_WORKSPACE_EVENT_ROUTE = (0.30, 0.70, 0.86, 1.0)
 
 
 def _event_field_default(value_type: ValueType):
+    if value_type is ValueType.CURVE:
+        return Curve().to_dict()
+    if value_type is ValueType.GRADIENT:
+        return Gradient().to_dict()
     if value_type is ValueType.TEXTURE2D:
         return AssetReference().to_dict()
     if value_type is ValueType.BOOL:
@@ -207,7 +221,6 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._selected_node_uid = ""
         self._selected_parameter_id = ""
         self._selected_event_type_id = ""
-        self._selected_event_route_id = ""
         self._focus_detail_name = ""
         self._renaming_parameter_id = ""
         self._parameter_rename_buffer = ""
@@ -217,14 +230,10 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._draft_compile_due_at = 0.0
         self._draft_compile_error = ""
         self._event_type_dialog_requested = False
-        self._event_route_dialog_requested = False
         self._event_type_dialog_open = False
-        self._event_route_dialog_open = False
         self._editing_event_type_id = ""
-        self._editing_event_route_id = ""
         self._event_dialog_error = ""
         self._event_type_draft = self._new_event_type_draft()
-        self._event_route_draft = self._new_event_route_draft()
         self._save_as_dialog = AssetSaveAsDialog(
             "particle_graph.save_as", "particle graph"
         )
@@ -272,6 +281,7 @@ class ParticleGraphEditorPanel(EditorPanel):
                         "uid": str(node.uid),
                         "type_id": str(node.type_id),
                         "stage": str(self._model.stage_for_uid(node.uid) or ""),
+                        "position": [float(node.pos_x), float(node.pos_y)],
                         "properties": copy.deepcopy(node.data),
                     }
                 )
@@ -304,7 +314,6 @@ class ParticleGraphEditorPanel(EditorPanel):
             ],
             "parameters": [value.to_dict() for value in self._asset.parameters],
             "event_types": [value.to_dict() for value in self._asset.event_types],
-            "event_routes": [value.to_dict() for value in self._asset.event_routes],
             "registered_types": (
                 [
                     self._authoring_definition_snapshot(definition.type_id)
@@ -406,7 +415,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         node = self._model.find_node(str(node_uid))
         if node is None:
             raise KeyError(f"Particle Graph node not found: {node_uid!r}")
-        definition = self._definition_for_type(node.type_id)
+        definition = self._definition_for_node(node)
         if definition is None:
             raise RuntimeError(
                 f"Particle Graph node type is not registered: {node.type_id!r}"
@@ -472,7 +481,10 @@ class ParticleGraphEditorPanel(EditorPanel):
             raise RuntimeError("Particle Graph editor has no active authoring model")
         stage = str(stage)
         type_id = str(type_id)
-        if stage not in _STAGES:
+        valid_stages = set(_STAGES) | {
+            f"event.{flow.stable_id}" for flow in self._selected_emitter().event_flows
+        }
+        if stage not in valid_stages:
             raise ValueError(f"Unknown Particle Graph stage: {stage!r}")
         if not math.isfinite(float(x)) or not math.isfinite(float(y)):
             raise ValueError("Particle Graph node position must be finite")
@@ -490,7 +502,8 @@ class ParticleGraphEditorPanel(EditorPanel):
             raise ValueError(
                 "Collision lifecycle roots must be created in their matching lifecycle stage"
             )
-        if not particle_stage_definition_filter(f"particle.{stage}")(definition):
+        domain = "particle.event" if stage.startswith("event.") else f"particle.{stage}"
+        if not particle_stage_definition_filter(domain)(definition):
             raise ValueError(
                 f"Particle Graph node type {type_id!r} is not valid in {stage!r}"
             )
@@ -517,7 +530,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         node = self._model.find_node(str(node_uid))
         if node is None:
             raise KeyError(f"Particle Graph node not found: {node_uid!r}")
-        definition = self._definition_for_type(node.type_id)
+        definition = self._definition_for_node(node)
         if definition is None:
             raise RuntimeError(
                 f"Particle Graph node type is not registered: {node.type_id!r}"
@@ -566,6 +579,12 @@ class ParticleGraphEditorPanel(EditorPanel):
                 raise ValueError(
                     f"Particle Graph node {node_uid!r} references unknown attribute "
                     f"{value!r}"
+                )
+        if key == "event":
+            valid_events = {event_id for _label, event_id in self._model.event_entries()}
+            if str(value) not in valid_events:
+                raise ValueError(
+                    f"Particle Graph node {node_uid!r} references unknown event {value!r}"
                 )
         if (
             node.type_id == "particle.output.ribbon"
@@ -876,8 +895,8 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._record("Connect Particle Graph Exec", before)
         return {"link_uid": str(created.uid), "changed": True}
 
-    def disconnect_exec(self, link_uid: str) -> dict:
-        """Disconnect one Exec link through the strict graph model."""
+    def disconnect_link(self, link_uid: str) -> dict:
+        """Disconnect one Exec or value link through the strict graph model."""
         if self._model is None:
             raise RuntimeError("Particle Graph editor has no active authoring model")
         link_uid = str(link_uid)
@@ -887,22 +906,20 @@ class ParticleGraphEditorPanel(EditorPanel):
         )
         if link is None:
             raise KeyError(f"Particle Graph link not found: {link_uid!r}")
-        if link.source_pin != "out" or link.target_pin != "in":
-            raise ValueError(
-                f"Particle Graph link {link_uid!r} is not an Exec connection"
-            )
         before = self._snapshot()
         if not self._model.remove_link(link_uid):
             raise RuntimeError(
-                f"Particle Graph could not disconnect Exec link {link_uid!r}"
+                f"Particle Graph could not disconnect link {link_uid!r}"
             )
         self._sync_model_to_asset()
         self._mark_changed()
-        self._record("Disconnect Particle Graph Exec", before)
+        self._record("Disconnect Particle Graph link", before)
         return {
             "link_uid": link_uid,
             "source_node_uid": str(link.source_node),
+            "source_port": str(link.source_pin),
             "target_node_uid": str(link.target_node),
+            "target_port": str(link.target_pin),
             "changed": True,
         }
 
@@ -1014,7 +1031,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         }
 
     def remove_authoring_emitter(self, emitter_id: str) -> dict:
-        """Remove one emitter and every event route that references it."""
+        """Remove one emitter and its private lifecycle/event implementations."""
         if len(self._asset.emitters) <= 1:
             raise ValueError("Particle Graph must keep at least one emitter")
         emitter_id = str(emitter_id)
@@ -1033,28 +1050,11 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._sync_model_to_asset()
         before = self._snapshot()
         removed_emitter = self._asset.emitters[emitter_index]
-        removed_routes = tuple(
-            route
-            for route in self._asset.event_routes
-            if emitter_id in {route.source_emitter_id, route.target_emitter_id}
-        )
-        emitters = tuple(self._asset.emitters)
-        for route in removed_routes:
-            emitters = tuple(
-                self._remove_route_nodes_from_emitter(emitter, route)
-                for emitter in emitters
-            )
-        remaining_emitters = list(emitters)
+        remaining_emitters = list(self._asset.emitters)
         del remaining_emitters[emitter_index]
-        removed_route_ids = {route.stable_id for route in removed_routes}
         self._asset = replace(
             self._asset,
             emitters=tuple(remaining_emitters),
-            event_routes=tuple(
-                route
-                for route in self._asset.event_routes
-                if route.stable_id not in removed_route_ids
-            ),
         )
         self._emitter_index = min(emitter_index, len(remaining_emitters) - 1)
         self._bind_stage()
@@ -1062,7 +1062,6 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._record("Remove particle emitter", before)
         return {
             "emitter": removed_emitter.to_dict(),
-            "removed_route_ids": sorted(removed_route_ids),
             "changed": True,
         }
 
@@ -1130,7 +1129,10 @@ class ParticleGraphEditorPanel(EditorPanel):
         if not math.isfinite(float(x)) or not math.isfinite(float(y)):
             raise ValueError("Particle Graph node position must be finite")
         target_stage = str(stage) if stage else self._model.stage_nearest_y(float(y))
-        if target_stage not in _STAGES:
+        valid_stages = set(_STAGES) | {
+            f"event.{flow.stable_id}" for flow in self._selected_emitter().event_flows
+        }
+        if target_stage not in valid_stages:
             raise ValueError(f"Unknown Particle Graph stage: {target_stage!r}")
 
         before = self._snapshot()
@@ -1315,23 +1317,13 @@ class ParticleGraphEditorPanel(EditorPanel):
 
     @staticmethod
     def _new_event_type_draft() -> dict:
-        return {"name": "Event", "capacity": 1024, "fields": []}
-
-    @staticmethod
-    def _new_event_route_draft() -> dict:
-        return {
-            "event_type_index": 0,
-            "source_emitter_index": 0,
-            "source_stage_index": 1,
-            "target_emitter_index": 0,
-            "spawn_count": 1,
-        }
+        return {"name": "Event", "capacity": 32, "fields": []}
 
     @staticmethod
     def _draft_from_event_type(event_type: ParticleEventType) -> dict:
         return {
             "name": event_type.name,
-            "capacity": event_type.capacity_per_step,
+            "capacity": event_type.queue_capacity,
             "fields": [
                 {
                     "stable_id": field.stable_id,
@@ -1341,27 +1333,6 @@ class ParticleGraphEditorPanel(EditorPanel):
                 }
                 for field in event_type.fields
             ],
-        }
-
-    def _event_route_draft_for(self, route: ParticleEventRoute) -> dict:
-        return {
-            "event_type_index": next(
-                index
-                for index, value in enumerate(self._asset.event_types)
-                if value.stable_id == route.event_type_id
-            ),
-            "source_emitter_index": next(
-                index
-                for index, value in enumerate(self._asset.emitters)
-                if value.stable_id == route.source_emitter_id
-            ),
-            "source_stage_index": _STAGES.index(route.source_stage),
-            "target_emitter_index": next(
-                index
-                for index, value in enumerate(self._asset.emitters)
-                if value.stable_id == route.target_emitter_id
-            ),
-            "spawn_count": route.spawn_count,
         }
 
     @staticmethod
@@ -1461,7 +1432,7 @@ class ParticleGraphEditorPanel(EditorPanel):
     def add_event_type(
         self,
         name: str,
-        capacity_per_step: int,
+        queue_capacity: int,
         fields: list[dict],
     ) -> dict:
         """Add one typed event schema through the live document and Undo stack."""
@@ -1472,7 +1443,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         event_type = ParticleEventType(
             uuid.uuid4().hex,
             str(name).strip(),
-            int(capacity_per_step),
+            int(queue_capacity),
             decoded_fields,
         )
         before = self._snapshot()
@@ -1485,52 +1456,175 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._record("Add Particle Graph event type", before)
         return event_type.to_dict()
 
+    def add_authoring_event_flow(
+        self,
+        event_type_id: str,
+        x: float | None = None,
+        y: float | None = None,
+    ) -> dict:
+        """Create one empty Active Event flow on the active emitter."""
+        self._sync_model_to_asset()
+        event_type_id = str(event_type_id)
+        if (x is None) != (y is None):
+            raise ValueError("Particle event root position requires both x and y")
+        if x is not None and (
+            not math.isfinite(float(x)) or not math.isfinite(float(y))
+        ):
+            raise ValueError("Particle event root position must be finite")
+        event_type = next(
+            (
+                value
+                for value in self._asset.event_types
+                if value.stable_id == event_type_id
+            ),
+            None,
+        )
+        if event_type is None:
+            raise KeyError(f"Particle event not found: {event_type_id!r}")
+        emitter = self._selected_emitter()
+        flow_id = uuid.uuid4().hex
+        stage = f"event.{flow_id}"
+        before = self._snapshot()
+        self._replace_emitter(
+            replace(
+                emitter,
+                event_flows=(
+                    *emitter.event_flows,
+                    ParticleEventFlow(flow_id, default_event_graph(event_type_id)),
+                ),
+            )
+        )
+        self._stage = stage
+        self._bind_stage()
+        if x is not None and self._model is not None:
+            root = self._model.find_node(f"{stage}::root.event")
+            if root is None:
+                self._apply_snapshot(before)
+                raise RuntimeError("Particle Graph did not create the Event root")
+            root.pos_x = float(x)
+            root.pos_y = float(y)
+            self._sync_model_to_asset()
+        root_uid = f"{stage}::root.event"
+        self._selected_event_type_id = ""
+        self._selected_parameter_id = ""
+        self._selected_node_uid = root_uid
+        self._view.selected_nodes = [root_uid]
+        self._mark_changed()
+        self._record("Add Particle Graph Active Event", before)
+        return {"event_id": event_type_id, "flow_id": flow_id, "created": True}
+
     @staticmethod
     def _prune_changed_event_field_links(
         emitter: ParticleEmitterAsset,
-        route_ids: set[str],
+        event_id: str,
         changed_port_ids: set[str],
     ) -> ParticleEmitterAsset:
         if not changed_port_ids:
             return emitter
-        route_types = {
-            particle_event_payload_type_id(route_id)
-            for route_id in route_ids
+        event_types = {
+            PARTICLE_EVENT_ACTIVE_TYPE_ID,
+            PARTICLE_EVENT_TRIGGER_TYPE_ID,
         }
-        route_types.update(
-            particle_event_output_type_id(route_id, stage)
-            for route_id in route_ids
-            for stage in _STAGES
-        )
-        replacements = {}
-        for stage in _STAGES:
-            document = getattr(emitter, stage)
+
+        def prune_document(document: GraphDocument | None):
             if document is None:
-                continue
-            route_node_ids = {
-                node.uid for node in document.nodes if node.type_id in route_types
+                return None
+            event_node_ids = {
+                node.uid
+                for node in document.nodes
+                if node.type_id in event_types
+                and str(node.properties.get("event", "")) == event_id
             }
             links = tuple(
                 link
                 for link in document.links
                 if not (
-                    link.source_node in route_node_ids
+                    link.source_node in event_node_ids
                     and link.source_port in changed_port_ids
                 )
                 and not (
-                    link.target_node in route_node_ids
+                    link.target_node in event_node_ids
                     and link.target_port in changed_port_ids
                 )
             )
-            if links != document.links:
-                replacements[stage] = replace(document, links=links)
+            return replace(document, links=links) if links != document.links else document
+
+        replacements = {}
+        for stage in _STAGES:
+            document = getattr(emitter, stage)
+            pruned = prune_document(document)
+            if pruned != document:
+                replacements[stage] = pruned
+        event_flows = tuple(
+            replace(flow, graph=prune_document(flow.graph))
+            for flow in emitter.event_flows
+        )
+        if event_flows != emitter.event_flows:
+            replacements["event_flows"] = event_flows
+        return replace(emitter, **replacements) if replacements else emitter
+
+    @staticmethod
+    def _migrate_event_trigger_literals(
+        emitter: ParticleEmitterAsset,
+        previous: ParticleEventType,
+        updated: ParticleEventType,
+    ) -> ParticleEmitterAsset:
+        """Keep every Trigger Event literal valid across one schema edit."""
+
+        previous_by_id = {field.stable_id: field for field in previous.fields}
+        updated_ports = {
+            particle_event_payload_port_id(field.stable_id): field
+            for field in updated.fields
+        }
+
+        def migrate_document(document: GraphDocument | None):
+            if document is None:
+                return None
+            nodes = []
+            changed = False
+            for node in document.nodes:
+                if (
+                    node.type_id != PARTICLE_EVENT_TRIGGER_TYPE_ID
+                    or str(node.properties.get("event", "")) != previous.stable_id
+                ):
+                    nodes.append(node)
+                    continue
+                properties = dict(node.properties)
+                for key in tuple(properties):
+                    if key.startswith("payload.") and key not in updated_ports:
+                        del properties[key]
+                for port_id, field in updated_ports.items():
+                    previous_field = previous_by_id.get(field.stable_id)
+                    if (
+                        previous_field is None
+                        or previous_field.value_type != field.value_type
+                        or port_id not in properties
+                    ):
+                        properties[port_id] = copy.deepcopy(field.default)
+                replacement = replace(node, properties=properties)
+                nodes.append(replacement)
+                changed = changed or replacement != node
+            return replace(document, nodes=tuple(nodes)) if changed else document
+
+        replacements = {}
+        for stage in _STAGES:
+            document = getattr(emitter, stage)
+            migrated = migrate_document(document)
+            if migrated != document:
+                replacements[stage] = migrated
+        event_flows = tuple(
+            replace(flow, graph=migrate_document(flow.graph))
+            for flow in emitter.event_flows
+        )
+        if event_flows != emitter.event_flows:
+            replacements["event_flows"] = event_flows
         return replace(emitter, **replacements) if replacements else emitter
 
     def update_event_type(
         self,
         event_type_id: str,
         name: str,
-        capacity_per_step: int,
+        queue_capacity: int,
         fields: list[dict],
     ) -> dict:
         """Update one event schema without changing its stable identity."""
@@ -1551,7 +1645,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         updated = ParticleEventType(
             previous.stable_id,
             str(name).strip(),
-            int(capacity_per_step),
+            int(queue_capacity),
             decoded_fields,
         )
         if updated == previous:
@@ -1571,17 +1665,16 @@ class ParticleGraphEditorPanel(EditorPanel):
             particle_event_payload_port_id(stable_id)
             for stable_id in changed_field_ids
         }
-        route_ids = {
-            route.stable_id
-            for route in self._asset.event_routes
-            if route.event_type_id == previous.stable_id
-        }
         before = self._snapshot()
         event_types = list(self._asset.event_types)
         event_types[index] = updated
         emitters = tuple(
-            self._prune_changed_event_field_links(
-                emitter, route_ids, changed_port_ids
+            self._migrate_event_trigger_literals(
+                self._prune_changed_event_field_links(
+                    emitter, previous.stable_id, changed_port_ids
+                ),
+                previous,
+                updated,
             )
             for emitter in self._asset.emitters
         )
@@ -1593,250 +1686,8 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._record("Edit Particle Graph event type", before)
         return {**updated.to_dict(), "changed": True}
 
-    def add_event_route(
-        self,
-        event_type_id: str,
-        source_emitter_id: str,
-        source_stage: str,
-        target_emitter_id: str,
-        spawn_count: int,
-    ) -> dict:
-        """Add one directed event route and rebuild derived node definitions."""
-        self._sync_model_to_asset()
-        event_type_id = str(event_type_id)
-        source_emitter_id = str(source_emitter_id)
-        source_stage = str(source_stage)
-        target_emitter_id = str(target_emitter_id)
-        event_types = {
-            value.stable_id: value for value in self._asset.event_types
-        }
-        emitters = {
-            value.stable_id: value for value in self._asset.emitters
-        }
-        if event_type_id not in event_types:
-            available = [
-                {"stable_id": value.stable_id, "name": value.name}
-                for value in self._asset.event_types
-            ]
-            raise KeyError(
-                f"Particle event type not found: {event_type_id!r}; "
-                f"available event types: {available}"
-            )
-        if source_emitter_id not in emitters:
-            available = [
-                {"stable_id": value.stable_id, "name": value.name}
-                for value in self._asset.emitters
-            ]
-            raise KeyError(
-                f"Particle source emitter not found: {source_emitter_id!r}; "
-                f"available emitters: {available}"
-            )
-        if target_emitter_id not in emitters:
-            available = [
-                {"stable_id": value.stable_id, "name": value.name}
-                for value in self._asset.emitters
-            ]
-            raise KeyError(
-                f"Particle target emitter not found: {target_emitter_id!r}; "
-                f"available emitters: {available}"
-            )
-        if source_stage not in _STAGES:
-            raise ValueError(
-                f"Unknown Particle Graph event source stage: {source_stage!r}; "
-                f"expected one of {_STAGES}"
-            )
-        route = ParticleEventRoute(
-            uuid.uuid4().hex,
-            event_type_id,
-            source_emitter_id,
-            source_stage,
-            target_emitter_id,
-            int(spawn_count),
-        )
-        before = self._snapshot()
-        self._asset = replace(
-            self._asset,
-            event_routes=(*self._asset.event_routes, route),
-        )
-        self._bind_stage()
-        self._mark_changed()
-        self._record("Add Particle Graph event route", before)
-        return route.to_dict()
-
-    def add_event_output_node(
-        self, route_id: str, x: float = 0.0, y: float = 0.0
-    ) -> dict:
-        """Add a route-specific Event Output in its source emitter/stage."""
-        route = next(
-            (
-                value
-                for value in self._asset.event_routes
-                if value.stable_id == str(route_id)
-            ),
-            None,
-        )
-        if route is None:
-            raise KeyError(f"Particle event route not found: {route_id!r}")
-        self.select_authoring_emitter(route.source_emitter_id)
-        return self.add_authoring_node(
-            route.source_stage,
-            particle_event_output_type_id(route.stable_id, route.source_stage),
-            float(x),
-            float(y),
-        )
-
-    def add_event_payload_node(
-        self, route_id: str, x: float = 0.0, y: float = 0.0
-    ) -> dict:
-        """Add a route-specific Event Payload in its target Init graph."""
-        route = next(
-            (
-                value
-                for value in self._asset.event_routes
-                if value.stable_id == str(route_id)
-            ),
-            None,
-        )
-        if route is None:
-            raise KeyError(f"Particle event route not found: {route_id!r}")
-        self.select_authoring_emitter(route.target_emitter_id)
-        return self.add_authoring_node(
-            "init",
-            particle_event_payload_type_id(route.stable_id),
-            float(x),
-            float(y),
-        )
-
-    def update_event_route(
-        self,
-        route_id: str,
-        event_type_id: str,
-        source_emitter_id: str,
-        source_stage: str,
-        target_emitter_id: str,
-        spawn_count: int,
-    ) -> dict:
-        """Update one event route while preserving its stable identity."""
-        self._sync_model_to_asset()
-        route_id = str(route_id)
-        index = next(
-            (
-                index
-                for index, value in enumerate(self._asset.event_routes)
-                if value.stable_id == route_id
-            ),
-            -1,
-        )
-        if index < 0:
-            raise KeyError(f"Particle event route not found: {route_id!r}")
-        previous = self._asset.event_routes[index]
-        updated = ParticleEventRoute(
-            previous.stable_id,
-            str(event_type_id),
-            str(source_emitter_id),
-            str(source_stage),
-            str(target_emitter_id),
-            int(spawn_count),
-        )
-        if updated == previous:
-            return {**updated.to_dict(), "changed": False}
-        before = self._snapshot()
-        emitters = self._asset.emitters
-        endpoint_changed = (
-            previous.event_type_id != updated.event_type_id
-            or previous.source_emitter_id != updated.source_emitter_id
-            or previous.source_stage != updated.source_stage
-            or previous.target_emitter_id != updated.target_emitter_id
-        )
-        if endpoint_changed:
-            emitters = tuple(
-                self._remove_route_nodes_from_emitter(emitter, previous)
-                for emitter in emitters
-            )
-            self._selected_node_uid = ""
-            self._view.selected_nodes = []
-        routes = list(self._asset.event_routes)
-        routes[index] = updated
-        self._asset = replace(
-            self._asset, emitters=emitters, event_routes=tuple(routes)
-        )
-        self._bind_stage()
-        self._mark_changed()
-        self._record("Edit Particle Graph event route", before)
-        return {
-            **updated.to_dict(),
-            "changed": True,
-            "route_nodes_removed": endpoint_changed,
-        }
-
-    @staticmethod
-    def _remove_route_nodes_from_emitter(
-        emitter: ParticleEmitterAsset, route: ParticleEventRoute
-    ) -> ParticleEmitterAsset:
-        removed_types = {
-            particle_event_output_type_id(route.stable_id, route.source_stage),
-            particle_event_payload_type_id(route.stable_id),
-        }
-        replacements = {}
-        for stage in _STAGES:
-            document = getattr(emitter, stage)
-            if document is None:
-                continue
-            removed_uids = {
-                node.uid for node in document.nodes if node.type_id in removed_types
-            }
-            if not removed_uids:
-                continue
-            replacements[stage] = replace(
-                document,
-                nodes=tuple(
-                    node for node in document.nodes if node.uid not in removed_uids
-                ),
-                links=tuple(
-                    link
-                    for link in document.links
-                    if link.source_node not in removed_uids
-                    and link.target_node not in removed_uids
-                ),
-            )
-        return replace(emitter, **replacements) if replacements else emitter
-
-    def remove_event_route(self, route_id: str) -> dict:
-        """Remove a route and every graph node derived from its private ABI."""
-        self._sync_model_to_asset()
-        route = next(
-            (
-                value
-                for value in self._asset.event_routes
-                if value.stable_id == str(route_id)
-            ),
-            None,
-        )
-        if route is None:
-            raise KeyError(f"Particle event route not found: {route_id!r}")
-        before = self._snapshot()
-        emitters = tuple(
-            self._remove_route_nodes_from_emitter(emitter, route)
-            for emitter in self._asset.emitters
-        )
-        self._asset = replace(
-            self._asset,
-            emitters=emitters,
-            event_routes=tuple(
-                value
-                for value in self._asset.event_routes
-                if value.stable_id != route.stable_id
-            ),
-        )
-        self._selected_node_uid = ""
-        self._view.selected_nodes = []
-        self._bind_stage()
-        self._mark_changed()
-        self._record("Remove Particle Graph event route", before)
-        return route.to_dict()
-
     def remove_event_type(self, event_type_id: str) -> dict:
-        """Remove an event schema, its routes, and all route-derived nodes."""
+        """Remove an event schema while preserving every reusable event node."""
         self._sync_model_to_asset()
         event_type = next(
             (
@@ -1848,31 +1699,74 @@ class ParticleGraphEditorPanel(EditorPanel):
         )
         if event_type is None:
             raise KeyError(f"Particle event type not found: {event_type_id!r}")
-        routes = tuple(
-            route
-            for route in self._asset.event_routes
-            if route.event_type_id == event_type.stable_id
-        )
         before = self._snapshot()
-        emitters = self._asset.emitters
-        for route in routes:
-            emitters = tuple(
-                self._remove_route_nodes_from_emitter(emitter, route)
-                for emitter in emitters
+        def clear_document(document: GraphDocument | None):
+            if document is None:
+                return None
+            cleared_ids = set()
+            nodes = []
+            changed = False
+            for node in document.nodes:
+                if (
+                    node.type_id not in {
+                        PARTICLE_EVENT_ACTIVE_TYPE_ID,
+                        PARTICLE_EVENT_TRIGGER_TYPE_ID,
+                    }
+                    or str(node.properties.get("event", "")) != event_type.stable_id
+                ):
+                    nodes.append(node)
+                    continue
+                properties = {
+                    key: copy.deepcopy(value)
+                    for key, value in node.properties.items()
+                    if not str(key).startswith("payload.")
+                }
+                properties["event"] = ""
+                replacement = replace(node, properties=properties)
+                nodes.append(replacement)
+                cleared_ids.add(node.uid)
+                changed = changed or replacement != node
+            links = tuple(
+                link
+                for link in document.links
+                if not (
+                    link.source_node in cleared_ids
+                    and str(link.source_port).startswith("payload.")
+                )
+                and not (
+                    link.target_node in cleared_ids
+                    and str(link.target_port).startswith("payload.")
+                )
             )
-        route_ids = {route.stable_id for route in routes}
+            changed = changed or links != document.links
+            return (
+                replace(document, nodes=tuple(nodes), links=links)
+                if changed
+                else document
+            )
+
+        emitters = []
+        for emitter in self._asset.emitters:
+            updates = {
+                stage: (
+                    clear_document(document)
+                    if (document := getattr(emitter, stage)) is not None
+                    else None
+                )
+                for stage in _STAGES
+            }
+            updates["event_flows"] = tuple(
+                replace(flow, graph=clear_document(flow.graph))
+                for flow in emitter.event_flows
+            )
+            emitters.append(replace(emitter, **updates))
         self._asset = replace(
             self._asset,
-            emitters=emitters,
+            emitters=tuple(emitters),
             event_types=tuple(
                 value
                 for value in self._asset.event_types
                 if value.stable_id != event_type.stable_id
-            ),
-            event_routes=tuple(
-                route
-                for route in self._asset.event_routes
-                if route.stable_id not in route_ids
             ),
         )
         self._selected_node_uid = ""
@@ -1963,6 +1857,11 @@ class ParticleGraphEditorPanel(EditorPanel):
             return self._model.definition_for_type(type_id)
         return COMMON_NODE_REGISTRY.get(type_id)
 
+    def _definition_for_node(self, node):
+        if self._model is not None:
+            return self._model.definition_for_node(node)
+        return COMMON_NODE_REGISTRY.get(node.type_id) if node is not None else None
+
     def _replace_emitter(self, emitter: ParticleEmitterAsset) -> None:
         emitters = list(self._asset.emitters)
         emitters[self._emitter_index] = emitter
@@ -1984,15 +1883,24 @@ class ParticleGraphEditorPanel(EditorPanel):
         emitter = self._selected_emitter()
         documents = self._model.to_documents()
         updates = {
-            stage: document
-            for stage, document in documents.items()
-            if getattr(emitter, stage) != document
+            stage: documents[stage]
+            for stage in _STAGES
+            if stage in documents and getattr(emitter, stage) != documents[stage]
         }
+        event_flows = tuple(
+            replace(flow, graph=documents.get(f"event.{flow.stable_id}", flow.graph))
+            for flow in emitter.event_flows
+        )
+        if event_flows != emitter.event_flows:
+            updates["event_flows"] = event_flows
         if updates:
             self._replace_emitter(replace(emitter, **updates))
 
     def _select_stage(self, stage: str) -> None:
-        if stage not in _STAGES or stage == self._stage:
+        valid = set(_STAGES) | {
+            f"event.{flow.stable_id}" for flow in self._selected_emitter().event_flows
+        }
+        if stage not in valid or stage == self._stage:
             return
         self._stage = stage
         if self._model is not None:
@@ -2003,7 +1911,6 @@ class ParticleGraphEditorPanel(EditorPanel):
             return
         self._selected_parameter_id = ""
         self._selected_event_type_id = ""
-        self._selected_event_route_id = ""
         if index == self._emitter_index:
             self._selected_node_uid = ""
             self._view.selected_nodes = []
@@ -2018,23 +1925,11 @@ class ParticleGraphEditorPanel(EditorPanel):
         ):
             return
         self._selected_event_type_id = str(event_type_id)
-        self._selected_event_route_id = ""
         self._selected_parameter_id = ""
         self._selected_node_uid = ""
         self._view.selected_nodes = []
         if focus_name:
             self._focus_detail_name = "event_type"
-
-    def _select_event_route(self, route_id: str) -> None:
-        if not any(
-            item.stable_id == str(route_id) for item in self._asset.event_routes
-        ):
-            return
-        self._selected_event_route_id = str(route_id)
-        self._selected_event_type_id = ""
-        self._selected_parameter_id = ""
-        self._selected_node_uid = ""
-        self._view.selected_nodes = []
 
     def _open_particlegraph(self, file_path: str) -> bool:
         try:
@@ -2137,7 +2032,11 @@ class ParticleGraphEditorPanel(EditorPanel):
             int(snapshot.get("emitter_index", 0)), len(self._asset.emitters) - 1
         )
         stage = str(snapshot.get("stage", "init"))
-        self._stage = stage if stage in _STAGES else "init"
+        valid = set(_STAGES) | {
+            f"event.{flow.stable_id}"
+            for flow in self._asset.emitters[self._emitter_index].event_flows
+        }
+        self._stage = stage if stage in valid else "init"
         selected_parameter_id = str(snapshot.get("selected_parameter_id", ""))
         self._selected_parameter_id = (
             selected_parameter_id
@@ -2185,7 +2084,6 @@ class ParticleGraphEditorPanel(EditorPanel):
         if node_uid:
             self._selected_parameter_id = ""
             self._selected_event_type_id = ""
-            self._selected_event_route_id = ""
         if self._model is not None and node_uid:
             stage = self._model.stage_for_uid(node_uid)
             if stage:
@@ -2193,10 +2091,13 @@ class ParticleGraphEditorPanel(EditorPanel):
 
     def _on_canvas_drop(self, payload_type, payload, x: float, y: float) -> None:
         payload_type = str(payload_type)
-        if payload_type != _PARAMETER_DRAG_PAYLOAD or not isinstance(payload, str):
+        if not isinstance(payload, str):
             return
         try:
-            self.add_authoring_parameter_node(payload, float(x), float(y))
+            if payload_type == _PARAMETER_DRAG_PAYLOAD:
+                self.add_authoring_parameter_node(payload, float(x), float(y))
+            elif payload_type == _EVENT_DRAG_PAYLOAD:
+                self.add_authoring_event_flow(payload, float(x), float(y))
         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
             Debug.log_warning(f"Particle workspace drop rejected: {exc}")
 
@@ -2268,6 +2169,22 @@ class ParticleGraphEditorPanel(EditorPanel):
             return
         before = self._snapshot()
         node.data[key] = copy.deepcopy(new_value)
+        if key == "event" and node.type_id in {
+            PARTICLE_EVENT_ACTIVE_TYPE_ID,
+            PARTICLE_EVENT_TRIGGER_TYPE_ID,
+        }:
+            for property_id in tuple(node.data):
+                if str(property_id).startswith("payload."):
+                    del node.data[property_id]
+            definition = self._model.definition_for_node(node)
+            if definition is not None and node.type_id == PARTICLE_EVENT_TRIGGER_TYPE_ID:
+                for port in definition.ports:
+                    if (
+                        port.direction is PortDirection.INPUT
+                        and port.kind is PortKind.VALUE
+                        and str(port.id).startswith("payload.")
+                    ):
+                        node.data[port.id] = copy.deepcopy(port.default)
         removed_links = self._model.remove_invalid_links_for_node(node.uid)
         self._sync_model_to_asset()
         self._mark_changed()
@@ -2476,23 +2393,6 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._event_type_dialog_open = True
         self._event_type_dialog_requested = True
 
-    def _request_event_route_dialog(self, route_id: str = "") -> None:
-        self._editing_event_route_id = str(route_id)
-        if self._editing_event_route_id:
-            route = next(
-                value
-                for value in self._asset.event_routes
-                if value.stable_id == self._editing_event_route_id
-            )
-            self._event_route_draft = self._event_route_draft_for(route)
-        else:
-            self._event_route_draft = self._new_event_route_draft()
-            if len(self._asset.emitters) > 1:
-                self._event_route_draft["target_emitter_index"] = 1
-        self._event_dialog_error = ""
-        self._event_route_dialog_open = True
-        self._event_route_dialog_requested = True
-
     @staticmethod
     def _render_event_field_default(
         ctx: InxGUIContext, field_index: int, value_type: ValueType, value
@@ -2560,13 +2460,16 @@ class ParticleGraphEditorPanel(EditorPanel):
             str(draft["name"]),
             128,
         )
-        draft["capacity"] = max(
-            1,
+        draft["capacity"] = min(
+            64,
+            max(
+                1,
             int(
                 ctx.input_uint(
                     f"{t('particle_graph_editor.event_capacity')}##particle_event_capacity",
                     int(draft["capacity"]),
                 )
+            ),
             ),
         )
         ctx.separator()
@@ -2688,133 +2591,6 @@ class ParticleGraphEditorPanel(EditorPanel):
         )
         end_editor_modal(ctx)
 
-    def _render_event_route_dialog(self, ctx: InxGUIContext) -> None:
-        from .editor_modal import (
-            EditorModalAction,
-            begin_editor_modal,
-            end_editor_modal,
-            render_editor_modal_actions,
-        )
-
-        if not self._event_route_dialog_open and not self._event_route_dialog_requested:
-            return
-        editing = bool(self._editing_event_route_id)
-        title_key = (
-            "particle_graph_editor.edit_event_route_title"
-            if editing
-            else "particle_graph_editor.add_event_route_title"
-        )
-        popup_id = f"{t(title_key)}###particle_graph_event_route"
-        request_open = self._event_route_dialog_requested
-        self._event_route_dialog_requested = False
-        if not begin_editor_modal(
-            ctx,
-            popup_id=popup_id,
-            title=t(title_key),
-            semantic_id="particle_graph.event_route.dialog",
-            request_open=request_open,
-            width=560.0,
-            height=380.0,
-        ):
-            if not request_open:
-                self._event_route_dialog_open = False
-            return
-
-        draft = self._event_route_draft
-        event_names = [value.name for value in self._asset.event_types]
-        emitter_names = [value.name for value in self._asset.emitters]
-        draft["event_type_index"] = ctx.combo(
-            f"{t('particle_graph_editor.event_type')}##particle_event_route_type",
-            min(int(draft["event_type_index"]), len(event_names) - 1),
-            event_names,
-            -1,
-        )
-        draft["source_emitter_index"] = ctx.combo(
-            f"{t('particle_graph_editor.event_source')}##particle_event_route_source",
-            min(int(draft["source_emitter_index"]), len(emitter_names) - 1),
-            emitter_names,
-            -1,
-        )
-        draft["source_stage_index"] = ctx.combo(
-            f"{t('particle_graph_editor.event_stage')}##particle_event_route_stage",
-            min(int(draft["source_stage_index"]), len(_STAGES) - 1),
-            [t(f"particle_graph_editor.stage_{stage}") for stage in _STAGES],
-            -1,
-        )
-        draft["target_emitter_index"] = ctx.combo(
-            f"{t('particle_graph_editor.event_target')}##particle_event_route_target",
-            min(int(draft["target_emitter_index"]), len(emitter_names) - 1),
-            emitter_names,
-            -1,
-        )
-        draft["spawn_count"] = max(
-            1,
-            int(
-                ctx.input_uint(
-                    f"{t('particle_graph_editor.event_spawn_count')}##particle_event_route_spawn",
-                    int(draft["spawn_count"]),
-                )
-            ),
-        )
-        if self._event_dialog_error:
-            ctx.text_wrapped(self._event_dialog_error)
-
-        def _apply() -> None:
-            try:
-                arguments = (
-                    self._asset.event_types[
-                        int(draft["event_type_index"])
-                    ].stable_id,
-                    self._asset.emitters[
-                        int(draft["source_emitter_index"])
-                    ].stable_id,
-                    _STAGES[int(draft["source_stage_index"])],
-                    self._asset.emitters[
-                        int(draft["target_emitter_index"])
-                    ].stable_id,
-                    int(draft["spawn_count"]),
-                )
-                if editing:
-                    self.update_event_route(
-                        self._editing_event_route_id, *arguments
-                    )
-                else:
-                    self.add_event_route(*arguments)
-            except (ParticleGraphSchemaError, TypeError, ValueError) as exc:
-                self._event_dialog_error = str(exc)
-                return
-            self._event_dialog_error = ""
-            self._event_route_dialog_open = False
-            self._editing_event_route_id = ""
-            ctx.close_current_popup()
-
-        def _cancel() -> None:
-            self._event_route_dialog_open = False
-            self._editing_event_route_id = ""
-            ctx.close_current_popup()
-
-        render_editor_modal_actions(
-            ctx,
-            [
-                EditorModalAction(
-                    t(
-                        "particle_graph_editor.save_changes"
-                        if editing
-                        else "particle_graph_editor.create"
-                    ),
-                    "save" if editing else "create",
-                    _apply,
-                ),
-                EditorModalAction(
-                    t("editor.unsaved.cancel"),
-                    "cancel",
-                    _cancel,
-                ),
-            ],
-            semantic_prefix="particle_graph.event_route",
-        )
-        end_editor_modal(ctx)
-
     def _add_default_event_type(self) -> None:
         existing = {item.name for item in self._asset.event_types}
         index = len(existing) + 1
@@ -2822,22 +2598,8 @@ class ParticleGraphEditorPanel(EditorPanel):
         while name in existing:
             index += 1
             name = f"Event {index}"
-        created = self.add_event_type(name, 1024, [])
+        created = self.add_event_type(name, 32, [])
         self._select_event_type(created["stable_id"], focus_name=True)
-
-    def _add_default_event_route(self) -> None:
-        if not self._asset.event_types or len(self._asset.emitters) < 2:
-            return
-        source_index = max(0, min(self._emitter_index, len(self._asset.emitters) - 1))
-        target_index = 0 if source_index != 0 else 1
-        created = self.add_event_route(
-            self._asset.event_types[0].stable_id,
-            self._asset.emitters[source_index].stable_id,
-            "update",
-            self._asset.emitters[target_index].stable_id,
-            1,
-        )
-        self._select_event_route(created["stable_id"])
 
     def _render_event_page(self, ctx: InxGUIContext) -> None:
         render_workspace_add_header(
@@ -2856,12 +2618,29 @@ class ParticleGraphEditorPanel(EditorPanel):
                 ctx,
                 rect,
                 primary=event_type.name,
-                secondary=str(event_type.capacity_per_step),
+                secondary=str(event_type.queue_capacity),
                 dot_color=_WORKSPACE_EVENT_TYPE,
                 selected=selected,
             )
+            if bool(getattr(ctx, "semantic_capture_enabled", True)):
+                ctx.record_semantic_item(
+                    "particle_event_type",
+                    event_type.name,
+                    True,
+                    f"particle_graph.event_type.{event_type.stable_id}",
+                    numeric_value=float(event_type.queue_capacity),
+                )
             if clicked:
                 self._select_event_type(event_type.stable_id)
+            # Drag sources bind to ImGui's last submitted item. Keep this
+            # immediately after the workspace row; opening the context menu
+            # first makes the source attach to a popup item instead.
+            if ctx.begin_drag_drop_source():
+                ctx.set_drag_drop_payload_str(
+                    _EVENT_DRAG_PAYLOAD, event_type.stable_id
+                )
+                ctx.label(event_type.name)
+                ctx.end_drag_drop_source()
             action = ""
             if ctx.begin_popup_context_item(
                 f"##particle_event_type_context_{event_type.stable_id}"
@@ -2876,90 +2655,13 @@ class ParticleGraphEditorPanel(EditorPanel):
             if action == "remove":
                 remove_type_id = event_type.stable_id
             finish_workspace_entry(ctx)
-            if bool(getattr(ctx, "semantic_capture_enabled", True)):
-                ctx.record_semantic_item(
-                    "particle_event_type",
-                    event_type.name,
-                    True,
-                    f"particle_graph.event_type.{event_type.stable_id}",
-                    numeric_value=float(event_type.capacity_per_step),
-                )
         if remove_type_id:
             self.remove_event_type(remove_type_id)
-
-        emitter_by_id = {
-            emitter.stable_id: emitter for emitter in self._asset.emitters
-        }
-        event_by_id = {
-            event_type.stable_id: event_type for event_type in self._asset.event_types
-        }
-        route_available = bool(self._asset.event_types) and len(self._asset.emitters) > 1
-        render_workspace_add_header(
-            ctx,
-            t("particle_graph_editor.event_routes"),
-            "##particle_event_route_add",
-            on_add=self._add_default_event_route,
-            disabled=not route_available,
-        )
-        remove_route_id = ""
-        for route in self._asset.event_routes:
-            source = emitter_by_id[route.source_emitter_id]
-            target = emitter_by_id[route.target_emitter_id]
-            event_type = event_by_id[route.event_type_id]
-            route_label = f"{source.name} -> {target.name}"
-            route_meta = (
-                f"{event_type.name} · "
-                f"{t(f'particle_graph_editor.stage_{route.source_stage}')} · "
-                f"x{route.spawn_count}"
-            )
-            selected = route.stable_id == self._selected_event_route_id
-            clicked, rect = begin_workspace_entry(
-                ctx, f"particle_event_route_{route.stable_id}", selected
-            )
-            paint_workspace_entry(
-                ctx,
-                rect,
-                primary=route_label,
-                secondary=route_meta,
-                dot_color=_WORKSPACE_EVENT_ROUTE,
-                meta_pad=112.0,
-                selected=selected,
-            )
-            if clicked:
-                self._select_event_route(route.stable_id)
-            action = ""
-            if ctx.begin_popup_context_item(
-                f"##particle_event_route_context_{route.stable_id}"
-            ):
-                if ctx.menu_item(t("particle_graph_editor.edit")):
-                    action = "edit"
-                if ctx.menu_item(t("particle_graph_editor.delete")):
-                    action = "remove"
-                ctx.end_popup()
-            if action == "edit":
-                self._select_event_route(route.stable_id)
-            if action == "remove":
-                remove_route_id = route.stable_id
-            finish_workspace_entry(ctx)
-            if bool(getattr(ctx, "semantic_capture_enabled", True)):
-                ctx.record_semantic_item(
-                    "particle_event_route",
-                    route_label,
-                    True,
-                    f"particle_graph.event_route.{route.stable_id}",
-                    string_value=event_type.name,
-                )
-        if remove_route_id:
-            self.remove_event_route(remove_route_id)
 
         if (
             self._workspace_shortcut_pressed(ctx, KEY_DELETE)
         ):
-            if self._selected_event_route_id:
-                route_id = self._selected_event_route_id
-                self._selected_event_route_id = ""
-                self.remove_event_route(route_id)
-            elif self._selected_event_type_id:
+            if self._selected_event_type_id:
                 event_type_id = self._selected_event_type_id
                 self._selected_event_type_id = ""
                 self.remove_event_type(event_type_id)
@@ -3104,11 +2806,19 @@ class ParticleGraphEditorPanel(EditorPanel):
                 dot_color=_PARAMETER_TYPE_COLORS[parameter.value_type.value_type],
                 selected=selected,
             )
+        if bool(getattr(ctx, "semantic_capture_enabled", True)):
+            ctx.record_semantic_item(
+                "particle_parameter",
+                parameter.name,
+                True,
+                f"particle_graph.parameter.{parameter.stable_id}",
+                string_value=parameter.value_type.value_type.value,
+                bool_value=selected,
+            )
         if clicked:
             self._selected_parameter_id = parameter.stable_id
             self._selected_node_uid = ""
             self._selected_event_type_id = ""
-            self._selected_event_route_id = ""
             self._view.selected_nodes = []
             self._workspace_tab_index = 1
         if not renaming and ctx.is_item_hovered() and ctx.is_mouse_double_clicked(0):
@@ -3128,15 +2838,6 @@ class ParticleGraphEditorPanel(EditorPanel):
                 action = "remove"
             ctx.end_popup()
         finish_workspace_entry(ctx)
-        if bool(getattr(ctx, "semantic_capture_enabled", True)):
-            ctx.record_semantic_item(
-                "particle_parameter",
-                parameter.name,
-                True,
-                f"particle_graph.parameter.{parameter.stable_id}",
-                string_value=parameter.value_type.value_type.value,
-                bool_value=selected,
-            )
         return action
 
     def _render_parameter_page(self, ctx: InxGUIContext) -> None:
@@ -3186,6 +2887,14 @@ class ParticleGraphEditorPanel(EditorPanel):
                 dot_color=_WORKSPACE_EMITTER_ON,
                 selected=selected,
             )
+            if bool(getattr(ctx, "semantic_capture_enabled", True)):
+                ctx.record_semantic_item(
+                    "particle_emitter",
+                    emitter.name,
+                    True,
+                    f"particle_graph.emitter.{index}",
+                    bool_value=selected,
+                )
             if clicked:
                 select_index = index
             action = ""
@@ -3206,14 +2915,6 @@ class ParticleGraphEditorPanel(EditorPanel):
             elif action == "remove":
                 remove_index = index
             finish_workspace_entry(ctx)
-            if bool(getattr(ctx, "semantic_capture_enabled", True)):
-                ctx.record_semantic_item(
-                    "particle_emitter",
-                    emitter.name,
-                    True,
-                    f"particle_graph.emitter.{index}",
-                    bool_value=selected,
-                )
         # Rebinding replaces the complete authoring model. Defer it until the
         # active ImGui row and its context popup have both finished processing.
         if select_index >= 0:
@@ -3367,6 +3068,26 @@ class ParticleGraphEditorPanel(EditorPanel):
                 if selected_references
                 else reference.to_dict()
             )
+        elif kind is ValueType.CURVE:
+            edited_default = self._render_curve_property(
+                ctx,
+                f"parameter_{parameter.stable_id}",
+                "default",
+                default,
+                semantic_prefix=(
+                    f"particle_graph.parameter.{parameter.stable_id}.default"
+                ),
+            )
+        elif kind is ValueType.GRADIENT:
+            edited_default = self._render_gradient_property(
+                ctx,
+                f"parameter_{parameter.stable_id}",
+                "default",
+                default,
+                semantic_prefix=(
+                    f"particle_graph.parameter.{parameter.stable_id}.default"
+                ),
+            )
         else:
             edited_default = [
                 float(
@@ -3380,7 +3101,11 @@ class ParticleGraphEditorPanel(EditorPanel):
                 )
                 for axis, component in zip("XYZW", default)
             ]
-        if kind is not ValueType.TEXTURE2D:
+        if kind not in {
+            ValueType.TEXTURE2D,
+            ValueType.CURVE,
+            ValueType.GRADIENT,
+        }:
             edited_default = preserve_ui_float_precision(edited_default, default)
         if edited_default != default:
             changes["default"] = edited_default
@@ -3429,13 +3154,16 @@ class ParticleGraphEditorPanel(EditorPanel):
             event_type.name,
             128,
         ).strip()
-        capacity = max(
-            1,
+        capacity = min(
+            64,
+            max(
+                1,
             int(
                 ctx.input_uint(
                     f"{t('particle_graph_editor.event_capacity')}##particle_event_detail_capacity",
-                    event_type.capacity_per_step,
+                    event_type.queue_capacity,
                 )
+            ),
             ),
         )
         fields = [
@@ -3513,7 +3241,7 @@ class ParticleGraphEditorPanel(EditorPanel):
             name
             and (
                 name != event_type.name
-                or capacity != event_type.capacity_per_step
+                or capacity != event_type.queue_capacity
                 or encoded_fields != current_fields
             )
         ):
@@ -3523,79 +3251,6 @@ class ParticleGraphEditorPanel(EditorPanel):
                 )
             except (ParticleGraphSchemaError, TypeError, ValueError) as exc:
                 Debug.log_warning(f"Particle event edit rejected: {exc}")
-
-    def _render_event_route_properties(self, ctx: InxGUIContext) -> None:
-        route = next(
-            (
-                item
-                for item in self._asset.event_routes
-                if item.stable_id == self._selected_event_route_id
-            ),
-            None,
-        )
-        if route is None:
-            self._selected_event_route_id = ""
-            return
-        if not self._asset.event_types or not self._asset.emitters:
-            return
-
-        ctx.label(t("particle_graph_editor.edit_event_route_title"))
-        ctx.separator()
-        event_ids = [item.stable_id for item in self._asset.event_types]
-        event_names = [item.name for item in self._asset.event_types]
-        emitter_ids = [item.stable_id for item in self._asset.emitters]
-        emitter_names = [item.name for item in self._asset.emitters]
-        event_index = ctx.combo(
-            f"{t('particle_graph_editor.event_type')}##particle_event_detail_route_type",
-            event_ids.index(route.event_type_id),
-            event_names,
-            -1,
-        )
-        source_index = ctx.combo(
-            f"{t('particle_graph_editor.event_source')}##particle_event_detail_route_source",
-            emitter_ids.index(route.source_emitter_id),
-            emitter_names,
-            -1,
-        )
-        stage_index = ctx.combo(
-            f"{t('particle_graph_editor.event_stage')}##particle_event_detail_route_stage",
-            _STAGES.index(route.source_stage),
-            [t(f"particle_graph_editor.stage_{stage}") for stage in _STAGES],
-            -1,
-        )
-        target_index = ctx.combo(
-            f"{t('particle_graph_editor.event_target')}##particle_event_detail_route_target",
-            emitter_ids.index(route.target_emitter_id),
-            emitter_names,
-            -1,
-        )
-        spawn_count = max(
-            1,
-            int(
-                ctx.input_uint(
-                    f"{t('particle_graph_editor.event_spawn_count')}##particle_event_detail_route_spawn",
-                    route.spawn_count,
-                )
-            ),
-        )
-        values = (
-            event_ids[max(0, min(event_index, len(event_ids) - 1))],
-            emitter_ids[max(0, min(source_index, len(emitter_ids) - 1))],
-            _STAGES[max(0, min(stage_index, len(_STAGES) - 1))],
-            emitter_ids[max(0, min(target_index, len(emitter_ids) - 1))],
-            spawn_count,
-        )
-        if values != (
-            route.event_type_id,
-            route.source_emitter_id,
-            route.source_stage,
-            route.target_emitter_id,
-            route.spawn_count,
-        ):
-            try:
-                self.update_event_route(route.stable_id, *values)
-            except (ParticleGraphSchemaError, TypeError, ValueError) as exc:
-                Debug.log_warning(f"Particle event route edit rejected: {exc}")
 
     def _render_emitter_settings(self, ctx: InxGUIContext) -> None:
         ctx.label(t("particle_graph_editor.emitter_settings"))
@@ -4071,7 +3726,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         if self._model is None or not self._selected_node_uid:
             return
         node = self._model.find_node(self._selected_node_uid)
-        definition = self._definition_for_type(node.type_id) if node else None
+        definition = self._definition_for_node(node)
         if node is None or definition is None:
             return
         ctx.label(t("particle_graph_editor.node_settings"))
@@ -4349,7 +4004,14 @@ class ParticleGraphEditorPanel(EditorPanel):
             self._mark_changed()
 
     @staticmethod
-    def _render_curve_property(ctx: InxGUIContext, node_uid: str, key: str, value):
+    def _render_curve_property(
+        ctx: InxGUIContext,
+        node_uid: str,
+        key: str,
+        value,
+        *,
+        semantic_prefix: str = "",
+    ):
         curve = Curve.from_dict(value)
         keys = [item.to_dict() for item in curve.keys]
         pre_index = CURVE_WRAP_MODES.index(curve.pre_wrap)
@@ -4389,7 +4051,7 @@ class ParticleGraphEditorPanel(EditorPanel):
                 "drag_float",
                 t("particle_graph_editor.time"),
                 True,
-                f"particle_graph.node.{node_uid}.property.{key}.key.{index}.time",
+                f"{semantic_prefix or f'particle_graph.node.{node_uid}.property.{key}'}.key.{index}.time",
                 numeric_value=item["time"],
             )
             for tangent_key in ("value", "in_tangent", "out_tangent"):
@@ -4406,7 +4068,7 @@ class ParticleGraphEditorPanel(EditorPanel):
                     "drag_float",
                     t(f"particle_graph_editor.{tangent_key}"),
                     True,
-                    f"particle_graph.node.{node_uid}.property.{key}.key.{index}.{tangent_key}",
+                    f"{semantic_prefix or f'particle_graph.node.{node_uid}.property.{key}'}.key.{index}.{tangent_key}",
                     numeric_value=item[tangent_key],
                 )
             if len(keys) > 1 and ctx.button(
@@ -4436,7 +4098,14 @@ class ParticleGraphEditorPanel(EditorPanel):
         ).to_dict()
 
     @staticmethod
-    def _render_gradient_property(ctx: InxGUIContext, node_uid: str, key: str, value):
+    def _render_gradient_property(
+        ctx: InxGUIContext,
+        node_uid: str,
+        key: str,
+        value,
+        *,
+        semantic_prefix: str = "",
+    ):
         gradient = Gradient.from_dict(value)
         keys = [item.to_dict() for item in gradient.keys]
         mode_index = GRADIENT_MODES.index(gradient.mode)
@@ -4469,7 +4138,7 @@ class ParticleGraphEditorPanel(EditorPanel):
                 "drag_float",
                 t("particle_graph_editor.time"),
                 True,
-                f"particle_graph.node.{node_uid}.property.{key}.key.{index}.time",
+                f"{semantic_prefix or f'particle_graph.node.{node_uid}.property.{key}'}.key.{index}.time",
                 numeric_value=item["time"],
             )
             color = list(
@@ -4494,7 +4163,7 @@ class ParticleGraphEditorPanel(EditorPanel):
                     "drag_float",
                     channel.upper(),
                     True,
-                    f"particle_graph.node.{node_uid}.property.{key}.key.{index}.color.{channel}",
+                    f"{semantic_prefix or f'particle_graph.node.{node_uid}.property.{key}'}.key.{index}.color.{channel}",
                     numeric_value=color[channel_index],
                 )
             item["color"] = color
@@ -4581,7 +4250,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         graph_visible = ctx.begin_child("##particle_graph", available_w, available_h, False)
         try:
             if graph_visible:
-                self._view.render(ctx)
+                self._view.render(ctx, defer_canvas_drop_target=True)
                 render_floating_overlay(
                     ctx,
                     self._left_overlay,
@@ -4609,12 +4278,10 @@ class ParticleGraphEditorPanel(EditorPanel):
                         else self._render_event_type_properties(ctx)
                         if self._selected_event_type_id
                         and self._workspace_tab_index == 2
-                        else self._render_event_route_properties(ctx)
-                        if self._selected_event_route_id
-                        and self._workspace_tab_index == 2
                         else self._render_emitter_settings(ctx)
                     ),
                 )
+                self._view.render_canvas_drop_target(ctx)
         finally:
             ctx.end_child()
 

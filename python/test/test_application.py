@@ -1,3 +1,5 @@
+import pytest
+
 from Infernux.application import Application, _renderer_state_from_native
 
 
@@ -15,6 +17,7 @@ class _Native:
 class _Engine:
     def __init__(self):
         self.exit_requests = 0
+        self.capture_requests = []
 
     @staticmethod
     def get_native_engine():
@@ -22,6 +25,18 @@ class _Engine:
 
     def request_exit(self):
         self.exit_requests += 1
+
+    def request_capture(self, source, output_path):
+        self.capture_requests.append((source, output_path))
+        return 41
+
+    @staticmethod
+    def query_capture(capture_id):
+        return {"id": capture_id, "status": "completed"}
+
+    @staticmethod
+    def cancel_capture(capture_id):
+        return capture_id == 41
 
 
 def test_renderer_state_has_shared_editor_player_schema():
@@ -93,5 +108,29 @@ def test_persistent_data_path_uses_packaged_player_data_root(monkeypatch, tmp_pa
     monkeypatch.setenv("_INFERNUX_PLAYER_DATA_ROOT", str(packaged_root))
 
     assert Application.persistent_data_path() == str(packaged_root.resolve())
+
+    Application._unbind_engine(engine)
+
+
+def test_render_target_capture_uses_engine_and_stays_under_persistent_data(
+    monkeypatch, tmp_path
+):
+    engine = _Engine()
+    Application._bind_engine(engine, "player")
+    monkeypatch.setenv("_INFERNUX_PLAYER_DATA_ROOT", str(tmp_path))
+    output = tmp_path / "Logs" / "ribbon.png"
+
+    capture_id = Application.request_render_target_capture("GAME", str(output))
+
+    assert capture_id == 41
+    assert engine.capture_requests == [("game", str(output.resolve()))]
+    assert Application.query_render_target_capture(capture_id) == {
+        "id": 41,
+        "status": "completed",
+    }
+    assert Application.cancel_render_target_capture(capture_id) is True
+
+    with pytest.raises(ValueError, match="persistent_data_path"):
+        Application.request_render_target_capture("game", str(tmp_path.parent / "escape.png"))
 
     Application._unbind_engine(engine)

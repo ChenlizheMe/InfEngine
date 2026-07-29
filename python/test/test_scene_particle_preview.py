@@ -54,7 +54,25 @@ def test_scene_particle_preview_ticks_only_in_edit_mode():
     panel._play_mode_manager.is_edit_mode = False
     component.editor_preview_end = lambda: calls.append("end")
     panel._tick_particle_preview(0.02)
-    assert calls[-1] == "end"
+    assert calls == [(0.02, 1.5)]
+    assert panel._particle_preview_component is None
+
+
+def test_scene_particle_preview_never_binds_or_controls_play_mode_component():
+    panel = _panel()
+    panel._play_mode_manager.is_edit_mode = False
+    calls = []
+    component = SimpleNamespace(
+        editor_preview_begin=lambda: calls.append("begin") or True,
+        editor_preview_end=lambda: calls.append("end"),
+    )
+    selected = SimpleNamespace(get_py_components=lambda: [component])
+
+    panel._on_particle_preview_selection(selected)
+
+    assert panel._particle_preview_component is None
+    assert panel._particle_preview_object is None
+    assert calls == []
 
 
 def test_scene_particle_preview_pre_render_ticks_hidden_scene_tab(monkeypatch):
@@ -76,7 +94,9 @@ def test_scene_particle_preview_pre_render_ticks_hidden_scene_tab(monkeypatch):
 def test_scene_particle_preview_controls_use_current_semantic_value_contract():
     panel = _panel()
     calls = []
+    owner = SimpleNamespace(id=1)
     component = SimpleNamespace(
+        game_object=owner,
         editor_preview_emitter_states=lambda: [
             {
                 "index": 0,
@@ -88,11 +108,15 @@ def test_scene_particle_preview_controls_use_current_semantic_value_contract():
         ],
         editor_preview_pause=lambda: calls.append("pause"),
         editor_preview_stop=lambda: calls.append("stop"),
+        editor_preview_time_seconds=lambda: 0.5,
+        editor_preview_duration_seconds=lambda: 2.0,
+        editor_preview_seek=lambda value: calls.append(("seek", value)) or True,
         editor_preview_set_emitter_muted=lambda *_args: calls.append("mute"),
         editor_preview_set_emitter_solo=lambda *_args: calls.append("solo"),
         editor_preview_restart_emitter=lambda index: calls.append(("restart", index)) or True,
     )
     panel._particle_preview_component = component
+    panel._particle_preview_object = owner
     panel._particle_preview_playing = True
 
     semantics = []
@@ -138,6 +162,9 @@ def test_scene_particle_preview_controls_use_current_semantic_value_contract():
             return False
 
         def is_item_active(self):
+            return False
+
+        def is_item_deactivated_after_edit(self):
             return False
 
         def get_window_pos_x(self):
@@ -197,6 +224,8 @@ def test_scene_particle_preview_controls_use_current_semantic_value_contract():
     assert panel._particle_preview_playing is True
     speed = next(item for item in semantics if item[3] == "scene_view.particle_preview.speed")
     assert speed[4] == {"numeric_value": 1.0}
+    seek = next(item for item in semantics if item[3] == "scene_view.particle_preview.time")
+    assert seek[4] == {"numeric_value": 0.5}
     assert any(item[3] == "scene_view.particle_preview.pause" for item in semantics)
     assert any(item[3] == "scene_view.particle_preview.emitter.0.restart" for item in semantics)
     semantic_sources = {item[3]: item[5] for item in semantics}
@@ -332,7 +361,125 @@ def test_particle_preview_rebinds_after_play_mode_restores_scene(monkeypatch):
     assert panel._particle_preview_object is None
     assert panel._particle_preview_playing is False
     assert panel._particle_preview_prepared is False
+    assert panel._particle_preview_restore_pending is True
+    assert calls == []
+
+    deferred_module = importlib.import_module("Infernux.engine.deferred_task")
+    monkeypatch.setattr(
+        deferred_module.DeferredTaskRunner,
+        "instance",
+        classmethod(lambda _cls: SimpleNamespace(is_busy=False)),
+    )
+    panel._restore_particle_preview_if_ready()
+
+    assert panel._particle_preview_restore_pending is False
     assert calls == ["restore"]
+
+
+def test_invalid_particle_preview_wrapper_never_removes_native_batch():
+    panel = _panel()
+    calls = []
+    panel._particle_preview_component = SimpleNamespace(
+        _remove_native_batch=lambda: calls.append("remove")
+    )
+    panel._particle_preview_object = object()
+
+    panel._discard_invalid_particle_preview()
+
+    assert panel._particle_preview_component is None
+    assert calls == []
+
+
+def test_particle_preview_component_controls_are_hard_disabled_in_play(monkeypatch):
+    from Infernux.engine.play_mode import PlayModeManager
+
+    monkeypatch.setattr(
+        PlayModeManager,
+        "instance",
+        classmethod(lambda _cls: SimpleNamespace(is_edit_mode=False)),
+    )
+    component = ParticleSystem()
+    component._editor_preview_active = True
+    component._editor_preview_play_requested = True
+    calls = []
+    component.pause = lambda: calls.append("pause") or True
+    component.stop = lambda: calls.append("stop") or True
+    component._remove_native_batch = lambda: calls.append("remove")
+
+    assert component.editor_preview_pause() is False
+    assert component.editor_preview_stop() is False
+    component.editor_preview_end()
+    assert component._editor_preview_emitter_visible(0) is True
+    assert calls == []
+
+
+def test_particle_validate_ignores_identical_inspector_values():
+    component = ParticleSystem()
+    component._runtime_definition_signature = component._definition_signature()
+    component._runtime_rebuild_pending = False
+    component._gpu_controllers = [object()]
+    calls = []
+    component._remove_native_batch = lambda: calls.append("remove")
+    component._clear_runtime_state = lambda: calls.append("clear")
+
+    component.on_validate()
+
+    assert component._runtime_rebuild_pending is False
+    assert component._gpu_controllers
+    assert calls == []
+
+
+def test_particle_validate_defers_definition_rebuild_to_update():
+    from Infernux.core.asset_ref import ParticleGraphRef
+
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef("graph-guid", "Assets/Test.particlegraph")
+    component._runtime_definition_signature = component._definition_signature()
+    component._runtime_rebuild_pending = False
+    calls = []
+    component._sync_serialized_instance_overrides = lambda: calls.append("sync")
+    component._compile_asset = lambda *, force=False: calls.append(
+        ("compile", force)
+    ) or True
+    component._gpu_controllers = [object()]
+    component._particle_metadata = object()
+    component._update_gpu_particle_graph = lambda delta: calls.append(
+        ("update", delta)
+    )
+
+    component.random_seed = 17
+    component.on_validate()
+
+    assert component._runtime_rebuild_pending is True
+    assert calls == []
+
+    component.update(0.25)
+
+    assert component._runtime_rebuild_pending is False
+    assert calls == ["sync", ("compile", True), ("update", 0.25)]
+
+
+def test_particle_preview_entering_play_forgets_handles_without_runtime_command():
+    from Infernux.engine.play_mode import PlayModeState
+
+    panel = _panel()
+    calls = []
+    panel._particle_preview_component = SimpleNamespace(
+        editor_preview_end=lambda: calls.append("end")
+    )
+    panel._particle_preview_object = object()
+    panel._particle_preview_prepared = True
+
+    panel._on_particle_preview_play_mode_changed(
+        SimpleNamespace(
+            old_state=PlayModeState.EDIT,
+            new_state=PlayModeState.PLAYING,
+        )
+    )
+
+    assert panel._particle_preview_component is None
+    assert panel._particle_preview_object is None
+    assert calls == []
 
 
 def test_scene_panel_subscribes_to_play_mode_lifecycle():

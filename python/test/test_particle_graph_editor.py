@@ -18,16 +18,16 @@ from Infernux.particle.asset import (
     EmitterSettings,
     ParticleEmitterAsset,
     ParticleEventField,
-    ParticleEventRoute,
+    ParticleEventFlow,
     ParticleEventType,
     ParticleGraphAsset,
     ParticleParameter,
     particle_attribute_cache_id,
 )
 from Infernux.particle.nodes import (
-    particle_event_output_type_id,
+    PARTICLE_EVENT_ACTIVE_TYPE_ID,
+    PARTICLE_EVENT_TRIGGER_TYPE_ID,
     particle_event_payload_port_id,
-    particle_event_payload_type_id,
     particle_graph_node_definitions,
 )
 
@@ -324,6 +324,15 @@ def test_get_attribute_uses_dropdown_and_instance_typed_port_colors():
     assert position_pin.data_type == "vec3"
     assert "builtin.position" in attribute_field.enum_values
     assert "Position" in attribute_field.enum_labels
+    assert "builtin.collision_point" in attribute_field.enum_values
+    assert "builtin.collision_relative_velocity" in attribute_field.enum_values
+    assert "builtin.collision_penetration" in attribute_field.enum_values
+    assert "builtin.collision_is_trigger" in attribute_field.enum_values
+    assert "builtin.collision_material" in attribute_field.enum_values
+    assert not any(
+        value.startswith("internal.collision_")
+        for value in attribute_field.enum_values
+    )
 
     node.data["attribute"] = "builtin.age"
     age_type = model.get_node_type(node)
@@ -398,17 +407,16 @@ def test_vector_field_sample_connects_to_simulation_space_acceleration():
     assert model.add_link(vector_field.uid, "value", acceleration.uid, "value") is not None
 
 
-def test_particle_event_output_is_available_in_every_emitter_stage():
-    source = ParticleEmitterAsset(stable_id="source", name="Source")
-    target = ParticleEmitterAsset(stable_id="target", name="Target")
-    routes = tuple(
-        ParticleEventRoute(
-            f"route-{stage}", "event", "source", stage, "target"
-        )
-        for stage in ("init", "update", "rendering")
+def test_particle_trigger_event_is_available_after_event_flow_is_implemented():
+    from Infernux.particle import default_event_graph
+
+    source = ParticleEmitterAsset(
+        stable_id="source",
+        name="Source",
+        event_flows=(ParticleEventFlow("event", default_event_graph("event")),),
     )
     asset = ParticleGraphAsset(
-        emitters=(source, target),
+        emitters=(source,),
         event_types=(
             ParticleEventType(
                 "event",
@@ -417,34 +425,21 @@ def test_particle_event_output_is_available_in_every_emitter_stage():
                 (ParticleEventField("amount", "Amount", TypeRef(ValueType.F32), 1.0),),
             ),
         ),
-        event_routes=routes,
     )
     model = ParticleEmitterGraphAuthoringModel(
         source, definition_set=particle_graph_node_definitions(asset)
     )
     registered = {definition.type_id for definition in model.registered_types()}
 
-    for route in routes:
-        type_id = particle_event_output_type_id(route.stable_id, route.source_stage)
-        assert type_id in registered
-        model.prepare_node_creation(route.source_stage)
-        node = model.add_node(type_id, 200.0, 230.0)
-        assert model.stage_for_uid(node.uid) == route.source_stage
-
-    target_model = ParticleEmitterGraphAuthoringModel(
-        target, definition_set=particle_graph_node_definitions(asset)
+    type_id = PARTICLE_EVENT_TRIGGER_TYPE_ID
+    assert type_id in registered
+    for stage in ("init", "update", "rendering", "event.event"):
+        model.prepare_node_creation(stage)
+        node = model.add_node(type_id, 200.0, 230.0, event="event")
+        assert model.stage_for_uid(node.uid) == stage
+    assert any(
+        node.type_id == PARTICLE_EVENT_ACTIVE_TYPE_ID for node in model.nodes
     )
-    target_types = {definition.type_id for definition in target_model.registered_types()}
-    assert not target_types.intersection(
-        particle_event_output_type_id(route.stable_id, route.source_stage)
-        for route in routes
-    )
-    for route in routes:
-        payload_type_id = particle_event_payload_type_id(route.stable_id)
-        assert payload_type_id in target_types
-        target_model.prepare_node_creation("init")
-        node = target_model.add_node(payload_type_id, 200.0, 230.0)
-        assert target_model.stage_for_uid(node.uid) == "init"
 
 
 def test_default_rendering_stage_opens_without_overlapping_output():
@@ -842,7 +837,6 @@ def test_particle_graph_editor_discards_incompatible_transient_draft(tmp_path):
     state["dirty"] = True
     stale_draft = dict(state["draft"])
     stale_draft.pop("event_types")
-    stale_draft.pop("event_routes")
     state["draft"] = stale_draft
 
     restored = ParticleGraphEditorPanel()
@@ -870,7 +864,6 @@ def test_particle_graph_editor_explicitly_discards_an_unsaved_memory_document():
     }
     assert len(panel.asset.emitters) == 1
     assert panel.asset.event_types == ()
-    assert panel.asset.event_routes == ()
 
 
 def test_particle_graph_editor_ignores_float32_widget_round_trip_noise():
@@ -1199,7 +1192,7 @@ def test_particle_graph_editor_semantic_authoring_edits_orientation_exec_chains(
         panel.connect_exec(initial["uid"], angular["uid"])
 
 
-def test_particle_graph_editor_public_api_disconnects_exec_links():
+def test_particle_graph_editor_public_api_disconnects_exec_and_value_links():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
@@ -1209,12 +1202,14 @@ def test_particle_graph_editor_public_api_disconnects_exec_links():
     )
     connected = panel.connect_exec("init::root.init", lifetime["uid"])
 
-    disconnected = panel.disconnect_exec(connected["link_uid"])
+    disconnected = panel.disconnect_link(connected["link_uid"])
 
     assert disconnected == {
         "link_uid": connected["link_uid"],
         "source_node_uid": "init::root.init",
+        "source_port": "out",
         "target_node_uid": lifetime["uid"],
+        "target_port": "in",
         "changed": True,
     }
     assert all(
@@ -1222,7 +1217,14 @@ def test_particle_graph_editor_public_api_disconnects_exec_links():
         for link in panel.authoring_snapshot()["links"]
     )
     with pytest.raises(KeyError, match="link not found"):
-        panel.disconnect_exec(connected["link_uid"])
+        panel.disconnect_link(connected["link_uid"])
+
+    size = panel.add_authoring_node("init", "particle.attribute.size", 480.0, 40.0)
+    constant = panel.add_authoring_node("init", "common.constant.f32", 240.0, 180.0)
+    value_link = panel.connect_value(constant["uid"], "value", size["uid"], "value")
+    value_disconnected = panel.disconnect_link(value_link["link_uid"])
+    assert value_disconnected["source_port"] == "value"
+    assert value_disconnected["target_port"] == "value"
 
 
 def test_particle_graph_editor_type_catalog_is_searchable_and_paged():
@@ -1236,6 +1238,27 @@ def test_particle_graph_editor_type_catalog_is_searchable_and_paged():
     assert catalog["total"] >= 1
     assert len(catalog["types"]) == 1
     assert "ribbon" in catalog["types"][0]["type_id"]
+
+
+def test_particle_graph_editor_exposes_asset_local_burst_node():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    panel.add_authoring_emitter("Burst Target")
+    panel.select_authoring_emitter(panel._asset.emitters[0].stable_id)
+
+    catalog = panel.authoring_type_catalog(query="burst")
+
+    assert [item["type_id"] for item in catalog["types"]] == [
+        "particle.emitter.burst"
+    ]
+    created = panel.add_authoring_node(
+        "update", "particle.emitter.burst", 320.0, 260.0
+    )
+    assert created["properties"]["emitter"] in {
+        emitter.stable_id for emitter in panel._asset.emitters
+    }
 
 
 def test_particle_graph_editor_edits_unlinked_value_input_defaults():
@@ -1328,394 +1351,349 @@ def test_particle_graph_editor_exposes_vector_components_and_dimension_policies(
     assert policies == {"position": "fixed", "frequency": "exact", "seed": "exact", "value": "exact"}
 
 
-def test_particle_graph_editor_public_api_authors_a_typed_event_route():
+def test_particle_graph_editor_authors_trigger_and_independent_event_flow():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
     from Infernux.particle import ParticleGraphCompiler, ParticleKernelLowerer
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
-    source_id = panel._asset.emitters[0].stable_id
-    target = panel.add_authoring_emitter("Event Target")
-    target_id = target["stable_id"]
-    target_settings = target["settings"]
-    target_settings["spawn_rate"] = 0.0
-    changed = panel.set_authoring_emitter_settings(target_id, target_settings)
-    assert changed["changed"] is True
-    event_type = panel.add_event_type(
-        "Impact",
-        64,
-        [
-            {
-                "name": "Weight",
-                "type": TypeRef(ValueType.F32).to_dict(),
-                "default": 1.25,
-            }
-        ],
-    )
-    route = panel.add_event_route(
-        event_type["stable_id"], source_id, "update", target_id, 2
-    )
-
-    panel.select_authoring_emitter(source_id)
-    snapshot = panel.authoring_snapshot(include_registered_types=True)
-    event_output_definition = next(
-        value
-        for value in snapshot["registered_types"]
-        if value["type_id"]
-        == particle_event_output_type_id(route["stable_id"], "update")
-    )
-    assert any(
-        port["display_name"] == "Weight"
-        and port["type"] == TypeRef(ValueType.F32).to_dict()
-        for port in event_output_definition["ports"]
-    )
-    output = panel.add_authoring_node(
-        "update",
-        particle_event_output_type_id(route["stable_id"], "update"),
-        260.0,
-        230.0,
-    )
-    panel.connect_exec("update::root.update", output["uid"])
-
-    panel.select_authoring_emitter(target_id)
-    payload = panel.add_authoring_node(
-        "init",
-        particle_event_payload_type_id(route["stable_id"]),
-        160.0,
-        0.0,
-    )
-    size = panel.add_authoring_node(
-        "init", "particle.attribute.size", 420.0, 0.0
-    )
-    panel.connect_exec("init::root.init", size["uid"])
-    panel.connect_value(
-        payload["uid"],
-        particle_event_payload_port_id(event_type["fields"][0]["stable_id"]),
-        size["uid"],
-        "value",
-    )
-    replacement_payload = panel.add_authoring_node(
-        "init",
-        particle_event_payload_type_id(route["stable_id"]),
-        160.0,
-        120.0,
-    )
-    replaced = panel.connect_value(
-        replacement_payload["uid"],
-        particle_event_payload_port_id(event_type["fields"][0]["stable_id"]),
-        size["uid"],
-        "value",
-    )
-    assert replaced["changed"] is True
-    assert [
-        link.source_node
-        for link in panel._model.links
-        if link.target_node == size["uid"] and link.target_pin == "value"
-    ] == [replacement_payload["uid"]]
-
-    kernel = ParticleKernelLowerer().lower(
-        ParticleGraphCompiler().compile(panel._asset)
-    )
-    assert kernel.events.routes[0].spawn_count == 2
-    assert any(
-        instruction.opcode == "event_payload"
-        for instruction in kernel.emitters[1].init.instructions
-    )
-
-
-def test_particle_graph_editor_semantic_event_helpers_patch_and_route_nodes():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-
-    panel = ParticleGraphEditorPanel()
-    panel._record = lambda *_args: None
-    source = panel.asset.emitters[0]
-    original_settings = source.settings.to_dict()
-
-    patched = panel.patch_authoring_emitter_settings(
-        source.stable_id,
-        {"capacity": 64, "spawn_rate": 120.0},
-    )
-
-    assert patched["settings"]["capacity"] == 64
-    assert patched["settings"]["spawn_rate"] == 120.0
-    assert patched["settings"]["shape"] == original_settings["shape"]
-    with pytest.raises(ValueError, match="unknown emitter settings"):
-        panel.patch_authoring_emitter_settings(source.stable_id, {"legacy": True})
-
-    assert not hasattr(panel, "set_authoring_emitter_lifecycle")
-
-    target_id = panel.add_authoring_emitter("Event Target")["stable_id"]
+    assert not hasattr(panel, "add_event_route")
+    assert not hasattr(panel, "add_event_output_node")
+    assert not hasattr(panel, "add_event_payload_node")
     event_type = panel.add_event_type(
         "Impact",
         4,
-        [
-            {
-                "name": "Weight",
-                "type": TypeRef(ValueType.F32).to_dict(),
-                "default": 1.0,
-            }
-        ],
+        [{"name": "Weight", "type": TypeRef(ValueType.F32).to_dict(), "default": 1.25}],
     )
-    route = panel.add_event_route(
-        event_type["stable_id"], source.stable_id, "update", target_id, 3
+    event_id = event_type["stable_id"]
+    field_id = event_type["fields"][0]["stable_id"]
+    first_flow = panel.add_authoring_event_flow(event_id)
+    second_flow = panel.add_authoring_event_flow(event_id)
+    assert first_flow["created"] is True
+    assert second_flow["created"] is True
+    assert first_flow["flow_id"] != second_flow["flow_id"]
+
+    trigger = panel.add_authoring_node(
+        "update", PARTICLE_EVENT_TRIGGER_TYPE_ID, 260.0, 230.0
+    )
+    panel.set_node_property(trigger["uid"], "event", event_id)
+    panel.connect_exec("update::root.update", trigger["uid"])
+    event_stage = f"event.{first_flow['flow_id']}"
+    size = panel.add_authoring_node(
+        event_stage, "particle.attribute.size", 360.0, 0.0
+    )
+    root_uid = f"{event_stage}::root.event"
+    panel.connect_exec(root_uid, size["uid"])
+    panel.connect_value(
+        root_uid,
+        particle_event_payload_port_id(field_id),
+        size["uid"],
+        "value",
     )
 
-    output = panel.add_event_output_node(route["stable_id"], 280.0, 220.0)
-    assert panel.asset.emitters[panel._emitter_index].stable_id == source.stable_id
-    assert output["stage"] == "update"
-    assert output["type_id"] == particle_event_output_type_id(
-        route["stable_id"], "update"
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(panel.asset)
     )
+    opcodes = [item.opcode for item in kernel.emitters[0].update.instructions]
+    assert "event_enqueue" in opcodes
+    assert "event_payload" in opcodes
+    assert "event_begin" in opcodes
+    assert "event_complete" in opcodes
 
-    payload = panel.add_event_payload_node(route["stable_id"], 160.0, 40.0)
-    assert panel.asset.emitters[panel._emitter_index].stable_id == target_id
-    assert payload["stage"] == "init"
-    assert payload["type_id"] == particle_event_payload_type_id(route["stable_id"])
 
-
-def test_particle_graph_editor_updates_event_identity_in_place():
+def test_particle_graph_editor_dragged_event_root_uses_canvas_position():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
-    source_id = panel.asset.emitters[0].stable_id
-    target_id = panel.add_authoring_emitter("Target")["stable_id"]
+    event_type = panel.add_event_type("Pulse", 8, [])
+    event_id = event_type["stable_id"]
+
+    created = panel.add_authoring_event_flow(event_id, 420.0, 760.0)
+
+    assert created["event_id"] == event_id
+    assert created["created"] is True
+    flow_id = created["flow_id"]
+    root = next(
+        node
+        for node in panel.authoring_snapshot()["nodes"]
+        if node["uid"] == f"event.{flow_id}::root.event"
+    )
+    assert root["position"] == pytest.approx([420.0, 760.0])
+    root_definition = panel._model.get_node_type(
+        panel._model.find_node(root["uid"])
+    )
+    assert root_definition.visual_style == "context"
+    assert root_definition.deletable is False
+    strict_definition = panel._definition_for_node(
+        panel._model.find_node(root["uid"])
+    )
+    assert all(port.direction.value == "output" for port in strict_definition.ports)
+    assert [port.id for port in strict_definition.ports][0] == "out"
+    duplicate = panel.add_authoring_event_flow(event_id, 20.0, 30.0)
+    assert duplicate["created"] is True
+    assert duplicate["flow_id"] != flow_id
+    duplicate_root = next(
+        node
+        for node in panel.authoring_snapshot()["nodes"]
+        if node["uid"] == f"event.{duplicate['flow_id']}::root.event"
+    )
+    assert duplicate_root["position"] == pytest.approx([20.0, 30.0])
+    assert panel._selected_node_uid == duplicate_root["uid"]
+    assert panel._view.selected_nodes == [duplicate_root["uid"]]
+
+
+def test_particle_graph_defers_canvas_drop_target_until_after_floating_sources():
+    import inspect
+
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    source = inspect.getsource(ParticleGraphEditorPanel.on_render_content)
+    graph_render = source.index("defer_canvas_drop_target=True")
+    left_overlay = source.index("self._left_overlay", graph_render)
+    right_overlay = source.index("self._right_overlay", left_overlay)
+    drop_target = source.index("render_canvas_drop_target", right_overlay)
+
+    assert graph_render < left_overlay < right_overlay < drop_target
+
+
+def test_particle_event_canvas_drop_creates_an_independent_event_flow():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    event_type = panel.add_event_type("Pulse", 8, [])
+    event_id = event_type["stable_id"]
+
+    panel._on_canvas_drop("PARTICLE_EVENT", event_id, 420.0, 760.0)
+
+    assert [flow.event_id for flow in panel.asset.emitters[0].event_flows] == [
+        event_id
+    ]
+    flow_id = panel.asset.emitters[0].event_flows[0].stable_id
+    root = next(
+        node
+        for node in panel.authoring_snapshot()["nodes"]
+        if node["uid"] == f"event.{flow_id}::root.event"
+    )
+    assert root["position"] == pytest.approx([420.0, 760.0])
+
+
+def test_particle_event_row_binds_drag_source_before_context_menu(monkeypatch):
+    import Infernux.engine.ui.particle_graph_editor_panel as module
+
+    panel = module.ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    event_type = panel.add_event_type("Pulse", 8, [])
+    calls = []
+
+    monkeypatch.setattr(module, "render_workspace_add_header", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        module,
+        "begin_workspace_entry",
+        lambda *_a, **_k: (False, (0.0, 0.0, 100.0, 28.0)),
+    )
+    monkeypatch.setattr(module, "paint_workspace_entry", lambda *_a, **_k: None)
+    monkeypatch.setattr(module, "finish_workspace_entry", lambda *_a, **_k: None)
+    monkeypatch.setattr(panel, "_workspace_shortcut_pressed", lambda *_a: False)
+
+    class Context:
+        semantic_capture_enabled = False
+
+        @staticmethod
+        def begin_drag_drop_source():
+            calls.append("drag")
+            return True
+
+        @staticmethod
+        def set_drag_drop_payload_str(payload_type, payload):
+            calls.append((payload_type, payload))
+
+        @staticmethod
+        def label(_value):
+            pass
+
+        @staticmethod
+        def end_drag_drop_source():
+            pass
+
+        @staticmethod
+        def begin_popup_context_item(_item_id):
+            calls.append("context")
+            return False
+
+    panel._render_event_page(Context())
+
+    assert calls == [
+        "drag",
+        ("PARTICLE_EVENT", event_type["stable_id"]),
+        "context",
+    ]
+
+
+def test_particle_graph_editor_event_schema_edit_prunes_only_invalid_payload_links():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
     event_type = panel.add_event_type(
         "Impact",
-        32,
+        8,
         [{"name": "Weight", "type": TypeRef(ValueType.F32).to_dict(), "default": 1.0}],
     )
-    route = panel.add_event_route(
-        event_type["stable_id"], source_id, "update", target_id, 2
+    event_id = event_type["stable_id"]
+    field_id = event_type["fields"][0]["stable_id"]
+    flow = panel.add_authoring_event_flow(event_id)
+    event_stage = f"event.{flow['flow_id']}"
+    size = panel.add_authoring_node(event_stage, "particle.attribute.size", 360.0, 0.0)
+    root_uid = f"{event_stage}::root.event"
+    panel.connect_exec(root_uid, size["uid"])
+    panel.connect_value(
+        root_uid, particle_event_payload_port_id(field_id), size["uid"], "value"
     )
 
-    panel.select_authoring_emitter(source_id)
-    output = panel.add_authoring_node(
-        "update",
-        particle_event_output_type_id(route["stable_id"], "update"),
-        240.0,
-        230.0,
-    )
-    panel.connect_exec("update::root.update", output["uid"])
-    panel.select_authoring_emitter(target_id)
-    payload = panel.add_authoring_node(
-        "init", particle_event_payload_type_id(route["stable_id"]), 160.0, 0.0
-    )
-    size = panel.add_authoring_node(
-        "init", "particle.attribute.size", 420.0, 0.0
-    )
-    panel.connect_exec("init::root.init", size["uid"])
-    payload_port = particle_event_payload_port_id(
-        event_type["fields"][0]["stable_id"]
-    )
-    panel.connect_value(payload["uid"], payload_port, size["uid"], "value")
-
-    updated_type = panel.update_event_type(
-        event_type["stable_id"],
+    updated = panel.update_event_type(
+        event_id,
         "Impact Renamed",
+        16,
+        [{
+            "stable_id": field_id,
+            "name": "Impulse",
+            "type": TypeRef(ValueType.F32).to_dict(),
+            "default": 2.0,
+        }],
+    )
+    assert updated["stable_id"] == event_id
+    assert updated["queue_capacity"] == 16
+    assert any(
+        link.source_port == particle_event_payload_port_id(field_id)
+        for link in panel.asset.emitters[0].event_flows[0].graph.links
+    )
+
+    panel.update_event_type(
+        event_id,
+        "Impact Renamed",
+        16,
+        [{
+            "stable_id": field_id,
+            "name": "Impulse",
+            "type": TypeRef(ValueType.VEC3).to_dict(),
+            "default": [0.0, 0.0, 0.0],
+        }],
+    )
+    links = panel.asset.emitters[0].event_flows[0].graph.links
+    assert any(link.kind.value == "exec" for link in links)
+    assert not any(
+        link.source_port == particle_event_payload_port_id(field_id) for link in links
+    )
+
+
+def test_particle_graph_editor_event_schema_edit_migrates_trigger_literals_atomically():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    event_type = panel.add_event_type(
+        "Impact",
         8,
         [
             {
-                "stable_id": event_type["fields"][0]["stable_id"],
-                "name": "Impulse",
-                "type": TypeRef(ValueType.F32).to_dict(),
-                "default": 2.0,
+                "name": "Direction",
+                "type": TypeRef(ValueType.VEC3).to_dict(),
+                "default": [0.0, 1.0, 0.0],
             }
         ],
     )
-    assert updated_type["stable_id"] == event_type["stable_id"]
-    assert updated_type["fields"][0]["stable_id"] == event_type["fields"][0]["stable_id"]
-    assert updated_type["capacity_per_step"] == 8
-    assert updated_type["changed"] is True
-    assert any(
-        link.source_port == payload_port for link in panel.asset.emitters[1].init.links
-    )
-
-    updated_route = panel.update_event_route(
-        route["stable_id"],
-        event_type["stable_id"],
-        source_id,
-        "update",
-        target_id,
-        7,
-    )
-    assert updated_route["stable_id"] == route["stable_id"]
-    assert updated_route["spawn_count"] == 7
-    assert updated_route["route_nodes_removed"] is False
-    assert any(
-        node.type_id == particle_event_output_type_id(route["stable_id"], "update")
-        for node in panel.asset.emitters[0].update.nodes
-    )
-
-
-def test_particle_graph_editor_prunes_only_invalid_event_edit_context():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-
-    panel = ParticleGraphEditorPanel()
-    panel._record = lambda *_args: None
-    source_id = panel.asset.emitters[0].stable_id
-    target_id = panel.add_authoring_emitter("Target")["stable_id"]
-    event_type = panel.add_event_type(
-        "Impact",
-        32,
-        [{"name": "Weight", "type": TypeRef(ValueType.F32).to_dict(), "default": 1.0}],
-    )
-    route = panel.add_event_route(
-        event_type["stable_id"], source_id, "update", target_id, 2
-    )
+    event_id = event_type["stable_id"]
     field_id = event_type["fields"][0]["stable_id"]
-    payload_port = particle_event_payload_port_id(field_id)
-
-    panel.select_authoring_emitter(source_id)
-    output = panel.add_authoring_node(
-        "update",
-        particle_event_output_type_id(route["stable_id"], "update"),
-        240.0,
-        230.0,
+    panel.add_authoring_event_flow(event_id)
+    trigger = panel.add_authoring_node(
+        "update", PARTICLE_EVENT_TRIGGER_TYPE_ID, 260.0, 230.0
     )
-    panel.connect_exec("update::root.update", output["uid"])
-    constant = panel.add_authoring_node("update", "common.constant.f32", 80.0, 0.0)
-    panel.connect_value(constant["uid"], "value", output["uid"], payload_port)
+    panel.set_node_property(trigger["uid"], "event", event_id)
+    payload_port = particle_event_payload_port_id(field_id)
+    trigger_node = panel._model.find_node(trigger["uid"])
+    assert trigger_node.data[payload_port] == [0.0, 1.0, 0.0]
 
     panel.update_event_type(
-        event_type["stable_id"],
+        event_id,
         "Impact",
-        32,
+        8,
         [
             {
                 "stable_id": field_id,
                 "name": "Weight",
-                "type": TypeRef(ValueType.VEC3).to_dict(),
-                "default": [1.0, 1.0, 1.0],
-            }
-        ],
-    )
-    source = panel.asset.emitters[0]
-    assert any(link.target_port == "in" for link in source.update.links)
-    assert not any(link.target_port == payload_port for link in source.update.links)
-
-    moved = panel.update_event_route(
-        route["stable_id"],
-        event_type["stable_id"],
-        source_id,
-        "init",
-        target_id,
-        2,
-    )
-    assert moved["route_nodes_removed"] is True
-    route_types = {
-        particle_event_output_type_id(route["stable_id"], stage)
-        for stage in ("init", "update", "rendering")
-    }
-    route_types.add(particle_event_payload_type_id(route["stable_id"]))
-    assert not any(
-        node.type_id in route_types
-        for emitter in panel.asset.emitters
-        for stage in (emitter.init, emitter.update, emitter.rendering)
-        for node in stage.nodes
-    )
-
-
-def test_particle_graph_editor_removes_event_route_nodes_transactionally():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-
-    panel = ParticleGraphEditorPanel()
-    panel._record = lambda *_args: None
-    source_id = panel.asset.emitters[0].stable_id
-    target_id = panel.add_authoring_emitter("Target")["stable_id"]
-    event_type = panel.add_event_type(
-        "Impact",
-        32,
-        [
-            {
-                "name": "Weight",
                 "type": TypeRef(ValueType.F32).to_dict(),
-                "default": 1.0,
-            }
+                "default": 2.5,
+            },
+            {
+                "stable_id": "new-color-field",
+                "name": "Tint",
+                "type": TypeRef(ValueType.COLOR).to_dict(),
+                "default": [1.0, 0.25, 0.0, 1.0],
+            },
         ],
     )
-    route = panel.add_event_route(
-        event_type["stable_id"], source_id, "update", target_id, 2
-    )
 
-    panel.select_authoring_emitter(source_id)
-    output = panel.add_authoring_node(
-        "update",
-        particle_event_output_type_id(route["stable_id"], "update"),
-        240.0,
-        230.0,
+    node = next(
+        item
+        for item in panel.asset.emitters[0].update.nodes
+        if item.type_id == PARTICLE_EVENT_TRIGGER_TYPE_ID
+        and item.properties.get("event") == event_id
     )
-    panel.connect_exec("update::root.update", output["uid"])
-    panel.select_authoring_emitter(target_id)
-    panel.add_authoring_node(
-        "init",
-        particle_event_payload_type_id(route["stable_id"]),
-        160.0,
+    assert node.properties[payload_port] == 2.5
+    assert node.properties[particle_event_payload_port_id("new-color-field")] == [
+        1.0,
+        0.25,
         0.0,
-    )
-
-    removed = panel.remove_event_route(route["stable_id"])
-
-    assert removed == route
-    assert panel.asset.event_routes == ()
-    removed_types = {
-        particle_event_output_type_id(route["stable_id"], "update"),
-        particle_event_payload_type_id(route["stable_id"]),
-    }
-    assert not any(
-        node.type_id in removed_types
-        for emitter in panel.asset.emitters
-        for stage in (emitter.init, emitter.update, emitter.rendering)
-        for node in stage.nodes
-    )
-    ParticleGraphAsset.from_dict(panel.asset.to_dict())
-
-
-def test_particle_graph_editor_rejects_unknown_event_route_before_mutation():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-
-    panel = ParticleGraphEditorPanel()
-    panel._record = lambda *_args: None
-    source_id = panel.asset.emitters[0].stable_id
-    target_id = panel.add_authoring_emitter("Target")["stable_id"]
-    event_type = panel.add_event_type("Impact", 4, [])
-    before = panel.asset.to_dict()
-
-    with pytest.raises(KeyError) as exc_info:
-        panel.add_event_route(
-            "field-id-used-by-mistake", source_id, "update", target_id, 1
-        )
-
-    message = str(exc_info.value)
-    assert "available event types" in message
-    assert event_type["stable_id"] in message
-    assert panel.asset.to_dict() == before
-
-
-def test_particle_graph_editor_removing_emitter_cascades_event_routes():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-
-    panel = ParticleGraphEditorPanel()
-    panel._record = lambda *_args: None
-    source_id = panel.asset.emitters[0].stable_id
-    target_id = panel.add_authoring_emitter("Target")["stable_id"]
-    event_type = panel.add_event_type("Death", 16, [])
-    panel.add_event_route(
-        event_type["stable_id"], source_id, "rendering", target_id, 1
-    )
-
-    removed = panel.remove_authoring_emitter(target_id)
-
-    assert removed["emitter"]["stable_id"] == target_id
-    assert len(removed["removed_route_ids"]) == 1
-    assert [emitter.stable_id for emitter in panel.asset.emitters] == [source_id]
-    assert panel.asset.event_routes == ()
-    assert [value.stable_id for value in panel.asset.event_types] == [
-        event_type["stable_id"]
+        1.0,
     ]
-    with pytest.raises(ValueError, match="at least one emitter"):
-        panel.remove_authoring_emitter(source_id)
-    ParticleGraphAsset.from_dict(panel.asset.to_dict())
+    canvas_node = panel._model.find_node(f"update::{node.uid}")
+    canvas_type = panel._model.get_node_type(canvas_node)
+    inline_types = {field.id: field.data_type for field in canvas_type.inline_fields}
+    assert inline_types[payload_port] == "f32"
+    assert inline_types[particle_event_payload_port_id("new-color-field")] == "color"
+
+
+def test_particle_graph_editor_removing_event_clears_reusable_event_nodes():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    event_type = panel.add_event_type("Death", 4, [])
+    event_id = event_type["stable_id"]
+    panel.add_authoring_event_flow(event_id)
+    trigger = panel.add_authoring_node(
+        "update", PARTICLE_EVENT_TRIGGER_TYPE_ID, 260.0, 230.0
+    )
+    panel.set_node_property(trigger["uid"], "event", event_id)
+    panel.connect_exec("update::root.update", trigger["uid"])
+
+    removed = panel.remove_event_type(event_id)
+    assert removed["stable_id"] == event_id
+    assert panel.asset.event_types == ()
+    assert len(panel.asset.emitters[0].event_flows) == 1
+    assert panel.asset.emitters[0].event_flows[0].event_id == ""
+    trigger_node = next(
+        node
+        for node in panel.asset.emitters[0].update.nodes
+        if node.type_id == PARTICLE_EVENT_TRIGGER_TYPE_ID
+    )
+    assert trigger_node.properties["event"] == ""
+
+    replacement = panel.add_event_type("Respawn", 8, [])
+    replacement_id = replacement["stable_id"]
+    flow = panel.asset.emitters[0].event_flows[0]
+    trigger_uid = f"update::{trigger_node.uid}"
+    active_uid = f"event.{flow.stable_id}::root.event"
+    panel.set_node_property(trigger_uid, "event", replacement_id)
+    panel.set_node_property(active_uid, "event", replacement_id)
+    assert panel._model.get_node_type(panel._model.find_node(trigger_uid)).label == (
+        "Trigger Event: Respawn"
+    )
+    assert panel._model.get_node_type(panel._model.find_node(active_uid)).label == (
+        "Active Event: Respawn"
+    )
 
 
 def test_particle_node_inspector_edits_unconnected_value_input_defaults():
@@ -1852,18 +1830,16 @@ def test_particle_graph_editor_save_aot_compiles_and_reopens(tmp_path, monkeypat
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
     from Infernux.particle.artifact import ParticleArtifactRegistry
 
-    compiled = []
-    monkeypatch.setattr(
-        ParticleArtifactRegistry,
-        "compile_path",
-        classmethod(lambda cls, path, **_kwargs: compiled.append(path)),
-    )
+    ParticleArtifactRegistry.clear()
     monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(lambda cls, _path: None))
 
     path = tmp_path / "Smoke.particlegraph"
     panel = ParticleGraphEditorPanel()
     assert panel._save_to(str(path)) is True
-    assert compiled == [str(path.resolve())]
+    artifact = ParticleArtifactRegistry.get(str(path))
+    assert artifact is not None
+    assert artifact.source_kind == "graph"
+    assert artifact.hir["name"] == "Smoke"
     assert panel._dirty is False
 
     reopened = ParticleGraphEditorPanel()
@@ -1878,12 +1854,7 @@ def test_project_create_particlegraph_writes_loadable_asset(tmp_path, monkeypatc
     from Infernux.engine.ui.project_file_ops import create_particlegraph
     from Infernux.particle.artifact import ParticleArtifactRegistry
 
-    compiled = []
-    monkeypatch.setattr(
-        ParticleArtifactRegistry,
-        "compile_path",
-        classmethod(lambda cls, path, **_kwargs: compiled.append(path)),
-    )
+    ParticleArtifactRegistry.clear()
 
     ok, error = create_particlegraph(str(tmp_path), "Fire")
 
@@ -1901,7 +1872,10 @@ def test_project_create_particlegraph_writes_loadable_asset(tmp_path, monkeypatc
         "particle.attribute.velocity"
     ]
     assert emitter.update.nodes[1].properties["composition"] == "add"
-    assert compiled == [str(path)]
+    artifact = ParticleArtifactRegistry.get(str(path))
+    assert artifact is not None
+    assert artifact.source_kind == "graph"
+    assert artifact.hir["name"] == "Fire"
     assert json.loads(path.read_text(encoding="utf-8"))["$schema"] == "infernux.particle_graph"
 
 
@@ -1959,6 +1933,8 @@ def test_particle_system_inspector_metadata_is_localizable_and_backend_is_emitte
         "graph",
         "simulation_speed",
         "play_on_awake",
+        "random_seed",
+        "prewarm",
         "offscreen_policy",
         "bounds_mode",
         "manual_bounds_center",
@@ -1967,6 +1943,8 @@ def test_particle_system_inspector_metadata_is_localizable_and_backend_is_emitte
     assert fields["graph"].display_name_key == "particle_system.graph"
     assert fields["simulation_speed"].display_name_key == "particle_system.simulation_speed"
     assert fields["play_on_awake"].display_name_key == "particle_system.play_on_awake"
+    assert fields["random_seed"].display_name_key == "particle_system.random_seed"
+    assert fields["prewarm"].display_name_key == "particle_system.prewarm"
     assert (
         fields["offscreen_policy"].display_name_key
         == "particle_system.offscreen_policy"

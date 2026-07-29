@@ -114,12 +114,14 @@ class _Panel:
         self.calls.append(("connect", source_node_uid, target_node_uid))
         return {"link_uid": "update::new-link", "changed": True}
 
-    def disconnect_exec(self, link_uid):
-        self.calls.append(("disconnect-exec", link_uid))
+    def disconnect_link(self, link_uid):
+        self.calls.append(("disconnect-link", link_uid))
         return {
             "link_uid": link_uid,
             "source_node_uid": "init::root.init",
+            "source_port": "out",
             "target_node_uid": "init::lifetime",
+            "target_port": "in",
             "changed": True,
         }
 
@@ -170,87 +172,28 @@ class _Panel:
         self.calls.append(("remove-emitter", emitter_id))
         return {
             "emitter": {"stable_id": emitter_id},
-            "removed_route_ids": ["route-id"],
             "changed": True,
         }
 
-    def add_event_type(self, name, capacity_per_step, fields):
-        self.calls.append(("event-type", name, capacity_per_step, fields))
+    def add_event_type(self, name, queue_capacity, fields):
+        self.calls.append(("event-type", name, queue_capacity, fields))
         return {"stable_id": "event-id", "name": name}
 
-    def add_event_route(
-        self,
-        event_type_id,
-        source_emitter_id,
-        source_stage,
-        target_emitter_id,
-        spawn_count,
-    ):
+    def add_authoring_event_flow(self, event_type_id):
+        self.calls.append(("implement-event", event_type_id))
+        return {"event_id": event_type_id, "created": True}
+
+    def update_event_type(self, event_type_id, name, queue_capacity, fields):
         self.calls.append(
-            (
-                "event-route",
-                event_type_id,
-                source_emitter_id,
-                source_stage,
-                target_emitter_id,
-                spawn_count,
-            )
-        )
-        return {"stable_id": "route-id", "event_type_id": event_type_id}
-
-    def add_event_output_node(self, route_id, x, y):
-        self.calls.append(("event-output", route_id, x, y))
-        return {
-            "uid": "update::event-output",
-            "type_id": "event-output-type",
-            "stage": "update",
-        }
-
-    def add_event_payload_node(self, route_id, x, y):
-        self.calls.append(("event-payload", route_id, x, y))
-        return {
-            "uid": "init::event-payload",
-            "type_id": "event-payload-type",
-            "stage": "init",
-        }
-
-    def update_event_type(self, event_type_id, name, capacity_per_step, fields):
-        self.calls.append(
-            ("update-event-type", event_type_id, name, capacity_per_step, fields)
+            ("update-event-type", event_type_id, name, queue_capacity, fields)
         )
         return {
             "stable_id": event_type_id,
             "name": name,
-            "capacity_per_step": capacity_per_step,
+            "queue_capacity": queue_capacity,
             "fields": fields,
             "changed": True,
         }
-
-    def update_event_route(
-        self,
-        route_id,
-        event_type_id,
-        source_emitter_id,
-        source_stage,
-        target_emitter_id,
-        spawn_count,
-    ):
-        self.calls.append(
-            (
-                "update-event-route",
-                route_id,
-                event_type_id,
-                source_emitter_id,
-                source_stage,
-                target_emitter_id,
-                spawn_count,
-            )
-        )
-        return {"stable_id": route_id, "spawn_count": spawn_count, "changed": True}
-
-    def remove_event_route(self, route_id):
-        self.calls.append(("remove-event-route", route_id))
-        return {"stable_id": route_id, "event_type_id": "event-id"}
 
     def remove_event_type(self, event_type_id):
         self.calls.append(("remove-event-type", event_type_id))
@@ -310,7 +253,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     connected = mcp.tools["particle_graph_connect_exec"](
         "update::root.update", "update::new-node"
     )
-    disconnected = mcp.tools["particle_graph_disconnect_exec"](
+    disconnected = mcp.tools["particle_graph_disconnect_link"](
         "init::root-to-lifetime"
     )
     value_connected = mcp.tools["particle_graph_connect_value"](
@@ -347,15 +290,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
             }
         ],
     )
-    event_route = mcp.tools["particle_graph_add_event_route"](
-        "event-id", "source", "update", "target", 2
-    )
-    event_output = mcp.tools["particle_graph_add_event_output"](
-        "route-id", 280.0, 220.0
-    )
-    event_payload = mcp.tools["particle_graph_add_event_payload"](
-        "route-id", 160.0, 40.0
-    )
+    event_flow = mcp.tools["particle_graph_implement_event"]("event-id")
     updated_type = mcp.tools["particle_graph_update_event_type"](
         "event-id",
         "Impact Renamed",
@@ -369,10 +304,6 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
             }
         ],
     )
-    updated_route = mcp.tools["particle_graph_update_event_route"](
-        "route-id", "event-id", "source", "update", "target", 7
-    )
-    removed_route = mcp.tools["particle_graph_remove_event_route"]("route-id")
     removed_type = mcp.tools["particle_graph_remove_event_type"]("event-id")
     removed_emitter = mcp.tools["particle_graph_remove_emitter"]("target")
     routed = mcp.tools["particle_graph_set_rendering_output"](
@@ -404,13 +335,9 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert data_removed["interface"]["changed"] is True
     assert event_type["event_type_id"] == "event-id"
     assert event_type["event_type"]["stable_id"] == "event-id"
-    assert event_route["event_route_id"] == "route-id"
-    assert event_route["event_route"]["stable_id"] == "route-id"
-    assert event_output["node"]["uid"] == "update::event-output"
-    assert event_payload["node"]["uid"] == "init::event-payload"
+    assert event_flow["event_id"] == "event-id"
+    assert event_flow["created"] is True
     assert updated_type["event_type"]["stable_id"] == "event-id"
-    assert updated_route["event_route"]["spawn_count"] == 7
-    assert removed_route["event_route"]["stable_id"] == "route-id"
     assert removed_type["event_type"]["stable_id"] == "event-id"
     assert removed_emitter["emitter"]["stable_id"] == "target"
     assert routed["changed"] is True
@@ -426,7 +353,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
             [1.0, 2.0, 3.0],
         ),
         ("connect", "update::root.update", "update::new-node"),
-        ("disconnect-exec", "init::root-to-lifetime"),
+        ("disconnect-link", "init::root-to-lifetime"),
         ("value", "init::payload", "value", "init::size", "value"),
         ("select-emitter", "target"),
         ("add-emitter", "Target"),
@@ -458,9 +385,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
                 }
             ],
         ),
-        ("event-route", "event-id", "source", "update", "target", 2),
-        ("event-output", "route-id", 280.0, 220.0),
-        ("event-payload", "route-id", 160.0, 40.0),
+        ("implement-event", "event-id"),
         (
             "update-event-type",
             "event-id",
@@ -475,16 +400,6 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
                 }
             ],
         ),
-        (
-            "update-event-route",
-            "route-id",
-            "event-id",
-            "source",
-            "update",
-            "target",
-            7,
-        ),
-        ("remove-event-route", "route-id"),
         ("remove-event-type", "event-id"),
         ("remove-emitter", "target"),
         ("output", "rendering::mesh-output"),
@@ -613,8 +528,6 @@ def test_particle_system_runtime_tool_reads_only_the_control_plane(monkeypatch):
     class _Component:
         def runtime_diagnostics(self):
             return {
-                "event_abi_hash": 41,
-                "event_domain_serial": 7,
                 "emitters": [{"index": 1, "simulation_step": 9}],
             }
 
@@ -643,8 +556,6 @@ def test_particle_system_runtime_tool_reads_only_the_control_plane(monkeypatch):
         "object_id": 123,
         "object_name": "Event VFX",
         "runtime": {
-            "event_abi_hash": 41,
-            "event_domain_serial": 7,
             "emitters": [{"index": 1, "simulation_step": 9}],
         },
     }
@@ -774,8 +685,21 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
             return {
                 "request_id": 77,
                 "status": "completed",
-                "emitters": [{"stable_id": "target", "alive_count": 12}],
-                "events": [{"route_stable_id": "impact", "spawned_count": 12}],
+                "emitters": [
+                    {
+                        "stable_id": "target",
+                        "alive_count": 12,
+                        "event_diagnostics": [
+                            {
+                                "stable_id": "impact",
+                                "queue_capacity": 8,
+                                "enqueue_count": 11,
+                                "complete_count": 9,
+                                "overflow_count": 2,
+                            }
+                        ],
+                    }
+                ],
             }
 
         def request_gpu_view_diagnostics(self, view):
@@ -834,7 +758,18 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
         "status": "pending",
     }
     assert polled["diagnostics"]["emitters"][0]["alive_count"] == 12
-    assert polled["diagnostics"]["events"][0]["spawned_count"] == 12
+    assert (
+        polled["diagnostics"]["emitters"][0]["event_diagnostics"][0][
+            "overflow_count"
+        ]
+        == 2
+    )
+    assert (
+        polled["diagnostics"]["emitters"][0]["event_diagnostics"][0][
+            "complete_count"
+        ]
+        == 9
+    )
     assert view_requested["request_id"] == 78
     assert view_requested["view"] == "game"
     assert view_polled["diagnostics"]["outputs"][0]["visible_count"] == 7
@@ -861,6 +796,10 @@ def test_particle_system_emitter_control_tools_are_indexed_no_ops(monkeypatch):
             self.calls.append(("restart", index))
             return index == 0
 
+        def seek(self, time_seconds, index):
+            self.calls.append(("seek", time_seconds, index))
+            return index in {None, 0}
+
         def runtime_diagnostics(self):
             return {"emitters": [{"index": 0, "playing": True}]}
 
@@ -883,17 +822,24 @@ def test_particle_system_emitter_control_tools_are_indexed_no_ops(monkeypatch):
     paused = mcp.tools["particle_system_pause_emitter"](789, 0)
     terminated = mcp.tools["particle_system_terminate_emitter"](789, 0)
     restarted = mcp.tools["particle_system_restart_emitter"](789, 0)
+    sought = mcp.tools["particle_system_seek"](789, 2.5, 0)
+    sought_all = mcp.tools["particle_system_seek"](789, 1.25)
     invalid = mcp.tools["particle_system_start_emitter"](789, 99)
 
     assert started["accepted"] is True
     assert paused["operation"] == "pause"
     assert terminated["operation"] == "terminate"
     assert restarted["operation"] == "restart"
+    assert sought["accepted"] is True
+    assert sought["time_seconds"] == 2.5
+    assert sought_all["emitter_index"] is None
     assert invalid["accepted"] is False
     assert component.calls == [
         ("start", 0),
         ("pause", 0),
         ("terminate", 0),
         ("restart", 0),
+        ("seek", 2.5, 0),
+        ("seek", 1.25, None),
         ("start", 99),
     ]

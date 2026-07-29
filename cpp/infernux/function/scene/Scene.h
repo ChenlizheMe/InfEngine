@@ -65,6 +65,17 @@ class Scene
         m_environment = environment;
     }
 
+    /// Mark an explicit jump in the rendered world's time domain. Continuous
+    /// Update/FixedUpdate playback must not touch this revision.
+    void MarkTemporalDiscontinuity() noexcept
+    {
+        ++m_temporalDiscontinuityRevision;
+    }
+    [[nodiscard]] uint64_t GetTemporalDiscontinuityRevision() const noexcept
+    {
+        return m_temporalDiscontinuityRevision;
+    }
+
     /// Resolve the active skybox material: the environment's material asset
     /// when set and loadable, otherwise the builtin procedural sky.
     [[nodiscard]] std::shared_ptr<InxMaterial> ResolveSkyboxMaterial() const;
@@ -178,19 +189,26 @@ class Scene
         return m_mainCamera;
     }
 
-    /// @brief Set the main camera for this scene
-    void SetMainCamera(Camera *camera)
-    {
-        m_mainCamera = camera;
-    }
+    /// @brief Set the explicitly preferred game camera for this scene.
+    ///
+    /// A disabled preferred camera remains assigned and becomes effective
+    /// again when re-enabled. While it is unavailable, FindGameCamera()
+    /// selects a deterministic active fallback without overwriting this
+    /// authored choice.
+    void SetMainCamera(Camera *camera);
 
-    /// @brief Find the best game camera based on depth ordering and active state.
+    /// @brief Find the effective game camera based on authored preference,
+    /// active state, depth, and stable component identity.
     /// Skips the editor camera. If m_mainCamera is valid and active, returns it.
-    /// Otherwise auto-discovers the highest-priority (lowest depth) active Camera
-    /// in the scene and caches it as m_mainCamera.
+    /// Otherwise returns the lowest-depth active Camera without mutating the
+    /// explicitly authored main-camera reference.
     /// @param editorCam Editor camera to exclude from search
     /// @return The best game camera, or nullptr if none found
     Camera *FindGameCamera(Camera *editorCam);
+
+    /// @brief Collect all active game cameras in deterministic render order.
+    /// Lower depth sorts first; component identity breaks equal-depth ties.
+    [[nodiscard]] std::vector<Camera *> GetActiveGameCameras(Camera *editorCam) const;
 
     // ========================================================================
     // Update loop
@@ -421,6 +439,10 @@ class Scene
 
     // Structure version counter (bumped on add/remove/reparent)
     uint64_t m_structureVersion = 0;
+
+    // Explicit seeks/cuts only. The renderer consumes this monotonic revision
+    // once before view extraction and invalidates temporal histories together.
+    uint64_t m_temporalDiscontinuityRevision = 0;
 };
 
 class SceneCommitToken final

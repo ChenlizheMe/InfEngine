@@ -12,7 +12,13 @@ from typing import Any, Mapping
 import zlib
 
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
-from Infernux.graph.ramp import Curve, Gradient
+from Infernux.graph.ramp import (
+    CURVE_WRAP_MODES,
+    GRADIENT_MODES,
+    MAX_RAMP_KEYS,
+    Curve,
+    Gradient,
+)
 
 from .data_interface import SdfVolume, VectorField
 from .hir import ParticleStage
@@ -23,6 +29,8 @@ from .kernel_ir import (
     ParticleEmitterKernelIR,
     ParticleKernelFunction,
     ParticleKernelProgram,
+    _event_payload_state_id,
+    _event_state_prefix,
 )
 from .kernel_semantics import KernelStage
 
@@ -620,6 +628,7 @@ void main() {
 
 _BILLBOARD_PICKING_FRAGMENT_GLSL = """#version 450
 
+layout(location = 4) in float in_view_depth;
 layout(location = 0) out uvec2 out_object_id;
 
 layout(push_constant) uniform ViewConstants {
@@ -631,6 +640,7 @@ layout(push_constant) uniform ViewConstants {
 } view;
 
 void main() {
+    if (!(in_view_depth > 0.0)) discard;
     out_object_id = view.object_id.xy;
 }
 """
@@ -863,10 +873,9 @@ class GpuParticleEmitterSource:
     kernel_hash: str
     attribute_fields: tuple[tuple[str, str, str, int, int], ...]
     state_stride: int
-    event_output_stages: tuple[str, ...]
+    event_type_count: int
     bootstrap: str
     init: str
-    event_init: str
     update: str
     render_reset: str
     rendering: str
@@ -878,7 +887,6 @@ class GpuParticleEmitterSource:
         return {
             "bootstrap": self.bootstrap,
             "init": self.init,
-            "event_init": self.event_init,
             "update": self.update,
             "render_reset": self.render_reset,
             "rendering": self.rendering,
@@ -899,7 +907,7 @@ class GpuParticleEmitterSource:
                 for stable_id, field, glsl_type, offset, byte_size in self.attribute_fields
             ],
             "state_stride": self.state_stride,
-            "event_output_stages": list(self.event_output_stages),
+            "event_type_count": self.event_type_count,
             "data_interfaces": [dict(value) for value in self.data_interfaces],
             "data_interface_layout": dict(self.data_interface_layout),
             "continuation": (
@@ -957,17 +965,19 @@ class GpuParticleGlslLowerer:
     ) -> GpuParticleEmitterSource:
         fields = _attribute_fields(emitter)
         attribute_layout, state_stride = _std430_attribute_layout(fields)
-        data_interface_layout = _data_interface_layout(emitter, parameters)
+        event_type_count = len(events.event_types)
+        parameter_slots, _parameter_slot_count = _parameter_slot_layout(parameters)
+        data_interface_layout = _data_interface_layout(
+            emitter,
+            parameters,
+            parameter_slots,
+        )
         prelude = _shader_prelude(
             fields,
             emitter.random_seed,
             data_interface_layout,
-            len(parameters),
+            parameter_slots,
         )
-        parameter_slots = {
-            parameter.stable_id: (parameter.slot, parameter.value_type)
-            for parameter in parameters
-        }
         continuation_lane_indices = {
             stable_id: index
             for index, stable_id in enumerate(
@@ -975,7 +985,7 @@ class GpuParticleGlslLowerer:
             )
         }
         continuation_join_indices = {
-            (flow.lifecycle_stage, join.source_node_uid): index
+            (flow.lifecycle_stage, flow.flow_id, join.source_node_uid): index
             for index, (flow, join) in enumerate(
                 (flow, join)
                 for flow in emitter.flows
@@ -993,8 +1003,8 @@ class GpuParticleGlslLowerer:
             for flow in emitter.flows
             if flow.kernel_stage is KernelStage.RENDERING
         )
-        bootstrap = prelude + _bootstrap_main()
-        init_body, _, init_events = _StageCompiler(
+        bootstrap = prelude + _bootstrap_main(event_type_count)
+        init_body, _ = _StageCompiler(
             emitter,
             fields,
             data_interface_layout,
@@ -1004,18 +1014,7 @@ class GpuParticleGlslLowerer:
             continuation_lane_indices=continuation_lane_indices,
             continuation_join_indices=continuation_join_indices,
         ).compile(emitter.init, init_flows)
-        event_init_body, _, event_init_events = _StageCompiler(
-            emitter,
-            fields,
-            data_interface_layout,
-            events,
-            emitter_index,
-            event_input=True,
-            parameter_slots=parameter_slots,
-            continuation_lane_indices=continuation_lane_indices,
-            continuation_join_indices=continuation_join_indices,
-        ).compile(emitter.init, init_flows)
-        update_body, _, update_events = _StageCompiler(
+        update_body, _ = _StageCompiler(
             emitter,
             fields,
             data_interface_layout,
@@ -1026,7 +1025,7 @@ class GpuParticleGlslLowerer:
             continuation_join_indices=continuation_join_indices,
             entry_guard="state.update_resume_step != pc.simulation_step",
         ).compile(emitter.update, update_flows)
-        rendering_body, exports, rendering_events = _StageCompiler(
+        rendering_body, exports = _StageCompiler(
             emitter,
             fields,
             data_interface_layout,
@@ -1064,36 +1063,12 @@ class GpuParticleGlslLowerer:
                 for stable_id, value_type, field, offset, byte_size in attribute_layout
             ),
             state_stride,
-            tuple(
-                stage
-                for stage, body in (
-                    ("init", init_events),
-                    ("update", update_events),
-                    ("rendering", rendering_events),
-                )
-                if body
-            ),
+            event_type_count,
             bootstrap,
-            prelude
-            + continuation_bindings
-            + (_event_output_bindings(4) if init_events else "")
-            + _init_main(init_body, init_events, emitter, fields),
-            prelude
-            + continuation_bindings
-            + _event_init_bindings()
-            + (_event_output_bindings(4) if event_init_events else "")
-            + _event_init_main(
-                event_init_body, event_init_events, emitter, fields
-            ),
-            prelude
-            + continuation_bindings
-            + (_event_output_bindings(4) if update_events else "")
-            + _update_main(update_body, update_events, emitter, fields),
+            prelude + continuation_bindings + _init_main(init_body, emitter, fields),
+            prelude + continuation_bindings + _update_main(update_body, emitter, fields),
             prelude + _render_reset_main(),
-            prelude
-            + continuation_bindings
-            + (_event_output_bindings(4) if rendering_events else "")
-            + _rendering_main(rendering_body, rendering_events, exports),
+            prelude + continuation_bindings + _rendering_main(rendering_body, exports),
             continuation,
             tuple(interface.to_dict() for interface in emitter.data_interfaces),
             data_interface_layout,
@@ -1608,10 +1583,9 @@ class _StageCompiler:
         events,
         emitter_index: int,
         *,
-        event_input: bool = False,
         parameter_slots: Mapping[str, tuple[int, TypeRef]] | None = None,
         continuation_lane_indices: Mapping[str, int] | None = None,
-        continuation_join_indices: Mapping[tuple[ParticleStage, str], int]
+        continuation_join_indices: Mapping[tuple[ParticleStage, str, str], int]
         | None = None,
         existing_continuation_lane: int | None = None,
         entry_guard: str = "true",
@@ -1621,10 +1595,8 @@ class _StageCompiler:
         self._values: dict[str, str] = {}
         self._exports: dict[str, str] = {}
         self._lines: list[str] = []
-        self._event_lines: list[str] = []
         self._events = events
         self._emitter_index = int(emitter_index)
-        self._event_input = bool(event_input)
         self._parameter_slots = dict(parameter_slots or {})
         self._continuation_lane_indices = dict(continuation_lane_indices or {})
         self._continuation_join_indices = dict(continuation_join_indices or {})
@@ -1632,7 +1604,6 @@ class _StageCompiler:
         self._entry_guard = str(entry_guard)
         self._active_lane_var: str | None = None
         self._suspension_join_contexts: dict[str, tuple[int, int]] = {}
-        self._inline_events = False
         self._volume_interfaces = {
             interface["stable_id"]: interface["interface_index"]
             for interface in data_interface_layout.get("volume_interfaces", ())
@@ -1646,7 +1617,7 @@ class _StageCompiler:
         self,
         function: ParticleKernelFunction,
         flows=(),
-    ) -> tuple[str, dict[str, str], str]:
+    ) -> tuple[str, dict[str, str]]:
         if self._continuation_lane_indices and any(
             instruction.opcode
             in {"suspend_frames", "suspend_seconds", "until_frames", "until_seconds"}
@@ -1659,7 +1630,6 @@ class _StageCompiler:
         return (
             "\n".join(f"    {line}" for line in self._lines),
             dict(self._exports),
-            "\n".join(f"    {line}" for line in self._event_lines),
         )
 
     def _compile_flow_aware(self, function: ParticleKernelFunction, flows) -> None:
@@ -1667,7 +1637,6 @@ class _StageCompiler:
             raise GpuParticleCompileError(
                 "GPU Wait lowering requires lifecycle flow metadata"
             )
-        self._inline_events = True
         entries = []
         lane_names: dict[tuple[int, int], str] = {}
         joins = {}
@@ -1707,6 +1676,7 @@ class _StageCompiler:
                 item
                 for item in self._emitter.suspensions
                 if item.lifecycle_stage is flow.lifecycle_stage
+                and item.flow_id == flow.flow_id
             )
             for suspension in flow_suspensions:
                 lane_waits.setdefault((flow_index, suspension.lane_index), set()).add(
@@ -1728,7 +1698,7 @@ class _StageCompiler:
                     continue
                 try:
                     global_join_index = self._continuation_join_indices[
-                        (flow.lifecycle_stage, join.source_node_uid)
+                        (flow.lifecycle_stage, flow.flow_id, join.source_node_uid)
                     ]
                 except KeyError as exc:
                     raise GpuParticleCompileError(
@@ -1868,7 +1838,7 @@ class _StageCompiler:
         function: ParticleKernelFunction,
         flow,
         suspension,
-    ) -> tuple[str, str]:
+    ) -> str:
         block_order = {
             block.source_node_uid: order
             for order, block in enumerate(flow.blocks)
@@ -1940,6 +1910,37 @@ class _StageCompiler:
             if instruction.result_id
         }
         prerequisite_indices: set[int] = set()
+        if flow.lifecycle_stage is ParticleStage.EVENT:
+            event_index = next(
+                (
+                    index
+                    for index, event_type in enumerate(self._events.event_types)
+                    if event_type.stable_id == flow.flow_id
+                ),
+                -1,
+            )
+            if event_index < 0:
+                raise GpuParticleCompileError(
+                    f"GPU continuation references unknown event flow {flow.flow_id!r}"
+                )
+            event_guard = next(
+                (
+                    instruction
+                    for instruction in function.instructions
+                    if instruction.opcode == "event_begin"
+                    and int(instruction.immediate_dict()["event_type_index"])
+                    == event_index
+                ),
+                None,
+            )
+            if event_guard is None or not event_guard.result_id:
+                raise GpuParticleCompileError(
+                    f"GPU continuation event flow {flow.flow_id!r} has no invocation guard"
+                )
+            # A resumed Event continuation belongs to the invocation that set
+            # the per-particle active flag. Re-running event_begin would see
+            # active=1, produce false, and suppress every post-Wait block.
+            self._values[event_guard.result_id] = "true"
         pending_values = [
             operand.value_id
             for index in sorted(selected_instruction_indices)
@@ -1948,6 +1949,8 @@ class _StageCompiler:
         ]
         while pending_values:
             value_id = pending_values.pop()
+            if value_id in self._values:
+                continue
             producer_index = producer_by_value.get(value_id)
             if producer_index is None:
                 raise GpuParticleCompileError(
@@ -1978,7 +1981,6 @@ class _StageCompiler:
             self._active_lane_var = None
             self._compile_instruction(function.instructions[index])
 
-        self._inline_events = True
         lane_names = {
             lane.index: f"inx_resume_lane_{lane.index}_active"
             for lane in flow.lanes
@@ -1994,7 +1996,10 @@ class _StageCompiler:
             for join in reached_joins
         }
         for candidate_suspension in self._emitter.suspensions:
-            if candidate_suspension.lifecycle_stage is not flow.lifecycle_stage:
+            if (
+                candidate_suspension.lifecycle_stage is not flow.lifecycle_stage
+                or candidate_suspension.flow_id != flow.flow_id
+            ):
                 continue
             candidates = [
                 join
@@ -2008,7 +2013,7 @@ class _StageCompiler:
                 continue
             nearest = min(candidates, key=lambda join: join_orders[join.source_node_uid])
             nearest_index = self._continuation_join_indices[
-                (flow.lifecycle_stage, nearest.source_node_uid)
+                (flow.lifecycle_stage, flow.flow_id, nearest.source_node_uid)
             ]
             self._suspension_join_contexts[candidate_suspension.lane_stable_id] = (
                 nearest_index,
@@ -2021,7 +2026,7 @@ class _StageCompiler:
                 join = joins_by_output.get(block.lane_index)
                 if join is not None:
                     join_index = self._continuation_join_indices[
-                        (flow.lifecycle_stage, join.source_node_uid)
+                        (flow.lifecycle_stage, flow.flow_id, join.source_node_uid)
                     ]
                     expected_mask = (1 << len(join.input_lane_indices)) - 1
                     arrivals = " | ".join(
@@ -2057,10 +2062,7 @@ class _StageCompiler:
                 self._compile_instruction(instruction)
             self._lines.append("}")
         self._active_lane_var = None
-        return (
-            "\n".join(f"            {line}" for line in self._lines),
-            "\n".join(f"            {line}" for line in self._event_lines),
-        )
+        return "\n".join(f"            {line}" for line in self._lines)
 
     def _compile_instruction(self, instruction: KernelInstruction) -> None:
         try:
@@ -2128,32 +2130,123 @@ class _StageCompiler:
                     f"{_texture_resource_handle(stable_id)}u"
                 )
                 return
+            if result_type.value_type in {ValueType.CURVE, ValueType.GRADIENT}:
+                self._values[instruction.result_id] = f"{parameter[0]}u"
+                return
             expression = _parameter_load_glsl(parameter[0], result_type)
         elif opcode == "event_payload":
-            channel_index = int(immediate["channel_index"])
-            if not 0 <= channel_index < len(self._events.routes):
-                raise GpuParticleCompileError(
-                    "GPU event payload references an unknown channel"
-                )
-            route = self._events.routes[channel_index]
-            if route.target_emitter_index != self._emitter_index:
-                raise GpuParticleCompileError(
-                    "GPU event payload does not belong to this emitter"
-                )
+            event_index = int(immediate["event_type_index"])
+            if not 0 <= event_index < len(self._events.event_types):
+                raise GpuParticleCompileError("GPU event payload references an unknown event")
+            event_type = self._events.event_types[event_index]
+            field_id = str(immediate["field_stable_id"])
+            head_field = self._field(f"{_event_state_prefix(event_index)}.head")[1]
             default = _glsl_literal(immediate["default"], result_type)
-            if self._event_input:
-                word_offset = int(immediate["word_offset"])
-                word_count = int(immediate["word_count"])
-                words = tuple(
-                    f"event_record_words[record_base + {4 + word_offset + index}u]"
-                    for index in range(word_count)
-                )
-                decoded = _event_payload_glsl_expression(words, result_type)
+            expression = default
+            for slot in range(event_type.queue_capacity - 1, -1, -1):
+                payload_field = self._field(
+                    _event_payload_state_id(event_index, slot, field_id)
+                )[1]
                 expression = (
-                    f"(channel_index == {channel_index}u ? {decoded} : {default})"
+                    f"(state.{head_field} == {slot}u ? state.{payload_field} : {expression})"
                 )
-            else:
-                expression = default
+        elif opcode == "event_begin":
+            event_index = int(immediate["event_type_index"])
+            prefix = _event_state_prefix(event_index)
+            count_field = self._field(f"{prefix}.count")[1]
+            active_field = self._field(f"{prefix}.active")[1]
+            variable = f"inx_event_begin_{len(self._lines)}"
+            self._lines.extend(
+                (
+                    f"bool {variable} = state.{active_field} == 0u && state.{count_field} > 0u;",
+                    f"if ({variable}) {{",
+                    f"    state.{active_field} = 1u;",
+                    f"    state.{count_field} -= 1u;",
+                    "}",
+                )
+            )
+            self._values[instruction.result_id] = variable
+            return
+        elif opcode == "event_enqueue":
+            event_index = int(immediate["event_type_index"])
+            capacity = int(immediate["queue_capacity"])
+            event_type_count = len(self._events.event_types)
+            event_type = self._events.event_types[event_index]
+            prefix = _event_state_prefix(event_index)
+            tail_field = self._field(f"{prefix}.tail")[1]
+            count_field = self._field(f"{prefix}.count")[1]
+            active_field = self._field(f"{prefix}.active")[1]
+            # The active invocation keeps owning its head payload slot until
+            # event_complete advances head. Count it against capacity so a
+            # producer cannot wrap tail around and overwrite suspended work.
+            self._lines.extend(
+                (
+                    f"if ({operands[0]}) {{",
+                    (
+                        f"    if (state.{count_field} + state.{active_field} "
+                        f"< {capacity}u) {{"
+                    ),
+                )
+            )
+            for slot in range(capacity):
+                keyword = "if" if slot == 0 else "else if"
+                self._lines.append(
+                    f"        {keyword} (state.{tail_field} == {slot}u) {{"
+                )
+                for field, value in zip(event_type.fields, operands[1:]):
+                    payload_field = self._field(
+                        _event_payload_state_id(event_index, slot, field.stable_id)
+                    )[1]
+                    self._lines.append(f"            state.{payload_field} = {value};")
+                self._lines.append("        }")
+            self._lines.extend(
+                (
+                    f"        state.{tail_field} = (state.{tail_field} + 1u) % {capacity}u;",
+                    f"        state.{count_field} += 1u;",
+                    f"        atomicAdd(counters.event_counters[{event_type_count + event_index}u], 1u);",
+                    "    } else {",
+                    f"        atomicAdd(counters.event_counters[{event_index}u], 1u);",
+                    "    }",
+                    "}",
+                )
+            )
+            return
+        elif opcode == "burst_enqueue":
+            target_index = int(immediate["target_emitter_index"])
+            self._lines.append(
+                f"inx_enqueue_burst({target_index}u, {operands[0]});"
+            )
+            return
+        elif opcode == "event_complete":
+            event_index = int(immediate["event_type_index"])
+            capacity = int(immediate["queue_capacity"])
+            event_type_count = len(self._events.event_types)
+            flow_id = str(immediate["flow_id"])
+            prefix = _event_state_prefix(event_index)
+            head_field = self._field(f"{prefix}.head")[1]
+            active_field = self._field(f"{prefix}.active")[1]
+            pending_lanes = sorted(
+                {
+                    self._continuation_lane_indices[item.lane_stable_id]
+                    for item in self._emitter.suspensions
+                    if item.lifecycle_stage is ParticleStage.EVENT
+                    and item.flow_id == flow_id
+                }
+            )
+            pending_guard = "".join(
+                f" && !inx_continuation_lane_pending(particle_index, {lane}u)"
+                for lane in pending_lanes
+            )
+            self._lines.extend(
+                (
+                    f"if ({operands[0]}{pending_guard}) {{",
+                    f"    state.{active_field} = 0u;",
+                    f"    state.{head_field} = (state.{head_field} + 1u) % {capacity}u;",
+                    f"    atomicAdd(counters.event_counters[{event_type_count * 2 + event_index}u], 1u);",
+                    "}",
+                )
+            )
+            return
         elif opcode == "numeric_resize":
             expression = _numeric_resize_glsl(
                 operands[0], instruction.operands[0].value_type, result_type
@@ -2215,6 +2308,10 @@ class _StageCompiler:
                 f"float {sample_time} = {_glsl_wrapped_curve_time(operands[0], curve)};"
             )
             expression = _glsl_curve_sample(sample_time, curve)
+        elif opcode == "sample_curve_parameter":
+            expression = (
+                f"inx_sample_curve_parameter({operands[0]}, {operands[1]})"
+            )
         elif opcode == "sample_gradient":
             gradient = Gradient.from_dict(immediate["gradient"])
             sample_time = f"{result}_time"
@@ -2224,6 +2321,10 @@ class _StageCompiler:
                 f"{_float_literal(gradient.keys[-1].time)});"
             )
             expression = _glsl_gradient_sample(sample_time, gradient)
+        elif opcode == "sample_gradient_parameter":
+            expression = (
+                f"inx_sample_gradient_parameter({operands[0]}, {operands[1]})"
+            )
         elif opcode == "sample_texture2d":
             expression = f"inx_sample_parameter_texture({operands[0]}, {operands[1]})"
         elif opcode == "value_noise_3d":
@@ -2324,21 +2425,35 @@ class _StageCompiler:
                 or velocity_type.value_type is not ValueType.VEC3
             ):
                 raise GpuParticleCompileError(
-                    "Scene Collision requires vec3 position and velocity attributes"
+                    "Emitter collider collision requires vec3 position and velocity attributes"
                 )
             suffix = len(self._lines)
             position_name = f"inx_scene_position_{suffix}"
             velocity_name = f"inx_scene_velocity_{suffix}"
             normal_name = f"inx_scene_normal_{suffix}"
+            point_name = f"inx_scene_point_{suffix}"
+            relative_velocity_name = f"inx_scene_relative_velocity_{suffix}"
+            penetration_name = f"inx_scene_penetration_{suffix}"
+            trigger_name = f"inx_scene_trigger_{suffix}"
+            material_name = f"inx_scene_material_{suffix}"
+            collider_id_name = f"inx_scene_collider_id_{suffix}"
             hit_name = f"inx_scene_hit_{suffix}"
             self._lines.extend(
                 (
                     f"vec3 {position_name} = {operands[0]};",
                     f"vec3 {velocity_name} = {operands[1]};",
                     f"vec3 {normal_name} = vec3(0.0);",
+                    f"vec3 {point_name} = vec3(0.0);",
+                    f"vec3 {relative_velocity_name} = vec3(0.0);",
+                    f"float {penetration_name} = 0.0;",
+                    f"bool {trigger_name} = false;",
+                    f"vec4 {material_name} = vec4(0.0);",
+                    f"uvec2 {collider_id_name} = uvec2(0u);",
                     f"bool {hit_name} = inx_collide_scene("
                     f"{position_name}, {velocity_name}, {', '.join(operands[2:])}, "
-                    f"{normal_name});",
+                    f"{normal_name}, {point_name}, {relative_velocity_name}, "
+                    f"{penetration_name}, {trigger_name}, {material_name}, "
+                    f"{collider_id_name});",
                     f"state.{position_field} = {position_name};",
                     f"state.{velocity_field} = {velocity_name};",
                 )
@@ -2348,7 +2463,7 @@ class _StageCompiler:
                 hit_type, hit_field = self._field(hit_attribute)
                 if hit_type.value_type is not ValueType.BOOL:
                     raise GpuParticleCompileError(
-                        "Scene Collision hit output requires a bool attribute"
+                        "Emitter collider collision hit output requires a bool attribute"
                     )
                 self._lines.append(
                     f"state.{hit_field} = (state.{hit_field} != 0u || {hit_name}) ? 1u : 0u;"
@@ -2358,68 +2473,55 @@ class _StageCompiler:
                 normal_type, normal_field = self._field(normal_attribute)
                 if normal_type != TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION):
                     raise GpuParticleCompileError(
-                        "Scene Collision normal output requires a simulation-space vec3 attribute"
+                        "Emitter collider collision normal output requires a simulation-space "
+                        "vec3 attribute"
                     )
                 self._lines.append(
                     f"if ({hit_name}) state.{normal_field} = {normal_name};"
                 )
-            return
-        elif opcode == "event_append":
-            channel_index = int(immediate["channel_index"])
-            payload_layout = immediate["payload_layout"]
-            if channel_index < 0 or type(payload_layout) is not list or len(
-                payload_layout
-            ) != len(operands) - 1:
-                raise GpuParticleCompileError("GPU event append metadata is invalid")
-            event_lines = self._lines if self._inline_events else self._event_lines
-            suffix = len(event_lines)
-            id_field = self._field("builtin.id")[1]
-            event_lines.extend(
+            context_outputs = (
                 (
-                    f"if (pc.reserved != 0u && particle_alive && ({operands[0]})) {{",
-                    f"    const uint inx_event_channel_index_{suffix} = {channel_index}u;",
-                    f"    ParticleEventOutputChannel inx_event_channel_{suffix} = "
-                    f"event_output_channels[inx_event_channel_index_{suffix}];",
-                    f"    uint inx_event_slot_{suffix} = atomicAdd("
-                    f"event_output_counters[inx_event_channel_index_{suffix}].x, 1u);",
-                    f"    if (inx_event_slot_{suffix} < inx_event_channel_{suffix}.capacity) {{",
-                    f"        uint inx_event_base_{suffix} = inx_event_channel_{suffix}.record_base_words + "
-                    f"inx_event_slot_{suffix} * inx_event_channel_{suffix}.record_stride_words;",
-                    f"        event_output_record_words[inx_event_base_{suffix} + 0u] = "
-                    f"inx_event_channel_{suffix}.event_type_index;",
-                    f"        event_output_record_words[inx_event_base_{suffix} + 1u] = "
-                    f"inx_event_channel_{suffix}.source_emitter_index;",
-                    f"        event_output_record_words[inx_event_base_{suffix} + 2u] = state.{id_field};",
-                    f"        event_output_record_words[inx_event_base_{suffix} + 3u] = state.spawn_generation;",
-                )
+                    "point_attribute",
+                    TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+                    point_name,
+                ),
+                (
+                    "relative_velocity_attribute",
+                    TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+                    relative_velocity_name,
+                ),
+                ("penetration_attribute", TypeRef(ValueType.F32), penetration_name),
+                ("trigger_attribute", TypeRef(ValueType.BOOL), trigger_name),
+                ("material_attribute", TypeRef(ValueType.VEC4), material_name),
             )
-            for field, operand, kernel_operand in zip(
-                payload_layout, operands[1:], instruction.operands[1:]
+            for key, expected_type, value_name in context_outputs:
+                attribute = immediate[key]
+                if not attribute:
+                    continue
+                value_type, field = self._field(attribute)
+                if value_type != expected_type:
+                    raise GpuParticleCompileError(
+                        f"Emitter collider collision {key} requires {expected_type}"
+                    )
+                encoded = (
+                    f"({value_name} ? 1u : 0u)"
+                    if expected_type.value_type is ValueType.BOOL
+                    else value_name
+                )
+                self._lines.append(f"if ({hit_name}) state.{field} = {encoded};")
+            for key, component in (
+                ("collider_id_low_attribute", "x"),
+                ("collider_id_high_attribute", "y"),
             ):
-                field_type = TypeRef.from_dict(field["type"])
-                if field_type != kernel_operand.value_type:
+                attribute = immediate[key]
+                if not attribute:
+                    continue
+                value_type, field = self._field(attribute)
+                if value_type.value_type is not ValueType.U32:
                     raise GpuParticleCompileError(
-                        "GPU event append payload type does not match its operand"
+                        f"Emitter collider collision {key} requires u32"
                     )
-                words = _event_payload_word_expressions(operand, field_type)
-                if len(words) != int(field["word_count"]):
-                    raise GpuParticleCompileError(
-                        "GPU event append payload word layout is invalid"
-                    )
-                word_offset = int(field["word_offset"])
-                event_lines.extend(
-                    f"        event_output_record_words[inx_event_base_{suffix} + "
-                    f"{4 + word_offset + index}u] = {word};"
-                    for index, word in enumerate(words)
-                )
-            event_lines.extend(
-                (
-                    "    } else {",
-                    f"        atomicAdd(event_output_counters[inx_event_channel_index_{suffix}].y, 1u);",
-                    "    }",
-                    "}",
-                )
-            )
+                self._lines.append(f"state.{field} = {collider_id_name}.{component};")
             return
         elif opcode == "collide_plane_position":
             expression = f"inx_collide_plane_position({', '.join(operands)})"
@@ -2539,13 +2641,21 @@ def _glsl_gradient_sample(sample_time: str, gradient: Gradient) -> str:
 def _data_interface_layout(
     emitter: ParticleEmitterKernelIR,
     parameters: tuple[KernelParameter, ...],
+    parameter_slots: Mapping[str, tuple[int, TypeRef]],
 ) -> dict[str, Any]:
     layout = {
         "version": 1,
         "metadata_binding": 0,
     }
     layout.update(_volume_interface_layout(emitter))
-    layout.update(_texture_parameter_layout(emitter, parameters, layout))
+    layout.update(
+        _texture_parameter_layout(
+            emitter,
+            parameters,
+            parameter_slots,
+            layout,
+        )
+    )
     layout["mesh_shape"] = _mesh_shape_layout(emitter, layout)
     return layout
 
@@ -2553,6 +2663,7 @@ def _data_interface_layout(
 def _texture_parameter_layout(
     emitter: ParticleEmitterKernelIR,
     parameters: tuple[KernelParameter, ...],
+    parameter_slots: Mapping[str, tuple[int, TypeRef]],
     layout: Mapping[str, Any],
 ) -> dict[str, Any]:
     by_id = {
@@ -2593,7 +2704,7 @@ def _texture_parameter_layout(
             {
                 "stable_id": stable_id,
                 "name": by_id[stable_id].name,
-                "parameter_slot": by_id[stable_id].slot,
+                "parameter_slot": parameter_slots[stable_id][0],
                 "resource_index": index,
                 "texture_binding": volume_count + index + 1,
                 "default": dict(by_id[stable_id].default),
@@ -3569,9 +3680,9 @@ layout(push_constant) uniform ParticleContinuationConstants {
     uint record_stride_words;
     uint system_seed;
     float delta_time;
-    uint event_output_enabled;
     uint reserved0;
     uint reserved1;
+    uint reserved2;
 } continuation_pc;
 """
 
@@ -3722,9 +3833,11 @@ def _continuation_dispatch_glsl(
     emitter_index: int,
     parameter_slots: Mapping[str, tuple[int, TypeRef]],
     continuation_lane_indices: Mapping[str, int],
-    continuation_join_indices: Mapping[tuple[ParticleStage, str], int],
+    continuation_join_indices: Mapping[tuple[ParticleStage, str, str], int],
 ) -> str:
-    flow_by_stage = {flow.lifecycle_stage: flow for flow in emitter.flows}
+    flow_by_stage = {
+        (flow.lifecycle_stage, flow.flow_id): flow for flow in emitter.flows
+    }
     function_by_stage = {
         KernelStage.INIT: emitter.init,
         KernelStage.UPDATE: emitter.update,
@@ -3734,11 +3847,11 @@ def _continuation_dispatch_glsl(
     for suspension in sorted(
         emitter.suspensions, key=lambda value: value.resume_program_counter
     ):
-        flow = flow_by_stage[suspension.lifecycle_stage]
+        flow = flow_by_stage[(suspension.lifecycle_stage, suspension.flow_id)]
         function = function_by_stage[flow.kernel_stage]
         runtime_lane = continuation_lane_indices[suspension.lane_stable_id]
         if suspension.resume_instruction_index < 0:
-            body, event_body = "", ""
+            body = ""
         else:
             if any(
                 instruction.opcode == "event_payload"
@@ -3761,7 +3874,7 @@ def _continuation_dispatch_glsl(
                 continuation_join_indices=continuation_join_indices,
                 existing_continuation_lane=runtime_lane,
             )
-            body, event_body = compiler.compile_resume(function, flow, suspension)
+            body = compiler.compile_resume(function, flow, suspension)
         finite = _finite_state_check(function, fields)
         if suspension.lifecycle_stage is ParticleStage.INIT:
             other_init_lanes = sorted(
@@ -3785,6 +3898,41 @@ def _continuation_dispatch_glsl(
                 "            if (!inx_continuation_resuspended) "
                 "state.rendering_resume_step = pc.simulation_step;"
             )
+        elif suspension.lifecycle_stage is ParticleStage.EVENT:
+            event_index = next(
+                index
+                for index, event_type in enumerate(events.event_types)
+                if event_type.stable_id == suspension.flow_id
+            )
+            event_type = events.event_types[event_index]
+            prefix = _event_state_prefix(event_index)
+            head_field = next(
+                field for stable_id, _type, field in fields
+                if stable_id == f"{prefix}.head"
+            )
+            active_field = next(
+                field for stable_id, _type, field in fields
+                if stable_id == f"{prefix}.active"
+            )
+            other_lanes = sorted(
+                {
+                    continuation_lane_indices[item.lane_stable_id]
+                    for item in emitter.suspensions
+                    if item.lifecycle_stage is ParticleStage.EVENT
+                    and item.flow_id == suspension.flow_id
+                    and item.lane_stable_id != suspension.lane_stable_id
+                }
+            )
+            pending_guard = "".join(
+                f" && !inx_continuation_lane_pending(particle_index, {lane}u)"
+                for lane in other_lanes
+            )
+            completion = (
+                "            if (!inx_continuation_resuspended"
+                f"{pending_guard}) {{ state.{active_field} = 0u; "
+                f"state.{head_field} = (state.{head_field} + 1u) % "
+                f"{event_type.queue_capacity}u; }}"
+            )
         else:
             completion = (
                 "            if (!inx_continuation_resuspended) "
@@ -3793,31 +3941,23 @@ def _continuation_dispatch_glsl(
         cases.append(
             f"""        case {suspension.resume_program_counter}u: {{
 {body}
-{event_body}
             particle_alive = particle_alive && ({finite});
 {completion}
             break;
         }}"""
         )
-    event_output = any(
-        instruction.opcode == "event_append"
-        for function in (emitter.init, emitter.update, emitter.rendering)
-        for instruction in function.instructions
-    )
     prelude = _shader_prelude(
         fields,
         emitter.random_seed,
         data_interface_layout,
-        len(parameter_slots),
+        parameter_slots,
         continuation_dispatch=True,
     )
     bindings = _continuation_bindings_glsl(5)
-    event_bindings = _event_output_bindings(4) if event_output else ""
     switch_cases = "\n".join(cases)
     return (
         prelude
         + bindings
-        + event_bindings
         + f"""
 void inx_finish_continuation(uint record_index, uint particle_index, uint lane_index) {{
     if (particle_index < continuation_counters.particle_capacity
@@ -3909,7 +4049,7 @@ def _continuation_source(
     emitter_index: int,
     parameter_slots: Mapping[str, tuple[int, TypeRef]],
     continuation_lane_indices: Mapping[str, int],
-    continuation_join_indices: Mapping[tuple[ParticleStage, str], int],
+    continuation_join_indices: Mapping[tuple[ParticleStage, str, str], int],
 ) -> GpuParticleContinuationSource | None:
     if not emitter.suspensions:
         return None
@@ -3941,7 +4081,7 @@ def _shader_prelude(
     fields: tuple[tuple[str, TypeRef, str], ...],
     emitter_seed: int,
     data_interface_layout: dict[str, Any],
-    parameter_count: int,
+    parameter_slots: Mapping[str, tuple[int, TypeRef]],
     *,
     continuation_dispatch: bool = False,
 ) -> str:
@@ -3961,9 +4101,10 @@ def _shader_prelude(
     parameter_glsl = (
         "layout(std430, set = 0, binding = 7) readonly buffer "
         "ParticleParameters { uvec4 parameter_words[]; };"
-        if parameter_count
+        if parameter_slots
         else ""
     )
+    ramp_parameter_glsl = _ramp_parameter_glsl(parameter_slots)
     push_constants = (
         """layout(push_constant) uniform ParticlePushConstants {
     uint continuation_capacity;
@@ -4028,6 +4169,7 @@ layout(std430, set = 0, binding = 2) buffer ParticleCounters {{
     uint visible_count;
     uint dropped_count;
     uint reserved_count;
+    uint event_counters[];
 }} counters;
 layout(std430, set = 0, binding = 3) buffer ParticleInstances {{ ParticleRenderInstance instances[]; }};
 layout(std430, set = 0, binding = 4) buffer ParticleIndirect {{
@@ -4102,11 +4244,40 @@ layout(std430, set = 0, binding = 15) readonly buffer ParticleSimulationControl 
     uint offscreen_policy;
     uint simulation_control_reserved;
 }} simulation_control;
+layout(std430, set = 3, binding = 0) buffer ParticleEmitterBurstQueues {{
+    uint emitter_burst_request_counts[];
+}};
+layout(std430, set = 3, binding = 1) readonly buffer ParticleEmitterSpawnMetadata {{
+    uint spawn_count;
+    uint spawn_base_id;
+    uint spawn_generation;
+    uint spawn_overflow_count;
+    uint spawn_dispatch_group_count_x;
+    uint spawn_dispatch_group_count_y;
+    uint spawn_dispatch_group_count_z;
+    uint spawn_metadata_reserved;
+}} emitter_spawn;
 {data_interface_glsl}
 {push_constants}
+{ramp_parameter_glsl}
 
 const uint INX_EMITTER_SEED = {emitter_seed}u;
 const uint INX_INVALID_INDEX = 0xffffffffu;
+
+void inx_enqueue_burst(uint target_emitter_index, uint count) {{
+    if (count == 0u) return;
+    uint observed = emitter_burst_request_counts[target_emitter_index];
+    for (;;) {{
+        uint desired = observed > 0xffffffffu - count
+            ? 0xffffffffu
+            : observed + count;
+        uint prior = atomicCompSwap(
+            emitter_burst_request_counts[target_emitter_index], observed, desired
+        );
+        if (prior == observed) return;
+        observed = prior;
+    }}
+}}
 
 uint inx_pop_free() {{
     uint observed = atomicAdd(counters.free_count, 0u);
@@ -4731,14 +4902,33 @@ bool inx_collision_capsule(InxParticleCollider collider, vec3 previous_world_pos
 bool inx_collide_scene(inout vec3 simulation_position, inout vec3 simulation_velocity,
                        float particle_radius, uint layer_mask, bool include_triggers,
                        float restitution_scale, float friction_scale,
-                       out vec3 simulation_collision_normal) {{
+                       out vec3 simulation_collision_normal,
+                       out vec3 simulation_contact_point,
+                       out vec3 simulation_relative_velocity,
+                       out float simulation_penetration,
+                       out bool collision_is_trigger,
+                       out vec4 collision_material,
+                       out uvec2 collision_collider_id) {{
     simulation_collision_normal = vec3(0.0);
+    simulation_contact_point = simulation_position;
+    simulation_relative_velocity = vec3(0.0);
+    simulation_penetration = 0.0;
+    collision_is_trigger = false;
+    collision_material = vec4(0.0);
+    collision_collider_id = uvec2(0u);
     if (inx_collision_scene.collider_count == 0u || layer_mask == 0u) return false;
 
     vec3 world_position = (transforms.simulation_to_world * vec4(simulation_position, 1.0)).xyz;
     vec3 world_velocity = (transforms.simulation_to_world * vec4(simulation_velocity, 0.0)).xyz;
     bool any_hit = false;
-    vec3 last_world_normal = vec3(0.0);
+    bool primary_contact_set = false;
+    vec3 primary_world_normal = vec3(0.0, 1.0, 0.0);
+    vec3 primary_world_point = world_position;
+    vec3 primary_world_relative_velocity = vec3(0.0);
+    float primary_world_penetration = 0.0;
+    bool primary_is_trigger = false;
+    vec4 primary_material = vec4(0.0);
+    uvec2 primary_collider_id = uvec2(0u);
     float simulation_scale = max(length(transforms.simulation_to_world[0].xyz),
                                  max(length(transforms.simulation_to_world[1].xyz),
                                      length(transforms.simulation_to_world[2].xyz)));
@@ -4797,9 +4987,26 @@ bool inx_collide_scene(inout vec3 simulation_position, inout vec3 simulation_vel
                     if (!hit) continue;
 
                     any_hit = true;
-                    last_world_normal = world_normal;
-                    world_position = corrected_world_position;
                     vec3 relative_velocity = world_velocity - collider.linear_velocity.xyz;
+                    float penetration = length(corrected_world_position - world_position);
+                    uvec2 collider_id = collider.identity.xy;
+                    bool is_trigger = (collider.metadata.z & 1u) != 0u;
+                    bool lower_identity = collider_id.y < primary_collider_id.y ||
+                        (collider_id.y == primary_collider_id.y &&
+                         collider_id.x < primary_collider_id.x);
+                    if (!primary_contact_set || lower_identity) {{
+                        primary_contact_set = true;
+                        primary_world_normal = world_normal;
+                        primary_world_point = corrected_world_position;
+                        primary_world_relative_velocity = relative_velocity;
+                        primary_world_penetration = penetration;
+                        primary_is_trigger = is_trigger;
+                        primary_material = collider.material;
+                        primary_collider_id = collider_id;
+                    }}
+                    if (is_trigger) continue;
+
+                    world_position = corrected_world_position;
                     float normal_speed = dot(relative_velocity, world_normal);
                     if (normal_speed < 0.0) {{
                         vec3 tangent_velocity = relative_velocity - world_normal * normal_speed;
@@ -4815,13 +5022,21 @@ bool inx_collide_scene(inout vec3 simulation_position, inout vec3 simulation_vel
     }}
     simulation_position = (transforms.world_to_simulation * vec4(world_position, 1.0)).xyz;
     simulation_velocity = (transforms.world_to_simulation * vec4(world_velocity, 0.0)).xyz;
-    if (any_hit) {{
+    if (primary_contact_set) {{
         vec3 transformed_normal =
-            transpose(mat3(transforms.simulation_to_world)) * last_world_normal;
+            transpose(mat3(transforms.simulation_to_world)) * primary_world_normal;
         float normal_length = length(transformed_normal);
         simulation_collision_normal = normal_length > 1.0e-6
                                           ? transformed_normal / normal_length
                                           : vec3(0.0, 1.0, 0.0);
+        simulation_contact_point =
+            (transforms.world_to_simulation * vec4(primary_world_point, 1.0)).xyz;
+        simulation_relative_velocity =
+            (transforms.world_to_simulation * vec4(primary_world_relative_velocity, 0.0)).xyz;
+        simulation_penetration = primary_world_penetration / max(simulation_scale, 1.0e-6);
+        collision_is_trigger = primary_is_trigger;
+        collision_material = primary_material;
+        collision_collider_id = primary_collider_id;
     }}
     return any_hit;
 }}
@@ -4865,10 +5080,11 @@ bool inx_finite(vec4 value) {{ return !any(isnan(value)) && !any(isinf(value)); 
 """
 
 
-def _bootstrap_main() -> str:
+def _bootstrap_main(event_type_count: int) -> str:
     return """
 void main() {
     uint index = gl_GlobalInvocationID.x;
+    if (index < INX_EVENT_COUNTER_COUNTu) counters.event_counters[index] = 0u;
     if (index >= pc.capacity) return;
     states[index].lifecycle_flags = 0u;
     states[index].spawn_generation = 0u;
@@ -4886,12 +5102,11 @@ void main() {
         indirect_args.first_instance = 0u;
     }
 }
-"""
+""".replace("INX_EVENT_COUNTER_COUNT", str(event_type_count * 3))
 
 
 def _init_main(
     body: str,
-    event_body: str,
     emitter: ParticleEmitterKernelIR,
     fields: tuple[tuple[str, TypeRef, str], ...],
 ) -> str:
@@ -4901,127 +5116,22 @@ def _init_main(
 void main() {{
     if (simulation_control.simulation_allowed == 0u) return;
     uint invocation = gl_GlobalInvocationID.x;
-    if (invocation >= pc.invocation_count) return;
+    if (invocation >= emitter_spawn.spawn_count) return;
     uint particle_index = inx_pop_free();
     if (particle_index == INX_INVALID_INDEX) {{ atomicAdd(counters.dropped_count, 1u); return; }}
     ParticleState state = states[particle_index];
     state.lifecycle_flags = INX_PARTICLE_ALIVE;
     state.update_resume_step = 0xffffffffu;
     state.rendering_resume_step = 0xffffffffu;
-    uint particle_id = pc.spawn_base_id + invocation;
+    uint particle_id = emitter_spawn.spawn_base_id + invocation;
     state.{id_field} = particle_id;
-    state.spawn_generation = pc.spawn_generation + uint(particle_id < pc.spawn_base_id);
+    state.spawn_generation = emitter_spawn.spawn_generation + uint(particle_id < emitter_spawn.spawn_base_id);
     bool particle_alive = true;
     bool inx_stage_suspended = false;
 {body}
     particle_alive = particle_alive && ({finite});
     if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE;
     state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
-{event_body}
-    states[particle_index] = state;
-    if (!particle_alive) inx_push_free(particle_index);
-}}
-"""
-
-
-def _event_init_bindings() -> str:
-    return """
-struct ParticleEventChannel {
-    uint record_base_words;
-    uint record_stride_words;
-    uint capacity;
-    uint source_emitter_index;
-    uint target_emitter_index;
-    uint event_type_index;
-    uint payload_stride_words;
-    uint spawn_count;
-    uint spawn_base_indices;
-    uint target_capacity;
-    uint reserved0;
-    uint reserved1;
-};
-layout(std430, set = 3, binding = 0) readonly buffer ParticleEventChannels {
-    ParticleEventChannel event_channels[];
-};
-layout(std430, set = 3, binding = 1) readonly buffer ParticleEventRecords {
-    uint event_record_words[];
-};
-layout(std430, set = 3, binding = 2) readonly buffer ParticleEventCounters {
-    uvec4 event_counters[];
-};
-layout(std430, set = 3, binding = 3) readonly buffer ParticleEventSpawnIndices {
-    uint event_spawn_indices[];
-};
-"""
-
-
-def _event_output_bindings(set_index: int) -> str:
-    return f"""
-struct ParticleEventOutputChannel {{
-    uint record_base_words;
-    uint record_stride_words;
-    uint capacity;
-    uint source_emitter_index;
-    uint target_emitter_index;
-    uint event_type_index;
-    uint payload_stride_words;
-    uint spawn_count;
-    uint spawn_base_indices;
-    uint target_capacity;
-    uint reserved0;
-    uint reserved1;
-}};
-layout(std430, set = {set_index}, binding = 0) readonly buffer ParticleEventOutputChannels {{
-    ParticleEventOutputChannel event_output_channels[];
-}};
-layout(std430, set = {set_index}, binding = 1) buffer ParticleEventOutputRecords {{
-    uint event_output_record_words[];
-}};
-layout(std430, set = {set_index}, binding = 2) buffer ParticleEventOutputCounters {{
-    uvec4 event_output_counters[];
-}};
-"""
-
-
-def _event_init_main(
-    body: str,
-    event_body: str,
-    emitter: ParticleEmitterKernelIR,
-    fields: tuple[tuple[str, TypeRef, str], ...],
-) -> str:
-    id_field = next(field for stable, _type, field in fields if stable == "builtin.id")
-    finite = _finite_state_check(emitter.init, fields)
-    return f"""
-void main() {{
-    uint invocation = gl_GlobalInvocationID.x;
-    uint channel_index = pc.spawn_base_id;
-    ParticleEventChannel channel = event_channels[channel_index];
-    uint accepted_count = event_counters[channel_index].z;
-    uint total_spawn_count = accepted_count * channel.spawn_count;
-    if (invocation >= total_spawn_count) return;
-    uint particle_index = event_spawn_indices[channel.spawn_base_indices + invocation];
-    if (particle_index == INX_INVALID_INDEX || particle_index >= pc.capacity) return;
-    uint event_index = invocation / channel.spawn_count;
-    uint record_base = channel.record_base_words + event_index * channel.record_stride_words;
-    uint source_particle_id = event_record_words[record_base + 2u];
-    uint source_generation = event_record_words[record_base + 3u];
-    uint route_seed = inx_random_u32(channel_index, channel.source_emitter_index,
-                                     channel.target_emitter_index, channel.event_type_index);
-    uint particle_id = inx_random_u32(route_seed, source_particle_id, source_generation, invocation);
-    ParticleState state = states[particle_index];
-    state.lifecycle_flags = INX_PARTICLE_ALIVE;
-    state.update_resume_step = 0xffffffffu;
-    state.rendering_resume_step = 0xffffffffu;
-    state.{id_field} = particle_id;
-    state.spawn_generation = inx_random_u32(route_seed ^ 0x9e3779b9u, source_generation,
-                                            source_particle_id, invocation);
-    bool particle_alive = true;
-    bool inx_stage_suspended = false;
-{body}
-    particle_alive = particle_alive && ({finite});
-    if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE;
-    state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
-{event_body}
     states[particle_index] = state;
     if (!particle_alive) inx_push_free(particle_index);
 }}
@@ -5030,7 +5140,6 @@ void main() {{
 
 def _update_main(
     body: str,
-    event_body: str,
     emitter: ParticleEmitterKernelIR,
     fields: tuple[tuple[str, TypeRef, str], ...],
 ) -> str:
@@ -5048,7 +5157,6 @@ void main() {{
 {body}
     particle_alive = particle_alive && ({finite});
     state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
-{event_body}
     states[particle_index] = state;
     if (!particle_alive) inx_push_free(particle_index);
 }}
@@ -5069,7 +5177,7 @@ void main() {
 """
 
 
-def _rendering_main(body: str, event_body: str, exports: dict[str, str]) -> str:
+def _rendering_main(body: str, exports: dict[str, str]) -> str:
     position = exports["builtin.position"]
     size = exports["builtin.size"]
     color = exports["builtin.color"]
@@ -5119,7 +5227,6 @@ void main() {{
         inx_push_free(particle_index);
         return;
     }}
-{event_body}
     uint output_index = atomicAdd(counters.visible_count, 1u);
     if (output_index >= pc.capacity) return;
     ParticleRenderInstance previous_instance = instances[particle_index];
@@ -5288,11 +5395,125 @@ def _parameter_load_glsl(slot: int, value_type: TypeRef | None) -> str:
     return f"uintBitsToFloat({words}.{swizzle})"
 
 
+def _parameter_slot_width(value_type: TypeRef) -> int:
+    kind = value_type.value_type
+    if kind is ValueType.CURVE:
+        return 1 + MAX_RAMP_KEYS
+    if kind is ValueType.GRADIENT:
+        return 1 + MAX_RAMP_KEYS * 2
+    return 1
+
+
+def _parameter_slot_layout(
+    parameters: tuple[KernelParameter, ...],
+) -> tuple[dict[str, tuple[int, TypeRef]], int]:
+    slots: dict[str, tuple[int, TypeRef]] = {}
+    cursor = 0
+    for parameter in parameters:
+        slots[parameter.stable_id] = (cursor, parameter.value_type)
+        cursor += _parameter_slot_width(parameter.value_type)
+    return slots, cursor
+
+
+def _ramp_parameter_glsl(
+    parameter_slots: Mapping[str, tuple[int, TypeRef]],
+) -> str:
+    kinds = {value_type.value_type for _slot, value_type in parameter_slots.values()}
+    parts = []
+    if ValueType.CURVE in kinds:
+        parts.append(
+            f"""
+float inx_wrap_curve_parameter_time(float value, float first, float last, uint mode) {{
+    float span = last - first;
+    if (span <= 0.0000001 || mode == 0u) return clamp(value, first, last);
+    float offset = value - first;
+    if (mode == 1u) return first + mod(offset, span);
+    return first + span - abs(mod(offset, span * 2.0) - span);
+}}
+
+float inx_sample_curve_parameter(uint base_slot, float sample_time) {{
+    uvec4 header = parameter_words[base_slot];
+    uint count = clamp(header.x, 1u, {MAX_RAMP_KEYS}u);
+    vec4 first_key = uintBitsToFloat(parameter_words[base_slot + 1u]);
+    vec4 last_key = uintBitsToFloat(parameter_words[base_slot + count]);
+    float time = sample_time;
+    if (time < first_key.x)
+        time = inx_wrap_curve_parameter_time(time, first_key.x, last_key.x, header.y);
+    else if (time > last_key.x)
+        time = inx_wrap_curve_parameter_time(time, first_key.x, last_key.x, header.z);
+    if (count == 1u) return first_key.y;
+    vec4 left = first_key;
+    for (uint index = 1u; index < {MAX_RAMP_KEYS}u; ++index) {{
+        if (index >= count) break;
+        vec4 right = uintBitsToFloat(parameter_words[base_slot + 1u + index]);
+        if (time < right.x) {{
+            float duration = max(right.x - left.x, 0.0000001);
+            float u = clamp((time - left.x) / duration, 0.0, 1.0);
+            float u2 = u * u;
+            float u3 = u2 * u;
+            return (2.0 * u3 - 3.0 * u2 + 1.0) * left.y
+                + (u3 - 2.0 * u2 + u) * left.w * duration
+                + (-2.0 * u3 + 3.0 * u2) * right.y
+                + (u3 - u2) * right.z * duration;
+        }}
+        left = right;
+    }}
+    return last_key.y;
+}}
+"""
+        )
+    if ValueType.GRADIENT in kinds:
+        parts.append(
+            f"""
+vec4 inx_gradient_parameter_key(uint base_slot, uint index) {{
+    vec4 rgb_time = uintBitsToFloat(parameter_words[base_slot + 1u + index * 2u]);
+    vec4 alpha = uintBitsToFloat(parameter_words[base_slot + 2u + index * 2u]);
+    return vec4(rgb_time.yzw, alpha.x);
+}}
+
+float inx_gradient_parameter_time(uint base_slot, uint index) {{
+    return uintBitsToFloat(parameter_words[base_slot + 1u + index * 2u].x);
+}}
+
+vec4 inx_sample_gradient_parameter(uint base_slot, float sample_time) {{
+    uvec4 header = parameter_words[base_slot];
+    uint count = clamp(header.x, 1u, {MAX_RAMP_KEYS}u);
+    float first_time = inx_gradient_parameter_time(base_slot, 0u);
+    vec4 first_color = inx_gradient_parameter_key(base_slot, 0u);
+    if (count == 1u || sample_time <= first_time) return first_color;
+    uint last_index = count - 1u;
+    float last_time = inx_gradient_parameter_time(base_slot, last_index);
+    vec4 last_color = inx_gradient_parameter_key(base_slot, last_index);
+    float time = clamp(sample_time, first_time, last_time);
+    float left_time = first_time;
+    vec4 left_color = first_color;
+    for (uint index = 1u; index < {MAX_RAMP_KEYS}u; ++index) {{
+        if (index >= count) break;
+        float right_time = inx_gradient_parameter_time(base_slot, index);
+        vec4 right_color = inx_gradient_parameter_key(base_slot, index);
+        if (time < right_time) {{
+            if (header.y == 1u) return left_color;
+            float factor = clamp(
+                (time - left_time) / max(right_time - left_time, 0.0000001),
+                0.0,
+                1.0);
+            return mix(left_color, right_color, factor);
+        }}
+        left_time = right_time;
+        left_color = right_color;
+    }}
+    return last_color;
+}}
+"""
+        )
+    return "\n".join(parts)
+
+
 def pack_gpu_particle_parameters(
     parameters: tuple[KernelParameter, ...],
     overrides: Mapping[str, Any] | None = None,
 ) -> tuple[int, ...]:
-    """Pack one deterministic 16-byte slot per graph parameter."""
+    """Pack graph parameters into a deterministic, fixed-width GPU ABI."""
     overrides = dict(overrides or {})
     known = {parameter.stable_id for parameter in parameters}
     unknown = set(overrides) - known
@@ -5304,7 +5525,66 @@ def pack_gpu_particle_parameters(
     for parameter in parameters:
         value = overrides.get(parameter.stable_id, parameter.default)
         kind = parameter.value_type.value_type
-        if kind is ValueType.TEXTURE2D:
+        slot_width = _parameter_slot_width(parameter.value_type)
+        if kind is ValueType.CURVE:
+            try:
+                curve = Curve.from_dict(value)
+            except (TypeError, ValueError) as exc:
+                raise GpuParticleCompileError(
+                    f"particle parameter {parameter.name!r} requires a Curve"
+                ) from exc
+            encoded = [
+                len(curve.keys),
+                CURVE_WRAP_MODES.index(curve.pre_wrap),
+                CURVE_WRAP_MODES.index(curve.post_wrap),
+                0,
+            ]
+            for key in curve.keys:
+                encoded.extend(
+                    struct.unpack(
+                        "<4I",
+                        struct.pack(
+                            "<4f",
+                            key.time,
+                            key.value,
+                            key.in_tangent,
+                            key.out_tangent,
+                        ),
+                    )
+                )
+        elif kind is ValueType.GRADIENT:
+            try:
+                gradient = Gradient.from_dict(value)
+            except (TypeError, ValueError) as exc:
+                raise GpuParticleCompileError(
+                    f"particle parameter {parameter.name!r} requires a Gradient"
+                ) from exc
+            encoded = [
+                len(gradient.keys),
+                GRADIENT_MODES.index(gradient.mode),
+                0,
+                0,
+            ]
+            for key in gradient.keys:
+                encoded.extend(
+                    struct.unpack(
+                        "<4I",
+                        struct.pack(
+                            "<4f",
+                            key.time,
+                            key.color[0],
+                            key.color[1],
+                            key.color[2],
+                        ),
+                    )
+                )
+                encoded.extend(
+                    struct.unpack(
+                        "<4I",
+                        struct.pack("<4f", key.color[3], 0.0, 0.0, 0.0),
+                    )
+                )
+        elif kind is ValueType.TEXTURE2D:
             try:
                 AssetReference.from_dict(value)
             except (TypeError, ValueError) as exc:
@@ -5346,104 +5626,14 @@ def pack_gpu_particle_parameters(
                 struct.unpack("<I", struct.pack("<f", float(item)))[0]
                 for item in values
             ]
-        words.extend(encoded)
-        words.extend([0] * (4 - len(encoded)))
-    return tuple(words)
-
-
-def pack_gpu_particle_event_payload(
-    event_type,
-    values: Mapping[str, Any] | None = None,
-) -> tuple[int, ...]:
-    """Pack one external event payload using the compiled GPU event ABI."""
-    values = dict(values or {})
-    fields = tuple(getattr(event_type, "fields", ()))
-    by_key: dict[str, Any] = {}
-    ambiguous: set[str] = set()
-    for field in fields:
-        for key in (field.stable_id, getattr(field, "name", "")):
-            if not key:
-                continue
-            if key in by_key and by_key[key] is not field:
-                ambiguous.add(key)
-            else:
-                by_key[key] = field
-    unknown = set(values) - set(by_key)
-    if unknown:
-        raise GpuParticleCompileError(
-            f"particle event payload references unknown fields: {sorted(unknown)}"
-        )
-    if ambiguous.intersection(values):
-        raise GpuParticleCompileError(
-            "particle event payload field names are ambiguous; use stable field ids"
-        )
-
-    supplied: dict[str, Any] = {}
-    for key, value in values.items():
-        stable_id = by_key[key].stable_id
-        if stable_id in supplied:
+        expected_words = slot_width * 4
+        if len(encoded) > expected_words:
             raise GpuParticleCompileError(
-                f"particle event field {stable_id!r} was supplied more than once"
-            )
-        supplied[stable_id] = value
-
-    words: list[int] = []
-    for field in fields:
-        value = supplied.get(field.stable_id, field.default)
-        encoded = _pack_gpu_particle_event_value(field.value_type, value)
-        if len(encoded) != field.word_count or len(words) != field.word_offset:
-            raise GpuParticleCompileError(
-                f"particle event field {field.stable_id!r} does not match its compiled ABI"
+                f"particle parameter {parameter.name!r} exceeds its fixed GPU layout"
             )
         words.extend(encoded)
-    if len(words) != int(getattr(event_type, "payload_stride_words", -1)):
-        raise GpuParticleCompileError("particle event payload does not match its compiled stride")
+        words.extend([0] * (expected_words - len(encoded)))
     return tuple(words)
-
-
-def _pack_gpu_particle_event_value(value_type: TypeRef, value: Any) -> list[int]:
-    kind = value_type.value_type
-    if kind is ValueType.BOOL:
-        if type(value) is not bool:
-            raise GpuParticleCompileError("particle event bool field requires a bool")
-        return [1 if value else 0]
-    if kind in {ValueType.I32, ValueType.U32}:
-        if type(value) is not int:
-            raise GpuParticleCompileError("particle event integer field requires an integer")
-        if kind is ValueType.U32 and not 0 <= value <= 0xFFFFFFFF:
-            raise GpuParticleCompileError("particle event uint field is out of range")
-        if kind is ValueType.I32 and not -(1 << 31) <= value < (1 << 31):
-            raise GpuParticleCompileError("particle event int field is out of range")
-        return [value & 0xFFFFFFFF]
-
-    dimensions = {
-        ValueType.F32: 1,
-        ValueType.VEC2: 2,
-        ValueType.VEC3: 3,
-        ValueType.VEC4: 4,
-        ValueType.COLOR: 4,
-        ValueType.MAT3: 9,
-        ValueType.MAT4: 16,
-    }
-    dimension = dimensions.get(kind)
-    source = [value] if dimension == 1 else value
-    if (
-        dimension is None
-        or not isinstance(source, (list, tuple))
-        or len(source) != dimension
-        or any(type(item) not in {int, float} or not math.isfinite(float(item)) for item in source)
-    ):
-        raise GpuParticleCompileError(
-            f"particle event {kind.value} field has an invalid value"
-        )
-    encoded = [struct.unpack("<I", struct.pack("<f", float(item)))[0] for item in source]
-    if kind is ValueType.MAT3:
-        encoded = [
-            word
-            for column in range(3)
-            for word in (*encoded[column * 3 : column * 3 + 3], 0)
-        ]
-    return encoded
 
 
 def _storage_type(value_type: TypeRef) -> str:
@@ -5593,7 +5783,6 @@ __all__ = [
     "build_gpu_particle_migration",
     "compile_gpu_particle_spirv",
     "decode_gpu_particle_spirv",
-    "pack_gpu_particle_event_payload",
     "pack_gpu_particle_parameters",
     "validate_gpu_particle_spirv",
 ]
