@@ -162,3 +162,9 @@ Assets/Scripts/**/*.pycbuild_log.txt
 # Else: I found that when some guys push their branches, they always include their AGENTS.md file.
 # ============================================================================
 AGENTS.md
+
+# ============================================================================
+# Local agent tooling
+# ============================================================================
+/.codex/
+
