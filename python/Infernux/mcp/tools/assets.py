@@ -435,11 +435,11 @@ def register_asset_tools(mcp, project_path: str) -> None:
                 else:
                     os.remove(dst)
             track_project_path_before_change(project_path, dst, "copy")
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            if os.path.isdir(src):
-                shutil.copytree(src, dst)
-            else:
-                shutil.copy2(src, dst)
+            from Infernux.engine.ui.project_file_ops import copy_path_as_new_asset
+
+            copied = copy_path_as_new_asset(src, dst, get_asset_database())
+            if not copied:
+                raise RuntimeError(f"Failed to copy asset: {path}")
             notify_asset_changed(dst, "created")
             return {
                 "source": relative_path(src, project_path),

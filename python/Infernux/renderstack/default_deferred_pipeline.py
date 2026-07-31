@@ -17,9 +17,9 @@ GBuffer layout (MRT)::
 Topology::
 
     ShadowCasterPass → GBufferPass → after_gbuffer
-    → DeferredLightingPass → after_opaque
+    → DeferredLightingPass → DeferredForwardFallbackPass → after_opaque
     → SkyboxPass → after_sky
-    → TransparentPass (forward) → after_transparent
+    → TransparentPass (Forward+) → after_transparent
     → [post-process injection points]
 
 Usage::
@@ -129,7 +129,8 @@ class DefaultDeferredPipeline(RenderPipeline):
         Topology::
 
             ShadowCaster → GBuffer (MRT) → after_gbuffer
-            → DeferredLighting → after_opaque → Skybox → after_sky
+            → DeferredLighting → Deferred Forward+ Fallback → after_opaque
+            → Skybox → after_sky
             → Transparent (forward) → after_transparent
         """
         # Deferred pipeline does not support MSAA on GBuffer
@@ -164,6 +165,7 @@ class DefaultDeferredPipeline(RenderPipeline):
                 queue_range=opaque_queue_range(),
                 sort_mode="front_to_back",
                 material_pass="gbuffer",
+                material_filter="deferred_compatible",
             )
 
         add_motion_vector_pass(
@@ -198,6 +200,21 @@ class DefaultDeferredPipeline(RenderPipeline):
             p.write_color(COLOR_TEXTURE)
             p.set_clear(color=DEFERRED_LIGHTING_CLEAR_COLOR)
             p.fullscreen_quad(DEFERRED_LIGHTING_SHADER)
+
+        # Opaque shading models are Deferred-compatible by default. Models
+        # that explicitly declare Unsupported [Deferred] skip the GBuffer and
+        # render here with the camera's Forward+ light list while sharing the
+        # same scene color/depth. This is a real topology fallback, not an
+        # error-material substitution inside GBufferPass.
+        with graph.add_pass("DeferredForwardFallbackPass") as p:
+            p.write_color(COLOR_TEXTURE)
+            p.write_depth(DEPTH_TEXTURE)
+            p.draw_renderers(
+                queue_range=opaque_queue_range(),
+                sort_mode="front_to_back",
+                material_pass="forward_plus",
+                material_filter="deferred_unsupported",
+            )
 
         graph.injection_point("after_opaque", resources=SCENE_RESOURCES)
         graph.effects(

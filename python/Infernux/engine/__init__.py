@@ -260,6 +260,7 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
         window_height = manifest.get("window_height", 1080)
         window_resizable = manifest.get("window_resizable", True)
         splash_items = manifest.get("splash_items", [])
+        build_icon_path = manifest.get("icon_path", "")
         game_name = manifest.get("game_name", "")
 
         bootstrap = PlayerBootstrap(
@@ -282,7 +283,12 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
             bootstrap.engine.set_maximized(False)
             bootstrap.engine.set_resizable(window_resizable)
 
-        bootstrap.engine.set_window_icon(_resources.icon_path)
+        window_icon = (
+            os.path.join(project_path, build_icon_path)
+            if isinstance(build_icon_path, str) and build_icon_path
+            else _resources.icon_path
+        )
+        bootstrap.engine.set_window_icon(window_icon)
 
         _signal_engine_loaded()
         time.sleep(0.3)

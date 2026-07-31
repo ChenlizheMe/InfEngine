@@ -22,6 +22,7 @@ class ValueType(str, Enum):
     STRING = "string"
     ASSET_REF = "asset_ref"
     TEXTURE2D = "texture2d"
+    MESH = "mesh"
     CURVE = "curve"
     GRADIENT = "gradient"
 

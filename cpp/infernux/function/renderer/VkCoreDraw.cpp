@@ -439,7 +439,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                                          rhi::BindGroupHandle perViewGroup, const glm::mat4 &viewMatrix, int queueMin,
                                          int queueMax, const std::string &sortMode, const std::string &overrideMaterial,
                                          const std::string &passTag,
-                                         const MaterialPassPipelineDescriptor *pipelineDescriptor)
+                                         const MaterialPassPipelineDescriptor *pipelineDescriptor,
+                                         GraphMaterialFilter materialFilter)
 {
     const MaterialPassPipelineDescriptor activePass =
         pipelineDescriptor ? *pipelineDescriptor : m_materialPipelineManager.GetDefaultPassPipelineDescriptor();
@@ -528,6 +529,22 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         int queue = material->GetRenderQueue();
         if (queue < queueMin || queue > queueMax)
             continue;
+
+        if (materialFilter != GraphMaterialFilter::All) {
+            ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
+            if (const MaterialRenderData *committed =
+                    m_materialPipelineManager.GetRenderData(material->GetMaterialKey()))
+                stages = committed->programKey.stages;
+            const ShaderProgramArtifact *artifact = m_shaderCache.FindProgramArtifact(stages);
+            if (!artifact && m_shaderProgramArtifactResolver) {
+                m_shaderProgramArtifactResolver(*materialOwner);
+                artifact = m_shaderCache.FindProgramArtifact(stages);
+            }
+            const bool deferredCompatible = artifact && artifact->FindVariant(ShaderCompileTarget::GBuffer);
+            if ((materialFilter == GraphMaterialFilter::DeferredCompatible && !deferredCompatible) ||
+                (materialFilter == GraphMaterialFilter::DeferredUnsupported && deferredCompatible))
+                continue;
+        }
 
         // Pass tag filter: if a pass tag is specified, only draw materials whose
         // passTag matches. Empty passTag on either side means "match all".
@@ -672,17 +689,18 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
     const size_t totalEligible = m_eligibleScratch.size();
     const uint32_t writeBase = m_instanceWriteOffset;
-    const bool needsInstanceAuxiliary =
-        activePass.target == ShaderCompileTarget::Picking || activePass.target == ShaderCompileTarget::Motion ||
-        activePass.target == ShaderCompileTarget::ForwardPlus || activePass.target == ShaderCompileTarget::GBuffer;
+    const bool needsInstanceAuxiliary = ShaderCompileTargetUsesInstanceAuxiliary(activePass.target);
     if (needsInstanceAuxiliary)
         PrepareInstanceAuxiliary(m_ensureFrameCounter, writeBase + totalEligible);
 
     if (totalEligible > 0 && frameIndex < m_instanceBuffers.size()) {
+        const bool needsPreviousSkinPalette = activePass.target == ShaderCompileTarget::Motion;
         size_t requiredBoneMatrices = m_skinPaletteWriteOffset;
         for (const auto &entry : m_eligibleScratch) {
             if (entry.dc->skinBoneMatrices)
                 requiredBoneMatrices += entry.dc->skinBoneMatrices->size();
+            if (needsPreviousSkinPalette && entry.dc->previousSkinBoneMatrices)
+                requiredBoneMatrices += entry.dc->previousSkinBoneMatrices->size();
         }
         const VkBuffer previousInstanceBuffer =
             m_instanceBuffers[frameIndex].buffer ? m_instanceBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
@@ -748,27 +766,43 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 skinPaletteFrame.mapped = skinBones;
             }
             if (skinInstances && skinBones) {
-                auto resolveSkinData = [&](const std::vector<glm::mat4> *palette) {
+                auto appendPalette = [&](const std::vector<glm::mat4> *palette) {
+                    const uint32_t offset = m_skinPaletteWriteOffset;
+                    if (!palette || palette->empty())
+                        return offset;
+                    std::memcpy(&skinBones[offset], palette->data(), palette->size() * sizeof(glm::mat4));
+                    m_skinPaletteWriteOffset += static_cast<uint32_t>(palette->size());
+                    return offset;
+                };
+                auto resolveSkinData = [&](const DrawCall &draw) {
                     GPUSkinInstanceData skinData{};
+                    const std::vector<glm::mat4> *palette = draw.skinBoneMatrices;
                     if (!palette || palette->empty())
                         return skinData;
-                    const void *key = static_cast<const void *>(palette);
-                    auto cached = m_skinPaletteFrameCache.find(key);
-                    if (cached != m_skinPaletteFrameCache.end())
-                        return cached->second;
 
-                    skinData.boneOffset = m_skinPaletteWriteOffset;
                     skinData.boneCount = static_cast<uint32_t>(palette->size());
                     skinData.flags = kGPUSkinFlagEnabled;
-                    std::memcpy(&skinBones[m_skinPaletteWriteOffset], palette->data(),
-                                palette->size() * sizeof(glm::mat4));
-                    m_skinPaletteWriteOffset += static_cast<uint32_t>(palette->size());
-                    m_skinPaletteFrameCache[key] = skinData;
+                    if (!needsPreviousSkinPalette) {
+                        const void *key = static_cast<const void *>(palette);
+                        auto cached = m_skinPaletteFrameCache.find(key);
+                        if (cached != m_skinPaletteFrameCache.end())
+                            return cached->second;
+                        skinData.boneOffset = appendPalette(palette);
+                        skinData.previousBoneOffset = skinData.boneOffset;
+                        m_skinPaletteFrameCache[key] = skinData;
+                        return skinData;
+                    }
+
+                    skinData.boneOffset = appendPalette(palette);
+                    const auto *previous = draw.previousSkinBoneMatrices;
+                    if (!previous || previous->size() != palette->size())
+                        previous = palette;
+                    skinData.previousBoneOffset = previous == palette ? skinData.boneOffset : appendPalette(previous);
                     return skinData;
                 };
 
                 for (size_t i = 0; i < totalEligible; ++i) {
-                    skinInstances[writeBase + i] = resolveSkinData(m_eligibleScratch[i].dc->skinBoneMatrices);
+                    skinInstances[writeBase + i] = resolveSkinData(*m_eligibleScratch[i].dc);
                 }
             }
         }

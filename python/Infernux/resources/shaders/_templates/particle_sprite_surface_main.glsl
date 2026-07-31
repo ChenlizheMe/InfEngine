@@ -10,7 +10,7 @@ layout(push_constant) uniform ParticleViewConstants {
     vec4 alignment_reference;
 } particleView;
 
-layout(set = 0, binding = 15) uniform sampler2D _InxParticleSceneDepth;
+layout(set = 2, binding = 15) uniform sampler2D _InxParticleSceneDepth;
 
 float _inxParticleEyeDepth(float deviceDepth) {
     float numerator = particleView.depth_reconstruct.y - deviceDepth * particleView.depth_reconstruct.w;
@@ -44,8 +44,16 @@ ${SURFACE_CALL}
     if (!gl_FrontFacing)
         s.normalWS = -s.normalWS;
     if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) discard;
+    ShadingContext ctx = InitShadingContext();
+    ctx.positionWS = v_WorldPos;
+    ctx.geometricNormalWS = gl_FrontFacing ? normalize(v_Normal) : -normalize(v_Normal);
+    ctx.tangentWS = v_Tangent;
+    ctx.cameraPositionWS = INX_SHADING_CAMERA_POSITION;
+    ctx.viewDepth = v_ViewDepth;
+    ctx.frontFacing = gl_FrontFacing;
+    _inx_ShadingContext = ctx;
     vec4 _forwardResult;
-    evaluate(s, _forwardResult);
+    shading(s, _forwardResult);
     // Premultiplied outputs must fade color and alpha by identical coverage.
     // Otherwise soft intersections leave bright horizontal bands where alpha
     // approaches zero but the custom shading model still emits lit RGB.

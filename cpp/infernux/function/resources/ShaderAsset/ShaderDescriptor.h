@@ -79,6 +79,7 @@ struct ShaderDescriptor
     bool hasSurfaceFunc = false;
     bool hasMainFunc = false;
     bool hasVertexFunc = false;
+    bool hasShadingFunc = false;
 
     SurfaceOptions surfaceOptions;
     int renderQueue = -1;
@@ -93,10 +94,12 @@ struct ShaderDescriptor
     std::vector<ShaderVarying> inputs;
     std::vector<ShaderVarying> outputs;
     std::vector<std::string> capabilities;
+    std::vector<std::string> unsupported;
     std::vector<ShaderInfoEntry> entries;
     std::vector<ShaderInfoResource> resources;
     std::optional<ShaderInfoPushConstants> pushConstants;
     std::vector<std::string> imports;
+    std::vector<std::string> requirements;
     std::string versionDirective;
 
     struct TargetBlock
@@ -117,8 +120,8 @@ struct ShaderDescriptor
 
     [[nodiscard]] bool NeedsLightingUBO() const
     {
-        for (const auto &import : imports) {
-            if (import == "Lighting")
+        for (const auto &requirement : requirements) {
+            if (requirement == "Lighting")
                 return true;
         }
         return false;
@@ -148,6 +151,8 @@ struct ShaderDescriptor
             bytes += varying.GetRuntimeMemoryBytes();
         for (const auto &value : capabilities)
             bytes += sizeof(value) + value.capacity();
+        for (const auto &value : unsupported)
+            bytes += sizeof(value) + value.capacity();
         for (const auto &entry : entries)
             bytes += sizeof(entry) + entry.role.capacity() + entry.function.capacity();
         for (const auto &resource : resources)
@@ -158,6 +163,8 @@ struct ShaderDescriptor
                 bytes += sizeof(field) + field.type.capacity() + field.name.capacity();
         }
         for (const auto &value : imports)
+            bytes += sizeof(value) + value.capacity();
+        for (const auto &value : requirements)
             bytes += sizeof(value) + value.capacity();
         for (const auto &target : targets)
             bytes += sizeof(target) + target.name.capacity() + target.code.capacity();

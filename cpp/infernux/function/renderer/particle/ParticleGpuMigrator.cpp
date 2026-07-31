@@ -18,6 +18,15 @@ layout(std430, set = 0, binding = 1) readonly buffer SourceCounters {
     uint source_visible_count;
     uint source_dropped_count;
     uint source_reserved_count;
+    uint source_collision_hit_count;
+    uint source_collision_response_count;
+    uint source_collision_trigger_count;
+    uint source_collision_enter_count;
+    uint source_collision_stay_count;
+    uint source_collision_exit_count;
+    uint source_collision_max_outward_speed_bits;
+    uint source_collision_max_tangent_speed_bits;
+    uint source_collision_candidate_overflow_count;
 };
 layout(std430, set = 0, binding = 2) buffer DestinationStates { uint destination_states[]; };
 layout(std430, set = 0, binding = 3) buffer DestinationFreeList { uint destination_free_slots[]; };
@@ -26,6 +35,15 @@ layout(std430, set = 0, binding = 4) buffer DestinationCounters {
     uint destination_visible_count;
     uint destination_dropped_count;
     uint destination_reserved_count;
+    uint destination_collision_hit_count;
+    uint destination_collision_response_count;
+    uint destination_collision_trigger_count;
+    uint destination_collision_enter_count;
+    uint destination_collision_stay_count;
+    uint destination_collision_exit_count;
+    uint destination_collision_max_outward_speed_bits;
+    uint destination_collision_max_tangent_speed_bits;
+    uint destination_collision_candidate_overflow_count;
 };
 layout(std430, set = 0, binding = 5) readonly buffer CopyRanges { uvec4 copy_ranges[]; };
 layout(std430, set = 0, binding = 6) readonly buffer DefaultState { uint default_state[]; };
@@ -45,6 +63,15 @@ void main() {
     destination_visible_count = 0u;
     destination_dropped_count = source_dropped_count;
     destination_reserved_count = source_reserved_count;
+    destination_collision_hit_count = source_collision_hit_count;
+    destination_collision_response_count = source_collision_response_count;
+    destination_collision_trigger_count = source_collision_trigger_count;
+    destination_collision_enter_count = source_collision_enter_count;
+    destination_collision_stay_count = source_collision_stay_count;
+    destination_collision_exit_count = source_collision_exit_count;
+    destination_collision_max_outward_speed_bits = source_collision_max_outward_speed_bits;
+    destination_collision_max_tangent_speed_bits = source_collision_max_tangent_speed_bits;
+    destination_collision_candidate_overflow_count = source_collision_candidate_overflow_count;
 }
 )glsl";
 
@@ -57,6 +84,15 @@ layout(std430, set = 0, binding = 1) readonly buffer SourceCounters {
     uint source_visible_count;
     uint source_dropped_count;
     uint source_reserved_count;
+    uint source_collision_hit_count;
+    uint source_collision_response_count;
+    uint source_collision_trigger_count;
+    uint source_collision_enter_count;
+    uint source_collision_stay_count;
+    uint source_collision_exit_count;
+    uint source_collision_max_outward_speed_bits;
+    uint source_collision_max_tangent_speed_bits;
+    uint source_collision_candidate_overflow_count;
 };
 layout(std430, set = 0, binding = 2) buffer DestinationStates { uint destination_states[]; };
 layout(std430, set = 0, binding = 3) buffer DestinationFreeList { uint destination_free_slots[]; };
@@ -65,6 +101,15 @@ layout(std430, set = 0, binding = 4) buffer DestinationCounters {
     uint destination_visible_count;
     uint destination_dropped_count;
     uint destination_reserved_count;
+    uint destination_collision_hit_count;
+    uint destination_collision_response_count;
+    uint destination_collision_trigger_count;
+    uint destination_collision_enter_count;
+    uint destination_collision_stay_count;
+    uint destination_collision_exit_count;
+    uint destination_collision_max_outward_speed_bits;
+    uint destination_collision_max_tangent_speed_bits;
+    uint destination_collision_candidate_overflow_count;
 };
 layout(std430, set = 0, binding = 5) readonly buffer CopyRanges { uvec4 copy_ranges[]; };
 layout(std430, set = 0, binding = 6) readonly buffer DefaultState { uint default_state[]; };
@@ -169,9 +214,10 @@ bool ParticleGpuMigrator::Create(rhi::Device &device, const GpuParticleMigration
     Destroy();
     if (desc.sourceCapacity == 0 || desc.destinationCapacity == 0 || desc.sourceStride == 0 ||
         desc.destinationStride == 0 || desc.sourceStride % sizeof(uint32_t) != 0 ||
-        desc.destinationStride % sizeof(uint32_t) != 0 || !desc.sourceStates.IsValid() ||
-        !desc.sourceCounters.IsValid() || !desc.destinationStates.IsValid() || !desc.destinationFreeList.IsValid() ||
-        !desc.destinationCounters.IsValid() || desc.defaultStateWords.empty() ||
+        desc.destinationStride % sizeof(uint32_t) != 0 ||
+        desc.sourceCounterByteSize < ParticleGpuRuntime::BaseCounterWordCount * sizeof(uint32_t) ||
+        !desc.sourceStates.IsValid() || !desc.sourceCounters.IsValid() || !desc.destinationStates.IsValid() ||
+        !desc.destinationFreeList.IsValid() || !desc.destinationCounters.IsValid() || desc.defaultStateWords.empty() ||
         desc.defaultStateWords.size() != desc.destinationStride / sizeof(uint32_t) || !desc.program.IsValid() ||
         desc.copyRanges.size() > std::numeric_limits<uint32_t>::max())
         return false;
@@ -189,6 +235,7 @@ bool ParticleGpuMigrator::Create(rhi::Device &device, const GpuParticleMigration
     m_device = &device;
     m_sourceStates = desc.sourceStates;
     m_sourceCounters = desc.sourceCounters;
+    m_sourceCounterByteSize = desc.sourceCounterByteSize;
     m_destinationStates = desc.destinationStates;
     m_destinationFreeList = desc.destinationFreeList;
     m_destinationCounters = desc.destinationCounters;
@@ -282,6 +329,7 @@ void ParticleGpuMigrator::Destroy() noexcept
     m_device = nullptr;
     m_sourceStates = {};
     m_sourceCounters = {};
+    m_sourceCounterByteSize = 0;
     m_destinationStates = {};
     m_destinationFreeList = {};
     m_destinationCounters = {};

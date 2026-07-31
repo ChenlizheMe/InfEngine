@@ -450,6 +450,9 @@ class PassBuilder
     /// multisampled target for the next execution without creating a new SSA version.
     ResourceHandle PrepareColorAttachment(ResourceHandle handle);
 
+    /// Preserve an image while transitioning it back to writable depth state.
+    ResourceHandle PrepareDepthStencilAttachment(ResourceHandle handle);
+
     /// Declare the final presentation read and retain this pass as an external side effect.
     ResourceHandle PresentRead(ResourceHandle handle);
 
@@ -742,7 +745,13 @@ class RenderGraph
 
     /// Import a persistent texture owned outside the graph.
     ResourceHandle ImportTexture(const std::string &name, VkImage image, VkImageView view, VkFormat format,
-                                 uint32_t width, uint32_t height);
+                                 uint32_t width, uint32_t height,
+                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+
+    /// Import a persistent RHI texture while preserving its queue-sharing contract.
+    ResourceHandle ImportTexture(const std::string &name, rhi::TextureHandle texture, rhi::TextureViewHandle view,
+                                 VkFormat format, uint32_t width, uint32_t height,
+                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
 
     /// Rebind an imported texture to another image with the same description.
     bool UpdateImportedTexture(ResourceHandle handle, VkImage image, VkImageView view);

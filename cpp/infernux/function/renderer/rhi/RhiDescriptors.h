@@ -260,7 +260,7 @@ struct BufferBinding
 
 struct BindingLayoutDesc
 {
-    static constexpr size_t MaxEntries = 16;
+    static constexpr size_t MaxEntries = 32;
 
     std::array<BindingLayoutEntry, MaxEntries> entries{};
     uint32_t entryCount = 0;
@@ -275,7 +275,7 @@ enum class BindGroupLifetime : uint8_t
 
 struct BindGroupDesc
 {
-    static constexpr size_t MaxBufferBindings = 16;
+    static constexpr size_t MaxBufferBindings = 32;
     static constexpr size_t MaxTextureBindings = 16;
 
     BindingLayoutHandle layout;

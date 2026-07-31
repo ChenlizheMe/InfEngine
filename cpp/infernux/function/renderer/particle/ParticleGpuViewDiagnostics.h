@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ParticleGpuCuller.h"
+#include "ParticleOutputSemantics.h"
 
 #include <cstdint>
 #include <string>
@@ -28,15 +29,20 @@ struct GpuParticleViewOutputDiagnostic
     uint32_t visibleCount = 0;
     uint32_t drawVertexCount = 0;
     uint32_t drawInstanceCount = 0;
+    uint32_t sortGroupCountX = 0;
     bool boundsValid = false;
     bool coarseRejected = false;
+    bool sorterAllocated = false;
     GpuParticleCullMode cullMode = GpuParticleCullMode::Instances;
+    ParticleSortMode sortMode = ParticleSortMode::None;
 };
 
 struct GpuParticleViewDiagnosticSnapshot
 {
     uint64_t requestId = 0;
     uint64_t graphInstanceId = 0;
+    uint64_t cameraComponentId = 0;
+    uint64_t renderViewId = 0;
     GpuParticleViewDiagnosticStatus status = GpuParticleViewDiagnosticStatus::Unknown;
     std::vector<GpuParticleViewOutputDiagnostic> outputs;
     std::string error;

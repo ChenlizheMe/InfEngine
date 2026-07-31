@@ -8,7 +8,12 @@ import json
 import math
 from typing import Any, Mapping
 
-from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
+from Infernux.graph.types import (
+    PORTABLE_TYPE_SYSTEM,
+    CoordinateSpace,
+    TypeRef,
+    ValueType,
+)
 
 from .hir import (
     ParticleEmitterHIR,
@@ -20,10 +25,11 @@ from .hir import (
     ParticleSuspensionKind,
 )
 from .data_interface import (
-    ParticleDataInterface,
+    MeshResourceBinding,
+    ParticleRuntimeResource,
     SdfVolume,
     VectorField,
-    particle_data_interface_from_dict,
+    particle_runtime_resource_from_dict,
 )
 from .nodes import ATTRIBUTE_OPERATION_SPECS, particle_event_payload_port_id
 from .kernel_semantics import (
@@ -484,9 +490,9 @@ class KernelLifecycleFlow:
         expected_kernel_stage = {
             ParticleStage.INIT: KernelStage.INIT,
             ParticleStage.UPDATE: KernelStage.UPDATE,
-            ParticleStage.COLLISION_ENTER: KernelStage.UPDATE,
-            ParticleStage.COLLISION_STAY: KernelStage.UPDATE,
-            ParticleStage.COLLISION_EXIT: KernelStage.UPDATE,
+            ParticleStage.COLLISION_ENTER: KernelStage.CONTACT,
+            ParticleStage.COLLISION_STAY: KernelStage.CONTACT,
+            ParticleStage.COLLISION_EXIT: KernelStage.CONTACT,
             ParticleStage.EVENT: KernelStage.UPDATE,
             ParticleStage.RENDERING: KernelStage.RENDERING,
         }[self.lifecycle_stage]
@@ -693,9 +699,10 @@ class ParticleEmitterKernelIR:
     attributes: tuple[tuple[str, TypeRef, Any], ...]
     init: ParticleKernelFunction
     update: ParticleKernelFunction
+    contact: ParticleKernelFunction
     rendering: ParticleKernelFunction
     flows: tuple[KernelLifecycleFlow, ...]
-    data_interfaces: tuple[ParticleDataInterface, ...] = ()
+    data_interfaces: tuple[ParticleRuntimeResource, ...] = ()
     suspensions: tuple[KernelSuspensionPoint, ...] = ()
 
     def __post_init__(self) -> None:
@@ -707,7 +714,7 @@ class ParticleEmitterKernelIR:
         if len({stable_id for stable_id, _type, _default in self.attributes}) != len(self.attributes):
             raise KernelCompileError("kernel emitter attribute stable ids must be unique")
         if not all(
-            isinstance(interface, (VectorField, SdfVolume))
+            isinstance(interface, (VectorField, SdfVolume, MeshResourceBinding))
             for interface in interfaces
         ):
             raise KernelCompileError("kernel emitter data interfaces are invalid")
@@ -726,6 +733,7 @@ class ParticleEmitterKernelIR:
         expected_stages = (
             (self.init, KernelStage.INIT),
             (self.update, KernelStage.UPDATE),
+            (self.contact, KernelStage.CONTACT),
             (self.rendering, KernelStage.RENDERING),
         )
         for function, expected_stage in expected_stages:
@@ -768,6 +776,7 @@ class ParticleEmitterKernelIR:
         function_by_kernel_stage = {
             KernelStage.INIT: self.init,
             KernelStage.UPDATE: self.update,
+            KernelStage.CONTACT: self.contact,
             KernelStage.RENDERING: self.rendering,
         }
         for flow in flows:
@@ -786,9 +795,9 @@ class ParticleEmitterKernelIR:
         function_by_stage = {
             ParticleStage.INIT: self.init,
             ParticleStage.UPDATE: self.update,
-            ParticleStage.COLLISION_ENTER: self.update,
-            ParticleStage.COLLISION_STAY: self.update,
-            ParticleStage.COLLISION_EXIT: self.update,
+            ParticleStage.COLLISION_ENTER: self.contact,
+            ParticleStage.COLLISION_STAY: self.contact,
+            ParticleStage.COLLISION_EXIT: self.contact,
             ParticleStage.EVENT: self.update,
             ParticleStage.RENDERING: self.rendering,
         }
@@ -864,6 +873,9 @@ class ParticleEmitterKernelIR:
         for instruction in function.instructions:
             if instruction.opcode not in {
                 "sample_vector_field",
+                "sample_sdf_distance",
+                "sample_sdf_gradient",
+                "sample_mesh",
                 "collide_sdf_position",
                 "collide_sdf_velocity",
             }:
@@ -877,6 +889,8 @@ class ParticleEmitterKernelIR:
             expected_type = (
                 VectorField
                 if instruction.opcode == "sample_vector_field"
+                else MeshResourceBinding
+                if instruction.opcode == "sample_mesh"
                 else SdfVolume
             )
             if not isinstance(interface, expected_type):
@@ -948,6 +962,7 @@ class ParticleEmitterKernelIR:
             ],
             "init": self.init.to_dict(include_source=include_source),
             "update": self.update.to_dict(include_source=include_source),
+            "contact": self.contact.to_dict(include_source=include_source),
             "rendering": self.rendering.to_dict(include_source=include_source),
             "flows": [
                 flow.to_dict(include_source=include_source) for flow in self.flows
@@ -969,6 +984,7 @@ class ParticleEmitterKernelIR:
                 "data_interfaces",
                 "init",
                 "update",
+                "contact",
                 "rendering",
                 "flows",
                 "suspensions",
@@ -998,10 +1014,11 @@ class ParticleEmitterKernelIR:
             tuple(attributes),
             ParticleKernelFunction.from_dict(value["init"]),
             ParticleKernelFunction.from_dict(value["update"]),
+            ParticleKernelFunction.from_dict(value["contact"]),
             ParticleKernelFunction.from_dict(value["rendering"]),
             tuple(KernelLifecycleFlow.from_dict(item) for item in value["flows"]),
             tuple(
-                particle_data_interface_from_dict(
+                particle_runtime_resource_from_dict(
                     item, f"kernel emitter data_interfaces[{index}]"
                 )
                 for index, item in enumerate(value["data_interfaces"])
@@ -1261,7 +1278,12 @@ class ParticleKernelProgram:
             for parameter in self.parameters
         }
         for emitter in self.emitters:
-            for function in (emitter.init, emitter.update, emitter.rendering):
+            for function in (
+                emitter.init,
+                emitter.update,
+                emitter.contact,
+                emitter.rendering,
+            ):
                 for instruction in function.instructions:
                     if instruction.opcode != "load_parameter":
                         continue
@@ -1273,7 +1295,12 @@ class ParticleKernelProgram:
 
     def _validate_event_access(self) -> None:
         for emitter in self.emitters:
-            for function in (emitter.init, emitter.update, emitter.rendering):
+            for function in (
+                emitter.init,
+                emitter.update,
+                emitter.contact,
+                emitter.rendering,
+            ):
                 for instruction in function.instructions:
                     if instruction.opcode not in {
                         "event_payload",
@@ -1315,7 +1342,12 @@ class ParticleKernelProgram:
 
     def _validate_spawn_access(self) -> None:
         for emitter in self.emitters:
-            for function in (emitter.init, emitter.update, emitter.rendering):
+            for function in (
+                emitter.init,
+                emitter.update,
+                emitter.contact,
+                emitter.rendering,
+            ):
                 for instruction in function.instructions:
                     if instruction.opcode != "burst_enqueue":
                         continue
@@ -1515,6 +1547,14 @@ class ParticleKernelLowerer:
             continuation_program_counters,
             operation_instruction_ranges,
         )
+        contact = self._lower_contact(
+            emitter,
+            types,
+            event_types,
+            parameter_types,
+            continuation_program_counters,
+            operation_instruction_ranges,
+        )
         rendering = self._lower_rendering(
             emitter,
             types,
@@ -1529,9 +1569,9 @@ class ParticleKernelLowerer:
                 {
                     ParticleStage.INIT: init,
                     ParticleStage.UPDATE: update,
-                    ParticleStage.COLLISION_ENTER: update,
-                    ParticleStage.COLLISION_STAY: update,
-                    ParticleStage.COLLISION_EXIT: update,
+                    ParticleStage.COLLISION_ENTER: contact,
+                    ParticleStage.COLLISION_STAY: contact,
+                    ParticleStage.COLLISION_EXIT: contact,
                     ParticleStage.EVENT: update,
                     ParticleStage.RENDERING: rendering,
                 }[stage.stage],
@@ -1543,7 +1583,7 @@ class ParticleKernelLowerer:
             (flow.lifecycle_stage, flow.flow_id): flow for flow in flows
         }
         instruction_locations = {}
-        for function in (init, update, rendering):
+        for function in (init, update, contact, rendering):
             for instruction_index, instruction in enumerate(function.instructions):
                 if instruction.opcode not in {
                     "suspend_frames",
@@ -1589,6 +1629,7 @@ class ParticleKernelLowerer:
             schema,
             init,
             update,
+            contact,
             rendering,
             flows,
             emitter.data_interfaces,
@@ -1792,6 +1833,91 @@ class ParticleKernelLowerer:
         builder.store(str(parameters["snapshot"]), value, source)
 
     @staticmethod
+    def _lower_target_position(
+        builder,
+        operation,
+        expression_values,
+        attribute_types,
+        delta_time,
+        source,
+    ) -> None:
+        parameters = operation.parameter_dict()
+        bindings = dict(operation.value_bindings)
+        vector_type = attribute_types["builtin.position"]
+        scalar_type = TypeRef(ValueType.F32)
+        position = builder.load("builtin.position", source)
+        velocity = builder.load("builtin.velocity", source)
+        target = builder.operation_value(
+            "target",
+            bindings,
+            expression_values,
+            parameters,
+            vector_type,
+            source,
+        )
+        controls = tuple(
+            builder.operation_value(
+                name,
+                bindings,
+                expression_values,
+                parameters,
+                scalar_type,
+                source,
+            )
+            for name in ("speed", "responsiveness", "arrival_radius")
+        )
+        steered_velocity = builder.emit(
+            "target_position_velocity",
+            attribute_types["builtin.velocity"],
+            (position, velocity, target, *controls, delta_time),
+            {},
+            source,
+        )
+        builder.store("builtin.velocity", steered_velocity, source)
+
+    @staticmethod
+    def _lower_emitter_shape(builder, operation, attribute_types, source) -> None:
+        parameters = operation.parameter_dict()
+        shape_parameters = {
+            "shape": parameters["shape"],
+            "shape_space": parameters["shape_space"],
+            "radius": parameters["shape_radius"],
+            "angle_degrees": parameters["shape_angle_degrees"],
+            "dimensions": parameters["shape_dimensions"],
+            "mesh": parameters["shape_mesh"],
+            "mesh_mode": parameters["shape_mesh_mode"],
+            "sdf_interface": parameters["shape_sdf_interface"],
+            "sdf_mode": parameters["shape_sdf_mode"],
+            "random_slots": list(builder.next_random_slots(3)),
+        }
+        shape_space = (
+            CoordinateSpace.SIMULATION
+            if parameters["shape"] == "sdf"
+            else CoordinateSpace(parameters["shape_space"])
+        )
+        shape_type = TypeRef(ValueType.VEC3, shape_space)
+        position = builder.emit(
+            "sample_shape_position",
+            shape_type,
+            (),
+            shape_parameters,
+            source,
+        )
+        if shape_type != attribute_types["builtin.position"]:
+            position = builder.emit(
+                "convert_space",
+                attribute_types["builtin.position"],
+                (position,),
+                {
+                    "from": shape_type.space.value,
+                    "to": attribute_types["builtin.position"].space.value,
+                    "semantic": "position",
+                },
+                source,
+            )
+        builder.store("builtin.position", position, source)
+
+    @staticmethod
     def _integrate_update_position(builder, attribute_types, delta_time) -> None:
         source = KernelSourceRef(operation="update.integrate_position")
         position = builder.load("builtin.position", source)
@@ -1813,7 +1939,7 @@ class ParticleKernelLowerer:
         builder.store("builtin.position", position, source)
 
     @staticmethod
-    def _lower_update_collision(
+    def _lower_collision(
         builder,
         operation,
         expression_values,
@@ -1940,11 +2066,8 @@ class ParticleKernelLowerer:
         builder.store("builtin.velocity", resolved_velocity, source)
 
     @staticmethod
-    def _prepare_collision_lifecycle(builder, attribute_types) -> None:
-        source = KernelSourceRef(operation="update.collision_lifecycle")
-        previous_active = builder.load("builtin.collision_active", source)
-        previous_id_low = builder.load("internal.collision_active_id_low", source)
-        previous_id_high = builder.load("internal.collision_active_id_high", source)
+    def _collect_scene_contacts(builder, attribute_types, settings) -> None:
+        source = KernelSourceRef(operation="update.collect_scene_contacts")
         position = builder.load("builtin.position", source)
         velocity = builder.load("builtin.velocity", source)
         size = builder.load("builtin.size", source)
@@ -1952,9 +2075,18 @@ class ParticleKernelLowerer:
         radius = builder.emit(
             "multiply", TypeRef(ValueType.F32), (size, half), {}, source
         )
-        layer_mask = builder.constant(TypeRef(ValueType.U32), 0xFFFFFFFF, source)
-        include_triggers = builder.constant(TypeRef(ValueType.BOOL), True, source)
-        one = builder.constant(TypeRef(ValueType.F32), 1.0, source)
+        layer_mask = builder.constant(
+            TypeRef(ValueType.U32), settings.collision_layer_mask, source
+        )
+        include_triggers = builder.constant(
+            TypeRef(ValueType.BOOL), settings.collision_include_triggers, source
+        )
+        bounce_scale = builder.constant(
+            TypeRef(ValueType.F32), float(settings.collision_bounce_scale), source
+        )
+        friction_scale = builder.constant(
+            TypeRef(ValueType.F32), float(settings.collision_friction_scale), source
+        )
         builder.emit_void(
             "collide_scene",
             (
@@ -1963,8 +2095,8 @@ class ParticleKernelLowerer:
                 radius,
                 layer_mask,
                 include_triggers,
-                one,
-                one,
+                bounce_scale,
+                friction_scale,
             ),
             {
                 "position_attribute": "builtin.position",
@@ -1976,8 +2108,8 @@ class ParticleKernelLowerer:
                 "penetration_attribute": "builtin.collision_penetration",
                 "trigger_attribute": "builtin.collision_is_trigger",
                 "material_attribute": "builtin.collision_material",
-                "collider_id_low_attribute": "internal.collision_current_id_low",
-                "collider_id_high_attribute": "internal.collision_current_id_high",
+                "collider_id_low_attribute": "builtin.collision_collider_id_low",
+                "collider_id_high_attribute": "builtin.collision_collider_id_high",
             },
             source,
         )
@@ -1992,103 +2124,10 @@ class ParticleKernelLowerer:
                 "builtin.collision_penetration",
                 "builtin.collision_is_trigger",
                 "builtin.collision_material",
-                "internal.collision_current_id_low",
-                "internal.collision_current_id_high",
+                "builtin.collision_collider_id_low",
+                "builtin.collision_collider_id_high",
             }
         )
-        current_active = builder.load("builtin.collision_hit", source)
-        current_id_low = builder.load("internal.collision_current_id_low", source)
-        current_id_high = builder.load("internal.collision_current_id_high", source)
-        same_id_low = builder.emit(
-            "equal",
-            TypeRef(ValueType.BOOL),
-            (current_id_low, previous_id_low),
-            {},
-            source,
-        )
-        same_id_high = builder.emit(
-            "equal",
-            TypeRef(ValueType.BOOL),
-            (current_id_high, previous_id_high),
-            {},
-            source,
-        )
-        same_collider = builder.emit(
-            "logical_and",
-            TypeRef(ValueType.BOOL),
-            (same_id_low, same_id_high),
-            {},
-            source,
-        )
-        not_previous = builder.emit(
-            "logical_not",
-            TypeRef(ValueType.BOOL),
-            (previous_active,),
-            {},
-            source,
-        )
-        changed_collider = builder.emit(
-            "logical_not",
-            TypeRef(ValueType.BOOL),
-            (same_collider,),
-            {},
-            source,
-        )
-        fresh_or_changed = builder.emit(
-            "logical_or",
-            TypeRef(ValueType.BOOL),
-            (not_previous, changed_collider),
-            {},
-            source,
-        )
-        entered = builder.emit(
-            "logical_and",
-            TypeRef(ValueType.BOOL),
-            (current_active, fresh_or_changed),
-            {},
-            source,
-        )
-        active_and_same = builder.emit(
-            "logical_and",
-            TypeRef(ValueType.BOOL),
-            (previous_active, same_collider),
-            {},
-            source,
-        )
-        stayed = builder.emit(
-            "logical_and",
-            TypeRef(ValueType.BOOL),
-            (current_active, active_and_same),
-            {},
-            source,
-        )
-        not_current = builder.emit(
-            "logical_not",
-            TypeRef(ValueType.BOOL),
-            (current_active,),
-            {},
-            source,
-        )
-        missing_or_changed = builder.emit(
-            "logical_or",
-            TypeRef(ValueType.BOOL),
-            (not_current, changed_collider),
-            {},
-            source,
-        )
-        exited = builder.emit(
-            "logical_and",
-            TypeRef(ValueType.BOOL),
-            (previous_active, missing_or_changed),
-            {},
-            source,
-        )
-        builder.set_runtime_predicate("collision_enter", entered)
-        builder.set_runtime_predicate("collision_stay", stayed)
-        builder.set_runtime_predicate("collision_exit", exited)
-        builder.store("builtin.collision_active", current_active, source)
-        builder.store("internal.collision_active_id_low", current_id_low, source)
-        builder.store("internal.collision_active_id_high", current_id_high, source)
 
     def _lower_init(
         self,
@@ -2101,6 +2140,13 @@ class ParticleKernelLowerer:
         operation_instruction_ranges,
     ) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.INIT, attribute_types, parameter_types)
+        delta_time = builder.emit(
+            "load_uniform",
+            TypeRef(ValueType.F32),
+            (),
+            {"name": "delta_time"},
+            KernelSourceRef(operation="init.delta_time"),
+        )
         for stable_id in sorted(defaults):
             if stable_id == "builtin.id":
                 continue
@@ -2145,38 +2191,9 @@ class ParticleKernelLowerer:
                     continuation_program_counters,
                 )
             elif operation.opcode == "emitter.sample_shape":
-                shape_parameters = {
-                    "shape": parameters["shape"],
-                    "shape_space": parameters["shape_space"],
-                    "radius": parameters["shape_radius"],
-                    "angle_degrees": parameters["shape_angle_degrees"],
-                    "dimensions": parameters["shape_dimensions"],
-                    "mesh": parameters["shape_mesh"],
-                    "mesh_mode": parameters["shape_mesh_mode"],
-                    "random_slots": list(builder.next_random_slots(3)),
-                }
-                shape_space = CoordinateSpace(parameters["shape_space"])
-                shape_type = TypeRef(ValueType.VEC3, shape_space)
-                position = builder.emit(
-                    "sample_shape_position",
-                    shape_type,
-                    (),
-                    shape_parameters,
-                    source,
+                self._lower_emitter_shape(
+                    builder, operation, attribute_types, source
                 )
-                if shape_type != attribute_types["builtin.position"]:
-                    position = builder.emit(
-                        "convert_space",
-                        attribute_types["builtin.position"],
-                        (position,),
-                        {
-                            "from": shape_type.space.value,
-                            "to": attribute_types["builtin.position"].space.value,
-                            "semantic": "position",
-                        },
-                        source,
-                    )
-                builder.store("builtin.position", position, source)
             elif operation.opcode in ATTRIBUTE_OPERATION_SPECS or operation.opcode == "attribute.modify_cache":
                 self._lower_attribute_modification(
                     builder,
@@ -2187,6 +2204,25 @@ class ParticleKernelLowerer:
                 )
             elif operation.opcode == "attribute.capture":
                 self._lower_attribute_capture(builder, operation, source)
+            elif operation.opcode == "motion.target_position":
+                self._lower_target_position(
+                    builder,
+                    operation,
+                    expression_values,
+                    attribute_types,
+                    delta_time,
+                    source,
+                )
+            elif operation.opcode == "lifecycle.kill_if":
+                condition = builder.operation_value(
+                    "condition",
+                    bindings,
+                    expression_values,
+                    parameters,
+                    TypeRef(ValueType.BOOL),
+                    source,
+                )
+                builder.emit_void("kill_if", (condition,), {}, source)
             elif operation.opcode == "event.trigger":
                 self._lower_event_trigger(
                     builder,
@@ -2197,6 +2233,18 @@ class ParticleKernelLowerer:
                 )
             elif operation.opcode == "emitter.burst":
                 self._lower_emitter_burst(builder, operation, expression_values, source)
+            elif operation.opcode in {
+                "collision.plane",
+                "collision.sphere",
+                "collision.sdf",
+            }:
+                self._lower_collision(
+                    builder,
+                    operation,
+                    expression_values,
+                    attribute_types,
+                    source,
+                )
             else:
                 raise KernelCompileError(f"unsupported Init operation {operation.opcode!r}")
             builder.end_guard(guard, source)
@@ -2246,15 +2294,6 @@ class ParticleKernelLowerer:
             (emitter.update, operation)
             for operation in emitter.update.flow.iter_operations()
         ) + tuple(
-            (lifecycle, operation)
-            for lifecycle in (
-                emitter.collision_enter,
-                emitter.collision_stay,
-                emitter.collision_exit,
-            )
-            if lifecycle is not None
-            for operation in lifecycle.flow.iter_operations()
-        ) + tuple(
             (event_flow, operation)
             for event_flow in emitter.event_flows
             for operation in event_flow.flow.iter_operations()
@@ -2276,22 +2315,11 @@ class ParticleKernelLowerer:
             for event_flow in emitter.event_flows
         }
         position_integrated = False
-        collision_lifecycle_ready = False
 
         for stage_hir, operation in operation_stream:
             if operation.opcode in collision_opcodes and not position_integrated:
                 self._integrate_update_position(builder, attribute_types, delta_time)
                 position_integrated = True
-            uses_collision_lifecycle = any(
-                predicate.runtime_condition.startswith("collision_")
-                for predicate in operation.execution_predicates
-            )
-            if uses_collision_lifecycle and not collision_lifecycle_ready:
-                if not position_integrated:
-                    self._integrate_update_position(builder, attribute_types, delta_time)
-                    position_integrated = True
-                self._prepare_collision_lifecycle(builder, attribute_types)
-                collision_lifecycle_ready = True
             instruction_begin = len(builder.instructions)
             source = _authored_source_ref(
                 stage_hir,
@@ -2345,8 +2373,21 @@ class ParticleKernelLowerer:
                     attribute_types,
                     source,
                 )
+            elif operation.opcode == "motion.target_position":
+                self._lower_target_position(
+                    builder,
+                    operation,
+                    expression_values,
+                    attribute_types,
+                    delta_time,
+                    source,
+                )
             elif operation.opcode == "attribute.capture":
                 self._lower_attribute_capture(builder, operation, source)
+            elif operation.opcode == "emitter.sample_shape":
+                self._lower_emitter_shape(
+                    builder, operation, attribute_types, source
+                )
             elif operation.opcode == "lifecycle.kill_if":
                 condition = builder.operation_value(
                     "condition",
@@ -2368,7 +2409,7 @@ class ParticleKernelLowerer:
             elif operation.opcode == "emitter.burst":
                 self._lower_emitter_burst(builder, operation, expression_values, source)
             elif operation.opcode in collision_opcodes:
-                self._lower_update_collision(
+                self._lower_collision(
                     builder,
                     operation,
                     expression_values,
@@ -2395,12 +2436,13 @@ class ParticleKernelLowerer:
                 KernelSourceRef(operation=f"event.{event_flow.flow_id}.complete"),
             )
 
-        if emitter.settings.collision_enabled and not collision_lifecycle_ready:
+        if emitter.settings.collision_enabled:
             if not position_integrated:
                 self._integrate_update_position(builder, attribute_types, delta_time)
                 position_integrated = True
-            self._prepare_collision_lifecycle(builder, attribute_types)
-            collision_lifecycle_ready = True
+            self._collect_scene_contacts(
+                builder, attribute_types, emitter.settings
+            )
         if not position_integrated:
             self._integrate_update_position(builder, attribute_types, delta_time)
         lifetime = builder.load("builtin.lifetime", KernelSourceRef(operation="update.kill_expired"))
@@ -2426,6 +2468,136 @@ class ParticleKernelLowerer:
         )
         return builder.finish()
 
+    def _lower_contact(
+        self,
+        emitter,
+        attribute_types,
+        event_types,
+        parameter_types,
+        continuation_program_counters,
+        operation_instruction_ranges,
+    ) -> ParticleKernelFunction:
+        builder = _KernelBuilder(KernelStage.CONTACT, attribute_types, parameter_types)
+        delta_time = builder.emit(
+            "load_uniform",
+            TypeRef(ValueType.F32),
+            (),
+            {"name": "delta_time"},
+            KernelSourceRef(operation="contact.delta_time"),
+        )
+        lifecycles = tuple(
+            stage
+            for stage in (
+                emitter.collision_enter,
+                emitter.collision_stay,
+                emitter.collision_exit,
+            )
+            if stage is not None
+        )
+        for stage_hir in lifecycles:
+            for operation in stage_hir.flow.iter_operations():
+                instruction_begin = len(builder.instructions)
+                source = _authored_source_ref(
+                    stage_hir,
+                    operation.source_node_uid,
+                    operation=f"{stage_hir.stage.value}.{operation.opcode}",
+                )
+                expression_values = self._lower_operation_expressions(
+                    builder, stage_hir, operation
+                )
+                parameters = operation.parameter_dict()
+                bindings = dict(operation.value_bindings)
+                if operation.opcode in {"control.if", "control.join_all"}:
+                    operation_instruction_ranges[
+                        (stage_hir.stage, stage_hir.flow_id, operation.source_node_uid)
+                    ] = (instruction_begin, len(builder.instructions))
+                    continue
+                guard = builder.execution_guard(operation, expression_values, source)
+                builder.begin_guard(guard, source)
+                if operation.opcode in {
+                    "control.wait_frames",
+                    "control.wait_seconds",
+                    "control.until_frames",
+                    "control.until_seconds",
+                }:
+                    self._lower_suspension(
+                        builder,
+                        stage_hir,
+                        operation,
+                        expression_values,
+                        source,
+                        continuation_program_counters,
+                    )
+                elif (
+                    operation.opcode in ATTRIBUTE_OPERATION_SPECS
+                    or operation.opcode == "attribute.modify_cache"
+                ):
+                    self._lower_attribute_modification(
+                        builder,
+                        operation,
+                        expression_values,
+                        attribute_types,
+                        source,
+                    )
+                elif operation.opcode == "attribute.capture":
+                    self._lower_attribute_capture(builder, operation, source)
+                elif operation.opcode == "emitter.sample_shape":
+                    self._lower_emitter_shape(
+                        builder, operation, attribute_types, source
+                    )
+                elif operation.opcode == "motion.target_position":
+                    self._lower_target_position(
+                        builder,
+                        operation,
+                        expression_values,
+                        attribute_types,
+                        delta_time,
+                        source,
+                    )
+                elif operation.opcode == "lifecycle.kill_if":
+                    condition = builder.operation_value(
+                        "condition",
+                        bindings,
+                        expression_values,
+                        parameters,
+                        TypeRef(ValueType.BOOL),
+                        source,
+                    )
+                    builder.emit_void("kill_if", (condition,), {}, source)
+                elif operation.opcode == "event.trigger":
+                    self._lower_event_trigger(
+                        builder,
+                        operation,
+                        expression_values,
+                        event_types,
+                        source,
+                    )
+                elif operation.opcode == "emitter.burst":
+                    self._lower_emitter_burst(
+                        builder, operation, expression_values, source
+                    )
+                elif operation.opcode in {
+                    "collision.plane",
+                    "collision.sphere",
+                    "collision.sdf",
+                }:
+                    self._lower_collision(
+                        builder,
+                        operation,
+                        expression_values,
+                        attribute_types,
+                        source,
+                    )
+                else:
+                    raise KernelCompileError(
+                        f"unsupported Contact operation {operation.opcode!r}"
+                    )
+                builder.end_guard(guard, source)
+                operation_instruction_ranges[
+                    (stage_hir.stage, stage_hir.flow_id, operation.source_node_uid)
+                ] = (instruction_begin, len(builder.instructions))
+        return builder.finish()
+
     def _lower_rendering(
         self,
         emitter,
@@ -2436,6 +2608,13 @@ class ParticleKernelLowerer:
         operation_instruction_ranges,
     ) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.RENDERING, attribute_types, parameter_types)
+        delta_time = builder.emit(
+            "load_uniform",
+            TypeRef(ValueType.F32),
+            (),
+            {"name": "delta_time"},
+            KernelSourceRef(operation="rendering.delta_time"),
+        )
         for operation in emitter.rendering.flow.iter_operations():
             instruction_begin = len(builder.instructions)
             source = _authored_source_ref(
@@ -2443,12 +2622,18 @@ class ParticleKernelLowerer:
                 operation.source_node_uid,
                 operation=f"rendering.{operation.opcode}",
             )
+            # Rendering Output value ports configure the render descriptor. They
+            # are not per-particle kernel work and resource parameters such as a
+            # Mesh must never be lowered into the numeric parameter buffer.
+            if operation.opcode.startswith("render."):
+                operation_instruction_ranges[
+                    (emitter.rendering.stage, emitter.rendering.flow_id, operation.source_node_uid)
+                ] = (instruction_begin, instruction_begin)
+                continue
             expression_values = self._lower_operation_expressions(
                 builder, emitter.rendering, operation
             )
-            if operation.opcode in {"control.if", "control.join_all"} or operation.opcode.startswith(
-                "render."
-            ):
+            if operation.opcode in {"control.if", "control.join_all"}:
                 operation_instruction_ranges[
                     (emitter.rendering.stage, emitter.rendering.flow_id, operation.source_node_uid)
                 ] = (instruction_begin, len(builder.instructions))
@@ -2479,6 +2664,31 @@ class ParticleKernelLowerer:
                 )
             elif operation.opcode == "attribute.capture":
                 self._lower_attribute_capture(builder, operation, source)
+            elif operation.opcode == "emitter.sample_shape":
+                self._lower_emitter_shape(
+                    builder, operation, attribute_types, source
+                )
+            elif operation.opcode == "motion.target_position":
+                self._lower_target_position(
+                    builder,
+                    operation,
+                    expression_values,
+                    attribute_types,
+                    delta_time,
+                    source,
+                )
+            elif operation.opcode == "lifecycle.kill_if":
+                parameters = operation.parameter_dict()
+                bindings = dict(operation.value_bindings)
+                condition = builder.operation_value(
+                    "condition",
+                    bindings,
+                    expression_values,
+                    parameters,
+                    TypeRef(ValueType.BOOL),
+                    source,
+                )
+                builder.emit_void("kill_if", (condition,), {}, source)
             elif operation.opcode == "event.trigger":
                 self._lower_event_trigger(
                     builder,
@@ -2489,6 +2699,18 @@ class ParticleKernelLowerer:
                 )
             elif operation.opcode == "emitter.burst":
                 self._lower_emitter_burst(builder, operation, expression_values, source)
+            elif operation.opcode in {
+                "collision.plane",
+                "collision.sphere",
+                "collision.sdf",
+            }:
+                self._lower_collision(
+                    builder,
+                    operation,
+                    expression_values,
+                    attribute_types,
+                    source,
+                )
             else:
                 raise KernelCompileError(
                     f"unsupported Rendering operation {operation.opcode!r}"
@@ -2860,15 +3082,43 @@ class _KernelBuilder:
                     raise KernelCompileError(
                         "delta time expression cannot define authored inputs"
                     )
-                if self.stage is not KernelStage.UPDATE:
-                    raise KernelCompileError(
-                        "delta time is only valid in Update kernels"
-                    )
                 value = self.emit(
                     "load_uniform",
                     TypeRef(ValueType.F32),
                     (),
                     {"name": "delta_time"},
+                    source,
+                )
+            elif instruction.opcode == "sample_mesh":
+                if len(instruction.operands) != 1:
+                    raise KernelCompileError(
+                        "resolved Sample Mesh requires one sample-coordinate input"
+                    )
+                sample_operand = instruction.operands[0]
+                if sample_operand.value_id:
+                    try:
+                        sample_value = lowered[sample_operand.value_id]
+                    except KeyError as exc:
+                        raise KernelCompileError(
+                            f"Sample Mesh reads unavailable value "
+                            f"{sample_operand.value_id!r}"
+                        ) from exc
+                else:
+                    sample_value = self.constant(
+                        sample_operand.value_type,
+                        sample_operand.literal,
+                        source,
+                    )
+                authored = instruction.immediate_dict()
+                value = self.emit(
+                    "sample_mesh",
+                    instruction.result_type,
+                    (sample_value,),
+                    {
+                        "interface": authored["interface"],
+                        "mode": authored["mode"],
+                        "output": authored["output"],
+                    },
                     source,
                 )
             elif instruction.opcode in {"sample_curve", "sample_gradient"}:
@@ -2966,6 +3216,14 @@ class _KernelBuilder:
                         "to": expected_type.space.value,
                         "semantic": "direction",
                     },
+                    source,
+                )
+            if PORTABLE_TYPE_SYSTEM.can_resize_numeric(actual, expected_type):
+                return self.emit(
+                    "numeric_resize",
+                    expected_type,
+                    (value,),
+                    {},
                     source,
                 )
             raise KernelCompileError(

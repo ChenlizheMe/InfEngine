@@ -1084,8 +1084,12 @@ def build_scalar_desc(
 
     # --- Metadata ---
     if metadata.range:
-        desc["mn"] = float(metadata.range[0])
-        desc["mx"] = float(metadata.range[1])
+        if prop_type == PROP_INT:
+            desc["mn"] = int(metadata.range[0])
+            desc["mx"] = int(metadata.range[1])
+        else:
+            desc["mn"] = float(metadata.range[0])
+            desc["mx"] = float(metadata.range[1])
     speed = getattr(metadata, "drag_speed", None)
     if speed is not None:
         desc["sp"] = float(speed)

@@ -963,9 +963,14 @@ def _apply_batch_changes_py(py_comp, changes: dict, batch_info: list):
         field_name, meta, old_value, enum_members = batch_info[idx]
         new_value = _convert_batch_value(meta.field_type, raw_value, enum_members)
         if has_field_changed(meta.field_type, old_value, new_value) and not meta.readonly:
-            _record_property(py_comp, field_name, old_value, new_value, f"Set {field_name}")
-            if hasattr(py_comp, '_call_on_validate'):
-                py_comp._call_on_validate()
+            from ._inspector_undo import _record_python_component_document_edit
+            _record_python_component_document_edit(
+                py_comp,
+                lambda _name=field_name, _value=new_value: setattr(py_comp, _name, _value),
+                f"Set {field_name}",
+                edit_key=field_name,
+                validate=True,
+            )
 
 
 def render_cpp_component_generic(ctx: InxGUIContext, comp):
@@ -1234,9 +1239,14 @@ def render_py_component(ctx: InxGUIContext, py_comp):
                 ctx, py_comp, field_name, "inspector_field", _serialized_field_label(field_name, metadata),
             )
             if has_field_changed(metadata.field_type, current_value, new_value) and not metadata.readonly:
-                _record_property(py_comp, field_name, current_value, new_value, f"Set {field_name}")
-                if hasattr(py_comp, '_call_on_validate'):
-                    py_comp._call_on_validate()
+                from ._inspector_undo import _record_python_component_document_edit
+                _record_python_component_document_edit(
+                    py_comp,
+                    lambda _name=field_name, _value=new_value: setattr(py_comp, _name, _value),
+                    f"Set {field_name}",
+                    edit_key=field_name,
+                    validate=True,
+                )
                 _invalidate_component_value_cache(cache_entry)
                 refresh_values = True
             _tooltip_and_info(ctx, metadata)

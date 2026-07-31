@@ -812,7 +812,7 @@ def open_in_pycharm(file_path: str, line: int = 0, project_root: str = "") -> bo
 
 
 
-def open_file_with_system(file_path: str, project_root: str = ""):
+def open_file_with_system(file_path: str, project_root: str = "") -> bool:
     """
     Open *file_path* with the OS default application.
 
@@ -853,22 +853,29 @@ def open_file_with_system(file_path: str, project_root: str = ""):
 
             if ide == "vscode":
                 if open_in_vscode(file_path, project_root=project_root):
-                    return
+                    return True
                 Debug.log("[ProjectPanel] VS Code launch failed, trying next IDE")
 
             elif ide == "pycharm":
                 if open_in_pycharm(file_path, project_root=project_root):
-                    return
+                    return True
                 Debug.log("[ProjectPanel] PyCharm launch failed, trying next IDE")
 
     # Fallback: open with OS default application
-    system = platform.system()
-    if system == 'Windows':
-        os.startfile(file_path)
-    elif system == 'Darwin':
-        subprocess.run(['open', file_path], check=True)
-    else:
-        subprocess.run(['xdg-open', file_path], check=True)
+    try:
+        system = platform.system()
+        if system == 'Windows':
+            os.startfile(file_path)
+        elif system == 'Darwin':
+            subprocess.run(['open', file_path], check=True)
+        else:
+            subprocess.run(['xdg-open', file_path], check=True)
+        return True
+    except (OSError, subprocess.SubprocessError) as exc:
+        Debug.log_warning(
+            f"[ProjectPanel] No system application could open '{file_path}': {exc}"
+        )
+        return False
 
 
 def get_file_type(filename: str) -> str:

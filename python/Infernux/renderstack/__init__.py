@@ -79,6 +79,7 @@ from Infernux.renderstack.sharpen_effect import SharpenEffect
 from Infernux.renderstack.render_stack import RenderStack
 from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline
 from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+from Infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
 from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
 from Infernux.renderstack.discovery import discover_pipelines, discover_passes
 
@@ -97,6 +98,7 @@ __all__ = [
     "merge_route_policies",
     "RenderStackPipeline",
     "DefaultForwardPipeline",
+    "DefaultForwardPlusPipeline",
     "DefaultDeferredPipeline",
     # Injection points
     "InjectionPoint",

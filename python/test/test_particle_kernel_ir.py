@@ -485,7 +485,7 @@ def test_plane_collision_lowers_after_position_integration_with_portable_state_w
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "collision",
-                "particle.update.collide_plane",
+                "particle.collision.plane",
                 properties={"radius": 0.25, "restitution": 0.5, "friction": 0.25},
             ),
         ),
@@ -524,7 +524,7 @@ def test_sphere_collision_lowers_after_position_integration_with_typed_operands(
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "collision",
-                "particle.update.collide_sphere",
+                "particle.collision.sphere",
                 properties={
                     "center": [0.0, 1.0, 0.0],
                     "sphere_radius": 2.0,
@@ -652,6 +652,22 @@ def test_enabling_collision_is_a_layout_migratable_kernel_change():
         stable_id="collision-toggle",
         settings=EmitterSettings(collision_enabled=False),
     )
+    next_emitter = replace(
+        previous_emitter,
+        settings=replace(previous_emitter.settings, collision_enabled=True),
+    )
+    previous = _lower(ParticleGraphAsset(emitters=(previous_emitter,))).emitters[0]
+    current = _lower(ParticleGraphAsset(emitters=(next_emitter,))).emitters[0]
+
+    assert (
+        classify_emitter_update(
+            previous,
+            current,
+            previous_emitter.settings,
+            next_emitter.settings,
+        )
+        is ParticleRuntimeCompatibility.LAYOUT_MIGRATABLE
+    )
 
 
 def test_event_queue_abi_change_restarts_the_owning_emitter():
@@ -707,9 +723,22 @@ def test_emitter_seed_change_rebuilds_kernel_without_discarding_state():
         )
         is ParticleRuntimeCompatibility.KERNEL_COMPATIBLE
     )
+
+
+def test_collision_filter_and_material_scales_are_kernel_compatible_changes():
+    previous_emitter = ParticleEmitterAsset(
+        stable_id="collision-settings",
+        settings=EmitterSettings(collision_enabled=True),
+    )
     next_emitter = replace(
         previous_emitter,
-        settings=replace(previous_emitter.settings, collision_enabled=True),
+        settings=replace(
+            previous_emitter.settings,
+            collision_layer_mask=0x15,
+            collision_include_triggers=False,
+            collision_bounce_scale=1.5,
+            collision_friction_scale=0.25,
+        ),
     )
     previous = _lower(ParticleGraphAsset(emitters=(previous_emitter,))).emitters[0]
     current = _lower(ParticleGraphAsset(emitters=(next_emitter,))).emitters[0]
@@ -721,7 +750,7 @@ def test_emitter_seed_change_rebuilds_kernel_without_discarding_state():
             previous_emitter.settings,
             next_emitter.settings,
         )
-        is ParticleRuntimeCompatibility.LAYOUT_MIGRATABLE
+        is ParticleRuntimeCompatibility.KERNEL_COMPATIBLE
     )
 
 
@@ -800,6 +829,143 @@ def test_vector_field_graph_lowers_to_typed_data_interface_access():
                 ),
             )
         )
+
+
+def test_sdf_graph_samples_typed_distance_and_gradient_from_one_volume_interface():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "position",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.position"},
+            ),
+            GraphNodeRecord(
+                "distance",
+                "particle.sdf.sample_distance",
+                properties={"interface": "shape"},
+            ),
+            GraphNodeRecord(
+                "gradient",
+                "particle.sdf.sample_gradient",
+                properties={"interface": "shape"},
+            ),
+            GraphNodeRecord("size", "particle.attribute.size"),
+            GraphNodeRecord("velocity", "particle.attribute.velocity"),
+        ),
+        links=(
+            GraphLinkRecord("root-size", "root.update", "out", "size", "in", PortKind.EXEC),
+            GraphLinkRecord("size-velocity", "size", "out", "velocity", "in", PortKind.EXEC),
+            GraphLinkRecord("position-distance", "position", "value", "distance", "position"),
+            GraphLinkRecord("position-gradient", "position", "value", "gradient", "position"),
+            GraphLinkRecord("distance-size", "distance", "distance", "size", "value"),
+            GraphLinkRecord("gradient-velocity", "gradient", "gradient", "velocity", "value"),
+        ),
+    )
+    emitter = ParticleEmitterAsset(
+        stable_id="sdf-sample-kernel",
+        update=update,
+        data_interfaces=(
+            SdfVolume(
+                stable_id="shape",
+                texture=AssetReference(guid="sdf-texture"),
+            ),
+        ),
+    )
+
+    kernel = _lower(ParticleGraphAsset(emitters=(emitter,))).emitters[0]
+    samples = {
+        instruction.opcode: instruction
+        for instruction in kernel.update.instructions
+        if instruction.opcode in {"sample_sdf_distance", "sample_sdf_gradient"}
+    }
+    simulation_vector = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+    assert samples["sample_sdf_distance"].result_type == TypeRef(ValueType.F32)
+    assert samples["sample_sdf_gradient"].result_type == simulation_vector
+    assert all(
+        instruction.operands[0].value_type == simulation_vector
+        and instruction.immediate_dict() == {"interface": "shape"}
+        for instruction in samples.values()
+    )
+
+    with pytest.raises(KernelCompileError, match="unknown data interface"):
+        _lower(ParticleGraphAsset(emitters=(replace(emitter, data_interfaces=()),)))
+
+    with pytest.raises(KernelCompileError, match="not a SdfVolume"):
+        _lower(
+            ParticleGraphAsset(
+                emitters=(
+                    replace(
+                        emitter,
+                        data_interfaces=(
+                            VectorField(
+                                stable_id="shape",
+                                texture=AssetReference(guid="wrong-resource"),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("output", "mode", "expected_type"),
+    [
+        ("position", "surface", TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)),
+        ("normal", "edge", TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)),
+        ("tangent", "vertex", TypeRef(ValueType.VEC4, CoordinateSpace.SIMULATION)),
+        ("uv", "surface", TypeRef(ValueType.VEC2)),
+        ("barycentric", "edge", TypeRef(ValueType.VEC3)),
+    ],
+)
+def test_sample_mesh_input_lowers_typed_sampling_outputs(output, mode, expected_type):
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "sample",
+                "particle.mesh.sample",
+                properties={
+                    "mesh": AssetReference(guid="surface-mesh").to_dict(),
+                    "mode": mode,
+                },
+            ),
+            GraphNodeRecord(
+                "write",
+                "particle.attribute.cache",
+                properties={
+                    "name": f"Sample {output}",
+                    "value_type": expected_type.value_type.value,
+                    "value_space": expected_type.space.value,
+                    "composition": "set",
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord("exec", "root.update", "out", "write", "in", PortKind.EXEC),
+            GraphLinkRecord("sample-value", "sample", output, "write", "value"),
+        ),
+    )
+    emitter = ParticleEmitterAsset(
+        stable_id="mesh-data-kernel",
+        update=update,
+    )
+
+    kernel = _lower(ParticleGraphAsset(emitters=(emitter,))).emitters[0]
+    sample = next(
+        instruction
+        for instruction in kernel.update.instructions
+        if instruction.opcode == "sample_mesh"
+    )
+
+    immediates = sample.immediate_dict()
+    assert immediates["interface"].startswith("sample.mesh.")
+    assert immediates["mode"] == mode
+    assert immediates["output"] == output
+    assert sample.result_type == expected_type
 
 
 def test_kernel_random_slots_are_unique_and_source_uid_independent():
@@ -943,12 +1109,49 @@ def test_shape_settings_and_authored_space_are_explicit_in_kernel_ir():
             "dimensions": [3.0, 4.0, 5.0],
             "mesh": AssetReference().to_dict(),
             "mesh_mode": "surface",
+            "sdf_interface": "",
+            "sdf_mode": "surface",
             "random_slots": [0, 1, 2],
         }
     assert sum(
         instruction.opcode == "convert_space"
         for instruction in kernel_emitter.init.instructions
     ) == 1
+
+
+@pytest.mark.parametrize("mode", ("surface", "volume"))
+def test_sdf_emitter_shape_lowers_to_simulation_space_without_hidden_particle_state(mode):
+    interface = SdfVolume(
+        stable_id="spawn-field",
+        texture=AssetReference(guid="sdf-texture-guid"),
+    )
+    emitter = ParticleEmitterAsset(
+        stable_id="sdf-shape-emitter",
+        settings=EmitterSettings(
+            shape=EmitterShape(
+                kind="sdf",
+                sdf_interface=interface.stable_id,
+                sdf_mode=mode,
+            )
+        ),
+        data_interfaces=(interface,),
+    )
+
+    kernel_emitter = _lower(ParticleGraphAsset(emitters=(emitter,))).emitters[0]
+    sample = next(
+        instruction
+        for instruction in kernel_emitter.init.instructions
+        if instruction.opcode == "sample_shape_position"
+    )
+
+    assert sample.result_type == TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+    assert sample.immediate_dict()["shape"] == "sdf"
+    assert sample.immediate_dict()["sdf_interface"] == interface.stable_id
+    assert sample.immediate_dict()["sdf_mode"] == mode
+    assert not any(
+        instruction.opcode == "convert_space"
+        for instruction in kernel_emitter.init.instructions
+    )
 
 
 def test_portable_random_reference_has_stable_golden_values():
@@ -959,22 +1162,22 @@ def test_portable_random_reference_has_stable_golden_values():
     assert 0.0 <= particle_random_f32(0, 0, 0, 0, 0, 0, 0) < 1.0
 
 
-def test_kernel_opcode_contract_rejects_unknown_or_stage_invalid_operations():
+def test_kernel_opcode_contract_rejects_unknown_and_accepts_lifecycle_portable_operations():
     with pytest.raises(KernelCompileError, match="unknown particle kernel opcode"):
         KernelInstruction("backend_magic")
 
-    with pytest.raises(KernelCompileError, match="not valid in the init stage"):
-        ParticleKernelFunction(
-            KernelStage.INIT,
-            (
-                KernelInstruction(
-                    "kill_if",
-                    operands=(KernelOperand(TypeRef(ValueType.BOOL), literal=True),),
-                ),
+    function = ParticleKernelFunction(
+        KernelStage.INIT,
+        (
+            KernelInstruction(
+                "kill_if",
+                operands=(KernelOperand(TypeRef(ValueType.BOOL), literal=True),),
             ),
-            (),
-            (),
-        )
+        ),
+        (),
+        (),
+    )
+    assert function.instructions[0].opcode == "kill_if"
 
 
 def test_random_expression_preserves_authored_node_seed_in_kernel_ir():

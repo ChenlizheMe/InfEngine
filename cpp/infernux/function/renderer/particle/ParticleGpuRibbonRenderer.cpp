@@ -1,8 +1,5 @@
 #include "ParticleGpuRibbonRenderer.h"
 
-#include <core/types/ColorSpace.h>
-#include <function/resources/InxMaterial/InxMaterial.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -37,9 +34,19 @@ layout(push_constant) uniform ViewConstants {
     vec4 rendering_control;
     vec4 alignment_reference;
 } view;
-layout(location = 0) out vec4 out_color;
-layout(location = 1) out vec2 out_uv;
-layout(location = 15) flat out uvec2 out_object_id;
+layout(location = 0) out vec3 out_world_position;
+layout(location = 1) out vec3 out_normal;
+layout(location = 2) out vec4 out_tangent;
+layout(location = 3) out vec3 out_color;
+layout(location = 4) out vec2 out_uv;
+layout(location = 5) out float out_view_depth;
+layout(location = 9) out vec2 out_particle_local_uv;
+layout(location = 10) out vec2 out_particle_next_uv;
+layout(location = 11) out float out_particle_blend;
+layout(location = 12) out float out_particle_age;
+layout(location = 13) flat out uint out_particle_id;
+layout(location = 14) out float out_particle_alpha;
+layout(location = 15) flat out uint out_layer_mask;
 
 const uint endpoint_for_vertex[6] = uint[](0u, 0u, 1u, 0u, 1u, 1u);
 const float side_for_vertex[6] = float[](-1.0, 1.0, 1.0, -1.0, 1.0, -1.0);
@@ -69,34 +76,48 @@ void main() {
     vec3 world_position = center + side * side_for_vertex[corner] * half_width;
     gl_Position = view.view_projection * vec4(world_position, 1.0);
 
-    out_color = point.color * view.material_tint;
-    if (!connected) out_color.a = 0.0;
+    vec4 particle_color = point.color;
     float order_coordinate = float(point.ribbon_data.y);
     bool repeat_uv = view.rendering_control.z > 0.5;
-    out_uv = vec2(repeat_uv ? order_coordinate * view.rendering_control.y
-                            : order_coordinate / view.rendering_control.y,
-                  side_for_vertex[corner] > 0.0 ? 1.0 : 0.0);
-    out_object_id = floatBitsToUint(view.material_tint.xy);
-}
-)glsl";
-
-constexpr std::string_view FragmentSource = R"glsl(#version 450
-layout(location = 0) in vec4 in_color;
-layout(location = 1) in vec2 in_uv;
-layout(location = 0) out vec4 out_color;
-void main() {
-    if (in_color.a <= 0.0) discard;
-    out_color = in_color;
+    vec2 ribbon_uv = vec2(repeat_uv ? order_coordinate * view.rendering_control.y
+                                    : order_coordinate / view.rendering_control.y,
+                           side_for_vertex[corner] > 0.0 ? 1.0 : 0.0);
+    vec3 surface_normal = normalize(cross(side, tangent));
+    out_world_position = world_position;
+    out_normal = surface_normal;
+    out_tangent = vec4(tangent, 1.0);
+    out_color = particle_color.rgb;
+    out_uv = ribbon_uv;
+    out_view_depth = gl_Position.w;
+    out_particle_local_uv = ribbon_uv;
+    out_particle_next_uv = ribbon_uv;
+    out_particle_blend = 0.0;
+    out_particle_age = clamp(point.scale_custom.w, 0.0, 1.0);
+    out_particle_id = point.ribbon_data.w;
+    out_particle_alpha = connected ? particle_color.a : 0.0;
+    out_layer_mask = floatBitsToUint(view.lighting_control.w);
 }
 )glsl";
 
 constexpr std::string_view PickingFragmentSource = R"glsl(#version 450
-layout(location = 0) in vec4 in_color;
-layout(location = 15) flat in uvec2 in_object_id;
+layout(location = 14) in float in_particle_alpha;
 layout(location = 0) out uvec2 out_object_id;
+
+layout(push_constant) uniform ViewConstants {
+    mat4 view_projection;
+    mat4 previous_view_projection;
+    vec4 camera_right;
+    vec4 camera_up;
+    vec4 material_tint;
+    vec4 depth_reconstruct;
+    vec4 lighting_control;
+    vec4 rendering_control;
+    vec4 alignment_reference;
+} view;
+
 void main() {
-    if (in_color.a <= 0.0) discard;
-    out_object_id = in_object_id;
+    if (!(in_particle_alpha > 0.0)) discard;
+    out_object_id = uvec2(floatBitsToUint(view.material_tint.x), floatBitsToUint(view.material_tint.y));
 }
 )glsl";
 
@@ -188,6 +209,15 @@ bool IsShaderBytecodeValid(const ShaderBytecode &bytecode) noexcept
     return bytecode.words && bytecode.wordCount >= 5 && bytecode.words[0] == 0x07230203u;
 }
 
+std::vector<uint32_t> CopySpirvWords(const std::vector<char> &bytes)
+{
+    if (bytes.empty() || bytes.size() % sizeof(uint32_t) != 0)
+        return {};
+    std::vector<uint32_t> words(bytes.size() / sizeof(uint32_t));
+    std::memcpy(words.data(), bytes.data(), bytes.size());
+    return words;
+}
+
 uint8_t PipelineStateSignature(const GpuBillboardMaterialState &state) noexcept
 {
     return static_cast<uint8_t>((state.blendEnabled ? 1u : 0u) | (state.depthTestEnabled ? 2u : 0u) |
@@ -199,11 +229,6 @@ uint8_t PipelineStateSignature(const GpuBillboardMaterialState &state) noexcept
 std::string_view GpuParticleRibbonRenderShaderSources::Vertex() noexcept
 {
     return VertexSource;
-}
-
-std::string_view GpuParticleRibbonRenderShaderSources::Fragment() noexcept
-{
-    return FragmentSource;
 }
 
 std::string_view GpuParticleRibbonRenderShaderSources::PickingFragment() noexcept
@@ -223,7 +248,7 @@ std::string_view GpuParticleRibbonRenderShaderSources::MotionFragment() noexcept
 
 bool GpuParticleRibbonRenderProgram::IsValid() const noexcept
 {
-    return IsShaderBytecodeValid(vertex) && IsShaderBytecodeValid(fragment) && IsShaderBytecodeValid(pickingFragment) &&
+    return IsShaderBytecodeValid(vertex) && IsShaderBytecodeValid(pickingFragment) &&
            IsShaderBytecodeValid(motionVertex) && IsShaderBytecodeValid(motionFragment);
 }
 
@@ -231,9 +256,9 @@ bool GpuParticleRibbonRenderProgramStorage::Assign(const GpuParticleRibbonRender
 {
     if (!program.IsValid())
         return false;
-    const std::array<ShaderBytecode, 5> sources = {program.vertex, program.fragment, program.pickingFragment,
-                                                   program.motionVertex, program.motionFragment};
-    std::array<std::vector<uint32_t>, 5> candidate;
+    const std::array<ShaderBytecode, 4> sources = {program.vertex, program.pickingFragment, program.motionVertex,
+                                                   program.motionFragment};
+    std::array<std::vector<uint32_t>, 4> candidate;
     for (size_t index = 0; index < sources.size(); ++index)
         candidate[index].assign(sources[index].words, sources[index].words + sources[index].wordCount);
     shaders = std::move(candidate);
@@ -248,9 +273,10 @@ bool GpuParticleRibbonRenderProgramStorage::IsValid() const noexcept
 GpuParticleRibbonRenderProgram GpuParticleRibbonRenderProgramStorage::View() const noexcept
 {
     return {
-        {shaders[0].data(), shaders[0].size()}, {shaders[1].data(), shaders[1].size()},
-        {shaders[2].data(), shaders[2].size()}, {shaders[3].data(), shaders[3].size()},
-        {shaders[4].data(), shaders[4].size()},
+        {shaders[0].data(), shaders[0].size()},
+        {shaders[1].data(), shaders[1].size()},
+        {shaders[2].data(), shaders[2].size()},
+        {shaders[3].data(), shaders[3].size()},
     };
 }
 
@@ -263,20 +289,34 @@ bool ParticleGpuRibbonRenderer::Create(rhi::Device &device, const GpuRibbonRende
 {
     Destroy();
     if (!desc.program.IsValid() || !desc.topology || !desc.topology->IsValid() || !std::isfinite(desc.uvScale) ||
-        desc.uvScale <= 0.0f || !desc.semantics.IsValid() || desc.semantics.castShadows ||
-        desc.semantics.softParticles || desc.semantics.receiveSceneLighting || desc.semantics.receiveShadows) {
+        desc.uvScale <= 0.0f || !desc.semantics.IsValid() || desc.semantics.castShadows || !desc.shaderProgram ||
+        !desc.shaderProgram->IsValid() || desc.shaderProgram->domain != ShaderProgramDomain::ParticleSprite ||
+        !desc.textureResolver) {
         return false;
     }
+    const auto *linkedVariant = desc.shaderProgram->FindVariant(ShaderCompileTarget::Forward);
+    const auto *linkedForwardPlusVariant = desc.shaderProgram->FindVariant(ShaderCompileTarget::ForwardPlus);
+    if (!linkedVariant || (desc.semantics.receiveSceneLighting && !linkedForwardPlusVariant))
+        return false;
+    const auto linkedFragmentWords = CopySpirvWords(linkedVariant->fragmentSpirv);
+    const auto linkedForwardPlusFragmentWords =
+        linkedForwardPlusVariant ? CopySpirvWords(linkedForwardPlusVariant->fragmentSpirv) : std::vector<uint32_t>{};
+    if (linkedFragmentWords.empty() || (desc.semantics.receiveSceneLighting && linkedForwardPlusFragmentWords.empty()))
+        return false;
+
     m_device = &device;
     m_topology = desc.topology;
-    m_material = desc.material;
-    m_fallbackMaterial = desc.fallbackMaterial;
+    m_shaderProgram = desc.shaderProgram;
     m_semantics = desc.semantics;
     m_semantics.sortMode = ParticleSortMode::None;
     m_uvMode = desc.uvMode;
     m_uvScale = desc.uvScale;
     m_vertexShader = device.CreateShaderModule({desc.program.vertex.words, desc.program.vertex.wordCount});
-    m_fragmentShader = device.CreateShaderModule({desc.program.fragment.words, desc.program.fragment.wordCount});
+    m_fragmentShader = device.CreateShaderModule({linkedFragmentWords.data(), linkedFragmentWords.size()});
+    if (m_semantics.receiveSceneLighting) {
+        m_forwardPlusFragmentShader =
+            device.CreateShaderModule({linkedForwardPlusFragmentWords.data(), linkedForwardPlusFragmentWords.size()});
+    }
     m_pickingFragmentShader =
         device.CreateShaderModule({desc.program.pickingFragment.words, desc.program.pickingFragment.wordCount});
     m_motionVertexShader =
@@ -284,7 +324,8 @@ bool ParticleGpuRibbonRenderer::Create(rhi::Device &device, const GpuRibbonRende
     m_motionFragmentShader =
         device.CreateShaderModule({desc.program.motionFragment.words, desc.program.motionFragment.wordCount});
     if (!m_vertexShader.IsValid() || !m_fragmentShader.IsValid() || !m_pickingFragmentShader.IsValid() ||
-        !m_motionVertexShader.IsValid() || !m_motionFragmentShader.IsValid()) {
+        !m_motionVertexShader.IsValid() || !m_motionFragmentShader.IsValid() ||
+        (m_semantics.receiveSceneLighting && !m_forwardPlusFragmentShader.IsValid())) {
         Destroy();
         return false;
     }
@@ -292,9 +333,19 @@ bool ParticleGpuRibbonRenderer::Create(rhi::Device &device, const GpuRibbonRende
     layout.entries[layout.entryCount++] = {0, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
     layout.entries[layout.entryCount++] = {1, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
     layout.entries[layout.entryCount++] = {2, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
-    m_layout = device.CreateBindingLayout(layout);
-    m_group = CreateBindGroup(m_topology->SortedIndexBuffer());
-    if (!m_layout.IsValid() || !m_group.IsValid()) {
+    m_geometryLayout = device.CreateBindingLayout(layout);
+    m_emptyLayout = device.CreateBindingLayout({});
+    rhi::BindGroupDesc emptyGroupDesc;
+    emptyGroupDesc.layout = m_emptyLayout;
+    m_emptyGroup = device.CreateBindGroup(emptyGroupDesc);
+    if (!m_geometryLayout.IsValid() || !m_emptyLayout.IsValid() || !m_emptyGroup.IsValid() ||
+        !m_surface.Create(device, desc.shaderProgram, desc.material, desc.fallbackMaterial, desc.semantics,
+                          desc.textureResolver, desc.deletionQueue)) {
+        Destroy();
+        return false;
+    }
+    m_geometryGroup = CreateGeometryGroup(m_topology->SortedIndexBuffer());
+    if (!m_geometryGroup.IsValid()) {
         Destroy();
         return false;
     }
@@ -308,28 +359,34 @@ void ParticleGpuRibbonRenderer::Destroy() noexcept
             m_device->Release(entry.pipeline);
         for (const auto &entry : m_viewGroups)
             m_device->Release(entry.group);
-        m_device->Release(m_group);
-        m_device->Release(m_layout);
+        m_device->Release(m_geometryGroup);
+        m_device->Release(m_emptyGroup);
+        m_device->Release(m_geometryLayout);
+        m_device->Release(m_emptyLayout);
         m_device->Release(m_pickingFragmentShader);
         m_device->Release(m_motionFragmentShader);
         m_device->Release(m_motionVertexShader);
+        m_device->Release(m_forwardPlusFragmentShader);
         m_device->Release(m_fragmentShader);
         m_device->Release(m_vertexShader);
     }
+    m_surface.Destroy();
     m_device = nullptr;
     m_topology.reset();
-    m_material.reset();
-    m_fallbackMaterial = {};
+    m_shaderProgram.reset();
     m_semantics = {};
     m_uvMode = ParticleRibbonUvMode::Stretch;
     m_uvScale = 1.0f;
     m_vertexShader = {};
     m_fragmentShader = {};
+    m_forwardPlusFragmentShader = {};
     m_pickingFragmentShader = {};
     m_motionVertexShader = {};
     m_motionFragmentShader = {};
-    m_layout = {};
-    m_group = {};
+    m_geometryLayout = {};
+    m_geometryGroup = {};
+    m_emptyLayout = {};
+    m_emptyGroup = {};
     m_viewGroups.clear();
     m_pipelines.clear();
 }
@@ -338,12 +395,14 @@ bool ParticleGpuRibbonRenderer::IsValid() const noexcept
 {
     return m_device && m_topology && m_topology->IsValid() && m_vertexShader.IsValid() && m_fragmentShader.IsValid() &&
            m_pickingFragmentShader.IsValid() && m_motionVertexShader.IsValid() && m_motionFragmentShader.IsValid() &&
-           m_layout.IsValid() && m_group.IsValid();
+           m_geometryLayout.IsValid() && m_geometryGroup.IsValid() && m_emptyLayout.IsValid() &&
+           m_emptyGroup.IsValid() && m_surface.IsValid() &&
+           (!m_semantics.receiveSceneLighting || m_forwardPlusFragmentShader.IsValid());
 }
 
 int32_t ParticleGpuRibbonRenderer::RenderQueue() const noexcept
 {
-    return ResolveMaterialState().renderQueue;
+    return m_surface.ResolveMaterialState().renderQueue;
 }
 
 rhi::BufferHandle ParticleGpuRibbonRenderer::InstanceBuffer() const noexcept
@@ -356,52 +415,27 @@ rhi::BufferHandle ParticleGpuRibbonRenderer::RenderIndexBuffer() const noexcept
     return m_topology ? m_topology->SortedIndexBuffer() : rhi::BufferHandle{};
 }
 
-GpuBillboardMaterialState ParticleGpuRibbonRenderer::ResolveMaterialState() const noexcept
+rhi::BindGroupHandle ParticleGpuRibbonRenderer::CreateGeometryGroup(rhi::BufferHandle renderIndices) const
 {
-    if (!m_material || m_material->IsDeleted())
-        return m_fallbackMaterial;
-    const auto &state = m_material->GetRenderState();
-    return {state.renderQueue, state.blendEnable, state.depthTestEnable, state.depthWriteEnable,
-            state.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
-                state.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA};
-}
-
-std::array<float, 4> ParticleGpuRibbonRenderer::ResolveMaterialTint() const noexcept
-{
-    if (!m_material || m_material->IsDeleted())
-        return {1.0f, 1.0f, 1.0f, 1.0f};
-    const auto *property = m_material->GetProperty("baseColor");
-    if (!property || (property->type != MaterialPropertyType::Color && property->type != MaterialPropertyType::Float4))
-        return {1.0f, 1.0f, 1.0f, 1.0f};
-    const auto *value = std::get_if<glm::vec4>(&property->value);
-    if (!value)
-        return {1.0f, 1.0f, 1.0f, 1.0f};
-    // Authored Color properties are sRGB; shading runs in linear space.
-    const glm::vec4 tint = property->type == MaterialPropertyType::Color ? inx::color::SrgbToLinear(*value) : *value;
-    return {tint.x, tint.y, tint.z, tint.w};
-}
-
-rhi::BindGroupHandle ParticleGpuRibbonRenderer::CreateBindGroup(rhi::BufferHandle renderIndices) const
-{
-    if (!m_device || !m_layout.IsValid() || !InstanceBuffer().IsValid() || !renderIndices.IsValid())
+    if (!m_device || !m_geometryLayout.IsValid() || !InstanceBuffer().IsValid() || !renderIndices.IsValid())
         return {};
     rhi::BindGroupDesc group;
-    group.layout = m_layout;
+    group.layout = m_geometryLayout;
     group.buffers[group.bufferCount++] = {0, rhi::BindingType::StorageBuffer, InstanceBuffer(), 0, 0};
     group.buffers[group.bufferCount++] = {1, rhi::BindingType::StorageBuffer, RenderIndexBuffer(), 0, 0};
     group.buffers[group.bufferCount++] = {2, rhi::BindingType::StorageBuffer, renderIndices, 0, 0};
     return m_device->CreateBindGroup(group);
 }
 
-rhi::BindGroupHandle ParticleGpuRibbonRenderer::ResolveBindGroup(rhi::BufferHandle renderIndices)
+rhi::BindGroupHandle ParticleGpuRibbonRenderer::ResolveGeometryGroup(rhi::BufferHandle renderIndices)
 {
     if (!renderIndices.IsValid() || renderIndices == RenderIndexBuffer())
-        return m_group;
+        return m_geometryGroup;
     const auto found = std::find_if(m_viewGroups.begin(), m_viewGroups.end(),
                                     [&](const auto &entry) { return entry.renderIndices == renderIndices; });
     if (found != m_viewGroups.end())
         return found->group;
-    const auto group = CreateBindGroup(renderIndices);
+    const auto group = CreateGeometryGroup(renderIndices);
     if (group.IsValid())
         m_viewGroups.push_back({renderIndices, group});
     return group;
@@ -412,24 +446,36 @@ bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &en
                                            const MaterialPassPipelineDescriptor &pass,
                                            rhi::BufferHandle indirectArguments, const GpuParticleViewConstants &view,
                                            rhi::BufferHandle renderIndices, rhi::TextureViewHandle sceneDepth,
-                                           bool sceneDepthIsDepth, const GpuParticleForwardPlusBindings &forwardPlus)
+                                           bool sceneDepthIsDepth, const GpuParticlePerViewBindings &perView)
 {
-    (void)sceneDepth;
-    (void)sceneDepthIsDepth;
-    (void)forwardPlus;
-    if (!IsValid() || !encoder.IsValid() || !indirectArguments.IsValid())
+    if (!IsValid() || !encoder.IsValid() || !indirectArguments.IsValid() || !m_surface.RefreshMaterialBuffer(false) ||
+        !m_surface.RefreshTextureBindings(false))
         return false;
-    const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
-    const auto group = ResolveBindGroup(renderIndices);
-    if (!pipeline.IsValid() || !group.IsValid())
+    if (m_semantics.softParticles && !sceneDepth.IsValid())
+        return false;
+    const bool usesForwardPlusLighting =
+        pass.target == ShaderCompileTarget::ForwardPlus && m_semantics.receiveSceneLighting;
+    const bool usesPerViewBindings =
+        pass.target == ShaderCompileTarget::Forward || pass.target == ShaderCompileTarget::ForwardPlus;
+    if (usesPerViewBindings && !perView.IsValid())
+        return false;
+    const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass,
+                                              usesPerViewBindings ? perView.layout : rhi::BindingLayoutHandle{});
+    const auto geometryGroup = ResolveGeometryGroup(renderIndices);
+    const auto surfaceGroup = m_surface.ResolveBindGroup(sceneDepth, sceneDepthIsDepth);
+    if (!pipeline.IsValid() || !geometryGroup.IsValid() || !surfaceGroup.IsValid())
         return false;
     auto constants = view;
-    constants.materialTint = ResolveMaterialTint();
+    constants.materialTint = {1.0f, 1.0f, 1.0f, 1.0f};
+    constants.lightingControl[0] = usesForwardPlusLighting ? 1.0f : 0.0f;
+    constants.renderingControl[0] = m_semantics.receiveShadows ? 1.0f : 0.0f;
     constants.renderingControl[1] = m_uvScale;
     constants.renderingControl[2] = m_uvMode == ParticleRibbonUvMode::Repeat ? 1.0f : 0.0f;
     constants.renderingControl[3] = renderIndices.IsValid() && renderIndices != RenderIndexBuffer() ? 1.0f : 0.0f;
     encoder.BindPipeline(pipeline);
-    encoder.BindGroup(pipeline, 0, group);
+    encoder.BindGroup(pipeline, 0, geometryGroup);
+    encoder.BindGroup(pipeline, 1, usesPerViewBindings ? perView.group : m_emptyGroup);
+    encoder.BindGroup(pipeline, 2, surfaceGroup);
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
                           &constants);
     encoder.DrawIndirect(indirectArguments);
@@ -446,8 +492,9 @@ bool ParticleGpuRibbonRenderer::RecordPickingDraw(const rhi::GraphicsCommandEnco
     if (!IsValid() || !encoder.IsValid() || !indirectArguments.IsValid() || ownerObjectId == 0)
         return false;
     const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
-    const auto group = ResolveBindGroup(renderIndices);
-    if (!pipeline.IsValid() || !group.IsValid())
+    const auto geometryGroup = ResolveGeometryGroup(renderIndices);
+    const auto surfaceGroup = m_surface.ResolveBindGroup();
+    if (!pipeline.IsValid() || !geometryGroup.IsValid() || !surfaceGroup.IsValid())
         return false;
     auto constants = view;
     const std::array<uint32_t, 4> objectId = {
@@ -461,7 +508,9 @@ bool ParticleGpuRibbonRenderer::RecordPickingDraw(const rhi::GraphicsCommandEnco
     constants.renderingControl[2] = m_uvMode == ParticleRibbonUvMode::Repeat ? 1.0f : 0.0f;
     constants.renderingControl[3] = renderIndices.IsValid() && renderIndices != RenderIndexBuffer() ? 1.0f : 0.0f;
     encoder.BindPipeline(pipeline);
-    encoder.BindGroup(pipeline, 0, group);
+    encoder.BindGroup(pipeline, 0, geometryGroup);
+    encoder.BindGroup(pipeline, 1, m_emptyGroup);
+    encoder.BindGroup(pipeline, 2, surfaceGroup);
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
                           &constants);
     encoder.DrawIndirect(indirectArguments);
@@ -470,7 +519,8 @@ bool ParticleGpuRibbonRenderer::RecordPickingDraw(const rhi::GraphicsCommandEnco
 
 rhi::GraphicsPipelineHandle
 ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
-                                               const MaterialPassPipelineDescriptor &pass)
+                                               const MaterialPassPipelineDescriptor &pass,
+                                               rhi::BindingLayoutHandle perViewLayout)
 {
     if (!renderTargetLayout.IsValid() || !pass.IsValid() ||
         (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::ForwardPlus &&
@@ -478,20 +528,28 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
         return {};
     const bool picking = pass.target == ShaderCompileTarget::Picking;
     const bool motion = pass.target == ShaderCompileTarget::Motion;
+    const bool usesForwardPlusLighting =
+        pass.target == ShaderCompileTarget::ForwardPlus && m_semantics.receiveSceneLighting;
+    const bool usesPerViewBindings =
+        pass.target == ShaderCompileTarget::Forward || pass.target == ShaderCompileTarget::ForwardPlus;
+    if (usesPerViewBindings && !perViewLayout.IsValid())
+        return {};
     const auto state = picking  ? GpuBillboardMaterialState{3000, false, true, true}
                        : motion ? GpuBillboardMaterialState{3000, false, true, false}
-                                : ResolveMaterialState();
+                                : m_surface.ResolveMaterialState();
     const uint8_t signature = PipelineStateSignature(state);
     const auto found = std::find_if(m_pipelines.begin(), m_pipelines.end(), [&](const auto &entry) {
         return entry.renderTargetLayout == renderTargetLayout && entry.pass == pass &&
-               entry.materialStateSignature == signature;
+               entry.perViewLayout == perViewLayout && entry.materialStateSignature == signature;
     });
     if (found != m_pipelines.end())
         return found->pipeline;
 
     rhi::GraphicsPipelineDesc desc;
     desc.vertexShader = motion ? m_motionVertexShader : m_vertexShader;
-    desc.fragmentShader = picking ? m_pickingFragmentShader : motion ? m_motionFragmentShader : m_fragmentShader;
+    desc.fragmentShader = picking  ? m_pickingFragmentShader
+                          : motion ? m_motionFragmentShader
+                                   : (usesForwardPlusLighting ? m_forwardPlusFragmentShader : m_fragmentShader);
     desc.renderTargetLayout = renderTargetLayout;
     desc.raster.cullMode = rhi::CullMode::None;
     desc.depth.testEnabled = state.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
@@ -503,13 +561,15 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
         desc.colorTargets[index].premultipliedAlpha = state.premultipliedAlpha;
     }
     desc.colorTargetCount = static_cast<uint32_t>(pass.colorFormats.size());
-    desc.bindingLayouts[0] = m_layout;
-    desc.bindingLayoutCount = 1;
+    desc.bindingLayouts[0] = m_geometryLayout;
+    desc.bindingLayouts[1] = usesPerViewBindings ? perViewLayout : m_emptyLayout;
+    desc.bindingLayouts[2] = m_surface.Layout();
+    desc.bindingLayoutCount = 3;
     desc.pushConstantStages = rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment;
     desc.pushConstantBytes = sizeof(GpuParticleViewConstants);
     const auto pipeline = m_device->CreateGraphicsPipeline(desc);
     if (pipeline.IsValid())
-        m_pipelines.push_back({renderTargetLayout, pass, signature, pipeline});
+        m_pipelines.push_back({renderTargetLayout, pass, perViewLayout, signature, pipeline});
     return pipeline;
 }
 

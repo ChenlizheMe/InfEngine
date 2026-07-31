@@ -102,7 +102,9 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
     # Class-level storage for serialized field metadata (same pattern as InxComponent)
     _serialized_fields_: Dict[str, Any] = {}
 
-    _reserved_attrs_ = frozenset({"name"})
+    # Pipeline routing constants describe the implementation and must not be
+    # serialized as user-facing pipeline parameters.
+    _reserved_attrs_ = frozenset({"name", "material_pass"})
 
     # Optional back-reference to owning RenderStack (set when pipeline is
     # created by RenderStack, used to invalidate_graph on param change).

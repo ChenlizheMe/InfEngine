@@ -57,6 +57,11 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .value("COPY", GraphPassType::Copy)
         .value("PRESENT", GraphPassType::Present);
 
+    py::enum_<GraphMaterialFilter>(m, "GraphMaterialFilter", "Shading-model compatibility filter for renderer lists")
+        .value("ALL", GraphMaterialFilter::All)
+        .value("DEFERRED_COMPATIBLE", GraphMaterialFilter::DeferredCompatible)
+        .value("DEFERRED_UNSUPPORTED", GraphMaterialFilter::DeferredUnsupported);
+
     py::enum_<GraphBufferUsage>(m, "GraphBufferUsage", py::arithmetic(), "Allowed uses of a graph buffer")
         .value("NONE", GraphBufferUsage::None)
         .value("STORAGE", GraphBufferUsage::Storage)
@@ -80,6 +85,7 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def(py::init<>())
         .def_readwrite("type", &GraphCommandDesc::type)
         .def_readwrite("material_pass", &GraphCommandDesc::shaderTarget)
+        .def_readwrite("material_filter", &GraphCommandDesc::materialFilter)
         .def_readwrite("queue_min", &GraphCommandDesc::queueMin)
         .def_readwrite("queue_max", &GraphCommandDesc::queueMax)
         .def_readwrite("sort_mode", &GraphCommandDesc::sortMode)

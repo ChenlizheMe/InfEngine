@@ -20,7 +20,7 @@ from Infernux.graph.ramp import (
     Gradient,
 )
 
-from .data_interface import SdfVolume, VectorField
+from .data_interface import MeshResourceBinding, SdfVolume, VectorField
 from .hir import ParticleStage
 from .kernel_ir import (
     KernelParameter,
@@ -72,13 +72,22 @@ layout(push_constant) uniform ViewConstants {
     vec4 alignment_reference;
 } view;
 
-layout(location = 0) out vec4 out_color;
-layout(location = 1) out vec2 out_uv;
-layout(location = 2) out vec3 out_world_position;
-layout(location = 3) out vec3 out_world_normal;
-layout(location = 4) out float out_view_depth;
+layout(location = 0) out vec3 out_world_position;
+layout(location = 1) out vec3 out_world_normal;
+layout(location = 2) out vec4 out_tangent;
+layout(location = 3) out vec3 out_color;
+layout(location = 4) out vec2 out_uv;
+layout(location = 5) out float out_view_depth;
+layout(location = 9) out vec2 out_particle_local_uv;
+layout(location = 10) out vec2 out_particle_next_uv;
+layout(location = 11) out float out_particle_blend;
+layout(location = 12) out float out_particle_age;
+layout(location = 13) flat out uint out_particle_id;
+layout(location = 14) out float out_particle_alpha;
 #ifdef INX_PARTICLE_MOTION_PASS
 layout(location = 15) out vec2 out_motion;
+#else
+layout(location = 15) flat out uint out_layer_mask;
 #endif
 
 const vec2 corners[6] = vec2[](
@@ -139,17 +148,26 @@ void main() {
         (billboard_right * corner.x * instance.scale_custom.x +
          billboard_up * corner.y * instance.scale_custom.y) * instance.position_size.w;
     gl_Position = view.view_projection * vec4(world_position, 1.0);
-    out_color = instance.color;
-    vec2 flipbook_grid = max(view.rendering_control.zw, vec2(1.0));
-    float flipbook_count = flipbook_grid.x * flipbook_grid.y;
-    float flipbook_frame = mod(floor(max(instance.custom_data.x, 0.0)), flipbook_count);
-    vec2 flipbook_cell = vec2(
-        mod(flipbook_frame, flipbook_grid.x),
-        floor(flipbook_frame / flipbook_grid.x));
-    out_uv = (uvs[gl_VertexIndex % 6] + flipbook_cell) / flipbook_grid;
     out_world_position = world_position;
     out_world_normal = normalize(cross(billboard_right, billboard_up));
+    out_tangent = vec4(normalize(billboard_right), 1.0);
+    out_color = instance.color.rgb;
+    vec2 flipbook_grid = max(view.rendering_control.zw, vec2(1.0));
+    float flipbook_count = flipbook_grid.x * flipbook_grid.y;
+    float frame_position = mod(max(instance.custom_data.x, 0.0), flipbook_count);
+    float flipbook_frame = floor(frame_position);
+    float next_frame = mod(flipbook_frame + 1.0, flipbook_count);
+    vec2 local_uv = uvs[gl_VertexIndex % 6];
+    vec2 flipbook_cell = vec2(mod(flipbook_frame, flipbook_grid.x), floor(flipbook_frame / flipbook_grid.x));
+    vec2 next_flipbook_cell = vec2(mod(next_frame, flipbook_grid.x), floor(next_frame / flipbook_grid.x));
+    out_uv = (local_uv + flipbook_cell) / flipbook_grid;
     out_view_depth = gl_Position.w;
+    out_particle_local_uv = local_uv;
+    out_particle_next_uv = (local_uv + next_flipbook_cell) / flipbook_grid;
+    out_particle_blend = fract(frame_position);
+    out_particle_age = clamp(instance.scale_custom.w, 0.0, 1.0);
+    out_particle_id = instance.ribbon_data.w;
+    out_particle_alpha = instance.color.a;
 #ifdef INX_PARTICLE_MOTION_PASS
     vec3 previous_world_position = instance.previous_position_history.xyz +
         (world_position - instance.position_size.xyz);
@@ -157,6 +175,8 @@ void main() {
     vec2 current_ndc = gl_Position.xy / max(abs(gl_Position.w), 1e-6);
     vec2 previous_ndc = previous_clip.xy / max(abs(previous_clip.w), 1e-6);
     out_motion = (current_ndc - previous_ndc) * vec2(0.5, -0.5);
+#else
+    out_layer_mask = floatBitsToUint(view.lighting_control.w);
 #endif
 }
 """
@@ -167,13 +187,14 @@ def _motion_vertex_source(source: str) -> str:
 
 
 _BILLBOARD_MOTION_FRAGMENT_GLSL = """#version 450
-layout(location = 0) in vec4 in_color;
-layout(location = 1) in vec2 in_uv;
+layout(location = 3) in vec3 in_color;
+layout(location = 4) in vec2 in_uv;
+layout(location = 14) in float in_alpha;
 layout(location = 15) in vec2 in_motion;
 layout(location = 0) out vec2 out_motion;
 layout(set = 0, binding = 2) uniform sampler2D texSampler;
 void main() {
-    if ((texture(texSampler, in_uv) * in_color).a <= 0.0001) discard;
+    if (texture(texSampler, in_uv).a * in_alpha <= 0.0001) discard;
     out_motion = in_motion;
 }
 """
@@ -581,7 +602,7 @@ layout(location = 0) in vec4 in_color;
 layout(location = 1) in vec2 in_uv;
 layout(location = 2) in vec3 in_world_position;
 layout(location = 3) in vec3 in_world_normal;
-layout(location = 4) in float in_view_depth;
+layout(location = 5) in float in_view_depth;
 layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 2) uniform sampler2D texSampler;
@@ -690,12 +711,21 @@ layout(push_constant) uniform ViewConstants {
     vec4 alignment_reference;
 } view;
 
-layout(location = 0) out vec4 out_color;
+#ifndef INX_PARTICLE_MOTION_PASS
+layout(location = 0) out vec3 out_world_position;
 layout(location = 1) out vec3 out_normal;
-layout(location = 2) out vec2 out_uv;
-layout(location = 3) out vec3 out_world_position;
-layout(location = 4) out float out_view_depth;
-#ifdef INX_PARTICLE_MOTION_PASS
+layout(location = 2) out vec4 out_tangent;
+layout(location = 3) out vec3 out_color;
+layout(location = 4) out vec2 out_uv;
+layout(location = 5) out float out_view_depth;
+layout(location = 9) out vec2 out_particle_local_uv;
+layout(location = 10) out vec2 out_particle_next_uv;
+layout(location = 11) out float out_particle_blend;
+layout(location = 12) out float out_particle_age;
+layout(location = 13) flat out uint out_particle_id;
+layout(location = 14) out float out_particle_alpha;
+layout(location = 15) flat out uint out_layer_mask;
+#else
 layout(location = 15) out vec2 out_motion;
 #endif
 
@@ -728,7 +758,7 @@ void main() {
     vec3 inverse_scale = sign(particle_scale) / max(abs(particle_scale), vec3(1e-6));
     vec3 transformed_normal = rotation * (vertex.normal.xyz * inverse_scale);
     float normal_length_squared = dot(transformed_normal, transformed_normal);
-    out_normal = normal_length_squared > 1e-12
+    vec3 surface_normal = normal_length_squared > 1e-12
         ? transformed_normal * inversesqrt(normal_length_squared)
         : vec3(0.0, 1.0, 0.0);
     vec4 unbiassed_clip = view.view_projection * vec4(world_position, 1.0);
@@ -740,18 +770,30 @@ void main() {
             ? clamp(abs(unbiassed_clip.w) / max(view.camera_up.w, 0.000001), 0.001, 1.0)
             : 1.0;
         float world_texel = max(view.camera_up.z * perspective_scale, 0.000001);
-        float normal_scale = 1.0 - clamp(dot(out_normal, to_light), 0.0, 1.0);
+        float normal_scale = 1.0 - clamp(dot(surface_normal, to_light), 0.0, 1.0);
         world_position -= to_light * (view.camera_up.x * world_texel);
-        world_position -= out_normal * (view.camera_up.y * world_texel * normal_scale);
+        world_position -= surface_normal * (view.camera_up.y * world_texel * normal_scale);
     }
     gl_Position = view.view_projection * vec4(world_position, 1.0);
     if (view.rendering_control.y > 0.5 && view.camera_right.w < 0.5) {
         gl_Position.z = max(gl_Position.z, 0.0);
     }
-    out_color = instance.color * vertex.color;
+    vec4 particle_color = instance.color * vertex.color;
+#ifndef INX_PARTICLE_MOTION_PASS
+    out_normal = surface_normal;
+    out_color = particle_color.rgb;
+    out_tangent = vec4(rotation * vertex.tangent.xyz, vertex.tangent.w);
     out_uv = vertex.uv.xy;
     out_world_position = world_position;
     out_view_depth = gl_Position.w;
+    out_particle_local_uv = vertex.uv.xy;
+    out_particle_next_uv = vertex.uv.xy;
+    out_particle_blend = 0.0;
+    out_particle_age = clamp(instance.scale_custom.w, 0.0, 1.0);
+    out_particle_id = instance.ribbon_data.w;
+    out_particle_alpha = particle_color.a;
+    out_layer_mask = floatBitsToUint(view.lighting_control.w);
+#endif
 #ifdef INX_PARTICLE_MOTION_PASS
     vec3 previous_world_position = instance.previous_position_history.xyz +
         (world_position - instance.position_size.xyz);
@@ -770,11 +812,12 @@ void main() { out_motion = in_motion; }
 """
 
 _MESH_FRAGMENT_GLSL = """#version 450
+void main() {}
+"""
 
-layout(location = 0) in vec4 in_color;
-layout(location = 1) in vec3 in_normal;
-layout(location = 2) in vec2 in_uv;
-layout(location = 0) out vec4 out_color;
+_MESH_PICKING_FRAGMENT_GLSL = """#version 450
+layout(location = 14) in float in_particle_alpha;
+layout(location = 0) out uvec2 out_object_id;
 
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
@@ -789,7 +832,8 @@ layout(push_constant) uniform ViewConstants {
 } view;
 
 void main() {
-    out_color = in_color * view.material_tint;
+    if (!(in_particle_alpha > 0.0)) discard;
+    out_object_id = uvec2(floatBitsToUint(view.material_tint.x), floatBitsToUint(view.material_tint.y));
 }
 """
 
@@ -874,9 +918,13 @@ class GpuParticleEmitterSource:
     attribute_fields: tuple[tuple[str, str, str, int, int], ...]
     state_stride: int
     event_type_count: int
+    collision_enabled: bool
     bootstrap: str
     init: str
     update: str
+    contact_prepare: str
+    contact_solve: str
+    contact_dispatch: str
     render_reset: str
     rendering: str
     continuation: GpuParticleContinuationSource | None
@@ -888,6 +936,9 @@ class GpuParticleEmitterSource:
             "bootstrap": self.bootstrap,
             "init": self.init,
             "update": self.update,
+            "contact_prepare": self.contact_prepare,
+            "contact_solve": self.contact_solve,
+            "contact_dispatch": self.contact_dispatch,
             "render_reset": self.render_reset,
             "rendering": self.rendering,
         }
@@ -908,6 +959,7 @@ class GpuParticleEmitterSource:
             ],
             "state_stride": self.state_stride,
             "event_type_count": self.event_type_count,
+            "collision_enabled": self.collision_enabled,
             "data_interfaces": [dict(value) for value in self.data_interfaces],
             "data_interface_layout": dict(self.data_interface_layout),
             "continuation": (
@@ -964,6 +1016,10 @@ class GpuParticleGlslLowerer:
         emitter_index: int,
     ) -> GpuParticleEmitterSource:
         fields = _attribute_fields(emitter)
+        collision_enabled = any(
+            instruction.opcode == "collide_scene"
+            for instruction in emitter.update.instructions
+        )
         attribute_layout, state_stride = _std430_attribute_layout(fields)
         event_type_count = len(events.event_types)
         parameter_slots, _parameter_slot_count = _parameter_slot_layout(parameters)
@@ -977,6 +1033,13 @@ class GpuParticleGlslLowerer:
             emitter.random_seed,
             data_interface_layout,
             parameter_slots,
+        )
+        update_prelude = _shader_prelude(
+            fields,
+            emitter.random_seed,
+            data_interface_layout,
+            parameter_slots,
+            contact_enabled=collision_enabled,
         )
         continuation_lane_indices = {
             stable_id: index
@@ -997,6 +1060,9 @@ class GpuParticleGlslLowerer:
         )
         update_flows = tuple(
             flow for flow in emitter.flows if flow.kernel_stage is KernelStage.UPDATE
+        )
+        contact_flows = tuple(
+            flow for flow in emitter.flows if flow.kernel_stage is KernelStage.CONTACT
         )
         rendering_flows = tuple(
             flow
@@ -1025,6 +1091,22 @@ class GpuParticleGlslLowerer:
             continuation_join_indices=continuation_join_indices,
             entry_guard="state.update_resume_step != pc.simulation_step",
         ).compile(emitter.update, update_flows)
+        contact_body, _ = _StageCompiler(
+            emitter,
+            fields,
+            data_interface_layout,
+            events,
+            emitter_index,
+            parameter_slots=parameter_slots,
+            continuation_lane_indices=continuation_lane_indices,
+            continuation_join_indices=continuation_join_indices,
+            flow_entry_guards={
+                (ParticleStage.COLLISION_ENTER, ""): "inx_contact_lifecycle == 0u",
+                (ParticleStage.COLLISION_STAY, ""): "inx_contact_lifecycle == 1u",
+                (ParticleStage.COLLISION_EXIT, ""): "inx_contact_lifecycle == 2u",
+            },
+            force_flow_aware=bool(contact_flows),
+        ).compile(emitter.contact, contact_flows)
         rendering_body, exports = _StageCompiler(
             emitter,
             fields,
@@ -1055,6 +1137,30 @@ class GpuParticleGlslLowerer:
         continuation_bindings = (
             _continuation_bindings_glsl(5) if continuation is not None else ""
         )
+        contact_continuation_bindings = (
+            _continuation_bindings_glsl(5, contact_context=True)
+            if continuation is not None
+            else ""
+        )
+        contact_prepare = (
+            update_prelude + _contact_prepare_main()
+            if collision_enabled
+            else prelude + _empty_compute_main()
+        )
+        contact_solve = (
+            update_prelude + _contact_solve_main()
+            if collision_enabled
+            else prelude + _empty_compute_main()
+        )
+        contact_dispatch = (
+            update_prelude
+            + contact_continuation_bindings
+            + _contact_dispatch_main(
+                contact_body, emitter, fields, has_continuation=continuation is not None
+            )
+            if collision_enabled
+            else prelude + _empty_compute_main()
+        )
         return GpuParticleEmitterSource(
             emitter.stable_id,
             kernel_hash,
@@ -1064,9 +1170,15 @@ class GpuParticleGlslLowerer:
             ),
             state_stride,
             event_type_count,
+            collision_enabled,
             bootstrap,
             prelude + continuation_bindings + _init_main(init_body, emitter, fields),
-            prelude + continuation_bindings + _update_main(update_body, emitter, fields),
+            update_prelude
+            + continuation_bindings
+            + _update_main(update_body, emitter, fields),
+            contact_prepare,
+            contact_solve,
+            contact_dispatch,
             prelude + _render_reset_main(),
             prelude + continuation_bindings + _rendering_main(rendering_body, exports),
             continuation,
@@ -1113,6 +1225,28 @@ def _compile_cached_graphics(
             _SPIRV_DESCRIPTOR_CACHE[key] = descriptor
         result[stage] = dict(descriptor)
     return result
+
+
+def _particle_graphics_abi_hash() -> str:
+    sources = (
+        ("billboard.vertex", _BILLBOARD_VERTEX_GLSL),
+        ("billboard.picking_fragment", _BILLBOARD_PICKING_FRAGMENT_GLSL),
+        ("billboard.motion_vertex", _motion_vertex_source(_BILLBOARD_VERTEX_GLSL)),
+        ("billboard.motion_fragment", _BILLBOARD_MOTION_FRAGMENT_GLSL),
+        ("mesh.vertex", _MESH_VERTEX_GLSL),
+        ("mesh.shadow_fragment", _MESH_FRAGMENT_GLSL),
+        ("mesh.picking_fragment", _MESH_PICKING_FRAGMENT_GLSL),
+        ("mesh.motion_vertex", _motion_vertex_source(_MESH_VERTEX_GLSL)),
+        ("mesh.motion_fragment", _MESH_MOTION_FRAGMENT_GLSL),
+    )
+    digest = hashlib.sha256()
+    digest.update(b"infernux.particle.graphics-abi\0vulkan1.2-spirv1.5\0")
+    for name, source in sources:
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(source.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, Any]:
@@ -1184,14 +1318,12 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
         emitters.append(
             {
                 "stable_id": emitter.stable_id,
+                "collision_enabled": emitter.collision_enabled,
                 "stages": stages,
                 "continuation": continuation,
             }
         )
-    graphics_sources = {
-        "vertex": _BILLBOARD_VERTEX_GLSL,
-        "fragment": _BILLBOARD_FRAGMENT_GLSL,
-    }
+    graphics_sources = {"vertex": _BILLBOARD_VERTEX_GLSL}
     graphics_keys = {
         stage: hashlib.sha256(
             (f"vulkan1.2-spirv1.5\0{stage}\0" + source).encode("utf-8")
@@ -1258,32 +1390,6 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
         _SPIRV_DESCRIPTOR_CACHE[picking_key] = picking_descriptor
     billboard["picking_fragment"] = dict(picking_descriptor)
 
-    billboard_forward_plus_key = hashlib.sha256(
-        (
-            "vulkan1.2-spirv1.5\0fragment\0"
-            + _BILLBOARD_FORWARD_PLUS_FRAGMENT_GLSL
-        ).encode("utf-8")
-    ).hexdigest()
-    billboard_forward_plus = _SPIRV_DESCRIPTOR_CACHE.get(
-        billboard_forward_plus_key
-    )
-    if billboard_forward_plus is None:
-        compiled = native._compile_graphics_glsl_batch(
-            {"fragment": _BILLBOARD_FORWARD_PLUS_FRAGMENT_GLSL},
-            "particle:builtin-billboard-forward-plus",
-        )
-        binary = bytes(compiled.get("fragment", b""))
-        if len(binary) < 20 or int.from_bytes(binary[:4], "little") != 0x07230203:
-            raise GpuParticleCompileError(
-                "engine graphics compiler returned invalid particle Forward+ billboard SPIR-V"
-            )
-        billboard_forward_plus = {
-            "byte_size": len(binary),
-            "sha256": hashlib.sha256(binary).hexdigest(),
-            "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
-        }
-        _SPIRV_DESCRIPTOR_CACHE[billboard_forward_plus_key] = billboard_forward_plus
-    billboard["forward_plus_fragment"] = dict(billboard_forward_plus)
     billboard_motion = _compile_cached_graphics(
         native,
         {
@@ -1335,31 +1441,29 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
             }
             _SPIRV_DESCRIPTOR_CACHE[key] = descriptor
         mesh[stage] = dict(descriptor)
-    mesh["picking_fragment"] = dict(picking_descriptor)
-
-    mesh_forward_plus_key = hashlib.sha256(
-        ("vulkan1.2-spirv1.5\0fragment\0" + _MESH_FORWARD_PLUS_FRAGMENT_GLSL).encode(
-            "utf-8"
-        )
+    mesh["shadow_fragment"] = mesh.pop("fragment")
+    mesh_picking_key = hashlib.sha256(
+        ("vulkan1.2-spirv1.5\0fragment\0" + _MESH_PICKING_FRAGMENT_GLSL).encode("utf-8")
     ).hexdigest()
-    mesh_forward_plus = _SPIRV_DESCRIPTOR_CACHE.get(mesh_forward_plus_key)
-    if mesh_forward_plus is None:
-        compiled = native._compile_graphics_glsl_batch(
-            {"fragment": _MESH_FORWARD_PLUS_FRAGMENT_GLSL},
-            "particle:builtin-mesh-forward-plus",
+    mesh_picking_descriptor = _SPIRV_DESCRIPTOR_CACHE.get(mesh_picking_key)
+    if mesh_picking_descriptor is None:
+        compiled_mesh_picking = native._compile_graphics_glsl_batch(
+            {"fragment": _MESH_PICKING_FRAGMENT_GLSL},
+            "particle:builtin-mesh-picking",
         )
-        binary = bytes(compiled.get("fragment", b""))
+        binary = bytes(compiled_mesh_picking.get("fragment", b""))
         if len(binary) < 20 or int.from_bytes(binary[:4], "little") != 0x07230203:
             raise GpuParticleCompileError(
-                "engine graphics compiler returned invalid particle Forward+ mesh SPIR-V"
+                "engine graphics compiler returned invalid particle mesh picking SPIR-V"
             )
-        mesh_forward_plus = {
+        mesh_picking_descriptor = {
             "byte_size": len(binary),
             "sha256": hashlib.sha256(binary).hexdigest(),
             "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
         }
-        _SPIRV_DESCRIPTOR_CACHE[mesh_forward_plus_key] = mesh_forward_plus
-    mesh["forward_plus_fragment"] = dict(mesh_forward_plus)
+        _SPIRV_DESCRIPTOR_CACHE[mesh_picking_key] = mesh_picking_descriptor
+    mesh["picking_fragment"] = dict(mesh_picking_descriptor)
+
     mesh_motion = _compile_cached_graphics(
         native,
         {
@@ -1374,6 +1478,7 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
     return {
         "$schema": "infernux.particle_gpu_spirv",
         "target": "vulkan1.2-spirv1.5",
+        "graphics_abi_hash": _particle_graphics_abi_hash(),
         "kernel_hash": program.kernel_hash,
         "parameters": [parameter.to_dict() for parameter in program.parameters],
         "parameter_words": list(pack_gpu_particle_parameters(program.parameters)),
@@ -1390,6 +1495,7 @@ def validate_gpu_particle_spirv(
     expected_top = {
         "$schema",
         "target",
+        "graphics_abi_hash",
         "kernel_hash",
         "parameters",
         "parameter_words",
@@ -1402,6 +1508,7 @@ def validate_gpu_particle_spirv(
     if (
         value["$schema"] != "infernux.particle_gpu_spirv"
         or value["target"] != "vulkan1.2-spirv1.5"
+        or value["graphics_abi_hash"] != _particle_graphics_abi_hash()
         or value["kernel_hash"] != program.kernel_hash
         or value["parameters"] != [parameter.to_dict() for parameter in program.parameters]
         or value["parameter_words"] != list(pack_gpu_particle_parameters(program.parameters))
@@ -1411,25 +1518,30 @@ def validate_gpu_particle_spirv(
         raise GpuParticleCompileError("particle GPU SPIR-V header is incompatible")
     billboard = value["billboard"]
     if type(billboard) is not dict or set(billboard) != {
-        "vertex", "fragment", "forward_plus_fragment", "picking_fragment",
-        "motion_vertex", "motion_fragment",
+        "vertex", "picking_fragment", "motion_vertex", "motion_fragment",
     }:
         raise GpuParticleCompileError("particle GPU billboard binary is incomplete")
     mesh = value["mesh"]
     if type(mesh) is not dict or set(mesh) != {
-        "vertex", "fragment", "forward_plus_fragment", "picking_fragment",
-        "motion_vertex", "motion_fragment",
+        "vertex", "shadow_fragment", "picking_fragment", "motion_vertex",
+        "motion_fragment",
     }:
         raise GpuParticleCompileError("particle GPU mesh binary is incomplete")
     for encoded, source in zip(value["emitters"], program.emitters):
         if type(encoded) is not dict or set(encoded) != {
             "stable_id",
+            "collision_enabled",
             "stages",
             "continuation",
         }:
             raise GpuParticleCompileError("particle GPU emitter binary entry is invalid")
         stages = encoded["stages"]
-        if encoded["stable_id"] != source.stable_id or type(stages) is not dict:
+        if (
+            encoded["stable_id"] != source.stable_id
+            or type(encoded["collision_enabled"]) is not bool
+            or encoded["collision_enabled"] != source.collision_enabled
+            or type(stages) is not dict
+        ):
             raise GpuParticleCompileError("particle GPU emitter binary identity is invalid")
         if set(stages) != set(source.stages()):
             raise GpuParticleCompileError("particle GPU emitter binary stages are incomplete")
@@ -1544,6 +1656,7 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
         raise GpuParticleCompileError("particle GPU continuation payload is invalid")
     return {
         "stable_id": emitter.get("stable_id", ""),
+        "collision_enabled": emitter.get("collision_enabled"),
         "parameters": parameters,
         "parameter_words": parameter_words,
         "continuation": (
@@ -1589,6 +1702,8 @@ class _StageCompiler:
         | None = None,
         existing_continuation_lane: int | None = None,
         entry_guard: str = "true",
+        flow_entry_guards: Mapping[tuple[ParticleStage, str], str] | None = None,
+        force_flow_aware: bool = False,
     ) -> None:
         self._emitter = emitter
         self._fields = {stable_id: (value_type, field) for stable_id, value_type, field in fields}
@@ -1602,11 +1717,17 @@ class _StageCompiler:
         self._continuation_join_indices = dict(continuation_join_indices or {})
         self._existing_continuation_lane = existing_continuation_lane
         self._entry_guard = str(entry_guard)
+        self._flow_entry_guards = dict(flow_entry_guards or {})
+        self._force_flow_aware = bool(force_flow_aware)
         self._active_lane_var: str | None = None
         self._suspension_join_contexts: dict[str, tuple[int, int]] = {}
         self._volume_interfaces = {
             interface["stable_id"]: interface["interface_index"]
             for interface in data_interface_layout.get("volume_interfaces", ())
+        }
+        self._mesh_interfaces = {
+            interface["stable_id"]: interface["interface_index"]
+            for interface in data_interface_layout.get("mesh_interfaces", ())
         }
         self._texture_parameters = {
             parameter["stable_id"]: parameter
@@ -1618,10 +1739,13 @@ class _StageCompiler:
         function: ParticleKernelFunction,
         flows=(),
     ) -> tuple[str, dict[str, str]]:
-        if self._continuation_lane_indices and any(
-            instruction.opcode
-            in {"suspend_frames", "suspend_seconds", "until_frames", "until_seconds"}
-            for instruction in function.instructions
+        if self._force_flow_aware or (
+            self._continuation_lane_indices
+            and any(
+                instruction.opcode
+                in {"suspend_frames", "suspend_seconds", "until_frames", "until_seconds"}
+                for instruction in function.instructions
+            )
         ):
             self._compile_flow_aware(function, tuple(flows))
         else:
@@ -1746,7 +1870,13 @@ class _StageCompiler:
         entries.sort(key=lambda item: (item[0], item[1], item[2]))
         for flow_index, flow in enumerate(flows):
             for lane in flow.lanes:
-                initial = self._entry_guard if lane.index == 0 else "false"
+                initial = (
+                    self._flow_entry_guards.get(
+                        (flow.lifecycle_stage, flow.flow_id), self._entry_guard
+                    )
+                    if lane.index == 0
+                    else "false"
+                )
                 guards = []
                 for runtime_lane in sorted(
                     lane_waits.get((flow_index, lane.index), ())
@@ -2102,9 +2232,6 @@ class _StageCompiler:
         elif opcode == "load_attribute":
             value_type, field = self._field(immediate["attribute"])
             expression = f"state.{field}"
-            if value_type.value_type is ValueType.TEXTURE2D:
-                self._values[instruction.result_id] = expression
-                return
             if value_type.value_type is ValueType.BOOL:
                 expression = f"({expression} != 0u)"
         elif opcode == "load_uniform":
@@ -2295,6 +2422,8 @@ class _StageCompiler:
             return
         elif opcode == "normalize":
             expression = f"inx_safe_normalize({operands[0]})"
+        elif opcode == "target_position_velocity":
+            expression = f"inx_target_position_velocity({', '.join(operands)})"
         elif opcode == "random_f32":
             expression = (
                 f"inx_random_range({operands[0]}, {operands[1]}, {operands[2]}, "
@@ -2344,6 +2473,25 @@ class _StageCompiler:
                     f"uvec3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), "
                     f"state.{self._field('builtin.id')[1]}, state.spawn_generation))"
                 )
+            elif immediate["shape"] == "sdf":
+                if mode != "position":
+                    raise GpuParticleCompileError(
+                        "automatic SDF emitter shape only samples particle position"
+                    )
+                stable_id = immediate["sdf_interface"]
+                try:
+                    sample_index = self._volume_interfaces[stable_id]
+                except KeyError as exc:
+                    raise GpuParticleCompileError(
+                        f"GPU SDF emitter shape layout is missing {stable_id!r}"
+                    ) from exc
+                expression = (
+                    f"inx_sample_sdf_shape_position_{sample_index}("
+                    "inx_shape_random("
+                    f"uvec3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), "
+                    f"state.{self._field('builtin.id')[1]}, state.spawn_generation), "
+                    f"{'true' if str(immediate['sdf_mode']) == 'surface' else 'false'})"
+                )
             else:
                 expression = (
                     f"inx_sample_shape_{mode}({_shape_kind(immediate['shape'])}u, "
@@ -2362,6 +2510,28 @@ class _StageCompiler:
                     f"GPU vector field sample layout is missing {stable_id!r}"
                 ) from exc
             expression = f"inx_sample_vector_field_{sample_index}({operands[0]})"
+        elif opcode in {"sample_sdf_distance", "sample_sdf_gradient"}:
+            stable_id = immediate["interface"]
+            try:
+                sample_index = self._volume_interfaces[stable_id]
+            except KeyError as exc:
+                raise GpuParticleCompileError(
+                    f"GPU SDF sample layout is missing {stable_id!r}"
+                ) from exc
+            expression = f"inx_{opcode}_{sample_index}({operands[0]})"
+        elif opcode == "sample_mesh":
+            stable_id = immediate["interface"]
+            try:
+                sample_index = self._mesh_interfaces[stable_id]
+            except KeyError as exc:
+                raise GpuParticleCompileError(
+                    f"GPU Mesh resource sample layout is missing {stable_id!r}"
+                ) from exc
+            expression = (
+                f"inx_sample_mesh_{sample_index}({operands[0]}, "
+                f"INX_MESH_SAMPLE_{str(immediate['mode']).upper()})."
+                f"{str(immediate['output'])}"
+            )
         elif opcode == "convert_space":
             expression = _space_conversion(operands[0], result_type, immediate)
         elif opcode == "store_attribute":
@@ -2656,7 +2826,7 @@ def _data_interface_layout(
             layout,
         )
     )
-    layout["mesh_shape"] = _mesh_shape_layout(emitter, layout)
+    layout["mesh_interfaces"] = _mesh_interface_layout(emitter)
     return layout
 
 
@@ -2673,7 +2843,12 @@ def _texture_parameter_layout(
     }
     sampled = set()
     texture_sampling = False
-    for function in (emitter.init, emitter.update, emitter.rendering):
+    for function in (
+        emitter.init,
+        emitter.update,
+        emitter.contact,
+        emitter.rendering,
+    ):
         for instruction in function.instructions:
             if instruction.opcode == "sample_texture2d":
                 texture_sampling = True
@@ -2726,20 +2901,73 @@ def _mesh_shape_instruction(emitter: ParticleEmitterKernelIR):
     )
 
 
-def _mesh_shape_layout(
-    emitter: ParticleEmitterKernelIR, layout: Mapping[str, Any]
-) -> dict[str, Any] | None:
-    instruction = _mesh_shape_instruction(emitter)
-    if instruction is None:
-        return None
-    immediate = instruction.immediate_dict()
-    return {
-        "mesh": dict(immediate["mesh"]),
-        "mode": immediate["mesh_mode"],
-        "metadata_offset": 0,
-        "vertex_binding": 14,
-        "triangle_binding": 15,
+def _mesh_interface_layout(emitter: ParticleEmitterKernelIR) -> list[dict[str, Any]]:
+    interfaces = {
+        interface.stable_id: interface
+        for interface in emitter.data_interfaces
+        if isinstance(interface, MeshResourceBinding)
     }
+    sampled = set()
+    for function in (emitter.init, emitter.update, emitter.contact, emitter.rendering):
+        for sample in function.instructions:
+            if sample.opcode != "sample_mesh":
+                continue
+            stable_id = str(sample.immediate_dict()["interface"])
+            if stable_id not in interfaces:
+                raise GpuParticleCompileError(
+                    f"GPU kernel references unknown Mesh resource binding {stable_id!r}"
+                )
+            sampled.add(stable_id)
+
+    result: list[dict[str, Any]] = []
+    instruction = _mesh_shape_instruction(emitter)
+    if instruction is not None:
+        immediate = instruction.immediate_dict()
+        result.append(
+            {
+                "stable_id": "__emitter_shape_mesh",
+                "name": "Emitter Shape Mesh",
+                "mesh": dict(immediate["mesh"]),
+                "space": immediate["shape_space"],
+                "mesh_to_space": [
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                    0.0, 0.0, 0.0, 1.0,
+                ],
+                "interface_index": 0,
+                "metadata_offset": 0,
+                "vertex_binding": 1,
+                "triangle_binding": 2,
+                "influence_binding": 3,
+                "palette_binding": 4,
+                "shape_mode": immediate["mesh_mode"],
+            }
+        )
+    for stable_id in sorted(sampled):
+        interface = interfaces[stable_id]
+        index = len(result)
+        if index >= 7:
+            raise GpuParticleCompileError(
+                "GPU particle emitters support at most seven Mesh resource bindings"
+            )
+        result.append(
+            {
+                "stable_id": stable_id,
+                "name": interface.name,
+                "mesh": interface.mesh.to_dict(),
+                "mesh_parameter": interface.mesh_parameter,
+                "space": interface.space.value,
+                "mesh_to_space": list(interface.mesh_to_space),
+                "interface_index": index,
+                "metadata_offset": index * 32,
+                "vertex_binding": index * 4 + 1,
+                "triangle_binding": index * 4 + 2,
+                "influence_binding": index * 4 + 3,
+                "palette_binding": index * 4 + 4,
+            }
+        )
+    return result
 
 
 def _volume_interface_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
@@ -2754,10 +2982,17 @@ def _volume_interface_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]
         if isinstance(interface, SdfVolume)
     }
     sampled: dict[str, str] = {}
-    for function in (emitter.init, emitter.update, emitter.rendering):
+    for function in (
+        emitter.init,
+        emitter.update,
+        emitter.contact,
+        emitter.rendering,
+    ):
         for instruction in function.instructions:
             if instruction.opcode != "sample_vector_field":
                 if instruction.opcode not in {
+                    "sample_sdf_distance",
+                    "sample_sdf_gradient",
                     "collide_sdf_position",
                     "collide_sdf_velocity",
                 }:
@@ -2775,6 +3010,22 @@ def _volume_interface_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]
                     f"GPU kernel references unknown vector field interface {stable_id!r}"
                 )
             sampled[stable_id] = "vector_field"
+    sdf_shape = next(
+        (
+            instruction
+            for instruction in emitter.init.instructions
+            if instruction.opcode == "sample_shape_position"
+            and instruction.immediate_dict()["shape"] == "sdf"
+        ),
+        None,
+    )
+    if sdf_shape is not None:
+        stable_id = str(sdf_shape.immediate_dict()["sdf_interface"])
+        if stable_id not in sdf_interfaces:
+            raise GpuParticleCompileError(
+                f"GPU SDF emitter shape references unknown interface {stable_id!r}"
+            )
+        sampled[stable_id] = "sdf"
     if len(sampled) > 15:
         raise GpuParticleCompileError(
             "GPU particle emitters currently support at most fifteen sampled volume interfaces"
@@ -2840,7 +3091,6 @@ _STD430_STORAGE_LAYOUT = {
     ValueType.COLOR: (16, 16),
     ValueType.MAT3: (16, 48),
     ValueType.MAT4: (16, 64),
-    ValueType.TEXTURE2D: (4, 4),
 }
 
 
@@ -3010,8 +3260,6 @@ def _pack_std430_default(
             )
     elif kind is ValueType.MAT4:
         struct.pack_into("<16f", destination, offset, *(float(item) for item in value))
-    elif kind is ValueType.TEXTURE2D:
-        struct.pack_into("<I", destination, offset, 0)
     else:
         raise GpuParticleCompileError(
             f"GPU particle default for {kind.value!r} has no std430 encoding"
@@ -3019,65 +3267,128 @@ def _pack_std430_default(
 
 
 def _mesh_shape_glsl(layout: dict[str, Any]) -> str:
-    mesh_shape = layout.get("mesh_shape")
-    if mesh_shape is None:
+    interfaces = layout.get("mesh_interfaces", ())
+    if not interfaces:
         return ""
     lines = [
         "layout(std430, set = 1, binding = 0) readonly buffer "
-        "InxParticleDataMetadata { uint inx_particle_data_meta[]; };"
+        "InxParticleDataMetadata { uint inx_particle_data_meta[]; };",
+        "const uint INX_MESH_SAMPLE_VERTEX = 0u;",
+        "const uint INX_MESH_SAMPLE_EDGE = 1u;",
+        "const uint INX_MESH_SAMPLE_SURFACE = 2u;",
+        "struct InxMeshVertex {",
+        "    vec4 position; vec4 normal; vec4 tangent; vec4 color; vec4 uv;",
+        "};",
+        "struct InxMeshSkinInfluence { uvec4 bones; vec4 weights; };",
+        "struct InxMeshSample {",
+        "    vec3 position; vec3 normal; vec4 tangent; vec2 uv; vec3 barycentric;",
+        "};",
     ]
-    if mesh_shape is not None:
-        metadata = int(mesh_shape["metadata_offset"])
-        vertex_binding = int(mesh_shape["vertex_binding"])
-        triangle_binding = int(mesh_shape["triangle_binding"])
+    for interface in interfaces:
+        index = int(interface["interface_index"])
+        metadata = int(interface["metadata_offset"])
+        vertex_binding = int(interface["vertex_binding"])
+        triangle_binding = int(interface["triangle_binding"])
+        influence_binding = int(interface["influence_binding"])
+        palette_binding = int(interface["palette_binding"])
         lines.extend(
             (
-                "struct InxMeshShapeVertex {",
-                "    vec4 position; vec4 normal; vec4 tangent; vec4 color; vec4 uv;",
-                "};",
-                f"layout(std430, set = 1, binding = {vertex_binding}) readonly buffer InxMeshShapeVertices {{ InxMeshShapeVertex inx_mesh_shape_vertices[]; }};",
-                f"layout(std430, set = 1, binding = {triangle_binding}) readonly buffer InxMeshShapeTriangles {{ uvec4 inx_mesh_shape_triangles[]; }};",
-                "vec3 inx_sample_mesh_shape_position(vec3 random_value) {",
+                f"layout(std430, set = 1, binding = {vertex_binding}) readonly buffer InxMeshVertices{index} {{ InxMeshVertex inx_mesh_vertices_{index}[]; }};",
+                f"layout(std430, set = 1, binding = {triangle_binding}) readonly buffer InxMeshTriangles{index} {{ uvec4 inx_mesh_triangles_{index}[]; }};",
+                f"layout(std430, set = 1, binding = {influence_binding}) readonly buffer InxMeshInfluences{index} {{ InxMeshSkinInfluence inx_mesh_influences_{index}[]; }};",
+                f"layout(std430, set = 1, binding = {palette_binding}) readonly buffer InxMeshPalette{index} {{ mat4 inx_mesh_palette_{index}[]; }};",
+                f"InxMeshVertex inx_mesh_vertex_{index}(uint vertex_index) {{",
+                f"    InxMeshVertex vertex = inx_mesh_vertices_{index}[vertex_index];",
+                f"    uint bone_count = inx_particle_data_meta[{metadata + 3}u];",
+                "    if (bone_count == 0u) return vertex;",
+                f"    InxMeshSkinInfluence influence = inx_mesh_influences_{index}[vertex_index];",
+                "    float weight_sum = dot(influence.weights, vec4(1.0));",
+                "    if (weight_sum <= 1.0e-8) return vertex;",
+                "    vec4 weights = influence.weights / weight_sum;",
+                f"    mat4 skin = inx_mesh_palette_{index}[min(influence.bones.x, bone_count - 1u)] * weights.x",
+                f"              + inx_mesh_palette_{index}[min(influence.bones.y, bone_count - 1u)] * weights.y",
+                f"              + inx_mesh_palette_{index}[min(influence.bones.z, bone_count - 1u)] * weights.z",
+                f"              + inx_mesh_palette_{index}[min(influence.bones.w, bone_count - 1u)] * weights.w;",
+                "    vertex.position.xyz = (skin * vec4(vertex.position.xyz, 1.0)).xyz;",
+                "    mat3 skin_linear = mat3(skin);",
+                "    float skin_determinant = determinant(skin_linear);",
+                "    mat3 skin_normal = abs(skin_determinant) > 1.0e-8 ? transpose(inverse(skin_linear)) : mat3(1.0);",
+                "    vertex.normal.xyz = skin_normal * vertex.normal.xyz;",
+                "    vertex.tangent.xyz = skin_linear * vertex.tangent.xyz;",
+                "    return vertex;",
+                "}",
+                f"InxMeshSample inx_sample_mesh_{index}(vec3 sample_value, uint mode) {{",
+                "    InxMeshSample result;",
+                "    sample_value = clamp(sample_value, vec3(0.0), vec3(0.99999994));",
                 f"    uint vertex_count = inx_particle_data_meta[{metadata}u];",
                 f"    uint triangle_count = inx_particle_data_meta[{metadata + 1}u];",
+                f"    uint edge_count = inx_particle_data_meta[{metadata + 2}u];",
+                "    uint triangle_index = 0u;",
+                "    uvec3 triangle = uvec3(0u);",
+                "    vec3 barycentric = vec3(1.0, 0.0, 0.0);",
+                "    if (mode == INX_MESH_SAMPLE_VERTEX) {",
+                "        uint vertex_index = min(uint(sample_value.x * float(vertex_count)), vertex_count - 1u);",
+                "        triangle = uvec3(vertex_index);",
+                "    } else if (mode == INX_MESH_SAMPLE_EDGE) {",
+                "        uint low = 0u;",
+                "        uint high = edge_count;",
+                "        while (low < high) {",
+                "            uint middle = low + (high - low) / 2u;",
+                f"            float cdf = uintBitsToFloat(inx_mesh_triangles_{index}[triangle_count + middle].z);",
+                "            if (cdf < sample_value.x) low = middle + 1u; else high = middle;",
+                "        }",
+                "        uint edge_index = min(low, edge_count - 1u);",
+                f"        uvec4 edge = inx_mesh_triangles_{index}[triangle_count + edge_index];",
+                "        triangle = uvec3(edge.x, edge.y, edge.y);",
+                "        barycentric = vec3(1.0 - sample_value.y, sample_value.y, 0.0);",
+                "    } else {",
+                "        if (mode == INX_MESH_SAMPLE_SURFACE) {",
+                "            uint low = 0u;",
+                "            uint high = triangle_count;",
+                "            while (low < high) {",
+                "                uint middle = low + (high - low) / 2u;",
+                f"                float cdf = uintBitsToFloat(inx_mesh_triangles_{index}[middle].w);",
+                "                if (cdf < sample_value.x) low = middle + 1u; else high = middle;",
+                "            }",
+                "            triangle_index = min(low, triangle_count - 1u);",
+                "        }",
+                f"        triangle = inx_mesh_triangles_{index}[triangle_index].xyz;",
+                "        float root = sqrt(sample_value.y);",
+                "        barycentric = vec3(1.0 - root, root * (1.0 - sample_value.z), root * sample_value.z);",
+                "    }",
+                f"    InxMeshVertex a = inx_mesh_vertex_{index}(triangle.x);",
+                f"    InxMeshVertex b = inx_mesh_vertex_{index}(triangle.y);",
+                f"    InxMeshVertex c = inx_mesh_vertex_{index}(triangle.z);",
+                "    vec3 local_position = a.position.xyz * barycentric.x + b.position.xyz * barycentric.y + c.position.xyz * barycentric.z;",
+                "    vec3 local_normal = a.normal.xyz * barycentric.x + b.normal.xyz * barycentric.y + c.normal.xyz * barycentric.z;",
+                "    vec4 local_tangent = a.tangent * barycentric.x + b.tangent * barycentric.y + c.tangent * barycentric.z;",
+                "    vec2 local_uv = a.uv.xy * barycentric.x + b.uv.xy * barycentric.y + c.uv.xy * barycentric.z;",
+                f"    mat4 mesh_to_simulation = mat4(uintBitsToFloat(inx_particle_data_meta[{metadata + 4}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 5}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 6}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 7}u]),",
+                f"                                    uintBitsToFloat(inx_particle_data_meta[{metadata + 8}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 9}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 10}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 11}u]),",
+                f"                                    uintBitsToFloat(inx_particle_data_meta[{metadata + 12}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 13}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 14}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 15}u]),",
+                f"                                    uintBitsToFloat(inx_particle_data_meta[{metadata + 16}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 17}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 18}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 19}u]));",
+                f"    mat3 normal_to_simulation = mat3(uintBitsToFloat(inx_particle_data_meta[{metadata + 20}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 21}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 22}u]),",
+                f"                                      uintBitsToFloat(inx_particle_data_meta[{metadata + 24}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 25}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 26}u]),",
+                f"                                      uintBitsToFloat(inx_particle_data_meta[{metadata + 28}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 29}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 30}u]));",
+                "    result.position = (mesh_to_simulation * vec4(local_position, 1.0)).xyz;",
+                "    vec3 transformed_normal = normal_to_simulation * local_normal;",
+                "    vec3 transformed_tangent = mat3(mesh_to_simulation) * local_tangent.xyz;",
+                "    result.normal = dot(transformed_normal, transformed_normal) > 1.0e-12 ? normalize(transformed_normal) : vec3(0.0, 1.0, 0.0);",
+                "    transformed_tangent -= result.normal * dot(result.normal, transformed_tangent);",
+                "    vec3 tangent_direction = dot(transformed_tangent, transformed_tangent) > 1.0e-12 ? normalize(transformed_tangent) : vec3(1.0, 0.0, 0.0);",
+                "    float tangent_handedness = (local_tangent.w < 0.0 ? -1.0 : 1.0) * (determinant(mat3(mesh_to_simulation)) < 0.0 ? -1.0 : 1.0);",
+                "    result.tangent = vec4(tangent_direction, tangent_handedness);",
+                "    result.uv = local_uv;",
+                "    result.barycentric = barycentric;",
+                "    return result;",
+                "}",
             )
         )
-        if mesh_shape["mode"] == "vertex":
-            lines.extend(
-                (
-                    "    uint vertex_index = min(uint(random_value.x * float(vertex_count)), vertex_count - 1u);",
-                    "    return inx_mesh_shape_vertices[vertex_index].position.xyz;",
-                )
+        shape_mode = str(interface.get("shape_mode") or "")
+        if shape_mode:
+            lines.append(
+                f"vec3 inx_sample_mesh_shape_position(vec3 sample_value) {{ return inx_sample_mesh_{index}(sample_value, INX_MESH_SAMPLE_{shape_mode.upper()}).position; }}"
             )
-        else:
-            if mesh_shape["mode"] == "surface":
-                lines.extend(
-                    (
-                        "    uint low = 0u;",
-                        "    uint high = triangle_count;",
-                        "    while (low < high) {",
-                        "        uint middle = low + (high - low) / 2u;",
-                        "        float cdf = uintBitsToFloat(inx_mesh_shape_triangles[middle].w);",
-                        "        if (cdf < random_value.x) low = middle + 1u; else high = middle;",
-                        "    }",
-                        "    uint triangle_index = min(low, triangle_count - 1u);",
-                    )
-                )
-            else:
-                lines.append(
-                    "    uint triangle_index = min(uint(random_value.x * float(triangle_count)), triangle_count - 1u);"
-                )
-            lines.extend(
-                (
-                    "    uvec3 triangle = inx_mesh_shape_triangles[triangle_index].xyz;",
-                    "    float root = sqrt(random_value.y);",
-                    "    vec3 barycentric = vec3(1.0 - root, root * (1.0 - random_value.z), root * random_value.z);",
-                    "    return inx_mesh_shape_vertices[triangle.x].position.xyz * barycentric.x",
-                    "         + inx_mesh_shape_vertices[triangle.y].position.xyz * barycentric.y",
-                    "         + inx_mesh_shape_vertices[triangle.z].position.xyz * barycentric.z;",
-                )
-            )
-        lines.append("}")
     return "\n".join(lines)
 
 
@@ -3165,6 +3476,69 @@ def _volume_interface_glsl(layout: dict[str, Any]) -> str:
                 "    if (inverted) { distance_value = -distance_value; normal = -normal; }",
                 "    return true;",
                 "}",
+                f"float inx_sdf_shape_distance_{index}(vec3 field_position) {{",
+                "    vec3 uvw = clamp(field_position + vec3(0.5), vec3(0.0), vec3(1.0));",
+                f"    return texture(inx_volume_texture_{index}, uvw).r * uintBitsToFloat(inx_volume_meta[{base + 28}u]);",
+                "}",
+                f"vec3 inx_sdf_shape_candidate_{index}(vec3 seed, int attempt) {{",
+                "    const vec3 sequence = vec3(0.754877666, 0.569840296, 0.438579021);",
+                "    return fract(seed + sequence * float(attempt + 1)) - vec3(0.5);",
+                "}",
+                f"vec3 inx_sample_sdf_shape_position_{index}(vec3 seed, bool surface) {{",
+                f"    mat4 field_to_simulation = inverse(inx_volume_simulation_to_field_{index}());",
+                f"    vec3 best_field = inx_sdf_shape_candidate_{index}(seed, 0);",
+                f"    float best_distance = inx_sdf_shape_distance_{index}(best_field);",
+                "    if (!surface) {",
+                "        for (int attempt = 0; attempt < 16; ++attempt) {",
+                f"            vec3 field_position = inx_sdf_shape_candidate_{index}(seed, attempt);",
+                f"            float distance_value = inx_sdf_shape_distance_{index}(field_position);",
+                "            if (distance_value <= 0.0)",
+                "                return (field_to_simulation * vec4(field_position, 1.0)).xyz;",
+                "            if (distance_value < best_distance) {",
+                "                best_distance = distance_value;",
+                "                best_field = field_position;",
+                "            }",
+                "        }",
+                "    } else {",
+                "        best_distance = abs(best_distance);",
+                "        for (int attempt = 1; attempt < 4; ++attempt) {",
+                f"            vec3 field_position = inx_sdf_shape_candidate_{index}(seed, attempt);",
+                f"            float distance_value = abs(inx_sdf_shape_distance_{index}(field_position));",
+                "            if (distance_value < best_distance) {",
+                "                best_distance = distance_value;",
+                "                best_field = field_position;",
+                "            }",
+                "        }",
+                "    }",
+                "    vec3 point = (field_to_simulation * vec4(best_field, 1.0)).xyz;",
+                "    vec3 best_point = point;",
+                "    float best_absolute_distance = 3.402823466e+38;",
+                f"    float distance_scale = abs(uintBitsToFloat(inx_volume_meta[{base + 28}u]));",
+                "    float epsilon = max(1.0e-4, distance_scale * 5.0e-4);",
+                "    for (int iteration = 0; iteration < 8; ++iteration) {",
+                "        float distance_value;",
+                "        vec3 normal;",
+                f"        if (!inx_sample_sdf_{index}(point, false, distance_value, normal)) break;",
+                "        float absolute_distance = abs(distance_value);",
+                "        if (absolute_distance < best_absolute_distance) {",
+                "            best_absolute_distance = absolute_distance;",
+                "            best_point = point;",
+                "        }",
+                "        if (absolute_distance <= epsilon) break;",
+                "        point -= normal * clamp(distance_value, -distance_scale, distance_scale);",
+                "    }",
+                "    return best_point;",
+                "}",
+                f"float inx_sample_sdf_distance_{index}(vec3 position) {{",
+                "    float distance_value = 3.402823466e+38; vec3 gradient;",
+                f"    inx_sample_sdf_{index}(position, false, distance_value, gradient);",
+                "    return distance_value;",
+                "}",
+                f"vec3 inx_sample_sdf_gradient_{index}(vec3 position) {{",
+                "    float distance_value; vec3 gradient = vec3(0.0);",
+                f"    inx_sample_sdf_{index}(position, false, distance_value, gradient);",
+                "    return gradient;",
+                "}",
                 f"vec3 inx_collide_sdf_position_{index}(vec3 position, vec3 velocity, float radius, float restitution, float friction, bool inverted) {{",
                 "    float distance_value; vec3 normal;",
                 f"    if (!inx_sample_sdf_{index}(position, inverted, distance_value, normal)) return position;",
@@ -3218,8 +3592,752 @@ def _texture_resource_handle(stable_id: str) -> int:
     return handle or 1
 
 
-def _continuation_bindings_glsl(set_index: int) -> str:
+def _empty_compute_main() -> str:
+    return "\nvoid main() {}\n"
+
+
+def _contact_bindings_glsl(set_index: int) -> str:
     set_index = int(set_index)
+    return f"""
+struct InxParticleContactRecord {{
+    uvec4 identity;
+    vec4 point_penetration;
+    vec4 normal_speed;
+    vec4 relative_velocity;
+    vec4 material;
+    uvec4 metadata;
+}};
+struct InxParticleContactHashSlot {{
+    uvec4 key;
+    uvec4 value;
+}};
+struct InxParticleContactWorkItem {{
+    uvec4 identity;
+    uvec4 dispatch;
+}};
+struct InxParticleContactJoinState {{
+    uvec4 identity;
+    uvec4 context;
+    uvec4 state;
+}};
+layout(std430, set = {set_index}, binding = 0) buffer ParticleContactRecords {{
+    InxParticleContactRecord contact_records[];
+}};
+layout(std430, set = {set_index}, binding = 1) buffer ParticleContactHashSlots {{
+    InxParticleContactHashSlot contact_hash_slots[];
+}};
+layout(std430, set = {set_index}, binding = 2) buffer ParticleContactRecordIndices {{
+    uint contact_particle_record_indices[];
+}};
+layout(std430, set = {set_index}, binding = 3) buffer ParticleContactParticleStates {{
+    uvec4 contact_particle_states[];
+}};
+layout(std430, set = {set_index}, binding = 4) buffer ParticleContactWorkItems {{
+    InxParticleContactWorkItem contact_work_items[];
+}};
+layout(std430, set = {set_index}, binding = 5) buffer ParticleContactDispatchIndirect {{
+    uvec4 contact_dispatch_indirect;
+}};
+layout(std430, set = {set_index}, binding = 6) buffer ParticleContactCounters {{
+    uint contact_overflow_count;
+    uint contact_work_item_overflow_count;
+    uint contact_current_simulation_step;
+    uint contact_reset_serial;
+    uint contact_current_record_count;
+    uint contact_work_item_count;
+    uint contact_counter_reserved0;
+    uint contact_counter_reserved1;
+}} contact_counters;
+layout(std430, set = {set_index}, binding = 7) buffer ParticleContactContinuationSnapshots {{
+    uint contact_continuation_snapshot_words[];
+}};
+layout(std430, set = {set_index}, binding = 8) buffer ParticleContactContinuationJoinStates {{
+    InxParticleContactJoinState contact_continuation_join_states[];
+}};
+
+const uint INX_CONTACTS_PER_PARTICLE = 8u;
+const uint INX_CONTACT_INVALID_INDEX = 0xffffffffu;
+const uint INX_CONTACT_JOIN_EMPTY = 0xffffffffu;
+const uint INX_CONTACT_JOIN_TOMBSTONE = 0xfffffffeu;
+
+uint inx_contact_record_capacity() {{
+    return min(pc.capacity * INX_CONTACTS_PER_PARTICLE, 65536u);
+}}
+
+uint inx_contact_hash_capacity() {{
+    uint target = max(inx_contact_record_capacity() * 2u, 1u);
+    uint capacity = 1u;
+    while (capacity < target) capacity <<= 1u;
+    return capacity;
+}}
+
+uint inx_contact_join_capacity() {{
+    return uint(contact_continuation_join_states.length());
+}}
+
+uint inx_contact_hash(uvec4 key) {{
+    uint value = key.x * 0x8da6b343u;
+    value ^= key.y * 0xd8163841u;
+    value ^= key.z * 0xcb1ab31fu;
+    value ^= key.w * 0x165667b1u;
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    return value;
+}}
+
+uint inx_contact_generation(uvec4 key, uint entered_step) {{
+    uint generation = inx_contact_hash(
+        key ^ uvec4(entered_step, entered_step * 0x9e3779b9u,
+                    entered_step * 0x85ebca6bu, entered_step * 0xc2b2ae35u));
+    return generation == 0u ? 1u : generation;
+}}
+
+uint inx_find_contact_record(uint page, uvec4 key) {{
+    uint hash_capacity = inx_contact_hash_capacity();
+    uint hash_mask = hash_capacity - 1u;
+    uint hash_slot = inx_contact_hash(key) & hash_mask;
+    for (uint probe = 0u; probe < hash_capacity; ++probe) {{
+        uint physical_hash_slot = page * hash_capacity + hash_slot;
+        uvec4 candidate = contact_hash_slots[physical_hash_slot].key;
+        if (candidate.x == INX_CONTACT_INVALID_INDEX)
+            return INX_CONTACT_INVALID_INDEX;
+        if (all(equal(candidate, key)))
+            return contact_hash_slots[physical_hash_slot].value.x;
+        hash_slot = (hash_slot + 1u) & hash_mask;
+    }}
+    return INX_CONTACT_INVALID_INDEX;
+}}
+
+void inx_store_contact(uint particle_index, uvec2 collider_id,
+                       vec3 world_point, vec3 world_normal,
+                       vec3 world_relative_velocity, float world_penetration,
+                       bool is_trigger, vec4 material, float simulation_scale) {{
+    if (particle_index >= pc.capacity) return;
+    uvec4 particle_state = contact_particle_states[particle_index];
+    uint generation = states[particle_index].spawn_generation;
+    if (particle_state.x != generation || particle_state.y != pc.simulation_step) {{
+        particle_state = uvec4(generation, pc.simulation_step, 0u, 0u);
+        contact_particle_states[particle_index] = particle_state;
+    }}
+
+    uint contact_slot = particle_state.z;
+    if (contact_slot >= INX_CONTACTS_PER_PARTICLE) {{
+        atomicAdd(contact_counters.contact_overflow_count, 1u);
+        return;
+    }}
+    uint record_capacity = inx_contact_record_capacity();
+    uint local_record = particle_index * INX_CONTACTS_PER_PARTICLE + contact_slot;
+    if (local_record >= record_capacity) {{
+        atomicAdd(contact_counters.contact_overflow_count, 1u);
+        return;
+    }}
+
+    uint current_page = pc.simulation_step & 1u;
+    uint record_index = current_page * record_capacity + local_record;
+    vec3 transformed_normal =
+        transpose(mat3(transforms.simulation_to_world)) * world_normal;
+    float normal_length = length(transformed_normal);
+    vec3 simulation_normal = normal_length > 1.0e-6
+        ? transformed_normal / normal_length
+        : vec3(0.0, 1.0, 0.0);
+    vec3 simulation_point =
+        (transforms.world_to_simulation * vec4(world_point, 1.0)).xyz;
+    vec3 simulation_relative_velocity =
+        (transforms.world_to_simulation * vec4(world_relative_velocity, 0.0)).xyz;
+    float simulation_penetration =
+        world_penetration / max(simulation_scale, 1.0e-6);
+
+    contact_records[record_index].identity =
+        uvec4(particle_index, generation, collider_id.x, collider_id.y);
+    contact_records[record_index].point_penetration =
+        vec4(simulation_point, simulation_penetration);
+    contact_records[record_index].normal_speed = vec4(
+        simulation_normal,
+        dot(simulation_relative_velocity, simulation_normal));
+    contact_records[record_index].relative_velocity =
+        vec4(simulation_relative_velocity, 0.0);
+    contact_records[record_index].material = material;
+    contact_records[record_index].metadata =
+        uvec4(is_trigger ? 1u : 0u, pc.simulation_step, contact_slot, 0u);
+
+    uint index_base = current_page * pc.capacity * INX_CONTACTS_PER_PARTICLE
+        + particle_index * INX_CONTACTS_PER_PARTICLE;
+    contact_particle_record_indices[index_base + contact_slot] = record_index;
+    particle_state.z = contact_slot + 1u;
+    contact_particle_states[particle_index] = particle_state;
+    atomicAdd(contact_counters.contact_current_record_count, 1u);
+}}
+"""
+
+
+def _contact_prepare_main() -> str:
+    return """
+void main() {
+    uint particle_index = gl_GlobalInvocationID.x;
+    uint current_page = pc.simulation_step & 1u;
+    bool reset_all = (pc.diagnostic_flags & 4u) != 0u;
+    if (particle_index < pc.capacity) {
+        if (reset_all) {
+            contact_particle_states[particle_index] =
+                uvec4(INX_CONTACT_INVALID_INDEX, 0u, 0u, 0u);
+            for (uint page = 0u; page < 2u; ++page) {
+                uint page_base = page * pc.capacity * INX_CONTACTS_PER_PARTICLE
+                    + particle_index * INX_CONTACTS_PER_PARTICLE;
+                for (uint slot = 0u; slot < INX_CONTACTS_PER_PARTICLE; ++slot)
+                    contact_particle_record_indices[page_base + slot] =
+                        INX_CONTACT_INVALID_INDEX;
+            }
+        } else {
+            uvec4 previous_state = contact_particle_states[particle_index];
+            uint particle_generation = states[particle_index].spawn_generation;
+            uint previous_count = previous_state.x == particle_generation
+                && previous_state.y + 1u == pc.simulation_step
+                ? min(previous_state.z, INX_CONTACTS_PER_PARTICLE)
+                : 0u;
+            contact_particle_states[particle_index] = uvec4(
+                particle_generation, pc.simulation_step, 0u, previous_count);
+
+            uint current_base = current_page * pc.capacity * INX_CONTACTS_PER_PARTICLE
+                + particle_index * INX_CONTACTS_PER_PARTICLE;
+            for (uint slot = 0u; slot < INX_CONTACTS_PER_PARTICLE; ++slot)
+                contact_particle_record_indices[current_base + slot] =
+                    INX_CONTACT_INVALID_INDEX;
+        }
+
+        uint work_capacity = inx_contact_record_capacity() * 2u;
+        uint work_base = particle_index * INX_CONTACTS_PER_PARTICLE * 2u;
+        for (uint slot = 0u; slot < INX_CONTACTS_PER_PARTICLE * 2u; ++slot) {
+            uint work_index = work_base + slot;
+            if (work_index >= work_capacity) break;
+            contact_work_items[work_index].identity =
+                uvec4(INX_CONTACT_INVALID_INDEX);
+            contact_work_items[work_index].dispatch = uvec4(0u);
+        }
+    }
+
+    if (reset_all && particle_index < inx_contact_join_capacity()) {
+        contact_continuation_join_states[particle_index].identity =
+            uvec4(INX_CONTACT_JOIN_EMPTY);
+        contact_continuation_join_states[particle_index].context = uvec4(0u);
+        contact_continuation_join_states[particle_index].state = uvec4(0u);
+    }
+
+    uint hash_capacity = inx_contact_hash_capacity();
+    if (particle_index < hash_capacity) {
+        uint first_page = reset_all ? 0u : current_page;
+        uint page_count = reset_all ? 2u : 1u;
+        for (uint page_offset = 0u; page_offset < page_count; ++page_offset) {
+            uint hash_slot = (first_page + page_offset) * hash_capacity + particle_index;
+            contact_hash_slots[hash_slot].key = uvec4(INX_CONTACT_INVALID_INDEX);
+            contact_hash_slots[hash_slot].value = uvec4(0u);
+        }
+    }
+
+    if (particle_index == 0u) {
+        contact_counters.contact_overflow_count = 0u;
+        contact_counters.contact_work_item_overflow_count = 0u;
+        contact_counters.contact_current_simulation_step = pc.simulation_step;
+        contact_counters.contact_current_record_count = 0u;
+        contact_counters.contact_work_item_count = 0u;
+        if (reset_all)
+            contact_counters.contact_reset_serial = pc.simulation_step + 1u;
+        contact_dispatch_indirect = uvec4(
+            (pc.capacity + 255u) / 256u, 1u, 1u, 0u);
+    }
+}
+"""
+
+
+def _contact_solve_main() -> str:
+    return """
+void main() {
+    uint particle_index = gl_GlobalInvocationID.x;
+    if (particle_index >= pc.capacity) return;
+
+    uvec4 particle_state = contact_particle_states[particle_index];
+    uint generation = states[particle_index].spawn_generation;
+    if (particle_state.x != generation || particle_state.y != pc.simulation_step)
+        return;
+
+    uint current_page = pc.simulation_step & 1u;
+    uint previous_page = current_page ^ 1u;
+    uint record_capacity = inx_contact_record_capacity();
+    uint hash_capacity = inx_contact_hash_capacity();
+    uint hash_mask = hash_capacity - 1u;
+    uint index_base = current_page * pc.capacity * INX_CONTACTS_PER_PARTICLE
+        + particle_index * INX_CONTACTS_PER_PARTICLE;
+    uint contact_count = min(particle_state.z, INX_CONTACTS_PER_PARTICLE);
+    for (uint contact_slot = 0u; contact_slot < contact_count; ++contact_slot) {
+        uint record_index = contact_particle_record_indices[index_base + contact_slot];
+        if (record_index == INX_CONTACT_INVALID_INDEX) continue;
+        uvec4 key = contact_records[record_index].identity;
+        uint previous_record = inx_find_contact_record(previous_page, key);
+        contact_records[record_index].metadata.w =
+            previous_record != INX_CONTACT_INVALID_INDEX
+                ? contact_records[previous_record].metadata.w
+                : inx_contact_generation(key, pc.simulation_step);
+        uint hash_slot = inx_contact_hash(key) & hash_mask;
+        for (uint probe = 0u; probe < hash_capacity; ++probe) {
+            uint physical_hash_slot = current_page * hash_capacity + hash_slot;
+            uint owner = atomicCompSwap(
+                contact_hash_slots[physical_hash_slot].key.x,
+                INX_CONTACT_INVALID_INDEX,
+                key.x);
+            if (owner == INX_CONTACT_INVALID_INDEX || owner == key.x) {
+                if (owner == INX_CONTACT_INVALID_INDEX)
+                    contact_hash_slots[physical_hash_slot].key.yzw = key.yzw;
+                if (all(equal(contact_hash_slots[physical_hash_slot].key, key))) {
+                    contact_hash_slots[physical_hash_slot].value = uvec4(
+                        record_index,
+                        pc.simulation_step,
+                        contact_slot,
+                        contact_records[record_index].metadata.x);
+                    break;
+                }
+            }
+            hash_slot = (hash_slot + 1u) & hash_mask;
+            if (probe + 1u == hash_capacity)
+                atomicAdd(contact_counters.contact_overflow_count, 1u);
+        }
+    }
+
+    // One invocation owns one particle's complete range. This fixed sparse
+    // layout is deterministic without a global prefix scan: lifecycle order
+    // is Enter, Stay, Exit and each class inherits the stable collider order
+    // of the current/previous contact lists.
+    uint work_capacity = record_capacity * 2u;
+    uint work_base = particle_index * INX_CONTACTS_PER_PARTICLE * 2u;
+    uint work_count = 0u;
+    uint previous_count = min(particle_state.w, INX_CONTACTS_PER_PARTICLE);
+    uint previous_base = previous_page * pc.capacity * INX_CONTACTS_PER_PARTICLE
+        + particle_index * INX_CONTACTS_PER_PARTICLE;
+
+    for (uint lifecycle = 0u; lifecycle < 2u; ++lifecycle) {
+        for (uint contact_slot = 0u; contact_slot < contact_count; ++contact_slot) {
+            uint record_index = contact_particle_record_indices[index_base + contact_slot];
+            if (record_index == INX_CONTACT_INVALID_INDEX) continue;
+            uvec4 key = contact_records[record_index].identity;
+            bool existed = inx_find_contact_record(previous_page, key)
+                != INX_CONTACT_INVALID_INDEX;
+            if ((lifecycle == 0u && existed) || (lifecycle == 1u && !existed))
+                continue;
+            uint work_index = work_base + work_count;
+            if (work_index >= work_capacity) {
+                atomicAdd(contact_counters.contact_work_item_overflow_count, 1u);
+                continue;
+            }
+            contact_work_items[work_index].identity = key;
+            contact_work_items[work_index].dispatch = uvec4(
+                lifecycle, record_index, pc.simulation_step,
+                contact_records[record_index].metadata.w);
+            ++work_count;
+        }
+    }
+
+    for (uint contact_slot = 0u; contact_slot < previous_count; ++contact_slot) {
+        uint record_index = contact_particle_record_indices[previous_base + contact_slot];
+        if (record_index == INX_CONTACT_INVALID_INDEX) continue;
+        uvec4 key = contact_records[record_index].identity;
+        if (inx_find_contact_record(current_page, key) != INX_CONTACT_INVALID_INDEX)
+            continue;
+        uint work_index = work_base + work_count;
+        if (work_index >= work_capacity) {
+            atomicAdd(contact_counters.contact_work_item_overflow_count, 1u);
+            continue;
+        }
+        contact_work_items[work_index].identity = key;
+        contact_work_items[work_index].dispatch = uvec4(
+            2u, record_index, pc.simulation_step,
+            contact_records[record_index].metadata.w);
+        ++work_count;
+    }
+    if (work_count != 0u)
+        atomicAdd(contact_counters.contact_work_item_count, work_count);
+}
+"""
+
+
+def _contact_dispatch_main(
+    body: str,
+    emitter: ParticleEmitterKernelIR,
+    fields: tuple[tuple[str, TypeRef, str], ...],
+    *,
+    has_continuation: bool,
+) -> str:
+    field_by_id = {stable_id: field for stable_id, _value_type, field in fields}
+
+    def field(stable_id: str) -> str:
+        try:
+            return field_by_id[stable_id]
+        except KeyError as exc:
+            raise GpuParticleCompileError(
+                f"contact dispatch requires particle attribute {stable_id!r}"
+            ) from exc
+
+    finite = _finite_state_check(emitter.contact, fields)
+    continuation_context = (
+        """
+        inx_continuation_context_kind = INX_CONTINUATION_CONTEXT_CONTACT;
+        inx_continuation_context_lifecycle = inx_contact_lifecycle;
+        inx_continuation_context_generation = contact.metadata.w;
+        inx_continuation_context_identity_low = contact.identity.z;
+        inx_continuation_context_identity_high = contact.identity.w;
+        inx_continuation_context_record_index = record_index;
+"""
+        if has_continuation
+        else ""
+    )
+    return f"""
+void main() {{
+    uint particle_index = gl_GlobalInvocationID.x;
+    if (particle_index >= pc.capacity) return;
+    ParticleState state = states[particle_index];
+    if ((state.lifecycle_flags & INX_PARTICLE_ALIVE) == 0u) return;
+
+    uint particle_generation = state.spawn_generation;
+    uint work_capacity = inx_contact_record_capacity() * 2u;
+    uint work_base = particle_index * INX_CONTACTS_PER_PARTICLE * 2u;
+    bool particle_alive = true;
+    bool inx_stage_suspended = false;
+    bool inx_continuation_resuspended = false;
+
+    for (uint local_work = 0u;
+         local_work < INX_CONTACTS_PER_PARTICLE * 2u;
+         ++local_work) {{
+        uint work_index = work_base + local_work;
+        if (work_index >= work_capacity) break;
+        InxParticleContactWorkItem work = contact_work_items[work_index];
+        if (work.identity.x == INX_CONTACT_INVALID_INDEX) continue;
+        if (work.identity.x != particle_index
+            || work.identity.y != particle_generation
+            || work.dispatch.z != pc.simulation_step) continue;
+        uint record_index = work.dispatch.y;
+        if (record_index >= inx_contact_record_capacity() * 2u) continue;
+        InxParticleContactRecord contact = contact_records[record_index];
+        if (!all(equal(contact.identity, work.identity))) continue;
+        if (contact.metadata.w == 0u || contact.metadata.w != work.dispatch.w)
+            continue;
+
+        uint inx_contact_lifecycle = work.dispatch.x;
+{continuation_context}
+        state.{field("builtin.collision_hit")} =
+            inx_contact_lifecycle == 2u ? 0u : 1u;
+        state.{field("builtin.collision_point")} = contact.point_penetration.xyz;
+        state.{field("builtin.collision_penetration")} =
+            contact.point_penetration.w;
+        state.{field("builtin.collision_normal")} = contact.normal_speed.xyz;
+        state.{field("builtin.collision_relative_velocity")} =
+            contact.relative_velocity.xyz;
+        state.{field("builtin.collision_is_trigger")} = contact.metadata.x;
+        state.{field("builtin.collision_material")} = contact.material;
+        state.{field("builtin.collision_collider_id_low")} = contact.identity.z;
+        state.{field("builtin.collision_collider_id_high")} = contact.identity.w;
+
+        inx_stage_suspended = false;
+        inx_continuation_resuspended = false;
+        {{
+{body}
+        }}
+        if ((pc.diagnostic_flags & 1u) != 0u) {{
+            if (inx_contact_lifecycle == 0u)
+                atomicAdd(counters.collision_enter_count, 1u);
+            else if (inx_contact_lifecycle == 1u)
+                atomicAdd(counters.collision_stay_count, 1u);
+            else if (inx_contact_lifecycle == 2u)
+                atomicAdd(counters.collision_exit_count, 1u);
+        }}
+        particle_alive = particle_alive && ({finite});
+        if (!particle_alive) break;
+    }}
+
+    if (!particle_alive)
+        state.lifecycle_flags &= ~INX_PARTICLE_ALIVE;
+    states[particle_index] = state;
+    if (!particle_alive) inx_push_free(particle_index);
+}}
+"""
+
+
+def _continuation_bindings_glsl(
+    set_index: int, *, contact_context: bool = False
+) -> str:
+    set_index = int(set_index)
+    contact_snapshot_store = (
+        """
+void inx_store_continuation_context(uint continuation_record_index) {
+    if (inx_continuation_context_kind != 1u
+        || inx_continuation_context_record_index == INX_CONTINUATION_INVALID_INDEX)
+        return;
+    InxParticleContactRecord source =
+        contact_records[inx_continuation_context_record_index];
+    uint base = continuation_record_index * 24u;
+    contact_continuation_snapshot_words[base + 0u] = source.identity.x;
+    contact_continuation_snapshot_words[base + 1u] = source.identity.y;
+    contact_continuation_snapshot_words[base + 2u] = source.identity.z;
+    contact_continuation_snapshot_words[base + 3u] = source.identity.w;
+    contact_continuation_snapshot_words[base + 4u] = floatBitsToUint(source.point_penetration.x);
+    contact_continuation_snapshot_words[base + 5u] = floatBitsToUint(source.point_penetration.y);
+    contact_continuation_snapshot_words[base + 6u] = floatBitsToUint(source.point_penetration.z);
+    contact_continuation_snapshot_words[base + 7u] = floatBitsToUint(source.point_penetration.w);
+    contact_continuation_snapshot_words[base + 8u] = floatBitsToUint(source.normal_speed.x);
+    contact_continuation_snapshot_words[base + 9u] = floatBitsToUint(source.normal_speed.y);
+    contact_continuation_snapshot_words[base + 10u] = floatBitsToUint(source.normal_speed.z);
+    contact_continuation_snapshot_words[base + 11u] = floatBitsToUint(source.normal_speed.w);
+    contact_continuation_snapshot_words[base + 12u] = floatBitsToUint(source.relative_velocity.x);
+    contact_continuation_snapshot_words[base + 13u] = floatBitsToUint(source.relative_velocity.y);
+    contact_continuation_snapshot_words[base + 14u] = floatBitsToUint(source.relative_velocity.z);
+    contact_continuation_snapshot_words[base + 15u] = floatBitsToUint(source.relative_velocity.w);
+    contact_continuation_snapshot_words[base + 16u] = floatBitsToUint(source.material.x);
+    contact_continuation_snapshot_words[base + 17u] = floatBitsToUint(source.material.y);
+    contact_continuation_snapshot_words[base + 18u] = floatBitsToUint(source.material.z);
+    contact_continuation_snapshot_words[base + 19u] = floatBitsToUint(source.material.w);
+    contact_continuation_snapshot_words[base + 20u] = source.metadata.x;
+    contact_continuation_snapshot_words[base + 21u] = source.metadata.y;
+    contact_continuation_snapshot_words[base + 22u] = source.metadata.z;
+    contact_continuation_snapshot_words[base + 23u] = source.metadata.w;
+}
+"""
+        if contact_context
+        else """
+void inx_store_continuation_context(uint continuation_record_index) {
+}
+"""
+    )
+    contact_join_functions = (
+        """
+uint inx_contact_join_hash(uvec4 identity, uvec3 context) {
+    uint value = inx_contact_hash(identity);
+    value ^= context.x * 0x9e3779b9u;
+    value ^= context.y * 0x85ebca6bu;
+    value ^= context.z * 0xc2b2ae35u;
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    return value;
+}
+
+bool inx_contact_join_key_matches(
+    uint slot_index, uvec4 identity, uvec3 context
+) {
+    InxParticleContactJoinState slot =
+        contact_continuation_join_states[slot_index];
+    return slot.context.w == 1u
+        && all(equal(slot.identity, identity))
+        && all(equal(slot.context.xyz, context));
+}
+
+bool inx_contact_join_slot_stale(uint slot_index) {
+    InxParticleContactJoinState slot =
+        contact_continuation_join_states[slot_index];
+    if (slot.context.w != 1u) return false;
+    uint owner = slot.identity.x;
+    return owner >= continuation_counters.particle_capacity
+        || states[owner].spawn_generation != slot.identity.y
+        || (states[owner].lifecycle_flags & INX_PARTICLE_ALIVE) == 0u
+        || slot.context.z != continuation_counters.program_generation;
+}
+
+bool inx_contact_join_find(
+    uint particle_index,
+    uint particle_generation,
+    uint join_index,
+    bool create,
+    out uint slot_index
+) {
+    slot_index = INX_CONTINUATION_INVALID_INDEX;
+    uint capacity = inx_contact_join_capacity();
+    if (capacity == 0u) return false;
+    uvec4 identity = uvec4(
+        particle_index, particle_generation,
+        inx_continuation_context_identity_low,
+        inx_continuation_context_identity_high);
+    uvec3 context = uvec3(
+        inx_continuation_context_generation,
+        join_index,
+        continuation_counters.program_generation);
+    uint mask = capacity - 1u;
+    uint candidate = inx_contact_join_hash(identity, context) & mask;
+    for (uint probe = 0u; probe < capacity; ++probe) {
+        uint owner = atomicAdd(
+            contact_continuation_join_states[candidate].identity.x, 0u);
+        if (owner == INX_CONTACT_JOIN_EMPTY
+            || owner == INX_CONTACT_JOIN_TOMBSTONE) {
+            if (!create) {
+                if (owner == INX_CONTACT_JOIN_EMPTY) return false;
+                candidate = (candidate + 1u) & mask;
+                continue;
+            }
+            uint observed = atomicCompSwap(
+                contact_continuation_join_states[candidate].identity.x,
+                owner,
+                particle_index);
+            if (observed == owner) {
+                atomicExchange(
+                    contact_continuation_join_states[candidate].context.w, 0u);
+                contact_continuation_join_states[candidate].identity.yzw =
+                    identity.yzw;
+                contact_continuation_join_states[candidate].context.xyz = context;
+                contact_continuation_join_states[candidate].state = uvec4(0u);
+                memoryBarrierBuffer();
+                atomicExchange(
+                    contact_continuation_join_states[candidate].context.w, 1u);
+                slot_index = candidate;
+                return true;
+            }
+            owner = observed;
+        }
+        if (owner == particle_index) {
+            for (uint spin = 0u; spin < 16u; ++spin) {
+                if (atomicAdd(
+                        contact_continuation_join_states[candidate].context.w,
+                        0u) == 1u)
+                    break;
+                memoryBarrierBuffer();
+            }
+            if (inx_contact_join_key_matches(candidate, identity, context)) {
+                slot_index = candidate;
+                return true;
+            }
+        }
+        if (owner != INX_CONTACT_JOIN_EMPTY
+            && owner != INX_CONTACT_JOIN_TOMBSTONE
+            && inx_contact_join_slot_stale(candidate)) {
+            atomicExchange(
+                contact_continuation_join_states[candidate].context.w, 0u);
+            memoryBarrierBuffer();
+            if (atomicCompSwap(
+                    contact_continuation_join_states[candidate].identity.x,
+                    owner,
+                    INX_CONTACT_JOIN_TOMBSTONE) == owner) {
+                continue;
+            }
+        }
+        candidate = (candidate + 1u) & mask;
+    }
+    return false;
+}
+
+uint inx_contact_continuation_join_begin(
+    uint particle_index,
+    uint particle_generation,
+    uint join_index,
+    uint expected_mask
+) {
+    if (particle_index >= continuation_counters.particle_capacity
+        || join_index >= continuation_counters.join_count
+        || expected_mask == 0u)
+        return 0u;
+    uint slot_index;
+    if (!inx_contact_join_find(
+            particle_index, particle_generation, join_index, true, slot_index))
+        return 0u;
+    uint token = atomicAdd(
+        contact_continuation_join_states[slot_index].state.x, 0u);
+    if (token != 0u) return token;
+    uint replacement = atomicAdd(
+        continuation_counters.branch_token_counter, 1u);
+    if (replacement == 0u)
+        replacement = atomicAdd(
+            continuation_counters.branch_token_counter, 1u);
+    uint observed = atomicCompSwap(
+        contact_continuation_join_states[slot_index].state.x,
+        0u,
+        replacement);
+    if (observed != 0u) return observed;
+    atomicExchange(
+        contact_continuation_join_states[slot_index].state.y,
+        expected_mask);
+    atomicExchange(contact_continuation_join_states[slot_index].state.z, 0u);
+    memoryBarrierBuffer();
+    return replacement;
+}
+
+bool inx_contact_continuation_join_has_arrived(
+    uint particle_index,
+    uint particle_generation,
+    uint join_index,
+    uint arrival_bit
+) {
+    uint slot_index;
+    return inx_contact_join_find(
+            particle_index, particle_generation, join_index, false, slot_index)
+        && atomicAdd(
+               contact_continuation_join_states[slot_index].state.x, 0u) != 0u
+        && (atomicAdd(
+                contact_continuation_join_states[slot_index].state.z, 0u)
+            & arrival_bit) != 0u;
+}
+
+bool inx_contact_continuation_join_arrive(
+    uint particle_index,
+    uint particle_generation,
+    uint join_index,
+    uint branch_token,
+    uint expected_mask,
+    uint arrival_mask
+) {
+    if (arrival_mask == 0u) return false;
+    uint token = branch_token;
+    if (token == 0u)
+        token = inx_contact_continuation_join_begin(
+            particle_index, particle_generation, join_index, expected_mask);
+    if (token == 0u) return false;
+    uint slot_index;
+    if (!inx_contact_join_find(
+            particle_index, particle_generation, join_index, false, slot_index)
+        || atomicAdd(
+               contact_continuation_join_states[slot_index].state.x, 0u) != token)
+        return false;
+    uint expected = atomicAdd(
+        contact_continuation_join_states[slot_index].state.y, 0u);
+    uint accepted = arrival_mask & expected;
+    uint previous = atomicOr(
+        contact_continuation_join_states[slot_index].state.z, accepted);
+    uint combined = previous | accepted;
+    if ((combined & expected) != expected || (previous & expected) == expected)
+        return false;
+    if (atomicCompSwap(
+            contact_continuation_join_states[slot_index].state.x,
+            token,
+            0u) != token)
+        return false;
+    atomicExchange(contact_continuation_join_states[slot_index].state.y, 0u);
+    atomicExchange(contact_continuation_join_states[slot_index].state.z, 0u);
+    memoryBarrierBuffer();
+    atomicExchange(contact_continuation_join_states[slot_index].context.w, 0u);
+    atomicExchange(
+        contact_continuation_join_states[slot_index].identity.x,
+        INX_CONTACT_JOIN_TOMBSTONE);
+    return true;
+}
+"""
+        if contact_context
+        else """
+uint inx_contact_continuation_join_begin(
+    uint particle_index, uint particle_generation,
+    uint join_index, uint expected_mask
+) {
+    return inx_particle_continuation_join_begin(
+        particle_index, particle_generation, join_index, expected_mask);
+}
+bool inx_contact_continuation_join_has_arrived(
+    uint particle_index, uint particle_generation,
+    uint join_index, uint arrival_bit
+) {
+    return inx_particle_continuation_join_has_arrived(
+        particle_index, particle_generation, join_index, arrival_bit);
+}
+bool inx_contact_continuation_join_arrive(
+    uint particle_index, uint particle_generation, uint join_index,
+    uint branch_token, uint expected_mask, uint arrival_mask
+) {
+    return inx_particle_continuation_join_arrive(
+        particle_index, particle_generation, join_index,
+        branch_token, expected_mask, arrival_mask);
+}
+"""
+    )
     return f"""
 layout(std430, set = {set_index}, binding = 0) buffer ParticleContinuationRecords {{
     uint continuation_record_words[];
@@ -3281,6 +4399,17 @@ const uint INX_CONTINUATION_FLAG_SECONDS = 1u;
 const uint INX_CONTINUATION_FLAG_UNTIL_FRAMES = 2u;
 const uint INX_CONTINUATION_FLAG_UNTIL_SECONDS = 4u;
 const uint INX_CONTINUATION_INVALID_INDEX = 0xffffffffu;
+const uint INX_CONTINUATION_CONTEXT_CONTACT = 1u;
+
+uint inx_continuation_context_kind = 0u;
+uint inx_continuation_context_lifecycle = 0u;
+uint inx_continuation_context_generation = 0u;
+uint inx_continuation_context_identity_low = 0u;
+uint inx_continuation_context_identity_high = 0u;
+uint inx_continuation_context_record_index = INX_CONTINUATION_INVALID_INDEX;
+uint inx_last_continuation_record_index = INX_CONTINUATION_INVALID_INDEX;
+
+{contact_snapshot_store}
 
 uint inx_continuation_record_base(uint record_index) {{
     return record_index * continuation_counters.record_stride_words;
@@ -3302,7 +4431,7 @@ uint inx_continuation_join_state_index(uint particle_index, uint join_index) {{
     return particle_index * continuation_counters.join_count + join_index;
 }}
 
-uint inx_continuation_join_begin(
+uint inx_particle_continuation_join_begin(
     uint particle_index,
     uint particle_generation,
     uint join_index,
@@ -3331,7 +4460,7 @@ uint inx_continuation_join_begin(
     return replacement;
 }}
 
-bool inx_continuation_join_has_arrived(
+bool inx_particle_continuation_join_has_arrived(
     uint particle_index,
     uint particle_generation,
     uint join_index,
@@ -3345,7 +4474,7 @@ bool inx_continuation_join_has_arrived(
         && (atomicAdd(continuation_join_states[state_index].z, 0u) & arrival_bit) != 0u;
 }}
 
-bool inx_continuation_join_arrive(
+bool inx_particle_continuation_join_arrive(
     uint particle_index,
     uint particle_generation,
     uint join_index,
@@ -3356,7 +4485,7 @@ bool inx_continuation_join_arrive(
     if (arrival_mask == 0u) return false;
     uint token = branch_token;
     if (token == 0u) {{
-        token = inx_continuation_join_begin(
+        token = inx_particle_continuation_join_begin(
             particle_index, particle_generation, join_index, expected_mask
         );
     }}
@@ -3382,6 +4511,62 @@ bool inx_continuation_join_arrive(
     atomicExchange(continuation_join_states[state_index].z, 0u);
     atomicExchange(continuation_join_states[state_index].w, 0u);
     return true;
+}}
+
+{contact_join_functions}
+
+uint inx_continuation_join_begin(
+    uint particle_index,
+    uint particle_generation,
+    uint join_index,
+    uint expected_mask
+) {{
+    if (inx_continuation_context_kind == INX_CONTINUATION_CONTEXT_CONTACT) {{
+        return inx_contact_continuation_join_begin(
+            particle_index, particle_generation, join_index, expected_mask);
+    }}
+    return inx_particle_continuation_join_begin(
+        particle_index, particle_generation, join_index, expected_mask);
+}}
+
+bool inx_continuation_join_has_arrived(
+    uint particle_index,
+    uint particle_generation,
+    uint join_index,
+    uint arrival_bit
+) {{
+    if (inx_continuation_context_kind == INX_CONTINUATION_CONTEXT_CONTACT) {{
+        return inx_contact_continuation_join_has_arrived(
+            particle_index, particle_generation, join_index, arrival_bit);
+    }}
+    return inx_particle_continuation_join_has_arrived(
+        particle_index, particle_generation, join_index, arrival_bit);
+}}
+
+bool inx_continuation_join_arrive(
+    uint particle_index,
+    uint particle_generation,
+    uint join_index,
+    uint branch_token,
+    uint expected_mask,
+    uint arrival_mask
+) {{
+    if (inx_continuation_context_kind == INX_CONTINUATION_CONTEXT_CONTACT) {{
+        return inx_contact_continuation_join_arrive(
+            particle_index,
+            particle_generation,
+            join_index,
+            branch_token,
+            expected_mask,
+            arrival_mask);
+    }}
+    return inx_particle_continuation_join_arrive(
+        particle_index,
+        particle_generation,
+        join_index,
+        branch_token,
+        expected_mask,
+        arrival_mask);
 }}
 
 uint inx_continuation_pop_free() {{
@@ -3443,29 +4628,40 @@ bool inx_continuation_suspend(
     uint join_expected_mask,
     uint existing_record
 ) {{
+    inx_last_continuation_record_index = existing_record;
     if (particle_index >= continuation_counters.particle_capacity
         || lane_index >= continuation_counters.lane_count) {{
         atomicAdd(continuation_counters.dropped_capacity, 1u);
         return false;
     }}
     uint lane_slot = particle_index * continuation_counters.lane_count + lane_index;
+    bool uses_lane_slot = inx_continuation_context_kind == 0u;
     uint record_index = existing_record;
     bool reusing_record = record_index != INX_CONTINUATION_INVALID_INDEX;
     if (record_index == INX_CONTINUATION_INVALID_INDEX) {{
-        if (atomicAdd(continuation_lane_slots[lane_slot], 0u) != 0u) return true;
+        if (uses_lane_slot) {{
+            uint pending_slot = atomicAdd(continuation_lane_slots[lane_slot], 0u);
+            if (pending_slot != 0u) {{
+                inx_last_continuation_record_index = pending_slot - 1u;
+                return true;
+            }}
+        }}
         record_index = inx_continuation_pop_free();
         if (record_index == INX_CONTINUATION_INVALID_INDEX) {{
             atomicAdd(continuation_counters.dropped_capacity, 1u);
             return false;
         }}
-        uint previous = atomicCompSwap(
-            continuation_lane_slots[lane_slot], 0u, record_index + 1u
-        );
-        if (previous != 0u) {{
-            inx_continuation_push_free(record_index);
-            return true;
+        if (uses_lane_slot) {{
+            uint previous = atomicCompSwap(
+                continuation_lane_slots[lane_slot], 0u, record_index + 1u
+            );
+            if (previous != 0u) {{
+                inx_continuation_push_free(record_index);
+                return true;
+            }}
         }}
-    }} else if (atomicAdd(continuation_lane_slots[lane_slot], 0u) != record_index + 1u) {{
+    }} else if (uses_lane_slot
+        && atomicAdd(continuation_lane_slots[lane_slot], 0u) != record_index + 1u) {{
         atomicAdd(continuation_counters.stale_generation, 1u);
         return false;
     }}
@@ -3475,10 +4671,10 @@ bool inx_continuation_suspend(
             particle_index, particle_generation, join_index, join_expected_mask
         );
         if (branch_token == 0u) {{
-            if (!reusing_record) {{
+            if (!reusing_record && uses_lane_slot) {{
                 atomicCompSwap(continuation_lane_slots[lane_slot], record_index + 1u, 0u);
-                inx_continuation_push_free(record_index);
             }}
+            if (!reusing_record) inx_continuation_push_free(record_index);
             atomicAdd(continuation_counters.dropped_capacity, 1u);
             return false;
         }}
@@ -3494,18 +4690,20 @@ bool inx_continuation_suspend(
     continuation_record_words[base + 7u] = lane_index;
     continuation_record_words[base + 8u] = branch_token;
     continuation_record_words[base + 9u] = join_index;
-    continuation_record_words[base + 10u] = 0u;
+    continuation_record_words[base + 10u] = inx_continuation_context_kind;
     continuation_record_words[base + 11u] = flags;
     continuation_record_words[base + 12u] = 0u;
     continuation_record_words[base + 13u] = 0u;
-    continuation_record_words[base + 14u] = 0u;
-    continuation_record_words[base + 15u] = 0u;
+    continuation_record_words[base + 14u] = inx_continuation_context_lifecycle;
+    continuation_record_words[base + 15u] = inx_continuation_context_generation;
+    if (!reusing_record) inx_store_continuation_context(record_index);
+    inx_last_continuation_record_index = record_index;
     memoryBarrierBuffer();
     if (!inx_continuation_append_active(record_index)) {{
-        if (!reusing_record) {{
+        if (!reusing_record && uses_lane_slot) {{
             atomicCompSwap(continuation_lane_slots[lane_slot], record_index + 1u, 0u);
-            inx_continuation_push_free(record_index);
         }}
+        if (!reusing_record) inx_continuation_push_free(record_index);
         atomicAdd(continuation_counters.dropped_capacity, 1u);
         return false;
     }}
@@ -3601,10 +4799,9 @@ bool inx_until_frames(
         existing_record
     );
     if (suspended) {{
-        uint lane_slot = particle_index * continuation_counters.lane_count + lane_index;
-        uint record_slot = atomicAdd(continuation_lane_slots[lane_slot], 0u);
-        if (record_slot != 0u) {{
-            uint base = inx_continuation_record_base(record_slot - 1u);
+        uint record_index = inx_last_continuation_record_index;
+        if (record_index != INX_CONTINUATION_INVALID_INDEX) {{
+            uint base = inx_continuation_record_base(record_index);
             continuation_record_words[base + 12u] = deadline;
         }}
     }}
@@ -3651,10 +4848,9 @@ bool inx_until_seconds(
         existing_record
     );
     if (suspended) {{
-        uint lane_slot = particle_index * continuation_counters.lane_count + lane_index;
-        uint record_slot = atomicAdd(continuation_lane_slots[lane_slot], 0u);
-        if (record_slot != 0u) {{
-            uint base = inx_continuation_record_base(record_slot - 1u);
+        uint record_index = inx_last_continuation_record_index;
+        if (record_index != INX_CONTINUATION_INVALID_INDEX) {{
+            uint base = inx_continuation_record_base(record_index);
             continuation_record_words[base + 12u] = deadline_low;
             continuation_record_words[base + 13u] = deadline_high;
         }}
@@ -3770,7 +4966,9 @@ bool inx_continuation_time_reached(uint wake_low, uint wake_high) {
 void inx_continuation_discard(uint record_index, uint base) {
     uint particle_index = continuation_record_words[base + 0u];
     uint lane_index = continuation_record_words[base + 7u];
-    if (particle_index < continuation_pc.particle_capacity
+    bool uses_lane_slot = continuation_record_words[base + 10u] == 0u;
+    if (uses_lane_slot
+        && particle_index < continuation_pc.particle_capacity
         && lane_index < continuation_pc.lane_count) {
         uint lane_slot = particle_index * continuation_pc.lane_count + lane_index;
         atomicCompSwap(continuation_lane_slots[lane_slot], record_index + 1u, 0u);
@@ -3835,12 +5033,89 @@ def _continuation_dispatch_glsl(
     continuation_lane_indices: Mapping[str, int],
     continuation_join_indices: Mapping[tuple[ParticleStage, str, str], int],
 ) -> str:
+    collision_enabled = any(
+        instruction.opcode == "collide_scene"
+        for instruction in emitter.update.instructions
+    )
+    field_by_id = {stable_id: field for stable_id, _value_type, field in fields}
+
+    def contact_field(stable_id: str) -> str:
+        try:
+            return field_by_id[stable_id]
+        except KeyError as exc:
+            raise GpuParticleCompileError(
+                f"contact continuation requires particle attribute {stable_id!r}"
+            ) from exc
+
+    contact_validation = (
+        """
+    if (continuation_record_words[record_base + 10u]
+        == INX_CONTINUATION_CONTEXT_CONTACT) {
+        uint snapshot_base = inx_continuation_record_index * 24u;
+        if (contact_continuation_snapshot_words[snapshot_base + 0u]
+                != particle_index
+            || contact_continuation_snapshot_words[snapshot_base + 1u]
+                != particle_generation
+            || contact_continuation_snapshot_words[snapshot_base + 23u]
+                != continuation_record_words[record_base + 15u]) {
+            atomicAdd(continuation_counters.stale_generation, 1u);
+            inx_finish_continuation(
+                inx_continuation_record_index, particle_index, lane_index
+            );
+            return;
+        }
+    }
+"""
+        if collision_enabled
+        else ""
+    )
+    contact_restore = (
+        f"""
+    if (inx_continuation_context_kind == INX_CONTINUATION_CONTEXT_CONTACT) {{
+        uint snapshot_base = inx_continuation_record_index * 24u;
+        inx_continuation_context_identity_low =
+            contact_continuation_snapshot_words[snapshot_base + 2u];
+        inx_continuation_context_identity_high =
+            contact_continuation_snapshot_words[snapshot_base + 3u];
+        state.{contact_field("builtin.collision_hit")} =
+            inx_contact_lifecycle == 2u ? 0u : 1u;
+        state.{contact_field("builtin.collision_point")} = vec3(
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 4u]),
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 5u]),
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 6u]));
+        state.{contact_field("builtin.collision_penetration")} =
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 7u]);
+        state.{contact_field("builtin.collision_normal")} = vec3(
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 8u]),
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 9u]),
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 10u]));
+        state.{contact_field("builtin.collision_relative_velocity")} = vec3(
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 12u]),
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 13u]),
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 14u]));
+        state.{contact_field("builtin.collision_material")} = vec4(
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 16u]),
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 17u]),
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 18u]),
+            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 19u]));
+        state.{contact_field("builtin.collision_is_trigger")} =
+            contact_continuation_snapshot_words[snapshot_base + 20u];
+        state.{contact_field("builtin.collision_collider_id_low")} =
+            contact_continuation_snapshot_words[snapshot_base + 2u];
+        state.{contact_field("builtin.collision_collider_id_high")} =
+            contact_continuation_snapshot_words[snapshot_base + 3u];
+    }}
+"""
+        if collision_enabled
+        else ""
+    )
     flow_by_stage = {
         (flow.lifecycle_stage, flow.flow_id): flow for flow in emitter.flows
     }
     function_by_stage = {
         KernelStage.INIT: emitter.init,
         KernelStage.UPDATE: emitter.update,
+        KernelStage.CONTACT: emitter.contact,
         KernelStage.RENDERING: emitter.rendering,
     }
     cases = []
@@ -3933,6 +5208,12 @@ def _continuation_dispatch_glsl(
                 f"state.{head_field} = (state.{head_field} + 1u) % "
                 f"{event_type.queue_capacity}u; }}"
             )
+        elif suspension.lifecycle_stage in {
+            ParticleStage.COLLISION_ENTER,
+            ParticleStage.COLLISION_STAY,
+            ParticleStage.COLLISION_EXIT,
+        }:
+            completion = "            // Contact invocation completed independently."
         else:
             completion = (
                 "            if (!inx_continuation_resuspended) "
@@ -3952,15 +5233,21 @@ def _continuation_dispatch_glsl(
         data_interface_layout,
         parameter_slots,
         continuation_dispatch=True,
+        contact_enabled=collision_enabled,
     )
-    bindings = _continuation_bindings_glsl(5)
+    bindings = _continuation_bindings_glsl(
+        5, contact_context=collision_enabled
+    )
     switch_cases = "\n".join(cases)
     return (
         prelude
         + bindings
         + f"""
 void inx_finish_continuation(uint record_index, uint particle_index, uint lane_index) {{
-    if (particle_index < continuation_counters.particle_capacity
+    uint base = inx_continuation_record_base(record_index);
+    bool uses_lane_slot = continuation_record_words[base + 10u] == 0u;
+    if (uses_lane_slot
+        && particle_index < continuation_counters.particle_capacity
         && lane_index < continuation_counters.lane_count) {{
         uint lane_slot = particle_index * continuation_counters.lane_count + lane_index;
         atomicCompSwap(continuation_lane_slots[lane_slot], record_index + 1u, 0u);
@@ -3992,6 +5279,7 @@ void main() {{
         );
         return;
     }}
+{contact_validation}
 
     uint previous_lifecycle_flags = atomicOr(
         states[particle_index].lifecycle_flags,
@@ -4009,6 +5297,12 @@ void main() {{
     memoryBarrierBuffer();
 
     ParticleState state = states[particle_index];
+    inx_continuation_context_kind = continuation_record_words[record_base + 10u];
+    uint inx_contact_lifecycle = continuation_record_words[record_base + 14u];
+    inx_continuation_context_lifecycle = inx_contact_lifecycle;
+    inx_continuation_context_generation = continuation_record_words[record_base + 15u];
+    inx_continuation_context_record_index = INX_CONTINUATION_INVALID_INDEX;
+{contact_restore}
     bool particle_alive = true;
     bool inx_stage_suspended = false;
     bool inx_continuation_resuspended = false;
@@ -4084,6 +5378,7 @@ def _shader_prelude(
     parameter_slots: Mapping[str, tuple[int, TypeRef]],
     *,
     continuation_dispatch: bool = False,
+    contact_enabled: bool = False,
 ) -> str:
     state_fields = "\n".join(
         f"    {_storage_type(value_type)} {field};"
@@ -4105,6 +5400,15 @@ def _shader_prelude(
         else ""
     )
     ramp_parameter_glsl = _ramp_parameter_glsl(parameter_slots)
+    contact_glsl = _contact_bindings_glsl(7) if contact_enabled else ""
+    contact_store_call = (
+        """inx_store_contact(
+            gl_GlobalInvocationID.x, collider_id, corrected_world_position,
+            world_normal, relative_velocity, penetration, is_trigger,
+            collider.material, simulation_scale);"""
+        if contact_enabled
+        else ""
+    )
     push_constants = (
         """layout(push_constant) uniform ParticlePushConstants {
     uint continuation_capacity;
@@ -4120,7 +5424,7 @@ def _shader_prelude(
     uint continuation_record_stride_words;
     uint system_seed;
     float delta_time;
-    uint reserved;
+    uint diagnostic_flags;
     uint continuation_reserved0;
     uint continuation_reserved1;
 } pc;"""
@@ -4133,7 +5437,7 @@ def _shader_prelude(
     uint system_seed;
     uint simulation_step;
     float delta_time;
-    uint reserved;
+    uint diagnostic_flags;
 } pc;"""
     )
     return f"""#version 450
@@ -4169,6 +5473,15 @@ layout(std430, set = 0, binding = 2) buffer ParticleCounters {{
     uint visible_count;
     uint dropped_count;
     uint reserved_count;
+    uint collision_hit_count;
+    uint collision_response_count;
+    uint collision_trigger_count;
+    uint collision_enter_count;
+    uint collision_stay_count;
+    uint collision_exit_count;
+    uint collision_max_outward_speed_bits;
+    uint collision_max_tangent_speed_bits;
+    uint collision_candidate_overflow_count;
     uint event_counters[];
 }} counters;
 layout(std430, set = 0, binding = 3) buffer ParticleInstances {{ ParticleRenderInstance instances[]; }};
@@ -4211,7 +5524,7 @@ struct InxParticleCollisionBvhNode {{
     vec4 bounds_max;
     uvec4 metadata;
 }};
-layout(std430, set = 0, binding = 8) readonly buffer ParticleCollisionSceneHeader {{
+layout(std430, set = 6, binding = 0) readonly buffer ParticleCollisionSceneHeader {{
     uint collider_count;
     uint static_collider_count;
     uint collision_scene_revision_low;
@@ -4220,22 +5533,22 @@ layout(std430, set = 0, binding = 8) readonly buffer ParticleCollisionSceneHeade
     uvec4 grid_dimensions;
     uvec4 topology;
 }} inx_collision_scene;
-layout(std430, set = 0, binding = 9) readonly buffer ParticleCollisionSceneRecords {{
+layout(std430, set = 6, binding = 1) readonly buffer ParticleCollisionSceneRecords {{
     InxParticleCollider particle_colliders[];
 }};
-layout(std430, set = 0, binding = 10) readonly buffer ParticleCollisionGridOffsets {{
+layout(std430, set = 6, binding = 2) readonly buffer ParticleCollisionGridOffsets {{
     uint particle_collision_grid_offsets[];
 }};
-layout(std430, set = 0, binding = 11) readonly buffer ParticleCollisionGridColliderIndices {{
+layout(std430, set = 6, binding = 3) readonly buffer ParticleCollisionGridColliderIndices {{
     uint particle_collision_grid_collider_indices[];
 }};
-layout(std430, set = 0, binding = 12) readonly buffer ParticleCollisionMeshVertices {{
+layout(std430, set = 6, binding = 4) readonly buffer ParticleCollisionMeshVertices {{
     vec4 particle_collision_mesh_vertices[];
 }};
-layout(std430, set = 0, binding = 13) readonly buffer ParticleCollisionMeshIndices {{
+layout(std430, set = 6, binding = 5) readonly buffer ParticleCollisionMeshIndices {{
     uint particle_collision_mesh_indices[];
 }};
-layout(std430, set = 0, binding = 14) readonly buffer ParticleCollisionMeshBvh {{
+layout(std430, set = 6, binding = 6) readonly buffer ParticleCollisionMeshBvh {{
     InxParticleCollisionBvhNode particle_collision_mesh_bvh[];
 }};
 layout(std430, set = 0, binding = 15) readonly buffer ParticleSimulationControl {{
@@ -4260,6 +5573,7 @@ layout(std430, set = 3, binding = 1) readonly buffer ParticleEmitterSpawnMetadat
 {data_interface_glsl}
 {push_constants}
 {ramp_parameter_glsl}
+{contact_glsl}
 
 const uint INX_EMITTER_SEED = {emitter_seed}u;
 const uint INX_INVALID_INDEX = 0xffffffffu;
@@ -4359,6 +5673,28 @@ vec3 inx_vector_noise_3d(vec3 position, float frequency, uint seed) {{
 vec2 inx_safe_normalize(vec2 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : vec2(0.0); }}
 vec3 inx_safe_normalize(vec3 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : vec3(0.0); }}
 vec4 inx_safe_normalize(vec4 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : vec4(0.0); }}
+
+vec3 inx_target_position_velocity(
+    vec3 position,
+    vec3 velocity,
+    vec3 target,
+    float speed,
+    float responsiveness,
+    float arrival_radius,
+    float delta_time
+) {{
+    vec3 offset = target - position;
+    float distance_to_target = length(offset);
+    vec3 direction = distance_to_target > 0.000001
+        ? offset / distance_to_target
+        : vec3(0.0);
+    float arrival = arrival_radius > 0.000001
+        ? clamp(distance_to_target / arrival_radius, 0.0, 1.0)
+        : 1.0;
+    vec3 desired_velocity = direction * max(speed, 0.0) * arrival;
+    float blend = 1.0 - exp(-max(responsiveness, 0.0) * max(delta_time, 0.0));
+    return mix(velocity, desired_velocity, clamp(blend, 0.0, 1.0));
+}}
 
 vec3 inx_collide_plane_position(vec3 position, vec3 velocity, vec3 point, vec3 normal,
                                 float radius, float restitution, float friction) {{
@@ -4937,6 +6273,13 @@ bool inx_collide_scene(inout vec3 simulation_position, inout vec3 simulation_vel
     ivec3 query_min = inx_collision_grid_cell(min(previous_world_position, world_position) - vec3(world_radius));
     ivec3 query_max = inx_collision_grid_cell(max(previous_world_position, world_position) + vec3(world_radius));
 
+    // Gather before resolving so response order depends only on stable collider
+    // identity, never broadphase cell traversal. The bounded private array is
+    // paid only by collision-enabled kernels and does not expand ParticleState.
+    const uint candidate_capacity = 16u;
+    uint candidate_count = 0u;
+    uint candidate_indices[16];
+
     for (int z = query_min.z; z <= query_max.z; ++z) {{
         for (int y = query_min.y; y <= query_max.y; ++y) {{
             for (int x = query_min.x; x <= query_max.x; ++x) {{
@@ -4965,9 +6308,48 @@ bool inx_collide_scene(inout vec3 simulation_position, inout vec3 simulation_vel
                         any(greaterThan(particle_swept_min, collider_swept_max)))
                         continue;
 
-                    vec3 corrected_world_position = world_position;
-                    vec3 world_normal = vec3(0.0, 1.0, 0.0);
-                    bool hit = collider.metadata.x == 0u
+                    uint insertion = candidate_count;
+                    bool duplicate = false;
+                    for (uint slot = 0u; slot < candidate_count; ++slot) {{
+                        uint existing_index = candidate_indices[slot];
+                        if (existing_index == collider_index) {{
+                            duplicate = true;
+                            break;
+                        }}
+                        uvec2 existing_id = particle_colliders[existing_index].identity.xy;
+                        bool lower_identity = collider.identity.y < existing_id.y ||
+                            (collider.identity.y == existing_id.y &&
+                             collider.identity.x < existing_id.x);
+                        if (insertion == candidate_count && lower_identity)
+                            insertion = slot;
+                    }}
+                    if (duplicate) continue;
+                    if (candidate_count < candidate_capacity) {{
+                        for (uint slot = candidate_count; slot > insertion; --slot)
+                            candidate_indices[slot] = candidate_indices[slot - 1u];
+                        candidate_indices[insertion] = collider_index;
+                        ++candidate_count;
+                    }} else {{
+                        if ((pc.diagnostic_flags & 1u) != 0u)
+                            atomicAdd(counters.collision_candidate_overflow_count, 1u);
+                        if (insertion < candidate_capacity) {{
+                            for (uint slot = candidate_capacity - 1u; slot > insertion; --slot)
+                                candidate_indices[slot] = candidate_indices[slot - 1u];
+                            candidate_indices[insertion] = collider_index;
+                        }}
+                    }}
+                }}
+            }}
+        }}
+    }}
+
+    for (uint candidate = 0u; candidate < candidate_count; ++candidate) {{
+        uint collider_index = candidate_indices[candidate];
+        InxParticleCollider collider = particle_colliders[collider_index];
+
+        vec3 corrected_world_position = world_position;
+        vec3 world_normal = vec3(0.0, 1.0, 0.0);
+        bool hit = collider.metadata.x == 0u
                                    ? inx_collision_box(collider, previous_world_position,
                                                        world_position, world_radius,
                                                        corrected_world_position, world_normal)
@@ -4984,39 +6366,53 @@ bool inx_collide_scene(inout vec3 simulation_position, inout vec3 simulation_vel
                                                         world_position, world_radius,
                                                         corrected_world_position, world_normal)
                                    : false;
-                    if (!hit) continue;
+        if (!hit) continue;
 
-                    any_hit = true;
-                    vec3 relative_velocity = world_velocity - collider.linear_velocity.xyz;
-                    float penetration = length(corrected_world_position - world_position);
-                    uvec2 collider_id = collider.identity.xy;
-                    bool is_trigger = (collider.metadata.z & 1u) != 0u;
-                    bool lower_identity = collider_id.y < primary_collider_id.y ||
-                        (collider_id.y == primary_collider_id.y &&
-                         collider_id.x < primary_collider_id.x);
-                    if (!primary_contact_set || lower_identity) {{
-                        primary_contact_set = true;
-                        primary_world_normal = world_normal;
-                        primary_world_point = corrected_world_position;
-                        primary_world_relative_velocity = relative_velocity;
-                        primary_world_penetration = penetration;
-                        primary_is_trigger = is_trigger;
-                        primary_material = collider.material;
-                        primary_collider_id = collider_id;
-                    }}
-                    if (is_trigger) continue;
+        any_hit = true;
+        bool is_trigger = (collider.metadata.z & 1u) != 0u;
+        if ((pc.diagnostic_flags & 1u) != 0u) {{
+            atomicAdd(counters.collision_hit_count, 1u);
+            if (is_trigger)
+                atomicAdd(counters.collision_trigger_count, 1u);
+            else
+                atomicAdd(counters.collision_response_count, 1u);
+        }}
+        vec3 relative_velocity = world_velocity - collider.linear_velocity.xyz;
+        float penetration = length(corrected_world_position - world_position);
+        uvec2 collider_id = collider.identity.xy;
+        bool lower_identity = collider_id.y < primary_collider_id.y ||
+            (collider_id.y == primary_collider_id.y &&
+             collider_id.x < primary_collider_id.x);
+        if (!primary_contact_set || lower_identity) {{
+            primary_contact_set = true;
+            primary_world_normal = world_normal;
+            primary_world_point = corrected_world_position;
+            primary_world_relative_velocity = relative_velocity;
+            primary_world_penetration = penetration;
+            primary_is_trigger = is_trigger;
+            primary_material = collider.material;
+            primary_collider_id = collider_id;
+        }}
+        {contact_store_call}
+        if (is_trigger) continue;
 
-                    world_position = corrected_world_position;
-                    float normal_speed = dot(relative_velocity, world_normal);
-                    if (normal_speed < 0.0) {{
-                        vec3 tangent_velocity = relative_velocity - world_normal * normal_speed;
-                        float friction = clamp(collider.material.x * max(friction_scale, 0.0), 0.0, 1.0);
-                        float restitution = clamp(collider.material.y * max(restitution_scale, 0.0), 0.0, 1.0);
-                        relative_velocity = tangent_velocity * (1.0 - friction)
-                                          - world_normal * normal_speed * restitution;
-                        world_velocity = relative_velocity + collider.linear_velocity.xyz;
-                    }}
-                }}
+        world_position = corrected_world_position;
+        float normal_speed = dot(relative_velocity, world_normal);
+        if (normal_speed < 0.0) {{
+            vec3 tangent_velocity = relative_velocity - world_normal * normal_speed;
+            float friction = clamp(collider.material.x * max(friction_scale, 0.0), 0.0, 1.0);
+            float restitution = clamp(collider.material.y * max(restitution_scale, 0.0), 0.0, 1.0);
+            relative_velocity = tangent_velocity * (1.0 - friction)
+                              - world_normal * normal_speed * restitution;
+            world_velocity = relative_velocity + collider.linear_velocity.xyz;
+            if ((pc.diagnostic_flags & 1u) != 0u) {{
+                float outward_speed = max(dot(relative_velocity, world_normal), 0.0);
+                vec3 response_tangent =
+                    relative_velocity - world_normal * dot(relative_velocity, world_normal);
+                atomicMax(counters.collision_max_outward_speed_bits,
+                          floatBitsToUint(outward_speed));
+                atomicMax(counters.collision_max_tangent_speed_bits,
+                          floatBitsToUint(length(response_tangent)));
             }}
         }}
     }}
@@ -5096,6 +6492,15 @@ void main() {
         counters.visible_count = 0u;
         counters.dropped_count = 0u;
         counters.reserved_count = 0u;
+        counters.collision_hit_count = 0u;
+        counters.collision_response_count = 0u;
+        counters.collision_trigger_count = 0u;
+        counters.collision_enter_count = 0u;
+        counters.collision_stay_count = 0u;
+        counters.collision_exit_count = 0u;
+        counters.collision_max_outward_speed_bits = 0u;
+        counters.collision_max_tangent_speed_bits = 0u;
+        counters.collision_candidate_overflow_count = 0u;
         indirect_args.vertex_count = 6u;
         indirect_args.instance_count = 0u;
         indirect_args.first_vertex = 0u;
@@ -5166,8 +6571,19 @@ void main() {{
 def _render_reset_main() -> str:
     return """
 void main() {
-    if (simulation_control.simulation_allowed == 0u) return;
     if (gl_GlobalInvocationID.x != 0u) return;
+    if ((pc.diagnostic_flags & 2u) != 0u) {
+        counters.collision_hit_count = 0u;
+        counters.collision_response_count = 0u;
+        counters.collision_trigger_count = 0u;
+        counters.collision_enter_count = 0u;
+        counters.collision_stay_count = 0u;
+        counters.collision_exit_count = 0u;
+        counters.collision_max_outward_speed_bits = 0u;
+        counters.collision_max_tangent_speed_bits = 0u;
+        counters.collision_candidate_overflow_count = 0u;
+    }
+    if (simulation_control.simulation_allowed == 0u) return;
     counters.visible_count = 0u;
     indirect_args.vertex_count = 6u;
     indirect_args.instance_count = 0u;
@@ -5263,7 +6679,7 @@ def _finite_state_check(
 
 def _finite_expression(expression: str, value_type: TypeRef) -> str:
     kind = value_type.value_type
-    if kind in {ValueType.BOOL, ValueType.I32, ValueType.U32, ValueType.TEXTURE2D}:
+    if kind in {ValueType.BOOL, ValueType.I32, ValueType.U32}:
         return "true"
     if kind in {ValueType.F32, ValueType.VEC2, ValueType.VEC3, ValueType.VEC4, ValueType.COLOR}:
         return f"inx_finite({expression})"
@@ -5584,12 +7000,12 @@ def pack_gpu_particle_parameters(
                         struct.pack("<4f", key.color[3], 0.0, 0.0, 0.0),
                     )
                 )
-        elif kind is ValueType.TEXTURE2D:
+        elif kind in {ValueType.TEXTURE2D, ValueType.MESH}:
             try:
                 AssetReference.from_dict(value)
             except (TypeError, ValueError) as exc:
                 raise GpuParticleCompileError(
-                    f"particle parameter {parameter.name!r} requires a Texture2D asset reference"
+                    f"particle parameter {parameter.name!r} requires an asset reference"
                 ) from exc
             encoded = []
         elif kind is ValueType.BOOL:
@@ -5639,7 +7055,7 @@ def pack_gpu_particle_parameters(
 def _storage_type(value_type: TypeRef) -> str:
     return (
         "uint"
-        if value_type.value_type in {ValueType.BOOL, ValueType.TEXTURE2D}
+        if value_type.value_type is ValueType.BOOL
         else _glsl_type(value_type)
     )
 
@@ -5769,7 +7185,7 @@ def _vector_literal(values: Any, count: int) -> str:
 
 def _shape_kind(value: str) -> int:
     try:
-        return {"point": 0, "sphere": 1, "box": 2, "cone": 3, "mesh": 4}[value]
+        return {"point": 0, "sphere": 1, "box": 2, "cone": 3, "mesh": 4, "sdf": 5}[value]
     except KeyError as exc:
         raise GpuParticleCompileError(f"unsupported particle shape {value!r}") from exc
 

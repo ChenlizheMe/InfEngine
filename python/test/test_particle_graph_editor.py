@@ -13,7 +13,7 @@ from Infernux.engine.ui.graph_document_authoring import (
     ParticleEmitterGraphAuthoringModel,
     particle_stage_definition_filter,
 )
-from Infernux.graph.types import TypeRef, ValueType
+from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 from Infernux.particle.asset import (
     EmitterSettings,
     ParticleEmitterAsset,
@@ -54,7 +54,7 @@ def test_particle_document_authoring_round_trip_keeps_strict_roots():
 
 
     assert model.remove_node("root.init") is False
-    assert "particle.context.delta_time" not in {
+    assert "particle.context.delta_time" in {
         definition.type_id for definition in model.registered_types()
     }
     assert "particle.attribute.velocity" in {
@@ -78,6 +78,40 @@ def test_particle_update_palette_exposes_explicit_delta_time_value():
 
     assert "particle.context.delta_time" in {
         definition.type_id for definition in model.registered_types()
+    }
+
+
+def test_target_position_is_a_lifecycle_operation_not_a_particle_attribute():
+    asset = ParticleGraphAsset()
+    emitter = asset.emitters[0]
+    update_types = {
+        definition.type_id for definition in _stage_model(emitter.update).registered_types()
+    }
+    init_types = {
+        definition.type_id for definition in _stage_model(emitter.init).registered_types()
+    }
+    rendering_types = {
+        definition.type_id
+        for definition in _stage_model(emitter.rendering).registered_types()
+    }
+
+    assert "particle.motion.target_position" in update_types
+    assert "particle.motion.target_position" in init_types
+    assert "particle.motion.target_position" in rendering_types
+    definition = particle_graph_node_definitions(asset).registry.get(
+        "particle.motion.target_position"
+    )
+    assert definition is not None
+    assert {port.id for port in definition.ports} == {
+        "in",
+        "out",
+        "target",
+        "speed",
+        "responsiveness",
+        "arrival_radius",
+    }
+    assert "target" not in {
+        attribute.stable_id for attribute in emitter.attributes
     }
 
 
@@ -158,6 +192,8 @@ def test_particle_data_and_attribute_nodes_are_creatable_in_every_particle_stage
     for type_id in (
         "particle.attribute.get",
         "particle.vector_field.sample",
+        "particle.sdf.sample_distance",
+        "particle.sdf.sample_gradient",
         "particle.attribute.lifetime",
         "particle.attribute.normalized_age",
     ):
@@ -220,14 +256,20 @@ def test_attribute_cache_node_owns_storage_and_infers_its_input_type():
     assert model.node_creation_state("particle.attribute.cache") == (True, "")
 
 
-def test_attribute_cache_infers_texture_handle_and_forces_set_composition():
+@pytest.mark.parametrize("resource_type", (ValueType.TEXTURE2D, ValueType.MESH))
+def test_attribute_cache_rejects_graph_resources(resource_type):
+    default = (
+        {"guid": "texture-guid", "path_hint": "Assets/Smoke.png"}
+        if resource_type is ValueType.TEXTURE2D
+        else {"guid": "mesh-guid", "path_hint": "Assets/Smoke.fbx"}
+    )
     asset = ParticleGraphAsset(
         parameters=(
             ParticleParameter(
-                "smoke-texture",
-                "Smoke Texture",
-                TypeRef(ValueType.TEXTURE2D),
-                {"guid": "texture-guid", "path_hint": "Assets/Smoke.png"},
+                "resource",
+                "Resource",
+                TypeRef(resource_type),
+                default,
             ),
         )
     )
@@ -241,17 +283,26 @@ def test_attribute_cache_infers_texture_handle_and_forces_set_composition():
     )
     model.prepare_node_creation("init")
     parameter = model.add_node(
-        "particle.parameter.get",
+        "particle.parameter",
         20.0,
         250.0,
-        parameter="smoke-texture",
+        parameter="resource",
     )
 
-    assert model.add_link(parameter.uid, "value", cache.uid, "value") is not None
+    validation = model.validate_link(parameter.uid, "value", cache.uid, "value")
+    assert validation.is_valid is False
+    assert validation.code == "unsupported_cache_type"
+    assert model.add_link(parameter.uid, "value", cache.uid, "value") is None
 
-    assert cache.data["value_type"] == "texture2d"
-    assert cache.data["value"] == {"guid": "", "path_hint": ""}
-    assert cache.data["composition"] == "set"
+
+def test_particle_registry_has_no_resource_attribute_nodes():
+    definitions = particle_graph_node_definitions(ParticleGraphAsset())
+    type_ids = {item.type_id for item in definitions.registry.definitions()}
+
+    assert "particle.attribute.mesh" not in type_ids
+    assert "particle.attribute.texture2d" not in type_ids
+    assert all("set mesh" not in item.lower() for item in type_ids)
+    assert all("get mesh" not in item.lower() for item in type_ids)
 
 
 def test_particle_attribute_node_title_tracks_composition_mode():
@@ -329,6 +380,8 @@ def test_get_attribute_uses_dropdown_and_instance_typed_port_colors():
     assert "builtin.collision_penetration" in attribute_field.enum_values
     assert "builtin.collision_is_trigger" in attribute_field.enum_values
     assert "builtin.collision_material" in attribute_field.enum_values
+    assert "builtin.collision_collider_id_low" in attribute_field.enum_values
+    assert "builtin.collision_collider_id_high" in attribute_field.enum_values
     assert not any(
         value.startswith("internal.collision_")
         for value in attribute_field.enum_values
@@ -363,7 +416,7 @@ def test_get_parameter_uses_parameter_identity_as_title_and_typed_output():
         asset.emitters[0], definition_set=definitions
     )
     model.prepare_node_creation("update")
-    node = model.add_node("particle.parameter.get", 200.0, 230.0)
+    node = model.add_node("particle.parameter", 200.0, 230.0)
 
     wind_type = model.get_node_type(node)
     wind_pin = next(pin for pin in wind_type.pins if pin.id == "value")
@@ -520,7 +573,7 @@ def test_particle_graph_blackboard_api_updates_and_removes_reference_nodes():
     parameter = panel.add_authoring_parameter(
         "Wind", "vec3", [0.0, 1.0, 0.0]
     )
-    node = panel.add_authoring_node("update", "particle.parameter.get", 200.0, 230.0)
+    node = panel.add_authoring_node("update", "particle.parameter", 200.0, 230.0)
     assert node["properties"]["parameter"] == parameter["stable_id"]
 
     changed = panel.update_authoring_parameter(
@@ -533,7 +586,7 @@ def test_particle_graph_blackboard_api_updates_and_removes_reference_nodes():
     panel.remove_authoring_parameter(parameter["stable_id"])
     assert panel.asset.parameters == ()
     assert not any(
-        record.type_id == "particle.parameter.get"
+        record.type_id == "particle.parameter"
         for record in panel.asset.emitters[0].update.nodes
     )
 
@@ -554,7 +607,7 @@ def test_particle_parameter_canvas_drop_creates_the_selected_parameter_node():
     nodes = [
         node
         for node in panel.asset.emitters[0].update.nodes
-        if node.type_id == "particle.parameter.get"
+        if node.type_id == "particle.parameter"
     ]
     assert len(nodes) == 1
     assert nodes[0].properties["parameter"] == parameter["stable_id"]
@@ -572,10 +625,36 @@ def test_particle_parameter_canvas_drop_creates_the_selected_parameter_node():
     canvas_node = next(
         node
         for node in panel._model.nodes
-        if node.type_id == "particle.parameter.get"
+        if node.type_id == "particle.parameter"
         and node.data["parameter"] == parameter["stable_id"]
     )
     assert panel._model.get_node_type(canvas_node).label == "Wind"
+
+
+def test_particle_vector_parameter_adopts_fixed_attribute_space_and_compiles():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from Infernux.particle import ParticleGraphCompiler, ParticleKernelLowerer
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    parameter = panel.add_authoring_parameter("Wind", "vec3", [0.0, 1.0, 0.0])
+    source = panel.add_authoring_parameter_node(
+        parameter["stable_id"], 180.0, 360.0, stage="update"
+    )
+    velocity_uid = "update::update.velocity"
+
+    link = panel.connect_value(source["uid"], "value", velocity_uid, "value")
+    program = ParticleGraphCompiler().compile(panel.asset)
+
+    assert link["changed"] is True
+    converted = next(
+        item
+        for item in ParticleKernelLowerer().lower(program).emitters[0].update.instructions
+        if item.opcode == "convert_space"
+    )
+    assert converted.result_type == TypeRef(
+        ValueType.VEC3, CoordinateSpace.SIMULATION
+    )
 
 
 def test_removing_attribute_cache_node_removes_dependent_get_nodes():
@@ -633,7 +712,7 @@ def test_particle_graph_editor_authors_texture2d_parameter_node():
     assert parameter["default"] == {"guid": "", "path_hint": ""}
     assert node["properties"]["parameter"] == parameter["stable_id"]
     canvas_node = panel._model.find_node(node["uid"])
-    port = panel._definition_for_type("particle.parameter.get").port("value")
+    port = panel._definition_for_type("particle.parameter").port("value")
     assert panel._model._effective_port_type(canvas_node, port) == TypeRef(
         ValueType.TEXTURE2D
     )
@@ -1006,7 +1085,180 @@ def test_particle_graph_alignment_axis_is_only_visible_in_axis_mode():
     assert _node_property_is_visible(node, "alignment_axis") is False
     node.data["alignment"] = "axis"
     assert _node_property_is_visible(node, "alignment_axis") is True
-    assert _node_property_is_visible(node, "material") is True
+    assert _node_property_is_visible(node, "shader") is True
+
+
+def test_particle_output_exposes_selected_shader_properties_as_node_inputs():
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        ParticleGraphEditorPanel,
+    )
+
+    panel = ParticleGraphEditorPanel()
+    output = panel._model.find_node("rendering::output.sprite")
+    definition = panel._definition_for_node(output)
+
+    assert definition is not None
+    assert {item.id for item in definition.properties} >= {"shader"}
+    assert "material" not in {item.id for item in definition.properties}
+    shader_ports = {
+        item.id: item.value_type.value_type
+        for item in definition.ports
+        if item.id.startswith("shader.") and item.value_type is not None
+    }
+    assert shader_ports == {
+        "shader.baseColor": ValueType.COLOR,
+        "shader.texSampler": ValueType.TEXTURE2D,
+        "shader.softness": ValueType.F32,
+    }
+
+
+@pytest.mark.parametrize(
+    "type_id",
+    (
+        "particle.output.sprite",
+        "particle.output.mesh",
+        "particle.output.ribbon",
+    ),
+)
+def test_every_particle_output_uses_the_same_shader_property_contract(type_id):
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        ParticleGraphEditorPanel,
+    )
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    node = (
+        panel._model.find_node("rendering::output.sprite")
+        if type_id == "particle.output.sprite"
+        else panel._on_node_add(type_id, 540.0, 460.0)
+    )
+    definition = panel._definition_for_node(node)
+
+    assert definition is not None
+    assert "shader" in {item.id for item in definition.properties}
+    assert "material" not in {item.id for item in definition.properties}
+    assert {
+        item.id
+        for item in definition.ports
+        if item.id.startswith("shader.")
+    } == {
+        "shader.baseColor",
+        "shader.texSampler",
+        "shader.softness",
+    }
+
+    if type_id == "particle.output.mesh":
+        mesh_port = definition.port("mesh")
+        assert mesh_port is not None
+        assert mesh_port.value_type == TypeRef(ValueType.MESH)
+        assert mesh_port.required is False
+        assert "mesh" not in {item.id for item in definition.properties}
+
+
+def test_particle_output_texture_port_uses_live_asset_reference_path(
+    tmp_path, monkeypatch
+):
+    from Infernux.engine.ui import particle_graph_editor_panel as module
+
+    texture_path = tmp_path / "Smoke.png"
+    texture_path.write_bytes(b"png")
+    monkeypatch.setattr(module, "_asset_guid_from_path", lambda _path: "smoke-guid")
+    monkeypatch.setattr(
+        module,
+        "_portable_asset_path_hint",
+        lambda _path: "Assets/VFX/Smoke.png",
+    )
+
+    panel = module.ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    output = panel._model.find_node("rendering::output.sprite")
+    reference = panel.set_node_asset_reference(
+        output.uid, "shader.texSampler", str(texture_path)
+    )
+
+    assert reference == {
+        "guid": "smoke-guid",
+        "path_hint": "Assets/VFX/Smoke.png",
+    }
+    assert panel._model.find_node(output.uid).data["shader.texSampler"] == reference
+
+
+def test_particle_output_shader_schema_hot_reload_preserves_selection(monkeypatch):
+    from Infernux.engine.ui import particle_graph_editor_panel as module
+
+    panel = module.ParticleGraphEditorPanel()
+    output_uid = "rendering::output.sprite"
+    panel._selected_node_uid = output_uid
+    panel._view.selected_nodes = [output_uid]
+    next_generation = panel._shader_definition_generation + 1
+    monkeypatch.setattr(
+        module, "get_shader_property_generation", lambda: next_generation
+    )
+
+    panel._refresh_shader_definitions_if_needed()
+
+    assert panel._shader_definition_generation == next_generation
+    assert panel._selected_node_uid == output_uid
+    assert panel._view.selected_nodes == [output_uid]
+
+
+def test_particle_output_shader_switch_preserves_compatible_ports_and_links():
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        ParticleGraphEditorPanel,
+    )
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    output_uid = "rendering::output.sprite"
+    parameter = panel.add_authoring_parameter(
+        "Tint", "color", [0.2, 0.4, 0.8, 1.0]
+    )
+    source = panel.add_authoring_parameter_node(
+        parameter["stable_id"], 180.0, 500.0, stage="rendering"
+    )
+    panel.connect_value(source["uid"], "value", output_uid, "shader.baseColor")
+
+    panel.set_node_property(output_uid, "shader", "Particle Six-Way Smoke")
+    panel.set_node_property(output_uid, "shader.alphaScale", 1.75)
+    panel.set_node_property(output_uid, "shader", "Particle Unlit")
+
+    output = panel._model.find_node(output_uid)
+    assert output is not None
+    assert "shader.alphaScale" not in output.data
+    assert any(
+        link.source_node == source["uid"]
+        and link.target_node == output_uid
+        and link.target_pin == "shader.baseColor"
+        for link in panel._model.links
+    )
+
+
+def test_particle_graph_parameter_connects_directly_to_output_shader_property():
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        ParticleGraphEditorPanel,
+    )
+    from Infernux.particle import ParticleGraphCompiler
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    parameter = panel.add_authoring_parameter(
+        "Tint", "color", [0.2, 0.4, 0.8, 1.0]
+    )
+    source = panel.add_authoring_parameter_node(
+        parameter["stable_id"], 180.0, 500.0, stage="rendering"
+    )
+    panel.connect_value(
+        source["uid"],
+        "value",
+        "rendering::output.sprite",
+        "shader.baseColor",
+    )
+
+    output = ParticleGraphCompiler().compile(panel.asset).emitters[0].render_plan.outputs[0]
+    base_color = next(
+        item for item in output.shader_properties if item.name == "baseColor"
+    )
+    assert base_color.parameter_id == parameter["stable_id"]
 
 
 def test_particle_graph_editor_sets_mesh_asset_through_live_authoring_model(
@@ -1106,9 +1358,30 @@ def test_particle_graph_editor_authors_typed_sdf_data_interface(tmp_path, monkey
         },
     )
     collision = panel.add_authoring_node(
-        "update", "particle.update.collide_sdf", 220.0, 380.0
+        "update", "particle.collision.sdf", 220.0, 380.0
     )
     selected = panel.set_node_property(collision["uid"], "interface", interface_id)
+    distance = panel.add_authoring_node(
+        "update", "particle.sdf.sample_distance", 420.0, 380.0
+    )
+    gradient = panel.add_authoring_node(
+        "update", "particle.sdf.sample_gradient", 620.0, 380.0
+    )
+    assert panel.set_node_property(distance["uid"], "interface", interface_id)[
+        "value"
+    ] == interface_id
+    assert panel.set_node_property(gradient["uid"], "interface", interface_id)[
+        "value"
+    ] == interface_id
+    shape = panel.asset.emitters[0].settings.shape.to_dict()
+    shape.update(
+        kind="sdf",
+        sdf_interface=interface_id,
+        sdf_mode="volume",
+    )
+    authored_shape = panel.patch_authoring_emitter_settings(
+        emitter_id, {"shape": shape}
+    )["settings"]["shape"]
 
     assert bound["texture"] == {
         "guid": "sdf-guid",
@@ -1118,6 +1391,9 @@ def test_particle_graph_editor_authors_typed_sdf_data_interface(tmp_path, monkey
     assert patched["distance_scale"] == 2.5
     assert patched["filtering"] == "nearest"
     assert selected["value"] == interface_id
+    assert authored_shape["kind"] == "sdf"
+    assert authored_shape["sdf_interface"] == interface_id
+    assert authored_shape["sdf_mode"] == "volume"
     snapshot = panel.authoring_snapshot()
     emitter_snapshot = snapshot["emitters"][0]
     assert emitter_snapshot["data_interfaces"][0]["stable_id"] == interface_id
@@ -1125,6 +1401,12 @@ def test_particle_graph_editor_authors_typed_sdf_data_interface(tmp_path, monkey
     with pytest.raises(ValueError, match="still referenced"):
         panel.remove_authoring_data_interface(emitter_id, interface_id)
     panel.set_node_property(collision["uid"], "interface", "")
+    panel.set_node_property(distance["uid"], "interface", "")
+    panel.set_node_property(gradient["uid"], "interface", "")
+    with pytest.raises(ValueError, match="Emission Shape"):
+        panel.remove_authoring_data_interface(emitter_id, interface_id)
+    shape.update(kind="point", sdf_interface="")
+    panel.patch_authoring_emitter_settings(emitter_id, {"shape": shape})
     removed = panel.remove_authoring_data_interface(emitter_id, interface_id)
     assert removed["changed"] is True
     assert panel.authoring_snapshot()["emitters"][0]["data_interfaces"] == []
@@ -1140,13 +1422,51 @@ def test_particle_graph_editor_rejects_wrong_data_interface_kind():
         emitter_id, "vector_field", "Wind"
     )
     collision = panel.add_authoring_node(
-        "update", "particle.update.collide_sdf", 220.0, 380.0
+        "update", "particle.collision.sdf", 220.0, 380.0
     )
 
     with pytest.raises(ValueError, match="requires a SdfVolume"):
         panel.set_node_property(
             collision["uid"], "interface", vector_field["stable_id"]
         )
+
+
+def test_particle_graph_editor_authors_mesh_input_as_constant_or_parameter(
+    tmp_path, monkeypatch
+):
+    from Infernux.engine.ui import particle_graph_editor_panel as module
+
+    mesh_path = tmp_path / "Surface.fbx"
+    mesh_path.write_bytes(b"fbx")
+    monkeypatch.setattr(module, "_asset_guid_from_path", lambda _path: "mesh-guid")
+    monkeypatch.setattr(
+        module,
+        "_portable_asset_path_hint",
+        lambda _path: "Assets/Models/Surface.fbx",
+    )
+
+    panel = module.ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    node = panel.add_authoring_node("update", "particle.mesh.sample", 220.0, 380.0)
+    bound = panel.set_node_asset_reference(node["uid"], "mesh", str(mesh_path))
+
+    assert bound == {
+        "guid": "mesh-guid",
+        "path_hint": "Assets/Models/Surface.fbx",
+    }
+    snapshot = panel.authoring_snapshot()
+    sampled = next(item for item in snapshot["nodes"] if item["uid"] == node["uid"])
+    assert sampled["properties"]["mesh"] == bound
+
+    parameter = panel.add_authoring_parameter("Surface Mesh", "mesh", bound)
+    source = panel.add_authoring_parameter_node(
+        parameter["stable_id"], 20.0, 380.0, stage="update"
+    )
+    link = panel.connect_value(source["uid"], "value", node["uid"], "mesh")
+
+    snapshot = panel.authoring_snapshot()
+    assert snapshot["emitters"][0]["data_interfaces"] == []
+    assert any(item["uid"] == link["link_uid"] for item in snapshot["links"])
 
 
 def test_particle_graph_editor_semantic_authoring_edits_orientation_exec_chains():
@@ -1349,6 +1669,10 @@ def test_particle_graph_editor_exposes_vector_components_and_dimension_policies(
     noise = definitions["common.noise.value3d"]
     policies = {port["id"]: port["dimension_policy"] for port in noise["ports"]}
     assert policies == {"position": "fixed", "frequency": "exact", "seed": "exact", "value": "exact"}
+    velocity = definitions["particle.attribute.velocity"]
+    assert next(port for port in velocity["ports"] if port["id"] == "value")[
+        "dimension_policy"
+    ] == "fixed"
 
 
 def test_particle_graph_editor_authors_trigger_and_independent_event_flow():
@@ -1929,7 +2253,9 @@ def test_particle_system_inspector_metadata_is_localizable_and_backend_is_emitte
     from Infernux.components.serialized_field import get_serialized_fields
 
     fields = get_serialized_fields(ParticleSystem)
-    assert set(fields) == {
+    assert {
+        name for name, metadata in fields.items() if not metadata.hidden
+    } == {
         "graph",
         "simulation_speed",
         "play_on_awake",
@@ -1939,6 +2265,12 @@ def test_particle_system_inspector_metadata_is_localizable_and_backend_is_emitte
         "bounds_mode",
         "manual_bounds_center",
         "manual_bounds_size",
+    }
+    assert {
+        name for name, metadata in fields.items() if metadata.hidden
+    } == {
+        "_parameter_overrides_json",
+        "_emitter_overrides_json",
     }
     assert fields["graph"].display_name_key == "particle_system.graph"
     assert fields["simulation_speed"].display_name_key == "particle_system.simulation_speed"

@@ -29,7 +29,7 @@ struct SkinInstanceData {
     uint boneOffset;
     uint boneCount;
     uint flags;
-    uint _pad;
+    uint previousBoneOffset;
 };
 
 // Skin metadata and bone palettes share the engine globals set so every

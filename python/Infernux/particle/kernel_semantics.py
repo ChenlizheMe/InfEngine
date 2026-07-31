@@ -30,6 +30,7 @@ class KernelCapability(str, Enum):
 class KernelStage(str, Enum):
     INIT = "init"
     UPDATE = "update"
+    CONTACT = "contact"
     RENDERING = "rendering"
 
 
@@ -49,11 +50,15 @@ class KernelOpcodeSpec:
 
 
 _ALL_STAGES = frozenset(KernelStage)
-_INIT_ONLY = frozenset({KernelStage.INIT})
 _UPDATE_ONLY = frozenset({KernelStage.UPDATE})
 _RENDER_ONLY = frozenset({KernelStage.RENDERING})
 _SUSPEND_STAGES = frozenset(
-    {KernelStage.INIT, KernelStage.UPDATE, KernelStage.RENDERING}
+    {
+        KernelStage.INIT,
+        KernelStage.UPDATE,
+        KernelStage.CONTACT,
+        KernelStage.RENDERING,
+    }
 )
 _SHAPE_IMMEDIATES = frozenset(
     {
@@ -64,6 +69,8 @@ _SHAPE_IMMEDIATES = frozenset(
         "dimensions",
         "mesh",
         "mesh_mode",
+        "sdf_interface",
+        "sdf_mode",
         "random_slots",
     }
 )
@@ -92,6 +99,7 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "normalized_age": KernelOpcodeSpec(True, 2),
     "lerp": KernelOpcodeSpec(True, 3),
     "normalize": KernelOpcodeSpec(True, 1),
+    "target_position_velocity": KernelOpcodeSpec(True, 7),
     "random_f32": KernelOpcodeSpec(True, 3, frozenset({"random_slot"})),
     "sample_curve": KernelOpcodeSpec(True, 1, frozenset({"curve"})),
     "sample_curve_parameter": KernelOpcodeSpec(True, 2),
@@ -100,12 +108,30 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "sample_texture2d": KernelOpcodeSpec(True, 2),
     "value_noise_3d": KernelOpcodeSpec(True, 3),
     "vector_noise_3d": KernelOpcodeSpec(True, 3),
-    "sample_shape_position": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES, _INIT_ONLY),
-    "sample_shape_direction": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES, _INIT_ONLY),
+    "sample_shape_position": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES),
+    "sample_shape_direction": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES),
     "sample_vector_field": KernelOpcodeSpec(
         True,
         1,
         frozenset({"interface"}),
+        _ALL_STAGES,
+    ),
+    "sample_sdf_distance": KernelOpcodeSpec(
+        True,
+        1,
+        frozenset({"interface"}),
+        _ALL_STAGES,
+    ),
+    "sample_sdf_gradient": KernelOpcodeSpec(
+        True,
+        1,
+        frozenset({"interface"}),
+        _ALL_STAGES,
+    ),
+    "sample_mesh": KernelOpcodeSpec(
+        True,
+        1,
+        frozenset({"interface", "mode", "output"}),
         _ALL_STAGES,
     ),
     "less_than": KernelOpcodeSpec(True, 2),
@@ -175,7 +201,7 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         ),
         _SUSPEND_STAGES,
     ),
-    "kill_if": KernelOpcodeSpec(False, 1, stages=_UPDATE_ONLY),
+    "kill_if": KernelOpcodeSpec(False, 1),
     "event_begin": KernelOpcodeSpec(
         True, 0, frozenset({"event_type_index", "queue_capacity"}), _UPDATE_ONLY
     ),
@@ -197,21 +223,21 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         frozenset({"event_type_index", "queue_capacity", "flow_id"}),
         _UPDATE_ONLY,
     ),
-    "collide_plane_position": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
-    "collide_plane_velocity": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
-    "collide_sphere_position": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
-    "collide_sphere_velocity": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
+    "collide_plane_position": KernelOpcodeSpec(True, 7),
+    "collide_plane_velocity": KernelOpcodeSpec(True, 7),
+    "collide_sphere_position": KernelOpcodeSpec(True, 7),
+    "collide_sphere_velocity": KernelOpcodeSpec(True, 7),
     "collide_sdf_position": KernelOpcodeSpec(
         True,
         5,
         frozenset({"interface", "inverted"}),
-        _UPDATE_ONLY,
+        _ALL_STAGES,
     ),
     "collide_sdf_velocity": KernelOpcodeSpec(
         True,
         5,
         frozenset({"interface", "inverted"}),
-        _UPDATE_ONLY,
+        _ALL_STAGES,
     ),
     "collide_scene": KernelOpcodeSpec(
         False,
@@ -263,7 +289,14 @@ class KernelRuntimeContract:
     float_mode: str = "ieee754_f32"
     non_finite_policy: str = "kill_particle"
     normalize_zero_policy: str = "return_zero"
-    lifecycle_order: tuple[str, ...] = ("spawn", "init", "update", "kill", "rendering")
+    lifecycle_order: tuple[str, ...] = (
+        "spawn",
+        "init",
+        "update",
+        "contact",
+        "kill",
+        "rendering",
+    )
     delta_time_policy: str = "finite_non_negative_f32"
     pause_policy: str = "no_spawn_no_update_no_step_increment"
     capacity_policy: str = "drop_newest"
@@ -280,7 +313,14 @@ class KernelRuntimeContract:
             raise KernelSemanticError("unsupported particle non-finite policy")
         if self.normalize_zero_policy != "return_zero":
             raise KernelSemanticError("unsupported particle normalize-zero policy")
-        if tuple(self.lifecycle_order) != ("spawn", "init", "update", "kill", "rendering"):
+        if tuple(self.lifecycle_order) != (
+            "spawn",
+            "init",
+            "update",
+            "contact",
+            "kill",
+            "rendering",
+        ):
             raise KernelSemanticError("particle lifecycle order is part of the ABI")
         if self.delta_time_policy != "finite_non_negative_f32":
             raise KernelSemanticError("unsupported particle delta-time policy")
@@ -513,6 +553,22 @@ def _validate_opcode_types(
             ValueType.VEC4,
         }:
             raise KernelSemanticError("kernel normalize requires one matching vector operand")
+    elif opcode == "target_position_velocity":
+        simulation_vector = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        if result_type != simulation_vector or operands != (
+            simulation_vector,
+            simulation_vector,
+            simulation_vector,
+            f32,
+            f32,
+            f32,
+            f32,
+        ):
+            raise KernelSemanticError(
+                "kernel target_position_velocity requires simulation-space position, "
+                "velocity and target vectors followed by speed, responsiveness, "
+                "arrival radius and delta time"
+            )
     elif opcode == "random_f32":
         if result_type != f32 or operands != (f32, f32, TypeRef(ValueType.U32)):
             raise KernelSemanticError(
@@ -582,10 +638,15 @@ def _validate_opcode_types(
             raise KernelSemanticError("kernel shape space is invalid") from exc
         if shape_space not in {CoordinateSpace.EMITTER_LOCAL, CoordinateSpace.WORLD}:
             raise KernelSemanticError("kernel shape space must be emitter_local or world")
-        if result_type.space is not shape_space:
-            raise KernelSemanticError("kernel shape result must retain its authored space")
-        if immediates["shape"] not in {"point", "sphere", "box", "cone", "mesh"}:
+        if immediates["shape"] not in {"point", "sphere", "box", "cone", "mesh", "sdf"}:
             raise KernelSemanticError("kernel shape kind is invalid")
+        expected_space = (
+            CoordinateSpace.SIMULATION
+            if immediates["shape"] == "sdf"
+            else shape_space
+        )
+        if result_type.space is not expected_space:
+            raise KernelSemanticError("kernel shape result has an invalid coordinate space")
         _validate_non_negative(immediates["radius"], "shape radius")
         angle = _finite_number(immediates["angle_degrees"], "shape angle")
         if not 0.0 <= angle <= 180.0:
@@ -599,10 +660,16 @@ def _validate_opcode_types(
             mesh = AssetReference.from_dict(immediates["mesh"])
         except (TypeError, ValueError) as exc:
             raise KernelSemanticError("kernel shape mesh reference is invalid") from exc
-        if immediates["mesh_mode"] not in {"vertex", "triangle", "surface"}:
+        if immediates["mesh_mode"] not in {"vertex", "edge", "surface"}:
             raise KernelSemanticError("kernel mesh shape mode is invalid")
         if immediates["shape"] == "mesh" and not (mesh.guid or mesh.path_hint):
             raise KernelSemanticError("kernel mesh shape requires a mesh asset")
+        if type(immediates["sdf_interface"]) is not str:
+            raise KernelSemanticError("kernel SDF shape interface must be a string")
+        if immediates["sdf_mode"] not in {"surface", "volume"}:
+            raise KernelSemanticError("kernel SDF shape mode is invalid")
+        if immediates["shape"] == "sdf" and not immediates["sdf_interface"].strip():
+            raise KernelSemanticError("kernel SDF shape requires a Data Interface")
         random_slots = immediates["random_slots"]
         if not isinstance(random_slots, (list, tuple)) or len(random_slots) != 3:
             raise KernelSemanticError("kernel shape sampling requires three random slots")
@@ -618,6 +685,35 @@ def _validate_opcode_types(
             )
         if type(immediates["interface"]) is not str or not immediates["interface"].strip():
             raise KernelSemanticError("vector field interface cannot be empty")
+    elif opcode in {"sample_sdf_distance", "sample_sdf_gradient"}:
+        simulation_vector = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        expected_result = (
+            TypeRef(ValueType.F32)
+            if opcode == "sample_sdf_distance"
+            else simulation_vector
+        )
+        if operands != (simulation_vector,) or result_type != expected_result:
+            raise KernelSemanticError(
+                "SDF sampling requires a simulation-space vec3 position and a typed distance or gradient result"
+            )
+        if type(immediates["interface"]) is not str or not immediates["interface"].strip():
+            raise KernelSemanticError("SDF interface cannot be empty")
+    elif opcode == "sample_mesh":
+        if operands != (TypeRef(ValueType.VEC3),):
+            raise KernelSemanticError("mesh sampling requires one unit vec3 sample coordinate")
+        output_types = {
+            "position": TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+            "normal": TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+            "tangent": TypeRef(ValueType.VEC4, CoordinateSpace.SIMULATION),
+            "uv": TypeRef(ValueType.VEC2),
+            "barycentric": TypeRef(ValueType.VEC3),
+        }
+        if result_type != output_types.get(immediates["output"]):
+            raise KernelSemanticError("mesh sample output type does not match its selected attribute")
+        if type(immediates["interface"]) is not str or not immediates["interface"].strip():
+            raise KernelSemanticError("mesh resource binding cannot be empty")
+        if immediates["mode"] not in {"vertex", "edge", "surface"}:
+            raise KernelSemanticError("mesh sampling mode is invalid")
     elif opcode in {"less_than", "less_equal", "greater_than", "greater_equal", "equal", "not_equal"}:
         if result_type != bool_type or operands[0] != operands[1] or operands[0].value_type not in {
             ValueType.I32,

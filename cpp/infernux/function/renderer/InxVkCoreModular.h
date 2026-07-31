@@ -40,6 +40,7 @@
 #include "InxRenderStruct.h"
 #include "MaterialPipelineManager.h"
 #include "ProfileConfig.h"
+#include "RenderGraphDescription.h"
 #include "RenderInstanceHistory.h"
 #include "VkShaderCache.h"
 #include "VkTextureCache.h"
@@ -267,7 +268,8 @@ class InxVkCoreModular
     void DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, rhi::BindGroupHandle perViewGroup,
                            const glm::mat4 &viewMatrix, int queueMin, int queueMax, const std::string &sortMode = "",
                            const std::string &overrideMaterial = "", const std::string &passTag = "",
-                           const MaterialPassPipelineDescriptor *pipelineDescriptor = nullptr);
+                           const MaterialPassPipelineDescriptor *pipelineDescriptor = nullptr,
+                           GraphMaterialFilter materialFilter = GraphMaterialFilter::All);
 
     /**
      * @brief Draw shadow casters into a depth-only shadow map.

@@ -142,8 +142,8 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
     source = tmp_path / "Smoke.particlegraph"
     document = ParticleGraphAsset(stable_id="integration-smoke").to_dict()
     document["emitters"][0]["stages"]["rendering"]["nodes"][1]["properties"][
-        "material"
-    ] = AssetReference(guid="smoke-material-guid").to_dict()
+        "shader"
+    ] = "Particle Unlit"
     document["emitters"][0]["data_interfaces"] = [
         VectorField(
             stable_id="wind-field",
@@ -154,6 +154,20 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
             texture=AssetReference(guid="collision-field-guid"),
         ).to_dict(),
     ]
+    document["parameters"].append(
+        {
+            "stable_id": "surface-mesh",
+            "name": "Surface Mesh",
+            "type": {"value_type": "mesh", "space": "none"},
+            "default": {
+                "guid": "surface-mesh-guid",
+                "path_hint": "Assets/Models/Surface.fbx",
+            },
+            "exposed": True,
+            "category": "",
+            "tooltip": "",
+        }
+    )
     source.write_text(
         json.dumps(document),
         encoding="utf-8",
@@ -172,7 +186,7 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
         assert artifact.hir["stable_id"] == "integration-smoke"
         assert AssetDependencyGraph.instance().get_dependencies(result.guid) == {
             "collision-field-guid",
-            "smoke-material-guid",
+            "surface-mesh-guid",
             "wind-field-guid",
         }
     finally:
@@ -243,7 +257,7 @@ class SparksGraph(ParticleScript):
             pass
 
         def rendering(self, ctx, particles):
-            particles.sprite(material=AssetReference())
+            particles.sprite(shader="Particle Unlit")
 """,
         encoding="utf-8",
     )

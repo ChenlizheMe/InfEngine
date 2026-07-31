@@ -613,7 +613,7 @@ void SceneManager::FlushPendingBroadphase()
 
     // ── Create deferred Jolt bodies ──
     auto pendingBodies = store.ConsumePendingBodyCreations();
-    if (pendingBodies.empty() && !store.HasPendingBroadphaseAdds())
+    if (pendingBodies.empty() && !store.HasPendingBroadphaseAdds() && !store.HasPendingBroadphaseRemoves())
         return;
 
     auto t0 = ProfileClock::now();
@@ -637,6 +637,14 @@ void SceneManager::FlushPendingBroadphase()
     }
 
     double createBodiesMs = ProfileMsSince(t0);
+
+    // ── Remove before add ──
+    // Gameplay Update/FixedUpdate may toggle Collider.enabled. Submit those
+    // mutations only at this fixed-step boundary so Jolt never observes a
+    // broadphase change from inside a component callback.
+    for (const uint32_t bodyId : store.ConsumePendingBroadphaseRemoves()) {
+        pw.RemoveBodyFromBroadphase(bodyId);
+    }
 
     // ── Batch add to broadphase ──
     auto t1 = ProfileClock::now();

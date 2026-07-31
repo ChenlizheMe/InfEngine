@@ -23,6 +23,7 @@ Windows output layout::
 from __future__ import annotations
 
 import ast
+import io
 import json
 import hashlib
 import os
@@ -129,6 +130,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     )
     _CONTENT_ARCHIVE_FILENAME = "Content.inxpkg"
     _CONTENT_MANIFEST_FILENAME = "Content.json"
+    _PARTICLE_RUNTIME_INDEX_FILENAME = "RuntimeIndex.json"
     def __init__(
         self,
         project_path: str,
@@ -149,6 +151,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self.project_name = game_name.strip() if game_name.strip() else os.path.basename(self.project_path)
         self.output_dir = resolved_path(output_dir)
         self.icon_path = resolved_path(icon_path) if icon_path else ""
+        self._built_icon_path = ""
         self.display_mode = display_mode
         self.window_width = window_width
         self.window_height = window_height
@@ -262,6 +265,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self._compile_user_scripts(final_dir)
 
         _p(t("build.step.processing_splash"), 0.93)
+        self._process_build_icon(final_dir)
         self._process_splash_items(final_dir)
 
         _p(t("build.step.fixing_scenes"), 0.96)
@@ -963,6 +967,8 @@ finally:
             shutil.move(source, destination)
 
         shutil.copy2(launcher_path, game_executable)
+        if self.icon_path:
+            self._apply_windows_executable_icon(game_executable, self.icon_path)
         layout_manifest = {
             "layout": "infernux-windows-player",
             "launcher": os.path.basename(game_executable),
@@ -977,6 +983,151 @@ finally:
         ) as manifest_file:
             json.dump(layout_manifest, manifest_file, indent=2, sort_keys=True)
             manifest_file.write("\n")
+
+    @staticmethod
+    def _windows_icon_resource(icon_path: str) -> bytes:
+        """Convert a supported source image to a multi-resolution ICO payload."""
+        if os.path.splitext(icon_path)[1].lower() == ".ico":
+            with open(icon_path, "rb") as source:
+                return source.read()
+
+        try:
+            from PIL import Image, ImageOps
+        except ImportError as exc:
+            raise RuntimeError(
+                "Pillow is required to convert the configured Windows build icon"
+            ) from exc
+
+        with Image.open(icon_path) as source:
+            image = source.convert("RGBA")
+            image = ImageOps.contain(image, (256, 256), Image.Resampling.LANCZOS)
+            canvas = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+            canvas.alpha_composite(
+                image,
+                ((256 - image.width) // 2, (256 - image.height) // 2),
+            )
+            output = io.BytesIO()
+            canvas.save(
+                output,
+                format="ICO",
+                sizes=((256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)),
+            )
+            return output.getvalue()
+
+    @classmethod
+    def _apply_windows_executable_icon(cls, executable: str, icon_path: str) -> None:
+        """Replace the copied thin launcher's icon without rebuilding the runtime."""
+        if sys.platform != "win32":
+            return
+
+        import ctypes
+        from ctypes import wintypes
+
+        payload = cls._windows_icon_resource(icon_path)
+        if len(payload) < 6:
+            raise RuntimeError(f"Build icon is not a valid ICO payload: {icon_path}")
+        reserved, icon_type, count = struct.unpack_from("<HHH", payload, 0)
+        if reserved != 0 or icon_type != 1 or count == 0 or len(payload) < 6 + count * 16:
+            raise RuntimeError(f"Build icon is not a valid ICO payload: {icon_path}")
+
+        images: list[tuple[int, bytes]] = []
+        group_entries = bytearray(struct.pack("<HHH", 0, 1, count))
+        for index in range(count):
+            entry = struct.unpack_from("<BBBBHHII", payload, 6 + index * 16)
+            width, height, colors, entry_reserved, planes, bits, byte_count, offset = entry
+            end = offset + byte_count
+            if offset < 6 + count * 16 or end > len(payload):
+                raise RuntimeError(f"Build icon contains an invalid image entry: {icon_path}")
+            resource_id = index + 1
+            images.append((resource_id, payload[offset:end]))
+            group_entries.extend(
+                struct.pack(
+                    "<BBBBHHIH",
+                    width,
+                    height,
+                    colors,
+                    entry_reserved,
+                    planes,
+                    bits,
+                    byte_count,
+                    resource_id,
+                )
+            )
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.BeginUpdateResourceW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL]
+        kernel32.BeginUpdateResourceW.restype = wintypes.HANDLE
+        kernel32.UpdateResourceW.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.WORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.UpdateResourceW.restype = wintypes.BOOL
+        kernel32.EndUpdateResourceW.argtypes = [wintypes.HANDLE, wintypes.BOOL]
+        kernel32.EndUpdateResourceW.restype = wintypes.BOOL
+
+        update = kernel32.BeginUpdateResourceW(executable, False)
+        if not update:
+            raise RuntimeError(
+                f"Unable to open Player launcher icon resources (Windows error {ctypes.get_last_error()})"
+            )
+
+        buffers = []
+        committed = False
+        try:
+            # The bundled launcher uses group 101. Update both neutral and
+            # English resources so Explorer cannot select the stale group.
+            for language in (0, 0x0409):
+                for resource_id, image_bytes in images:
+                    image_buffer = ctypes.create_string_buffer(image_bytes)
+                    buffers.append(image_buffer)
+                    if not kernel32.UpdateResourceW(
+                        update,
+                        ctypes.c_void_p(3),
+                        ctypes.c_void_p(resource_id),
+                        language,
+                        image_buffer,
+                        len(image_bytes),
+                    ):
+                        raise RuntimeError(
+                            f"Unable to write Player icon image (Windows error {ctypes.get_last_error()})"
+                        )
+                group_buffer = ctypes.create_string_buffer(bytes(group_entries))
+                buffers.append(group_buffer)
+                if not kernel32.UpdateResourceW(
+                    update,
+                    ctypes.c_void_p(14),
+                    ctypes.c_void_p(101),
+                    language,
+                    group_buffer,
+                    len(group_entries),
+                ):
+                    raise RuntimeError(
+                        f"Unable to write Player icon group (Windows error {ctypes.get_last_error()})"
+                    )
+            if not kernel32.EndUpdateResourceW(update, False):
+                raise RuntimeError(
+                    f"Unable to commit Player icon resources (Windows error {ctypes.get_last_error()})"
+                )
+            committed = True
+        finally:
+            if not committed:
+                kernel32.EndUpdateResourceW(update, True)
+
+    def _process_build_icon(self, final_dir: str) -> None:
+        """Stage the project icon for the runtime window and taskbar."""
+        self._built_icon_path = ""
+        if not self.icon_path:
+            return
+        extension = os.path.splitext(self.icon_path)[1].lower()
+        branding_dir = os.path.join(final_dir, "Data", "Branding")
+        os.makedirs(branding_dir, exist_ok=True)
+        destination = os.path.join(branding_dir, "icon" + extension)
+        shutil.copy2(self.icon_path, destination)
+        self._built_icon_path = portable_path(relative_path(destination, os.path.join(final_dir, "Data")))
 
     # ------------------------------------------------------------------
     # Game data
@@ -1041,7 +1192,8 @@ finally:
         if not os.path.isdir(source_root):
             return
 
-        stable_ids = self._collect_reachable_particle_stable_ids()
+        references = self._collect_reachable_particle_artifacts()
+        stable_ids = {item["stable_id"] for item in references}
         destination_root = os.path.join(
             data_dir, "Library", "Artifacts", "Particle"
         )
@@ -1056,7 +1208,26 @@ finally:
             os.makedirs(destination_root, exist_ok=True)
             shutil.copy2(source, os.path.join(destination_root, filename))
 
+        if references:
+            os.makedirs(destination_root, exist_ok=True)
+            index_path = os.path.join(
+                destination_root, self._PARTICLE_RUNTIME_INDEX_FILENAME
+            )
+            payload = {
+                "$schema": "infernux.particle_runtime_index",
+                "entries": references,
+            }
+            with open(index_path, "w", encoding="utf-8") as stream:
+                json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
+                stream.write("\n")
+
     def _collect_reachable_particle_stable_ids(self) -> set[str]:
+        return {
+            item["stable_id"]
+            for item in self._collect_reachable_particle_artifacts()
+        }
+
+    def _collect_reachable_particle_artifacts(self) -> list[dict[str, str]]:
         settings_path = os.path.join(
             self.project_path, "ProjectSettings", "BuildSettings.json"
         )
@@ -1075,7 +1246,7 @@ finally:
                 ) from exc
             self._collect_particle_asset_references(scene, references)
 
-        stable_ids: set[str] = set()
+        entries: list[dict[str, str]] = []
         guid_index: Optional[dict[str, str]] = None
         for guid, path_hint in sorted(references):
             source_path = self._resolve_particle_source_path(path_hint)
@@ -1088,8 +1259,14 @@ finally:
                     "Build scene references a ParticleGraph that cannot be resolved: "
                     f"guid={guid!r}, path_hint={path_hint!r}"
                 )
-            stable_ids.add(self._particle_source_stable_id(source_path))
-        return stable_ids
+            entries.append(
+                {
+                    "guid": guid,
+                    "path_hint": path_hint.replace("\\", "/"),
+                    "stable_id": self._particle_source_stable_id(source_path),
+                }
+            )
+        return entries
 
     @classmethod
     def _collect_particle_asset_references(
@@ -1762,6 +1939,7 @@ finally:
 
         manifest = {
             "game_name": self.project_name,
+            "icon_path": self._built_icon_path,
             "debug_build": bool(self.debug_mode),
             "display_mode": self.display_mode,
             "window_width": self.window_width,

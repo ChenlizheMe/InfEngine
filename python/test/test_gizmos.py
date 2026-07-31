@@ -153,6 +153,7 @@ class TestParticleEmitterShapes:
             EmitterShape(EmitterShapeKind.BOX, dimensions=(2.0, 3.0, 4.0)),
             EmitterShape(EmitterShapeKind.CONE, radius=1.5, angle_degrees=35.0),
             EmitterShape(EmitterShapeKind.MESH),
+            EmitterShape(EmitterShapeKind.SDF, sdf_interface="shape-field"),
         )
 
         batch_counts = []

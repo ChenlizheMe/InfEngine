@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import os
 from typing import Callable, List, Optional
 
 from Infernux.engine.undo._base import UndoCommand
@@ -228,6 +229,8 @@ class UndoManager:
         self._debug_dump_stack("push")
 
     def _debug_dump_stack(self, action: str) -> None:
+        if os.environ.get("INFERNUX_UNDO_TRACE") != "1":
+            return
         from Infernux.debug import Debug
         pos = len(self._undo_stack)
         total = pos + len(self._redo_stack)
@@ -236,6 +239,10 @@ class UndoManager:
             parts.append(f"{i}: {cmd.description}")
         for j, cmd in enumerate(self._redo_stack[::-1], pos + 1):
             parts.append(f"{j}: (redo) {cmd.description}")
+        Debug.log(
+            f"[UndoTrace] {action} pos={pos} total={total} "
+            + " | ".join(parts)
+        )
 
     def _sync_dirty(self) -> None:
         from Infernux.engine.play_mode import PlayModeManager, PlayModeState

@@ -78,6 +78,10 @@ class SceneManager:
         """Process any pending scene load request."""
         ...
     @staticmethod
+    def is_scene_load_pending() -> bool:
+        """Return whether a deferred runtime scene load is queued or executing."""
+        ...
+    @staticmethod
     def get_scene_count() -> int:
         """Get the total number of scenes in the build."""
         ...

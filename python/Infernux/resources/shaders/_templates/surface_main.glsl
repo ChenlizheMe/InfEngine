@@ -1,8 +1,8 @@
 // ============================================================================
 // surface_main.glsl — Auto-generated main() for forward surface shaders
 //
-// Calls surface() to fill SurfaceData, then evaluates lighting via evaluate()
-// from the referenced .shadingmodel file.
+// Calls surface() to fill SurfaceData, then invokes the pipeline-agnostic
+// shading() function from the referenced .shadingmodel file.
 //
 // _AlphaClipThreshold is always available in MaterialProperties UBO.
 // When > 0.0, fragments with alpha below the threshold are discarded.
@@ -21,7 +21,15 @@ ${SURFACE_CALL}
     if (!gl_FrontFacing)
         s.normalWS = -s.normalWS;
     if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) discard;
+    ShadingContext ctx = InitShadingContext();
+    ctx.positionWS = v_WorldPos;
+    ctx.geometricNormalWS = gl_FrontFacing ? normalize(v_Normal) : -normalize(v_Normal);
+    ctx.tangentWS = v_Tangent;
+    ctx.cameraPositionWS = INX_SHADING_CAMERA_POSITION;
+    ctx.viewDepth = v_ViewDepth;
+    ctx.frontFacing = gl_FrontFacing;
+    _inx_ShadingContext = ctx;
     vec4 _forwardResult;
-    evaluate(s, _forwardResult);
+    shading(s, _forwardResult);
     outColor = _forwardResult;
 }

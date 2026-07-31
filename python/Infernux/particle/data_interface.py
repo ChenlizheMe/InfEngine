@@ -31,6 +31,12 @@ class SdfFilter(str, Enum):
     LINEAR = "linear"
 
 
+class MeshSampleMode(str, Enum):
+    VERTEX = "vertex"
+    EDGE = "edge"
+    SURFACE = "surface"
+
+
 def _identity_matrix() -> tuple[float, ...]:
     return (
         1.0,
@@ -202,7 +208,49 @@ class SdfVolume:
         }
 
 
+@dataclass(frozen=True)
+class MeshResourceBinding:
+    """Compiler-generated static-mesh resource binding for GPU kernels."""
+
+    stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    name: str = "Mesh Resource"
+    mesh: AssetReference = AssetReference()
+    mesh_parameter: str = ""
+    space: CoordinateSpace = CoordinateSpace.EMITTER_LOCAL
+    mesh_to_space: tuple[float, ...] = field(default_factory=_identity_matrix)
+
+    kind = "mesh_resource"
+
+    def __post_init__(self) -> None:
+        _validate_identity(self.stable_id, self.name, "mesh resource")
+        if not isinstance(self.mesh, AssetReference):
+            raise ParticleDataInterfaceError("mesh resource asset is invalid")
+        if type(self.mesh_parameter) is not str:
+            raise ParticleDataInterfaceError("mesh resource parameter binding must be a string")
+        object.__setattr__(self, "stable_id", self.stable_id.strip())
+        object.__setattr__(self, "name", self.name.strip())
+        object.__setattr__(self, "mesh_parameter", self.mesh_parameter.strip())
+        object.__setattr__(self, "space", _validate_space(self.space, "mesh resource"))
+        object.__setattr__(
+            self,
+            "mesh_to_space",
+            _validate_matrix(self.mesh_to_space, "mesh resource"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "stable_id": self.stable_id,
+            "name": self.name,
+            "mesh": self.mesh.to_dict(),
+            "mesh_parameter": self.mesh_parameter,
+            "space": self.space.value,
+            "mesh_to_space": list(self.mesh_to_space),
+        }
+
+
 ParticleDataInterface: TypeAlias = VectorField | SdfVolume
+ParticleRuntimeResource: TypeAlias = ParticleDataInterface | MeshResourceBinding
 
 
 def particle_data_interface_from_dict(
@@ -260,9 +308,40 @@ def particle_data_interface_from_dict(
     raise ParticleDataInterfaceError(f"{location} kind {kind!r} is unsupported")
 
 
+def particle_runtime_resource_from_dict(
+    value: Any, location: str = "particle runtime resource"
+) -> ParticleRuntimeResource:
+    if type(value) is not dict or type(value.get("kind")) is not str:
+        raise ParticleDataInterfaceError(f"{location} must be a typed object")
+    if value["kind"] != MeshResourceBinding.kind:
+        return particle_data_interface_from_dict(value, location)
+    expected = {
+        "kind",
+        "stable_id",
+        "name",
+        "mesh",
+        "mesh_parameter",
+        "space",
+        "mesh_to_space",
+    }
+    if set(value) != expected:
+        raise ParticleDataInterfaceError(
+            f"{location} keys do not match MeshResourceBinding"
+        )
+    return MeshResourceBinding(
+        stable_id=value["stable_id"],
+        name=value["name"],
+        mesh=AssetReference.from_dict(value["mesh"]),
+        mesh_parameter=value["mesh_parameter"],
+        space=value["space"],
+        mesh_to_space=tuple(value["mesh_to_space"]),
+    )
+
+
 __all__ = [
     "ParticleDataInterface",
     "ParticleDataInterfaceError",
+    "MeshSampleMode",
     "SdfFilter",
     "SdfVolume",
     "VectorField",

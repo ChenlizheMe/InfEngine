@@ -14,8 +14,7 @@ namespace infernux::particle
 struct GpuMeshRendererDesc
 {
     ShaderBytecode vertexShader;
-    ShaderBytecode fragmentShader;
-    ShaderBytecode forwardPlusFragmentShader;
+    ShaderBytecode shadowFragmentShader;
     ShaderBytecode pickingFragmentShader;
     ShaderBytecode motionVertexShader;
     ShaderBytecode motionFragmentShader;
@@ -26,9 +25,12 @@ struct GpuMeshRendererDesc
     rhi::BufferHandle meshIndices;
     uint32_t indexCount = 0;
     std::shared_ptr<void> meshBufferKeepAlive;
+    std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
     std::shared_ptr<InxMaterial> material;
     GpuBillboardMaterialState fallbackMaterial;
     ParticleOutputSemantics semantics;
+    GpuBillboardTextureResolver textureResolver;
+    GpuRetirementQueue *deletionQueue = nullptr;
 };
 
 class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
@@ -47,7 +49,7 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
     [[nodiscard]] int32_t RenderQueue() const noexcept override;
     [[nodiscard]] bool RequiresSceneDepth() const noexcept override
     {
-        return false;
+        return m_semantics.softParticles;
     }
     [[nodiscard]] bool CanCastShadows() const noexcept override
     {
@@ -75,7 +77,7 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
                                   const MaterialPassPipelineDescriptor &pass, rhi::BufferHandle indirectArguments,
                                   const GpuParticleViewConstants &view, rhi::BufferHandle renderIndices = {},
                                   rhi::TextureViewHandle sceneDepth = {}, bool sceneDepthIsDepth = true,
-                                  const GpuParticleForwardPlusBindings &forwardPlus = {}) override;
+                                  const GpuParticlePerViewBindings &perView = {}) override;
     [[nodiscard]] bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
                                          rhi::RenderTargetLayoutHandle renderTargetLayout,
                                          const MaterialPassPipelineDescriptor &pass,
@@ -87,7 +89,7 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
     {
         rhi::RenderTargetLayoutHandle renderTargetLayout;
         MaterialPassPipelineDescriptor pass;
-        rhi::BindingLayoutHandle forwardPlusLayout;
+        rhi::BindingLayoutHandle perViewLayout;
         uint8_t materialStateSignature = 0;
         rhi::GraphicsPipelineHandle pipeline;
     };
@@ -97,19 +99,17 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
         rhi::BindGroupHandle group;
     };
 
-    [[nodiscard]] GpuBillboardMaterialState ResolveMaterialState() const noexcept;
-    [[nodiscard]] std::array<float, 4> ResolveMaterialTint() const noexcept;
-    [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(rhi::BufferHandle renderIndices) const;
-    [[nodiscard]] rhi::BindGroupHandle ResolveBindGroup(rhi::BufferHandle renderIndices);
+    [[nodiscard]] rhi::BindGroupHandle CreateGeometryGroup(rhi::BufferHandle renderIndices) const;
+    [[nodiscard]] rhi::BindGroupHandle ResolveGeometryGroup(rhi::BufferHandle renderIndices);
     [[nodiscard]] rhi::GraphicsPipelineHandle GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
                                                                   const MaterialPassPipelineDescriptor &pass,
-                                                                  rhi::BindingLayoutHandle forwardPlusLayout = {});
+                                                                  rhi::BindingLayoutHandle perViewLayout = {});
 
     rhi::Device *m_device = nullptr;
+    std::shared_ptr<const ShaderProgramArtifact> m_shaderProgram;
+    GpuRetirementQueue *m_deletionQueue = nullptr;
     std::shared_ptr<InxMesh> m_mesh;
     std::shared_ptr<void> m_meshBufferKeepAlive;
-    std::shared_ptr<InxMaterial> m_material;
-    GpuBillboardMaterialState m_fallbackMaterial{};
     ParticleOutputSemantics m_semantics{};
     uint32_t m_indexCount = 0;
     rhi::BufferHandle m_instances;
@@ -120,12 +120,16 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
     rhi::ShaderModuleHandle m_vertexShader;
     rhi::ShaderModuleHandle m_fragmentShader;
     rhi::ShaderModuleHandle m_forwardPlusFragmentShader;
+    rhi::ShaderModuleHandle m_shadowFragmentShader;
     rhi::ShaderModuleHandle m_pickingFragmentShader;
     rhi::ShaderModuleHandle m_motionVertexShader;
     rhi::ShaderModuleHandle m_motionFragmentShader;
-    rhi::BindingLayoutHandle m_layout;
-    rhi::BindGroupHandle m_group;
+    rhi::BindingLayoutHandle m_geometryLayout;
+    rhi::BindGroupHandle m_geometryGroup;
+    rhi::BindingLayoutHandle m_emptyLayout;
+    rhi::BindGroupHandle m_emptyGroup;
     std::vector<ViewGroup> m_viewGroups;
+    ParticleGpuSurfaceBinding m_surface;
     std::vector<PipelineEntry> m_pipelines;
 };
 

@@ -1,10 +1,13 @@
 #pragma once
 
+#include "ParticleGpuContactRuntime.h"
 #include "ParticleGpuContinuationRuntime.h"
 #include "ParticleRenderInstance.h"
 
 #include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiDevice.h>
+
+#include <glm/glm.hpp>
 
 #include <array>
 #include <cstddef>
@@ -22,6 +25,9 @@ enum class GpuKernelStage : uint8_t
     Bootstrap,
     Init,
     Update,
+    ContactPrepare,
+    ContactSolve,
+    ContactDispatch,
     RenderReset,
     Rendering,
     Count,
@@ -47,16 +53,38 @@ struct ShaderBytecode
     size_t wordCount = 0;
 };
 
-struct GpuMeshShapeDesc
+struct GpuMeshInterfaceDesc
 {
+    std::string stableId;
+    uint32_t interfaceIndex = 0;
     uint32_t metadataOffsetWords = 0;
-    uint32_t vertexBinding = 14;
-    uint32_t triangleBinding = 15;
+    uint32_t vertexBinding = 1;
+    uint32_t triangleBinding = 2;
+    uint32_t influenceBinding = 3;
+    uint32_t paletteBinding = 4;
+    bool worldSpace = false;
+    std::array<float, 16> meshToSpace = {
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+    };
     uint32_t vertexCount = 0;
     uint32_t triangleCount = 0;
+    uint32_t edgeCount = 0;
+    uint32_t boneCount = 0;
+    uint64_t poseRevision = 0;
     rhi::BufferHandle vertices;
     rhi::BufferHandle triangles;
+    rhi::BufferHandle influences;
+    rhi::BufferHandle palette;
+    std::vector<glm::mat4> initialPalette;
     std::shared_ptr<const void> keepAlive;
+};
+
+struct GpuSkinnedMeshFrameData
+{
+    uint32_t interfaceIndex = 0;
+    uint64_t poseRevision = 0;
+    std::array<float, 16> sourceToWorld{};
+    std::shared_ptr<const std::vector<glm::mat4>> currentPalette;
 };
 
 struct GpuVectorFieldDesc
@@ -103,9 +131,10 @@ struct GpuEmitterDesc
     uint32_t capacity = 0;
     uint32_t stateStride = 0;
     uint32_t eventTypeCount = 0;
+    bool collisionEnabled = false;
     std::vector<uint32_t> parameterWords;
     std::array<ShaderBytecode, static_cast<size_t>(GpuKernelStage::Count)> kernels{};
-    std::optional<GpuMeshShapeDesc> meshShape;
+    std::vector<GpuMeshInterfaceDesc> meshInterfaces;
     GpuVectorFieldLayoutDesc vectorFields;
     rhi::BufferHandle collisionSceneHeader;
     rhi::BufferHandle collisionSceneColliders;
@@ -136,7 +165,7 @@ struct GpuParticlePushConstants
     uint32_t systemSeed = 0;
     uint32_t simulationStep = 0;
     float deltaTime = 0.0f;
-    uint32_t reserved = 0;
+    uint32_t diagnosticFlags = 0;
 };
 
 class ParticleGpuRuntime
@@ -144,6 +173,8 @@ class ParticleGpuRuntime
   public:
     static constexpr uint32_t WorkgroupSize = 256;
     static constexpr uint32_t RenderInstanceStride = sizeof(GpuParticleRenderInstance);
+    static constexpr uint32_t BaseCounterWordCount = 13;
+    static constexpr uint32_t EventCounterWordOffset = BaseCounterWordCount;
 
     ParticleGpuRuntime();
     ~ParticleGpuRuntime();
@@ -171,20 +202,31 @@ class ParticleGpuRuntime
     void RequestBootstrap() noexcept;
     void MarkStateInitialized() noexcept;
     [[nodiscard]] bool UpdateTransforms(const GpuParticleTransforms &transforms);
+    /// Refresh scene-owned skinned Mesh parameters without rebuilding the
+    /// particle graph or re-uploading immutable geometry.
+    [[nodiscard]] bool UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMeshFrameData> &sources);
     [[nodiscard]] bool UpdateParameters(const std::vector<uint32_t> &parameterWords);
 
     void RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
                          rhi::BindGroupHandle graphSpawnGroup);
-    void RecordInitIndirect(const rhi::ComputeCommandEncoder &encoder, uint32_t cpuSpawnCount,
-                            uint32_t spawnBaseId, uint32_t spawnGeneration, uint32_t systemSeed,
-                            uint32_t simulationStep, float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
-                            rhi::BufferHandle spawnMetadata, uint64_t indirectOffset) const;
+    void RecordInitIndirect(const rhi::ComputeCommandEncoder &encoder, uint32_t cpuSpawnCount, uint32_t spawnBaseId,
+                            uint32_t spawnGeneration, uint32_t systemSeed, uint32_t simulationStep, float deltaTime,
+                            rhi::BindGroupHandle graphSpawnGroup, rhi::BufferHandle spawnMetadata,
+                            uint64_t indirectOffset) const;
     void RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
-                      float deltaTime, rhi::BindGroupHandle graphSpawnGroup) const;
-    void RecordRenderReset(const rhi::ComputeCommandEncoder &encoder,
-                           rhi::BindGroupHandle graphSpawnGroup) const;
-    void RecordRendering(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
-                         uint32_t simulationStep, rhi::BindGroupHandle graphSpawnGroup) const;
+                      float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
+                      bool collectCollisionDiagnostics = false) const;
+    void RecordContactPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
+                              rhi::BindGroupHandle graphSpawnGroup, bool resetAll = false) const;
+    void RecordContactSolve(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
+                            rhi::BindGroupHandle graphSpawnGroup) const;
+    void RecordContactDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
+                               float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
+                               bool collectCollisionDiagnostics = false) const;
+    void RecordRenderReset(const rhi::ComputeCommandEncoder &encoder, rhi::BindGroupHandle graphSpawnGroup,
+                           bool resetCollisionDiagnostics = false) const;
+    void RecordRendering(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
+                         rhi::BindGroupHandle graphSpawnGroup) const;
     [[nodiscard]] bool HasContinuations() const noexcept;
     [[nodiscard]] const GpuParticleContinuationResources &ContinuationResources() const noexcept;
     [[nodiscard]] GpuParticleContinuationTelemetry ContinuationTelemetry() const noexcept;
@@ -195,9 +237,24 @@ class ParticleGpuRuntime
     [[nodiscard]] bool RecordContinuationClassify(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
                                                   uint64_t elapsedTimeTicks) const;
     [[nodiscard]] bool RecordContinuationDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                                                  uint64_t elapsedTimeTicks, uint32_t systemSeed,
-                                                  float deltaTime,
+                                                  uint64_t elapsedTimeTicks, uint32_t systemSeed, float deltaTime,
                                                   rhi::BindGroupHandle graphSpawnGroup) const;
+    [[nodiscard]] bool HasContactRuntime() const noexcept;
+    [[nodiscard]] const GpuParticleContactResources &ContactResources() const noexcept;
+    [[nodiscard]] GpuParticleContactTelemetry ContactTelemetry() const noexcept;
+    [[nodiscard]] bool SharesContactStateWith(const ParticleGpuRuntime &other) const noexcept;
+    [[nodiscard]] uint64_t ContactPrepareRecordCalls() const noexcept
+    {
+        return m_contactPrepareRecordCalls;
+    }
+    [[nodiscard]] uint64_t ContactSolveRecordCalls() const noexcept
+    {
+        return m_contactSolveRecordCalls;
+    }
+    [[nodiscard]] uint64_t ContactDispatchRecordCalls() const noexcept
+    {
+        return m_contactDispatchRecordCalls;
+    }
 
     [[nodiscard]] uint32_t Capacity() const noexcept
     {
@@ -211,10 +268,15 @@ class ParticleGpuRuntime
     {
         return m_eventTypeCount;
     }
+    [[nodiscard]] bool CollisionEnabled() const noexcept
+    {
+        return m_collisionEnabled;
+    }
     [[nodiscard]] uint64_t CounterBufferByteSize() const noexcept
     {
         const uint64_t eventCounterWords = static_cast<uint64_t>(m_eventTypeCount) * 3u;
-        return 16u + ((eventCounterWords + 3u) / 4u) * 16u;
+        const uint64_t totalWords = BaseCounterWordCount + eventCounterWords;
+        return ((totalWords + 3u) / 4u) * 16u;
     }
     [[nodiscard]] rhi::BufferHandle StateBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle FreeListBuffer() const noexcept;
@@ -232,6 +294,7 @@ class ParticleGpuRuntime
     {
         return m_graphSpawnLayout;
     }
+
   private:
     struct ResidentState;
     struct DataInterfaceState;
@@ -239,8 +302,10 @@ class ParticleGpuRuntime
 
     [[nodiscard]] bool CreateInternal(rhi::Device &device, const GpuEmitterDesc &desc,
                                       std::shared_ptr<ResidentState> residentState,
-                                      const ParticleGpuContinuationRuntime *previousContinuation);
+                                      const ParticleGpuContinuationRuntime *previousContinuation,
+                                      const ParticleGpuContactRuntime *previousContacts);
     [[nodiscard]] bool UpdateVectorFieldMetadata(const GpuParticleTransforms &transforms);
+    [[nodiscard]] bool UpdateMeshInterfaceMetadata(const GpuParticleTransforms &transforms);
     void Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
                 const GpuParticlePushConstants &constants, uint32_t invocationCount,
                 rhi::BindGroupHandle graphSpawnGroup, rhi::BufferHandle indirectArguments = {},
@@ -251,15 +316,22 @@ class ParticleGpuRuntime
     uint32_t m_capacity = 0;
     uint32_t m_stateStride = 0;
     uint32_t m_eventTypeCount = 0;
+    bool m_collisionEnabled = false;
+    mutable uint64_t m_contactPrepareRecordCalls = 0;
+    mutable uint64_t m_contactSolveRecordCalls = 0;
+    mutable uint64_t m_contactDispatchRecordCalls = 0;
     std::shared_ptr<ResidentState> m_residentState;
     std::unique_ptr<DataInterfaceState> m_dataInterfaces;
     std::unique_ptr<VectorFieldState> m_vectorFields;
     std::unique_ptr<ParticleGpuContinuationRuntime> m_continuation;
+    std::unique_ptr<ParticleGpuContactRuntime> m_contacts;
     rhi::BindingLayoutHandle m_emptyDataInterfaceLayout;
     rhi::BindGroupHandle m_emptyDataInterfaceGroup;
     rhi::BindingLayoutHandle m_graphSpawnLayout;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
+    rhi::BindingLayoutHandle m_collisionSceneLayout;
+    rhi::BindGroupHandle m_collisionSceneGroup;
     rhi::BufferHandle m_parameterBuffer;
     uint32_t m_parameterWordCount = 0;
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};

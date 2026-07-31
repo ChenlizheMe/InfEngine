@@ -537,7 +537,8 @@ rhi::TextureHandle VulkanRhiDevice::CreateTexture(const rhi::TextureDesc &desc)
     VmaAllocation allocation = VK_NULL_HANDLE;
     if (vmaCreateImage(m_allocator, &createInfo, &allocationInfo, &image, &allocation, nullptr) != VK_SUCCESS)
         return {};
-    return Register<rhi::TextureHandle>(m_textures, m_freeTexture, TexturePayload{image, allocation, desc, true});
+    return Register<rhi::TextureHandle>(m_textures, m_freeTexture,
+                                        TexturePayload{image, allocation, desc, true, sharedWithTransfer});
 }
 
 rhi::TextureViewHandle VulkanRhiDevice::CreateTextureView(const rhi::TextureViewDesc &desc)
@@ -1066,6 +1067,13 @@ VkImage VulkanRhiDevice::Resolve(rhi::TextureHandle handle) const noexcept
     const auto *payload = Resolve(m_textures, handle);
     return payload ? payload->image : VK_NULL_HANDLE;
 }
+
+bool VulkanRhiDevice::UsesConcurrentQueueSharing(rhi::TextureHandle handle) const noexcept
+{
+    const auto *payload = Resolve(m_textures, handle);
+    return payload && payload->concurrentQueueSharing;
+}
+
 VkSampler VulkanRhiDevice::Resolve(rhi::SamplerHandle handle) const noexcept
 {
     const auto *payload = Resolve(m_samplers, handle);

@@ -118,6 +118,8 @@ class ProjectPanel : public EditorPanel
 
     /// Move item to directory: (itemPath, destDir) → newPath or empty
     std::function<std::string(const std::string &, const std::string &)> moveItemToDirectory;
+    /// Copy item to exact path as a distinct asset: (itemPath, destinationPath) → newPath or empty
+    std::function<std::string(const std::string &, const std::string &)> copyItemToPath;
 
     /// Open file: (filePath)
     std::function<void(const std::string &)> openFile;

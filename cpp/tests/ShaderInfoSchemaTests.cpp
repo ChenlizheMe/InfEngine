@@ -116,9 +116,114 @@ void surface (out SurfaceData surface) { }
     assert(entries.surface);
     assert(!entries.main);
     assert(!entries.vertex);
+    assert(!entries.shading);
 
     auto compiler = MakeCompiler();
     infernux::InxShaderLoader::AddShaderSearchPath(INFERNUX_TEST_SHADER_ROOT);
+
+    const std::string shadingModelSource = R"(
+ShadingModelInfo {
+    Name "Tests/SingleContract"
+    Imports ["Lighting"]
+    Requires [Lighting]
+}
+void shading(in SurfaceData s, out vec4 color) {
+    color = vec4(s.albedo + s.emission, s.alpha);
+}
+)";
+    const auto shadingInfo = infernux::ParseShaderInfo(shadingModelSource);
+    assert(shadingInfo.IsValid());
+    assert(shadingInfo.kind == infernux::ShaderInfoKind::ShadingModel);
+    assert(shadingInfo.imports == std::vector<std::string>{"Lighting"});
+    assert(shadingInfo.requirements == std::vector<std::string>{"Lighting"});
+    const auto shadingDescriptor = compiler.ParseShaderSource(shadingModelSource, "SingleContract.shadingmodel");
+    assert(shadingDescriptor.errors.empty());
+    assert(shadingDescriptor.hasShadingFunc);
+    assert(shadingDescriptor.NeedsLightingUBO());
+    assert(shadingDescriptor.unsupported.empty());
+    assert(shadingDescriptor.FindTarget("shading") != nullptr);
+
+    const auto defaultModelInfo = infernux::ParseShaderInfo(shadingModelSource);
+    assert(defaultModelInfo.IsValid());
+    assert(defaultModelInfo.capabilities.empty());
+    assert(defaultModelInfo.unsupported.empty());
+
+    const std::string forwardOnlyShadingModelSource = R"(
+ShadingModelInfo {
+    Name "Tests/ForwardOnly"
+    Unsupported [Deferred]
+}
+void shading(in SurfaceData s, out vec4 color) {
+    color = vec4(s.albedo, s.alpha);
+}
+)";
+    const auto forwardOnlyDescriptor =
+        compiler.ParseShaderSource(forwardOnlyShadingModelSource, "ForwardOnly.shadingmodel");
+    assert(forwardOnlyDescriptor.errors.empty());
+    assert(forwardOnlyDescriptor.unsupported == std::vector<std::string>{"Deferred"});
+    assert(infernux::ParseShaderInfo(forwardOnlyShadingModelSource).IsValid());
+
+    const std::string unknownUnsupportedSource = R"(
+ShadingModelInfo {
+    Name "Tests/UnknownUnsupported"
+    Unsupported [Forward]
+}
+void shading(in SurfaceData s, out vec4 color) {
+    color = vec4(s.albedo, s.alpha);
+}
+)";
+    const auto unknownUnsupportedDescriptor =
+        compiler.ParseShaderSource(unknownUnsupportedSource, "UnknownUnsupported.shadingmodel");
+    assert(std::any_of(unknownUnsupportedDescriptor.errors.begin(), unknownUnsupportedDescriptor.errors.end(),
+                       [](const std::string &error) {
+                           return error.find("Unsupported currently accepts only Deferred") != std::string::npos;
+                       }));
+
+    const std::string misplacedUnsupportedSource = R"(
+ShaderInfo {
+    Name "Tests/MisplacedUnsupported"
+    Unsupported [Deferred]
+}
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+}
+)";
+    const auto misplacedUnsupportedDescriptor =
+        compiler.ParseShaderSource(misplacedUnsupportedSource, "MisplacedUnsupported.frag");
+    assert(std::any_of(
+        misplacedUnsupportedDescriptor.errors.begin(), misplacedUnsupportedDescriptor.errors.end(),
+        [](const std::string &error) { return error.find("only valid in ShadingModelInfo") != std::string::npos; }));
+
+    const std::string legacyCapabilityShadingModelSource = R"(
+ShadingModelInfo {
+    Name "Tests/LegacyCapability"
+    Capabilities [Deferred]
+}
+void shading(in SurfaceData s, out vec4 color) {
+    color = vec4(s.albedo, s.alpha);
+}
+)";
+    const auto legacyCapabilityDescriptor =
+        compiler.ParseShaderSource(legacyCapabilityShadingModelSource, "LegacyCapability.shadingmodel");
+    assert(!legacyCapabilityDescriptor.errors.empty());
+    assert(std::any_of(
+        legacyCapabilityDescriptor.errors.begin(), legacyCapabilityDescriptor.errors.end(),
+        [](const std::string &error) { return error.find("does not accept Capabilities") != std::string::npos; }));
+
+    const std::string legacyShadingModelSource = R"(
+ShadingModelInfo {
+    Name "Tests/LegacyEntries"
+    Entry Forward evaluateForward
+}
+void evaluateForward(in SurfaceData s, out vec4 color) {
+    color = vec4(s.albedo, s.alpha);
+}
+)";
+    const auto legacyDescriptor = compiler.ParseShaderSource(legacyShadingModelSource, "LegacyEntries.shadingmodel");
+    assert(!legacyDescriptor.errors.empty());
+    assert(std::any_of(legacyDescriptor.errors.begin(), legacyDescriptor.errors.end(), [](const std::string &error) {
+        return error.find("Entry declarations were removed") != std::string::npos;
+    }));
 
     const std::string standalonePassSource = R"(
 #version 450

@@ -76,7 +76,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
         property_name: str,
         asset_path: str,
     ) -> dict:
-        """Set a Mesh or Material AssetRef on a node in the live ParticleGraph editor."""
+        """Set a serialized Mesh or shader Texture2D input on a graph node."""
 
         def _set():
             panel = _require_particle_graph_panel()
@@ -184,7 +184,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
 
     @mcp.tool(name="particle_graph_remove_parameter")
     def particle_graph_remove_parameter(parameter_id: str) -> dict:
-        """Remove a Blackboard parameter and its dependent Get Parameter nodes."""
+        """Remove a Blackboard parameter and its dependent Parameter nodes."""
 
         def _remove():
             panel = _require_particle_graph_panel()
@@ -234,16 +234,25 @@ def register_particle_tools(mcp, project_path: str) -> None:
     def particle_graph_connect_exec(
         source_node_uid: str,
         target_node_uid: str,
+        source_port: str = "out",
+        target_port: str = "in",
     ) -> dict:
-        """Connect the Exec output/input of two nodes in the same particle stage."""
+        """Connect two named Exec ports in the same particle lifecycle flow."""
 
         def _connect():
             panel = _require_particle_graph_panel()
-            result = panel.connect_exec(source_node_uid, target_node_uid)
+            result = panel.connect_exec(
+                source_node_uid,
+                target_node_uid,
+                source_port,
+                target_port,
+            )
             return {
                 **result,
                 "source_node_uid": str(source_node_uid),
                 "target_node_uid": str(target_node_uid),
+                "source_port": str(source_port),
+                "target_port": str(target_port),
                 "editor": _portable_snapshot(
                     panel.authoring_snapshot(), project_path
                 ),
@@ -255,6 +264,8 @@ def register_particle_tools(mcp, project_path: str) -> None:
             arguments={
                 "source_node_uid": source_node_uid,
                 "target_node_uid": target_node_uid,
+                "source_port": source_port,
+                "target_port": target_port,
             },
         )
 
@@ -725,7 +736,7 @@ def register_particle_runtime_tools(mcp) -> None:
     def particle_system_set_parameter(
         object_id: int, name: str, value, ordinal: int = 0
     ) -> dict:
-        """Set one exposed numeric, color, vector, or Texture2D parameter."""
+        """Set one exposed typed ParticleGraph parameter."""
 
         def _set():
             obj = find_game_object(object_id)
@@ -919,9 +930,12 @@ def register_particle_runtime_tools(mcp) -> None:
 
     @mcp.tool(name="particle_system_request_gpu_diagnostics")
     def particle_system_request_gpu_diagnostics(
-        object_id: int, ordinal: int = 0
+        object_id: int,
+        ordinal: int = 0,
+        sample_frames: int = 60,
+        state_sample_count: int = 0,
     ) -> dict:
-        """Request one asynchronous GPU particle counter snapshot."""
+        """Request an isolated GPU snapshot and optional bounded live-state samples."""
 
         def _request():
             obj = find_game_object(object_id)
@@ -933,14 +947,21 @@ def register_particle_runtime_tools(mcp) -> None:
             return {
                 "object_id": int(obj.id),
                 "object_name": str(obj.name),
-                "request_id": component.request_gpu_diagnostics(),
+                "request_id": component.request_gpu_diagnostics(
+                    int(sample_frames), int(state_sample_count)
+                ),
                 "status": "pending",
             }
 
         return main_thread(
             "particle_system_request_gpu_diagnostics",
             _request,
-            arguments={"object_id": object_id, "ordinal": ordinal},
+            arguments={
+                "object_id": object_id,
+                "ordinal": ordinal,
+                "sample_frames": sample_frames,
+                "state_sample_count": state_sample_count,
+            },
         )
 
     @mcp.tool(name="particle_system_poll_gpu_diagnostics")
@@ -974,7 +995,10 @@ def register_particle_runtime_tools(mcp) -> None:
 
     @mcp.tool(name="particle_system_request_gpu_view_diagnostics")
     def particle_system_request_gpu_view_diagnostics(
-        object_id: int, view: str, ordinal: int = 0
+        object_id: int,
+        view: str,
+        ordinal: int = 0,
+        camera_component_id: int = 0,
     ) -> dict:
         """Request one asynchronous Scene/Game GPU cull-and-draw snapshot."""
 
@@ -991,20 +1015,30 @@ def register_particle_runtime_tools(mcp) -> None:
                 "object_name": str(obj.name),
                 "view": normalized_view,
                 "request_id": component.request_gpu_view_diagnostics(
-                    normalized_view
+                    normalized_view, int(camera_component_id)
                 ),
+                "camera_component_id": int(camera_component_id),
                 "status": "pending",
             }
 
         return main_thread(
             "particle_system_request_gpu_view_diagnostics",
             _request,
-            arguments={"object_id": object_id, "view": view, "ordinal": ordinal},
+            arguments={
+                "object_id": object_id,
+                "view": view,
+                "ordinal": ordinal,
+                "camera_component_id": camera_component_id,
+            },
         )
 
     @mcp.tool(name="particle_system_poll_gpu_view_diagnostics")
     def particle_system_poll_gpu_view_diagnostics(
-        object_id: int, view: str, request_id: int, ordinal: int = 0
+        object_id: int,
+        view: str,
+        request_id: int,
+        ordinal: int = 0,
+        camera_component_id: int = 0,
     ) -> dict:
         """Poll a requested per-view GPU particle cull-and-draw snapshot."""
 
@@ -1020,7 +1054,7 @@ def register_particle_runtime_tools(mcp) -> None:
                 "object_id": int(obj.id),
                 "object_name": str(obj.name),
                 "diagnostics": component.poll_gpu_view_diagnostics(
-                    normalized_view, int(request_id)
+                    normalized_view, int(request_id), int(camera_component_id)
                 ),
             }
 
@@ -1032,6 +1066,7 @@ def register_particle_runtime_tools(mcp) -> None:
                 "view": view,
                 "request_id": request_id,
                 "ordinal": ordinal,
+                "camera_component_id": camera_component_id,
             },
         )
 
@@ -1198,7 +1233,7 @@ def _register_authoring_metadata() -> None:
         aliases=["add particle parameter", "添加粒子参数"],
         preconditions=[
             "A .particlegraph asset must be open.",
-            "value_type must be bool, i32, u32, f32, vec2, vec3, vec4, color, curve, gradient, or texture2d.",
+            "value_type must be bool, i32, u32, f32, vec2, vec3, vec4, color, curve, gradient, texture2d, or mesh.",
         ],
         side_effects=[
             "Records Undo, selects the new Blackboard field, and republishes the live draft."
@@ -1227,13 +1262,13 @@ def _register_authoring_metadata() -> None:
     )
     register_tool_metadata(
         "particle_graph_remove_parameter",
-        summary="Remove a ParticleGraph Blackboard field and dependent Get Parameter nodes.",
+        summary="Remove a ParticleGraph Blackboard field and dependent Parameter nodes.",
         category="assets/particle_graph",
         tags=["particle", "graph", "parameter", "blackboard", "remove"],
         aliases=["remove particle parameter", "移除粒子参数"],
         preconditions=["parameter_id must identify a current Blackboard field."],
         side_effects=[
-            "Records Undo and removes every Get Parameter node referencing the field."
+            "Records Undo and removes every Parameter node referencing the field."
         ],
         recovery=["Inspect the editor and retry with a current parameter stable ID."],
         next_suggested_tools=["particle_graph_inspect_editor", "editor_save_document"],
@@ -1254,13 +1289,13 @@ def _register_authoring_metadata() -> None:
     )
     register_tool_metadata(
         "particle_graph_connect_exec",
-        summary="Connect two Exec nodes in one ParticleGraph stage.",
+        summary="Connect two named Exec ports in one ParticleGraph lifecycle flow.",
         category="assets/particle_graph",
         tags=["particle", "graph", "editor", "exec"],
         aliases=["connect particle nodes", "连接粒子节点"],
         preconditions=[
             "Both node UIDs must exist in the same stage.",
-            "The source must expose out and the target must expose in Exec ports.",
+            "The named source and target ports must both be Exec ports.",
         ],
         side_effects=["Records Undo, marks the panel dirty, and republishes the live draft."],
         recovery=["Inspect existing links and endpoint stages before retrying."],
@@ -1454,10 +1489,10 @@ def _register_authoring_metadata() -> None:
     )
     register_tool_metadata(
         "particle_graph_set_node_asset",
-        summary="Set a Mesh or Material reference through the live ParticleGraph editor model.",
+        summary="Set a Mesh or shader Texture2D input through the live ParticleGraph editor model.",
         category="assets/particle_graph",
-        tags=["particle", "graph", "editor", "mesh", "material"],
-        aliases=["set mesh output", "particle material", "设置粒子网格"],
+        tags=["particle", "graph", "editor", "mesh", "texture", "shader"],
+        aliases=["set particle mesh input", "set particle texture", "设置粒子网格输入", "设置粒子贴图"],
         preconditions=[
             "A .particlegraph asset must be open.",
             "asset_path must identify an imported asset inside Assets/.",
@@ -1466,7 +1501,7 @@ def _register_authoring_metadata() -> None:
             "Updates the live editor document, records Undo, marks the panel dirty, and republishes its in-memory draft."
         ],
         recovery=[
-            "Call particle_graph_inspect_editor to verify node_uid and AssetRef property names."
+            "Call particle_graph_inspect_editor to verify node_uid and the Mesh or shader Texture2D input ID."
         ],
         next_suggested_tools=[
             "particle_graph_inspect_editor",
@@ -1541,17 +1576,17 @@ def _register_runtime_metadata() -> None:
     )
     register_tool_metadata(
         "particle_system_set_parameter",
-        summary="Set one exposed ParticleGraph value or Texture2D parameter.",
+        summary="Set one exposed ParticleGraph value, Texture2D, or Mesh parameter.",
         category="runtime/particles",
         tags=["particle", "runtime", "parameter", "write", "gpu"],
         aliases=["set particle parameter", "设置粒子参数"],
         preconditions=[
             "object_id must own a live ParticleSystem component.",
             "The value shape and type must match the exposed parameter exactly.",
-            "Texture2D values use an AssetReference object with guid and path_hint.",
+            "Texture2D and Mesh values use an AssetReference object with guid and path_hint.",
         ],
         side_effects=[
-            "Serializes the override; numeric values upload parameter words, while Texture2D values rebuild only the sampled-resource binding and preserve compatible resident state."
+            "Serializes the override; numeric values upload parameter words, while Texture2D and Mesh values rebuild only the affected GPU resource binding and preserve compatible resident state."
         ],
         recovery=["Read the parameter first and retry with a matching typed value."],
         next_suggested_tools=["particle_system_get_parameter", "capture_request"],

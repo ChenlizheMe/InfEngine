@@ -45,6 +45,9 @@ struct PropertyDesc
     std::string sVal;             // String value
     float rangeMin = -1e6f;
     float rangeMax = 1e6f;
+    int intRangeMin = 0;
+    int intRangeMax = 0;
+    bool hasRange = false;
     float speed = 0.1f;
     bool slider = false;
     bool multiline = false;

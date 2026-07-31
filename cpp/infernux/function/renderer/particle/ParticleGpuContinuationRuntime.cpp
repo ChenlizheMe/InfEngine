@@ -116,6 +116,8 @@ struct ParticleGpuContinuationRuntime::ProgramRevision
     rhi::BindGroupHandle dataInterfaceGroup;
     rhi::BindGroupHandle vectorFieldGroup;
     rhi::BindGroupHandle emptyGroup;
+    rhi::BindGroupHandle collisionSceneGroup;
+    rhi::BindGroupHandle contactGroup;
     rhi::ComputePipelineHandle preparePipeline;
     rhi::ComputePipelineHandle classifyPipeline;
     rhi::ComputePipelineHandle dispatchPipeline;
@@ -155,8 +157,9 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
         desc.laneCount > MaximumLaneCount || desc.joinCount > MaximumJoinCount || programGeneration == 0 ||
         !desc.program.IsValid() || !desc.ownerLayout.IsValid() || !desc.ownerGroup.IsValid() ||
         !desc.dataInterfaceLayout.IsValid() || !desc.dataInterfaceGroup.IsValid() ||
-        !desc.vectorFieldLayout.IsValid() || !desc.vectorFieldGroup.IsValid() ||
-        !desc.graphSpawnLayout.IsValid() || !desc.emptyLayout.IsValid() || !desc.emptyGroup.IsValid())
+        !desc.vectorFieldLayout.IsValid() || !desc.vectorFieldGroup.IsValid() || !desc.graphSpawnLayout.IsValid() ||
+        !desc.emptyLayout.IsValid() || !desc.emptyGroup.IsValid() || !desc.collisionSceneLayout.IsValid() ||
+        !desc.collisionSceneGroup.IsValid() || !desc.contactLayout.IsValid() || !desc.contactGroup.IsValid())
         return false;
 
     m_device = &device;
@@ -232,6 +235,8 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
     revision->dataInterfaceGroup = desc.dataInterfaceGroup;
     revision->vectorFieldGroup = desc.vectorFieldGroup;
     revision->emptyGroup = desc.emptyGroup;
+    revision->collisionSceneGroup = desc.collisionSceneGroup;
+    revision->contactGroup = desc.contactGroup;
     rhi::BindingLayoutDesc layoutDesc;
     for (uint32_t binding = 0; binding < 10; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
@@ -278,7 +283,9 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
             pipelineDesc.bindingLayouts[3] = desc.graphSpawnLayout;
             pipelineDesc.bindingLayouts[4] = desc.emptyLayout;
             pipelineDesc.bindingLayouts[5] = revision->layout;
-            pipelineDesc.bindingLayoutCount = 6;
+            pipelineDesc.bindingLayouts[6] = desc.collisionSceneLayout;
+            pipelineDesc.bindingLayouts[7] = desc.contactLayout;
+            pipelineDesc.bindingLayoutCount = 8;
         } else {
             pipelineDesc.bindingLayouts[0] = revision->layout;
             pipelineDesc.bindingLayoutCount = 1;
@@ -320,8 +327,10 @@ bool ParticleGpuContinuationRuntime::IsValid() const noexcept
 {
     return m_device && m_storage && m_revision && m_storage->capacity > 0 && m_storage->resources.IsValid() &&
            m_revision->layout.IsValid() && m_revision->group.IsValid() && m_revision->ownerGroup.IsValid() &&
-           m_revision->preparePipeline.IsValid() && m_revision->classifyPipeline.IsValid() &&
-           m_revision->dispatchPipeline.IsValid() && m_programGeneration != 0 && m_resetSerial != 0;
+           m_revision->collisionSceneGroup.IsValid() && m_revision->contactGroup.IsValid() &&
+           m_revision->preparePipeline.IsValid() &&
+           m_revision->classifyPipeline.IsValid() && m_revision->dispatchPipeline.IsValid() &&
+           m_programGeneration != 0 && m_resetSerial != 0;
 }
 
 bool ParticleGpuContinuationRuntime::SharesStorageWith(const ParticleGpuContinuationRuntime &other) const noexcept
@@ -457,11 +466,11 @@ bool ParticleGpuContinuationRuntime::RecordClassify(const rhi::ComputeCommandEnc
 }
 
 bool ParticleGpuContinuationRuntime::RecordDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                                                    uint64_t elapsedTimeTicks, uint32_t systemSeed,
-                                                    float deltaTime, rhi::BindGroupHandle graphSpawnGroup) const
+                                                    uint64_t elapsedTimeTicks, uint32_t systemSeed, float deltaTime,
+                                                    rhi::BindGroupHandle graphSpawnGroup) const
 {
-    if (!IsValid() || !encoder.IsValid() || !graphSpawnGroup.IsValid() ||
-        m_classifiedEpoch != m_recordEpoch || m_dispatchedEpoch == m_recordEpoch)
+    if (!IsValid() || !encoder.IsValid() || !graphSpawnGroup.IsValid() || m_classifiedEpoch != m_recordEpoch ||
+        m_dispatchedEpoch == m_recordEpoch)
         return false;
     const auto constants = Constants(simulationStep, elapsedTimeTicks, systemSeed, deltaTime);
     encoder.BindPipeline(m_revision->dispatchPipeline);
@@ -471,6 +480,8 @@ bool ParticleGpuContinuationRuntime::RecordDispatch(const rhi::ComputeCommandEnc
     encoder.BindGroup(m_revision->dispatchPipeline, 3, graphSpawnGroup);
     encoder.BindGroup(m_revision->dispatchPipeline, 4, m_revision->emptyGroup);
     encoder.BindGroup(m_revision->dispatchPipeline, 5, m_revision->group);
+    encoder.BindGroup(m_revision->dispatchPipeline, 6, m_revision->collisionSceneGroup);
+    encoder.BindGroup(m_revision->dispatchPipeline, 7, m_revision->contactGroup);
     encoder.PushConstants(m_revision->dispatchPipeline, sizeof(constants), &constants);
     encoder.DispatchIndirect(m_storage->resources.dispatchIndirectArguments, 0);
     m_dispatchedEpoch = m_recordEpoch;

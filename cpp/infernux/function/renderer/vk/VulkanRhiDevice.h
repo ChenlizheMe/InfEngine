@@ -122,6 +122,7 @@ class VulkanRhiDevice final : public rhi::Device
     [[nodiscard]] VkBuffer Resolve(rhi::BufferHandle handle) const noexcept;
     [[nodiscard]] bool UsesConcurrentQueueSharing(rhi::BufferHandle handle) const noexcept;
     [[nodiscard]] VkImage Resolve(rhi::TextureHandle handle) const noexcept;
+    [[nodiscard]] bool UsesConcurrentQueueSharing(rhi::TextureHandle handle) const noexcept;
     [[nodiscard]] VkImageView Resolve(rhi::TextureViewHandle handle) const noexcept;
     [[nodiscard]] VkSampler Resolve(rhi::SamplerHandle handle) const noexcept;
     [[nodiscard]] VkShaderModule Resolve(rhi::ShaderModuleHandle handle) const noexcept;
@@ -154,6 +155,7 @@ class VulkanRhiDevice final : public rhi::Device
         VmaAllocation allocation = VK_NULL_HANDLE;
         rhi::TextureDesc desc{};
         bool owned = false;
+        bool concurrentQueueSharing = false;
     };
 
     struct TextureViewPayload

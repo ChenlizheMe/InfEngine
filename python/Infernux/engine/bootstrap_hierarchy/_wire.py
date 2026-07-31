@@ -265,9 +265,9 @@ def _wire_drop_and_delete(ctx):
             sfm2 = bs.scene_file_manager
             if sfm2:
                 sfm2.mark_dirty()
-        sel.clear()
-        if hp.on_selection_changed:
-            hp.on_selection_changed(0)
+            sel.clear()
+            if hp.on_selection_changed:
+                hp.on_selection_changed(0)
 
     def _delete_selected_objects():
         from Infernux.lib import SceneManager
@@ -285,6 +285,12 @@ def _wire_drop_and_delete(ctx):
             _delete_selected_objects_impl(valid_ids)
 
     hp.delete_selected_objects = _delete_selected_objects
+    # Hierarchy is created before SceneView during bootstrap.  Keep the
+    # structural delete transaction on the bootstrap object so every selection
+    # surface can bind to the same action once it exists.
+    bs._delete_selected_objects = _delete_selected_objects
+    if bs.scene_view is not None:
+        bs.scene_view.set_object_delete_handler(_delete_selected_objects)
 
 
 def _finalize_drop(new_obj, parent_id, description, sel, undo, hp, SceneManager):

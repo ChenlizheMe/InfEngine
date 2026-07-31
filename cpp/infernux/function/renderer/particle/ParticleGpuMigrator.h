@@ -49,6 +49,7 @@ struct GpuParticleMigrationDesc
     uint32_t destinationStride = 0;
     rhi::BufferHandle sourceStates;
     rhi::BufferHandle sourceCounters;
+    uint64_t sourceCounterByteSize = 0;
     rhi::BufferHandle destinationStates;
     rhi::BufferHandle destinationFreeList;
     rhi::BufferHandle destinationCounters;
@@ -104,6 +105,10 @@ class ParticleGpuMigrator
     {
         return m_sourceCounters;
     }
+    [[nodiscard]] uint64_t SourceCounterBufferByteSize() const noexcept
+    {
+        return m_sourceCounterByteSize;
+    }
     [[nodiscard]] rhi::BufferHandle DestinationStateBuffer() const noexcept
     {
         return m_destinationStates;
@@ -133,6 +138,7 @@ class ParticleGpuMigrator
     rhi::Device *m_device = nullptr;
     rhi::BufferHandle m_sourceStates;
     rhi::BufferHandle m_sourceCounters;
+    uint64_t m_sourceCounterByteSize = 0;
     rhi::BufferHandle m_destinationStates;
     rhi::BufferHandle m_destinationFreeList;
     rhi::BufferHandle m_destinationCounters;

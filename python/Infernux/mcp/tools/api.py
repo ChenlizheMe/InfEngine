@@ -111,17 +111,19 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
             "file_kinds": {
                 ".frag": "Surface fragment shader. Uses ShaderInfo Name, optional ShadingModel/render state, and a typed Properties block.",
                 ".vert": "Vertex shader. Uses ShaderInfo Name and optional Properties/Outputs. Use for custom vertex deformation or varyings.",
-                ".shadingmodel": "Lighting/evaluation model declared with ShadingModelInfo and Entry roles; do not assign one directly to Material.",
-                ".glsl": "Shared GLSL library code. New ShaderInfo assets name libraries through Imports; do not assign one directly to Material.",
+                ".shadingmodel": "Pipeline-independent lighting/evaluation model declared with ShadingModelInfo and one fixed shading() function; do not assign one directly to Material.",
+                ".glsl": "Pure shared GLSL function library. ShaderInfo and ShadingModelInfo assets name libraries through Imports; do not assign one directly to Material.",
             },
             "shader_info": {
                 "Name": "Stable shader ID used by materials and RenderGraph.",
                 "ShadingModel": "Fragment lighting model such as pbr or unlit.",
                 "Properties": "Typed declarations such as Float amount = 0.5 Range(0.0, 1.0), Color tint = [...] HDR, or Texture2D albedo = white.",
-                "Imports": "List of GLSL library IDs, for example Imports [\"lib/common\", \"lib/color\"].",
+                "Imports": "Pure GLSL function-library dependencies, for example Imports [\"lib/common\", \"lib/color\"]. Imports do not bind renderer resources.",
+                "Requires": "Compiler-owned renderer resource contracts required by this stage or shading model, for example Requires [Lighting].",
                 "Inputs/Outputs": "Typed stage interfaces reserved for the stage-linker migration; built-in varyings continue to work now.",
                 "Surface/Queue/Cull/DepthWrite": "Material render-state defaults compiled into importer metadata.",
-                "Capabilities": "Declared pass/backend capabilities consumed by the upcoming variant planner.",
+                "Capabilities": "ShaderInfo-only stage/pass traits such as Fullscreen, Standalone, or ParticleSprite. ShadingModelInfo must not declare this field.",
+                "Unsupported": "ShadingModelInfo-only opt-out list. Every model supports Forward, Forward+, and Deferred by default; use Unsupported [Deferred] only when reconstructed deferred surface/context data is insufficient.",
             },
             "entry_points": {
                 "surface": "Preferred fragment workflow: void surface(out SurfaceData s). If no main() exists, engine injects templates, varyings, outputs, and shading-model evaluate().",
@@ -790,6 +792,8 @@ def _scan_shaders() -> list[dict[str, Any]]:
                     "hidden": annotations.get("hidden", False),
                     "properties": shader_utils.parse_shader_properties(path) if ext in {".vert", ".frag"} else [],
                     "imports": annotations.get("imports", []),
+                    "requirements": annotations.get("requirements", []),
+                    "unsupported": annotations.get("unsupported", []),
                     "targets": annotations.get("targets", []),
                     "shading_model": annotations.get("shading_model", ""),
                     "queue": annotations.get("queue", ""),
@@ -820,7 +824,9 @@ def _parse_shader_annotations(path: str) -> dict[str, Any]:
             return value
 
         imports = _json_value("shader_imports", [])
+        requirements = _json_value("shader_requirements", [])
         capabilities = _json_value("shader_capabilities", [])
+        unsupported = _json_value("shader_unsupported", [])
         inputs = _json_value("shader_inputs", [])
         outputs = _json_value("shader_outputs", [])
         entries = _json_value("shader_entries", {})
@@ -828,9 +834,11 @@ def _parse_shader_annotations(path: str) -> dict[str, Any]:
             "shader_id": str(metadata["shader_id"]).strip(),
             "hidden": bool(metadata.get("shader_hidden", False)),
             "imports": imports if isinstance(imports, list) else [],
+            "requirements": requirements if isinstance(requirements, list) else [],
             "targets": list(entries) if isinstance(entries, dict) else [],
             "entries": entries if isinstance(entries, dict) else {},
             "capabilities": capabilities if isinstance(capabilities, list) else [],
+            "unsupported": unsupported if isinstance(unsupported, list) else [],
             "inputs": inputs if isinstance(inputs, list) else [],
             "outputs": outputs if isinstance(outputs, list) else [],
             "shading_model": str(metadata.get("shader_lighting_type") or ""),
@@ -847,9 +855,11 @@ def _parse_shader_annotations(path: str) -> dict[str, Any]:
         "shader_id": source.get("shader_id", ""),
         "hidden": bool(source.get("shader_hidden", False)),
         "imports": source.get("imports", []),
+        "requirements": source.get("requirements", []),
         "targets": list(entries) if isinstance(entries, dict) else [],
         "entries": entries if isinstance(entries, dict) else {},
         "capabilities": source.get("capabilities", []),
+        "unsupported": source.get("unsupported", []),
         "inputs": [],
         "outputs": [],
         "shading_model": source.get("shading_model", ""),
@@ -908,9 +918,9 @@ def _shader_examples() -> dict[str, str]:
             "ShadingModelInfo {\n"
             "    Name \"my_lighting\"\n"
             "    Imports [\"Lighting\"]\n"
-            "    Entry Forward evaluateForward\n"
+            "    Requires [Lighting]\n"
             "}\n\n"
-            "void evaluateForward(in SurfaceData s, out vec4 color) {\n"
+            "void shading(in SurfaceData s, out vec4 color) {\n"
             "    color = vec4(s.albedo + s.emission, s.alpha);\n"
             "}\n"
         ),

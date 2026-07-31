@@ -94,6 +94,9 @@ class DeleteGameObjectCommand(UndoCommand):
             obj = scene.find_by_id(self._object_id)
             if obj:
                 _destroy_game_object_immediately(scene, obj)
+        fn = type(self)._selection_restore_fn
+        if fn:
+            fn([])
 
     def undo(self) -> None:
         if self._document is not None:
@@ -107,15 +110,7 @@ class DeleteGameObjectCommand(UndoCommand):
                 fn(self._pre_delete_selection_ids)
 
     def redo(self) -> None:
-        scene = _get_active_scene()
-        if scene:
-            obj = scene.find_by_id(self._object_id)
-            if obj:
-                self._document = _snapshot_object(obj)
-                _destroy_game_object_immediately(scene, obj)
-        fn = type(self)._selection_restore_fn
-        if fn:
-            fn([])
+        self.execute()
 
 
 class DeleteGameObjectsCommand(UndoCommand):
@@ -176,6 +171,9 @@ class DeleteGameObjectsCommand(UndoCommand):
     def execute(self) -> None:
         scene = _get_active_scene()
         if not scene:
+            fn = type(self)._selection_restore_fn
+            if fn:
+                fn([])
             return
         # Destroy from the end of each sibling list so earlier indices do not
         # shift while the transaction is being applied.
@@ -183,6 +181,9 @@ class DeleteGameObjectsCommand(UndoCommand):
             obj = scene.find_by_id(entry["object_id"])
             if obj is not None:
                 _destroy_game_object_immediately(scene, obj)
+        fn = type(self)._selection_restore_fn
+        if fn:
+            fn([])
 
     def undo(self) -> None:
         from Infernux.engine.undo._recreate import _recreate_game_object_from_document
@@ -199,9 +200,6 @@ class DeleteGameObjectsCommand(UndoCommand):
 
     def redo(self) -> None:
         self.execute()
-        fn = type(self)._selection_restore_fn
-        if fn:
-            fn([])
 
 
 class ReparentCommand(UndoCommand):

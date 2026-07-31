@@ -76,11 +76,10 @@ void surface(out SurfaceData s) {
     // The positive six-way map stores opacity directly in A. Absorption only
     // changes how colored light traverses the smoke; applying it here would
     // darken opacity a second time when cards overlap.
-    float opacity = max(positiveAxes.a, 0.0) * material.alphaScale;
     float fadeIn = smoothstep(0.0, max(material.fadeInFraction, 0.0001), v_ParticleNormalizedAge);
     float fadeOut = 1.0 - smoothstep(material.fadeOutStart, 1.0, v_ParticleNormalizedAge);
     float lifetimeFade = fadeIn * fadeOut;
-    float densityAlpha = opacity * lifetimeFade;
+    float densityAlpha = max(positiveAxes.a, 0.0) * material.alphaScale * lifetimeFade;
     if (densityAlpha < material.densityClipThreshold) discard;
     vec4 negativeAxes = mix(
         textureGrad(negativeAxesMap, inxFlipbookUv(v_TexCoord, firstFrame), atlasGradientX, atlasGradientY),

@@ -111,10 +111,16 @@ PropertyDesc DecodePropertyDesc(const py::dict &d)
         p.fVal[3] = d["f4"].cast<float>();
         break;
     }
-    if (d.contains("mn"))
-        p.rangeMin = d["mn"].cast<float>();
-    if (d.contains("mx"))
-        p.rangeMax = d["mx"].cast<float>();
+    if (d.contains("mn") && d.contains("mx")) {
+        p.hasRange = true;
+        if (p.type == PropertyDesc::Int) {
+            p.intRangeMin = d["mn"].cast<int>();
+            p.intRangeMax = d["mx"].cast<int>();
+        } else {
+            p.rangeMin = d["mn"].cast<float>();
+            p.rangeMax = d["mx"].cast<float>();
+        }
+    }
     if (d.contains("sp"))
         p.speed = d["sp"].cast<float>();
     if (d.contains("sl"))
@@ -1330,6 +1336,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("do_rename", &ProjectPanel::doRename)
         .def_readwrite("get_unique_name", &ProjectPanel::getUniqueName)
         .def_readwrite("move_item_to_directory", &ProjectPanel::moveItemToDirectory)
+        .def_readwrite("copy_item_to_path", &ProjectPanel::copyItemToPath)
         // Open/Reveal callbacks
         .def_readwrite("open_file", &ProjectPanel::openFile)
         .def_readwrite("open_scene", &ProjectPanel::openScene)

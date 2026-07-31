@@ -2558,7 +2558,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             auto *adb = AssetRegistry::Instance().GetAssetDatabase();
             if (adb) {
                 std::string matPath = adb->GetPathFromGuid(matGuid);
-                if (!matPath.empty())
+                if (!matPath.empty() && adb->GetResourceTypeForPath(matPath) == ResourceType::Material)
                     mat = AssetRegistry::Instance().LoadAssetByPath<InxMaterial>(matPath, ResourceType::Material);
             }
             return mat;

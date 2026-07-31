@@ -437,6 +437,14 @@ class SceneManager:
         if scene:
             sm._start_active_scene_for_play()
 
+    @staticmethod
+    def is_scene_load_pending() -> bool:
+        """Return whether a deferred runtime scene load is queued or executing."""
+        return (
+            SceneManager._pending_scene_load is not None
+            or SceneManager._active_scene_transaction is not None
+        )
+
     # ------------------------------------------------------------------
     # Build-list queries
     # ------------------------------------------------------------------

@@ -99,6 +99,8 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     )
     pp.move_item_to_directory = lambda item, dest: _safe_project_path(
         file_ops.move_item_to_directory, item, dest, adb)
+    pp.copy_item_to_path = lambda item, dest: _safe_project_path(
+        file_ops.copy_path_as_new_asset, item, dest, adb)
 
     # -- Delete (through an Editor-owned semantic modal) --
     def _delete_items(paths):

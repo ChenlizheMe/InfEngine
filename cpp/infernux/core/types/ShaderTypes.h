@@ -68,4 +68,25 @@ enum class ShaderCompileTarget : int
     return "Unknown";
 }
 
+/// Geometry variants that consume InstanceAuxBuffer for object identity,
+/// transform history or the engine-owned layer mask must upload that stream
+/// before drawing. Keep this contract beside the compile target enum so the
+/// shader linker and draw path cannot silently diverge.
+[[nodiscard]] constexpr bool ShaderCompileTargetUsesInstanceAuxiliary(ShaderCompileTarget target) noexcept
+{
+    switch (target) {
+    case ShaderCompileTarget::Forward:
+    case ShaderCompileTarget::ForwardPlus:
+    case ShaderCompileTarget::GBuffer:
+    case ShaderCompileTarget::Picking:
+    case ShaderCompileTarget::Motion:
+        return true;
+    case ShaderCompileTarget::Shadow:
+    case ShaderCompileTarget::Depth:
+    case ShaderCompileTarget::Count:
+        return false;
+    }
+    return false;
+}
+
 } // namespace infernux

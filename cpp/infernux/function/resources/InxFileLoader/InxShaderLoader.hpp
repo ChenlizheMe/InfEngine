@@ -11,6 +11,7 @@
 #include <glslang/Public/ShaderLang.h>
 #include <optional>
 #include <set>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -171,7 +172,16 @@ class InxShaderLoader
     std::string GenerateGLSL(const ShaderDescriptor &desc, const std::string &resolvedSource,
                              const ShaderDescriptor *shadingModel = nullptr,
                              ShaderCompileTarget target = ShaderCompileTarget::Forward,
-                             const ShaderProgramInterfaceArtifact *linkedInterface = nullptr) const;
+                             const ShaderProgramInterfaceArtifact *linkedInterface = nullptr,
+                             const std::string &deferredShadingRegistry = {}) const;
+
+    /// Build the generated Deferred dispatcher from every shading model that
+    /// does not explicitly declare Unsupported [Deferred].
+    std::string BuildDeferredShadingRegistry(const std::unordered_map<std::string, std::string> &shaderIdMap,
+                                             std::vector<ShaderDescriptor> &models) const;
+
+    /// Stable model identifier stored in the GBuffer object metadata target.
+    static uint32_t ShadingModelId(std::string_view name) noexcept;
 
     /// Build a mapping of shader_id → file_path by recursively scanning shader directories.
     std::unordered_map<std::string, std::string> BuildShaderIdMap(const std::string &dir);

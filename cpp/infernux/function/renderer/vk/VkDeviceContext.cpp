@@ -213,12 +213,12 @@ VkDeviceContext::VkDeviceContext(VkDeviceContext &&other) noexcept
     : m_instance(other.m_instance), m_debugMessenger(other.m_debugMessenger), m_surface(other.m_surface),
       m_physicalDevice(other.m_physicalDevice), m_device(other.m_device), m_vmaAllocator(other.m_vmaAllocator),
       m_graphicsQueue(other.m_graphicsQueue), m_computeQueue(other.m_computeQueue),
-      m_presentQueue(other.m_presentQueue),
-      m_transferQueue(other.m_transferQueue), m_hasDedicatedTransferQueue(other.m_hasDedicatedTransferQueue),
-      m_hasIndependentComputeQueue(other.m_hasIndependentComputeQueue),
-      m_queueIndices(other.m_queueIndices), m_deviceProperties(other.m_deviceProperties),
-      m_deviceFeatures(other.m_deviceFeatures), m_capabilities(other.m_capabilities),
-      m_rhiDevice(std::move(other.m_rhiDevice)), m_descriptorIndexingEnabled(other.m_descriptorIndexingEnabled),
+      m_presentQueue(other.m_presentQueue), m_transferQueue(other.m_transferQueue),
+      m_hasDedicatedTransferQueue(other.m_hasDedicatedTransferQueue),
+      m_hasIndependentComputeQueue(other.m_hasIndependentComputeQueue), m_queueIndices(other.m_queueIndices),
+      m_deviceProperties(other.m_deviceProperties), m_deviceFeatures(other.m_deviceFeatures),
+      m_capabilities(other.m_capabilities), m_rhiDevice(std::move(other.m_rhiDevice)),
+      m_descriptorIndexingEnabled(other.m_descriptorIndexingEnabled),
       m_timelineSemaphoreEnabled(other.m_timelineSemaphoreEnabled), m_validationEnabled(other.m_validationEnabled),
       m_shuttingDown(other.m_shuttingDown), m_waitIdleCount(other.m_waitIdleCount)
 {
@@ -335,10 +335,9 @@ bool VkDeviceContext::Initialize(SDL_Window *window, const DeviceConfig &config)
         INXLOG_ERROR("Failed to create VMA allocator");
         return false;
     }
-    m_rhiDevice =
-        std::make_unique<VulkanRhiDevice>(m_device, m_vmaAllocator, m_capabilities,
-                                          m_queueIndices.graphicsFamily.value(), m_queueIndices.computeFamily.value(),
-                                          m_queueIndices.transferFamily.value());
+    m_rhiDevice = std::make_unique<VulkanRhiDevice>(
+        m_device, m_vmaAllocator, m_capabilities, m_queueIndices.graphicsFamily.value(),
+        m_queueIndices.computeFamily.value(), m_queueIndices.transferFamily.value());
 
     INXLOG_INFO("Vulkan device context initialized successfully");
     INXLOG_INFO("  GPU: ", m_deviceProperties.deviceName);
@@ -404,10 +403,9 @@ bool VkDeviceContext::InitializeDevice(VkSurfaceKHR surface, const DeviceConfig 
         INXLOG_ERROR("Failed to create VMA allocator");
         return false;
     }
-    m_rhiDevice =
-        std::make_unique<VulkanRhiDevice>(m_device, m_vmaAllocator, m_capabilities,
-                                          m_queueIndices.graphicsFamily.value(), m_queueIndices.computeFamily.value(),
-                                          m_queueIndices.transferFamily.value());
+    m_rhiDevice = std::make_unique<VulkanRhiDevice>(
+        m_device, m_vmaAllocator, m_capabilities, m_queueIndices.graphicsFamily.value(),
+        m_queueIndices.computeFamily.value(), m_queueIndices.transferFamily.value());
 
     INXLOG_INFO("Vulkan device initialized successfully");
     INXLOG_INFO("  GPU: ", m_deviceProperties.deviceName);
@@ -534,13 +532,16 @@ VkFormat VkDeviceContext::FindDepthFormat() const
                                VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
 }
 
-VkFormat VkDeviceContext::FindShadowMapDepthFormat() const
+VkFormat VkDeviceContext::FindSampledDepthFormat() const
 {
-    // Shadow map depth format must support BOTH depth attachment AND sampled image
-    // (the shadow map is rendered as a depth attachment, then sampled in lit fragment shaders)
     return FindSupportedFormat({VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT},
                                VK_IMAGE_TILING_OPTIMAL,
                                VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+}
+
+VkFormat VkDeviceContext::FindShadowMapDepthFormat() const
+{
+    return FindSampledDepthFormat();
 }
 
 bool VkDeviceContext::HasStencilComponent(VkFormat format)
@@ -791,8 +792,7 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
 
     // Get queue handles
     vkGetDeviceQueue(m_device, m_queueIndices.graphicsFamily.value(), 0, &m_graphicsQueue);
-    vkGetDeviceQueue(m_device, m_queueIndices.computeFamily.value(), m_queueIndices.computeQueueIndex,
-                     &m_computeQueue);
+    vkGetDeviceQueue(m_device, m_queueIndices.computeFamily.value(), m_queueIndices.computeQueueIndex, &m_computeQueue);
     vkGetDeviceQueue(m_device, m_queueIndices.presentFamily.value(), 0, &m_presentQueue);
     m_hasIndependentComputeQueue = m_computeQueue != VK_NULL_HANDLE && m_computeQueue != m_graphicsQueue;
     if (m_hasIndependentComputeQueue) {

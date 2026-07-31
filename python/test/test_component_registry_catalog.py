@@ -120,6 +120,7 @@ def test_engine_component_catalog_is_explicit_and_complete():
     assert engine_types == {
         "ParticleSystem",
         "RenderStack",
+        "RuntimeAcceptanceRunner",
         "SkeletalAnimator",
         "SpriteRenderer",
         "SpiritAnimator",

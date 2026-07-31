@@ -355,6 +355,26 @@ def test_scene_and_game_resize_publish_target_generations_without_device_drain()
         assert "RetireResourcesAfter" in body
 
 
+def test_scene_render_target_depth_is_sampleable_across_pipeline_switches() -> None:
+    target_source = (RENDERER / "SceneRenderTarget.cpp").read_text(encoding="utf-8")
+    device_header = (VULKAN_BACKEND / "VkDeviceContext.h").read_text(encoding="utf-8")
+    device_source = (VULKAN_BACKEND / "VkDeviceContext.cpp").read_text(encoding="utf-8")
+
+    create_depth = _function_body(
+        target_source, "void SceneRenderTarget::CreateDepthAttachment"
+    )
+    assert "FindSampledDepthFormat" in create_depth
+    assert "VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT" in create_depth
+    assert "VK_IMAGE_USAGE_SAMPLED_BIT" in create_depth
+
+    assert "FindSampledDepthFormat() const" in device_header
+    sampled_format = _function_body(
+        device_source, "VkFormat VkDeviceContext::FindSampledDepthFormat"
+    )
+    assert "VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT" in sampled_format
+    assert "VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT" in sampled_format
+
+
 def test_scene_picking_target_resize_uses_deferred_generation_publication() -> None:
     picking = (RENDERER / "ScenePickingService.cpp").read_text(encoding="utf-8")
     ensure_target = _function_body(picking, "bool ScenePickingService::EnsureTarget")
@@ -486,7 +506,7 @@ def test_dynamic_msaa_retires_every_old_resource_at_one_cutover_epoch() -> None:
             "m_sceneRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
         ),
         "Game framebuffer": (
-            "m_gameRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
+            "graph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
         ),
         "Outline": "retirementQueue.RetireAfter(cutoverEpoch",
         "Scene target": (
@@ -524,13 +544,13 @@ def test_dynamic_msaa_retires_every_old_resource_at_one_cutover_epoch() -> None:
         "m_sceneRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
     )
     game_framebuffer_retirement = (
-        "m_gameRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
+        "graph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
     )
     assert apply_msaa.index(scene_framebuffer_retirement) < apply_msaa.index(
         "m_sceneRenderGraph->ReplaceSceneTarget"
     )
     assert apply_msaa.index(game_framebuffer_retirement) < apply_msaa.index(
-        "m_gameRenderGraph->ReplaceSceneTarget"
+        "graph->ReplaceSceneTarget"
     )
     assert apply_msaa.index("CommitMaterialPipelineGeneration") < apply_msaa.index(
         "m_sceneRenderGraph->ReplaceSceneTarget"
@@ -677,3 +697,24 @@ def test_material_consumers_resolve_after_property_publication() -> None:
         "passBindings.push_back(binding)", 1
     )[0]
     assert preview_publish.index("UpdateMaterialUBO") < preview_publish.index("refreshPassBinding")
+
+
+def test_game_camera_stack_owns_one_render_graph_per_camera() -> None:
+    header = (RENDERER / "InxRenderer.h").read_text(encoding="utf-8")
+    source = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+
+    assert "m_gameRenderGraphs" in header
+    assert "EnsureGameRenderGraph(class Camera *camera)" in header
+    assert "for (Camera *gameCam : FindGameCamerasCached())" in source
+    assert "appendView(graph, false, gameView, cameraDependency, &cameraFinal)" in source
+    assert "cameraDependency = cameraFinal" in source
+
+
+def test_camera_stack_uses_target_owned_color_and_depth_attachments() -> None:
+    graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
+    backend = (VULKAN_BACKEND / "RenderGraph.cpp").read_text(encoding="utf-8")
+
+    assert 'm_renderGraph->ImportTexture(\n        "SceneDepth"' in graph
+    assert "vk::ResourceHandle sharedDepth = m_importedDepthTarget" in graph
+    assert "builder.PrepareDepthStencilAttachment(m_importedDepthTarget)" in graph
+    assert "PassBuilder::PrepareDepthStencilAttachment" in backend

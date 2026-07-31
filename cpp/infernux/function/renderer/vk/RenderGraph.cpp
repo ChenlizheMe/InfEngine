@@ -587,6 +587,19 @@ ResourceHandle PassBuilder::PrepareColorAttachment(ResourceHandle handle)
     return handle;
 }
 
+ResourceHandle PassBuilder::PrepareDepthStencilAttachment(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type == ResourceType::Buffer ||
+        m_graph->m_resources[handle.id].type == ResourceType::RendererList) {
+        return handle;
+    }
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.reads.push_back({handle, ResourceUsage::Read, rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth,
+                          rhi::Access::DepthRead, rhi::TextureLayout::DepthStencilAttachment});
+    return handle;
+}
+
 ResourceHandle PassBuilder::PresentRead(ResourceHandle handle)
 {
     if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type == ResourceType::Buffer ||
@@ -1163,7 +1176,7 @@ ResourceHandle RenderGraph::ImportResolveTarget(VkImage image, VkImageView view,
 }
 
 ResourceHandle RenderGraph::ImportTexture(const std::string &name, VkImage image, VkImageView view, VkFormat format,
-                                          uint32_t width, uint32_t height)
+                                          uint32_t width, uint32_t height, VkSampleCountFlagBits samples)
 {
     ResourceHandle handle;
     handle.scope = m_identity.Current();
@@ -1178,7 +1191,7 @@ ResourceHandle RenderGraph::ImportTexture(const std::string &name, VkImage image
     resource.textureDesc.width = width;
     resource.textureDesc.height = height;
     resource.textureDesc.format = format;
-    resource.textureDesc.samples = VK_SAMPLE_COUNT_1_BIT;
+    resource.textureDesc.samples = samples;
     resource.textureDesc.isTransient = false;
     resource.isExternal = true;
     resource.externalImage = image;
@@ -1191,6 +1204,24 @@ ResourceHandle RenderGraph::ImportTexture(const std::string &name, VkImage image
     m_resourceStates.resize(m_resources.size());
     m_initialResourceStates.resize(m_resources.size());
     SetResourceInitialState(handle, rhi::TextureLayout::Undefined, rhi::Access::None, rhi::PipelineStage::Top);
+    return handle;
+}
+
+ResourceHandle RenderGraph::ImportTexture(const std::string &name, rhi::TextureHandle texture,
+                                          rhi::TextureViewHandle view, VkFormat format, uint32_t width, uint32_t height,
+                                          VkSampleCountFlagBits samples)
+{
+    if (!m_rhiDevice || !texture.IsValid() || !view.IsValid())
+        return {};
+
+    const VkImage image = m_rhiDevice->Resolve(texture);
+    const VkImageView imageView = m_rhiDevice->Resolve(view);
+    if (image == VK_NULL_HANDLE || imageView == VK_NULL_HANDLE)
+        return {};
+
+    const ResourceHandle handle = ImportTexture(name, image, imageView, format, width, height, samples);
+    if (Owns(handle))
+        m_resources[handle.id].concurrentQueueSharing = m_rhiDevice->UsesConcurrentQueueSharing(texture);
     return handle;
 }
 

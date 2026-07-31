@@ -38,6 +38,8 @@ class SplashPlayer:
         self._img_w: int = 0
         self._img_h: int = 0
         self._tex_resource_key: str = ""
+        self._image_path: str = ""
+        self._image_stamp: int = 0
 
         # Video state
         self._vfile = None
@@ -79,6 +81,9 @@ class SplashPlayer:
             if target != self._vlast_frame:
                 self._vlast_frame = target
                 self._upload_video_frame(native_engine, target)
+
+        if item.get("type") != "video" and not self._tex_id:
+            self._poll_image_texture(native_engine)
 
         # Render (scale-to-fill, preserving aspect ratio)
         if self._tex_id:
@@ -156,14 +161,20 @@ class SplashPlayer:
         stamp = texture_stamp(path, "splash_image")
         if stamp == 0:
             return
+        self._image_path = path
+        self._image_stamp = stamp
         self._tex_resource_key = f"splash|{resolved_path(path)}"
+
+    def _poll_image_texture(self, native_engine):
+        if not self._image_path or not self._image_stamp or not self._tex_resource_key:
+            return
         tex_id, tex_w, tex_h = query_or_schedule_texture(
             native_engine,
             self._tex_resource_key,
-            path,
-            int(stamp),
+            self._image_path,
+            self._image_stamp,
             nearest=False,
-            srgb=False,
+            srgb=True,
             pump=True,
         )
         self._tex_id = int(tex_id)
@@ -226,6 +237,8 @@ class SplashPlayer:
                 Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             self._tex_id = 0
         self._tex_resource_key = ""
+        self._image_path = ""
+        self._image_stamp = 0
         if self._vfile:
             self._vfile.close()
             self._vfile = None

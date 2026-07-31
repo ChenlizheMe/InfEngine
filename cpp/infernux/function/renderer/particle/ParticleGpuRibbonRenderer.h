@@ -3,6 +3,7 @@
 #include "ParticleGpuBillboardRenderer.h"
 #include "ParticleGpuOutputRenderer.h"
 #include "ParticleGpuRibbonTopology.h"
+#include "ParticleGpuSurfaceBinding.h"
 
 #include <array>
 #include <memory>
@@ -21,7 +22,6 @@ enum class ParticleRibbonUvMode : uint8_t
 struct GpuParticleRibbonRenderShaderSources
 {
     [[nodiscard]] static std::string_view Vertex() noexcept;
-    [[nodiscard]] static std::string_view Fragment() noexcept;
     [[nodiscard]] static std::string_view PickingFragment() noexcept;
     [[nodiscard]] static std::string_view MotionVertex() noexcept;
     [[nodiscard]] static std::string_view MotionFragment() noexcept;
@@ -30,7 +30,6 @@ struct GpuParticleRibbonRenderShaderSources
 struct GpuParticleRibbonRenderProgram
 {
     ShaderBytecode vertex;
-    ShaderBytecode fragment;
     ShaderBytecode pickingFragment;
     ShaderBytecode motionVertex;
     ShaderBytecode motionFragment;
@@ -40,7 +39,7 @@ struct GpuParticleRibbonRenderProgram
 
 struct GpuParticleRibbonRenderProgramStorage
 {
-    std::array<std::vector<uint32_t>, 5> shaders;
+    std::array<std::vector<uint32_t>, 4> shaders;
 
     [[nodiscard]] bool Assign(const GpuParticleRibbonRenderProgram &program);
     [[nodiscard]] bool IsValid() const noexcept;
@@ -51,11 +50,14 @@ struct GpuRibbonRendererDesc
 {
     GpuParticleRibbonRenderProgram program;
     std::shared_ptr<ParticleGpuRibbonTopology> topology;
+    std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
     std::shared_ptr<InxMaterial> material;
     GpuBillboardMaterialState fallbackMaterial;
     ParticleOutputSemantics semantics;
     ParticleRibbonUvMode uvMode = ParticleRibbonUvMode::Stretch;
     float uvScale = 1.0f;
+    GpuBillboardTextureResolver textureResolver;
+    GpuRetirementQueue *deletionQueue = nullptr;
 };
 
 /// Procedural, camera-facing ribbon renderer. One indirect draw emits six
@@ -76,7 +78,7 @@ class ParticleGpuRibbonRenderer final : public ParticleGpuOutputRenderer
     [[nodiscard]] int32_t RenderQueue() const noexcept override;
     [[nodiscard]] bool RequiresSceneDepth() const noexcept override
     {
-        return false;
+        return m_semantics.softParticles;
     }
     [[nodiscard]] bool CanCastShadows() const noexcept override
     {
@@ -94,7 +96,7 @@ class ParticleGpuRibbonRenderer final : public ParticleGpuOutputRenderer
                                   const MaterialPassPipelineDescriptor &pass, rhi::BufferHandle indirectArguments,
                                   const GpuParticleViewConstants &view, rhi::BufferHandle renderIndices = {},
                                   rhi::TextureViewHandle sceneDepth = {}, bool sceneDepthIsDepth = true,
-                                  const GpuParticleForwardPlusBindings &forwardPlus = {}) override;
+                                  const GpuParticlePerViewBindings &perView = {}) override;
     [[nodiscard]] bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
                                          rhi::RenderTargetLayoutHandle renderTargetLayout,
                                          const MaterialPassPipelineDescriptor &pass,
@@ -106,6 +108,7 @@ class ParticleGpuRibbonRenderer final : public ParticleGpuOutputRenderer
     {
         rhi::RenderTargetLayoutHandle renderTargetLayout;
         MaterialPassPipelineDescriptor pass;
+        rhi::BindingLayoutHandle perViewLayout;
         uint8_t materialStateSignature = 0;
         rhi::GraphicsPipelineHandle pipeline;
     };
@@ -115,28 +118,30 @@ class ParticleGpuRibbonRenderer final : public ParticleGpuOutputRenderer
         rhi::BindGroupHandle group;
     };
 
-    [[nodiscard]] GpuBillboardMaterialState ResolveMaterialState() const noexcept;
-    [[nodiscard]] std::array<float, 4> ResolveMaterialTint() const noexcept;
-    [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(rhi::BufferHandle renderIndices) const;
-    [[nodiscard]] rhi::BindGroupHandle ResolveBindGroup(rhi::BufferHandle renderIndices);
+    [[nodiscard]] rhi::BindGroupHandle CreateGeometryGroup(rhi::BufferHandle renderIndices) const;
+    [[nodiscard]] rhi::BindGroupHandle ResolveGeometryGroup(rhi::BufferHandle renderIndices);
     [[nodiscard]] rhi::GraphicsPipelineHandle GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
-                                                                  const MaterialPassPipelineDescriptor &pass);
+                                                                  const MaterialPassPipelineDescriptor &pass,
+                                                                  rhi::BindingLayoutHandle perViewLayout = {});
 
     rhi::Device *m_device = nullptr;
     std::shared_ptr<ParticleGpuRibbonTopology> m_topology;
-    std::shared_ptr<InxMaterial> m_material;
-    GpuBillboardMaterialState m_fallbackMaterial{};
+    std::shared_ptr<const ShaderProgramArtifact> m_shaderProgram;
     ParticleOutputSemantics m_semantics{};
     ParticleRibbonUvMode m_uvMode = ParticleRibbonUvMode::Stretch;
     float m_uvScale = 1.0f;
     rhi::ShaderModuleHandle m_vertexShader;
     rhi::ShaderModuleHandle m_fragmentShader;
+    rhi::ShaderModuleHandle m_forwardPlusFragmentShader;
     rhi::ShaderModuleHandle m_pickingFragmentShader;
     rhi::ShaderModuleHandle m_motionVertexShader;
     rhi::ShaderModuleHandle m_motionFragmentShader;
-    rhi::BindingLayoutHandle m_layout;
-    rhi::BindGroupHandle m_group;
+    rhi::BindingLayoutHandle m_geometryLayout;
+    rhi::BindGroupHandle m_geometryGroup;
+    rhi::BindingLayoutHandle m_emptyLayout;
+    rhi::BindGroupHandle m_emptyGroup;
     std::vector<ViewGroup> m_viewGroups;
+    ParticleGpuSurfaceBinding m_surface;
     std::vector<PipelineEntry> m_pipelines;
 };
 

@@ -1486,7 +1486,7 @@ class TestDeleteGameObjectsCommand:
                 )
             ):
                 command.undo()
-            assert restored == [(10, None, 0), (20, None, 1), [20, 21, 10]]
+            assert restored == [[], (10, None, 0), (20, None, 1), [20, 21, 10]]
         finally:
             DeleteGameObjectsCommand._selection_restore_fn = old_fn
 

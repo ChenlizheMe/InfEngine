@@ -31,6 +31,12 @@ struct GpuParticleFrameRequest
     float deltaTime = 0.0f;
     bool simulate = true;
     bool render = true;
+    /// Internal, one-frame diagnostics gate. Normal simulation leaves this
+    /// false so collision telemetry adds no atomics to gameplay frames.
+    bool collectCollisionDiagnostics = false;
+    /// Internal, one-frame diagnostics baseline reset. The RenderReset kernel
+    /// clears collision telemetry before a new sampling window begins.
+    bool resetCollisionDiagnostics = false;
     GpuParticleOffscreenPolicy offscreenPolicy = GpuParticleOffscreenPolicy::AlwaysSimulate;
     bool forceSimulation = false;
     GpuParticleBoundsMode boundsMode = GpuParticleBoundsMode::Automatic;
@@ -259,6 +265,7 @@ class ParticleRenderGraph
     GpuParticleFrameRequest m_request{};
     GpuParticleGraphOutputs m_outputs{};
     bool m_bootstrapPending = true;
+    bool m_contactResetPending = true;
     bool m_migrationPending = false;
     bool m_migrationCompleted = false;
     bool m_framePending = false;

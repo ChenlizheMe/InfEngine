@@ -9,6 +9,8 @@ import sys
 import threading
 import time
 import zipfile
+import ctypes
+from ctypes import wintypes
 from types import SimpleNamespace
 
 import pytest
@@ -569,6 +571,83 @@ def test_windows_launcher_layout_hides_runtime_payload(tmp_path, monkeypatch):
     assert layout["layout"] == "infernux-windows-player"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PE resource contract")
+def test_windows_launcher_icon_is_replaced_with_project_icon(tmp_path):
+    launcher = (
+        Path(__file__).parents[1]
+        / "Infernux"
+        / "resources"
+        / "player"
+        / "InfernuxLauncher.exe"
+    )
+    project_icon = (
+        Path(__file__).parents[1]
+        / "Infernux"
+        / "resources"
+        / "icons"
+        / "icon.png"
+    )
+    executable = tmp_path / "BrandedGame.exe"
+    shutil.copy2(launcher, executable)
+
+    GameBuilder._apply_windows_executable_icon(str(executable), str(project_icon))
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.LoadLibraryExW.argtypes = [wintypes.LPCWSTR, wintypes.HANDLE, wintypes.DWORD]
+    kernel32.LoadLibraryExW.restype = wintypes.HMODULE
+    kernel32.FindResourceW.argtypes = [wintypes.HMODULE, ctypes.c_void_p, ctypes.c_void_p]
+    kernel32.FindResourceW.restype = wintypes.HRSRC
+    kernel32.SizeofResource.argtypes = [wintypes.HMODULE, wintypes.HRSRC]
+    kernel32.SizeofResource.restype = wintypes.DWORD
+    module = kernel32.LoadLibraryExW(str(executable), None, 0x00000002)
+    assert module
+    try:
+        group = kernel32.FindResourceW(module, ctypes.c_void_p(101), ctypes.c_void_p(14))
+        assert group
+        assert kernel32.SizeofResource(module, group) >= 6 + 14 * 6
+    finally:
+        kernel32.FreeLibrary.argtypes = [wintypes.HMODULE]
+        kernel32.FreeLibrary(module)
+
+
+def test_build_branding_assets_are_manifested_and_packed(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    icon = tmp_path / "project-icon.png"
+    splash = tmp_path / "opening.png"
+    icon.write_bytes(b"icon")
+    splash.write_bytes(b"splash")
+    builder.icon_path = str(icon)
+    builder.splash_items = [
+        {
+            "type": "image",
+            "path": str(splash),
+            "duration": 2.0,
+            "fade_in": 0.25,
+            "fade_out": 0.5,
+        }
+    ]
+    final_dir = tmp_path / "dist"
+    settings = final_dir / "Data" / "ProjectSettings"
+    settings.mkdir(parents=True)
+    (settings / "BuildSettings.json").write_text(
+        json.dumps({"scenes": ["main.scene"]}), encoding="utf-8"
+    )
+
+    builder._process_build_icon(str(final_dir))
+    builder._process_splash_items(str(final_dir))
+    builder._generate_manifest(str(final_dir))
+
+    manifest = json.loads(
+        (final_dir / "Data" / "BuildManifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["icon_path"] == "Branding/icon.png"
+    assert manifest["splash_items"][0]["path"] == "Splash/opening.png"
+    builder._pack_content_archive(str(final_dir))
+    with zipfile.ZipFile(final_dir / "Data" / "Content.inxpkg") as archive:
+        assert "Branding/icon.png" in archive.namelist()
+        assert "Splash/opening.png" in archive.namelist()
+
+
 def test_requirements_install_is_skipped_when_content_is_unchanged(tmp_path, monkeypatch):
     state_root = tmp_path / "requirements-state"
     monkeypatch.setattr(nuitka_builder_module, "_REQUIREMENTS_STATE_DIR", str(state_root))
@@ -688,10 +767,26 @@ def test_game_data_includes_particle_artifacts(tmp_path):
         / artifact.name
     )
     assert shipped.read_text(encoding="utf-8") == artifact.read_text(encoding="utf-8")
+    runtime_index = json.loads(
+        (shipped.parent / builder._PARTICLE_RUNTIME_INDEX_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert runtime_index == {
+        "$schema": "infernux.particle_runtime_index",
+        "entries": [
+            {
+                "guid": "",
+                "path_hint": "Assets/VFX/smoke.particlegraph",
+                "stable_id": "smoke",
+            }
+        ],
+    }
 
     builder._pack_content_archive(str(final_dir))
     with zipfile.ZipFile(final_dir / "Data" / builder._CONTENT_ARCHIVE_FILENAME) as archive:
         assert "Library/Artifacts/Particle/smoke.inxparticle" in archive.namelist()
+        assert "Library/Artifacts/Particle/RuntimeIndex.json" in archive.namelist()
 
 
 def test_game_data_excludes_unreachable_particle_artifacts(tmp_path):

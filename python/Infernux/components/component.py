@@ -164,11 +164,16 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
 
         # ── Pass 1: attributes with a class-level value ──────────────────
         for attr_name in list(cls.__dict__):
-            if attr_name.startswith('_'):
-                continue
-
             # Raw attribute from class __dict__ (avoids descriptor protocol)
             attr = cls.__dict__[attr_name]
+            # Private annotations remain runtime-only by default. An explicit
+            # serialized_field(), however, is an authoring declaration; this
+            # is how hidden backing data participates in save and undo while
+            # staying out of the Inspector.
+            if attr_name.startswith('_') and not isinstance(
+                attr, SerializedFieldDescriptor
+            ):
+                continue
 
             if callable(attr) or isinstance(attr, (property, classmethod, staticmethod)):
                 continue

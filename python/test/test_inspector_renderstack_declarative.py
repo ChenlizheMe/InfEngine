@@ -10,6 +10,7 @@ from Infernux.engine.ui.inspector_declarative import (
 from Infernux.engine.ui.inspector_renderstack import build_renderstack_inspector_model
 from Infernux.components.serialized_field import get_serialized_fields
 from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+from Infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
 from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
 from Infernux.renderstack.render_stack import RenderStack
 
@@ -46,10 +47,10 @@ def test_shadow_resolution_range_is_enforced_outside_the_inspector():
     assert pipeline.shadow_resolution == 8192
 
 
-def test_default_forward_pipeline_uses_forward_plus_for_opaque_and_transparent():
+def test_default_forward_pipeline_uses_forward_for_opaque_and_transparent():
     from Infernux.rendergraph.graph import RenderGraph
 
-    graph = RenderGraph("Default Forward+")
+    graph = RenderGraph("Default Forward")
     DefaultForwardPipeline().define_topology(graph)
     draws = {
         render_pass.name: render_pass
@@ -57,10 +58,32 @@ def test_default_forward_pipeline_uses_forward_plus_for_opaque_and_transparent()
         if render_pass._action == "draw_renderers"
     }
 
-    assert draws["OpaquePass"]._material_pass == "forward_plus"
+    assert draws["OpaquePass"]._material_pass == "forward"
     assert draws["OpaquePass"]._sort_mode == "front_to_back"
-    assert draws["TransparentPass"]._material_pass == "forward_plus"
+    assert draws["TransparentPass"]._material_pass == "forward"
     assert draws["TransparentPass"]._sort_mode == "back_to_front"
+
+
+def test_builtin_pipeline_route_selector_is_not_an_exposed_parameter():
+    from Infernux.components.serialized_field import get_serialized_fields
+
+    assert "material_pass" not in get_serialized_fields(DefaultForwardPipeline)
+    assert "material_pass" not in get_serialized_fields(DefaultForwardPlusPipeline)
+
+
+def test_default_forward_plus_pipeline_uses_tiled_variants_for_all_geometry():
+    from Infernux.rendergraph.graph import RenderGraph
+
+    graph = RenderGraph("Default Forward+")
+    DefaultForwardPlusPipeline().define_topology(graph)
+    draws = {
+        render_pass.name: render_pass
+        for render_pass in graph._passes
+        if render_pass._action == "draw_renderers"
+    }
+
+    assert draws["OpaquePass"]._material_pass == "forward_plus"
+    assert draws["TransparentPass"]._material_pass == "forward_plus"
 
 
 def test_default_deferred_pipeline_uses_forward_plus_for_transparent():
@@ -85,6 +108,15 @@ def test_default_deferred_pipeline_uses_forward_plus_for_transparent():
         if render_pass.name == "DeferredLightingPass"
     )
     assert len(gbuffer._write_colors) == 5
+    assert gbuffer._material_filter == "deferred_compatible"
+    fallback = next(
+        render_pass
+        for render_pass in graph._passes
+        if render_pass.name == "DeferredForwardFallbackPass"
+    )
+    assert fallback._material_pass == "forward_plus"
+    assert fallback._material_filter == "deferred_unsupported"
+    assert fallback._write_depth == "depth"
     assert graph.get_texture("gbuffer_object").format == Format.RG32_UINT
     assert lighting._shader_name == "Deferred Lighting"
     assert list(lighting._input_bindings) == [
@@ -100,7 +132,11 @@ def test_default_deferred_pipeline_uses_forward_plus_for_transparent():
 def test_default_pipelines_publish_depth_tested_motion_for_both_queue_domains():
     from Infernux.rendergraph.graph import Format, RenderGraph
 
-    for pipeline in (DefaultForwardPipeline(), DefaultDeferredPipeline()):
+    for pipeline in (
+        DefaultForwardPipeline(),
+        DefaultForwardPlusPipeline(),
+        DefaultDeferredPipeline(),
+    ):
         graph = RenderGraph(type(pipeline).__name__)
         pipeline.define_topology(graph)
 
@@ -226,6 +262,8 @@ def test_switching_pipeline_rebuilds_stage_model_without_stale_stage_access():
     forward_model = build_renderstack_inspector_model(stack)
     choice = forward_model.sections[0].controls[0]
     pipelines = tuple(choice.options())
+    assert choice.current_index() == pipelines.index("Default Forward")
+    assert {"Default Forward", "Default Forward+", "Default Deferred"} <= set(pipelines)
     choice.on_change(pipelines.index("Default Deferred"))
 
     deferred_controls = _topology_controls(build_renderstack_inspector_model(stack))

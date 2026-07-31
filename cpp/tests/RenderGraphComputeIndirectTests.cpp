@@ -216,13 +216,16 @@ bool VerifyGpuParticleMigration(TestResources &resources,
     constexpr uint32_t destinationStrideWords = 8;
     constexpr VkDeviceSize destinationStateBytes = destinationCapacity * destinationStrideWords * sizeof(uint32_t);
     constexpr VkDeviceSize destinationFreeListBytes = destinationCapacity * sizeof(uint32_t);
-    constexpr VkDeviceSize counterBytes = 4 * sizeof(uint32_t);
+    constexpr VkDeviceSize counterBytes =
+        infernux::particle::ParticleGpuRuntime::BaseCounterWordCount * sizeof(uint32_t);
     constexpr VkDeviceSize readbackBytes = destinationStateBytes + destinationFreeListBytes + counterBytes;
 
     const std::array<uint32_t, sourceCapacity * sourceStrideWords> sourceStates = {
         1, 11, 100, 101, 200, 900, 0, 0, 110, 111, 210, 901, 1, 22, 120, 121, 220, 902, 1, 33, 130, 131, 230, 903,
     };
-    const std::array<uint32_t, 4> sourceCounters = {1, 3, 5, 7};
+    const std::array<uint32_t, infernux::particle::ParticleGpuRuntime::BaseCounterWordCount> sourceCounters = {
+        1, 3, 5, 7, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+    };
     const std::array<uint32_t, destinationStrideWords> defaults = {
         0, 0, 0xDEADu, 0xBEEFu, 0, 0, 0x1234u, 0x5678u,
     };
@@ -260,6 +263,7 @@ bool VerifyGpuParticleMigration(TestResources &resources,
     migrationDesc.destinationStride = destinationStrideWords * sizeof(uint32_t);
     migrationDesc.sourceStates = sourceStateBuffer;
     migrationDesc.sourceCounters = sourceCounterBuffer;
+    migrationDesc.sourceCounterByteSize = counterBytes;
     migrationDesc.destinationStates = destinationStateBuffer;
     migrationDesc.destinationFreeList = destinationFreeListBuffer;
     migrationDesc.destinationCounters = destinationCounterBuffer;
@@ -417,15 +421,18 @@ bool VerifyGpuParticleMigration(TestResources &resources,
     };
     std::array<uint32_t, expectedStates.size()> migratedStates{};
     std::array<uint32_t, destinationCapacity> migratedFreeList{};
-    std::array<uint32_t, 4> migratedCounters{};
+    std::array<uint32_t, infernux::particle::ParticleGpuRuntime::BaseCounterWordCount> migratedCounters{};
     std::memcpy(migratedStates.data(), readback.mapped, sizeof(migratedStates));
     std::memcpy(migratedFreeList.data(), static_cast<const uint8_t *>(readback.mapped) + destinationStateBytes,
                 sizeof(migratedFreeList));
     std::memcpy(migratedCounters.data(),
                 static_cast<const uint8_t *>(readback.mapped) + destinationStateBytes + destinationFreeListBytes,
                 sizeof(migratedCounters));
-    const bool migrationMatches = migratedStates == expectedStates && migratedFreeList[0] == 1 &&
-                                  migratedCounters == std::array<uint32_t, 4>{1, 0, 6, 7};
+    const bool migrationMatches =
+        migratedStates == expectedStates && migratedFreeList[0] == 1 &&
+        migratedCounters == std::array<uint32_t, infernux::particle::ParticleGpuRuntime::BaseCounterWordCount>{
+                                1, 0, 6, 7, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                            };
 
     migrationGraph.Destroy();
     migrator.Destroy();
@@ -845,7 +852,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::ParticleGpuDrawRegistry particleDrawRegistry;
     infernux::particle::ParticleGpuSystemManager particleSystems;
     if (!Require(particleSystems.Initialize(resources.context, resources.pipelines, resources.resources,
-                                            particleDeletionQueue, particleDrawRegistry, {}, {}, sortProgram,
+                                            particleDeletionQueue, particleDrawRegistry, {}, {}, {}, sortProgram,
                                             cullProgram, boundsProgram, migrationProgram, spawnProgram),
                  "GPU particle system manager initialization failed"))
         return false;
@@ -861,7 +868,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     for (auto &kernel : managedProgram.kernels)
         kernel = particleComputeCode;
     managedProgram.billboardVertexShader = particleVertexCode;
-    managedProgram.billboardFragmentShader = particleFragmentCode;
+    managedProgram.billboardPickingFragmentShader = particleFragmentCode;
+    managedProgram.billboardMotionVertexShader = particleVertexCode;
+    managedProgram.billboardMotionFragmentShader = particleFragmentCode;
     infernux::particle::GpuParticleOutputProgram primaryOutput;
     primaryOutput.id = 911;
     primaryOutput.stableId = "managed-primary";
@@ -889,6 +898,20 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 && particleDrawRegistry.Size() == 1,
                  "GPU particle system was not published atomically"))
         return false;
+    const uint64_t resetDiagnosticRequest = particleSystems.RequestDiagnostics(managedProgram.graphInstanceId, 60);
+    if (!Require(resetDiagnosticRequest != 0 &&
+                     particleSystems.QueryDiagnostics(resetDiagnosticRequest).status ==
+                         infernux::particle::GpuParticleDiagnosticStatus::Pending &&
+                     particleSystems.Reset(managedProgram.id) &&
+                     particleSystems.QueryDiagnostics(resetDiagnosticRequest).status ==
+                         infernux::particle::GpuParticleDiagnosticStatus::Failed,
+                 "GPU particle reset did not terminate its pending diagnostic request"))
+        return false;
+    const uint64_t retryDiagnosticRequest = particleSystems.RequestDiagnostics(managedProgram.graphInstanceId, 60);
+    if (!Require(retryDiagnosticRequest != 0 && particleSystems.QueryDiagnostics(retryDiagnosticRequest).status ==
+                                                    infernux::particle::GpuParticleDiagnosticStatus::Pending,
+                 "GPU particle diagnostics could not be requested again after reset"))
+        return false;
     const auto residentParticleTelemetry = particleSystems.TelemetrySnapshot();
     if (!Require(residentParticleTelemetry.systemCount == 1 && residentParticleTelemetry.outputCount == 1 &&
                      residentParticleTelemetry.totalCapacity == 32 &&
@@ -912,13 +935,17 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     invalidSemanticsProgram.artifactRevision = 2;
     invalidSemanticsProgram.outputs[0].semantics.receiveShadows = true;
     if (!Require(!publishManagedGraph({invalidSemanticsProgram}) &&
-                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 1,
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 &&
+                     particleSystems.QueryDiagnostics(retryDiagnosticRequest).status ==
+                         infernux::particle::GpuParticleDiagnosticStatus::Pending &&
+                     particleSystems.Reset(managedProgram.id) &&
+                     particleSystems.QueryDiagnostics(retryDiagnosticRequest).status ==
+                         infernux::particle::GpuParticleDiagnosticStatus::Failed,
                  "Invalid GPU particle output semantics disturbed the active revision"))
         return false;
 
     auto unsupportedLinkedLightingProgram = managedProgram;
     unsupportedLinkedLightingProgram.artifactRevision = 2;
-    unsupportedLinkedLightingProgram.billboardForwardPlusFragmentShader = particleFragmentCode;
     unsupportedLinkedLightingProgram.outputs[0].semantics.receiveSceneLighting = true;
     if (!Require(!publishManagedGraph({unsupportedLinkedLightingProgram}) &&
                      managedError.find("requires a linked Particle Forward+ shader variant") != std::string::npos &&
@@ -992,6 +1019,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     secondaryMaterialState.depthWriteEnable = false;
     secondaryOutput.material->SetRenderState(secondaryMaterialState);
     managedProgram.outputs.push_back(secondaryOutput);
+    const uint64_t publishDiagnosticRequest = particleSystems.RequestDiagnostics(managedProgram.graphInstanceId, 60);
     const bool managedReplacement = publishManagedGraph({managedProgram});
     if (!managedReplacement || particleSystems.ActiveArtifactRevision(managedProgram.id) != 2 ||
         particleDeletionQueue.PendingCount() != 1) {
@@ -1002,6 +1030,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(managedReplacement && particleSystems.ActiveArtifactRevision(managedProgram.id) == 2 &&
                      particleSystems.ActiveOutputCount(managedProgram.id) == 2 && particleDrawRegistry.Size() == 2 &&
                      particleSystems.ActiveStateWasPreserved(managedProgram.id) &&
+                     particleSystems.QueryDiagnostics(publishDiagnosticRequest).status ==
+                         infernux::particle::GpuParticleDiagnosticStatus::Failed &&
                      particleDeletionQueue.PendingCount() == 1,
                  "Valid GPU particle hot replacement was not published with deferred retirement"))
         return false;
@@ -1303,6 +1333,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::GpuBillboardViewConstants billboardView;
     infernux::MaterialPassPipelineDescriptor billboardPass;
     infernux::rhi::RenderTargetLayoutHandle billboardTargetLayout;
+    infernux::particle::GpuParticlePerViewBindings particlePerView;
     bool billboardRecorded = false;
     RendererList emptyRendererList;
     std::vector<DrawCall> populatedDrawCalls(1);
@@ -1593,13 +1624,14 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return [&, managedRenderer](RenderContext &context) {
             vkCmdBeginQuery(context.GetCommandBuffer(), resources.queryPool, 0, 0);
             auto &encoder = context.GetGraphicsCommandEncoder();
+            billboardRecorded = billboardRenderer.RecordDraw(encoder, billboardTargetLayout, billboardPass,
+                                                             context.GetBufferHandle(particleOutputs.indirectArguments),
+                                                             billboardView, {}, {}, true, particlePerView);
             billboardRecorded =
-                billboardRenderer.RecordDraw(encoder, billboardTargetLayout, billboardPass,
-                                             context.GetBufferHandle(particleOutputs.indirectArguments), billboardView);
-            billboardRecorded = managedRenderer->RecordDraw(encoder, billboardTargetLayout, billboardPass,
-                                                            context.GetBufferHandle(managedIndirectArguments),
-                                                            billboardView, managedViewSorter.SortedIndices()) &&
-                                billboardRecorded;
+                managedRenderer->RecordDraw(encoder, billboardTargetLayout, billboardPass,
+                                            context.GetBufferHandle(managedIndirectArguments), billboardView,
+                                            managedViewSorter.SortedIndices(), {}, true, particlePerView) &&
+                billboardRecorded;
             encoder.DrawIndirect(context.GetBufferHandle(copiedIndirectArguments));
             vkCmdEndQuery(context.GetCommandBuffer(), resources.queryPool, 0);
         };
@@ -1831,10 +1863,22 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     infernux::particle::GpuBillboardRendererDesc billboardDesc;
+    auto billboardShaderProgram = std::make_shared<infernux::ShaderProgramArtifact>();
+    billboardShaderProgram->key = {{"Tests/ParticleTextured", "Tests/ParticleTexturedSurface"}, 1};
+    billboardShaderProgram->domain = infernux::ShaderProgramDomain::ParticleSprite;
+    billboardShaderProgram->compatibilitySignature = 42;
+    infernux::ShaderProgramArtifact::PassVariant billboardForward;
+    billboardForward.compatibilitySignature = billboardShaderProgram->compatibilitySignature;
+    billboardForward.vertexSpirv = SpirvBytes(particleTexturedVertexCode);
+    billboardForward.fragmentSpirv = SpirvBytes(particleTexturedFragmentCode);
+    billboardShaderProgram->variants.push_back(billboardForward);
+    auto billboardMotion = billboardForward;
+    billboardMotion.target = infernux::ShaderCompileTarget::Motion;
+    billboardShaderProgram->variants.push_back(std::move(billboardMotion));
     billboardDesc.vertexShader = {particleTexturedVertexCode.data(), particleTexturedVertexCode.size()};
-    billboardDesc.fragmentShader = {particleTexturedFragmentCode.data(), particleTexturedFragmentCode.size()};
     billboardDesc.motionVertexShader = {particleTexturedVertexCode.data(), particleTexturedVertexCode.size()};
     billboardDesc.motionFragmentShader = {particleTexturedFragmentCode.data(), particleTexturedFragmentCode.size()};
+    billboardDesc.shaderProgram = std::move(billboardShaderProgram);
     billboardDesc.instances = particleRuntime.InstanceBuffer();
     billboardDesc.renderIndices = particleRuntime.RenderIndexBuffer();
     billboardDesc.fallbackMaterial.blendEnabled = false;
@@ -1866,6 +1910,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.computeGroup.IsValid() && resources.computeHandle.IsValid() &&
                      billboardRenderer.Create(rhi, billboardDesc),
                  "Typed RHI particle billboard creation failed"))
+        return false;
+    particlePerView.layout = rhi.CreateBindingLayout({});
+    infernux::rhi::BindGroupDesc particlePerViewGroupDesc;
+    particlePerViewGroupDesc.layout = particlePerView.layout;
+    particlePerView.group = rhi.CreateBindGroup(particlePerViewGroupDesc);
+    if (!Require(particlePerView.IsValid(), "Particle per-view fixture binding creation failed"))
         return false;
 
     rhi.Release(resources.computeShader);
@@ -2132,6 +2182,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     particleDeletionQueue.FlushAll();
 
     billboardRenderer.Destroy();
+    rhi.Release(particlePerView.group);
+    rhi.Release(particlePerView.layout);
     resources.graph.Destroy();
     particleSpawnDomain.Destroy();
     managedViewSorter.Destroy();

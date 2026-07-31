@@ -118,6 +118,13 @@ class _ParticleStageContext:
     def parameter(self, name_or_stable_id: str): ...
     def sample_texture2d(self, texture, uv): ...
     def sample_vector_field(self, interface: str, position): ...
+    def sample_sdf_distance(self, interface: str, position) -> float: ...
+    def sample_sdf_gradient(self, interface: str, position): ...
+    def sample_mesh_position(self, mesh, sample, mode: str = "surface"): ...
+    def sample_mesh_normal(self, mesh, sample, mode: str = "surface"): ...
+    def sample_mesh_tangent(self, mesh, sample, mode: str = "surface"): ...
+    def sample_mesh_uv(self, mesh, sample, mode: str = "surface"): ...
+    def sample_mesh_barycentric(self, mesh, sample, mode: str = "surface"): ...
     def sample_curve(self, curve, t: float) -> float: ...
     def sample_gradient(self, gradient, t: float): ...
     def value_noise_3d(self, position, frequency: float = 1.0, seed: int = 0) -> float: ...
@@ -166,6 +173,8 @@ class ParticleStream:
     collision_penetration: float
     collision_is_trigger: bool
     collision_material: tuple[float, float, float, float]
+    collision_collider_id_low: int
+    collision_collider_id_high: int
 
     def get_attribute(self, name_or_stable_id: str): ...
     def set_attribute(self, name_or_stable_id: str, value) -> None: ...
@@ -178,6 +187,14 @@ class ParticleStream:
     def set_velocity(self, value) -> None: ...
     def add_velocity(self, value) -> None: ...
     def multiply_velocity(self, value) -> None: ...
+    def target_position(
+        self,
+        target,
+        *,
+        speed: float = 5.0,
+        responsiveness: float = 8.0,
+        arrival_radius: float = 0.5,
+    ) -> None: ...
     def set_lifetime(self, value) -> None: ...
     def add_lifetime(self, value) -> None: ...
     def multiply_lifetime(self, value) -> None: ...
@@ -245,7 +262,8 @@ class ParticleStream:
     def sprite(
         self,
         *,
-        material: AssetReference = AssetReference(),
+        shader: str = "Particle Unlit",
+        properties: dict[str, Any] | None = None,
         receive_scene_lighting: bool = False,
         receive_shadows: bool = False,
         soft_particles: bool = False,
@@ -260,7 +278,8 @@ class ParticleStream:
         self,
         *,
         mesh: AssetReference,
-        material: AssetReference = AssetReference(),
+        shader: str = "Particle Unlit",
+        properties: dict[str, Any] | None = None,
         receive_scene_lighting: bool = False,
         receive_shadows: bool = False,
         cast_shadows: bool = False,
@@ -269,7 +288,8 @@ class ParticleStream:
     def ribbon(
         self,
         *,
-        material: AssetReference = AssetReference(),
+        shader: str = "Particle Unlit",
+        properties: dict[str, Any] | None = None,
         receive_scene_lighting: bool = False,
         receive_shadows: bool = False,
         soft_particles: bool = False,
@@ -320,17 +340,19 @@ class ParticleScriptCompiler:
         "until_frames": ("particle.control.until_frames", "frames"),
         "until_seconds": ("particle.control.until_seconds", "seconds"),
     }
+    _LIFECYCLE_OPERATIONS = {
+        **_ATTRIBUTE_OPERATIONS,
+        "collide_plane": ("particle.collision.plane", ""),
+        "collide_sphere": ("particle.collision.sphere", ""),
+        "collide_sdf": ("particle.collision.sdf", ""),
+        "target_position": ("particle.motion.target_position", "target"),
+        "kill_if": ("particle.lifecycle.kill_if", "condition"),
+    }
     _OPERATIONS = {
-        "init": dict(_ATTRIBUTE_OPERATIONS),
-        "update": {
-            **_ATTRIBUTE_OPERATIONS,
-            "collide_plane": ("particle.update.collide_plane", ""),
-            "collide_sphere": ("particle.update.collide_sphere", ""),
-            "collide_sdf": ("particle.update.collide_sdf", ""),
-            "kill_if": ("particle.update.kill_if", "condition"),
-        },
+        "init": dict(_LIFECYCLE_OPERATIONS),
+        "update": dict(_LIFECYCLE_OPERATIONS),
         "rendering": {
-            **_ATTRIBUTE_OPERATIONS,
+            **_LIFECYCLE_OPERATIONS,
             "sprite": ("particle.output.sprite", ""),
             "mesh": ("particle.output.mesh", ""),
             "ribbon": ("particle.output.ribbon", ""),
@@ -681,9 +703,7 @@ class ParticleScriptCompiler:
                     "emitter data_interfaces must be a list or tuple",
                 )
             data_interfaces = tuple(decoded_interfaces)
-        if not all(
-            isinstance(value, (VectorField, SdfVolume)) for value in data_interfaces
-        ):
+        if not all(isinstance(value, (VectorField, SdfVolume)) for value in data_interfaces):
             raise self._error(
                 source_name,
                 data_interfaces_node or node,
@@ -1063,11 +1083,99 @@ class ParticleScriptCompiler:
                     properties[positional_property] = self._value(argument)
             elif call.args:
                 raise self._error(source_name, call, "particle output arguments must be named")
+            uid = f"{stage}.{index}.{call.func.attr}"
+            output_value_links = []
             for keyword in call.keywords:
                 if keyword.arg is None or keyword.arg in properties:
                     raise self._error(source_name, keyword, "invalid or duplicate particle operation argument")
+                if (
+                    operation_stage == "rendering"
+                    and call.func.attr in {"sprite", "mesh", "ribbon"}
+                    and keyword.arg == "properties"
+                ):
+                    if not isinstance(keyword.value, ast.Dict):
+                        raise self._error(
+                            source_name,
+                            keyword.value,
+                            "particle output properties must be a dictionary literal",
+                        )
+                    for key_node, value_node in zip(
+                        keyword.value.keys, keyword.value.values
+                    ):
+                        property_name = self._literal(key_node)
+                        if not isinstance(property_name, str) or not property_name:
+                            raise self._error(
+                                source_name,
+                                key_node or keyword.value,
+                                "particle output shader property names must be strings",
+                            )
+                        port_id = f"shader.{property_name}"
+                        if port_id in properties:
+                            raise self._error(
+                                source_name,
+                                key_node or keyword.value,
+                                f"duplicate particle output shader property {property_name!r}",
+                            )
+                        if self._is_particle_expression(
+                            value_node, context_name, particle_name
+                        ):
+                            source, expression_index = self._parse_expression(
+                                value_node,
+                                stage=stage,
+                                context_name=context_name,
+                                particle_name=particle_name,
+                                source_name=source_name,
+                                expression_index=expression_index,
+                                nodes=nodes,
+                                links=links,
+                                event_context=event_context,
+                                source_locations=source_locations,
+                            )
+                            output_value_links.append(
+                                GraphLinkRecord(
+                                    f"{stage}.shader_property.{index}.{len(shader_property_links)}",
+                                    source[0],
+                                    source[1],
+                                    uid,
+                                    port_id,
+                                    PortKind.VALUE,
+                                )
+                            )
+                        else:
+                            properties[port_id] = self._value(value_node)
+                    continue
+                if (
+                    operation_stage == "rendering"
+                    and call.func.attr == "mesh"
+                    and keyword.arg == "mesh"
+                    and self._is_particle_expression(
+                        keyword.value, context_name, particle_name
+                    )
+                ):
+                    source, expression_index = self._parse_expression(
+                        keyword.value,
+                        stage=stage,
+                        context_name=context_name,
+                        particle_name=particle_name,
+                        source_name=source_name,
+                        expression_index=expression_index,
+                        nodes=nodes,
+                        links=links,
+                        event_context=event_context,
+                        source_locations=source_locations,
+                    )
+                    output_value_links.append(
+                        GraphLinkRecord(
+                            f"{stage}.output_value.{index}.{len(output_value_links)}",
+                            source[0],
+                            source[1],
+                            uid,
+                            "mesh",
+                            PortKind.VALUE,
+                        )
+                    )
+                    continue
                 properties[keyword.arg] = self._value(keyword.value)
-            uid = f"{stage}.{index}.{call.func.attr}"
             self._append_source_node(
                 nodes,
                 source_locations,
@@ -1087,6 +1195,7 @@ class ParticleScriptCompiler:
                         PortKind.VALUE,
                     )
                 )
+            links.extend(output_value_links)
             operation_index += 1
 
             return uid, index
@@ -1705,17 +1814,6 @@ class ParticleScriptCompiler:
             and node.value.id == context_name
         ):
             if node.attr == "delta_time":
-                if stage not in {
-                    "update",
-                    "collision_enter",
-                    "collision_stay",
-                    "collision_exit",
-                }:
-                    raise self._error(
-                        source_name,
-                        node,
-                        "Delta Time is only valid in Update and Collision lifecycle stages",
-                    )
                 uid = f"{stage}.expr.{expression_index}.delta_time"
                 append_source(
                     GraphNodeRecord(uid, "particle.context.delta_time")
@@ -1755,6 +1853,8 @@ class ParticleScriptCompiler:
                 "collision_penetration": "builtin.collision_penetration",
                 "collision_is_trigger": "builtin.collision_is_trigger",
                 "collision_material": "builtin.collision_material",
+                "collision_collider_id_low": "builtin.collision_collider_id_low",
+                "collision_collider_id_high": "builtin.collision_collider_id_high",
                 "rotation": "builtin.rotation",
                 "color": "builtin.color",
             }
@@ -1829,7 +1929,7 @@ class ParticleScriptCompiler:
             append_source(
                 GraphNodeRecord(
                     uid,
-                    "particle.parameter.get",
+                    "particle.parameter",
                     properties={"parameter": stable_id},
                 )
             )
@@ -2050,17 +2150,134 @@ class ParticleScriptCompiler:
             )
             return (uid, "value"), expression_index + 1
 
-        if node.func.attr != "sample_vector_field":
+        mesh_outputs = {
+            "sample_mesh_position": "position",
+            "sample_mesh_normal": "normal",
+            "sample_mesh_tangent": "tangent",
+            "sample_mesh_uv": "uv",
+            "sample_mesh_barycentric": "barycentric",
+        }
+        if node.func.attr in mesh_outputs:
+            if len(node.args) != 2 or any(
+                keyword.arg != "mode" for keyword in node.keywords
+            ):
+                raise self._error(
+                    source_name,
+                    node,
+                    f"{node.func.attr} requires a Mesh value, sample coordinate, and optional mode",
+                )
+            mode = "surface"
+            if node.keywords:
+                mode = self._literal(node.keywords[0].value)
+            if mode not in {"vertex", "edge", "surface"}:
+                raise self._error(
+                    source_name,
+                    node,
+                    "mesh sampling mode must be vertex, edge, or surface",
+                )
+            mesh_source = None
+            mesh_value = None
+            try:
+                mesh_value = self._value(node.args[0])
+            except ParticleScriptError:
+                mesh_source, expression_index = self._parse_expression(
+                    node.args[0],
+                    stage=stage,
+                    context_name=context_name,
+                    particle_name=particle_name,
+                    source_name=source_name,
+                    expression_index=expression_index,
+                    nodes=nodes,
+                    links=links,
+                    event_context=event_context,
+                    source_locations=source_locations,
+                )
+            if mesh_source is None:
+                try:
+                    mesh_value = AssetReference.from_dict(mesh_value).to_dict()
+                except (TypeError, ValueError) as exc:
+                    raise self._error(
+                        source_name,
+                        node.args[0],
+                        "mesh input must be a Mesh parameter or AssetReference",
+                    ) from exc
+
+            sample_source, expression_index = self._parse_expression(
+                node.args[1],
+                stage=stage,
+                context_name=context_name,
+                particle_name=particle_name,
+                source_name=source_name,
+                expression_index=expression_index,
+                nodes=nodes,
+                links=links,
+                event_context=event_context,
+                source_locations=source_locations,
+            )
+            uid = f"{stage}.expr.{expression_index}.{node.func.attr}"
+            append_source(
+                GraphNodeRecord(
+                    uid,
+                    "particle.mesh.sample",
+                    properties={"mesh": mesh_value or AssetReference().to_dict(), "mode": mode},
+                )
+            )
+            if mesh_source is not None:
+                links.append(
+                    GraphLinkRecord(
+                        f"{stage}.expr.link.{expression_index}.mesh",
+                        mesh_source[0],
+                        mesh_source[1],
+                        uid,
+                        "mesh",
+                        PortKind.VALUE,
+                    )
+                )
+            links.append(
+                GraphLinkRecord(
+                    f"{stage}.expr.link.{expression_index}",
+                    sample_source[0],
+                    sample_source[1],
+                    uid,
+                    "sample",
+                    PortKind.VALUE,
+                )
+            )
+            return (uid, mesh_outputs[node.func.attr]), expression_index + 1
+
+        volume_samples = {
+            "sample_vector_field": (
+                "particle.vector_field.sample",
+                "value",
+                "vector field",
+            ),
+            "sample_sdf_distance": (
+                "particle.sdf.sample_distance",
+                "distance",
+                "SDF",
+            ),
+            "sample_sdf_gradient": (
+                "particle.sdf.sample_gradient",
+                "gradient",
+                "SDF",
+            ),
+        }
+        volume_sample = volume_samples.get(node.func.attr)
+        if volume_sample is None:
             raise self._error(source_name, node, f"unsupported particle context expression {node.func.attr!r}")
         if len(node.args) != 2 or node.keywords:
             raise self._error(
                 source_name,
                 node,
-                "sample_vector_field requires an interface name and particle position",
+                f"{node.func.attr} requires an interface name and particle position",
             )
         interface = self._literal(node.args[0])
         if type(interface) is not str or not interface.strip():
-            raise self._error(source_name, node.args[0], "vector field interface must be a non-empty string")
+            raise self._error(
+                source_name,
+                node.args[0],
+                f"{volume_sample[2]} interface must be a non-empty string",
+            )
         position_source, expression_index = self._parse_expression(
             node.args[1],
             stage=stage,
@@ -2073,11 +2290,11 @@ class ParticleScriptCompiler:
             event_context=event_context,
             source_locations=source_locations,
         )
-        uid = f"{stage}.expr.{expression_index}.sample_vector_field"
+        uid = f"{stage}.expr.{expression_index}.{node.func.attr}"
         append_source(
             GraphNodeRecord(
                 uid,
-                "particle.vector_field.sample",
+                volume_sample[0],
                 properties={"interface": interface.strip()},
             )
         )
@@ -2091,7 +2308,7 @@ class ParticleScriptCompiler:
                 PortKind.VALUE,
             )
         )
-        return (uid, "value"), expression_index + 1
+        return (uid, volume_sample[1]), expression_index + 1
 
     @staticmethod
     def _particle_literal_type(value) -> TypeRef:
@@ -2164,6 +2381,8 @@ class ParticleScriptCompiler:
                 "dimensions",
                 "mesh",
                 "mesh_mode",
+                "sdf_interface",
+                "sdf_mode",
             ),
             "AssetReference": ("guid", "path_hint"),
             "VectorField": (),

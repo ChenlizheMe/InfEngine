@@ -53,12 +53,12 @@ struct alignas(16) GpuParticleContinuationRecord
     uint32_t laneIndex = 0;
     uint32_t branchToken = 0;
     uint32_t joinIndex = 0xFFFFFFFFu;
-    uint32_t reservedContext = 0;
+    uint32_t contextKind = 0;
     uint32_t flags = 0;
     uint32_t payloadOffsetWords = 0;
     uint32_t payloadWordCount = 0;
-    uint32_t reserved0 = 0;
-    uint32_t reserved1 = 0;
+    uint32_t contextLifecycle = 0;
+    uint32_t contextGeneration = 0;
 };
 
 /// Shader-visible counters. They remain GPU-resident during normal execution;
@@ -118,7 +118,7 @@ struct alignas(16) GpuParticleContinuationConstants
     uint32_t recordStrideWords = 0;
     uint32_t systemSeed = 0;
     float deltaTime = 0.0f;
-    uint32_t reserved0 = 0;
+    uint32_t diagnosticFlags = 0;
     uint32_t reserved1 = 0;
     uint32_t reserved2 = 0;
 };
@@ -141,6 +141,10 @@ struct GpuParticleContinuationDesc
     rhi::BindingLayoutHandle graphSpawnLayout;
     rhi::BindingLayoutHandle emptyLayout;
     rhi::BindGroupHandle emptyGroup;
+    rhi::BindingLayoutHandle collisionSceneLayout;
+    rhi::BindGroupHandle collisionSceneGroup;
+    rhi::BindingLayoutHandle contactLayout;
+    rhi::BindGroupHandle contactGroup;
 };
 
 struct GpuParticleContinuationResources
@@ -261,6 +265,9 @@ class ParticleGpuContinuationRuntime
 };
 
 static_assert(sizeof(GpuParticleContinuationRecord) == 64);
+static_assert(offsetof(GpuParticleContinuationRecord, contextKind) == 40);
+static_assert(offsetof(GpuParticleContinuationRecord, contextLifecycle) == 56);
+static_assert(offsetof(GpuParticleContinuationRecord, contextGeneration) == 60);
 static_assert(sizeof(GpuParticleContinuationCounters) == 80);
 static_assert(sizeof(GpuParticleContinuationDispatchArguments) == 16);
 static_assert(sizeof(GpuParticleContinuationJoinState) == 16);

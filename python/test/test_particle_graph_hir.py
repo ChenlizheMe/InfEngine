@@ -12,6 +12,7 @@ from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, Port
 from Infernux.particle import (
     EmitterSettings,
     EmitterShape,
+    GpuParticleGlslLowerer,
     KernelCompileError,
     MeshEmissionMode,
     ParticleCompileError,
@@ -36,6 +37,7 @@ from Infernux.particle import (
     SimulationSpace,
     VectorField,
     decode_particle_runtime_metadata,
+    compile_gpu_particle_spirv,
     default_event_graph,
 )
 from Infernux.graph import AssetReference, CoordinateSpace, TypeRef, ValueType
@@ -616,7 +618,7 @@ def test_particle_exec_multiple_inputs_require_an_explicit_join():
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord("left", "particle.attribute.size"),
             GraphNodeRecord("right", "particle.attribute.position"),
-            GraphNodeRecord("tail", "particle.update.kill_if"),
+            GraphNodeRecord("tail", "particle.lifecycle.kill_if"),
         ),
         links=(
             GraphLinkRecord("root-left", "root.update", "out", "left", "in", PortKind.EXEC),
@@ -640,7 +642,7 @@ def test_particle_join_rejects_an_input_from_an_unreachable_exec_branch():
             GraphNodeRecord("reachable", "particle.attribute.size"),
             GraphNodeRecord("orphan", "particle.attribute.position"),
             GraphNodeRecord("join", "particle.control.join_all"),
-            GraphNodeRecord("tail", "particle.update.kill_if"),
+            GraphNodeRecord("tail", "particle.lifecycle.kill_if"),
         ),
         links=(
             GraphLinkRecord(
@@ -690,7 +692,7 @@ def test_particle_exec_join_all_continues_after_every_parallel_branch():
             GraphNodeRecord("left", "particle.attribute.size"),
             GraphNodeRecord("right", "particle.attribute.position"),
             GraphNodeRecord("join", "particle.control.join_all"),
-            GraphNodeRecord("tail", "particle.update.kill_if"),
+            GraphNodeRecord("tail", "particle.lifecycle.kill_if"),
         ),
         links=(
             GraphLinkRecord("root-left", "root.update", "out", "left", "in", PortKind.EXEC),
@@ -1163,7 +1165,7 @@ def test_particle_until_repeats_the_preceding_operation_and_keeps_wait_distinct(
     ]
 
 
-def test_particle_delta_time_is_an_explicit_update_value_not_attribute_semantics():
+def test_particle_delta_time_is_an_explicit_lifecycle_value_not_attribute_semantics():
     update = GraphDocument(
         "particle.update",
         nodes=(
@@ -1236,10 +1238,17 @@ def test_particle_delta_time_is_an_explicit_update_value_not_attribute_semantics
             ),
         ),
     )
-    with pytest.raises(ParticleCompileError, match="Delta Time is only valid"):
-        ParticleGraphCompiler().compile(
-            ParticleGraphAsset(emitters=(ParticleEmitterAsset(init=init),))
-        )
+    init_program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(init=init),))
+    )
+    init_kernel = ParticleKernelLowerer().lower(init_program).emitters[0].init
+    init_delta = next(
+        instruction
+        for instruction in init_kernel.instructions
+        if instruction.source.node_uid == "delta"
+    )
+    assert init_delta.opcode == "load_uniform"
+    assert init_delta.immediate_dict() == {"name": "delta_time"}
 
 
 def test_kernel_continuation_program_counters_are_unique_across_lifecycle_stages():
@@ -1341,34 +1350,28 @@ def test_collision_lifecycle_roots_are_first_class_emitter_stages():
     assert hir.collision_stay.stage is ParticleStage.COLLISION_STAY
     assert hir.collision_exit.stage is ParticleStage.COLLISION_EXIT
     runtime_conditions = {
-        operation.source_node_uid: operation.execution_predicates[-1].runtime_condition
+        operation.source_node_uid: tuple(
+            predicate.runtime_condition for predicate in operation.execution_predicates
+        )
         for stage in (hir.collision_enter, hir.collision_stay, hir.collision_exit)
         if stage is not None
         for operation in stage.flow.iter_operations()
     }
     assert runtime_conditions == {
-        "enter.size": "collision_enter",
-        "stay.size": "collision_stay",
-        "exit.size": "collision_exit",
+        "enter.size": (),
+        "stay.size": (),
+        "exit.size": (),
     }
 
     kernel_program = ParticleKernelLowerer().lower(program)
     kernel_emitter = kernel_program.emitters[0]
-    kernel = kernel_emitter.update
-    opcodes = [instruction.opcode for instruction in kernel.instructions]
-    assert opcodes.count("collide_scene") == 1
-    assert opcodes.count("begin_if") == 3
-    assert opcodes.count("end_if") == 3
-    assert "builtin.collision_active" in kernel.written_attributes
-    assert "builtin.collision_point" in kernel.written_attributes
-    assert "builtin.collision_relative_velocity" in kernel.written_attributes
-    assert "builtin.collision_penetration" in kernel.written_attributes
-    assert "builtin.collision_is_trigger" in kernel.written_attributes
-    assert "builtin.collision_material" in kernel.written_attributes
-    assert "internal.collision_current_id_low" in kernel.written_attributes
-    assert "internal.collision_current_id_high" in kernel.written_attributes
-    assert "internal.collision_active_id_low" in kernel.written_attributes
-    assert "internal.collision_active_id_high" in kernel.written_attributes
+    update_opcodes = [instruction.opcode for instruction in kernel_emitter.update.instructions]
+    contact_opcodes = [instruction.opcode for instruction in kernel_emitter.contact.instructions]
+    assert update_opcodes.count("collide_scene") == 1
+    assert "store_attribute" in contact_opcodes
+    assert "builtin.collision_active" not in {
+        stable_id for stable_id, _type, _default in kernel_emitter.attributes
+    }
 
     flow_by_stage = {
         flow.lifecycle_stage: flow for flow in kernel_emitter.flows
@@ -1388,7 +1391,7 @@ def test_collision_lifecycle_roots_are_first_class_emitter_stages():
     }
     for lifecycle_stage, source_node_uid in expected_nodes.items():
         flow = flow_by_stage[lifecycle_stage]
-        assert flow.kernel_stage.value == "update"
+        assert flow.kernel_stage.value == "contact"
         assert flow.entry_node_uid == f"root.{lifecycle_stage.value}"
         assert [lane.index for lane in flow.lanes] == list(range(len(flow.lanes)))
         block = next(
@@ -1399,7 +1402,7 @@ def test_collision_lifecycle_roots_are_first_class_emitter_stages():
         assert block.instruction_begin < block.instruction_end
         assert all(
             instruction.source.node_uid == source_node_uid
-            for instruction in kernel.instructions[
+            for instruction in kernel_emitter.contact.instructions[
                 block.instruction_begin : block.instruction_end
             ]
         )
@@ -1450,6 +1453,8 @@ class CollisionGraph(ParticleScript):
             particles.set_velocity(particles.collision_relative_velocity)
             particles.set_size(particles.collision_penetration)
             particles.set_color(particles.collision_material)
+            particles.set_attribute("collision-id-low", particles.collision_collider_id_low)
+            particles.set_attribute("collision-id-high", particles.collision_collider_id_high)
 
         def collision_stay(self, ctx, particles):
             particles.set_size(3.0)
@@ -1479,6 +1484,8 @@ class CollisionGraph(ParticleScript):
         "builtin.collision_relative_velocity",
         "builtin.collision_penetration",
         "builtin.collision_material",
+        "builtin.collision_collider_id_low",
+        "builtin.collision_collider_id_high",
     } <= enter_reads
 
 
@@ -1520,7 +1527,7 @@ def test_graph_parameters_have_stable_slots_and_default_only_hot_updates():
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "wind",
-                "particle.parameter.get",
+                "particle.parameter",
                 properties={"parameter": "wind"},
             ),
             GraphNodeRecord("accelerate", "particle.attribute.velocity"),
@@ -1793,39 +1800,12 @@ def test_particle_event_trigger_compiles_for_an_implemented_event():
 
 def test_scene_collision_is_not_a_public_authoring_node():
     definitions = particle_graph_node_definitions(ParticleGraphAsset())
-    assert definitions.registry.get("particle.update.collide_scene") is None
+    assert definitions.registry.get("particle.collision.scene") is None
     assert all(
         "scene collision" not in definition.type_id.lower()
         and "scene collision" not in definition.display_name.lower()
         for definition in definitions.registry.definitions()
     )
-
-    legacy_update = GraphDocument(
-        "particle.update",
-        nodes=(
-            GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("legacy-scene-collision", "particle.update.collide_scene"),
-        ),
-        links=(
-            GraphLinkRecord(
-                "legacy-exec",
-                "root.update",
-                "out",
-                "legacy-scene-collision",
-                "in",
-                PortKind.EXEC,
-            ),
-        ),
-    )
-    with pytest.raises(
-        ParticleCompileError,
-        match=r"unknown node type 'particle\.update\.collide_scene'",
-    ):
-        ParticleGraphCompiler().compile(
-            ParticleGraphAsset(
-                emitters=(ParticleEmitterAsset(update=legacy_update),),
-            )
-        )
 
 
 def test_particle_event_schema_fingerprint_invalidates_event_expression_programs():
@@ -2204,6 +2184,59 @@ def test_particle_data_interfaces_round_trip_with_stable_identity_and_space():
         )
 
 
+@pytest.mark.parametrize("kind", ["mesh_data", "mesh_resource"])
+def test_mesh_resource_bindings_are_not_public_data_interfaces(kind):
+    from Infernux.particle.data_interface import (
+        ParticleDataInterfaceError,
+        particle_data_interface_from_dict,
+    )
+
+    value = {
+        "kind": kind,
+        "stable_id": "surface-mesh",
+        "name": "Surface Mesh",
+        "mesh": AssetReference(guid="mesh-guid").to_dict(),
+        "mesh_parameter": "surface-mesh",
+        "space": "emitter_local",
+        "mesh_to_space": [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ],
+    }
+
+    with pytest.raises(ParticleDataInterfaceError, match="unsupported"):
+        particle_data_interface_from_dict(value)
+
+
+def test_runtime_mesh_resource_parser_accepts_only_current_internal_schema():
+    from Infernux.particle.data_interface import (
+        MeshResourceBinding,
+        ParticleDataInterfaceError,
+        particle_runtime_resource_from_dict,
+    )
+
+    current = MeshResourceBinding(
+        stable_id="surface-mesh",
+        name="Surface Mesh",
+        mesh=AssetReference(guid="mesh-guid"),
+        mesh_parameter="surface-mesh",
+    ).to_dict()
+
+    restored = particle_runtime_resource_from_dict(current)
+    assert restored == MeshResourceBinding(
+        stable_id="surface-mesh",
+        name="Surface Mesh",
+        mesh=AssetReference(guid="mesh-guid"),
+        mesh_parameter="surface-mesh",
+    )
+
+    legacy = dict(current, kind="mesh_data")
+    with pytest.raises(ParticleDataInterfaceError, match="unsupported"):
+        particle_runtime_resource_from_dict(legacy)
+
+
 @pytest.mark.parametrize("stage", ["init", "update", "rendering"])
 def test_particle_graph_rejects_deleted_or_replaced_stage_root(stage):
     value = ParticleGraphAsset().to_dict()
@@ -2249,7 +2282,7 @@ def test_particle_graph_compiler_builds_multi_emitter_schedule_and_render_plan()
                     sprite.uid,
                     sprite.type_id,
                     properties={
-                        "material": AssetReference(guid="six-way-smoke-guid").to_dict(),
+                        "shader": "Particle Six-Way Smoke",
                         "receive_scene_lighting": True,
                         "receive_shadows": True,
                         "soft_particles": True,
@@ -2271,7 +2304,12 @@ def test_particle_graph_compiler_builds_multi_emitter_schedule_and_render_plan()
     assert smoke.init.stage is ParticleStage.INIT
     assert _operations(smoke.init)[0].opcode == "emitter.sample_shape"
     assert _operations(smoke.update)[0].opcode == "attribute.modify_velocity"
-    assert smoke.render_plan.outputs[0].material == AssetReference(guid="six-way-smoke-guid")
+    assert smoke.render_plan.outputs[0].shader == "Particle Six-Way Smoke"
+    assert {item.name for item in smoke.render_plan.outputs[0].shader_properties} >= {
+        "baseColor",
+        "positiveAxesMap",
+        "negativeAxesMap",
+    }
     assert smoke.render_plan.outputs[0].receive_scene_lighting is True
     assert smoke.render_plan.outputs[0].receive_shadows is True
     assert smoke.render_plan.outputs[0].cast_shadows is False
@@ -2407,7 +2445,7 @@ def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
                     "mesh": AssetReference(
                         guid="mesh-guid", path_hint="Assets/Models/Debris.fbx"
                     ).to_dict(),
-                    "material": AssetReference(guid="debris-material-guid").to_dict(),
+                    "shader": "Particle Unlit",
                     "receive_scene_lighting": False,
                     "receive_shadows": False,
                     "sort": "none",
@@ -2436,7 +2474,12 @@ def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
     assert output.mesh == AssetReference(
         guid="mesh-guid", path_hint="Assets/Models/Debris.fbx"
     )
-    assert output.material == AssetReference(guid="debris-material-guid")
+    assert output.shader == "Particle Unlit"
+    assert {item.name for item in output.shader_properties} == {
+        "baseColor",
+        "texSampler",
+        "softness",
+    }
     assert output.soft_particles is False
     assert output.cast_shadows is False
     assert output.sort_mode == "none"
@@ -2447,6 +2490,67 @@ def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
     )
     assert orientation.value_type == TypeRef(ValueType.VEC3)
     assert orientation.default == [0.0, 0.0, 0.0]
+
+
+def test_particle_graph_mesh_parameter_connects_directly_to_static_mesh_output():
+    default_mesh = AssetReference(
+        guid="mesh-guid",
+        path_hint="Assets/Models/Debris.fbx",
+    )
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord(
+                "mesh.parameter",
+                "particle.parameter",
+                properties={"parameter": "output-mesh"},
+            ),
+            GraphNodeRecord("output.mesh", "particle.output.mesh"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-to-mesh",
+                "root.rendering",
+                "out",
+                "output.mesh",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "parameter-to-mesh",
+                "mesh.parameter",
+                "value",
+                "output.mesh",
+                "mesh",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(
+            parameters=(
+                ParticleParameter(
+                    "output-mesh",
+                    "Output Mesh",
+                    TypeRef(ValueType.MESH),
+                    default_mesh.to_dict(),
+                ),
+            ),
+            emitters=(ParticleEmitterAsset(rendering=rendering),),
+        )
+    )
+
+    output = program.emitters[0].render_plan.outputs[0]
+    assert output.mesh_parameter == "output-mesh"
+    assert output.mesh == AssetReference()
+    kernel = ParticleKernelLowerer().lower(program)
+    assert not any(
+        instruction.opcode == "load_parameter"
+        and instruction.immediate_dict().get("parameter") == "output-mesh"
+        for instruction in kernel.emitters[0].rendering.instructions
+    )
+    compile_gpu_particle_spirv(GpuParticleGlslLowerer().lower(kernel))
 
 
 def test_particle_graph_rejects_static_mesh_output_without_mesh_asset():
@@ -2513,10 +2617,11 @@ def test_particle_graph_compiles_lit_shadow_receiving_static_mesh_output():
     assert output.cast_shadows is True
 
 
-def test_particle_graph_rejects_sorted_static_mesh_output():
+@pytest.mark.parametrize("sort_mode", ["back_to_front", "front_to_back"])
+def test_particle_graph_compiles_sorted_static_mesh_output(sort_mode):
     properties = {
         "mesh": AssetReference(guid="mesh-guid").to_dict(),
-        "sort": "back_to_front",
+        "sort": sort_mode,
     }
     rendering = GraphDocument(
         "particle.rendering",
@@ -2538,13 +2643,12 @@ def test_particle_graph_rejects_sorted_static_mesh_output():
         ),
     )
 
-    with pytest.raises(
-        ParticleCompileError,
-        match="currently supports unsorted, non-soft rendering only",
-    ):
-        ParticleGraphCompiler().compile(
-            ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
-        )
+    output = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
+    ).emitters[0].render_plan.outputs[0]
+
+    assert output.output_type == "mesh"
+    assert output.sort_mode == sort_mode
 
 
 def test_particle_graph_exec_order_lowers_to_stage_operations():
@@ -2749,6 +2853,11 @@ def test_particle_graph_schema_is_strict_and_semantic_hash_ignores_positions():
     with pytest.raises(ParticleGraphSchemaError, match="keys mismatch"):
         ParticleGraphAsset.from_dict(obsolete_lifecycle)
 
+    obsolete_collision = copy.deepcopy(asset.to_dict())
+    del obsolete_collision["emitters"][0]["settings"]["collision_layer_mask"]
+    with pytest.raises(ParticleGraphSchemaError, match="keys mismatch"):
+        ParticleGraphAsset.from_dict(obsolete_collision)
+
 
 def test_particle_emitter_instance_policy_is_not_graph_or_runtime_metadata():
     source = ParticleGraphAsset(
@@ -2773,6 +2882,12 @@ def test_particle_python_construction_cannot_bypass_schema_invariants():
         ParticleAttribute("custom.wind", "wind", TypeRef(ValueType.VEC3), [1.0, 2.0])
     with pytest.raises(ParticleGraphSchemaError, match="bursts"):
         EmitterSettings(bursts=(object(),))
+    with pytest.raises(ParticleGraphSchemaError, match="unsigned 32-bit"):
+        EmitterSettings(collision_layer_mask=-1)
+    with pytest.raises(ParticleGraphSchemaError, match="bounce_scale"):
+        EmitterSettings(collision_bounce_scale=-0.1)
+    with pytest.raises(ParticleGraphSchemaError, match="friction_scale"):
+        EmitterSettings(collision_friction_scale=float("nan"))
     with pytest.raises(ParticleGraphSchemaError, match="within the emitter duration"):
         EmitterSettings(
             duration=1.0,
@@ -2782,13 +2897,13 @@ def test_particle_python_construction_cannot_bypass_schema_invariants():
         ParticleGraphAsset(emitters=(object(),))
 
 
-def test_particle_material_reference_uses_strict_guid_and_path_hint_shape():
+def test_particle_output_rejects_removed_material_property():
     value = ParticleGraphAsset().to_dict()
-    material = value["emitters"][0]["stages"]["rendering"]["nodes"][1]["properties"]
-    material["material"] = "ambiguous-material"
+    output = value["emitters"][0]["stages"]["rendering"]["nodes"][1]["properties"]
+    output["material"] = AssetReference(guid="legacy-material").to_dict()
 
     restored = ParticleGraphAsset.from_dict(value)
-    with pytest.raises(ParticleCompileError, match="guid and path_hint"):
+    with pytest.raises(ParticleCompileError, match="unknown properties.*material"):
         ParticleGraphCompiler().compile(restored)
 
 
@@ -2800,6 +2915,33 @@ def test_mesh_emitter_shape_requires_an_asset_at_aot_compile_time():
     hir = ParticleGraphCompiler().compile(ParticleGraphAsset(emitters=(emitter,)))
     with pytest.raises(KernelCompileError, match="mesh shape requires a mesh asset"):
         ParticleKernelLowerer().lower(hir)
+
+
+def test_sdf_emitter_shape_requires_an_owned_sdf_data_interface():
+    with pytest.raises(ParticleGraphSchemaError, match="Signed Distance Volume"):
+        ParticleEmitterAsset(
+            settings=EmitterSettings(
+                shape=EmitterShape(kind="sdf", sdf_interface="missing")
+            )
+        )
+
+    with pytest.raises(ParticleGraphSchemaError, match="Signed Distance Volume"):
+        ParticleEmitterAsset(
+            settings=EmitterSettings(
+                shape=EmitterShape(kind="sdf", sdf_interface="field")
+            ),
+            data_interfaces=(VectorField(stable_id="field"),),
+        )
+
+
+def test_particle_graph_rejects_pre_sdf_emitter_shape_schema():
+    payload = ParticleGraphAsset().to_dict()
+    shape = payload["emitters"][0]["settings"]["shape"]
+    shape.pop("sdf_interface")
+    shape.pop("sdf_mode")
+
+    with pytest.raises(ParticleGraphSchemaError, match="keys mismatch"):
+        ParticleGraphAsset.from_dict(payload)
 
 
 def test_particle_script_mesh_shape_matches_graph_asset_contract():
@@ -2835,6 +2977,47 @@ class MeshShapeGraph(ParticleScript):
     assert shape.kind.value == "mesh"
     assert shape.mesh == AssetReference(path_hint="Assets/Models/source.fbx")
     assert shape.mesh_mode is MeshEmissionMode.SURFACE
+
+
+def test_particle_script_sdf_shape_matches_graph_asset_contract():
+    source = '''\
+from Infernux.particle import AssetReference, EmitterShape, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
+
+class SdfShapeGraph(ParticleScript):
+    class VolumeEmitter(ParticleEmitter):
+        stable_id = "volume-emitter"
+        settings = EmitterSettings(
+            shape=EmitterShape(
+                kind="sdf",
+                sdf_interface="shape-field",
+                sdf_mode="volume",
+            ),
+        )
+        data_interfaces = (
+            SdfVolume(
+                stable_id="shape-field",
+                texture=AssetReference(path_hint="Assets/VFX/Shape.inxsdf"),
+            ),
+        )
+
+        def init(self, ctx, particles):
+            pass
+
+        def update(self, ctx, particles):
+            pass
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+
+    asset = ParticleScriptCompiler().parse(
+        source, source_name="SdfShape.particle.py"
+    )
+
+    shape = asset.emitters[0].settings.shape
+    assert shape.kind.value == "sdf"
+    assert shape.sdf_interface == "shape-field"
+    assert shape.sdf_mode.value == "volume"
 
 
 PARTICLE_SCRIPT_SOURCE = '''\
@@ -2877,7 +3060,7 @@ class SmokeGraph(ParticleScript):
             particles.set_lifetime(8.0)
             particles.set_flipbook_frame(particles.normalized_age * 63.0)
             particles.sprite(
-                material=AssetReference(guid="six-way-smoke-guid"),
+                shader="Particle Six-Way Smoke",
                 receive_scene_lighting=True,
                 receive_shadows=True,
                 sort="back_to_front",
@@ -3535,7 +3718,7 @@ def test_particle_script_typed_events_reject_invalid_events_and_payloads(
 def test_particle_script_static_mesh_output_matches_graph_contract():
     source = PARTICLE_SCRIPT_SOURCE.replace(
         '''particles.sprite(
-                material=AssetReference(guid="six-way-smoke-guid"),
+                shader="Particle Six-Way Smoke",
                 receive_scene_lighting=True,
                 receive_shadows=True,
                 sort="back_to_front",
@@ -3543,7 +3726,7 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
             )''',
         '''particles.mesh(
                 mesh=AssetReference(guid="mesh-guid", path_hint="Assets/Models/Debris.fbx"),
-                material=AssetReference(guid="debris-material-guid"),
+                shader="Particle Unlit",
                 cast_shadows=True,
                 sort="none",
             )''',
@@ -3573,7 +3756,7 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
         ParticleScriptCompiler().parse(source, source_name="MeshOutput.particle.py")
     )
     assert graph_program.emitters[0].render_plan.outputs[0] == output
-    assert output.material.guid == "debris-material-guid"
+    assert output.shader == "Particle Unlit"
     assert output.sort_mode == "none"
     assert _operations(emitter.init)[-2].opcode == "attribute.modify_orientation"
     assert _operations(emitter.init)[-1].opcode == "attribute.modify_scale"
@@ -3584,6 +3767,54 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
     assert "builtin.scale" in {
         attribute.stable_id for attribute in emitter.attributes
     }
+
+
+def test_particle_script_mesh_parameter_connects_to_output_mesh_port():
+    source = '''\
+from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, Parameter
+
+class MeshParameterOutput(ParticleScript):
+    parameters = (
+        Parameter(
+            "output-mesh",
+            "Output Mesh",
+            "mesh",
+            AssetReference(guid="mesh-guid", path_hint="Assets/Models/Debris.fbx"),
+        ),
+    )
+
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            pass
+
+        def update(self, ctx, particles):
+            pass
+
+        def rendering(self, ctx, particles):
+            particles.mesh(mesh=ctx.parameter("Output Mesh"))
+'''
+    asset = ParticleScriptCompiler().parse(
+        source,
+        source_name="MeshParameterOutput.particle.py",
+    )
+    output_node = next(
+        node
+        for node in asset.emitters[0].rendering.nodes
+        if node.type_id == "particle.output.mesh"
+    )
+    assert "mesh" not in output_node.properties
+    assert any(
+        link.source_node.startswith("rendering.expr.")
+        and link.target_node == output_node.uid
+        and link.target_port == "mesh"
+        for link in asset.emitters[0].rendering.links
+    )
+
+    output = ParticleGraphCompiler().compile(asset).emitters[0].render_plan.outputs[0]
+    assert output.mesh_parameter == "output-mesh"
 
 
 def test_ribbon_output_has_stable_topology_attributes_and_script_parity():
@@ -3605,7 +3836,7 @@ class TrailGraph(ParticleScript):
 
         def rendering(self, ctx, particles):
             particles.ribbon(
-                material=AssetReference(path_hint="Assets/Materials/Trail.mat"),
+                shader="Particle Unlit",
                 uv_mode="repeat",
                 uv_scale=2.5,
             )
@@ -3690,7 +3921,7 @@ def test_plane_collision_rejects_invalid_static_parameters(properties, message):
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "collision",
-                "particle.update.collide_plane",
+                "particle.collision.plane",
                 properties=properties,
             ),
         ),
@@ -3754,7 +3985,14 @@ from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 class CollisionGraph(ParticleScript):
     class Sparks(ParticleEmitter):
         stable_id = "sparks"
-        settings = EmitterSettings(capacity=1024, collision_enabled=True)
+        settings = EmitterSettings(
+            capacity=1024,
+            collision_enabled=True,
+            collision_layer_mask=21,
+            collision_include_triggers=False,
+            collision_bounce_scale=1.5,
+            collision_friction_scale=0.25,
+        )
 
         def init(self, ctx, particles):
             particles.set_velocity((0.0, 0.0, 0.0))
@@ -3774,7 +4012,14 @@ class CollisionGraph(ParticleScript):
             emitters=(
                 ParticleEmitterAsset(
                     stable_id="sparks",
-                    settings=EmitterSettings(capacity=1024, collision_enabled=True),
+                    settings=EmitterSettings(
+                        capacity=1024,
+                        collision_enabled=True,
+                        collision_layer_mask=21,
+                        collision_include_triggers=False,
+                        collision_bounce_scale=1.5,
+                        collision_friction_scale=0.25,
+                    ),
                 ),
             ),
         )
@@ -3797,6 +4042,19 @@ class CollisionGraph(ParticleScript):
     assert collision_instructions[0].immediate_dict() == (
         collision_instructions[1].immediate_dict()
     )
+    for program, collision in zip((script_hir, graph_hir), collision_instructions):
+        instructions = ParticleKernelLowerer().lower(program).emitters[0].update.instructions
+        constants = {
+            instruction.result_id: instruction.immediate_dict()["value"]
+            for instruction in instructions
+            if instruction.opcode == "constant"
+        }
+        assert [constants[operand.value_id] for operand in collision.operands[3:]] == [
+            21,
+            False,
+            1.5,
+            0.25,
+        ]
 
 
 def test_particle_script_scene_collision_events_read_current_hit_and_normal():
@@ -3853,29 +4111,30 @@ class CollisionEvents(ParticleScript):
     ] == ["event.trigger"]
 
     kernel = ParticleKernelLowerer().lower(program)
-    instructions = kernel.emitters[0].update.instructions
+    update_instructions = kernel.emitters[0].update.instructions
+    contact_instructions = kernel.emitters[0].contact.instructions
     collision_index = next(
-        index for index, instruction in enumerate(instructions)
+        index for index, instruction in enumerate(update_instructions)
         if instruction.opcode == "collide_scene"
     )
     event_index = next(
-        index for index, instruction in enumerate(instructions)
+        index for index, instruction in enumerate(contact_instructions)
         if instruction.opcode == "event_enqueue"
     )
-    collision = instructions[collision_index]
+    collision = update_instructions[collision_index]
     assert collision.immediate_dict()["hit_attribute"] == "builtin.collision_hit"
     assert collision.immediate_dict()["normal_attribute"] == "builtin.collision_normal"
     assert any(
-        collision_index < index < event_index
+        index < event_index
         and instruction.opcode == "load_attribute"
         and instruction.immediate_dict()["attribute"] == "builtin.collision_hit"
-        for index, instruction in enumerate(instructions)
+        for index, instruction in enumerate(contact_instructions)
     )
     assert any(
-        collision_index < index < event_index
+        index < event_index
         and instruction.opcode == "load_attribute"
         and instruction.immediate_dict()["attribute"] == "builtin.collision_normal"
-        for index, instruction in enumerate(instructions)
+        for index, instruction in enumerate(contact_instructions)
     )
 
 
@@ -3971,7 +4230,7 @@ def test_sphere_collision_rejects_invalid_static_parameters(properties, message)
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "collision",
-                "particle.update.collide_sphere",
+                "particle.collision.sphere",
                 properties=properties,
             ),
         ),
@@ -4047,6 +4306,95 @@ def test_particle_script_vector_field_expression_matches_graph_kernel_contract()
     assert sample.immediate_dict() == {"interface": "wind-field"}
 
 
+def test_particle_script_sdf_samples_match_graph_kernel_contract():
+    source = '''\
+from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
+
+class SdfSampleGraph(ParticleScript):
+    stable_id = "sdf-sample-graph"
+
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+        data_interfaces = (
+            SdfVolume(
+                stable_id="shape",
+                texture=AssetReference(path_hint="Assets/Fields/Shape.inxsdf"),
+            ),
+        )
+
+        def init(self, ctx, particles):
+            particles.set_lifetime(1.0)
+
+        def update(self, ctx, particles):
+            particles.set_size(ctx.sample_sdf_distance("shape", particles.position))
+            particles.set_velocity(ctx.sample_sdf_gradient("shape", particles.position))
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    asset = ParticleScriptCompiler().parse(source, source_name="SdfSample.particle.py")
+    update = asset.emitters[0].update
+    assert "particle.sdf.sample_distance" in {node.type_id for node in update.nodes}
+    assert "particle.sdf.sample_gradient" in {node.type_id for node in update.nodes}
+
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(asset)
+    ).emitters[0]
+    opcodes = {instruction.opcode for instruction in kernel.update.instructions}
+    assert {"sample_sdf_distance", "sample_sdf_gradient"}.issubset(opcodes)
+
+
+def test_particle_script_target_position_is_a_stateless_motion_operation():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class TargetMotion(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_lifetime(4.0)
+
+        def update(self, ctx, particles):
+            particles.target_position(
+                (2.0, 3.0, 4.0),
+                speed=6.0,
+                responsiveness=10.0,
+                arrival_radius=0.25,
+            )
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    asset = ParticleScriptCompiler().parse(source, source_name="TargetMotion.particle.py")
+    update = asset.emitters[0].update
+    target_node = next(
+        node for node in update.nodes if node.type_id == "particle.motion.target_position"
+    )
+    assert target_node.properties == {
+        "target": [2.0, 3.0, 4.0],
+        "speed": 6.0,
+        "responsiveness": 10.0,
+        "arrival_radius": 0.25,
+    }
+
+    hir = ParticleGraphCompiler().compile(asset)
+    operation = next(
+        operation
+        for operation in hir.emitters[0].update.flow.iter_operations()
+        if operation.opcode == "motion.target_position"
+    )
+    assert operation.parameter_dict()["target"] == [2.0, 3.0, 4.0]
+    kernel = ParticleKernelLowerer().lower(hir).emitters[0]
+    opcodes = [instruction.opcode for instruction in kernel.update.instructions]
+    assert "target_position_velocity" in opcodes
+    assert "target" not in {
+        attribute.stable_id for attribute in hir.emitters[0].attributes
+    }
+
+
 
 
 def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations():
@@ -4112,13 +4460,13 @@ class RampParameters(ParticleScript):
     assert any(
         link.target_port == "curve"
         and next(node for node in update.nodes if node.uid == link.source_node).type_id
-        == "particle.parameter.get"
+        == "particle.parameter"
         for link in update.links
     )
     assert any(
         link.target_port == "gradient"
         and next(node for node in update.nodes if node.uid == link.source_node).type_id
-        == "particle.parameter.get"
+        == "particle.parameter"
         for link in update.links
     )
 
@@ -4140,7 +4488,7 @@ def test_particle_script_comparisons_and_kill_if_lower_to_composable_lifecycle_o
     opcodes = [instruction.opcode for instruction in kernel.emitters[0].update.instructions]
 
     assert any(node.type_id == "common.compare.greater_equal" for node in update.nodes)
-    assert any(node.type_id == "particle.update.kill_if" for node in update.nodes)
+    assert any(node.type_id == "particle.lifecycle.kill_if" for node in update.nodes)
     assert "greater_equal" in opcodes
     assert opcodes.count("kill_if") == 2
 
@@ -4302,10 +4650,13 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
         for value in graph_artifact.gpu_glsl["emitters"][0]["data_interfaces"]
     ] == ["wind-field"]
     assert set(graph_artifact.gpu_glsl["emitters"][0]["stages"]) == {
-        "bootstrap",
-        "init",
-        "update",
-        "render_reset",
+            "bootstrap",
+            "init",
+            "update",
+            "contact_prepare",
+            "contact_solve",
+            "contact_dispatch",
+            "render_reset",
         "rendering",
     }
     assert graph_artifact.gpu_spirv["target"] == "vulkan1.2-spirv1.5"
@@ -4315,16 +4666,13 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     )
     assert set(graph_artifact.gpu_spirv["billboard"]) == {
         "vertex",
-        "fragment",
-        "forward_plus_fragment",
         "picking_fragment",
         "motion_vertex",
         "motion_fragment",
     }
     assert set(graph_artifact.gpu_spirv["mesh"]) == {
         "vertex",
-        "fragment",
-        "forward_plus_fragment",
+        "shadow_fragment",
         "picking_fragment",
         "motion_vertex",
         "motion_fragment",
@@ -4336,16 +4684,13 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     assert set(decoded["stages"]) == set(graph_artifact.gpu_glsl["emitters"][0]["stages"])
     assert set(decoded["billboard"]) == {
         "vertex",
-        "fragment",
-        "forward_plus_fragment",
         "picking_fragment",
         "motion_vertex",
         "motion_fragment",
     }
     assert set(decoded["mesh"]) == {
         "vertex",
-        "fragment",
-        "forward_plus_fragment",
+        "shadow_fragment",
         "picking_fragment",
         "motion_vertex",
         "motion_fragment",
@@ -4364,6 +4709,46 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     with pytest.raises(ParticleRuntimeMetadataError, match="is invalid"):
         decode_particle_runtime_metadata(stale_hir)
     assert graph_artifact.artifact_path.endswith("smoke-graph.inxparticle")
+
+
+def test_particle_runtime_index_loads_aot_without_authoring_source(tmp_path, monkeypatch):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    source_path = tmp_path / "Assets" / "Smoke.particle.py"
+    source_path.parent.mkdir()
+    source_path.write_text(PARTICLE_SCRIPT_SOURCE, encoding="utf-8")
+    compiled = ParticleArtifactRegistry.compile_path(str(source_path), guid="smoke-guid")
+    assert Path(compiled.artifact_path).is_file()
+
+    runtime_index = Path(compiled.artifact_path).parent / "RuntimeIndex.json"
+    runtime_index.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.particle_runtime_index",
+                "entries": [
+                    {
+                        "guid": "smoke-guid",
+                        "path_hint": "Assets/Smoke.particle.py",
+                        "stable_id": Path(compiled.artifact_path).stem,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_path.unlink()
+    ParticleArtifactRegistry.clear()
+
+    restored = ParticleArtifactRegistry.load_runtime_reference(
+        "Assets/Smoke.particle.py", guid="smoke-guid"
+    )
+
+    assert restored is not None
+    assert restored.source_kind == "script"
+    assert restored.behavior_hash == compiled.behavior_hash
+    assert restored.artifact_path == compiled.artifact_path
 
 
 def test_particle_graph_save_compiles_the_in_memory_snapshot_once(tmp_path, monkeypatch):

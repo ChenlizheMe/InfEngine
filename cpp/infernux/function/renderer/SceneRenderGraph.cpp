@@ -121,8 +121,8 @@ bool CommandDescEquals(const GraphCommandDesc &a, const GraphCommandDesc &b)
         }
         return true;
     };
-    return a.type == b.type && a.shaderTarget == b.shaderTarget && a.queueMin == b.queueMin &&
-           a.queueMax == b.queueMax && a.sortMode == b.sortMode && a.passTag == b.passTag &&
+    return a.type == b.type && a.shaderTarget == b.shaderTarget && a.materialFilter == b.materialFilter &&
+           a.queueMin == b.queueMin && a.queueMax == b.queueMax && a.sortMode == b.sortMode && a.passTag == b.passTag &&
            a.overrideMaterial == b.overrideMaterial && a.lightIndex == b.lightIndex &&
            a.screenUIList == b.screenUIList && a.shaderName == b.shaderName && a.parameterBlock == b.parameterBlock &&
            parameterLayoutEquals(a, b) && a.inputBindings == b.inputBindings && a.sourceResource == b.sourceResource &&
@@ -996,6 +996,10 @@ void SceneRenderGraph::RecordParticleViewDiagnostics(VkCommandBuffer commandBuff
             capture.diagnostic.outputStableId = entry.outputStableId;
             capture.diagnostic.capacity = entry.capacity;
             capture.diagnostic.cullMode = entry.cullMode;
+            capture.diagnostic.sortMode = entry.semantics.sortMode;
+            const auto sorter = m_particleSorters.find(entry.id);
+            capture.diagnostic.sorterAllocated =
+                sorter != m_particleSorters.end() && sorter->second && sorter->second->IsValid();
             capture.culler = culler->second;
             captures.push_back(std::move(capture));
         }
@@ -1056,6 +1060,7 @@ void SceneRenderGraph::RecordParticleViewDiagnostics(VkCommandBuffer commandBuff
                     std::memcpy(draw.data(), bytes.data() + capture.drawOffset, sizeof(draw));
                     capture.diagnostic.sourceCount = dispatch.sourceCount;
                     capture.diagnostic.visibleCount = draw[1];
+                    capture.diagnostic.sortGroupCountX = dispatch.groupCountX;
                     capture.diagnostic.boundsValid = (dispatch.flags & 1u) != 0u;
                     capture.diagnostic.coarseRejected = capture.diagnostic.boundsValid && (dispatch.flags & 2u) == 0u;
                     capture.diagnostic.cullMode = (dispatch.flags & 4u) != 0u
@@ -1370,6 +1375,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         const std::string sortMode = command->sortMode;
         const std::string overrideMaterial = command->overrideMaterial;
         const std::string passTag = command->passTag;
+        const GraphMaterialFilter materialFilter = command->materialFilter;
         MaterialPassPipelineDescriptor materialPass =
             vkCore->GetMaterialPipelineManager().GetDefaultPassPipelineDescriptor(command->shaderTarget);
         if (commandType == GraphCommandType::DrawRenderers || commandType == GraphCommandType::DrawShadowCasters) {
@@ -1427,12 +1433,12 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         }
 
         m_pythonCallbacks[passDesc.name] = [this, vkCore, commandType, queueMin, queueMax, screenUIListIndex,
-                                            lightIndex, sortMode, overrideMaterial, passTag,
+                                            lightIndex, sortMode, overrideMaterial, passTag, materialFilter,
                                             materialPass](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
             switch (commandType) {
             case GraphCommandType::DrawRenderers:
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, queueMin,
-                                          queueMax, sortMode, overrideMaterial, passTag, &materialPass);
+                                          queueMax, sortMode, overrideMaterial, passTag, &materialPass, materialFilter);
                 break;
             case GraphCommandType::DrawSkybox: {
                 const int32_t skyboxQueue = EngineConfig::Get().skyboxQueue;
@@ -1645,6 +1651,12 @@ void SceneRenderGraph::EnsureGraphBuilt()
     }
 
     if (m_needsRebuild) {
+        // RenderGraph rebuilds can retire and recreate the transient shadow
+        // image view. Vulkan may reuse the same raw handle value, so cached
+        // handle equality cannot prove an existing descriptor still refers
+        // to the new object. Force every frame-local descriptor generation
+        // to be republished after the rebuild.
+        InvalidatePerViewShadowBindings();
         BuildRenderGraph();
         m_needsRebuild = false;
         m_needsCompile = true; // Need to compile after rebuild
@@ -1860,6 +1872,12 @@ bool SceneRenderGraph::PrepareSubmissionExecution()
                                                rhi::Access::ShaderRead, rhi::PipelineStage::FragmentShader);
     }
 
+    if (m_importedDepthTarget.IsValid()) {
+        m_renderGraph->SetResourceInitialState(m_importedDepthTarget, rhi::TextureLayout::DepthStencilAttachment,
+                                               rhi::Access::DepthRead | rhi::Access::DepthWrite,
+                                               rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth);
+    }
+
     if (!m_graphBuilt)
         return false;
 
@@ -1970,6 +1988,12 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
     viewFrame.shadowBinding = {view, shadowSampler, imageLayout, false};
 }
 
+void SceneRenderGraph::InvalidatePerViewShadowBindings() noexcept
+{
+    for (auto &frame : m_perViewFrames)
+        frame.shadowBinding = {};
+}
+
 // ============================================================================
 // Debug
 // ============================================================================
@@ -2055,6 +2079,14 @@ void SceneRenderGraph::ImportSceneTargetResources()
     } else {
         m_importedResolveTarget = {}; // Clear — no separate resolve target needed
     }
+
+    // Color and depth belong to the same persistent output. Importing the
+    // target-owned depth image lets ordered camera graphs preserve or clear a
+    // shared depth domain according to CameraClearFlags instead of allocating
+    // a private depth image per graph.
+    m_importedDepthTarget = m_renderGraph->ImportTexture(
+        "SceneDepth", m_sceneTarget->GetDepthImage(), m_sceneTarget->GetDepthImageView(),
+        m_sceneTarget->GetDepthFormat(), m_width, m_height, m_sceneTarget->GetMsaaSampleCount());
 }
 
 void SceneRenderGraph::ImportTemporalHistoryResources(std::unordered_map<std::string, vk::ResourceHandle> &handles)
@@ -2145,13 +2177,12 @@ void SceneRenderGraph::ImportTemporalHistoryResources(std::unordered_map<std::st
         history.readName = request.read->name;
         history.writeName = request.write->name;
         const uint32_t writeIndex = history.readIndex ^ 1u;
-        history.readHandle =
-            m_renderGraph->ImportTexture(history.readName, device.Resolve(history.textures[history.readIndex]),
-                                         device.Resolve(history.views[history.readIndex]),
-                                         rhi::ToVkFormat(history.format), history.width, history.height);
-        history.writeHandle = m_renderGraph->ImportTexture(
-            history.writeName, device.Resolve(history.textures[writeIndex]), device.Resolve(history.views[writeIndex]),
+        history.readHandle = m_renderGraph->ImportTexture(
+            history.readName, history.textures[history.readIndex], history.views[history.readIndex],
             rhi::ToVkFormat(history.format), history.width, history.height);
+        history.writeHandle =
+            m_renderGraph->ImportTexture(history.writeName, history.textures[writeIndex], history.views[writeIndex],
+                                         rhi::ToVkFormat(history.format), history.width, history.height);
         handles[history.readName] = history.readHandle;
         handles[history.writeName] = history.writeHandle;
         if (!m_renderView.history.IsValid())
@@ -2410,6 +2441,8 @@ void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string,
                 builder.Read(graphOutput, rhi::PipelineStage::FragmentShader);
             if (preserveMsaaAttachment)
                 builder.PrepareColorAttachment(msaaSource);
+            if (m_importedDepthTarget.IsValid())
+                builder.PrepareDepthStencilAttachment(m_importedDepthTarget);
             builder.SetSideEffect();
             return [](vk::RenderContext &) {};
         });
@@ -2440,11 +2473,16 @@ void SceneRenderGraph::BuildRenderGraph()
     m_renderView.depth = {};
     m_renderView.motion = {};
     m_renderView.history = {};
-    // The renderer has waited only for the current frame slot. Leave the
-    // other descriptor set untouched until its own fence is observed; the
-    // old graph resources remain alive in the deferred deletion queue.
-    if (VkDescriptorSet currentPerViewSet = GetPerViewDescriptorSet(); currentPerViewSet != VK_NULL_HANDLE)
-        m_vkCore->ClearPerViewShadowMap(currentPerViewSet);
+    // The renderer has waited only for the current frame slot. Clear both
+    // geometry and particle views for that slot before retiring graph-owned
+    // shadow images; the other slot is republished after its own fence.
+    const uint32_t currentFrame = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    auto &currentViewFrame = m_perViewFrames[currentFrame];
+    if (currentViewFrame.GeometrySet() != VK_NULL_HANDLE)
+        m_vkCore->ClearPerViewShadowMap(currentViewFrame.GeometrySet());
+    if (currentViewFrame.ParticleSet() != VK_NULL_HANDLE)
+        m_vkCore->ClearPerViewShadowMap(currentViewFrame.ParticleSet());
+    currentViewFrame.shadowBinding = {};
 
     m_vkCore->GetMaterialPipelineManager().InvalidateAllMaterialPipelines();
 
@@ -2599,9 +2637,10 @@ void SceneRenderGraph::BuildRenderGraph()
         // Capture vkCore for pass lambdas (avoids capturing 'this')
         InxVkCoreModular *vkCore = m_vkCore;
 
-        // Shared depth handle — created by the first pass that writes depth,
-        // referenced by later passes via ReadDepth().
-        vk::ResourceHandle sharedDepth;
+        // All camera graphs targeting this output import the same persistent
+        // depth attachment. The first camera normally clears it; later
+        // cameras may clear or preserve it through their clear flags.
+        vk::ResourceHandle sharedDepth = m_importedDepthTarget;
 
         // =================================================================
         // Custom RT tracking: Non-backbuffer color textures get a transient
@@ -3959,14 +3998,12 @@ void SceneRenderGraph::BuildRenderGraph()
                         auto &encoder = ctx.GetGraphicsCommandEncoder();
                         const auto sceneDepth = particleSceneDepth.IsValid() ? ctx.GetTextureView(particleSceneDepth)
                                                                              : rhi::TextureViewHandle{};
-                        particle::GpuParticleForwardPlusBindings particleLighting;
-                        if (particlePass.target == ShaderCompileTarget::ForwardPlus && m_forwardPlusParticlesRequired) {
-                            const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
-                            const auto &viewFrame = m_perViewFrames[frameIndex];
-                            if (m_perViewLayout.IsValid() && viewFrame.particleGroup.IsValid()) {
-                                particleLighting.layout = m_perViewLayout;
-                                particleLighting.group = viewFrame.particleGroup;
-                            }
+                        particle::GpuParticlePerViewBindings particlePerView;
+                        const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+                        const auto &viewFrame = m_perViewFrames[frameIndex];
+                        if (m_perViewLayout.IsValid() && viewFrame.particleGroup.IsValid()) {
+                            particlePerView.layout = m_perViewLayout;
+                            particlePerView.group = viewFrame.particleGroup;
                         }
                         for (const auto &packet : particlePackets) {
                             auto packetView = view;
@@ -3976,7 +4013,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                 encoder, renderTargetLayout, particlePass,
                                 ctx.GetBufferHandle(packet.indirectArguments), packetView, packet.drawRenderIndices,
                                 packet.renderer->RequiresSceneDepth() ? sceneDepth : rhi::TextureViewHandle{},
-                                particleSceneDepthIsDepth, particleLighting);
+                                particleSceneDepthIsDepth, particlePerView);
                         }
                     }
                 };

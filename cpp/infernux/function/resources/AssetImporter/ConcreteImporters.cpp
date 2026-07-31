@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <regex>
@@ -203,8 +204,8 @@ std::vector<std::string> RenderEffectImporter::ScanDependencies(const ImportRequ
                 }
                 return result;
             };
-            throw std::runtime_error(location + " schema mismatch; missing=[" + join(missing) +
-                                     "], unknown=[" + join(unknown) + "]");
+            throw std::runtime_error(location + " schema mismatch; missing=[" + join(missing) + "], unknown=[" +
+                                     join(unknown) + "]");
         }
     };
 
@@ -307,8 +308,7 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         }
     };
 
-    requireExactKeys(root, {"$schema", "stable_id", "name", "emitters", "parameters", "event_types"},
-                     "particle graph");
+    requireExactKeys(root, {"$schema", "stable_id", "name", "emitters", "parameters", "event_types"}, "particle graph");
     if (!root["$schema"].is_string() || root["$schema"].get<std::string>() != "infernux.particle_graph")
         throw std::runtime_error("particle graph has an unsupported $schema");
     if (!root["stable_id"].is_string() || root["stable_id"].get_ref<const std::string &>().empty() ||
@@ -330,12 +330,28 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         if (!guid.empty())
             dependencies.insert(guid);
     };
+    std::function<void(const nlohmann::json &, const std::string &)> scanReferences;
+    scanReferences = [&](const nlohmann::json &value, const std::string &location) {
+        if (value.is_object()) {
+            if (value.size() == 2 && value.contains("guid") && value.contains("path_hint")) {
+                readReference(value, location);
+                return;
+            }
+            for (const auto &[key, child] : value.items())
+                scanReferences(child, location + "." + key);
+            return;
+        }
+        if (value.is_array()) {
+            for (size_t index = 0; index < value.size(); ++index)
+                scanReferences(value[index], location + "[" + std::to_string(index) + "]");
+        }
+    };
+    scanReferences(root, "particle graph");
     for (size_t emitterIndex = 0; emitterIndex < root["emitters"].size(); ++emitterIndex) {
         const auto &emitter = root["emitters"][emitterIndex];
         const std::string emitterLocation = "emitters[" + std::to_string(emitterIndex) + "]";
         requireExactKeys(emitter,
-                         {"stable_id", "name", "settings", "attribute_defaults", "data_interfaces", "stages",
-                          "events"},
+                         {"stable_id", "name", "settings", "attribute_defaults", "data_interfaces", "stages", "events"},
                          emitterLocation);
         if (!emitter["attribute_defaults"].is_object() || !emitter["data_interfaces"].is_array() ||
             !emitter["events"].is_array())
@@ -385,10 +401,7 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
             for (const auto &node : stage["nodes"]) {
                 if (!node.is_object() || !node.contains("properties") || !node["properties"].is_object())
                     throw std::runtime_error(stageLocation + " contains an invalid node");
-                const auto material = node["properties"].find("material");
-                if (material == node["properties"].end())
-                    continue;
-                readReference(*material, stageLocation + ".material");
+                scanReferences(node["properties"], stageLocation + ".properties");
             }
         }
     }

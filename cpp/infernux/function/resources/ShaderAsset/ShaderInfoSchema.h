@@ -117,7 +117,9 @@ struct ShaderInfoDocument
     std::vector<ShaderInfoVarying> inputs;
     std::vector<ShaderInfoVarying> outputs;
     std::vector<std::string> imports;
+    std::vector<std::string> requirements;
     std::vector<std::string> capabilities;
+    std::vector<std::string> unsupported;
     std::vector<ShaderInfoEntry> entries;
     std::vector<ShaderInfoResource> resources;
     std::optional<ShaderInfoPushConstants> pushConstants;
@@ -132,6 +134,7 @@ struct ShaderEntryPointSet
     bool main = false;
     bool surface = false;
     bool vertex = false;
+    bool shading = false;
 };
 
 /// Parse the first uncommented ShaderInfo or ShadingModelInfo declaration.

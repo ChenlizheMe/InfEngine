@@ -38,7 +38,8 @@ class ShaderPassVariantPlanner final
 {
   public:
     [[nodiscard]] static ShaderPassVariantPlan Plan(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment,
-                                                    const ShaderProgramInterfaceArtifact &interfaceArtifact);
+                                                    const ShaderProgramInterfaceArtifact &interfaceArtifact,
+                                                    bool shadingModelSupportsDeferred = true);
 };
 
 } // namespace infernux

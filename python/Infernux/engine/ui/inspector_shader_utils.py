@@ -149,7 +149,7 @@ def _read_source_shader_metadata(filepath: str) -> dict[str, object]:
     queue_match = re.search(r"\bQueue\s+(-?\d+)\b", body)
     if queue_match is not None:
         result["queue"] = int(queue_match.group(1))
-    for field in ("Imports", "Capabilities"):
+    for field in ("Imports", "Requires", "Capabilities", "Unsupported"):
         list_match = re.search(rf"\b{field}\s*\[([^\]]*)\]", body)
         if list_match is None:
             continue

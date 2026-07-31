@@ -10,7 +10,12 @@ from pathlib import Path
 import threading
 from typing import Any, Mapping
 
-from Infernux.engine.path_utils import path_key, resolved_path
+from Infernux.engine.path_utils import (
+    path_key,
+    portable_path,
+    relative_path,
+    resolved_path,
+)
 from .asset import ParticleGraphAsset
 from .hir import ParticleGraphCompiler, ParticleProgramHIR
 from .kernel_ir import ParticleKernelLowerer, ParticleKernelProgram
@@ -24,6 +29,8 @@ from .script import ParticleScriptCompiler
 
 
 PARTICLE_ARTIFACT_SCHEMA = "infernux.particle_artifact"
+PARTICLE_RUNTIME_INDEX_SCHEMA = "infernux.particle_runtime_index"
+PARTICLE_RUNTIME_INDEX_FILENAME = "RuntimeIndex.json"
 
 
 class ParticleArtifactError(ValueError):
@@ -75,6 +82,109 @@ class ParticleArtifactRegistry:
     def get(cls, path: str = "", *, guid: str = "") -> ParticleArtifact | None:
         with cls._lock:
             return cls._current_unlocked(path, guid)
+
+    @classmethod
+    def load_runtime_reference(
+        cls, path: str = "", *, guid: str = ""
+    ) -> ParticleArtifact | None:
+        """Load a shipped AOT artifact without requiring its authoring source."""
+        from Infernux.engine.project_context import get_project_root
+
+        project_root = get_project_root()
+        if not project_root:
+            return None
+        artifact_root = os.path.join(
+            project_root, "Library", "Artifacts", "Particle"
+        )
+        index_path = os.path.join(artifact_root, PARTICLE_RUNTIME_INDEX_FILENAME)
+        if not os.path.isfile(index_path):
+            return None
+        try:
+            index = json.loads(Path(index_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ParticleArtifactError(
+                f"particle runtime index cannot be read: {index_path}"
+            ) from exc
+        if (
+            type(index) is not dict
+            or set(index) != {"$schema", "entries"}
+            or index.get("$schema") != PARTICLE_RUNTIME_INDEX_SCHEMA
+            or type(index.get("entries")) is not list
+        ):
+            raise ParticleArtifactError("particle runtime index is not current")
+
+        def reference_key(value: str) -> str:
+            candidate = str(value or "").strip()
+            if os.path.isabs(candidate):
+                try:
+                    candidate = relative_path(
+                        candidate,
+                        project_root,
+                        resolve=False,
+                    )
+                except ValueError:
+                    pass
+            return portable_path(candidate).casefold()
+
+        wanted_guid = str(guid or "").strip()
+        wanted_path = reference_key(path)
+        selected = None
+        for entry in index["entries"]:
+            if (
+                type(entry) is not dict
+                or set(entry) != {"guid", "path_hint", "stable_id"}
+                or any(type(entry.get(key)) is not str for key in entry)
+            ):
+                raise ParticleArtifactError("particle runtime index entry is not current")
+            if wanted_guid and entry["guid"] == wanted_guid:
+                selected = entry
+                break
+            if not wanted_guid and wanted_path and reference_key(entry["path_hint"]) == wanted_path:
+                selected = entry
+                break
+        if selected is None and wanted_path:
+            selected = next(
+                (
+                    entry
+                    for entry in index["entries"]
+                    if reference_key(entry["path_hint"]) == wanted_path
+                ),
+                None,
+            )
+        if selected is None:
+            return None
+
+        stable_id = selected["stable_id"]
+        if not stable_id or not all(
+            character.isalnum() or character in "-_" for character in stable_id
+        ):
+            raise ParticleArtifactError(
+                f"particle runtime index has an invalid stable_id: {stable_id!r}"
+            )
+        artifact_path = os.path.join(artifact_root, stable_id + ".inxparticle")
+        try:
+            payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+            source_hash = payload["source_hash"]
+            source_kind = payload["source_kind"]
+        except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise ParticleArtifactError(
+                f"shipped particle artifact cannot be read: {artifact_path}"
+            ) from exc
+        key = cls._source_key(path, guid)
+        artifact = cls._load_persisted(
+            artifact_path,
+            key=key,
+            source_hash=source_hash,
+            source_kind=source_kind,
+        )
+        if artifact is None:
+            raise ParticleArtifactError(
+                f"shipped particle artifact is invalid: {artifact_path}"
+            )
+        with cls._lock:
+            cls._register_unlocked(artifact, key, cls._source_key(path))
+            cls._revision = max(cls._revision, artifact.revision)
+        return artifact
 
     @staticmethod
     def validate_graph_asset(asset: ParticleGraphAsset) -> None:
@@ -686,7 +796,17 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                         "output_id": output.output_id,
                         "output_type": output.output_type,
                         "mesh": output.mesh.to_dict(),
-                        "material": output.material.to_dict(),
+                        "mesh_parameter": output.mesh_parameter,
+                        "shader": output.shader,
+                        "shader_properties": [
+                            {
+                                "name": item.name,
+                                "type": item.value_type.to_dict(),
+                                "default": item.default,
+                                "parameter_id": item.parameter_id,
+                            }
+                            for item in output.shader_properties
+                        ],
                         "receive_scene_lighting": output.receive_scene_lighting,
                         "receive_shadows": output.receive_shadows,
                         "cast_shadows": output.cast_shadows,

@@ -2293,6 +2293,36 @@ class TestSceneSerialization:
         second.enabled = False
         assert scene.effective_game_camera is None
 
+    def test_active_game_camera_stack_is_depth_ordered_and_filters_disabled(self, scene):
+        high_owner = scene.create_game_object("HighCamera")
+        high = high_owner.add_component("Camera")
+        high.depth = 20.0
+        low_owner = scene.create_game_object("LowCamera")
+        low = low_owner.add_component("Camera")
+        low.depth = -5.0
+        middle_owner = scene.create_game_object("MiddleCamera")
+        middle = middle_owner.add_component("Camera")
+        middle.depth = 3.0
+
+        assert [camera.component_id for camera in scene.active_game_cameras] == [
+            low.component_id,
+            middle.component_id,
+            high.component_id,
+        ]
+
+        middle.enabled = False
+        assert [camera.component_id for camera in scene.active_game_cameras] == [
+            low.component_id,
+            high.component_id,
+        ]
+
+        middle.enabled = True
+        middle_owner.active = False
+        assert [camera.component_id for camera in scene.active_game_cameras] == [
+            low.component_id,
+            high.component_id,
+        ]
+
     def test_main_camera_rejects_cross_scene_reference(self, scene):
         other = SceneManager.instance().create_scene("OtherCameraScene")
         owner = other.create_game_object("ForeignCamera")

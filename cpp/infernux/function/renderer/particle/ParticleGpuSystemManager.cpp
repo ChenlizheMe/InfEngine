@@ -12,6 +12,7 @@
 #include <function/renderer/vk/VkPipelineManager.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
+#include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <numeric>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -61,13 +64,27 @@ struct alignas(16) PackedParticleMeshVertex
     std::array<float, 4> uv{};
 };
 
-struct alignas(16) PackedParticleMeshTriangle
+struct alignas(16) PackedParticleMeshPrimitive
 {
     uint32_t first = 0;
     uint32_t second = 0;
-    uint32_t third = 0;
-    float cumulativeArea = 0.0f;
+    uint32_t thirdOrCdf = 0;
+    uint32_t cdfOrPadding = 0;
 };
+
+struct alignas(16) PackedParticleSkinInfluence
+{
+    std::array<uint32_t, 4> bones{};
+    std::array<float, 4> weights{};
+};
+
+uint32_t FloatBits(float value) noexcept
+{
+    uint32_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value));
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
 
 uint64_t HashBytes(uint64_t hash, const void *data, size_t byteSize) noexcept
 {
@@ -94,6 +111,9 @@ struct ParticleGpuSystemManager::Impl
     {
         uint64_t requestId = 0;
         uint64_t graphInstanceId = 0;
+        uint32_t remainingSampleFrames = 0;
+        uint32_t stateSampleCount = 0;
+        bool resetPending = true;
     };
 
     struct MeshResources
@@ -101,9 +121,11 @@ struct ParticleGpuSystemManager::Impl
         std::shared_ptr<rhi::BufferResource> vertices;
         std::shared_ptr<rhi::BufferResource> indices;
         std::shared_ptr<rhi::BufferResource> samplingTriangles;
+        std::shared_ptr<rhi::BufferResource> skinInfluences;
         uint32_t vertexCount = 0;
         uint32_t indexCount = 0;
         uint32_t samplingTriangleCount = 0;
+        uint32_t samplingEdgeCount = 0;
     };
 
     struct MeshUpload
@@ -113,6 +135,7 @@ struct ParticleGpuSystemManager::Impl
         std::shared_ptr<vk::BufferUploadTicket> vertexTicket;
         std::shared_ptr<vk::BufferUploadTicket> indexTicket;
         std::shared_ptr<vk::BufferUploadTicket> samplingTriangleTicket;
+        std::shared_ptr<vk::BufferUploadTicket> skinInfluenceTicket;
         std::shared_ptr<MeshResources> resources;
         bool failed = false;
     };
@@ -150,15 +173,14 @@ struct ParticleGpuSystemManager::Impl
         std::vector<std::shared_ptr<InxTexture>> vectorFields;
         std::vector<uint64_t> vectorFieldGenerations;
         std::vector<uint64_t> observedVectorFieldGenerations;
+        std::vector<std::shared_ptr<InxMesh>> meshes;
+        std::vector<uint64_t> observedMeshGenerations;
         std::vector<uint32_t> billboardVertexShader;
-        std::vector<uint32_t> billboardFragmentShader;
-        std::vector<uint32_t> billboardForwardPlusFragmentShader;
         std::vector<uint32_t> billboardPickingFragmentShader;
         std::vector<uint32_t> billboardMotionVertexShader;
         std::vector<uint32_t> billboardMotionFragmentShader;
         std::vector<uint32_t> meshVertexShader;
-        std::vector<uint32_t> meshFragmentShader;
-        std::vector<uint32_t> meshForwardPlusFragmentShader;
+        std::vector<uint32_t> meshShadowFragmentShader;
         std::vector<uint32_t> meshPickingFragmentShader;
         std::vector<uint32_t> meshMotionVertexShader;
         std::vector<uint32_t> meshMotionFragmentShader;
@@ -192,6 +214,7 @@ struct ParticleGpuSystemManager::Impl
     ParticleGpuDrawRegistry *drawRegistry = nullptr;
     GpuBillboardTextureResolver textureResolver;
     GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver;
+    GpuParticleSkinnedMeshResolver skinnedMeshResolver;
     std::shared_ptr<const GpuParticleCullProgramStorage> cullProgram;
     std::shared_ptr<const GpuParticleSortProgramStorage> sortProgram;
     std::shared_ptr<const GpuParticleBoundsProgramStorage> boundsProgram;
@@ -207,6 +230,26 @@ struct ParticleGpuSystemManager::Impl
     std::shared_ptr<DiagnosticState> diagnosticState = std::make_shared<DiagnosticState>();
     std::vector<PendingDiagnostic> pendingDiagnostics;
     uint64_t nextDiagnosticRequestId = 1;
+
+    void FailDiagnostics(uint64_t graphInstanceId, const char *reason) noexcept
+    {
+        pendingDiagnostics.erase(std::remove_if(pendingDiagnostics.begin(), pendingDiagnostics.end(),
+                                                [graphInstanceId](const auto &request) {
+                                                    return graphInstanceId == 0 ||
+                                                           request.graphInstanceId == graphInstanceId;
+                                                }),
+                                 pendingDiagnostics.end());
+
+        std::scoped_lock lock(diagnosticState->mutex);
+        for (auto &[requestId, snapshot] : diagnosticState->snapshots) {
+            (void)requestId;
+            if (snapshot.status != GpuParticleDiagnosticStatus::Pending ||
+                (graphInstanceId != 0 && snapshot.graphInstanceId != graphInstanceId))
+                continue;
+            snapshot.status = GpuParticleDiagnosticStatus::Failed;
+            snapshot.error = reason;
+        }
+    }
 
     [[nodiscard]] bool HasQueuedFrameRequests() const noexcept
     {
@@ -281,8 +324,17 @@ struct ParticleGpuSystemManager::Impl
         if (pendingDiagnostics.empty() || !context || !deletionQueue || commandBuffer == VK_NULL_HANDLE)
             return;
 
-        auto requests = std::move(pendingDiagnostics);
-        pendingDiagnostics.clear();
+        std::vector<PendingDiagnostic> requests;
+        for (auto it = pendingDiagnostics.begin(); it != pendingDiagnostics.end();) {
+            if (it->remainingSampleFrames != 0) {
+                ++it;
+                continue;
+            }
+            requests.push_back(*it);
+            it = pendingDiagnostics.erase(it);
+        }
+        if (requests.empty())
+            return;
         auto &device = context->GetRhiDevice();
         vk::VulkanTransferCommandContext transferContext;
         const auto transfer = device.MakeTransferCommandEncoder(transferContext, commandBuffer);
@@ -302,8 +354,13 @@ struct ParticleGpuSystemManager::Impl
                 uint64_t counterBytes = 0;
                 uint64_t boundsOffset = 0;
                 uint64_t spawnMetadataOffset = 0;
+                uint64_t stateOffset = 0;
+                uint64_t stateBytes = 0;
+                uint32_t stateStride = 0;
+                uint32_t stateSampleCount = 0;
             };
             std::vector<EmitterCapture> emitterCaptures;
+            bool invalidStateLayout = false;
             for (const auto &[id, emitter] : emitters) {
                 if (!emitter || emitter->graphInstanceId != request.graphInstanceId || !emitter->runtime)
                     continue;
@@ -316,16 +373,43 @@ struct ParticleGpuSystemManager::Impl
                 capture.diagnostic.eventEnqueueCounts.resize(emitter->runtime->EventTypeCount());
                 capture.diagnostic.eventCompleteCounts.resize(emitter->runtime->EventTypeCount());
                 capture.counterBytes = emitter->runtime->CounterBufferByteSize();
+                if (request.stateSampleCount > 0) {
+                    capture.stateStride = emitter->runtime->StateStride();
+                    capture.stateSampleCount = request.stateSampleCount;
+                    if (capture.stateStride == 0 || capture.stateStride % sizeof(uint32_t) != 0 ||
+                        capture.diagnostic.capacity > std::numeric_limits<uint64_t>::max() / capture.stateStride) {
+                        std::scoped_lock lock(diagnosticState->mutex);
+                        auto &snapshot = diagnosticState->snapshots[request.requestId];
+                        snapshot.status = GpuParticleDiagnosticStatus::Failed;
+                        snapshot.error = "GPU particle state layout is invalid for diagnostic sampling";
+                        invalidStateLayout = true;
+                        break;
+                    }
+                    capture.stateBytes = static_cast<uint64_t>(capture.diagnostic.capacity) * capture.stateStride;
+                }
                 emitterCaptures.push_back(capture);
             }
+            if (invalidStateLayout)
+                continue;
             std::sort(emitterCaptures.begin(), emitterCaptures.end(), [](const auto &lhs, const auto &rhs) {
                 return lhs.diagnostic.emitterIndex < rhs.diagnostic.emitterIndex;
             });
 
             uint64_t totalBytes = 0;
             for (const auto &capture : emitterCaptures)
-                totalBytes +=
-                    capture.counterBytes + ParticleGpuBounds::BoundsBufferBytes + sizeof(GpuParticleSpawnMetadata);
+                totalBytes += capture.counterBytes + ParticleGpuBounds::BoundsBufferBytes +
+                              sizeof(GpuParticleSpawnMetadata) + capture.stateBytes;
+            constexpr uint64_t MaxDiagnosticStateReadbackBytes = 16ull * 1024ull * 1024ull;
+            const uint64_t stateReadbackBytes =
+                std::accumulate(emitterCaptures.begin(), emitterCaptures.end(), uint64_t{0},
+                                [](uint64_t total, const auto &capture) { return total + capture.stateBytes; });
+            if (stateReadbackBytes > MaxDiagnosticStateReadbackBytes) {
+                std::scoped_lock lock(diagnosticState->mutex);
+                auto &snapshot = diagnosticState->snapshots[request.requestId];
+                snapshot.status = GpuParticleDiagnosticStatus::Failed;
+                snapshot.error = "GPU particle state diagnostic exceeds the 16 MiB bounded readback budget";
+                continue;
+            }
             if (emitterCaptures.empty() || totalBytes == 0) {
                 std::scoped_lock lock(diagnosticState->mutex);
                 auto &snapshot = diagnosticState->snapshots[request.requestId];
@@ -365,6 +449,12 @@ struct ParticleGpuSystemManager::Impl
                                          sizeof(GpuParticleSpawnMetadata)});
                 }
                 offset += sizeof(GpuParticleSpawnMetadata);
+                if (capture.stateBytes > 0) {
+                    capture.stateOffset = offset;
+                    transfer.CopyBuffer(emitter->second->runtime->StateBuffer(), readbackHandle,
+                                        {0, offset, capture.stateBytes});
+                    offset += capture.stateBytes;
+                }
             }
             const auto state = diagnosticState;
             auto *readbackDevice = static_cast<rhi::Device *>(&device);
@@ -380,16 +470,26 @@ struct ParticleGpuSystemManager::Impl
                 } else {
                     result.status = GpuParticleDiagnosticStatus::Completed;
                     for (auto &capture : emitterCaptures) {
-                        std::array<uint32_t, 4> counters{};
+                        std::array<uint32_t, ParticleGpuRuntime::BaseCounterWordCount> counters{};
                         std::memcpy(counters.data(), bytes.data() + capture.counterOffset, sizeof(counters));
                         capture.diagnostic.freeCount = std::min(counters[0], capture.diagnostic.capacity);
                         capture.diagnostic.aliveCount = capture.diagnostic.capacity - capture.diagnostic.freeCount;
                         capture.diagnostic.visibleCount = counters[1];
                         capture.diagnostic.droppedCount = counters[2];
+                        capture.diagnostic.collisionHitCount = counters[4];
+                        capture.diagnostic.collisionResponseCount = counters[5];
+                        capture.diagnostic.collisionTriggerCount = counters[6];
+                        capture.diagnostic.collisionEnterCount = counters[7];
+                        capture.diagnostic.collisionStayCount = counters[8];
+                        capture.diagnostic.collisionExitCount = counters[9];
+                        std::memcpy(&capture.diagnostic.collisionMaxOutwardSpeed, &counters[10], sizeof(float));
+                        std::memcpy(&capture.diagnostic.collisionMaxTangentSpeed, &counters[11], sizeof(float));
+                        capture.diagnostic.collisionCandidateOverflowCount = counters[12];
                         if (!capture.diagnostic.eventOverflowCounts.empty()) {
                             const size_t eventCount = capture.diagnostic.eventOverflowCounts.size();
                             const size_t eventBytes = eventCount * sizeof(uint32_t);
-                            const auto *eventCounters = bytes.data() + capture.counterOffset + sizeof(counters);
+                            const auto *eventCounters = bytes.data() + capture.counterOffset +
+                                                        ParticleGpuRuntime::EventCounterWordOffset * sizeof(uint32_t);
                             std::memcpy(capture.diagnostic.eventOverflowCounts.data(), eventCounters, eventBytes);
                             std::memcpy(capture.diagnostic.eventEnqueueCounts.data(), eventCounters + eventBytes,
                                         eventBytes);
@@ -418,6 +518,28 @@ struct ParticleGpuSystemManager::Impl
                         capture.diagnostic.preparedSpawnBaseId = spawnMetadata.baseId;
                         capture.diagnostic.preparedSpawnGeneration = spawnMetadata.generation;
                         capture.diagnostic.spawnOverflowCount = spawnMetadata.overflowCount;
+                        if (capture.stateBytes > 0 && capture.stateSampleCount > 0) {
+                            const size_t wordsPerState = capture.stateStride / sizeof(uint32_t);
+                            for (uint32_t slot = 0; slot < capture.diagnostic.capacity &&
+                                                    capture.diagnostic.stateSamples.size() < capture.stateSampleCount;
+                                 ++slot) {
+                                const auto *stateBytes = bytes.data() + capture.stateOffset +
+                                                         static_cast<uint64_t>(slot) * capture.stateStride;
+                                uint32_t lifecycleFlags = 0;
+                                uint32_t spawnGeneration = 0;
+                                std::memcpy(&lifecycleFlags, stateBytes, sizeof(lifecycleFlags));
+                                if ((lifecycleFlags & 1u) == 0u)
+                                    continue;
+                                std::memcpy(&spawnGeneration, stateBytes + sizeof(uint32_t), sizeof(spawnGeneration));
+                                GpuParticleEmitterDiagnostic::StateSample sample;
+                                sample.slotIndex = slot;
+                                sample.lifecycleFlags = lifecycleFlags;
+                                sample.spawnGeneration = spawnGeneration;
+                                sample.words.resize(wordsPerState);
+                                std::memcpy(sample.words.data(), stateBytes, capture.stateStride);
+                                capture.diagnostic.stateSamples.push_back(std::move(sample));
+                            }
+                        }
                         result.emitters.push_back(capture.diagnostic);
                     }
                 }
@@ -464,8 +586,22 @@ struct ParticleGpuSystemManager::Impl
             vertex.uv = {source.texCoord.x, source.texCoord.y, 0.0f, 0.0f};
             vertices.push_back(vertex);
         }
-        std::vector<PackedParticleMeshTriangle> samplingTriangles;
-        samplingTriangles.reserve(sourceIndices.size() / 3);
+        std::vector<PackedParticleSkinInfluence> skinInfluences;
+        if (const auto &skinned = mesh->GetSkinnedData(); skinned) {
+            if (skinned->influences.size() != sourceVertices.size()) {
+                SetError(error, "GPU particle Skinned Mesh influence count does not match its vertices");
+                return {};
+            }
+            skinInfluences.reserve(skinned->influences.size());
+            for (const auto &source : skinned->influences) {
+                PackedParticleSkinInfluence influence;
+                influence.bones = source.boneIndex;
+                influence.weights = source.weight;
+                skinInfluences.push_back(influence);
+            }
+        }
+        std::vector<PackedParticleMeshPrimitive> samplingPrimitives;
+        samplingPrimitives.reserve(sourceIndices.size());
         double cumulativeArea = 0.0;
         for (size_t index = 0; index < sourceIndices.size(); index += 3) {
             const uint32_t first = sourceIndices[index];
@@ -477,21 +613,61 @@ struct ParticleGpuSystemManager::Impl
             if (!std::isfinite(area) || area <= 1.0e-12)
                 continue;
             cumulativeArea += area;
-            samplingTriangles.push_back({first, second, third, static_cast<float>(cumulativeArea)});
+            samplingPrimitives.push_back({first, second, third, FloatBits(static_cast<float>(cumulativeArea))});
         }
-        if (samplingTriangles.empty() || !std::isfinite(cumulativeArea) || cumulativeArea <= 0.0) {
+        const size_t samplingTriangleCount = samplingPrimitives.size();
+        if (samplingTriangleCount == 0 || !std::isfinite(cumulativeArea) || cumulativeArea <= 0.0) {
             SetError(error, "GPU particle Mesh sampling requires non-degenerate triangles");
             return {};
         }
         const float inverseArea = static_cast<float>(1.0 / cumulativeArea);
-        for (auto &triangle : samplingTriangles)
-            triangle.cumulativeArea *= inverseArea;
-        samplingTriangles.back().cumulativeArea = 1.0f;
+        for (size_t index = 0; index < samplingTriangleCount; ++index) {
+            float cumulative = 0.0f;
+            std::memcpy(&cumulative, &samplingPrimitives[index].cdfOrPadding, sizeof(cumulative));
+            samplingPrimitives[index].cdfOrPadding = FloatBits(cumulative * inverseArea);
+        }
+        samplingPrimitives[samplingTriangleCount - 1].cdfOrPadding = FloatBits(1.0f);
+
+        std::set<std::pair<uint32_t, uint32_t>> uniqueEdges;
+        for (size_t index = 0; index < sourceIndices.size(); index += 3) {
+            const std::array<uint32_t, 3> triangle = {sourceIndices[index], sourceIndices[index + 1],
+                                                      sourceIndices[index + 2]};
+            for (size_t edge = 0; edge < triangle.size(); ++edge) {
+                const uint32_t first = triangle[edge];
+                const uint32_t second = triangle[(edge + 1) % triangle.size()];
+                if (first != second)
+                    uniqueEdges.emplace(std::min(first, second), std::max(first, second));
+            }
+        }
+        double cumulativeLength = 0.0;
+        for (const auto &[first, second] : uniqueEdges) {
+            const double length =
+                static_cast<double>(glm::length(sourceVertices[second].pos - sourceVertices[first].pos));
+            if (!std::isfinite(length) || length <= 1.0e-12)
+                continue;
+            cumulativeLength += length;
+            samplingPrimitives.push_back({first, second, FloatBits(static_cast<float>(cumulativeLength)), 0u});
+        }
+        const size_t samplingEdgeCount = samplingPrimitives.size() - samplingTriangleCount;
+        if (samplingEdgeCount == 0 || !std::isfinite(cumulativeLength) || cumulativeLength <= 0.0) {
+            SetError(error, "GPU particle Mesh edge sampling requires non-degenerate edges");
+            return {};
+        }
+        const float inverseLength = static_cast<float>(1.0 / cumulativeLength);
+        for (size_t index = samplingTriangleCount; index < samplingPrimitives.size(); ++index) {
+            float cumulative = 0.0f;
+            std::memcpy(&cumulative, &samplingPrimitives[index].thirdOrCdf, sizeof(cumulative));
+            samplingPrimitives[index].thirdOrCdf = FloatBits(cumulative * inverseLength);
+        }
+        samplingPrimitives.back().thirdOrCdf = FloatBits(1.0f);
         uint64_t contentHash = 1469598103934665603ull;
         contentHash = HashBytes(contentHash, vertices.data(), vertices.size() * sizeof(PackedParticleMeshVertex));
+        if (!skinInfluences.empty())
+            contentHash = HashBytes(contentHash, skinInfluences.data(),
+                                    skinInfluences.size() * sizeof(PackedParticleSkinInfluence));
         contentHash = HashBytes(contentHash, sourceIndices.data(), sourceIndices.size() * sizeof(uint32_t));
-        contentHash = HashBytes(contentHash, samplingTriangles.data(),
-                                samplingTriangles.size() * sizeof(PackedParticleMeshTriangle));
+        contentHash = HashBytes(contentHash, samplingPrimitives.data(),
+                                samplingPrimitives.size() * sizeof(PackedParticleMeshPrimitive));
 
         auto &upload = meshUploads[mesh.get()];
         const auto owner = upload.owner.lock();
@@ -505,8 +681,13 @@ struct ParticleGpuSystemManager::Impl
                 upload.indexTicket = resources->BeginBufferUpload(
                     {sourceIndices.data(), sourceIndices.size() * sizeof(uint32_t), rhi::BufferUsage::Storage});
                 upload.samplingTriangleTicket = resources->BeginBufferUpload(
-                    {samplingTriangles.data(), samplingTriangles.size() * sizeof(PackedParticleMeshTriangle),
+                    {samplingPrimitives.data(), samplingPrimitives.size() * sizeof(PackedParticleMeshPrimitive),
                      rhi::BufferUsage::Storage});
+                if (!skinInfluences.empty()) {
+                    upload.skinInfluenceTicket = resources->BeginBufferUpload(
+                        {skinInfluences.data(), skinInfluences.size() * sizeof(PackedParticleSkinInfluence),
+                         rhi::BufferUsage::Storage});
+                }
             } catch (const std::exception &exception) {
                 upload.failed = true;
                 SetError(error, std::string("GPU particle Mesh upload failed: ") + exception.what());
@@ -523,7 +704,9 @@ struct ParticleGpuSystemManager::Impl
             const bool verticesReady = resources->TryPublishBufferUpload(upload.vertexTicket);
             const bool indicesReady = resources->TryPublishBufferUpload(upload.indexTicket);
             const bool samplingReady = resources->TryPublishBufferUpload(upload.samplingTriangleTicket);
-            if (!verticesReady || !indicesReady || !samplingReady) {
+            const bool influencesReady =
+                !upload.skinInfluenceTicket || resources->TryPublishBufferUpload(upload.skinInfluenceTicket);
+            if (!verticesReady || !indicesReady || !samplingReady || !influencesReady) {
                 SetError(error, "GPU particle Mesh upload is pending");
                 return {};
             }
@@ -531,9 +714,12 @@ struct ParticleGpuSystemManager::Impl
             result->vertices = resources->GetPublishedRhiBuffer(upload.vertexTicket);
             result->indices = resources->GetPublishedRhiBuffer(upload.indexTicket);
             result->samplingTriangles = resources->GetPublishedRhiBuffer(upload.samplingTriangleTicket);
+            if (upload.skinInfluenceTicket)
+                result->skinInfluences = resources->GetPublishedRhiBuffer(upload.skinInfluenceTicket);
             result->vertexCount = static_cast<uint32_t>(sourceVertices.size());
             result->indexCount = static_cast<uint32_t>(sourceIndices.size());
-            result->samplingTriangleCount = static_cast<uint32_t>(samplingTriangles.size());
+            result->samplingTriangleCount = static_cast<uint32_t>(samplingTriangleCount);
+            result->samplingEdgeCount = static_cast<uint32_t>(samplingEdgeCount);
             if (!result->vertices || !result->vertices->IsValid() || !result->indices || !result->indices->IsValid() ||
                 !result->samplingTriangles || !result->samplingTriangles->IsValid()) {
                 upload.failed = true;
@@ -549,6 +735,24 @@ struct ParticleGpuSystemManager::Impl
         }
     }
 
+    static void CaptureMeshRevisions(const GpuParticleEmitterProgram &program,
+                                     std::vector<std::shared_ptr<InxMesh>> &meshes, std::vector<uint64_t> &generations)
+    {
+        meshes.clear();
+        generations.clear();
+        std::unordered_set<const InxMesh *> seen;
+        const auto append = [&](const std::shared_ptr<InxMesh> &mesh) {
+            if (!mesh || !seen.insert(mesh.get()).second)
+                return;
+            meshes.push_back(mesh);
+            generations.push_back(mesh->GetGeneration());
+        };
+        for (const auto &interface : program.meshInterfaces)
+            append(interface.mesh);
+        for (const auto &output : program.outputs)
+            append(output.mesh);
+    }
+
     [[nodiscard]] bool BuildRuntimeDesc(const GpuParticleEmitterProgram &program, GpuEmitterDesc &runtimeDesc,
                                         std::vector<std::shared_ptr<InxTexture>> &vectorFields,
                                         std::vector<uint64_t> &vectorFieldGenerations, std::string *error) const
@@ -556,6 +760,7 @@ struct ParticleGpuSystemManager::Impl
         runtimeDesc.capacity = program.capacity;
         runtimeDesc.stateStride = program.stateStride;
         runtimeDesc.eventTypeCount = program.eventTypeCount;
+        runtimeDesc.collisionEnabled = program.collisionEnabled;
         runtimeDesc.parameterWords = program.parameterWords;
         for (size_t index = 0; index < program.kernels.size(); ++index)
             runtimeDesc.kernels[index] = {program.kernels[index].data(), program.kernels[index].size()};
@@ -577,35 +782,65 @@ struct ParticleGpuSystemManager::Impl
                 program.continuationKernels[static_cast<size_t>(GpuParticleContinuationKernelStage::Dispatch)].size(),
             };
         }
-        if (!collisionScene || !collisionScene->IsValid()) {
-            SetError(error, "GPU particle collision scene is not initialized");
-            return false;
-        }
-        runtimeDesc.collisionSceneHeader = collisionScene->HeaderBuffer();
-        runtimeDesc.collisionSceneColliders = collisionScene->ColliderBuffer();
-        runtimeDesc.collisionSceneGridOffsets = collisionScene->GridOffsetBuffer();
-        runtimeDesc.collisionSceneGridColliderIndices = collisionScene->GridColliderIndexBuffer();
-        runtimeDesc.collisionSceneMeshVertices = collisionScene->MeshVertexBuffer();
-        runtimeDesc.collisionSceneMeshIndices = collisionScene->MeshIndexBuffer();
-        runtimeDesc.collisionSceneMeshBvhNodes = collisionScene->MeshBvhBuffer();
-        if (program.meshShape) {
-            if (!program.meshShape->mesh) {
-                SetError(error, "GPU particle Mesh emitter shape requires a loaded Mesh asset");
+        if (program.collisionEnabled) {
+            if (!collisionScene || !collisionScene->IsValid()) {
+                SetError(error, "GPU particle collision scene is not initialized");
                 return false;
             }
-            const auto meshResources = ResolveMeshResources(program.meshShape->mesh, error);
+            runtimeDesc.collisionSceneHeader = collisionScene->HeaderBuffer();
+            runtimeDesc.collisionSceneColliders = collisionScene->ColliderBuffer();
+            runtimeDesc.collisionSceneGridOffsets = collisionScene->GridOffsetBuffer();
+            runtimeDesc.collisionSceneGridColliderIndices = collisionScene->GridColliderIndexBuffer();
+            runtimeDesc.collisionSceneMeshVertices = collisionScene->MeshVertexBuffer();
+            runtimeDesc.collisionSceneMeshIndices = collisionScene->MeshIndexBuffer();
+            runtimeDesc.collisionSceneMeshBvhNodes = collisionScene->MeshBvhBuffer();
+        }
+        runtimeDesc.meshInterfaces.reserve(program.meshInterfaces.size());
+        for (const auto &mesh : program.meshInterfaces) {
+            if (!mesh.mesh) {
+                SetError(error, "GPU particle Mesh resource binding requires a loaded Mesh asset");
+                return false;
+            }
+            const auto meshResources = ResolveMeshResources(mesh.mesh, error);
             if (!meshResources)
                 return false;
-            GpuMeshShapeDesc runtimeMeshShape;
-            runtimeMeshShape.metadataOffsetWords = program.meshShape->metadataOffsetWords;
-            runtimeMeshShape.vertexBinding = program.meshShape->vertexBinding;
-            runtimeMeshShape.triangleBinding = program.meshShape->triangleBinding;
-            runtimeMeshShape.vertexCount = meshResources->vertexCount;
-            runtimeMeshShape.triangleCount = meshResources->samplingTriangleCount;
-            runtimeMeshShape.vertices = meshResources->vertices->GetBuffer();
-            runtimeMeshShape.triangles = meshResources->samplingTriangles->GetBuffer();
-            runtimeMeshShape.keepAlive = meshResources;
-            runtimeDesc.meshShape = std::move(runtimeMeshShape);
+            GpuMeshInterfaceDesc runtimeMesh;
+            runtimeMesh.stableId = mesh.stableId;
+            runtimeMesh.interfaceIndex = mesh.interfaceIndex;
+            runtimeMesh.metadataOffsetWords = mesh.metadataOffsetWords;
+            runtimeMesh.vertexBinding = mesh.vertexBinding;
+            runtimeMesh.triangleBinding = mesh.triangleBinding;
+            runtimeMesh.influenceBinding = mesh.influenceBinding;
+            runtimeMesh.paletteBinding = mesh.paletteBinding;
+            runtimeMesh.worldSpace = mesh.worldSpace;
+            runtimeMesh.meshToSpace = mesh.meshToSpace;
+            runtimeMesh.vertexCount = meshResources->vertexCount;
+            runtimeMesh.triangleCount = meshResources->samplingTriangleCount;
+            runtimeMesh.edgeCount = meshResources->samplingEdgeCount;
+            runtimeMesh.vertices = meshResources->vertices->GetBuffer();
+            runtimeMesh.triangles = meshResources->samplingTriangles->GetBuffer();
+            if (mesh.skinnedRenderer.IsValid()) {
+                if (!skinnedMeshResolver) {
+                    SetError(error, "GPU particle SkinnedMeshRenderer resolver is unavailable");
+                    return false;
+                }
+                const auto snapshot = skinnedMeshResolver(mesh.skinnedRenderer);
+                if (!snapshot || !snapshot->mesh || snapshot->mesh.get() != mesh.mesh.get() || !snapshot->model ||
+                    !snapshot->currentPalette || snapshot->currentPalette->empty() ||
+                    snapshot->currentPalette->size() != snapshot->model->bones.size() ||
+                    !meshResources->skinInfluences || !meshResources->skinInfluences->IsValid()) {
+                    SetError(error, "GPU particle SkinnedMeshRenderer source has no valid live skin pose");
+                    return false;
+                }
+                runtimeMesh.worldSpace = true;
+                runtimeMesh.meshToSpace = snapshot->sourceToWorld;
+                runtimeMesh.boneCount = static_cast<uint32_t>(snapshot->currentPalette->size());
+                runtimeMesh.poseRevision = snapshot->revision;
+                runtimeMesh.influences = meshResources->skinInfluences->GetBuffer();
+                runtimeMesh.initialPalette.assign(snapshot->currentPalette->begin(), snapshot->currentPalette->end());
+            }
+            runtimeMesh.keepAlive = meshResources;
+            runtimeDesc.meshInterfaces.push_back(std::move(runtimeMesh));
         }
 
         runtimeDesc.vectorFields.metadataBinding = program.vectorFields.metadataBinding;
@@ -693,11 +928,14 @@ struct ParticleGpuSystemManager::Impl
             GpuRibbonRendererDesc desc;
             desc.program = ribbonRenderProgram->View();
             desc.topology = emitter.ribbonTopology;
+            desc.shaderProgram = output.shaderProgram;
             desc.material = output.material;
             desc.fallbackMaterial = output.fallbackMaterial;
             desc.semantics = output.semantics;
             desc.uvMode = output.ribbonUvMode;
             desc.uvScale = output.ribbonUvScale;
+            desc.textureResolver = textureResolver;
+            desc.deletionQueue = deletionQueue;
             return renderer->Create(context->GetRhiDevice(), desc) ? renderer : nullptr;
         }
         if (output.type == GpuParticleOutputType::Mesh) {
@@ -707,9 +945,8 @@ struct ParticleGpuSystemManager::Impl
             auto renderer = std::make_shared<ParticleGpuMeshRenderer>();
             GpuMeshRendererDesc desc;
             desc.vertexShader = {emitter.meshVertexShader.data(), emitter.meshVertexShader.size()};
-            desc.fragmentShader = {emitter.meshFragmentShader.data(), emitter.meshFragmentShader.size()};
-            desc.forwardPlusFragmentShader = {emitter.meshForwardPlusFragmentShader.data(),
-                                              emitter.meshForwardPlusFragmentShader.size()};
+            desc.shadowFragmentShader = {emitter.meshShadowFragmentShader.data(),
+                                         emitter.meshShadowFragmentShader.size()};
             desc.pickingFragmentShader = {emitter.meshPickingFragmentShader.data(),
                                           emitter.meshPickingFragmentShader.size()};
             desc.motionVertexShader = {emitter.meshMotionVertexShader.data(), emitter.meshMotionVertexShader.size()};
@@ -722,17 +959,17 @@ struct ParticleGpuSystemManager::Impl
             desc.meshIndices = meshResources->indices->GetBuffer();
             desc.indexCount = meshResources->indexCount;
             desc.meshBufferKeepAlive = meshResources;
+            desc.shaderProgram = output.shaderProgram;
             desc.material = output.material;
             desc.fallbackMaterial = output.fallbackMaterial;
             desc.semantics = output.semantics;
+            desc.textureResolver = textureResolver;
+            desc.deletionQueue = deletionQueue;
             return renderer->Create(context->GetRhiDevice(), desc) ? renderer : nullptr;
         }
         auto renderer = std::make_shared<ParticleGpuBillboardRenderer>();
         GpuBillboardRendererDesc rendererDesc;
         rendererDesc.vertexShader = {emitter.billboardVertexShader.data(), emitter.billboardVertexShader.size()};
-        rendererDesc.fragmentShader = {emitter.billboardFragmentShader.data(), emitter.billboardFragmentShader.size()};
-        rendererDesc.forwardPlusFragmentShader = {emitter.billboardForwardPlusFragmentShader.data(),
-                                                  emitter.billboardForwardPlusFragmentShader.size()};
         rendererDesc.pickingFragmentShader = {emitter.billboardPickingFragmentShader.data(),
                                               emitter.billboardPickingFragmentShader.size()};
         rendererDesc.motionVertexShader = {emitter.billboardMotionVertexShader.data(),
@@ -750,6 +987,127 @@ struct ParticleGpuSystemManager::Impl
         rendererDesc.textureResolver = textureResolver;
         rendererDesc.deletionQueue = deletionQueue;
         return renderer->Create(context->GetRhiDevice(), rendererDesc) ? renderer : nullptr;
+    }
+
+    [[nodiscard]] bool PreflightEmitterProgram(const GpuParticleEmitterProgram &program,
+                                               const std::shared_ptr<Emitter> &previous, std::string *error) const
+    {
+        if (program.id == 0 || program.graphInstanceId == 0 || program.stableId.empty() ||
+            program.artifactRevision == 0 || program.capacity == 0 || program.stateStride == 0) {
+            SetError(error,
+                     "GPU particle program graph identity, emitter identity, revision, capacity, and state stride "
+                     "must be valid");
+            return false;
+        }
+        if (!std::all_of(program.kernels.begin(), program.kernels.end(),
+                         [](const auto &kernel) { return IsSpirv(kernel); })) {
+            SetError(error, "GPU particle program contains invalid compute SPIR-V");
+            return false;
+        }
+        const bool hasContinuationKernels =
+            std::any_of(program.continuationKernels.begin(), program.continuationKernels.end(),
+                        [](const auto &kernel) { return !kernel.empty(); });
+        if ((program.continuationCapacity == 0) != !hasContinuationKernels ||
+            program.continuationCapacity > ParticleGpuContinuationRuntime::MaximumCapacity ||
+            (program.continuationCapacity > 0 &&
+             (program.continuationRecordStride < sizeof(GpuParticleContinuationRecord) ||
+              program.continuationRecordStride > ParticleGpuContinuationRuntime::MaximumRecordStride ||
+              program.continuationRecordStride % 16 != 0)) ||
+            (program.continuationCapacity > 0 &&
+             (program.continuationLaneCount == 0 ||
+              program.continuationLaneCount > ParticleGpuContinuationRuntime::MaximumLaneCount ||
+              program.continuationJoinCount > ParticleGpuContinuationRuntime::MaximumJoinCount)) ||
+            (program.continuationCapacity > 0 &&
+             !std::all_of(program.continuationKernels.begin(), program.continuationKernels.end(),
+                          [](const auto &kernel) { return IsSpirv(kernel); }))) {
+            SetError(error,
+                     "GPU particle continuation capacity, record stride, static lane/join counts and "
+                     "Prepare/Classify/Dispatch SPIR-V must be supplied together and satisfy the bounded runtime "
+                     "contract");
+            return false;
+        }
+        if (program.outputs.empty()) {
+            SetError(error, "GPU particle program requires at least one rendering output");
+            return false;
+        }
+
+        const bool needsMesh = std::any_of(program.outputs.begin(), program.outputs.end(), [](const auto &output) {
+            return output.type == GpuParticleOutputType::Mesh;
+        });
+        const bool needsRibbon = std::any_of(program.outputs.begin(), program.outputs.end(), [](const auto &output) {
+            return output.type == GpuParticleOutputType::Ribbon;
+        });
+        if (needsMesh && (!IsSpirv(program.meshVertexShader) || !IsSpirv(program.meshShadowFragmentShader) ||
+                          !IsSpirv(program.meshPickingFragmentShader) || !IsSpirv(program.meshMotionVertexShader) ||
+                          !IsSpirv(program.meshMotionFragmentShader))) {
+            SetError(error, "GPU particle program contains invalid mesh output SPIR-V");
+            return false;
+        }
+        if (needsRibbon && (!ribbonTopologyProgram || !ribbonTopologyProgram->IsValid() || !ribbonRenderProgram ||
+                            !ribbonRenderProgram->IsValid())) {
+            SetError(error, "GPU particle Ribbon topology or render shaders are unavailable");
+            return false;
+        }
+
+        std::unordered_set<uint64_t> outputIds;
+        std::unordered_set<std::string> outputStableIds;
+        outputIds.reserve(program.outputs.size());
+        outputStableIds.reserve(program.outputs.size());
+        for (const auto &output : program.outputs) {
+            if (output.id == 0 || output.stableId.empty() || !outputIds.insert(output.id).second ||
+                !outputStableIds.insert(output.stableId).second) {
+                SetError(error, "GPU particle output identity must be valid and unique per emitter");
+                return false;
+            }
+            if (!output.shaderProgram || !output.shaderProgram->IsValid() ||
+                output.shaderProgram->domain != ShaderProgramDomain::ParticleSprite) {
+                SetError(error, "GPU particle surface outputs require a valid linked ParticleSprite shader");
+                return false;
+            }
+            if (output.semantics.castShadows && output.type != GpuParticleOutputType::Mesh) {
+                SetError(error, "only static mesh particle outputs can cast shadows");
+                return false;
+            }
+            if (!output.semantics.IsValid()) {
+                SetError(error, "GPU particle output '" + output.stableId + "' has invalid rendering semantics");
+                return false;
+            }
+            if (output.semantics.receiveSceneLighting &&
+                !output.shaderProgram->FindVariant(ShaderCompileTarget::ForwardPlus)) {
+                SetError(error, "GPU particle output '" + output.stableId +
+                                    "' requires a linked Particle Forward+ shader variant when Receive Scene "
+                                    "Lighting is enabled");
+                return false;
+            }
+            if (output.type == GpuParticleOutputType::Mesh && (!output.mesh || output.semantics.softParticles)) {
+                SetError(error, "GPU particle mesh output '" + output.stableId +
+                                    "' requires a loaded mesh and currently does not support soft fading");
+                return false;
+            }
+            if (output.type == GpuParticleOutputType::Ribbon &&
+                (output.semantics.castShadows || !std::isfinite(output.ribbonUvScale) ||
+                 output.ribbonUvScale <= 0.0f)) {
+                SetError(error, "GPU particle Ribbon output '" + output.stableId +
+                                    "' cannot cast shadows and requires a positive finite UV scale");
+                return false;
+            }
+            if (output.type != GpuParticleOutputType::Ribbon && output.semantics.sortMode != ParticleSortMode::None &&
+                (!sortProgram || !sortProgram->IsValid())) {
+                SetError(error, "GPU particle sorting kernels are unavailable");
+                return false;
+            }
+        }
+        if (!cullProgram || !cullProgram->IsValid()) {
+            SetError(error, "GPU particle view-culling kernels are unavailable");
+            return false;
+        }
+        if (program.preserveState &&
+            (!previous || previous->id != program.id || previous->graphInstanceId != program.graphInstanceId ||
+             previous->stableId != program.stableId)) {
+            SetError(error, "GPU particle state preservation requires the same live emitter identity");
+            return false;
+        }
+        return true;
     }
 
     [[nodiscard]] std::shared_ptr<Emitter> CreateEmitter(const GpuParticleEmitterProgram &program,
@@ -791,21 +1149,15 @@ struct ParticleGpuSystemManager::Impl
                      "contract");
             return {};
         }
-        const bool needsLegacyBillboard =
-            std::any_of(program.outputs.begin(), program.outputs.end(), [](const GpuParticleOutputProgram &output) {
-                return output.type == GpuParticleOutputType::Sprite && !output.shaderProgram;
-            });
-        const bool needsLitLegacyBillboard =
-            std::any_of(program.outputs.begin(), program.outputs.end(), [](const GpuParticleOutputProgram &output) {
-                return output.type == GpuParticleOutputType::Sprite && !output.shaderProgram &&
-                       output.semantics.receiveSceneLighting;
-            });
-        if (needsLegacyBillboard &&
-            (!IsSpirv(program.billboardVertexShader) || !IsSpirv(program.billboardFragmentShader) ||
-             (needsLitLegacyBillboard && !IsSpirv(program.billboardForwardPlusFragmentShader)) ||
-             !IsSpirv(program.billboardMotionVertexShader) || !IsSpirv(program.billboardMotionFragmentShader))) {
-            SetError(error, "GPU particle program contains invalid billboard SPIR-V");
-            return {};
+        const bool needsSurfaceShader = !program.outputs.empty();
+        if (needsSurfaceShader) {
+            for (const auto &output : program.outputs) {
+                if (!output.shaderProgram || !output.shaderProgram->IsValid() ||
+                    output.shaderProgram->domain != ShaderProgramDomain::ParticleSprite) {
+                    SetError(error, "GPU particle surface outputs require a valid linked ParticleSprite shader");
+                    return {};
+                }
+            }
         }
         const bool needsMesh = std::any_of(program.outputs.begin(), program.outputs.end(), [](const auto &output) {
             return output.type == GpuParticleOutputType::Mesh;
@@ -813,12 +1165,7 @@ struct ParticleGpuSystemManager::Impl
         const bool needsRibbon = std::any_of(program.outputs.begin(), program.outputs.end(), [](const auto &output) {
             return output.type == GpuParticleOutputType::Ribbon;
         });
-        const bool needsLitMesh =
-            std::any_of(program.outputs.begin(), program.outputs.end(), [](const GpuParticleOutputProgram &output) {
-                return output.type == GpuParticleOutputType::Mesh && output.semantics.receiveSceneLighting;
-            });
-        if (needsMesh && (!IsSpirv(program.meshVertexShader) || !IsSpirv(program.meshFragmentShader) ||
-                          (needsLitMesh && !IsSpirv(program.meshForwardPlusFragmentShader)) ||
+        if (needsMesh && (!IsSpirv(program.meshVertexShader) || !IsSpirv(program.meshShadowFragmentShader) ||
                           !IsSpirv(program.meshPickingFragmentShader) || !IsSpirv(program.meshMotionVertexShader) ||
                           !IsSpirv(program.meshMotionFragmentShader))) {
             SetError(error, "GPU particle program contains invalid mesh output SPIR-V");
@@ -834,6 +1181,54 @@ struct ParticleGpuSystemManager::Impl
             return {};
         }
 
+        std::unordered_set<uint64_t> outputIds;
+        std::unordered_set<std::string> outputStableIds;
+        outputIds.reserve(program.outputs.size());
+        outputStableIds.reserve(program.outputs.size());
+        for (const auto &output : program.outputs) {
+            if (output.id == 0 || output.stableId.empty() || !outputIds.insert(output.id).second ||
+                !outputStableIds.insert(output.stableId).second) {
+                SetError(error, "GPU particle output identity must be valid and unique per emitter");
+                return {};
+            }
+            if (output.semantics.castShadows && output.type != GpuParticleOutputType::Mesh) {
+                SetError(error, "only static mesh particle outputs can cast shadows");
+                return {};
+            }
+            if (!output.semantics.IsValid()) {
+                SetError(error, "GPU particle output '" + output.stableId + "' has invalid rendering semantics");
+                return {};
+            }
+            if (output.semantics.receiveSceneLighting &&
+                !output.shaderProgram->FindVariant(ShaderCompileTarget::ForwardPlus)) {
+                SetError(error, "GPU particle output '" + output.stableId +
+                                    "' requires a linked Particle Forward+ shader variant when Receive Scene "
+                                    "Lighting is enabled");
+                return {};
+            }
+            if (output.type == GpuParticleOutputType::Mesh && (!output.mesh || output.semantics.softParticles)) {
+                SetError(error, "GPU particle mesh output '" + output.stableId +
+                                    "' requires a loaded mesh and currently does not support soft fading");
+                return {};
+            }
+            if (output.type == GpuParticleOutputType::Ribbon &&
+                (output.semantics.castShadows || !std::isfinite(output.ribbonUvScale) ||
+                 output.ribbonUvScale <= 0.0f)) {
+                SetError(error, "GPU particle Ribbon output '" + output.stableId +
+                                    "' cannot cast shadows and requires a positive finite UV scale");
+                return {};
+            }
+            if (output.type != GpuParticleOutputType::Ribbon && output.semantics.sortMode != ParticleSortMode::None &&
+                (!sortProgram || !sortProgram->IsValid())) {
+                SetError(error, "GPU particle sorting kernels are unavailable");
+                return {};
+            }
+        }
+        if (!cullProgram || !cullProgram->IsValid()) {
+            SetError(error, "GPU particle view-culling kernels are unavailable");
+            return {};
+        }
+
         auto emitter = std::make_shared<Emitter>();
         emitter->id = program.id;
         emitter->graphInstanceId = program.graphInstanceId;
@@ -841,14 +1236,11 @@ struct ParticleGpuSystemManager::Impl
         emitter->stableId = program.stableId;
         emitter->statePreservedOnPublish = program.preserveState;
         emitter->billboardVertexShader = program.billboardVertexShader;
-        emitter->billboardFragmentShader = program.billboardFragmentShader;
-        emitter->billboardForwardPlusFragmentShader = program.billboardForwardPlusFragmentShader;
         emitter->billboardPickingFragmentShader = program.billboardPickingFragmentShader;
         emitter->billboardMotionVertexShader = program.billboardMotionVertexShader;
         emitter->billboardMotionFragmentShader = program.billboardMotionFragmentShader;
         emitter->meshVertexShader = program.meshVertexShader;
-        emitter->meshFragmentShader = program.meshFragmentShader;
-        emitter->meshForwardPlusFragmentShader = program.meshForwardPlusFragmentShader;
+        emitter->meshShadowFragmentShader = program.meshShadowFragmentShader;
         emitter->meshPickingFragmentShader = program.meshPickingFragmentShader;
         emitter->meshMotionVertexShader = program.meshMotionVertexShader;
         emitter->meshMotionFragmentShader = program.meshMotionFragmentShader;
@@ -858,6 +1250,7 @@ struct ParticleGpuSystemManager::Impl
         if (!BuildRuntimeDesc(program, runtimeDesc, emitter->vectorFields, emitter->vectorFieldGenerations, error))
             return {};
         emitter->observedVectorFieldGenerations = emitter->vectorFieldGenerations;
+        CaptureMeshRevisions(program, emitter->meshes, emitter->observedMeshGenerations);
         emitter->sourceProgram = program;
         auto &device = context->GetRhiDevice();
         if (program.preserveState &&
@@ -892,6 +1285,7 @@ struct ParticleGpuSystemManager::Impl
             migrationDesc.destinationStride = migration.destinationStride;
             migrationDesc.sourceStates = previous->runtime->StateBuffer();
             migrationDesc.sourceCounters = previous->runtime->CounterBuffer();
+            migrationDesc.sourceCounterByteSize = previous->runtime->CounterBufferByteSize();
             migrationDesc.destinationStates = emitter->runtime->StateBuffer();
             migrationDesc.destinationFreeList = emitter->runtime->FreeListBuffer();
             migrationDesc.destinationCounters = emitter->runtime->CounterBuffer();
@@ -936,56 +1330,8 @@ struct ParticleGpuSystemManager::Impl
             }
         }
 
-        std::unordered_set<uint64_t> outputIds;
-        std::unordered_set<std::string> outputStableIds;
-        outputIds.reserve(program.outputs.size());
-        outputStableIds.reserve(program.outputs.size());
         emitter->outputs.reserve(program.outputs.size());
         for (const auto &output : program.outputs) {
-            if (output.semantics.castShadows && output.type != GpuParticleOutputType::Mesh) {
-                SetError(error, "only static mesh particle outputs can cast shadows");
-                return {};
-            }
-            if (output.id == 0 || output.stableId.empty() || !outputIds.insert(output.id).second ||
-                !outputStableIds.insert(output.stableId).second) {
-                SetError(error, "GPU particle output identity must be valid and unique per emitter");
-                return {};
-            }
-            if (!output.semantics.IsValid()) {
-                SetError(error, "GPU particle output '" + output.stableId + "' has invalid rendering semantics");
-                return {};
-            }
-            if (output.type == GpuParticleOutputType::Sprite && output.shaderProgram &&
-                output.semantics.receiveSceneLighting &&
-                !output.shaderProgram->FindVariant(ShaderCompileTarget::ForwardPlus)) {
-                SetError(error, "GPU particle output '" + output.stableId +
-                                    "' requires a linked Particle Forward+ shader variant when Receive Scene "
-                                    "Lighting is enabled");
-                return {};
-            }
-            if (output.type == GpuParticleOutputType::Mesh && (!output.mesh || output.semantics.softParticles)) {
-                SetError(error, "GPU particle mesh output '" + output.stableId +
-                                    "' requires a loaded mesh and currently does not support soft fading");
-                return {};
-            }
-            if (output.type == GpuParticleOutputType::Ribbon &&
-                (output.semantics.castShadows || output.semantics.softParticles ||
-                 output.semantics.receiveSceneLighting || output.semantics.receiveShadows ||
-                 !std::isfinite(output.ribbonUvScale) || output.ribbonUvScale <= 0.0f)) {
-                SetError(error, "GPU particle Ribbon output '" + output.stableId +
-                                    "' has unsupported lighting, shadow, soft-particle, or UV semantics");
-                return {};
-            }
-            if (output.type != GpuParticleOutputType::Ribbon && output.semantics.sortMode != ParticleSortMode::None &&
-                (!sortProgram || !sortProgram->IsValid())) {
-                SetError(error, "GPU particle sorting kernels are unavailable");
-                return {};
-            }
-            if ((output.shaderProgram || output.type == GpuParticleOutputType::Mesh) &&
-                (!cullProgram || !cullProgram->IsValid())) {
-                SetError(error, "GPU particle view-culling kernels are unavailable");
-                return {};
-            }
             auto renderer = CreateOutputRenderer(*emitter, output, error);
             if (!renderer) {
                 if (!error || error->empty())
@@ -1014,19 +1360,29 @@ struct ParticleGpuSystemManager::Impl
         return emitter;
     }
 
-    [[nodiscard]] bool RefreshDataInterfaces(Emitter &emitter)
+    [[nodiscard]] bool RefreshResources(Emitter &emitter)
     {
-        if (emitter.vectorFields.empty())
+        if (emitter.vectorFields.empty() && emitter.meshes.empty())
             return true;
         std::vector<uint64_t> currentVectorFieldGenerations;
         currentVectorFieldGenerations.reserve(emitter.vectorFields.size());
-        bool changed = false;
+        bool textureChanged = emitter.vectorFields.size() != emitter.observedVectorFieldGenerations.size();
         for (size_t index = 0; index < emitter.vectorFields.size(); ++index) {
             const uint64_t generation = emitter.vectorFields[index] ? emitter.vectorFields[index]->GetGeneration() : 0;
             currentVectorFieldGenerations.push_back(generation);
-            changed = changed || generation != emitter.observedVectorFieldGenerations[index];
+            textureChanged = textureChanged || index >= emitter.observedVectorFieldGenerations.size() ||
+                             generation != emitter.observedVectorFieldGenerations[index];
         }
-        if (!changed)
+        std::vector<uint64_t> currentMeshGenerations;
+        currentMeshGenerations.reserve(emitter.meshes.size());
+        bool meshChanged = emitter.meshes.size() != emitter.observedMeshGenerations.size();
+        for (size_t index = 0; index < emitter.meshes.size(); ++index) {
+            const uint64_t generation = emitter.meshes[index] ? emitter.meshes[index]->GetGeneration() : 0;
+            currentMeshGenerations.push_back(generation);
+            meshChanged = meshChanged || index >= emitter.observedMeshGenerations.size() ||
+                          generation != emitter.observedMeshGenerations[index];
+        }
+        if (!textureChanged && !meshChanged)
             return true;
 
         std::string error;
@@ -1038,22 +1394,92 @@ struct ParticleGpuSystemManager::Impl
             BuildRuntimeDesc(emitter.sourceProgram, runtimeDesc, vectorFields, vectorFieldGenerations, &error);
         const bool replacementCreated =
             descriptorValid && replacement->CreateCompatible(context->GetRhiDevice(), runtimeDesc, *emitter.runtime);
-        if (!replacementCreated || !deletionQueue || !emitter.runtime->AdoptCompatibleRevision(*replacement)) {
-            const bool uploadPending = error == "GPU particle Vector Field texture upload is pending" ||
-                                       error == "GPU particle sampled texture upload is pending";
-            if (!uploadPending)
-                emitter.observedVectorFieldGenerations = std::move(currentVectorFieldGenerations);
-            if (!uploadPending)
-                INXLOG_WARN("GPU particle data-interface refresh kept last-known-good emitter '", emitter.stableId,
+        const auto rememberHardFailure = [&]() {
+            emitter.observedVectorFieldGenerations = currentVectorFieldGenerations;
+            emitter.observedMeshGenerations = currentMeshGenerations;
+        };
+        const auto uploadPending = [&]() { return error.find("upload is pending") != std::string::npos; };
+        if (!replacementCreated || !deletionQueue) {
+            if (!uploadPending())
+                rememberHardFailure();
+            if (!uploadPending())
+                INXLOG_WARN("GPU particle resource refresh kept last-known-good emitter '", emitter.stableId,
                             "': ", error.empty() ? "failed to create a compatible RHI revision" : error);
+            return false;
+        }
+
+        struct RendererReplacement
+        {
+            size_t outputIndex = 0;
+            std::shared_ptr<ParticleGpuOutputRenderer> previous;
+            std::shared_ptr<ParticleGpuOutputRenderer> next;
+        };
+        std::vector<RendererReplacement> renderers;
+        if (meshChanged) {
+            for (size_t index = 0; index < emitter.outputs.size(); ++index) {
+                const auto &output = emitter.outputs[index];
+                if (output.type != GpuParticleOutputType::Mesh)
+                    continue;
+                GpuParticleOutputProgram candidate;
+                candidate.id = output.id;
+                candidate.stableId = output.stableId;
+                candidate.type = output.type;
+                candidate.mesh = output.mesh;
+                candidate.material = output.material;
+                candidate.shaderProgram = output.shaderProgram;
+                candidate.fallbackMaterial = output.fallbackMaterial;
+                candidate.semantics = output.semantics;
+                candidate.ribbonUvMode = output.ribbonUvMode;
+                candidate.ribbonUvScale = output.ribbonUvScale;
+                candidate.flipbookColumns = output.flipbookColumns;
+                candidate.flipbookRows = output.flipbookRows;
+                auto next = CreateOutputRenderer(emitter, candidate, &error);
+                if (!next) {
+                    if (!uploadPending())
+                        rememberHardFailure();
+                    if (!uploadPending())
+                        INXLOG_WARN("GPU particle Mesh output refresh kept last-known-good emitter '", emitter.stableId,
+                                    "': ", error.empty() ? "renderer creation failed" : error);
+                    return false;
+                }
+                renderers.push_back({index, output.renderer, std::move(next)});
+            }
+        }
+
+        if (!emitter.runtime->AdoptCompatibleRevision(*replacement)) {
+            rememberHardFailure();
+            INXLOG_WARN("GPU particle resource refresh kept last-known-good emitter '", emitter.stableId,
+                        "': compatible runtime adoption failed");
+            return false;
+        }
+        for (auto &renderer : renderers)
+            emitter.outputs[renderer.outputIndex].renderer = renderer.next;
+
+        if (!renderers.empty() && (!drawRegistry || !drawRegistry->Replace(BuildDrawEntries(emitters)))) {
+            for (auto &renderer : renderers)
+                emitter.outputs[renderer.outputIndex].renderer = renderer.previous;
+            const bool restored = emitter.runtime->AdoptCompatibleRevision(*replacement);
+            rememberHardFailure();
+            INXLOG_WARN("GPU particle resource refresh kept last-known-good emitter '", emitter.stableId,
+                        "': draw registry publication failed", restored ? "" : " and runtime rollback failed");
             return false;
         }
 
         emitter.vectorFields = std::move(vectorFields);
         emitter.vectorFieldGenerations = vectorFieldGenerations;
         emitter.observedVectorFieldGenerations = std::move(vectorFieldGenerations);
-        auto retired = std::shared_ptr<ParticleGpuRuntime>(std::move(replacement));
-        deletionQueue->Retire([retired = std::move(retired)]() mutable { retired.reset(); });
+        CaptureMeshRevisions(emitter.sourceProgram, emitter.meshes, emitter.observedMeshGenerations);
+
+        std::vector<std::shared_ptr<ParticleGpuOutputRenderer>> retiredRenderers;
+        retiredRenderers.reserve(renderers.size());
+        for (auto &renderer : renderers)
+            retiredRenderers.push_back(std::move(renderer.previous));
+        auto retiredRuntime = std::shared_ptr<ParticleGpuRuntime>(std::move(replacement));
+        deletionQueue->Retire(
+            [retiredRuntime = std::move(retiredRuntime), retiredRenderers = std::move(retiredRenderers)]() mutable {
+                retiredRenderers.clear();
+                retiredRuntime.reset();
+            });
         return true;
     }
 
@@ -1266,10 +1692,11 @@ bool ParticleGpuSystemManager::Initialize(
     vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines, vk::VkResourceManager &resources,
     GpuRetirementQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
     GpuBillboardTextureResolver textureResolver, GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver,
-    const GpuParticleSortProgram &sortProgram, const GpuParticleCullProgram &cullProgram,
-    const GpuParticleBoundsProgram &boundsProgram, const GpuParticleMigrationProgram &migrationProgram,
-    const GpuParticleSpawnProgram &spawnProgram, const GpuParticleRibbonProgram &ribbonTopologyProgram,
-    const GpuParticleRibbonRenderProgram &ribbonRenderProgram, uint32_t framesInFlight)
+    GpuParticleSkinnedMeshResolver skinnedMeshResolver, const GpuParticleSortProgram &sortProgram,
+    const GpuParticleCullProgram &cullProgram, const GpuParticleBoundsProgram &boundsProgram,
+    const GpuParticleMigrationProgram &migrationProgram, const GpuParticleSpawnProgram &spawnProgram,
+    const GpuParticleRibbonProgram &ribbonTopologyProgram, const GpuParticleRibbonRenderProgram &ribbonRenderProgram,
+    uint32_t framesInFlight)
 {
     if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid() || !migrationProgram.IsValid() ||
         !spawnProgram.IsValid() || framesInFlight == 0 ||
@@ -1288,6 +1715,7 @@ bool ParticleGpuSystemManager::Initialize(
     m_impl->drawRegistry = &drawRegistry;
     m_impl->textureResolver = std::move(textureResolver);
     m_impl->vectorFieldTextureResolver = std::move(vectorFieldTextureResolver);
+    m_impl->skinnedMeshResolver = std::move(skinnedMeshResolver);
     m_impl->collisionScene = std::make_unique<ParticleGpuCollisionScene>();
     if (!m_impl->collisionScene->Create(context.GetRhiDevice(), ParticleGpuCollisionScene::DefaultCapacity,
                                         framesInFlight)) {
@@ -1362,21 +1790,15 @@ void ParticleGpuSystemManager::Shutdown() noexcept
         return;
     if (m_impl->drawRegistry)
         m_impl->drawRegistry->Clear();
-    {
-        std::scoped_lock lock(m_impl->diagnosticState->mutex);
-        for (const auto &request : m_impl->pendingDiagnostics) {
-            auto &snapshot = m_impl->diagnosticState->snapshots[request.requestId];
-            snapshot.status = GpuParticleDiagnosticStatus::Failed;
-            snapshot.error = "GPU particle manager shut down before diagnostic recording";
-        }
-    }
-    m_impl->pendingDiagnostics.clear();
+    m_impl->FailDiagnostics(0, "GPU particle manager shut down before diagnostic recording completed");
     m_impl->graphState.reset();
     m_impl->emitters.clear();
     m_impl->meshUploads.clear();
     m_impl->collisionScene.reset();
     m_impl->drawRegistry = nullptr;
     m_impl->textureResolver = {};
+    m_impl->vectorFieldTextureResolver = {};
+    m_impl->skinnedMeshResolver = {};
     m_impl->cullProgram.reset();
     m_impl->sortProgram.reset();
     m_impl->boundsProgram.reset();
@@ -1436,6 +1858,13 @@ bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program
             SetError(error, "GPU particle emitter id is already owned by another graph");
             return false;
         }
+        if (!m_impl->PreflightEmitterProgram(
+                emitterProgram,
+                previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{}, error))
+            return false;
+    }
+    for (const auto &emitterProgram : program.emitters) {
+        const auto previous = m_impl->emitters.find(emitterProgram.id);
         auto emitter = m_impl->CreateEmitter(
             emitterProgram, previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{},
             error);
@@ -1454,6 +1883,8 @@ bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program
 
     auto oldGraph = std::move(m_impl->graphState);
     auto oldEmitters = std::move(m_impl->emitters);
+    m_impl->FailDiagnostics(program.graphInstanceId,
+                            "GPU particle graph changed before diagnostic recording completed");
     m_impl->graphState = std::move(candidateGraph);
     m_impl->emitters = std::move(candidates);
     m_impl->Retire(std::move(oldGraph), std::move(oldEmitters));
@@ -1532,14 +1963,13 @@ bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxM
         return false;
     }
     const bool referenced = std::any_of(m_impl->emitters.begin(), m_impl->emitters.end(), [&](const auto &entry) {
-        return std::any_of(entry.second->outputs.begin(), entry.second->outputs.end(), [&](const auto &output) {
-            return output.type == GpuParticleOutputType::Sprite && output.material.get() == material.get();
-        });
+        return std::any_of(entry.second->outputs.begin(), entry.second->outputs.end(),
+                           [&](const auto &output) { return output.material.get() == material.get(); });
     });
     if (!referenced)
         return true;
     if (shaderProgram && (!shaderProgram->IsValid() || shaderProgram->domain != ShaderProgramDomain::ParticleSprite)) {
-        SetError(error, "GPU particle material must resolve to a valid ParticleSprite shader program");
+        SetError(error, "GPU particle material must resolve to a valid linked ParticleSprite shader program");
         return false;
     }
 
@@ -1554,35 +1984,37 @@ bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxM
     for (const auto &[id, emitter] : m_impl->emitters) {
         (void)id;
         for (auto &output : emitter->outputs) {
-            if (output.type != GpuParticleOutputType::Sprite || output.material.get() != material.get())
+            if (output.material.get() != material.get())
                 continue;
             const bool sameProgram =
-                (!output.shaderProgram && !shaderProgram) ||
-                (output.shaderProgram && shaderProgram && output.shaderProgram->key == shaderProgram->key);
+                output.shaderProgram && shaderProgram && output.shaderProgram->key == shaderProgram->key;
             if (sameProgram)
                 continue;
-            if (shaderProgram && output.semantics.receiveSceneLighting &&
+            if (!shaderProgram || !shaderProgram->IsValid() ||
+                shaderProgram->domain != ShaderProgramDomain::ParticleSprite) {
+                SetError(error, "GPU particle surface output requires a valid linked ParticleSprite shader program");
+                return false;
+            }
+            if (output.semantics.receiveSceneLighting &&
                 !shaderProgram->FindVariant(ShaderCompileTarget::ForwardPlus)) {
                 SetError(error, "GPU particle output '" + output.stableId +
                                     "' requires a linked Particle Forward+ shader variant when Receive Scene "
                                     "Lighting is enabled");
                 return false;
             }
-            if (output.semantics.sortMode != ParticleSortMode::None && !shaderProgram) {
-                SetError(error,
-                         "GPU particle sorted output '" + output.stableId + "' cannot use a legacy billboard material");
-                return false;
-            }
             GpuParticleOutputProgram candidate;
             candidate.id = output.id;
             candidate.stableId = output.stableId;
             candidate.type = output.type;
+            candidate.mesh = output.mesh;
             candidate.material = material;
             candidate.shaderProgram = shaderProgram;
             candidate.fallbackMaterial = output.fallbackMaterial;
             candidate.semantics = output.semantics;
             candidate.flipbookColumns = output.flipbookColumns;
             candidate.flipbookRows = output.flipbookRows;
+            candidate.ribbonUvMode = output.ribbonUvMode;
+            candidate.ribbonUvScale = output.ribbonUvScale;
             auto renderer = m_impl->CreateOutputRenderer(*emitter, candidate, error);
             if (!renderer) {
                 SetError(error, "failed to refresh GPU particle material for output '" + output.stableId + "'");
@@ -1628,6 +2060,7 @@ void ParticleGpuSystemManager::Clear()
         return;
     auto oldGraph = std::move(m_impl->graphState);
     auto oldEmitters = std::move(m_impl->emitters);
+    m_impl->FailDiagnostics(0, "GPU particle graph was cleared before diagnostic recording completed");
     m_impl->graphState = std::move(candidateGraph);
     m_impl->emitters.clear();
     m_impl->Retire(std::move(oldGraph), std::move(oldEmitters));
@@ -1662,6 +2095,15 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
     std::unordered_set<uint64_t> emitterIds;
     emitterIds.reserve(items.size());
     const uint64_t frameIndex = items.front().request.frameIndex;
+    const bool resetCollisionDiagnostics = std::any_of(
+        m_impl->pendingDiagnostics.begin(), m_impl->pendingDiagnostics.end(), [graphInstanceId](const auto &request) {
+            return request.graphInstanceId == graphInstanceId && request.resetPending;
+        });
+    const bool collectCollisionDiagnostics = std::any_of(
+        m_impl->pendingDiagnostics.begin(), m_impl->pendingDiagnostics.end(), [graphInstanceId](const auto &request) {
+            return request.graphInstanceId == graphInstanceId && !request.resetPending &&
+                   request.remainingSampleFrames != 0;
+        });
     const auto spawnDomain = m_impl->graphState->spawnDomains.find(graphInstanceId);
     if (spawnDomain == m_impl->graphState->spawnDomains.end())
         return false;
@@ -1677,6 +2119,8 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
             return false;
         PreparedItem decoded{&item, emitter->second, scheduler->second, item.prerollRequests};
         decoded.sequence.push_back(item.request);
+        decoded.sequence.back().collectCollisionDiagnostics = collectCollisionDiagnostics;
+        decoded.sequence.back().resetCollisionDiagnostics = resetCollisionDiagnostics;
         for (size_t substep = 0; substep < decoded.sequence.size(); ++substep) {
             const auto &request = decoded.sequence[substep];
             if (request.frameIndex != frameIndex || request.substepIndex != substep ||
@@ -1699,13 +2143,31 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
     }
 
     for (const auto &entry : prepared)
-        (void)m_impl->RefreshDataInterfaces(*entry.emitter);
+        (void)m_impl->RefreshResources(*entry.emitter);
 
     for (const auto &entry : prepared) {
         if (!entry.scheduler->CanBeginFrame(entry.sequence.front()))
             return false;
     }
     for (const auto &entry : prepared) {
+        std::vector<GpuSkinnedMeshFrameData> skinnedSources;
+        for (const auto &mesh : entry.emitter->sourceProgram.meshInterfaces) {
+            if (!mesh.skinnedRenderer.IsValid())
+                continue;
+            if (!m_impl->skinnedMeshResolver)
+                return false;
+            const auto snapshot = m_impl->skinnedMeshResolver(mesh.skinnedRenderer);
+            // A scene object may be destroyed between authoring and this frame.
+            // Retain the last valid pose until the graph parameter is changed;
+            // never invalidate a resident bind group mid-frame.
+            if (!snapshot || !snapshot->mesh || snapshot->mesh.get() != mesh.mesh.get() || !snapshot->currentPalette ||
+                snapshot->currentPalette->empty())
+                continue;
+            skinnedSources.push_back(
+                {mesh.interfaceIndex, snapshot->revision, snapshot->sourceToWorld, snapshot->currentPalette});
+        }
+        if (!entry.emitter->runtime->UpdateSkinnedMeshSources(skinnedSources))
+            return false;
         if (!entry.emitter->runtime->UpdateTransforms(entry.item->transforms))
             return false;
     }
@@ -1741,6 +2203,17 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
         entry.emitter->lastOffscreenPolicy = entry.item->request.offscreenPolicy;
         entry.emitter->lastBoundsMode = entry.item->request.boundsMode;
     }
+    if (resetCollisionDiagnostics) {
+        for (auto &request : m_impl->pendingDiagnostics) {
+            if (request.graphInstanceId == graphInstanceId && request.resetPending)
+                request.resetPending = false;
+        }
+    } else if (collectCollisionDiagnostics) {
+        for (auto &request : m_impl->pendingDiagnostics) {
+            if (request.graphInstanceId == graphInstanceId && request.remainingSampleFrames != 0)
+                --request.remainingSampleFrames;
+        }
+    }
     return true;
 }
 
@@ -1761,6 +2234,8 @@ bool ParticleGpuSystemManager::Reset(uint64_t id)
     emitter->second->lastSimulate = false;
     emitter->second->queuedFrameRequests.clear();
     scheduler->second->Reset();
+    m_impl->FailDiagnostics(emitter->second->graphInstanceId,
+                            "GPU particle graph was reset before diagnostic recording completed");
     return true;
 }
 
@@ -1885,6 +2360,18 @@ GpuParticleTelemetrySnapshot ParticleGpuSystemManager::TelemetrySnapshot() const
             snapshot.continuationDispatchRecordCalls += continuation.dispatchRecordCalls;
             snapshot.continuationResetPendingCount += continuation.resetPending ? 1u : 0u;
         }
+        const auto contacts = emitter->runtime->ContactTelemetry();
+        if (contacts.particleCapacity > 0) {
+            ++snapshot.contactRuntimeSystemCount;
+            snapshot.totalContactRecordCapacity += contacts.contactRecordCapacity;
+            snapshot.totalContactWorkItemCapacity += contacts.workItemCapacity;
+            snapshot.totalContactResidentBytes += contacts.contactBytes + contacts.hashBytes +
+                                                  contacts.particleIndexBytes + contacts.particleStateBytes +
+                                                  contacts.workItemBytes + contacts.continuationSnapshotBytes +
+                                                  sizeof(GpuParticleContactCounters) + sizeof(std::array<uint32_t, 4>);
+            snapshot.contactPrepareRecordCalls += emitter->runtime->ContactPrepareRecordCalls();
+            snapshot.contactSolveRecordCalls += emitter->runtime->ContactSolveRecordCalls();
+        }
         if (emitter->hasFrameRequest)
             snapshot.lastScheduledFrame = std::max(snapshot.lastScheduledFrame, emitter->lastFrameIndex);
     }
@@ -1967,7 +2454,8 @@ std::optional<ParticleOutputSemantics> ParticleGpuSystemManager::ActiveOutputSem
     return output != emitter->second->outputs.end() ? std::optional{output->semantics} : std::nullopt;
 }
 
-uint64_t ParticleGpuSystemManager::RequestDiagnostics(uint64_t graphInstanceId)
+uint64_t ParticleGpuSystemManager::RequestDiagnostics(uint64_t graphInstanceId, uint32_t sampleFrames,
+                                                      uint32_t stateSampleCount)
 {
     if (!m_impl)
         return 0;
@@ -1980,9 +2468,20 @@ uint64_t ParticleGpuSystemManager::RequestDiagnostics(uint64_t graphInstanceId)
         std::any_of(m_impl->emitters.begin(), m_impl->emitters.end(), [graphInstanceId](const auto &entry) {
             return entry.second && entry.second->graphInstanceId == graphInstanceId;
         });
-    if (m_impl->pendingDiagnostics.size() >= 8) {
+    if (sampleFrames == 0 || sampleFrames > 4096u) {
+        snapshot.status = GpuParticleDiagnosticStatus::Failed;
+        snapshot.error = "GPU particle diagnostic sample frames must be between 1 and 4096";
+    } else if (stateSampleCount > 64u) {
+        snapshot.status = GpuParticleDiagnosticStatus::Failed;
+        snapshot.error = "GPU particle diagnostic state sample count must be between 0 and 64";
+    } else if (m_impl->pendingDiagnostics.size() >= 8) {
         snapshot.status = GpuParticleDiagnosticStatus::Failed;
         snapshot.error = "Too many GPU particle diagnostic requests are pending";
+    } else if (std::any_of(
+                   m_impl->pendingDiagnostics.begin(), m_impl->pendingDiagnostics.end(),
+                   [graphInstanceId](const auto &request) { return request.graphInstanceId == graphInstanceId; })) {
+        snapshot.status = GpuParticleDiagnosticStatus::Failed;
+        snapshot.error = "A GPU particle diagnostic request is already pending for this graph";
     } else if (!hasEmitter) {
         snapshot.status = GpuParticleDiagnosticStatus::Inactive;
         snapshot.error = "GPU particle graph is not resident";
@@ -1991,7 +2490,7 @@ uint64_t ParticleGpuSystemManager::RequestDiagnostics(uint64_t graphInstanceId)
         snapshot.error = "GPU particle diagnostics are unavailable";
     } else {
         snapshot.status = GpuParticleDiagnosticStatus::Pending;
-        m_impl->pendingDiagnostics.push_back({requestId, graphInstanceId});
+        m_impl->pendingDiagnostics.push_back({requestId, graphInstanceId, sampleFrames, stateSampleCount, true});
     }
     std::scoped_lock lock(m_impl->diagnosticState->mutex);
     if (m_impl->diagnosticState->snapshots.size() >= 128) {

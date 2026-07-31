@@ -14,21 +14,25 @@
 
 #include <core/types/ShaderProgramArtifact.h>
 #include <function/resources/InxTexture/InxTexture.h>
+#include <function/scene/ObjectHandle.h>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
 
 namespace infernux
 {
 
 class GpuRetirementQueue;
+class InxSkinnedMesh;
 namespace vk
 {
 class VkDeviceContext;
@@ -64,13 +68,33 @@ struct GpuParticleOutputProgram
     uint32_t flipbookRows = 1;
 };
 
-struct GpuParticleMeshShapeProgram
+struct GpuParticleMeshInterfaceProgram
 {
+    std::string stableId;
+    uint32_t interfaceIndex = 0;
     uint32_t metadataOffsetWords = 0;
-    uint32_t vertexBinding = 14;
-    uint32_t triangleBinding = 15;
+    uint32_t vertexBinding = 1;
+    uint32_t triangleBinding = 2;
+    uint32_t influenceBinding = 3;
+    uint32_t paletteBinding = 4;
+    bool worldSpace = false;
+    std::array<float, 16> meshToSpace{};
     std::shared_ptr<InxMesh> mesh;
+    ObjectHandle skinnedRenderer;
 };
+
+struct GpuParticleSkinnedMeshSnapshot
+{
+    std::shared_ptr<InxMesh> mesh;
+    std::shared_ptr<const InxSkinnedMesh> model;
+    std::shared_ptr<const std::vector<glm::mat4>> currentPalette;
+    std::shared_ptr<const std::vector<glm::mat4>> previousPalette;
+    std::array<float, 16> sourceToWorld{};
+    uint64_t revision = 0;
+};
+
+using GpuParticleSkinnedMeshResolver =
+    std::function<std::optional<GpuParticleSkinnedMeshSnapshot>(const ObjectHandle &renderer)>;
 
 struct GpuParticleVectorFieldProgram
 {
@@ -119,6 +143,7 @@ struct GpuParticleEmitterProgram
     uint32_t capacity = 0;
     uint32_t stateStride = 0;
     uint32_t eventTypeCount = 0;
+    bool collisionEnabled = false;
     std::vector<uint32_t> parameterWords;
     bool preserveState = false;
     struct StateMigration
@@ -136,17 +161,14 @@ struct GpuParticleEmitterProgram
     uint32_t continuationJoinCount = 0;
     std::array<std::vector<uint32_t>, static_cast<size_t>(GpuParticleContinuationKernelStage::Count)>
         continuationKernels;
-    std::optional<GpuParticleMeshShapeProgram> meshShape;
+    std::vector<GpuParticleMeshInterfaceProgram> meshInterfaces;
     GpuParticleVectorFieldLayoutProgram vectorFields;
     std::vector<uint32_t> billboardVertexShader;
-    std::vector<uint32_t> billboardFragmentShader;
-    std::vector<uint32_t> billboardForwardPlusFragmentShader;
     std::vector<uint32_t> billboardPickingFragmentShader;
     std::vector<uint32_t> billboardMotionVertexShader;
     std::vector<uint32_t> billboardMotionFragmentShader;
     std::vector<uint32_t> meshVertexShader;
-    std::vector<uint32_t> meshFragmentShader;
-    std::vector<uint32_t> meshForwardPlusFragmentShader;
+    std::vector<uint32_t> meshShadowFragmentShader;
     std::vector<uint32_t> meshPickingFragmentShader;
     std::vector<uint32_t> meshMotionVertexShader;
     std::vector<uint32_t> meshMotionFragmentShader;
@@ -190,6 +212,12 @@ struct GpuParticleTelemetrySnapshot
     uint64_t continuationClassifyRecordCalls = 0;
     uint64_t continuationDispatchRecordCalls = 0;
     size_t continuationResetPendingCount = 0;
+    size_t contactRuntimeSystemCount = 0;
+    uint64_t totalContactRecordCapacity = 0;
+    uint64_t totalContactWorkItemCapacity = 0;
+    uint64_t totalContactResidentBytes = 0;
+    uint64_t contactPrepareRecordCalls = 0;
+    uint64_t contactSolveRecordCalls = 0;
     uint64_t collisionSceneRevision = 0;
     uint32_t collisionSceneColliderCount = 0;
     uint64_t collisionSceneTopologyRevision = 0;
@@ -209,6 +237,14 @@ enum class GpuParticleDiagnosticStatus : uint8_t
 
 struct GpuParticleEmitterDiagnostic
 {
+    struct StateSample
+    {
+        uint32_t slotIndex = 0;
+        uint32_t lifecycleFlags = 0;
+        uint32_t spawnGeneration = 0;
+        std::vector<uint32_t> words;
+    };
+
     uint64_t emitterId = 0;
     uint32_t emitterIndex = 0;
     uint32_t capacity = 0;
@@ -216,6 +252,15 @@ struct GpuParticleEmitterDiagnostic
     uint32_t aliveCount = 0;
     uint32_t visibleCount = 0;
     uint32_t droppedCount = 0;
+    uint32_t collisionHitCount = 0;
+    uint32_t collisionResponseCount = 0;
+    uint32_t collisionTriggerCount = 0;
+    uint32_t collisionEnterCount = 0;
+    uint32_t collisionStayCount = 0;
+    uint32_t collisionExitCount = 0;
+    float collisionMaxOutwardSpeed = 0.0f;
+    float collisionMaxTangentSpeed = 0.0f;
+    uint32_t collisionCandidateOverflowCount = 0;
     uint32_t preparedSpawnCount = 0;
     uint32_t preparedSpawnBaseId = 0;
     uint32_t preparedSpawnGeneration = 0;
@@ -227,6 +272,7 @@ struct GpuParticleEmitterDiagnostic
     bool boundsValid = false;
     std::array<float, 3> boundsLower{};
     std::array<float, 3> boundsUpper{};
+    std::vector<StateSample> stateSamples;
 };
 
 struct GpuParticleDiagnosticSnapshot
@@ -251,15 +297,17 @@ class ParticleGpuSystemManager
     ParticleGpuSystemManager(ParticleGpuSystemManager &&) = delete;
     ParticleGpuSystemManager &operator=(ParticleGpuSystemManager &&) = delete;
 
-    [[nodiscard]] bool Initialize(
-        vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines, vk::VkResourceManager &resources,
-        GpuRetirementQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
-        GpuBillboardTextureResolver textureResolver = {},
-        GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver = {},
-        const GpuParticleSortProgram &sortProgram = {}, const GpuParticleCullProgram &cullProgram = {},
-        const GpuParticleBoundsProgram &boundsProgram = {}, const GpuParticleMigrationProgram &migrationProgram = {},
-        const GpuParticleSpawnProgram &spawnProgram = {}, const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
-        const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {}, uint32_t framesInFlight = 2);
+    [[nodiscard]] bool
+    Initialize(vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines, vk::VkResourceManager &resources,
+               GpuRetirementQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
+               GpuBillboardTextureResolver textureResolver = {},
+               GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver = {},
+               GpuParticleSkinnedMeshResolver skinnedMeshResolver = {}, const GpuParticleSortProgram &sortProgram = {},
+               const GpuParticleCullProgram &cullProgram = {}, const GpuParticleBoundsProgram &boundsProgram = {},
+               const GpuParticleMigrationProgram &migrationProgram = {},
+               const GpuParticleSpawnProgram &spawnProgram = {},
+               const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
+               const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {}, uint32_t framesInFlight = 2);
     void Shutdown() noexcept;
 
     /// Compile then publish one complete graph transaction. The active graph
@@ -311,9 +359,12 @@ class ParticleGpuSystemManager
     [[nodiscard]] int32_t ActiveOutputRenderQueue(uint64_t emitterId, uint64_t outputId) const;
     [[nodiscard]] std::optional<ParticleOutputSemantics> ActiveOutputSemantics(uint64_t emitterId,
                                                                                uint64_t outputId) const;
-    /// Arm one counter-and-bounds snapshot. No transfer or readback resource
-    /// exists until this method is called, and completion never stalls the renderer.
-    [[nodiscard]] uint64_t RequestDiagnostics(uint64_t graphInstanceId);
+    /// Arm one counter-and-bounds snapshot. Collision counters are sampled by
+    /// the next update and accumulate only across diagnostic sample frames for
+    /// the current resident state. No transfer or readback resource exists
+    /// until this method is called, and completion never stalls the renderer.
+    [[nodiscard]] uint64_t RequestDiagnostics(uint64_t graphInstanceId, uint32_t sampleFrames = 60,
+                                              uint32_t stateSampleCount = 0);
     [[nodiscard]] GpuParticleDiagnosticSnapshot QueryDiagnostics(uint64_t requestId) const;
 
   private:

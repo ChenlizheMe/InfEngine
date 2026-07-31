@@ -249,6 +249,17 @@ class TestAnnotationOnlyDeclarations:
         fields = get_serialized_fields(Priv)
         assert '_hidden_counter' not in fields and 'shown' in fields
 
+    def test_explicit_private_hidden_field_is_serialized(self):
+        class PrivateBacking(InxComponent):
+            _state: str = serialized_field(default="{}", hidden=True)
+
+        component = PrivateBacking()
+        component._state = '{"value":2}'
+        fields = get_serialized_fields(PrivateBacking)
+
+        assert fields["_state"].hidden is True
+        assert component._serialize_fields_document()["_state"] == '{"value":2}'
+
     def test_list_annotation(self):
         class WithList(InxComponent):
             tags: List[str] = serialized_field(default=[], field_type=FieldType.LIST,

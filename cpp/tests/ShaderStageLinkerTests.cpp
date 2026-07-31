@@ -60,6 +60,11 @@ std::string ReadText(const std::string &path)
 
 int main()
 {
+    assert(infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::Forward));
+    assert(infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::ForwardPlus));
+    assert(infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::GBuffer));
+    assert(!infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::Shadow));
+
     auto compiler = MakeCompiler();
     const std::string waveVertex = R"(
 ShaderInfo
@@ -170,6 +175,12 @@ void surface(out SurfaceData s)
         assert(requirement->enabled);
         assert(!requirement->reason.empty());
     }
+    const auto forwardOnlyPlan = infernux::ShaderPassVariantPlanner::Plan(vertex, fragment, artifact, false);
+    const auto *forwardOnlyGBuffer = forwardOnlyPlan.Find(infernux::ShaderCompileTarget::GBuffer);
+    assert(forwardOnlyGBuffer != nullptr);
+    assert(!forwardOnlyGBuffer->enabled);
+    assert(forwardOnlyGBuffer->fallback == infernux::ShaderCompileTarget::ForwardPlus);
+    assert(forwardOnlyGBuffer->reason.find("Unsupported [Deferred]") != std::string::npos);
 
     infernux::InxShaderLoader::AddShaderSearchPath(INFERNUX_TEST_SHADER_ROOT);
     const auto compiledProgram =
@@ -245,8 +256,13 @@ void surface(out SurfaceData s)
     assert(gbufferProgram.generatedFragmentSource.find("layout(location = 0) out vec4 outGBuf0;") != std::string::npos);
     assert(gbufferProgram.generatedFragmentSource.find("layout(location = 4) out uvec2 outGBuf4;") !=
            std::string::npos);
-    assert(gbufferProgram.generatedFragmentSource.find("gbuf4 = uvec2(_inx_ObjectLayerMask, 1u);") !=
-           std::string::npos);
+    uint32_t pbrModelId = 2166136261u;
+    for (const unsigned char character : std::string_view("PBR")) {
+        pbrModelId ^= character;
+        pbrModelId *= 16777619u;
+    }
+    assert(gbufferProgram.generatedFragmentSource.find("gbuf4 = uvec2(_inx_ObjectLayerMask, " +
+                                                       std::to_string(pbrModelId) + "u);") != std::string::npos);
     assert(gbufferProgram.generatedFragmentSource.find("vec3 litColor =") == std::string::npos);
     assert(gbufferProgram.generatedFragmentSource.find("fragmentInput.waveUV = _inx_v_waveUV;") != std::string::npos);
 
@@ -316,6 +332,9 @@ void surface(out SurfaceData s)
     assert(motionCompilation != completeCompilation.compiledVariants.end());
     assert(motionCompilation->generatedVertexSource.find("set = 2, binding = 4") != std::string::npos);
     assert(motionCompilation->generatedVertexSource.find("previousViewProj * aux.previousModel") != std::string::npos);
+    assert(motionCompilation->generatedVertexSource.find("previousBoneOffset") != std::string::npos);
+    assert(motionCompilation->generatedVertexSource.find("previousLocalPosition = inxUnskinnedPosition") !=
+           std::string::npos);
     assert(motionCompilation->generatedFragmentSource.find("outMotion = _inx_MotionVector;") != std::string::npos);
 
     auto reorderedArtifact = completeArtifact;
@@ -479,9 +498,9 @@ void surface(out SurfaceData surface)
     assert(particleForward.generatedFragmentSource.find("float postSurfaceCoverage = v_ParticleAlpha;") !=
            std::string::npos);
     assert(particleForward.generatedFragmentSource.find("s.alpha *= postSurfaceCoverage;") != std::string::npos);
-    assert(particleForward.generatedFragmentSource.find("set = 0, binding = 2") != std::string::npos);
-    assert(particleForward.generatedFragmentSource.find("set = 0, binding = 14") != std::string::npos);
-    assert(particleForward.generatedFragmentSource.find("set = 0, binding = 15") != std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("set = 2, binding = 2") != std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("set = 2, binding = 14") != std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("set = 2, binding = 15") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("_inxParticleEyeDepth") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("return abs(numerator / ") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("sceneDepth - particleDepth") != std::string::npos);
@@ -626,6 +645,17 @@ void surface(out SurfaceData surface)
                      [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::ForwardPlus; });
     assert(builtinForward != builtinLitCompilation.compiledVariants.end());
     assert(builtinForwardPlus != builtinLitCompilation.compiledVariants.end());
+    const auto builtinGBuffer =
+        std::find_if(builtinLitCompilation.compiledVariants.begin(), builtinLitCompilation.compiledVariants.end(),
+                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::GBuffer; });
+    assert(builtinGBuffer != builtinLitCompilation.compiledVariants.end());
+    assert(builtinForward->generatedFragmentSource.find("void shading(") != std::string::npos);
+    assert(builtinForwardPlus->generatedFragmentSource.find("void shading(") != std::string::npos);
+    assert(builtinForward->generatedFragmentSource.find("evaluateForward") == std::string::npos);
+    assert(builtinForwardPlus->generatedFragmentSource.find("evaluateForward") == std::string::npos);
+    assert(builtinGBuffer->generatedFragmentSource.find("INX_GBUFFER_PASS") != std::string::npos);
+    assert(builtinGBuffer->generatedFragmentSource.find("void shading(") == std::string::npos);
+    assert(builtinGBuffer->generatedFragmentSource.find("CanonicalLightBuffer") == std::string::npos);
     assert(builtinForward->generatedFragmentSource.find("CanonicalLightBuffer") == std::string::npos);
     assert(builtinForwardPlus->generatedFragmentSource.find("#define INX_FORWARD_PLUS_PASS 1") != std::string::npos);
     assert(builtinForwardPlus->generatedFragmentSource.find("set = 1, binding = 1") != std::string::npos);
@@ -636,6 +666,26 @@ void surface(out SurfaceData surface)
     assert(builtinForwardPlus->generatedVertexSource.find("_inx_ObjectLayerMask =") != std::string::npos);
     assert(builtinForwardPlus->generatedFragmentSource.find("light.metadata.y & _inx_ObjectLayerMask") !=
            std::string::npos);
+
+    const auto builtinToonCompilation =
+        compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
+                                              ReadText(shaderRoot + "/toon.frag"), shaderRoot + "/toon.frag");
+    if (!builtinToonCompilation.IsValid()) {
+        for (const auto &error : builtinToonCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(builtinToonCompilation.IsValid());
+    const auto builtinToonArtifact = builtinToonCompilation.CreateRuntimeArtifact();
+    assert(builtinToonArtifact.IsValid());
+    assert(builtinToonArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
+    assert(builtinToonArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
+    assert(builtinToonArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer) != nullptr);
+    const auto toonGBuffer =
+        std::find_if(builtinToonCompilation.compiledVariants.begin(), builtinToonCompilation.compiledVariants.end(),
+                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::GBuffer; });
+    assert(toonGBuffer != builtinToonCompilation.compiledVariants.end());
+    assert(toonGBuffer->generatedFragmentSource.find("s.shadingParam0") != std::string::npos);
+    assert(toonGBuffer->generatedFragmentSource.find("s.shadingParam1") != std::string::npos);
 
     const auto spriteLitCompilation = compiler.CompileLinkedProgramArtifact(
         ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
@@ -918,8 +968,6 @@ void main() { }
 
     const auto ribbonVertex = compiler.CompileVertexGlsl(
         std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex()), "ParticleRibbon.vert");
-    const auto ribbonFragment = compiler.CompileFragmentGlsl(
-        std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::Fragment()), "ParticleRibbon.frag");
     const auto ribbonPicking = compiler.CompileFragmentGlsl(
         std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::PickingFragment()),
         "ParticleRibbonPicking.frag");
@@ -932,7 +980,6 @@ void main() { }
     assert(ribbonVertex.size() >= 5 * sizeof(uint32_t));
     assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("visible_segments") !=
            std::string_view::npos);
-    assert(ribbonFragment.size() >= 5 * sizeof(uint32_t));
     assert(ribbonPicking.size() >= 5 * sizeof(uint32_t));
     assert(ribbonMotionVertex.size() >= 5 * sizeof(uint32_t));
     assert(ribbonMotionFragment.size() >= 5 * sizeof(uint32_t));

@@ -269,6 +269,7 @@ def test_particle_preview_begin_restarts_every_enabled_emitter_after_rebuild():
 
 def test_particle_preview_stop_drops_native_draws_immediately():
     component = ParticleSystem()
+    component._batch_id = 1
     component._gpu_controllers = [object()]
     calls = []
     component.stop = lambda: calls.append("stop") or True

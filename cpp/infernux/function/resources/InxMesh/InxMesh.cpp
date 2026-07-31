@@ -35,6 +35,7 @@ void InxMesh::SetSkinnedData(std::shared_ptr<const InxSkinnedMesh> skinnedData)
     if (skinnedData && !skinnedData->IsValid())
         throw std::invalid_argument("InxMesh cannot attach invalid skinned data");
     m_skinnedData = std::move(skinnedData);
+    ++m_generation;
 }
 
 void InxMesh::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<SubMesh> subMeshes)
@@ -44,6 +45,7 @@ void InxMesh::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indice
     m_subMeshes = std::move(subMeshes);
 
     RecalculateBounds();
+    ++m_generation;
 
     INXLOG_DEBUG("InxMesh::SetData: '", m_name, "' — ", m_vertices.size(), " verts, ", m_indices.size(), " indices, ",
                  m_subMeshes.size(), " submesh(es)");

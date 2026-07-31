@@ -46,11 +46,21 @@ static Collider *GetPrimaryBodyCollider(GameObject *go)
     const uint32_t bodyId = Collider::GetSharedBodyId(go);
     if (bodyId == 0xFFFFFFFF)
         return nullptr;
+    Collider *allocatedBody = nullptr;
     for (const auto &component : go->GetAllComponents()) {
         auto *col = dynamic_cast<Collider *>(component.get());
-        if (col && col->GetBodyId() == bodyId)
+        if (!col || col->GetBodyId() != bodyId)
+            continue;
+        allocatedBody = col;
+        if (col->IsEnabled())
             return col;
     }
+    // A disabled Collider keeps its Jolt body allocation so re-enabling is
+    // cheap, but that body is not resident in the broadphase. Rigidbody
+    // properties must fall back to Transform state until an enabled Collider
+    // makes the shared body operational again.
+    if (allocatedBody)
+        return nullptr;
     throw std::logic_error("Physics actor body exists without an owning collider");
 }
 

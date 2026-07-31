@@ -341,10 +341,15 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
                 std::min(cache.drawCallStart + cache.drawCallCount, frame.m_drawCalls.drawCalls.size());
             std::shared_ptr<const std::vector<glm::mat4>> skinBoneMatricesOwner;
             const std::vector<glm::mat4> *skinBoneMatricesPtr = nullptr;
+            std::shared_ptr<const std::vector<glm::mat4>> previousSkinBoneMatricesOwner;
+            const std::vector<glm::mat4> *previousSkinBoneMatricesPtr = nullptr;
             const bool isSkinnedRenderer = source.skinnedRenderer != nullptr;
             if (auto *skinned = source.skinnedRenderer; skinned && skinned->HasRuntimeSkinnedMesh()) {
-                skinBoneMatricesOwner = skinned->GetRuntimeSkinBonePalette();
+                const auto pose = skinned->GetRuntimeSkinPoseSnapshot();
+                skinBoneMatricesOwner = pose ? pose->current : nullptr;
                 skinBoneMatricesPtr = skinBoneMatricesOwner.get();
+                previousSkinBoneMatricesOwner = pose ? pose->previous : nullptr;
+                previousSkinBoneMatricesPtr = previousSkinBoneMatricesOwner.get();
             }
 
             auto patchSkinPalette = [&](DrawCall &dc) {
@@ -352,6 +357,8 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
                     return;
                 dc.skinBoneMatricesOwner = skinBoneMatricesOwner;
                 dc.skinBoneMatrices = skinBoneMatricesPtr;
+                dc.previousSkinBoneMatricesOwner = previousSkinBoneMatricesOwner;
+                dc.previousSkinBoneMatrices = previousSkinBoneMatricesPtr;
             };
 
             for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
@@ -486,13 +493,18 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
         std::shared_ptr<const void> meshDataOwner = meshPtr;
         std::shared_ptr<const std::vector<glm::mat4>> skinBoneMatricesOwner;
         const std::vector<glm::mat4> *skinBoneMatricesPtr = nullptr;
+        std::shared_ptr<const std::vector<glm::mat4>> previousSkinBoneMatricesOwner;
+        const std::vector<glm::mat4> *previousSkinBoneMatricesPtr = nullptr;
         if (auto *skinned = source.skinnedRenderer; skinned && skinned->HasRuntimeSkinnedMesh()) {
             objVerticesPtr = &skinned->GetRuntimeSkinnedVertices();
             objIndicesPtr = &skinned->GetRuntimeSkinnedIndices();
             subMeshesPtr = &skinned->GetRuntimeSkinnedSubMeshes();
             meshDataOwner = skinned->GetRuntimeModelSnapshot();
-            skinBoneMatricesOwner = skinned->GetRuntimeSkinBonePalette();
+            const auto pose = skinned->GetRuntimeSkinPoseSnapshot();
+            skinBoneMatricesOwner = pose ? pose->current : nullptr;
             skinBoneMatricesPtr = skinBoneMatricesOwner.get();
+            previousSkinBoneMatricesOwner = pose ? pose->previous : nullptr;
+            previousSkinBoneMatricesPtr = previousSkinBoneMatricesOwner.get();
         }
         const auto &objVertices = *objVerticesPtr;
         const auto &objIndices = *objIndicesPtr;
@@ -524,6 +536,8 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             stampAssetIdentity(dc);
             dc.skinBoneMatricesOwner = skinBoneMatricesOwner;
             dc.skinBoneMatrices = skinBoneMatricesPtr;
+            dc.previousSkinBoneMatricesOwner = previousSkinBoneMatricesOwner;
+            dc.previousSkinBoneMatrices = previousSkinBoneMatricesPtr;
             dc.forceBufferUpdate = bufferDirty;
             result.drawCalls.push_back(dc);
         } else if (submeshFilter >= 0 && static_cast<uint32_t>(submeshFilter) < subMeshCount) {
@@ -552,6 +566,8 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             stampAssetIdentity(dc);
             dc.skinBoneMatricesOwner = skinBoneMatricesOwner;
             dc.skinBoneMatrices = skinBoneMatricesPtr;
+            dc.previousSkinBoneMatricesOwner = previousSkinBoneMatricesOwner;
+            dc.previousSkinBoneMatrices = previousSkinBoneMatricesPtr;
             dc.forceBufferUpdate = bufferDirty;
             result.drawCalls.push_back(dc);
         } else {
@@ -596,6 +612,8 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
                 stampAssetIdentity(dc);
                 dc.skinBoneMatricesOwner = skinBoneMatricesOwner;
                 dc.skinBoneMatrices = skinBoneMatricesPtr;
+                dc.previousSkinBoneMatricesOwner = previousSkinBoneMatricesOwner;
+                dc.previousSkinBoneMatrices = previousSkinBoneMatricesPtr;
                 dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
                 firstDirty = false;
                 result.drawCalls.push_back(dc);

@@ -13,6 +13,9 @@ void main() {
     v.color    = inColor;
     v.texCoord = inTexCoord;
 ${VERTEX_CALL}
+    // Preserve the authored local position so Motion can evaluate the same
+    // vertex against the previous skeletal pose after current skinning.
+    vec3 inxUnskinnedPosition = v.position;
     SkinInstanceData skin = skinInstances[gl_InstanceIndex];
     if ((skin.flags & 1u) != 0u && skin.boneCount > 0u) {
         mat4 skinMat =

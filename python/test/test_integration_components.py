@@ -1127,6 +1127,19 @@ class TestColliders:
         assert resolved.friction_combine == PhysicsMaterialCombine.Multiply
         assert resolved.bounce_combine == PhysicsMaterialCombine.Maximum
 
+    def test_builtin_collider_accepts_empty_physic_material_reference(self, scene):
+        from Infernux.core.asset_ref import PhysicMaterialRef
+        from Infernux.core.physic_material import PhysicMaterial
+
+        collider = scene.create_game_object("ClearMaterial").add_component(
+            BoxColliderComponent
+        )
+        collider.physic_material = PhysicMaterial()
+        assert collider.physic_material.resolve() is not None
+
+        collider.physic_material = PhysicMaterialRef()
+        assert collider.physic_material.resolve() is None
+
     @pytest.mark.parametrize(
         "component_type,attribute,value",
         [

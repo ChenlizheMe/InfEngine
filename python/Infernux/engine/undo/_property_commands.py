@@ -151,7 +151,7 @@ class PythonComponentDocumentCommand(UndoCommand):
     MERGE_WINDOW: float = 0.3
 
     def __init__(self, comp: Any, old_document: dict, new_document: dict,
-                 description: str = ""):
+                 description: str = "", edit_key: str = ""):
         super().__init__(description or f"Edit {_comp_type_name_of(comp)}")
         self._comp = comp
         self._old_document = copy.deepcopy(old_document)
@@ -159,6 +159,7 @@ class PythonComponentDocumentCommand(UndoCommand):
         self._comp_id: int = getattr(comp, "component_id", id(comp))
         self._game_object_id: int = _game_object_id_of(comp)
         self._comp_type_name: str = _comp_type_name_of(comp)
+        self._edit_key = str(edit_key)
 
     def _live(self):
         if self._game_object_id and self._comp_id:
@@ -202,6 +203,7 @@ class PythonComponentDocumentCommand(UndoCommand):
         return (
             isinstance(other, PythonComponentDocumentCommand)
             and self._comp_id == other._comp_id
+            and self._edit_key == other._edit_key
             and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW
         )
 

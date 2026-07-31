@@ -42,7 +42,6 @@ _PARTICLE_STORAGE_TYPES = frozenset(
         ValueType.COLOR,
         ValueType.MAT3,
         ValueType.MAT4,
-        ValueType.TEXTURE2D,
     }
 )
 
@@ -62,12 +61,18 @@ class EmitterShapeKind(str, Enum):
     BOX = "box"
     CONE = "cone"
     MESH = "mesh"
+    SDF = "sdf"
 
 
 class MeshEmissionMode(str, Enum):
     VERTEX = "vertex"
-    TRIANGLE = "triangle"
+    EDGE = "edge"
     SURFACE = "surface"
+
+
+class SdfEmissionMode(str, Enum):
+    SURFACE = "surface"
+    VOLUME = "volume"
 
 
 @dataclass(frozen=True)
@@ -149,11 +154,14 @@ class EmitterShape:
     dimensions: tuple[float, float, float] = (1.0, 1.0, 1.0)
     mesh: AssetReference = AssetReference()
     mesh_mode: MeshEmissionMode = MeshEmissionMode.SURFACE
+    sdf_interface: str = ""
+    sdf_mode: SdfEmissionMode = SdfEmissionMode.SURFACE
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", EmitterShapeKind(self.kind))
         object.__setattr__(self, "space", CoordinateSpace(self.space))
         object.__setattr__(self, "mesh_mode", MeshEmissionMode(self.mesh_mode))
+        object.__setattr__(self, "sdf_mode", SdfEmissionMode(self.sdf_mode))
         if self.space not in {CoordinateSpace.EMITTER_LOCAL, CoordinateSpace.WORLD}:
             raise ParticleGraphSchemaError("emitter shape space must be emitter_local or world")
         if not math.isfinite(float(self.radius)) or float(self.radius) < 0.0:
@@ -167,6 +175,13 @@ class EmitterShape:
         object.__setattr__(self, "dimensions", tuple(float(value) for value in self.dimensions))
         if not isinstance(self.mesh, AssetReference):
             raise ParticleGraphSchemaError("emitter shape mesh must be an AssetReference")
+        if type(self.sdf_interface) is not str:
+            raise ParticleGraphSchemaError("emitter shape SDF interface must be a string")
+        object.__setattr__(self, "sdf_interface", self.sdf_interface.strip())
+        if self.kind is EmitterShapeKind.SDF and not self.sdf_interface:
+            raise ParticleGraphSchemaError(
+                "SDF emitter shape requires a Signed Distance Volume interface"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -177,6 +192,8 @@ class EmitterShape:
             "dimensions": list(self.dimensions),
             "mesh": self.mesh.to_dict(),
             "mesh_mode": self.mesh_mode.value,
+            "sdf_interface": self.sdf_interface,
+            "sdf_mode": self.sdf_mode.value,
         }
 
     @classmethod
@@ -191,6 +208,8 @@ class EmitterShape:
                 "dimensions",
                 "mesh",
                 "mesh_mode",
+                "sdf_interface",
+                "sdf_mode",
             },
             location,
         )
@@ -204,6 +223,8 @@ class EmitterShape:
             tuple(value["dimensions"]),
             AssetReference.from_dict(value["mesh"]),
             value["mesh_mode"],
+            value["sdf_interface"],
+            value["sdf_mode"],
         )
 
 
@@ -218,6 +239,10 @@ class EmitterSettings:
     loop: bool = True
     start_delay: float = 0.0
     collision_enabled: bool = False
+    collision_layer_mask: int = 0xFFFFFFFF
+    collision_include_triggers: bool = True
+    collision_bounce_scale: float = 1.0
+    collision_friction_scale: float = 1.0
     bursts: tuple[ParticleBurst, ...] = ()
     shape: EmitterShape = EmitterShape()
 
@@ -246,6 +271,31 @@ class EmitterSettings:
             )
         if type(self.collision_enabled) is not bool:
             raise ParticleGraphSchemaError("emitter collision_enabled must be a boolean")
+        if (
+            type(self.collision_layer_mask) is not int
+            or not 0 <= self.collision_layer_mask <= 0xFFFFFFFF
+        ):
+            raise ParticleGraphSchemaError(
+                "emitter collision_layer_mask must be an unsigned 32-bit integer"
+            )
+        if type(self.collision_include_triggers) is not bool:
+            raise ParticleGraphSchemaError(
+                "emitter collision_include_triggers must be a boolean"
+            )
+        if (
+            not math.isfinite(float(self.collision_bounce_scale))
+            or float(self.collision_bounce_scale) < 0.0
+        ):
+            raise ParticleGraphSchemaError(
+                "emitter collision_bounce_scale must be finite and non-negative"
+            )
+        if (
+            not math.isfinite(float(self.collision_friction_scale))
+            or float(self.collision_friction_scale) < 0.0
+        ):
+            raise ParticleGraphSchemaError(
+                "emitter collision_friction_scale must be finite and non-negative"
+            )
         bursts = tuple(self.bursts)
         if not all(isinstance(value, ParticleBurst) for value in bursts):
             raise ParticleGraphSchemaError("emitter bursts must contain ParticleBurst values")
@@ -271,6 +321,10 @@ class EmitterSettings:
             "loop": self.loop,
             "start_delay": float(self.start_delay),
             "collision_enabled": self.collision_enabled,
+            "collision_layer_mask": self.collision_layer_mask,
+            "collision_include_triggers": self.collision_include_triggers,
+            "collision_bounce_scale": float(self.collision_bounce_scale),
+            "collision_friction_scale": float(self.collision_friction_scale),
             "bursts": [burst.to_dict() for burst in self.bursts],
             "shape": self.shape.to_dict(),
         }
@@ -280,7 +334,9 @@ class EmitterSettings:
         expected = {
             "capacity", "simulation_space", "seed", "spawn_rate",
             "spawn_rate_over_distance", "duration", "loop", "start_delay",
-            "collision_enabled", "bursts", "shape",
+            "collision_enabled", "collision_layer_mask",
+            "collision_include_triggers", "collision_bounce_scale",
+            "collision_friction_scale", "bursts", "shape",
         }
         _exact_object(value, expected, location)
         if type(value["bursts"]) is not list:
@@ -295,6 +351,10 @@ class EmitterSettings:
             loop=value["loop"],
             start_delay=value["start_delay"],
             collision_enabled=value["collision_enabled"],
+            collision_layer_mask=value["collision_layer_mask"],
+            collision_include_triggers=value["collision_include_triggers"],
+            collision_bounce_scale=value["collision_bounce_scale"],
+            collision_friction_scale=value["collision_friction_scale"],
             bursts=tuple(
                 ParticleBurst.from_dict(item, f"{location}.bursts[{index}]")
                 for index, item in enumerate(value["bursts"])
@@ -356,6 +416,7 @@ _PARTICLE_PARAMETER_TYPES = frozenset(
         ValueType.CURVE,
         ValueType.GRADIENT,
         ValueType.TEXTURE2D,
+        ValueType.MESH,
     }
 )
 
@@ -630,32 +691,14 @@ def optional_particle_attributes() -> tuple[ParticleAttribute, ...]:
         # Exact collider identity stays split into uint words so the GPU path
         # does not require optional 64-bit shader integer support.
         ParticleAttribute(
-            "internal.collision_current_id_low",
-            "collision_current_id_low",
+            "builtin.collision_collider_id_low",
+            "collision_collider_id_low",
             TypeRef(ValueType.U32),
             0,
         ),
         ParticleAttribute(
-            "internal.collision_current_id_high",
-            "collision_current_id_high",
-            TypeRef(ValueType.U32),
-            0,
-        ),
-        ParticleAttribute(
-            "builtin.collision_active",
-            "collision_active",
-            TypeRef(ValueType.BOOL),
-            False,
-        ),
-        ParticleAttribute(
-            "internal.collision_active_id_low",
-            "collision_active_id_low",
-            TypeRef(ValueType.U32),
-            0,
-        ),
-        ParticleAttribute(
-            "internal.collision_active_id_high",
-            "collision_active_id_high",
+            "builtin.collision_collider_id_high",
+            "collision_collider_id_high",
             TypeRef(ValueType.U32),
             0,
         ),
@@ -685,8 +728,6 @@ def particle_attribute_zero(value_type: TypeRef):
         return 0
     if kind is ValueType.F32:
         return 0.0
-    if kind is ValueType.TEXTURE2D:
-        return {"guid": "", "path_hint": ""}
     width = {
         ValueType.VEC2: 2,
         ValueType.VEC3: 3,
@@ -982,6 +1023,20 @@ class ParticleEmitterAsset:
             )
         if len({interface.stable_id for interface in data_interfaces}) != len(data_interfaces):
             raise ParticleGraphSchemaError("particle data-interface stable ids must be unique")
+        if self.settings.shape.kind is EmitterShapeKind.SDF:
+            interface = next(
+                (
+                    item
+                    for item in data_interfaces
+                    if item.stable_id == self.settings.shape.sdf_interface
+                ),
+                None,
+            )
+            if not isinstance(interface, SdfVolume):
+                raise ParticleGraphSchemaError(
+                    "SDF emitter shape must reference a Signed Distance Volume "
+                    "Data Interface owned by the same emitter"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         standard_defaults = {
@@ -1352,6 +1407,7 @@ __all__ = [
     "EmitterShape",
     "EmitterShapeKind",
     "MeshEmissionMode",
+    "SdfEmissionMode",
     "PARTICLE_GRAPH_SCHEMA",
     "ParticleAttribute",
     "ParticleBurst",

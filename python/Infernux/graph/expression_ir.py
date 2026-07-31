@@ -216,6 +216,8 @@ class ExpressionCompiler:
                         ]
                     ) from exc
                 immediates.append(("component", component))
+            elif opcode == "sample_mesh":
+                immediates.append(("output", port_id))
             if opcode == "constant":
                 prop = definition.properties[0]
                 literal = node.properties.get(prop.id, prop.default)
@@ -394,7 +396,7 @@ class ExpressionCompiler:
                 return ""
             except (TypeError, ValueError) as exc:
                 return str(exc)
-        if kind in {ValueType.ASSET_REF, ValueType.TEXTURE2D}:
+        if kind in {ValueType.ASSET_REF, ValueType.TEXTURE2D, ValueType.MESH}:
             try:
                 AssetReference.from_dict(value)
                 return ""

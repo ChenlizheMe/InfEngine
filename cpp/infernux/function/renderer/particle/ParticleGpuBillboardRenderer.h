@@ -2,17 +2,16 @@
 
 #include "ParticleGpuOutputRenderer.h"
 #include "ParticleGpuRuntime.h"
+#include "ParticleGpuSurfaceBinding.h"
 #include "ParticleOutputSemantics.h"
 #include <function/renderer/rhi/RhiTexture.h>
 
 #include <core/types/ShaderProgramArtifact.h>
 #include <function/renderer/MaterialPassPipeline.h>
 
-#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <string>
 #include <vector>
 
 namespace infernux
@@ -24,39 +23,9 @@ class GpuRetirementQueue;
 namespace infernux::particle
 {
 
-struct GpuBillboardMaterialState
-{
-    int32_t renderQueue = 3000;
-    bool blendEnabled = true;
-    bool depthTestEnabled = true;
-    bool depthWriteEnabled = false;
-    bool premultipliedAlpha = false;
-};
-
-enum class GpuBillboardTextureStatus : uint8_t
-{
-    Ready,
-    Pending,
-    Failed,
-};
-
-struct GpuBillboardTextureLease
-{
-    GpuBillboardTextureStatus status = GpuBillboardTextureStatus::Failed;
-    rhi::TextureViewHandle texture;
-    rhi::SamplerHandle sampler;
-    std::shared_ptr<rhi::TextureGpuViewSlot> gpuSlot;
-    std::shared_ptr<const rhi::TextureGpuView> gpuView;
-};
-
-using GpuBillboardTextureResolver =
-    std::function<GpuBillboardTextureLease(const std::string &textureGuid, const std::string &bindingName)>;
-
 struct GpuBillboardRendererDesc
 {
     ShaderBytecode vertexShader;
-    ShaderBytecode fragmentShader;
-    ShaderBytecode forwardPlusFragmentShader;
     ShaderBytecode pickingFragmentShader;
     ShaderBytecode motionVertexShader;
     ShaderBytecode motionFragmentShader;
@@ -112,7 +81,7 @@ class ParticleGpuBillboardRenderer : public ParticleGpuOutputRenderer
                                   const MaterialPassPipelineDescriptor &pass, rhi::BufferHandle indirectArguments,
                                   const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices = {},
                                   rhi::TextureViewHandle sceneDepth = {}, bool sceneDepthIsDepth = true,
-                                  const GpuParticleForwardPlusBindings &forwardPlus = {}) override;
+                                  const GpuParticlePerViewBindings &perView = {}) override;
     [[nodiscard]] bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
                                          rhi::RenderTargetLayoutHandle renderTargetLayout,
                                          const MaterialPassPipelineDescriptor &pass,
@@ -124,85 +93,46 @@ class ParticleGpuBillboardRenderer : public ParticleGpuOutputRenderer
     {
         rhi::RenderTargetLayoutHandle renderTargetLayout;
         MaterialPassPipelineDescriptor pass;
-        rhi::BindingLayoutHandle forwardPlusLayout;
+        rhi::BindingLayoutHandle perViewLayout;
         uint8_t materialStateSignature = 0;
         rhi::GraphicsPipelineHandle pipeline;
     };
 
     [[nodiscard]] rhi::GraphicsPipelineHandle GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
                                                                   const MaterialPassPipelineDescriptor &pass,
-                                                                  rhi::BindingLayoutHandle forwardPlusLayout = {});
-    struct TextureBindingState
-    {
-        uint32_t binding = 0;
-        rhi::ShaderStage visibility = rhi::ShaderStage::None;
-        std::string name;
-        std::string defaultGuid;
-        std::string requestedGuid;
-        uint64_t requestedVersion = 0;
-        rhi::TextureViewHandle texture;
-        rhi::SamplerHandle sampler;
-        std::shared_ptr<rhi::TextureGpuViewSlot> gpuSlot;
-        std::shared_ptr<const rhi::TextureGpuView> gpuView;
-        bool pending = false;
-        bool fallback = false;
-    };
-
-    [[nodiscard]] bool UsesLinkedProgram() const noexcept;
+                                                                  rhi::BindingLayoutHandle perViewLayout = {});
     [[nodiscard]] GpuBillboardMaterialState ResolveMaterialState() const noexcept;
-    [[nodiscard]] std::array<float, 4> ResolveMaterialTint() const noexcept;
-    [[nodiscard]] float ResolveMaterialFloat(const char *name, float fallback) const noexcept;
-    [[nodiscard]] std::string ResolveMaterialTextureGuid(const TextureBindingState &binding) const;
-    [[nodiscard]] bool RefreshMaterialBuffer(bool force);
-    [[nodiscard]] bool RefreshTextureBindings(bool force);
-    [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(const std::vector<TextureBindingState> &textures,
-                                                       rhi::BufferHandle renderIndices,
-                                                       rhi::TextureViewHandle sceneDepth = {},
-                                                       bool sceneDepthIsDepth = true) const;
-    [[nodiscard]] rhi::BindGroupHandle ResolveBindGroup(rhi::BufferHandle renderIndices,
-                                                        rhi::TextureViewHandle sceneDepth = {},
-                                                        bool sceneDepthIsDepth = true);
-    [[nodiscard]] bool RebuildBindGroup();
     void RetireViewBindGroups();
     void RetireBindGroup(rhi::BindGroupHandle group);
-    void RetireTexture(std::shared_ptr<const rhi::TextureGpuView> gpuView);
+    [[nodiscard]] rhi::BindGroupHandle CreateGeometryGroup(rhi::BufferHandle renderIndices) const;
+    [[nodiscard]] rhi::BindGroupHandle ResolveGeometryGroup(rhi::BufferHandle renderIndices);
 
     rhi::Device *m_device = nullptr;
-    std::shared_ptr<InxMaterial> m_material;
     std::shared_ptr<const ShaderProgramArtifact> m_shaderProgram;
-    GpuBillboardMaterialState m_fallbackMaterial{};
+    GpuRetirementQueue *m_deletionQueue = nullptr;
     ParticleOutputSemantics m_semantics{};
     uint32_t m_flipbookColumns = 1;
     uint32_t m_flipbookRows = 1;
-    GpuBillboardTextureResolver m_textureResolver;
-    GpuRetirementQueue *m_deletionQueue = nullptr;
     rhi::BufferHandle m_instances;
     rhi::BufferHandle m_renderIndices;
     rhi::ShaderModuleHandle m_vertexShader;
     rhi::ShaderModuleHandle m_fragmentShader;
-    rhi::ShaderModuleHandle m_forwardPlusVertexShader;
     rhi::ShaderModuleHandle m_forwardPlusFragmentShader;
     rhi::ShaderModuleHandle m_pickingVertexShader;
     rhi::ShaderModuleHandle m_pickingFragmentShader;
     rhi::ShaderModuleHandle m_motionVertexShader;
     rhi::ShaderModuleHandle m_motionFragmentShader;
-    rhi::BindingLayoutHandle m_layout;
-    rhi::BindGroupHandle m_group;
+    rhi::BindingLayoutHandle m_geometryLayout;
+    rhi::BindGroupHandle m_geometryGroup;
+    rhi::BindingLayoutHandle m_emptyLayout;
+    rhi::BindGroupHandle m_emptyGroup;
     struct ViewBindGroup
     {
         rhi::BufferHandle renderIndices;
-        rhi::TextureViewHandle sceneDepth;
-        bool sceneDepthIsDepth = true;
         rhi::BindGroupHandle group;
     };
     std::vector<ViewBindGroup> m_viewGroups;
-    rhi::BufferHandle m_materialBuffer;
-    std::vector<TextureBindingState> m_textures;
-    GpuBillboardTextureLease m_sceneDepthFallback;
-    uint64_t m_materialVersion = 0;
-    bool m_materialVersionInitialized = false;
-    bool m_usesTexture = false;
-    bool m_supportsSceneDepth = false;
+    ParticleGpuSurfaceBinding m_surface;
     std::vector<PipelineEntry> m_pipelines;
 };
 

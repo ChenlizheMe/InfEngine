@@ -29,6 +29,7 @@ from Infernux.graph.registry import (
     COMMON_NODE_REGISTRY,
     NodeDef,
     NodeDefinitionRegistry,
+    PortDimensionPolicy,
     PortDirection,
     PortKind,
 )
@@ -51,6 +52,22 @@ _PIN_COLORS = {
     "exec": (0.76, 0.76, 0.78, 1.0),
     "event": (0.84, 0.44, 0.40, 1.0),
 }
+
+
+def _value_port_accepts(source_type: TypeRef, target_type: TypeRef, target_port) -> bool:
+    """Mirror ExpressionCompiler numeric port coercion during authoring."""
+    policy = target_port.dimension_policy
+    if policy is PortDimensionPolicy.EXACT:
+        return PORTABLE_TYPE_SYSTEM.can_connect(source_type, target_type)
+    try:
+        if policy is PortDimensionPolicy.FIXED:
+            PORTABLE_TYPE_SYSTEM.fixed_numeric_target(source_type, target_type)
+            return True
+        if policy is PortDimensionPolicy.PROMOTE:
+            return PORTABLE_TYPE_SYSTEM.can_resize_numeric(source_type, target_type)
+    except TypeError:
+        return False
+    return False
 
 _PARTICLE_COLLISION_ROOT_TYPES = frozenset(
     {
@@ -354,7 +371,7 @@ class GraphDocumentAuthoringModel(NodeGraph):
             source_port.kind is PortKind.VALUE
             and source_port.value_type is not None
             and target_port.value_type is not None
-            and not PORTABLE_TYPE_SYSTEM.can_connect(source_port.value_type, target_port.value_type)
+            and not _value_port_accepts(source_port.value_type, target_port.value_type, target_port)
         ):
             return LinkValidationResult(False, "type_mismatch", "Graph value types do not match")
         return LinkValidationResult(True)
@@ -429,6 +446,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             registry = definition_set.registry
         self._definitions = registry
         self._definition_set = definition_set
+        self._emitter_id = str(emitter.stable_id)
         self._collision_enabled = bool(emitter.settings.collision_enabled)
         self._base_attribute_catalog = {
             attribute.stable_id: attribute
@@ -672,6 +690,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             PARTICLE_EVENT_ACTIVE_TYPE_ID,
             PARTICLE_EVENT_TRIGGER_TYPE_ID,
             particle_event_node_definition,
+            particle_output_node_definition,
         )
 
         if node.type_id in {
@@ -684,6 +703,12 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 self._definition_set,
                 node.type_id,
                 str(node.data.get("event", "")),
+            )
+        if node.type_id.startswith("particle.output.") and self._definition_set is not None:
+            return particle_output_node_definition(
+                self._definition_set,
+                self._emitter_id,
+                node,
             )
         return self._definitions.get(node.type_id)
 
@@ -759,6 +784,28 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 self._dynamic_type_cache[cache_key] = cached
             return with_lifecycle_state(cached)
 
+        if node.type_id.startswith("particle.output."):
+            shader_id = str(node.data.get("shader", "Particle Unlit"))
+            cache_key = f"particle-output:{node.uid}:{shader_id}"
+            cached = self._dynamic_type_cache.get(cache_key)
+            if cached is None:
+                definition = self.definition_for_node(node)
+                if definition is None:
+                    return None
+                cached = _canvas_definition(
+                    definition,
+                    property_enum_entries={
+                        "shader": (
+                            self._definition_set.fragment_shader_choices
+                            if self._definition_set is not None
+                            else ()
+                        )
+                    },
+                )
+                cached.type_id = node.type_id
+                self._dynamic_type_cache[cache_key] = cached
+            return with_lifecycle_state(cached)
+
         base = super().get_node_type(node)
         if base is None:
             return base
@@ -813,10 +860,10 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             return with_lifecycle_state(resolved)
         if node.type_id not in {
             "particle.attribute.get",
-            "particle.parameter.get",
+            "particle.parameter",
         }:
             return with_lifecycle_state(base)
-        is_parameter = node.type_id == "particle.parameter.get"
+        is_parameter = node.type_id == "particle.parameter"
         property_id = "parameter" if is_parameter else "attribute"
         selected_id = str(
             node.data.get(property_id, "" if is_parameter else "builtin.position")
@@ -946,7 +993,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                     "value": 0.0,
                 }
             )
-        if type_id == "particle.parameter.get" and self._parameter_catalog:
+        if type_id == "particle.parameter" and self._parameter_catalog:
             properties["parameter"] = next(iter(self._parameter_catalog))
         properties.update(data)
         node = super().add_node(type_id, x, y, uid=canvas_uid, **properties)
@@ -1055,19 +1102,18 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 ValueType.COLOR,
                 ValueType.MAT3,
                 ValueType.MAT4,
-                ValueType.TEXTURE2D,
             }:
                 return LinkValidationResult(
                     False,
                     "unsupported_cache_type",
-                    "Attribute Cache requires a GPU-storable value",
+                    "Attribute Cache requires per-particle numeric or boolean data; resources must remain graph parameters",
                 )
             target_type = source_type
         if (
             source_port.kind is PortKind.VALUE
             and source_type is not None
             and target_type is not None
-            and not PORTABLE_TYPE_SYSTEM.can_connect(source_type, target_type)
+            and not _value_port_accepts(source_type, target_type, target_port)
         ):
             return LinkValidationResult(False, "type_mismatch", "Graph value types do not match")
         return LinkValidationResult(True)
@@ -1087,8 +1133,6 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         target.data["value_type"] = value_type.value_type.value
         target.data["value_space"] = value_type.space.value
         target.data["value"] = copy.deepcopy(particle_attribute_zero(value_type))
-        if value_type.value_type is ValueType.TEXTURE2D:
-            target.data["composition"] = "set"
         self._mark_attribute_catalog_dirty()
 
     def add_link(self, src_node, src_pin, dst_node, dst_pin, uid=None, **data):
@@ -1194,7 +1238,12 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
 
 
 def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
-    """Return the common/particle node palette allowed in one particle stage."""
+    """Return the node palette for one lifecycle flow.
+
+    Ordinary nodes describe calculations or executable behavior and are valid
+    in every lifecycle. Only structural roots, event entry points, and render
+    outputs retain lifecycle ownership.
+    """
 
     stage = str(domain).removeprefix("particle.")
 
@@ -1202,44 +1251,13 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
         type_id = definition.type_id
         if type_id.startswith("common."):
             return True
+        if type_id.startswith("particle.root."):
+            return type_id == f"particle.root.{stage}"
         if type_id == "particle.event.active":
             return stage == "event"
-        if type_id == "particle.event.trigger":
-            return stage in {
-                "init", "update", "collision_enter", "collision_stay",
-                "collision_exit", "event", "rendering",
-            }
-        if type_id == "particle.context.delta_time":
-            return stage in {
-                "update",
-                "collision_enter",
-                "collision_stay",
-                "collision_exit",
-            }
-        if stage in {
-            "init",
-            "update",
-            "collision_enter",
-            "collision_stay",
-                "collision_exit",
-                "event",
-                "rendering",
-        } and type_id.startswith(
-            (
-                "particle.attribute.",
-                "particle.control.",
-                "particle.context.",
-                "particle.emitter.",
-                "particle.parameter.",
-                "particle.vector_field.",
-            )
-        ):
-            return True
-        if type_id == f"particle.root.{stage}":
-            return True
-        if stage == "rendering":
-            return type_id.startswith("particle.output.")
-        return type_id.startswith(f"particle.{stage}.")
+        if type_id.startswith("particle.output."):
+            return stage == "rendering"
+        return type_id.startswith("particle.")
 
     return _accept
 

@@ -296,7 +296,16 @@ class VkDeviceContext
     [[nodiscard]] VkFormat FindDepthFormat() const;
 
     /**
+     * @brief Find a depth format suitable for a render target that is also sampled.
+     * @return Best
+     * available depth format with attachment and sampled-image support,
+     *         or VK_FORMAT_UNDEFINED
+     */
+    [[nodiscard]] VkFormat FindSampledDepthFormat() const;
+
+    /**
      * @brief Find a depth format suitable for shadow maps (must support both attachment and sampling).
+     *
      * @return Best available depth format with sampled image support, or VK_FORMAT_UNDEFINED
      */
     [[nodiscard]] VkFormat FindShadowMapDepthFormat() const;

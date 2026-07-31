@@ -157,6 +157,11 @@ class InxMesh
         return m_boundsMax;
     }
 
+    [[nodiscard]] uint64_t GetGeneration() const noexcept
+    {
+        return m_generation;
+    }
+
     // ── Material slot names (extracted from model file) ──────────────────
 
     [[nodiscard]] const std::vector<std::string> &GetMaterialSlotNames() const
@@ -243,6 +248,7 @@ class InxMesh
     std::vector<MaterialSlotData> m_materialSlotData;
     std::vector<std::string> m_nodeNames; ///< Node names indexed by nodeGroup
     std::shared_ptr<const InxSkinnedMesh> m_skinnedData;
+    uint64_t m_generation = 0;
 
     /// Recompute m_boundsMin/Max from vertex positions.
     void RecalculateBounds();

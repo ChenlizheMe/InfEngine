@@ -10,10 +10,14 @@ from Infernux.graph.types import AssetReference, TypeRef
 
 from .asset import EmitterSettings
 from .data_interface import (
-    ParticleDataInterface,
-    particle_data_interface_from_dict,
+    ParticleRuntimeResource,
+    particle_runtime_resource_from_dict,
 )
-from .hir import ParticleOutputDescriptor, ParticleProgramHIR
+from .hir import (
+    ParticleOutputDescriptor,
+    ParticleOutputShaderProperty,
+    ParticleProgramHIR,
+)
 
 
 class ParticleRuntimeMetadataError(ValueError):
@@ -26,7 +30,7 @@ class ParticleEmitterRuntimeMetadata:
     name: str
     settings: EmitterSettings
     outputs: tuple[ParticleOutputDescriptor, ...]
-    data_interfaces: tuple[ParticleDataInterface, ...] = ()
+    data_interfaces: tuple[ParticleRuntimeResource, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -139,7 +143,7 @@ def decode_particle_runtime_metadata(
                 for output_index, value in enumerate(render_plan)
             )
             data_interfaces = tuple(
-                particle_data_interface_from_dict(
+                particle_runtime_resource_from_dict(
                     value, f"{location}.data_interfaces[{interface_index}]"
                 )
                 for interface_index, value in enumerate(data_interfaces_value)
@@ -222,7 +226,9 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         "output_id",
         "output_type",
         "mesh",
-        "material",
+        "mesh_parameter",
+        "shader",
+        "shader_properties",
         "receive_scene_lighting",
         "receive_shadows",
         "cast_shadows",
@@ -242,6 +248,10 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         or not value["output_id"]
         or type(value["output_type"]) is not str
         or not value["output_type"]
+        or type(value["mesh_parameter"]) is not str
+        or type(value["shader"]) is not str
+        or not value["shader"]
+        or type(value["shader_properties"]) is not list
         or type(value["receive_scene_lighting"]) is not bool
         or type(value["receive_shadows"]) is not bool
         or type(value["cast_shadows"]) is not bool
@@ -270,11 +280,45 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         )
     ):
         raise ParticleRuntimeMetadataError(f"{location} fields are invalid")
+    shader_properties = []
+    for index, item in enumerate(value["shader_properties"]):
+        if type(item) is not dict or set(item) != {
+            "name",
+            "type",
+            "default",
+            "parameter_id",
+        }:
+            raise ParticleRuntimeMetadataError(
+                f"{location}.shader_properties[{index}] is invalid"
+            )
+        try:
+            value_type = TypeRef.from_dict(item["type"])
+        except (TypeError, ValueError) as exc:
+            raise ParticleRuntimeMetadataError(
+                f"{location}.shader_properties[{index}].type is invalid"
+            ) from exc
+        if (
+            type(item["name"]) is not str
+            or not item["name"]
+            or type(item["parameter_id"]) is not str
+        ):
+            raise ParticleRuntimeMetadataError(
+                f"{location}.shader_properties[{index}] fields are invalid"
+            )
+        shader_properties.append(
+            ParticleOutputShaderProperty(
+                item["name"],
+                value_type,
+                item["default"],
+                item["parameter_id"],
+            )
+        )
     return ParticleOutputDescriptor(
         value["output_id"],
         value["output_type"],
         AssetReference.from_dict(value["mesh"]),
-        AssetReference.from_dict(value["material"]),
+        value["shader"],
+        tuple(shader_properties),
         value["receive_scene_lighting"],
         value["receive_shadows"],
         value["cast_shadows"],
@@ -287,6 +331,7 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         value["flipbook_rows"],
         value["sprite_alignment"],
         tuple(float(item) for item in value["alignment_axis"]),
+        value["mesh_parameter"],
     )
 
 

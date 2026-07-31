@@ -242,6 +242,28 @@ def test_scalar_batch_descriptor_keeps_its_semantic_identity():
     assert desc["sid"] == "inspector.object.7.component.11.speed"
 
 
+def test_scalar_batch_descriptor_preserves_full_int32_range_as_integers():
+    from Infernux.components.serialized_field import FieldType
+    from Infernux.engine.ui.inspector_utils import build_scalar_desc
+
+    metadata = SimpleNamespace(
+        field_type=FieldType.INT,
+        range=(0, 2147483647),
+        drag_speed=None,
+        slider=True,
+        multiline=False,
+        tooltip="",
+    )
+
+    desc = build_scalar_desc("##seed", "Random Seed", metadata, 0)
+
+    assert desc is not None
+    assert type(desc["mn"]) is int
+    assert type(desc["mx"]) is int
+    assert desc["mn"] == 0
+    assert desc["mx"] == 2147483647
+
+
 def test_sprite_renderer_exposes_native_shadow_fields_to_inspector():
     from Infernux.components.builtin.sprite_renderer import SpriteRenderer
     from Infernux.engine.ui.inspector_components import _collect_cpp_properties

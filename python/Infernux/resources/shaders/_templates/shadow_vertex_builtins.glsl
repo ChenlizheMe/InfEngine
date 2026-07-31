@@ -28,7 +28,7 @@ struct SkinInstanceData {
     uint boneOffset;
     uint boneCount;
     uint flags;
-    uint _pad;
+    uint previousBoneOffset;
 };
 
 layout(std430, set = 1, binding = 2) readonly buffer SkinInstanceBuffer {

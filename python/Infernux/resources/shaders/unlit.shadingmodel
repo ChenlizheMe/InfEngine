@@ -1,36 +1,20 @@
 ShadingModelInfo {
     Name "Unlit"
-    Entry Forward evaluateForward
-    Entry GBuffer evaluateGBuffer
 }
 
 // ============================================================================
 // unlit.shadingmodel — Unlit Shading Model (no lighting evaluation)
 //
-// Simply outputs albedo + emission. No LightingUBO required.
-// Custom ShadingModel Entry: gbuffer is kept because unlit uses flat normals and zero
-// metallic — different from the engine default PBR-oriented G-Buffer packing.
-// Shadow pass is fully automatic (injected by the engine).
+// Simply outputs albedo + emission. It has no Lighting requirement. The same
+// shading() function is selected by every supported render path.
 //
 // Referenced by surface shaders via ShaderInfo ShadingModel: Unlit
 // ============================================================================
 
 
 // ============================================================================
-// ShadingModel Entry: forward — Direct color output (no lighting)
+// Pipeline-agnostic direct color output (no lighting)
 // ============================================================================
-void evaluateForward(in SurfaceData s, out vec4 color) {
+void shading(in SurfaceData s, out vec4 color) {
     color = vec4(s.albedo + s.emission, s.alpha);
-}
-
-// ============================================================================
-// ShadingModel Entry: gbuffer — Deferred G-Buffer packing (flat normal, no material)
-// ============================================================================
-void evaluateGBuffer(in SurfaceData s, out vec4 gbuf0, out vec4 gbuf1, out vec4 gbuf2, out vec4 gbuf3,
-                     out uvec2 gbuf4) {
-    gbuf0 = vec4(s.albedo, s.alpha);
-    gbuf1 = vec4(normalize(s.normalWS) * 0.5 + 0.5, 0.0);
-    gbuf2 = vec4(0.0, 1.0, 0.0, 1.0);
-    gbuf3 = vec4(s.emission, 1.0);
-    gbuf4 = uvec2(_inx_ObjectLayerMask, 0u);
 }

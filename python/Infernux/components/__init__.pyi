@@ -73,6 +73,7 @@ from .spirit_animator import SpiritAnimator as SpiritAnimator
 from .skeletal_animator import SkeletalAnimator as SkeletalAnimator
 from .timeline_action import TimelineAction as TimelineAction
 from .particle_system import ParticleBoundsMode as ParticleBoundsMode, ParticleOffscreenPolicy as ParticleOffscreenPolicy, ParticleSystem as ParticleSystem
+from .runtime_acceptance_runner import RuntimeAcceptanceRunner as RuntimeAcceptanceRunner
 from .registry import (
     get_type as get_type,
     get_all_types as get_all_types,
@@ -172,4 +173,5 @@ __all__ = [
     "ParticleSystem",
     "ParticleBoundsMode",
     "ParticleOffscreenPolicy",
+    "RuntimeAcceptanceRunner",
 ]

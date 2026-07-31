@@ -20,6 +20,7 @@
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/scene/Light.h>
 #include <function/scene/LightingData.h>
 
 #include <algorithm>
@@ -278,6 +279,27 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     for (auto &b : bindings)
         m_vkCore->UpdateMaterialUBO(*b.ownedMaterial);
 
+    // Texture synchronization may publish a copy-on-write material descriptor
+    // and retire the handle captured above. Re-read every binding after the
+    // update so this command buffer never skips all geometry on stale handles.
+    bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
+                                  [&](SubmeshBinding &binding) {
+                                      MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(
+                                          binding.ownedMaterial->GetMaterialKey());
+                                      if (!rd || !rd->isValid || rd->pipeline == VK_NULL_HANDLE ||
+                                          rd->pipelineLayout == VK_NULL_HANDLE || rd->descriptorSet == VK_NULL_HANDLE ||
+                                          !rd->shaderProgram)
+                                          return true;
+                                      binding.pipeline = rd->pipeline;
+                                      binding.pipelineLayout = rd->pipelineLayout;
+                                      binding.materialDescSet = rd->descriptorSet;
+                                      binding.program = rd->shaderProgram.get();
+                                      return false;
+                                  }),
+                   bindings.end());
+    if (bindings.empty())
+        return nullptr;
+
     // ── Scene UBO ────────────────────────────────────────────────────
     // Use identity model matrix; the mesh vertices are in local space
     // and the camera is positioned to look at the mesh bounds.
@@ -302,9 +324,13 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
 
     lightingUBO.directionalLights[0].direction = glm::vec4(glm::normalize(glm::vec3(-0.7f, -1.0f, -0.5f)), 0.0f);
     lightingUBO.directionalLights[0].color = glm::vec4(1.8f, 1.71f, 1.62f, 1.8f);
+    lightingUBO.directionalLights[0].metadata =
+        glm::uvec4(~0u, static_cast<uint32_t>(LightInfluenceDomain::Geometry), 0u, 0u);
 
     lightingUBO.directionalLights[1].direction = glm::vec4(glm::normalize(glm::vec3(0.5f, 0.3f, -0.7f)), 0.0f);
     lightingUBO.directionalLights[1].color = glm::vec4(0.36f, 0.42f, 0.51f, 0.6f);
+    lightingUBO.directionalLights[1].metadata =
+        glm::uvec4(~0u, static_cast<uint32_t>(LightInfluenceDomain::Geometry), 0u, 0u);
 
     // ── Engine globals UBO ───────────────────────────────────────────
     EngineGlobalsUBO globalsUBO{};
@@ -418,6 +444,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     pushData.normalMat = glm::transpose(glm::inverse(modelMat));
 
     // ── Draw each submesh ────────────────────────────────────────────
+    bool anyDrawn = false;
     for (auto &b : bindings) {
         if (!m_vkCore->GetMaterialPipelineManager().IsDescriptorSetLive(b.materialDescSet))
             continue;
@@ -440,6 +467,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
         vkCmdPushConstants(cmd, b.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushData);
 
         vkCmdDrawIndexed(cmd, b.submesh->indexCount, 1, b.submesh->indexStart, 0, 0);
+        anyDrawn = true;
     }
 
     vkCmdEndRenderPass(cmd);
@@ -499,7 +527,11 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
             indexLease.reset();
             vertexLease.reset();
         });
-    return m_activeReadback;
+    // A descriptor can still be retired between binding preparation and
+    // command recording. Finish the submission so command-buffer and resource
+    // ownership remain valid, but let the caller retry instead of publishing
+    // the transparent clear as a successful thumbnail.
+    return anyDrawn ? m_activeReadback : nullptr;
 }
 
 bool GPUMeshPreview::TryCompleteRenderToPixels(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
@@ -962,8 +994,9 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         std::shared_ptr<InxMaterial> previewMat = cloneMaterials ? srcMat->Clone() : srcMat;
         if (!previewMat)
             continue;
-        if (cloneMaterials)
+        if (cloneMaterials) {
             previewMat->ClearAllPassPipelines();
+        }
         bool pipelineReady = m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
                                                                       previewMat->GetFragShaderName(), false);
         if (!pipelineReady && srcMat != defaultMat && defaultMat) {
@@ -998,6 +1031,24 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     for (auto &b : bindings)
         m_vkCore->UpdateMaterialUBO(*b.ownedMaterial);
 
+    bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
+                                  [&](SubmeshBinding &binding) {
+                                      MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(
+                                          binding.ownedMaterial->GetMaterialKey());
+                                      if (!rd || !rd->isValid || rd->pipeline == VK_NULL_HANDLE ||
+                                          rd->pipelineLayout == VK_NULL_HANDLE || rd->descriptorSet == VK_NULL_HANDLE ||
+                                          !rd->shaderProgram)
+                                          return true;
+                                      binding.pipeline = rd->pipeline;
+                                      binding.pipelineLayout = rd->pipelineLayout;
+                                      binding.materialDescSet = rd->descriptorSet;
+                                      binding.program = rd->shaderProgram.get();
+                                      return false;
+                                  }),
+                   bindings.end());
+    if (bindings.empty())
+        return 0;
+
     const glm::mat4 modelMat = glm::mat4(1.0f);
     UniformBufferObject sceneUBO{};
     sceneUBO.model = modelMat;
@@ -1016,8 +1067,12 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     lightingUBO.cameraPos = glm::vec4(cameraPos, 1.0f);
     lightingUBO.directionalLights[0].direction = glm::vec4(glm::normalize(glm::vec3(-0.7f, -1.0f, -0.5f)), 0.0f);
     lightingUBO.directionalLights[0].color = glm::vec4(1.8f, 1.71f, 1.62f, 1.8f);
+    lightingUBO.directionalLights[0].metadata =
+        glm::uvec4(~0u, static_cast<uint32_t>(LightInfluenceDomain::Geometry), 0u, 0u);
     lightingUBO.directionalLights[1].direction = glm::vec4(glm::normalize(glm::vec3(0.5f, 0.3f, -0.7f)), 0.0f);
     lightingUBO.directionalLights[1].color = glm::vec4(0.36f, 0.42f, 0.51f, 0.6f);
+    lightingUBO.directionalLights[1].metadata =
+        glm::uvec4(~0u, static_cast<uint32_t>(LightInfluenceDomain::Geometry), 0u, 0u);
 
     EngineGlobalsUBO globalsUBO{};
     memset(&globalsUBO, 0, sizeof(globalsUBO));

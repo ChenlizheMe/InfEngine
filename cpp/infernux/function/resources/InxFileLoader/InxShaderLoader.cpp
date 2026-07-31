@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <core/log/InxLog.h>
 #include <filesystem>
 #include <fstream>
@@ -29,10 +30,23 @@ ShaderProgramStageMask ToRuntimeStageMask(ShaderStageVisibility visibility) noex
     return result;
 }
 
+bool EqualsInsensitive(std::string_view lhs, std::string_view rhs)
+{
+    return lhs.size() == rhs.size() && std::equal(lhs.begin(), lhs.end(), rhs.begin(), [](char left, char right) {
+               return std::tolower(static_cast<unsigned char>(left)) == std::tolower(static_cast<unsigned char>(right));
+           });
+}
+
 bool DescriptorHasCapability(const ShaderDescriptor &descriptor, std::string_view capability)
 {
     return std::find(descriptor.capabilities.begin(), descriptor.capabilities.end(), capability) !=
            descriptor.capabilities.end();
+}
+
+bool DescriptorMarksUnsupported(const ShaderDescriptor &descriptor, std::string_view feature)
+{
+    return std::any_of(descriptor.unsupported.begin(), descriptor.unsupported.end(),
+                       [&](const std::string &value) { return EqualsInsensitive(value, feature); });
 }
 
 void CopyRuntimeInterface(const ShaderProgramInterfaceArtifact &source, ShaderProgramArtifact &target)
@@ -213,8 +227,11 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
     if (target == ShaderCompileTarget::Shadow && stage == ShaderStageVisibility::Fragment)
         return;
 
-    const uint32_t expectedSet =
-        target == ShaderCompileTarget::Shadow ? 2u : GlslStageInterfaceEmitter::MaterialDescriptorSet;
+    const uint32_t expectedSet = target == ShaderCompileTarget::Shadow
+                                     ? 2u
+                                     : (artifact.domain == ShaderProgramDomain::ParticleSprite
+                                            ? GlslStageInterfaceEmitter::ParticleSurfaceDescriptorSet
+                                            : GlslStageInterfaceEmitter::MaterialDescriptorSet);
     const uint32_t expectedTextureBinding =
         target == ShaderCompileTarget::Shadow ? 0u : GlslStageInterfaceEmitter::FirstTextureBinding;
     const bool stageUsesMaterialBuffer =
@@ -458,7 +475,9 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
     metaData.AddMetadata("shader_inputs", serializeVaryings(desc.inputs));
     metaData.AddMetadata("shader_outputs", serializeVaryings(desc.outputs));
     metaData.AddMetadata("shader_capabilities", nlohmann::json(desc.capabilities).dump());
+    metaData.AddMetadata("shader_unsupported", nlohmann::json(desc.unsupported).dump());
     metaData.AddMetadata("shader_imports", nlohmann::json(desc.imports).dump());
+    metaData.AddMetadata("shader_requirements", nlohmann::json(desc.requirements).dump());
     nlohmann::json entries = nlohmann::json::object();
     for (const auto &entry : desc.entries)
         entries[entry.role] = entry.function;
@@ -590,7 +609,9 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
         copyVaryings(shaderInfo.inputs, desc.inputs);
         copyVaryings(shaderInfo.outputs, desc.outputs);
         desc.imports = shaderInfo.imports;
+        desc.requirements = shaderInfo.requirements;
         desc.capabilities = shaderInfo.capabilities;
+        desc.unsupported = shaderInfo.unsupported;
         desc.entries = shaderInfo.entries;
         desc.resources = shaderInfo.resources;
         desc.pushConstants = shaderInfo.pushConstants;
@@ -612,6 +633,7 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
     desc.hasSurfaceFunc = entryPoints.surface;
     desc.hasMainFunc = entryPoints.main;
     desc.hasVertexFunc = entryPoints.vertex;
+    desc.hasShadingFunc = entryPoints.shading;
 
     // Record the GLSL version and reject old annotation statements without
     // interpreting them. Comments containing an at-sign remain ordinary GLSL.
@@ -633,16 +655,18 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
                                   ":1: legacy @ shader syntax was removed; use ShaderInfo fields");
     }
 
-    // Structured shading models use explicit Entry declarations. Each target
-    // receives the shared helper code, with its selected function renamed to
-    // the canonical evaluate() entry expected by generated surface mains.
+    // A shading model is deliberately pipeline-agnostic. It exposes one fixed
+    // shading() function; Forward, Forward+, Deferred, and custom pipelines
+    // receive generated adapters around that same source.
     if (desc.isShadingModel) {
-        for (const auto &entry : desc.entries) {
-            ShaderDescriptor::TargetBlock block;
-            block.name = toLower(entry.role);
-            block.code = RewriteShaderEntryPoint(shaderCode, "void", entry.function, "evaluate");
-            desc.targets.push_back(std::move(block));
-        }
+        if (!desc.entries.empty())
+            desc.errors.push_back(filePath +
+                                  ": ShadingModelInfo Entry declarations were removed; define the fixed shading() "
+                                  "function once");
+        if (!desc.hasShadingFunc)
+            desc.errors.push_back(filePath + ": a shading model must define void shading(...)");
+        if (desc.hasShadingFunc)
+            desc.targets.push_back({"shading", shaderCode});
     }
 
     return desc;
@@ -731,13 +755,87 @@ InxShaderLoader::LoadShadingModel(const std::string &modelName,
     return desc;
 }
 
+uint32_t InxShaderLoader::ShadingModelId(std::string_view name) noexcept
+{
+    // FNV-1a keeps authored model IDs stable across processes, platforms, and
+    // asset import order. Zero is reserved for an invalid GBuffer record.
+    uint32_t hash = 2166136261u;
+    for (const unsigned char character : name) {
+        hash ^= character;
+        hash *= 16777619u;
+    }
+    return hash == 0u ? 1u : hash;
+}
+
+std::string
+InxShaderLoader::BuildDeferredShadingRegistry(const std::unordered_map<std::string, std::string> &shaderIdMap,
+                                              std::vector<ShaderDescriptor> &models) const
+{
+    std::vector<std::pair<std::string, std::string>> authoredModels;
+    for (const auto &[key, path] : shaderIdMap) {
+        constexpr std::string_view prefix = "shadingmodel/";
+        if (key.size() >= prefix.size() && key.compare(0, prefix.size(), prefix) == 0)
+            authoredModels.emplace_back(key.substr(prefix.size()), path);
+    }
+    std::sort(authoredModels.begin(), authoredModels.end());
+
+    std::ostringstream functions;
+    std::ostringstream dispatch;
+    std::unordered_map<uint32_t, std::string> assignedIds;
+    dispatch << "\nvoid inxDispatchShading(uint modelId, out vec4 color) {\n"
+                "    switch (modelId) {\n";
+
+    for (const auto &[name, path] : authoredModels) {
+        (void)name;
+        std::ifstream file = OpenInputFile(path);
+        if (!file.is_open())
+            continue;
+        std::ostringstream stream;
+        stream << file.rdbuf();
+        ShaderDescriptor model = ParseShaderSource(stream.str(), path);
+        if (!model.errors.empty() || !model.hasShadingFunc || DescriptorMarksUnsupported(model, "Deferred"))
+            continue;
+
+        const uint32_t modelId = ShadingModelId(model.shaderId);
+        if (const auto existing = assignedIds.find(modelId); existing != assignedIds.end()) {
+            INXLOG_ERROR("Deferred shading-model ID collision between '", existing->second, "' and '", model.shaderId,
+                         "'");
+            continue;
+        }
+        assignedIds.emplace(modelId, model.shaderId);
+        models.push_back(model);
+
+        const auto *sourceBlock = model.FindTarget("shading");
+        if (!sourceBlock)
+            continue;
+        const std::string functionName = "_inx_shading_" + std::to_string(modelId);
+        std::string modelSource = RewriteShaderEntryPoint(sourceBlock->code, "void", "shading", functionName);
+        std::istringstream lines(modelSource);
+        std::string line;
+        functions << "\n// Deferred shading model: " << model.shaderId << "\n";
+        while (std::getline(lines, line)) {
+            const size_t first = line.find_first_not_of(" \t");
+            if (first != std::string::npos && line.compare(first, 8, "#version") == 0)
+                continue;
+            functions << line << '\n';
+        }
+        dispatch << "    case " << modelId << "u: " << functionName << "(_inx_DeferredSurfaceData, color); return;\n";
+    }
+
+    dispatch << "    default: color = vec4(1.0, 0.0, 1.0, _inx_DeferredSurfaceData.alpha); return;\n"
+                "    }\n"
+                "}\n";
+    return functions.str() + dispatch.str();
+}
+
 // ============================================================================
 // GenerateGLSL — produce compilable GLSL from descriptor + resolved source
 // ============================================================================
 
 std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const std::string &resolvedSource,
                                           const ShaderDescriptor *shadingModel, ShaderCompileTarget target,
-                                          const ShaderProgramInterfaceArtifact *linkedInterface) const
+                                          const ShaderProgramInterfaceArtifact *linkedInterface,
+                                          const std::string &deferredShadingRegistry) const
 {
     const auto hasCapability = [&](std::string_view capability) { return DescriptorHasCapability(desc, capability); };
     const bool particleSpriteDomain =
@@ -794,13 +892,13 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // texture samplers, MaterialProperties UBO, and user surface() code
     // so it can sample alpha and discard transparent fragments.
     bool shadowNeedsAlphaClip = false;
+    if (target != ShaderCompileTarget::Shadow && target != ShaderCompileTarget::GBuffer) {
+        needsLightingUBO = needsLightingUBO || desc.NeedsLightingUBO();
+        if (shadingModel)
+            needsLightingUBO = needsLightingUBO || shadingModel->NeedsLightingUBO();
+    }
     if (shadingModel) {
-        // Shadow pass never needs LightingUBO — depth only
-        if (target != ShaderCompileTarget::Shadow) {
-            needsLightingUBO = shadingModel->NeedsLightingUBO();
-        }
-        // GBuffer target: always enabled — engine provides default packing
-        // when the shading model has no explicit GBuffer entry.
+        // GBuffer target always uses the engine-owned canonical packing.
         if (target == ShaderCompileTarget::GBuffer) {
             hasGBufferTarget = true;
         }
@@ -830,6 +928,12 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     if (deferredLightingDomain) {
         result << "#define INX_DEFERRED_LIGHTING_PASS 1\n";
         result << "#define INX_FORWARD_PLUS_PASS 1\n";
+    }
+    if (particleSpriteDomain) {
+        result << (needsLightingUBO ? "#define INX_SHADING_CAMERA_POSITION lighting.cameraPos.xyz\n"
+                                    : "#define INX_SHADING_CAMERA_POSITION vec3(0.0)\n");
+    } else {
+        result << "#define INX_SHADING_CAMERA_POSITION _Globals._WorldSpaceCameraPos.xyz\n";
     }
 
     // ================================================================
@@ -1049,7 +1153,10 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             const ShaderStageVisibility stage =
                 desc.isVertexShader ? ShaderStageVisibility::Vertex : ShaderStageVisibility::Fragment;
             const uint32_t descriptorSet =
-                target == ShaderCompileTarget::Shadow ? 2u : GlslStageInterfaceEmitter::MaterialDescriptorSet;
+                target == ShaderCompileTarget::Shadow
+                    ? 2u
+                    : (particleSpriteDomain ? GlslStageInterfaceEmitter::ParticleSurfaceDescriptorSet
+                                            : GlslStageInterfaceEmitter::MaterialDescriptorSet);
             const uint32_t firstBinding =
                 target == ShaderCompileTarget::Shadow ? 0u : GlslStageInterfaceEmitter::FirstTextureBinding;
             const std::string declarations = GlslStageInterfaceEmitter::EmitTextureDeclarations(
@@ -1113,8 +1220,11 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             }
             result << "\n// Auto-generated MaterialProperties UBO\n";
             if (linkedInterface && target != ShaderCompileTarget::Shadow) {
-                result << "layout(std140, set = " << GlslStageInterfaceEmitter::MaterialDescriptorSet
-                       << ", binding = " << materialBinding << ") uniform MaterialProperties {\n";
+                const uint32_t materialDescriptorSet = particleSpriteDomain
+                                                           ? GlslStageInterfaceEmitter::ParticleSurfaceDescriptorSet
+                                                           : GlslStageInterfaceEmitter::MaterialDescriptorSet;
+                result << "layout(std140, set = " << materialDescriptorSet << ", binding = " << materialBinding
+                       << ") uniform MaterialProperties {\n";
             } else if (target == ShaderCompileTarget::Shadow && (desc.isVertexShader || shadowAlphaFragment)) {
                 result << "layout(std140, set = 2, binding = " << materialBinding << ") uniform MaterialProperties {\n";
             } else {
@@ -1263,21 +1373,22 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                                                : "    surface(s);");
             result << "\n" << mainTpl << "\n";
         } else {
-            // Forward / GBuffer: inject evaluate() from shading model
-            std::string targetName = (target == ShaderCompileTarget::GBuffer) ? "gbuffer" : "forward";
-            if (shadingModel) {
-                const auto *targetBlock = shadingModel->FindTarget(targetName);
-                if (targetBlock && !targetBlock->code.empty()) {
-                    result << "\n// evaluate() from shading model: " << desc.shadingModel << " (Entry " << targetName
-                           << ")\n";
-                    result << targetBlock->code << "\n";
-                } else if (target == ShaderCompileTarget::GBuffer) {
-                    // No custom GBuffer entry: use engine default packing.
-                    result << "\n// Default GBuffer packing (engine-provided)\n";
-                    result << LoadTemplate("default_gbuffer_evaluate.glsl") << "\n";
+            // The authored shading() function is injected only for Forward
+            // targets. GBuffer packing is always engine-generated and records
+            // the stable shading-model ID for the Deferred dispatcher.
+            if (shadingModel && target != ShaderCompileTarget::GBuffer) {
+                const auto *shadingBlock = shadingModel->FindTarget("shading");
+                if (shadingBlock && !shadingBlock->code.empty()) {
+                    result << "\n// Pipeline-agnostic shading model: " << desc.shadingModel << "\n";
+                    result << shadingBlock->code << "\n";
                 } else {
-                    INXLOG_WARN("Shading model '", desc.shadingModel, "' has no Entry ", targetName, " block");
+                    INXLOG_ERROR("Shading model '", desc.shadingModel, "' does not define shading()");
                 }
+            } else if (target == ShaderCompileTarget::GBuffer) {
+                std::string packing = LoadTemplate("default_gbuffer_evaluate.glsl");
+                ReplacePlaceholder(packing, "${SHADING_MODEL_ID}",
+                                   std::to_string(ShadingModelId(desc.shadingModel)) + "u");
+                result << "\n// Engine-generated canonical GBuffer packing\n" << packing << "\n";
             }
 
             // Alpha clip is now uniform-based (material._AlphaClipThreshold),
@@ -1297,6 +1408,11 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 result << "\n" << mainTpl << "\n";
             }
         }
+    }
+
+    if (deferredLightingDomain && !deferredShadingRegistry.empty()) {
+        result << "\n// Engine-generated deferred shading-model registry\n";
+        result << deferredShadingRegistry << '\n';
     }
 
     // ================================================================
@@ -1327,7 +1443,16 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         } else if (target == ShaderCompileTarget::Motion) {
             passVertexOutput = R"(    InstanceAuxData aux = instanceAuxData[gl_InstanceIndex];
     if ((aux.flags & 1u) != 0u) {
-        vec4 previousClip = ubo.previousViewProj * aux.previousModel * vec4(v.position, 1.0);
+        vec3 previousLocalPosition = inxUnskinnedPosition;
+        if ((skin.flags & 1u) != 0u && skin.boneCount > 0u) {
+            mat4 previousSkinMat =
+                inBoneWeights.x * skinBones[skin.previousBoneOffset + min(inBoneIndices.x, skin.boneCount - 1u)] +
+                inBoneWeights.y * skinBones[skin.previousBoneOffset + min(inBoneIndices.y, skin.boneCount - 1u)] +
+                inBoneWeights.z * skinBones[skin.previousBoneOffset + min(inBoneIndices.z, skin.boneCount - 1u)] +
+                inBoneWeights.w * skinBones[skin.previousBoneOffset + min(inBoneIndices.w, skin.boneCount - 1u)];
+            previousLocalPosition = (previousSkinMat * vec4(previousLocalPosition, 1.0)).xyz;
+        }
+        vec4 previousClip = ubo.previousViewProj * aux.previousModel * vec4(previousLocalPosition, 1.0);
         vec2 currentNdc = gl_Position.xy / max(abs(gl_Position.w), 1e-6);
         vec2 previousNdc = previousClip.xy / max(abs(previousClip.w), 1e-6);
         _inx_MotionVector = (currentNdc - previousNdc) * vec2(0.5, -0.5);
@@ -1362,6 +1487,7 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
     std::vector<std::string> effectiveImports = desc.imports;
     const ShaderDescriptor *shadingModelPtr = nullptr;
     ShaderDescriptor shadingModelDesc;
+    std::string deferredShadingRegistry;
 
     if (!filePath.empty()) {
         std::filesystem::path shaderPath = ToFsPath(filePath);
@@ -1379,13 +1505,31 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
             if (shadingModelDesc.errors.empty()) {
                 shadingModelPtr = &shadingModelDesc;
 
-                // Auto-inject the shading model's structured import dependencies.
-                std::set<std::string> existingImports(effectiveImports.begin(), effectiveImports.end());
-                for (const auto &imp : shadingModelDesc.imports) {
-                    if (existingImports.find(imp) == existingImports.end()) {
-                        effectiveImports.push_back(imp);
-                        existingImports.insert(imp);
+                // GBuffer variants only execute surface() and canonical
+                // packing. Lighting/model helpers belong to Forward shading
+                // or the generated Deferred dispatcher, not geometry capture.
+                if (target != ShaderCompileTarget::GBuffer) {
+                    std::set<std::string> existingImports(effectiveImports.begin(), effectiveImports.end());
+                    for (const auto &imp : shadingModelDesc.imports) {
+                        if (existingImports.find(imp) == existingImports.end()) {
+                            effectiveImports.push_back(imp);
+                            existingImports.insert(imp);
+                        }
                     }
+                }
+            }
+        }
+
+        if (DescriptorHasCapability(desc, "DeferredLighting") && desc.isFragmentShader) {
+            std::vector<ShaderDescriptor> deferredModels;
+            deferredShadingRegistry = BuildDeferredShadingRegistry(shaderIdMap, deferredModels);
+            std::set<std::string> existingImports(effectiveImports.begin(), effectiveImports.end());
+            if (existingImports.insert("Surface").second)
+                effectiveImports.push_back("Surface");
+            for (const auto &model : deferredModels) {
+                for (const auto &import : model.imports) {
+                    if (existingImports.insert(import).second)
+                        effectiveImports.push_back(import);
                 }
             }
         }
@@ -1421,7 +1565,7 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
     }
 
     // Stage 3: Generate GLSL from descriptor + resolved source + shading model
-    return GenerateGLSL(desc, resolvedSource, shadingModelPtr, target, linkedInterface);
+    return GenerateGLSL(desc, resolvedSource, shadingModelPtr, target, linkedInterface, deferredShadingRegistry);
 }
 
 std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content, size_t contentSize,
@@ -1527,6 +1671,20 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedProgram(const std::
     if (!compilation.interfaceArtifact.IsValid() || !compilation.errors.empty())
         return compilation;
 
+    if (target == ShaderCompileTarget::GBuffer && !fragment.shadingModel.empty()) {
+        const auto shaderMap = BuildShaderIdMap(FromFsPath(ToFsPath(fragmentPath).parent_path()));
+        const ShaderDescriptor model = LoadShadingModel(fragment.shadingModel, shaderMap);
+        if (!model.errors.empty()) {
+            compilation.errors.insert(compilation.errors.end(), model.errors.begin(), model.errors.end());
+            return compilation;
+        }
+        if (DescriptorMarksUnsupported(model, "Deferred")) {
+            compilation.errors.push_back("Shading model '" + fragment.shadingModel +
+                                         "' declares Unsupported [Deferred]");
+            return compilation;
+        }
+    }
+
     return CompileLinkedProgramVariant(vertexSource, vertexPath, fragmentSource, fragmentPath, target,
                                        compilation.interfaceArtifact);
 }
@@ -1549,7 +1707,18 @@ LinkedShaderProgramArtifactCompilation InxShaderLoader::CompileLinkedProgramArti
     if (!result.interfaceArtifact.IsValid() || !result.errors.empty())
         return result;
 
-    result.passPlan = ShaderPassVariantPlanner::Plan(vertex, fragment, result.interfaceArtifact);
+    bool shadingModelSupportsDeferred = true;
+    if (!fragment.shadingModel.empty()) {
+        const auto shaderMap = BuildShaderIdMap(FromFsPath(ToFsPath(fragmentPath).parent_path()));
+        const ShaderDescriptor model = LoadShadingModel(fragment.shadingModel, shaderMap);
+        if (!model.errors.empty()) {
+            result.errors.insert(result.errors.end(), model.errors.begin(), model.errors.end());
+            return result;
+        }
+        shadingModelSupportsDeferred = !DescriptorMarksUnsupported(model, "Deferred");
+    }
+    result.passPlan =
+        ShaderPassVariantPlanner::Plan(vertex, fragment, result.interfaceArtifact, shadingModelSupportsDeferred);
     result.errors.insert(result.errors.end(), result.passPlan.diagnostics.begin(), result.passPlan.diagnostics.end());
     if (!result.passPlan.IsValid() || !result.errors.empty())
         return result;

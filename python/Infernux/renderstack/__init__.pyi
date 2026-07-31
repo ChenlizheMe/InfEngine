@@ -41,6 +41,7 @@ from Infernux.renderstack.sharpen_effect import SharpenEffect as SharpenEffect
 from Infernux.renderstack.render_stack import RenderStack as RenderStack, PassEntry as PassEntry
 from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline as RenderStackPipeline
 from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline as DefaultForwardPipeline
+from Infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline as DefaultForwardPlusPipeline
 from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline as DefaultDeferredPipeline
 from Infernux.renderstack.discovery import discover_pipelines as discover_pipelines, discover_passes as discover_passes
 
@@ -49,6 +50,7 @@ __all__ = [
     "PassEntry",
     "RenderStackPipeline",
     "DefaultForwardPipeline",
+    "DefaultForwardPlusPipeline",
     "DefaultDeferredPipeline",
     "InjectionPoint",
     "EffectStage",

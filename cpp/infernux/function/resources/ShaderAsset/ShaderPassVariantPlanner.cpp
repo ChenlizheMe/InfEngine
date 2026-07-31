@@ -38,7 +38,8 @@ const ShaderPassVariantRequirement *ShaderPassVariantPlan::Find(ShaderCompileTar
 }
 
 ShaderPassVariantPlan ShaderPassVariantPlanner::Plan(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment,
-                                                     const ShaderProgramInterfaceArtifact &interfaceArtifact)
+                                                     const ShaderProgramInterfaceArtifact &interfaceArtifact,
+                                                     bool shadingModelSupportsDeferred)
 {
     ShaderPassVariantPlan plan;
     plan.stages = {vertex.shaderId, fragment.shaderId};
@@ -76,11 +77,17 @@ ShaderPassVariantPlan ShaderPassVariantPlanner::Plan(const ShaderDescriptor &ver
 
     Add(plan, ShaderCompileTarget::Forward, true, "all linked material programs require a Forward variant");
     Add(plan, ShaderCompileTarget::ForwardPlus, true, "mesh material programs require a tiled Forward+ variant");
-    Add(plan, ShaderCompileTarget::GBuffer, !transparent && !forceForward,
-        transparent ? "transparent surfaces use the Forward fallback"
-                    : (forceForward ? "the fragment shader explicitly requires Forward"
-                                    : "opaque standard surfaces are Deferred candidates"),
-        (!transparent && !forceForward) ? std::nullopt : std::optional{ShaderCompileTarget::Forward});
+    const bool deferredCompatible = !transparent && !forceForward && shadingModelSupportsDeferred;
+    const auto deferredFallback = !transparent && !forceForward && !shadingModelSupportsDeferred
+                                      ? ShaderCompileTarget::ForwardPlus
+                                      : ShaderCompileTarget::Forward;
+    Add(plan, ShaderCompileTarget::GBuffer, deferredCompatible,
+        transparent
+            ? "transparent surfaces use the Forward fallback"
+            : (forceForward ? "the fragment shader explicitly requires Forward"
+                            : (!shadingModelSupportsDeferred ? "the shading model declares Unsupported [Deferred]"
+                                                             : "opaque standard surfaces are Deferred candidates")),
+        deferredCompatible ? std::nullopt : std::optional{deferredFallback});
     Add(plan, ShaderCompileTarget::Shadow, fragment.surfaceOptions.castShadows,
         fragment.surfaceOptions.castShadows ? "the fragment shader enables shadow casting"
                                             : "the fragment shader disables shadow casting");

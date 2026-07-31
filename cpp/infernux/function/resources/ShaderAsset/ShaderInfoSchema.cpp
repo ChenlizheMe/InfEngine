@@ -426,8 +426,12 @@ class Parser final
                 ParseVaryings(m_document.outputs, "Outputs");
             } else if (key.text == "Imports") {
                 ParseList(m_document.imports, "Imports");
+            } else if (key.text == "Requires") {
+                ParseList(m_document.requirements, "Requires");
             } else if (key.text == "Capabilities") {
                 ParseList(m_document.capabilities, "Capabilities");
+            } else if (key.text == "Unsupported") {
+                ParseList(m_document.unsupported, "Unsupported");
             } else if (key.text == "Resources") {
                 ParseResources();
             } else if (key.text == "PushConstants") {
@@ -786,6 +790,23 @@ class Parser final
         if (m_document.name.empty())
             Error({TokenKind::Invalid, {}, m_document.declaration.begin, m_document.declaration.begin},
                   "ShaderInfo requires Name");
+
+        const Token declarationToken{
+            TokenKind::Identifier, {}, m_document.declaration.begin, m_document.declaration.begin};
+        if (m_document.kind == ShaderInfoKind::ShadingModel) {
+            if (!m_document.capabilities.empty()) {
+                Error(declarationToken,
+                      "ShadingModelInfo does not accept Capabilities; every shading model supports Forward, "
+                      "Forward+, and Deferred unless it declares Unsupported [Deferred]");
+            }
+            for (const auto &feature : m_document.unsupported) {
+                if (feature != "Deferred") {
+                    Error(declarationToken, "ShadingModelInfo Unsupported currently accepts only Deferred");
+                }
+            }
+        } else if (!m_document.unsupported.empty()) {
+            Error(declarationToken, "Unsupported is only valid in ShadingModelInfo");
+        }
     }
 
     void DetectDuplicateDeclarations()
@@ -846,6 +867,7 @@ ShaderEntryPointSet DetectShaderEntryPoints(std::string_view source)
             open.kind == TokenKind::LeftParen) {
             entries.main = entries.main || (returnType.text == "void" && name.text == "main");
             entries.surface = entries.surface || (returnType.text == "void" && name.text == "surface");
+            entries.shading = entries.shading || (returnType.text == "void" && name.text == "shading");
             entries.vertex = entries.vertex || ((returnType.text == "void" || returnType.text == "VertexOutput") &&
                                                 name.text == "vertex");
         }

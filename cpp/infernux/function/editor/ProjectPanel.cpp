@@ -1793,13 +1793,19 @@ void ProjectPanel::ReceiveDroppedFiles(const std::vector<std::string> &paths)
         }
 
         try {
-            if (fs::is_directory(fs::u8path(src), ec)) {
+            if (copyItemToPath) {
+                auto result = copyItemToPath(src, dst);
+                if (!result.empty())
+                    copiedPaths.push_back(result);
+            } else if (fs::is_directory(fs::u8path(src), ec)) {
                 fs::copy(fs::u8path(src), fs::u8path(dst), fs::copy_options::recursive, ec);
+                if (!ec)
+                    copiedPaths.push_back(dst);
             } else {
                 fs::copy_file(fs::u8path(src), fs::u8path(dst), ec);
+                if (!ec)
+                    copiedPaths.push_back(dst);
             }
-            if (!ec)
-                copiedPaths.push_back(dst);
         } catch (...) {
             continue;
         }
@@ -2020,6 +2026,10 @@ void ProjectPanel::ClipboardPaste()
                     if (!ec)
                         pastedPaths.push_back(dst);
                 }
+            } else if (copyItemToPath) {
+                auto result = copyItemToPath(src, dst);
+                if (!result.empty())
+                    pastedPaths.push_back(result);
             } else if (fs::is_directory(fs::u8path(src), ec)) {
                 fs::copy(fs::u8path(src), fs::u8path(dst), fs::copy_options::recursive, ec);
                 if (!ec)

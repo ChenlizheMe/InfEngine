@@ -173,9 +173,8 @@ class SceneRenderGraph
 
     [[nodiscard]] size_t GetValidTemporalHistoryCount() const noexcept
     {
-        return static_cast<size_t>(std::count_if(
-            m_temporalHistories.begin(), m_temporalHistories.end(),
-            [](const auto &entry) { return entry.second.valid; }));
+        return static_cast<size_t>(std::count_if(m_temporalHistories.begin(), m_temporalHistories.end(),
+                                                 [](const auto &entry) { return entry.second.valid; }));
     }
 
     [[nodiscard]] uint32_t GetTemporalSampleIndex() const noexcept
@@ -539,6 +538,7 @@ class SceneRenderGraph
     void ClearCachedFrameState()
     {
         ClearCachedViewSubmission();
+        InvalidatePerViewShadowBindings();
         m_needsRebuild = true;
         // Prevent Execute() from running the old compiled graph before
         // EnsureGraphBuilt() has a chance to rebuild it.  Without this,
@@ -670,6 +670,7 @@ class SceneRenderGraph
 
     /// @brief Update this frame's per-view shadow descriptor before recording.
     void RefreshPerViewShadowDescriptor();
+    void InvalidatePerViewShadowBindings() noexcept;
     [[nodiscard]] bool UsesForwardPlus() const;
     void RefreshForwardPlusParticleRequirement();
     [[nodiscard]] bool PrepareForwardPlusFrame();

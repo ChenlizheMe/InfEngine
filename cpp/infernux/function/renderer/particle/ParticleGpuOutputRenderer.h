@@ -28,7 +28,7 @@ struct alignas(16) GpuParticleViewConstants
     std::array<float, 4> alignmentReference{};
 };
 
-struct GpuParticleForwardPlusBindings
+struct GpuParticlePerViewBindings
 {
     rhi::BindingLayoutHandle layout;
     rhi::BindGroupHandle group;
@@ -72,7 +72,7 @@ class ParticleGpuOutputRenderer
                                           rhi::BufferHandle indirectArguments, const GpuParticleViewConstants &view,
                                           rhi::BufferHandle renderIndices = {}, rhi::TextureViewHandle sceneDepth = {},
                                           bool sceneDepthIsDepth = true,
-                                          const GpuParticleForwardPlusBindings &forwardPlus = {}) = 0;
+                                          const GpuParticlePerViewBindings &perView = {}) = 0;
     [[nodiscard]] virtual bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
                                                  rhi::RenderTargetLayoutHandle renderTargetLayout,
                                                  const MaterialPassPipelineDescriptor &pass,

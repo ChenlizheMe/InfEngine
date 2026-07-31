@@ -56,6 +56,13 @@ enum class GraphPassType
     Present
 };
 
+enum class GraphMaterialFilter : uint8_t
+{
+    All,
+    DeferredCompatible,
+    DeferredUnsupported,
+};
+
 enum class GraphBufferUsage : uint32_t
 {
     None = 0,
@@ -85,6 +92,7 @@ struct GraphCommandDesc
 {
     GraphCommandType type = GraphCommandType::DrawRenderers;
     ShaderCompileTarget shaderTarget = ShaderCompileTarget::Forward;
+    GraphMaterialFilter materialFilter = GraphMaterialFilter::All;
 
     int queueMin = 0;
     int queueMax = 5000;

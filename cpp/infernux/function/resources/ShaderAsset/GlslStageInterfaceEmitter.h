@@ -11,6 +11,7 @@ class GlslStageInterfaceEmitter final
 {
   public:
     static constexpr uint32_t MaterialDescriptorSet = 0;
+    static constexpr uint32_t ParticleSurfaceDescriptorSet = 2;
     static constexpr uint32_t FirstTextureBinding = 2;
     static constexpr uint32_t MaterialBufferBinding = 14;
 

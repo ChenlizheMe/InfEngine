@@ -160,9 +160,11 @@ class SceneViewGizmoMixin:
         except Exception:
             ids = []
         if primary_id and primary_id not in ids:
-            ids.insert(0, primary_id)
+            ids.append(primary_id)
         if not ids and primary_id:
             ids = [primary_id]
+        elif primary_id in ids:
+            ids = [primary_id] + [oid for oid in ids if oid != primary_id]
 
         objects = []
         seen = set()
@@ -228,7 +230,8 @@ class SceneViewGizmoMixin:
         """Initialize gizmo drag state.  Returns ``False`` if blocked (prefab child)."""
         from Infernux.lib._Infernux import SceneManager as _SM
         scene = _SM.instance().get_active_scene()
-        sel_id = engine.get_selected_object_id()
+        from Infernux.engine.ui.selection_manager import SelectionManager
+        sel_id = SelectionManager.instance().get_primary()
         selected_objects = self._get_gizmo_drag_objects(scene, sel_id)
         if selected_objects:
             for _obj in selected_objects:
@@ -428,10 +431,19 @@ class SceneViewGizmoMixin:
     def _record_gizmo_undo(self, mode: int):
         """Record an undo command for the gizmo drag that just finished."""
         from Infernux.lib._Infernux import SceneManager as _SM, Vector3
-        from Infernux.engine.undo import UndoManager, SetPropertyCommand, CompoundCommand
+        from Infernux.engine.undo import (
+            CompoundCommand,
+            SetPropertyCommand,
+            UndoManager,
+        )
 
         scene = _SM.instance().get_active_scene()
         if not scene or not self._gizmo_drag_obj_id:
+            if os.environ.get("INFERNUX_UNDO_TRACE") == "1":
+                Debug.log(
+                    "[UndoTrace] gizmo record skipped: "
+                    f"scene={scene is not None} object={self._gizmo_drag_obj_id}"
+                )
             return
 
         snapshots = getattr(self, "_gizmo_drag_items", {}) or {}
@@ -449,15 +461,12 @@ class SceneViewGizmoMixin:
         desc = "Transform"
         prop_name = "position"
         old_key = "pos"
-
         if mode == TOOL_TRANSLATE:
             desc = "Translate"
             prop_name = "position"
             old_key = "pos"
         elif mode == TOOL_ROTATE:
             desc = "Rotate"
-            prop_name = "euler_angles"
-            old_key = "euler"
         elif mode == TOOL_SCALE:
             desc = "Scale"
             prop_name = "local_scale"
@@ -471,22 +480,32 @@ class SceneViewGizmoMixin:
                 continue
             transform = obj.transform
             if mode == TOOL_ROTATE:
-                for rotate_prop, rotate_key in (("euler_angles", "euler"), ("position", "pos")):
-                    old_val = Vector3(*snapshot[rotate_key])
-                    new_val_raw = getattr(transform, rotate_prop)
-                    new_val = Vector3(new_val_raw[0], new_val_raw[1], new_val_raw[2])
-                    if not self._vec3_approx_equal(old_val, new_val):
-                        commands.append(SetPropertyCommand(transform, rotate_prop, old_val, new_val, desc))
+                for rotate_prop, rotate_key in (
+                    ("euler_angles", "euler"),
+                    ("position", "pos"),
+                ):
+                    old_value = Vector3(*snapshot[rotate_key])
+                    current = getattr(transform, rotate_prop)
+                    new_value = Vector3(current[0], current[1], current[2])
+                    if self._vec3_approx_equal(old_value, new_value):
+                        continue
+                    commands.append(SetPropertyCommand(
+                        transform, rotate_prop, old_value, new_value, desc
+                    ))
                 continue
 
-            old_val = Vector3(*snapshot[old_key])
-            new_val_raw = getattr(transform, prop_name)
-            new_val = Vector3(new_val_raw[0], new_val_raw[1], new_val_raw[2])
-            if self._vec3_approx_equal(old_val, new_val):
+            old_value = Vector3(*snapshot[old_key])
+            current = getattr(transform, prop_name)
+            new_value = Vector3(current[0], current[1], current[2])
+            if self._vec3_approx_equal(old_value, new_value):
                 continue
-            commands.append(SetPropertyCommand(transform, prop_name, old_val, new_val, desc))
+            commands.append(SetPropertyCommand(
+                transform, prop_name, old_value, new_value, desc
+            ))
 
         if not commands:
+            if os.environ.get("INFERNUX_UNDO_TRACE") == "1":
+                Debug.log("[UndoTrace] gizmo produced no transform command")
             return
         cmd = commands[0] if len(commands) == 1 else CompoundCommand(commands, desc)
         UndoManager.instance().record(cmd)

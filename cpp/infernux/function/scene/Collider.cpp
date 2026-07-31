@@ -508,7 +508,15 @@ void Collider::UnregisterBody()
             }
         }
     } else {
-        RemoveFromBroadphase();
+        auto &pendingStore = PhysicsECSStore::Instance();
+        const bool hadPendingAdd = pendingStore.CancelBroadphaseAdd(actor.bodyId);
+        const bool hadPendingRemove = pendingStore.CancelBroadphaseRemove(actor.bodyId);
+        // Destruction is already committed at a main-thread safe point. A
+        // queued removal means the body is still physically resident even
+        // though the logical actor state was changed when it was disabled.
+        if (!hadPendingAdd && (actor.bodyInBroadphase || hadPendingRemove)) {
+            PhysicsWorld::Instance().RemoveBodyFromBroadphase(actor.bodyId);
+        }
         PhysicsWorld::Instance().DestroyBody(this);
         actor.bodyId = 0xFFFFFFFF;
         actor.bodyInBroadphase = false;
@@ -521,6 +529,11 @@ void Collider::AddToBroadphase()
     auto &actor = ActorMut();
     if (actor.bodyId == 0xFFFFFFFF)
         return;
+    auto &store = PhysicsECSStore::Instance();
+    if (store.CancelBroadphaseRemove(actor.bodyId)) {
+        actor.bodyInBroadphase = true;
+        return;
+    }
     if (actor.bodyInBroadphase)
         return;
 
@@ -529,7 +542,7 @@ void Collider::AddToBroadphase()
     // Defer broadphase addition to the next pre-physics flush (Unity-style).
     // The body exists in Jolt but won't participate in queries/simulation
     // until SceneManager flushes the pending queue.
-    PhysicsECSStore::Instance().QueueBroadphaseAdd(actor.bodyId, isStatic);
+    store.QueueBroadphaseAdd(actor.bodyId, isStatic);
     actor.bodyInBroadphase = true;
 }
 
@@ -551,7 +564,10 @@ void Collider::RemoveFromBroadphase()
         }
     }
 
-    PhysicsWorld::Instance().RemoveBodyFromBroadphase(actor.bodyId);
+    auto &store = PhysicsECSStore::Instance();
+    if (!store.CancelBroadphaseAdd(actor.bodyId)) {
+        store.QueueBroadphaseRemove(actor.bodyId);
+    }
     actor.bodyInBroadphase = false;
 }
 

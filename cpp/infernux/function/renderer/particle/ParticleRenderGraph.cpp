@@ -10,7 +10,6 @@ namespace infernux::particle
 namespace
 {
 
-constexpr uint64_t CounterBufferBytes = 16;
 constexpr uint64_t IndirectBufferBytes = 16;
 
 std::string StageName(const std::string &prefix, const char *stage)
@@ -413,6 +412,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     m_migrationPending = migration != nullptr;
     m_migrationCompleted = false;
     m_bootstrapPending = !migration && runtime.NeedsBootstrap();
+    m_contactResetPending = runtime.HasContactRuntime() && (runtime.NeedsBootstrap() || migration != nullptr);
     vk::ResourceHandle states;
     vk::ResourceHandle freeList;
     vk::ResourceHandle counters;
@@ -431,6 +431,15 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     vk::ResourceHandle continuationDispatchIndirect;
     vk::ResourceHandle continuationLaneSlots;
     vk::ResourceHandle continuationJoinStates;
+    vk::ResourceHandle contactRecords;
+    vk::ResourceHandle contactHashSlots;
+    vk::ResourceHandle contactParticleRecordIndices;
+    vk::ResourceHandle contactParticleStates;
+    vk::ResourceHandle contactWorkItems;
+    vk::ResourceHandle contactDispatchIndirect;
+    vk::ResourceHandle contactCounters;
+    vk::ResourceHandle contactContinuationSnapshots;
+    vk::ResourceHandle contactContinuationJoinStates;
     vk::ResourceHandle boundsBuffer;
     vk::ResourceHandle boundsDispatch;
     vk::ResourceHandle migrationSourceStates;
@@ -450,7 +459,8 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
                                       capacity * runtime.StateStride());
         freeList = builder.ImportBuffer(StageName(namePrefix, "FreeList"), runtime.FreeListBuffer(),
                                         capacity * sizeof(uint32_t));
-        counters = builder.ImportBuffer(StageName(namePrefix, "Counters"), runtime.CounterBuffer(), CounterBufferBytes);
+        counters = builder.ImportBuffer(StageName(namePrefix, "Counters"), runtime.CounterBuffer(),
+                                        runtime.CounterBufferByteSize());
         instances = builder.ImportBuffer(StageName(namePrefix, "Instances"), runtime.InstanceBuffer(),
                                          capacity * ParticleGpuRuntime::RenderInstanceStride);
         renderIndices = builder.ImportBuffer(StageName(namePrefix, "RenderIndices"), runtime.RenderIndexBuffer(),
@@ -488,6 +498,31 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             continuationJoinStates = builder.ImportBuffer(StageName(namePrefix, "ContinuationJoinStates"),
                                                           continuation.joinStates, telemetry.joinStateBytes);
         }
+        if (runtime.HasContactRuntime()) {
+            const auto &contacts = runtime.ContactResources();
+            const auto telemetry = runtime.ContactTelemetry();
+            contactRecords = builder.ImportBuffer(StageName(namePrefix, "ContactRecords"), contacts.contactRecords,
+                                                  telemetry.contactBytes);
+            contactHashSlots = builder.ImportBuffer(StageName(namePrefix, "ContactHashSlots"), contacts.hashSlots,
+                                                    telemetry.hashBytes);
+            contactParticleRecordIndices =
+                builder.ImportBuffer(StageName(namePrefix, "ContactParticleRecordIndices"),
+                                     contacts.particleRecordIndices, telemetry.particleIndexBytes);
+            contactParticleStates = builder.ImportBuffer(StageName(namePrefix, "ContactParticleStates"),
+                                                         contacts.particleStates, telemetry.particleStateBytes);
+            contactWorkItems = builder.ImportBuffer(StageName(namePrefix, "ContactWorkItems"), contacts.workItems,
+                                                    telemetry.workItemBytes);
+            contactDispatchIndirect = builder.ImportBuffer(StageName(namePrefix, "ContactDispatchIndirect"),
+                                                           contacts.dispatchIndirect, sizeof(std::array<uint32_t, 4>));
+            contactCounters = builder.ImportBuffer(StageName(namePrefix, "ContactCounters"), contacts.counters,
+                                                   sizeof(GpuParticleContactCounters));
+            contactContinuationSnapshots =
+                builder.ImportBuffer(StageName(namePrefix, "ContactContinuationSnapshots"),
+                                     contacts.continuationSnapshots, telemetry.continuationSnapshotBytes);
+            contactContinuationJoinStates =
+                builder.ImportBuffer(StageName(namePrefix, "ContactContinuationJoinStates"),
+                                     contacts.continuationJoinStates, telemetry.continuationJoinBytes);
+        }
         boundsBuffer = builder.ImportBuffer(StageName(namePrefix, "Bounds"), bounds.BoundsBuffer(),
                                             ParticleGpuBounds::BoundsBufferBytes);
         boundsDispatch = builder.ImportBuffer(StageName(namePrefix, "BoundsDispatch"), bounds.DispatchBuffer(),
@@ -502,6 +537,12 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
              !continuationCounters.IsValid() || !continuationClassifyIndirect.IsValid() ||
              !continuationDispatchIndirect.IsValid() || !continuationLaneSlots.IsValid() ||
              !continuationJoinStates.IsValid()))
+            return vk::PassExecuteCallback{};
+        if (runtime.HasContactRuntime() &&
+            (!contactRecords.IsValid() || !contactHashSlots.IsValid() || !contactParticleRecordIndices.IsValid() ||
+             !contactParticleStates.IsValid() || !contactWorkItems.IsValid() || !contactDispatchIndirect.IsValid() ||
+             !contactCounters.IsValid() || !contactContinuationSnapshots.IsValid() ||
+             !contactContinuationJoinStates.IsValid()))
             return vk::PassExecuteCallback{};
 
         states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
@@ -531,6 +572,16 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         m_spawnDomain = nullptr;
         return false;
     }
+    if (runtime.HasContactRuntime() &&
+        (!contactRecords.IsValid() || !contactHashSlots.IsValid() || !contactParticleRecordIndices.IsValid() ||
+         !contactParticleStates.IsValid() || !contactWorkItems.IsValid() || !contactDispatchIndirect.IsValid() ||
+         !contactCounters.IsValid() || !contactContinuationSnapshots.IsValid() ||
+         !contactContinuationJoinStates.IsValid())) {
+        m_runtime = nullptr;
+        m_bounds = nullptr;
+        m_spawnDomain = nullptr;
+        return false;
+    }
 
     if (migration) {
         graph.AddComputePass(StageName(namePrefix, "MigrationReset"), [&](vk::PassBuilder &builder) {
@@ -538,8 +589,9 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             migrationSourceStates = builder.ImportBuffer(
                 StageName(namePrefix, "MigrationSourceStates"), migration->SourceStateBuffer(),
                 static_cast<uint64_t>(constants.sourceCapacity) * constants.sourceStrideWords * sizeof(uint32_t));
-            migrationSourceCounters = builder.ImportBuffer(StageName(namePrefix, "MigrationSourceCounters"),
-                                                           migration->SourceCounterBuffer(), CounterBufferBytes);
+            migrationSourceCounters =
+                builder.ImportBuffer(StageName(namePrefix, "MigrationSourceCounters"), migration->SourceCounterBuffer(),
+                                     migration->SourceCounterBufferByteSize());
             migrationRanges = builder.ImportBuffer(
                 StageName(namePrefix, "MigrationRanges"), migration->CopyRangeBuffer(),
                 std::max<uint64_t>(static_cast<uint64_t>(constants.copyRangeCount) * sizeof(GpuParticleMigrationRange),
@@ -606,6 +658,28 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
                                          m_request, discard);
         };
     });
+
+    if (runtime.HasContactRuntime()) {
+        graph.AddComputePass(StageName(namePrefix, "ContactPrepare"), [&](vk::PassBuilder &builder) {
+            builder.ReadStorageBuffer(states);
+            contactHashSlots = builder.WriteStorageBuffer(contactHashSlots);
+            contactParticleRecordIndices = builder.WriteStorageBuffer(contactParticleRecordIndices);
+            contactParticleStates = builder.ReadWrite(contactParticleStates, rhi::PipelineStage::ComputeShader);
+            contactWorkItems = builder.WriteStorageBuffer(contactWorkItems);
+            contactDispatchIndirect = builder.WriteStorageBuffer(contactDispatchIndirect);
+            contactCounters = builder.WriteStorageBuffer(contactCounters);
+            contactContinuationJoinStates =
+                builder.ReadWrite(contactContinuationJoinStates, rhi::PipelineStage::ComputeShader);
+            return [this](vk::RenderContext &context) {
+                if (!m_framePending || (!m_request.simulate && !m_contactResetPending) || !m_runtime)
+                    return;
+                m_runtime->RecordContactPrepare(context.GetComputeCommandEncoder(), m_request.simulationStep,
+                                                m_spawnDomain->RuntimeGroup(m_graphEmitterIndex),
+                                                m_contactResetPending);
+                m_contactResetPending = false;
+            };
+        });
+    }
 
     if (runtime.HasContinuations()) {
         graph.AddComputePass(StageName(namePrefix, "ContinuationPrepare"), [&](vk::PassBuilder &builder) {
@@ -692,6 +766,12 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             builder.ReadIndirectBuffer(continuationDispatchIndirect);
             continuationLaneSlots = builder.ReadWrite(continuationLaneSlots, rhi::PipelineStage::ComputeShader);
             continuationJoinStates = builder.ReadWrite(continuationJoinStates, rhi::PipelineStage::ComputeShader);
+            if (runtime.HasContactRuntime())
+                contactContinuationSnapshots =
+                    builder.ReadWrite(contactContinuationSnapshots, rhi::PipelineStage::ComputeShader);
+            if (runtime.HasContactRuntime())
+                contactContinuationJoinStates =
+                    builder.ReadWrite(contactContinuationJoinStates, rhi::PipelineStage::ComputeShader);
             return [this](vk::RenderContext &context) {
                 if (!m_framePending || !m_request.simulate || !m_runtime)
                     return;
@@ -718,13 +798,72 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             continuationLaneSlots = builder.ReadWrite(continuationLaneSlots, rhi::PipelineStage::ComputeShader);
             continuationJoinStates = builder.ReadWrite(continuationJoinStates, rhi::PipelineStage::ComputeShader);
         }
+        if (runtime.HasContactRuntime()) {
+            contactRecords = builder.ReadWrite(contactRecords, rhi::PipelineStage::ComputeShader);
+            contactParticleRecordIndices =
+                builder.ReadWrite(contactParticleRecordIndices, rhi::PipelineStage::ComputeShader);
+            contactParticleStates = builder.ReadWrite(contactParticleStates, rhi::PipelineStage::ComputeShader);
+            contactCounters = builder.ReadWrite(contactCounters, rhi::PipelineStage::ComputeShader);
+        }
         return [this](vk::RenderContext &context) {
             if (!m_framePending || !m_request.simulate || !m_runtime)
                 return;
             m_runtime->RecordUpdate(context.GetComputeCommandEncoder(), m_request.systemSeed, m_request.simulationStep,
-                                    m_request.deltaTime, m_spawnDomain->RuntimeGroup(m_graphEmitterIndex));
+                                    m_request.deltaTime, m_spawnDomain->RuntimeGroup(m_graphEmitterIndex),
+                                    m_request.collectCollisionDiagnostics);
         };
     });
+
+    if (runtime.HasContactRuntime()) {
+        graph.AddComputePass(StageName(namePrefix, "ContactSolve"), [&](vk::PassBuilder &builder) {
+            builder.ReadStorageBuffer(contactRecords);
+            contactHashSlots = builder.ReadWrite(contactHashSlots, rhi::PipelineStage::ComputeShader);
+            builder.ReadStorageBuffer(contactParticleRecordIndices);
+            builder.ReadStorageBuffer(contactParticleStates);
+            contactWorkItems = builder.ReadWrite(contactWorkItems, rhi::PipelineStage::ComputeShader);
+            contactCounters = builder.ReadWrite(contactCounters, rhi::PipelineStage::ComputeShader);
+            return [this](vk::RenderContext &context) {
+                if (!m_framePending || !m_request.simulate || !m_runtime)
+                    return;
+                m_runtime->RecordContactSolve(context.GetComputeCommandEncoder(), m_request.simulationStep,
+                                              m_spawnDomain->RuntimeGroup(m_graphEmitterIndex));
+            };
+        });
+
+        graph.AddComputePass(StageName(namePrefix, "ContactDispatch"), [&](vk::PassBuilder &builder) {
+            m_spawnDomain->DeclareKernelWrite(builder);
+            states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
+            freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
+            counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
+            builder.ReadStorageBuffer(contactRecords);
+            builder.ReadStorageBuffer(contactWorkItems);
+            builder.ReadIndirectBuffer(contactDispatchIndirect);
+            contactCounters = builder.ReadWrite(contactCounters, rhi::PipelineStage::ComputeShader);
+            if (runtime.HasContinuations()) {
+                continuationRecords = builder.ReadWrite(continuationRecords, rhi::PipelineStage::ComputeShader);
+                continuationFreeList = builder.ReadWrite(continuationFreeList, rhi::PipelineStage::ComputeShader);
+                continuationActiveQueueA =
+                    builder.ReadWrite(continuationActiveQueueA, rhi::PipelineStage::ComputeShader);
+                continuationActiveQueueB =
+                    builder.ReadWrite(continuationActiveQueueB, rhi::PipelineStage::ComputeShader);
+                continuationCounters = builder.ReadWrite(continuationCounters, rhi::PipelineStage::ComputeShader);
+                continuationLaneSlots = builder.ReadWrite(continuationLaneSlots, rhi::PipelineStage::ComputeShader);
+                continuationJoinStates = builder.ReadWrite(continuationJoinStates, rhi::PipelineStage::ComputeShader);
+                contactContinuationSnapshots =
+                    builder.ReadWrite(contactContinuationSnapshots, rhi::PipelineStage::ComputeShader);
+                contactContinuationJoinStates =
+                    builder.ReadWrite(contactContinuationJoinStates, rhi::PipelineStage::ComputeShader);
+            }
+            return [this](vk::RenderContext &context) {
+                if (!m_framePending || !m_request.simulate || !m_runtime)
+                    return;
+                m_runtime->RecordContactDispatch(context.GetComputeCommandEncoder(), m_request.systemSeed,
+                                                 m_request.simulationStep, m_request.deltaTime,
+                                                 m_spawnDomain->RuntimeGroup(m_graphEmitterIndex),
+                                                 m_request.collectCollisionDiagnostics);
+            };
+        });
+    }
 
     const auto renderExportBoundary =
         graph.AddComputePass(StageName(namePrefix, "RenderReset"), [&](vk::PassBuilder &builder) {
@@ -735,7 +874,8 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
                 if (!m_framePending || !m_runtime)
                     return;
                 m_runtime->RecordRenderReset(context.GetComputeCommandEncoder(),
-                                             m_spawnDomain->RuntimeGroup(m_graphEmitterIndex));
+                                             m_spawnDomain->RuntimeGroup(m_graphEmitterIndex),
+                                             m_request.resetCollisionDiagnostics);
             };
         });
     m_renderExportPassId = renderExportBoundary.id;
@@ -956,6 +1096,7 @@ void ParticleRenderGraph::Reset() noexcept
     if (m_runtime)
         m_runtime->RequestContinuationReset();
     m_bootstrapPending = true;
+    m_contactResetPending = true;
     // Reset is also the Stop contract. Arm a render-graph execution so the
     // bootstrap pass clears resident counters and indirect draws even when
     // the caller will no longer submit simulation frames after stopping.

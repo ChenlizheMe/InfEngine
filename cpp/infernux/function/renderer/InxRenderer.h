@@ -66,6 +66,9 @@ struct RendererFrameTelemetrySnapshot
     bool sceneTargetReady = false;
     bool gameCameraEnabled = false;
     bool gameCameraAvailable = false;
+    size_t gameCameraCount = 0;
+    std::vector<uint64_t> gameCameraIds;
+    std::vector<uint64_t> gameRenderViewIds;
     bool gameTargetReady = false;
     uint32_t sceneTargetWidth = 0;
     uint32_t sceneTargetHeight = 0;
@@ -112,6 +115,12 @@ struct RendererFrameTelemetrySnapshot
     uint64_t gpuParticleContinuationClassifyRecordCalls = 0;
     uint64_t gpuParticleContinuationDispatchRecordCalls = 0;
     size_t gpuParticleContinuationResetPendingCount = 0;
+    size_t gpuParticleContactRuntimeSystemCount = 0;
+    uint64_t gpuParticleContactRecordCapacity = 0;
+    uint64_t gpuParticleContactWorkItemCapacity = 0;
+    uint64_t gpuParticleContactResidentBytes = 0;
+    uint64_t gpuParticleContactPrepareRecordCalls = 0;
+    uint64_t gpuParticleContactSolveRecordCalls = 0;
     uint64_t gpuParticleCollisionSceneRevision = 0;
     uint32_t gpuParticleCollisionSceneColliderCount = 0;
     uint64_t gpuParticleCollisionSceneTopologyRevision = 0;
@@ -248,9 +257,10 @@ class InxRenderer
     /// currently advancing DrawFrame(). Never waits for a queue or device.
     void PollGpuCompletions();
     [[nodiscard]] RendererFrameTelemetrySnapshot GetFrameTelemetrySnapshot();
-    [[nodiscard]] uint64_t RequestGpuParticleViewDiagnostics(bool gameView, uint64_t graphInstanceId);
-    [[nodiscard]] particle::GpuParticleViewDiagnosticSnapshot QueryGpuParticleViewDiagnostics(bool gameView,
-                                                                                              uint64_t requestId) const;
+    [[nodiscard]] uint64_t RequestGpuParticleViewDiagnostics(bool gameView, uint64_t graphInstanceId,
+                                                             uint64_t cameraComponentId = 0);
+    [[nodiscard]] particle::GpuParticleViewDiagnosticSnapshot
+    QueryGpuParticleViewDiagnostics(bool gameView, uint64_t requestId, uint64_t cameraComponentId = 0) const;
     [[nodiscard]] RendererUIPerformanceSnapshot GetUIPerformanceSnapshot(size_t maxSamples = 240) const;
     [[nodiscard]] uint64_t GetGpuResidencyBudgetBytes() const;
     void SetGpuResidencyBudgetBytes(uint64_t bytes);
@@ -626,9 +636,12 @@ class InxRenderer
     uint64_t m_gpuResidencyBudgetBytes = 0;
     uint32_t m_gpuResidencyCheckFrames = 0;
 
-    // Game Camera: separate render target + graph for Game View
+    // Game cameras share one output target but own independent RenderGraphs.
+    // This keeps camera matrices, shadows, Forward+ lists, particles and
+    // temporal history isolated while Camera.depth determines execution order.
     std::unique_ptr<SceneRenderTarget> m_gameRenderTarget;
-    std::unique_ptr<SceneRenderGraph> m_gameRenderGraph;
+    std::unordered_map<uint64_t, std::unique_ptr<SceneRenderGraph>> m_gameRenderGraphs;
+    SceneRenderGraph *m_gameRenderGraph = nullptr; ///< Representative graph for legacy single-view queries.
     std::unique_ptr<InxScreenUIRenderer> m_screenUIRenderer;
     bool m_gameCameraEnabled = false;
     bool m_sceneViewVisible = false; ///< Default false; Python editor sets true via SetSceneViewVisible()
@@ -654,8 +667,8 @@ class InxRenderer
     /// Per-frame cached game camera pointer, lazily resolved once per frame
     /// by FindGameCameraCached() and cleared at the start of each DrawFrame.
     class Camera *m_cachedGameCamera = nullptr;
+    std::vector<class Camera *> m_cachedGameCameras;
     bool m_gameCameraCacheValid = false;
-    uint64_t m_lastResolvedGameCameraId = 0;
 
     // Scriptable render pipeline (nullptr = default C++ path)
     std::shared_ptr<RenderPipelineCallback> m_renderPipeline;
@@ -698,9 +711,16 @@ class InxRenderer
     /// Returns the highest-priority active Camera (by depth), excluding the editor camera.
     class Camera *FindGameCamera();
 
+    /// @brief Find every active game camera in stable Camera.depth order.
+    std::vector<class Camera *> FindGameCameras();
+
     /// @brief Per-frame cached version of FindGameCamera().
     /// First call per frame does the actual discovery; subsequent calls return cached result.
     class Camera *FindGameCameraCached();
+
+    /// @brief Per-frame camera stack and per-camera RenderGraph ownership.
+    const std::vector<class Camera *> &FindGameCamerasCached();
+    SceneRenderGraph *EnsureGameRenderGraph(class Camera *camera);
 
     /// Callback invoked once per frame BEFORE GUI::BuildFrame().
     /// Used by Python to tick DeferredTaskRunner so that scene-mutating

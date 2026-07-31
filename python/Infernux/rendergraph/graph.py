@@ -34,6 +34,7 @@ from Infernux.lib import (
     GraphPassDesc,
     GraphCommandDesc,
     GraphCommandType,
+    GraphMaterialFilter,
     GraphPassType,
     GraphBufferDesc,
     GraphBufferUsage,
@@ -150,6 +151,7 @@ class RenderPassBuilder:
         self._clear_depth: Optional[float] = None
         self._action = "none"
         self._material_pass = "forward"
+        self._material_filter = "all"
         self._queue_min = 0
         self._queue_max = 5000
         self._sort_mode = "none"
@@ -339,6 +341,7 @@ class RenderPassBuilder:
         pass_tag: str = "",
         override_material: str = "",
         material_pass: str = "forward",
+        material_filter: str = "all",
     ) -> "RenderPassBuilder":
         """Configure this pass to draw scene renderers.
 
@@ -353,6 +356,9 @@ class RenderPassBuilder:
             material_pass: Linked material program used by this pass. Supported
             values are ``forward``, ``forward_plus``, ``gbuffer``, ``depth``,
                            ``picking``, and ``motion``.
+            material_filter: Select all materials, only Deferred-compatible
+                             materials, or only models that declare
+                             ``Unsupported [Deferred]``.
         """
         normalized_pass = str(material_pass).strip().lower()
         if normalized_pass not in {
@@ -366,6 +372,10 @@ class RenderPassBuilder:
             raise ValueError(f"Unknown material pass '{material_pass}'")
         self._action = "draw_renderers"
         self._material_pass = normalized_pass
+        normalized_filter = str(material_filter).strip().lower()
+        if normalized_filter not in {"all", "deferred_compatible", "deferred_unsupported"}:
+            raise ValueError(f"Unknown material filter '{material_filter}'")
+        self._material_filter = normalized_filter
         self._queue_min, self._queue_max = queue_range
         self._sort_mode = sort_mode
         self._pass_tag = pass_tag
@@ -1547,6 +1557,11 @@ class RenderGraph:
             "picking": MaterialPassType.PICKING,
             "motion": MaterialPassType.MOTION,
         }
+        _material_filter_map = {
+            "all": GraphMaterialFilter.ALL,
+            "deferred_compatible": GraphMaterialFilter.DEFERRED_COMPATIBLE,
+            "deferred_unsupported": GraphMaterialFilter.DEFERRED_UNSUPPORTED,
+        }
 
         pass_list = []
         for p in self._passes:
@@ -1587,6 +1602,7 @@ class RenderGraph:
                 command = GraphCommandDesc()
                 command.type = command_type
                 command.material_pass = _material_pass_map[p._material_pass]
+                command.material_filter = _material_filter_map[p._material_filter]
                 command.queue_min = p._queue_min
                 command.queue_max = p._queue_max
                 command.sort_mode = p._sort_mode
@@ -1650,6 +1666,7 @@ class RenderGraph:
                     "clear_depth": p._clear_depth,
                     "action": p._action,
                     "material_pass": p._material_pass,
+                    "material_filter": p._material_filter,
                     "queue_min": p._queue_min,
                     "queue_max": p._queue_max,
                     "sort_mode": p._sort_mode,

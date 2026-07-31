@@ -300,6 +300,84 @@ def move_item_to_directory(item_path: str, dest_dir: str, asset_database=None):
     return move_path(item_abs, new_path, asset_database)
 
 
+def _copy_file_as_new_asset(source: str, destination: str) -> None:
+    """Copy one source file while regenerating asset-owned identities."""
+    if source.lower().endswith(".particlegraph"):
+        from dataclasses import replace
+        import uuid
+
+        from Infernux.particle.asset import ParticleGraphAsset
+
+        graph = ParticleGraphAsset.load(source)
+        replace(
+            graph,
+            stable_id=uuid.uuid4().hex,
+            name=os.path.splitext(os.path.basename(destination))[0],
+        ).save(destination)
+        return
+    shutil.copy2(source, destination)
+
+
+def copy_path_as_new_asset(source: str, destination: str, asset_database=None):
+    """Copy a file or directory as a distinct asset and import the result.
+
+    Sidecar metadata is never copied. ParticleGraph owns an additional AOT
+    identity beyond its AssetDatabase GUID, so that identity is regenerated
+    while emitter, parameter, event, and node stable IDs remain intact.
+    """
+    if not source or not destination or not os.path.exists(source):
+        return None
+
+    source_abs = resolved_path(source)
+    destination_abs = resolved_path(destination)
+    if same_path(source_abs, destination_abs) or os.path.exists(destination_abs):
+        return None
+    if os.path.isdir(source_abs) and is_path_within(destination_abs, source_abs):
+        return None
+
+    copied_files: list[str] = []
+    try:
+        if os.path.isdir(source_abs):
+            os.makedirs(destination_abs)
+            for directory, dirnames, filenames in os.walk(source_abs):
+                dirnames[:] = [
+                    name for name in dirnames if not name.lower().endswith(".meta")
+                ]
+                relative = relative_path(directory, source_abs, allow_root=True)
+                target_directory = (
+                    destination_abs
+                    if relative == "."
+                    else os.path.join(destination_abs, relative)
+                )
+                os.makedirs(target_directory, exist_ok=True)
+                for filename in filenames:
+                    if filename.lower().endswith(".meta"):
+                        continue
+                    target = os.path.join(target_directory, filename)
+                    _copy_file_as_new_asset(os.path.join(directory, filename), target)
+                    copied_files.append(target)
+        else:
+            if source_abs.lower().endswith(".meta"):
+                return None
+            os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
+            _copy_file_as_new_asset(source_abs, destination_abs)
+            copied_files.append(destination_abs)
+    except Exception:
+        if os.path.isdir(destination_abs):
+            shutil.rmtree(destination_abs, ignore_errors=True)
+        elif os.path.exists(destination_abs):
+            try:
+                os.remove(destination_abs)
+            except OSError:
+                pass
+        raise
+
+    if asset_database:
+        for copied_file in copied_files:
+            _import_new_asset(copied_file, asset_database)
+    return destination_abs
+
+
 # ---------------------------------------------------------------------------
 # Create operations
 # ---------------------------------------------------------------------------

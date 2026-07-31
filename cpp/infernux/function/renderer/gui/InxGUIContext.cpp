@@ -2342,15 +2342,11 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
             int val = d.iVal;
             int orig = val;
             CompensateWarp();
-            if (d.slider && static_cast<int>(d.rangeMin) > -1000000) {
-                const int rangeMin = static_cast<int>(d.rangeMin);
-                const int rangeMax = static_cast<int>(d.rangeMax);
-                DrawUnityRangedInt(d.widgetId.c_str(), &val, rangeMin, rangeMax);
+            if (d.slider && d.hasRange) {
+                DrawUnityRangedInt(d.widgetId.c_str(), &val, d.intRangeMin, d.intRangeMax);
             } else {
-                const ImGuiSliderFlags flags =
-                    d.rangeMin < d.rangeMax ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
-                ImGui::DragInt(d.widgetId.c_str(), &val, d.speed, static_cast<int>(d.rangeMin),
-                               static_cast<int>(d.rangeMax), "%d", flags);
+                const ImGuiSliderFlags flags = d.hasRange ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
+                ImGui::DragInt(d.widgetId.c_str(), &val, d.speed, d.intRangeMin, d.intRangeMax, "%d", flags);
             }
             if (captureSemantics)
                 RecordSemanticItem(d.slider ? "int_slider" : "drag_int", d.label, true, semanticId, std::nullopt,

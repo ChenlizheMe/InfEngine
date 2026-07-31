@@ -20,10 +20,14 @@ from .inspector_utils import (
 from .theme import Theme, ImGuiCol
 from ._inspector_undo import (
     _notify_scene_modified, _record_track_volume, _record_material_slot,
-    _record_generic_component,
+    _record_generic_component, _record_python_component_document_edit,
 )
 from ._inspector_references import (
-    _picker_assets, _portable_asset_path_hint, render_object_field,
+    _create_component_ref_from_go,
+    _picker_assets,
+    _picker_scene_gameobjects,
+    _portable_asset_path_hint,
+    render_object_field,
 )
 
 
@@ -101,8 +105,12 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
                     )
                     if bool(changed) != current:
                         try:
-                            comp.set_emitter_options(
-                                stable_id, **{option: bool(changed)}
+                            _record_python_component_document_edit(
+                                comp,
+                                lambda _stable_id=stable_id, _option=option, _value=bool(changed):
+                                    comp.set_emitter_options(_stable_id, **{_option: _value}),
+                                f"Set {emitter['name']} {option}",
+                                edit_key=f"emitter:{stable_id}:{option}",
                             )
                         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
                             Debug.log_error(f"Particle emitter option edit failed: {exc}")
@@ -164,20 +172,49 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
             )
             if changed != current:
                 try:
-                    comp.set_parameter(stable_id, changed)
+                    _record_python_component_document_edit(
+                        comp,
+                        lambda _stable_id=stable_id, _changed=changed:
+                            comp.set_parameter(_stable_id, _changed),
+                        f"Set {parameter['name']}",
+                        edit_key=f"parameter:{stable_id}",
+                    )
                 except (KeyError, RuntimeError, TypeError, ValueError) as exc:
                     Debug.log_error(f"Particle parameter edit failed: {exc}")
             continue
-        if kind == "texture2d":
+        if kind in {"texture2d", "mesh"}:
             reference = dict(parameter["value"])
             path_hint = str(reference.get("path_hint") or "")
-            extensions = tuple(sorted(IMAGE_EXTENSIONS))
+            is_mesh = kind == "mesh"
+            is_skinned_source = bool(
+                is_mesh
+                and reference.get("$type") == "component_ref"
+                and reference.get("component_type") == "SkinnedMeshRenderer"
+            )
+            skinned_reference = None
+            if is_skinned_source:
+                from Infernux.components.ref_wrappers import ComponentRef
 
-            def _set_texture(path, *, _stable_id=stable_id):
+                skinned_reference = ComponentRef._from_dict(reference)
+            extensions = (
+                (".fbx", ".obj", ".gltf", ".glb", ".dae")
+                if is_mesh
+                else tuple(sorted(IMAGE_EXTENSIONS))
+            )
+
+            def _set_resource(
+                path,
+                *,
+                _stable_id=stable_id,
+                _parameter_name=str(parameter["name"]),
+                _parameter_kind=kind,
+                _extensions=extensions,
+            ):
                 target = str(path)
-                if os.path.splitext(target)[1].lower() not in IMAGE_EXTENSIONS:
+                if os.path.splitext(target)[1].lower() not in _extensions:
                     Debug.log_warning(
-                        f"Particle Texture2D parameter requires an image asset: {target}"
+                        f"Particle {_parameter_kind} parameter received an incompatible "
+                        f"asset: {target}"
                     )
                     return
                 try:
@@ -187,44 +224,119 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
                     guid = database.get_guid_from_path(target) if database else ""
                     if not guid:
                         Debug.log_warning(
-                            f"Particle texture parameter asset is not imported: {target}"
+                            f"Particle {_parameter_kind} parameter asset is not imported: "
+                            f"{target}"
                         )
                         return
-                    comp.set_parameter(
-                        _stable_id,
-                        {
-                            "guid": guid,
-                            "path_hint": _portable_asset_path_hint(target),
-                        },
+                    value = {
+                        "guid": guid,
+                        "path_hint": _portable_asset_path_hint(target),
+                    }
+                    _record_python_component_document_edit(
+                        comp,
+                        lambda: comp.set_parameter(_stable_id, value),
+                        f"Set {_parameter_name}",
+                        edit_key=f"parameter:{_stable_id}",
                     )
                 except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
-                    Debug.log_error(f"Particle texture assignment failed: {exc}")
+                    Debug.log_error(
+                        f"Particle {_parameter_kind} assignment failed: {exc}"
+                    )
 
-            def _clear_texture(*, _stable_id=stable_id):
+            def _set_skinned_source(
+                game_object,
+                *,
+                _stable_id=stable_id,
+                _parameter_name=str(parameter["name"]),
+            ):
+                reference_value = _create_component_ref_from_go(
+                    game_object, "SkinnedMeshRenderer"
+                )
+                if reference_value is None:
+                    Debug.log_warning(
+                        "Particle Mesh parameter requires a GameObject with a "
+                        "SkinnedMeshRenderer"
+                    )
+                    return
                 try:
-                    comp.reset_parameter(_stable_id)
+                    _record_python_component_document_edit(
+                        comp,
+                        lambda: comp.set_parameter(_stable_id, reference_value),
+                        f"Set {_parameter_name}",
+                        edit_key=f"parameter:{_stable_id}",
+                    )
                 except (KeyError, RuntimeError, TypeError, ValueError) as exc:
-                    Debug.log_error(f"Particle texture reset failed: {exc}")
+                    Debug.log_error(f"Particle Mesh assignment failed: {exc}")
+
+            def _pick_resource(value):
+                if is_mesh and hasattr(value, "id"):
+                    _set_skinned_source(value)
+                else:
+                    _set_resource(value)
+
+            def _drop_resource(payload):
+                if is_mesh and isinstance(payload, int):
+                    try:
+                        from Infernux.lib import SceneManager
+
+                        scene = SceneManager.instance().get_active_scene()
+                        game_object = scene.find_by_id(payload) if scene else None
+                    except (AttributeError, RuntimeError):
+                        game_object = None
+                    if game_object is not None:
+                        _set_skinned_source(game_object)
+                    return
+                _set_resource(payload)
+
+            def _clear_resource(
+                *,
+                _stable_id=stable_id,
+                _parameter_name=str(parameter["name"]),
+                _parameter_kind=kind,
+            ):
+                try:
+                    _record_python_component_document_edit(
+                        comp,
+                        lambda: comp.reset_parameter(_stable_id),
+                        f"Reset {_parameter_name}",
+                        edit_key=f"parameter:{_stable_id}",
+                    )
+                except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+                    Debug.log_error(f"Particle {_parameter_kind} reset failed: {exc}")
 
             field_label(ctx, str(parameter["name"]), lw)
             render_object_field(
                 ctx,
                 f"particle_system_parameter_{stable_id}",
-                os.path.basename(path_hint) if path_hint else t("igui.none"),
-                "Texture",
-                accept_drag_type=(
-                    "TEXTURE_GUID",
-                    "TEXTURE_FILE",
-                    "ASSET_FILE",
+                (
+                    skinned_reference.display_name
+                    if skinned_reference is not None
+                    else os.path.basename(path_hint) if path_hint else t("igui.none")
                 ),
-                on_drop_callback=_set_texture,
+                "Mesh" if is_mesh else "Texture",
+                accept_drag_type=(
+                    (
+                        "MODEL_GUID",
+                        "MODEL_FILE",
+                        "ASSET_FILE",
+                        "HIERARCHY_GAMEOBJECT",
+                    )
+                    if is_mesh
+                    else ("TEXTURE_GUID", "TEXTURE_FILE", "ASSET_FILE")
+                ),
+                on_drop_callback=_drop_resource,
+                picker_scene_items=(
+                    lambda query: _picker_scene_gameobjects(
+                        query, required_component="SkinnedMeshRenderer"
+                    )
+                ) if is_mesh else None,
                 picker_asset_items=lambda query, _extensions=extensions: [
                     item
                     for extension in _extensions
                     for item in _picker_assets(query, f"*{extension}")
                 ],
-                on_pick=_set_texture,
-                on_clear=_clear_texture,
+                on_pick=_pick_resource,
+                on_clear=_clear_resource,
                 ping_path=path_hint or None,
                 semantic_id=f"inspector.particle_system.parameter.{stable_id}",
             )
@@ -248,9 +360,13 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
             ctx.set_tooltip(metadata.tooltip)
         if has_field_changed(metadata.field_type, current, changed):
             try:
-                comp.set_parameter(
-                    stable_id,
-                    _particle_parameter_storage_value(kind, changed),
+                storage_value = _particle_parameter_storage_value(kind, changed)
+                _record_python_component_document_edit(
+                    comp,
+                    lambda _stable_id=stable_id, _value=storage_value:
+                        comp.set_parameter(_stable_id, _value),
+                    f"Set {parameter['name']}",
+                    edit_key=f"parameter:{stable_id}",
                 )
             except (KeyError, RuntimeError, TypeError, ValueError) as exc:
                 Debug.log_error(f"Particle parameter edit failed: {exc}")

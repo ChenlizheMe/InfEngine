@@ -331,7 +331,9 @@ def test_mcp_catalog_consumes_native_shader_metadata(tmp_path):
             "shader_lighting_type": "unlit",
             "shader_queue": "2010",
             "shader_imports": json.dumps(["lib/common"]),
+            "shader_requirements": json.dumps(["Lighting"]),
             "shader_capabilities": json.dumps(["ForwardPlus"]),
+            "shader_unsupported": json.dumps(["Deferred"]),
             "shader_inputs": json.dumps([{"name": "uv", "type": "Float2"}]),
             "shader_outputs": json.dumps([]),
             "shader_entries": json.dumps({"Surface": "surface"}),
@@ -342,7 +344,9 @@ def test_mcp_catalog_consumes_native_shader_metadata(tmp_path):
     annotations = mcp_api._parse_shader_annotations(str(shader))
     assert annotations["shader_id"] == "Imported/McpShader"
     assert annotations["imports"] == ["lib/common"]
+    assert annotations["requirements"] == ["Lighting"]
     assert annotations["capabilities"] == ["ForwardPlus"]
+    assert annotations["unsupported"] == ["Deferred"]
     assert annotations["targets"] == ["Surface"]
     assert annotations["schema_format"] == "ShaderInfo"
 

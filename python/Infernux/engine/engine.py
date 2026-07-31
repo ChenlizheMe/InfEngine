@@ -376,7 +376,11 @@ class Engine():
         # valid for that composition as well.
         if is_playing:
             pmm.tick(delta_time)
+            self._tick_runtime_acceptance(delta_time)
         else:
+            from Infernux.acceptance import RuntimeAcceptance
+            if RuntimeAcceptance.is_active():
+                RuntimeAcceptance.reset()
             from Infernux.lib import SceneManager
             native_scene_manager = SceneManager.instance()
             if native_scene_manager.is_playing() and not native_scene_manager.is_paused():
@@ -397,6 +401,41 @@ class Engine():
             self._clear_uploaded_gizmos()
         
         return delta_time
+
+    @staticmethod
+    def _tick_runtime_acceptance(delta_time: float) -> None:
+        """Advance the opt-in Editor/Player acceptance control plane."""
+        from Infernux.acceptance import RuntimeAcceptance
+        from Infernux.application import Application
+
+        if RuntimeAcceptance.is_active():
+            try:
+                RuntimeAcceptance.tick(delta_time)
+            except Exception as exc:
+                Debug.log_error(
+                    f"[RuntimeAcceptance] runner failed: {type(exc).__name__}: {exc}"
+                )
+                try:
+                    RuntimeAcceptance.fail_current(
+                        f"{type(exc).__name__}: {exc}",
+                        {"phase": "engine_tick"},
+                    )
+                except Exception as nested:
+                    Debug.log_suppressed(
+                        "Engine._tick_runtime_acceptance.fail_current", nested
+                    )
+                    return
+        status = RuntimeAcceptance._consume_completion()
+        if not status:
+            return
+        summary = status.get("summary", {})
+        Debug.log(
+            "[RuntimeAcceptance] finished "
+            f"status={status.get('status')} passed={summary.get('passed', 0)}/"
+            f"{summary.get('total', 0)}"
+        )
+        if Application.is_player():
+            Application.quit(0 if status.get("status") == "passed" else 1)
 
     def _tick_gizmos(self):
         """Collect component gizmos and upload to C++ each frame."""

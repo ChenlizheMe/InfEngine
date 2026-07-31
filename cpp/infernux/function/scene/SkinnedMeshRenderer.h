@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MeshRenderer.h"
+#include "SkinPoseHistory.h"
 
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 
@@ -116,7 +117,15 @@ class SkinnedMeshRenderer : public MeshRenderer
     [[nodiscard]] const std::vector<glm::mat4> &GetRuntimeSkinBoneMatrices() const;
     [[nodiscard]] std::shared_ptr<const std::vector<glm::mat4>> GetRuntimeSkinBonePalette() const
     {
-        return m_runtimeSkinBonePalette;
+        return m_skinPoseHistory.Current();
+    }
+    [[nodiscard]] std::shared_ptr<const std::vector<glm::mat4>> GetPreviousRuntimeSkinBonePalette() const
+    {
+        return m_skinPoseHistory.Previous();
+    }
+    [[nodiscard]] SkinPoseHistory::SnapshotPtr GetRuntimeSkinPoseSnapshot() const
+    {
+        return m_skinPoseHistory.Acquire();
     }
 
     [[nodiscard]] nlohmann::json SerializeDocument() const override;
@@ -139,7 +148,7 @@ class SkinnedMeshRenderer : public MeshRenderer
     bool m_runtimeAnimationLoop = true;
     std::vector<PoseStackLayer> m_poseStack;
     bool m_usePoseStack = false;
-    std::shared_ptr<const std::vector<glm::mat4>> m_runtimeSkinBonePalette;
+    SkinPoseHistory m_skinPoseHistory;
     mutable std::shared_ptr<const InxSkinnedMesh> m_runtimeModel;
 };
 

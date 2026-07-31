@@ -1,5 +1,6 @@
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
+#include <function/scene/SkinPoseHistory.h>
 
 #include <cassert>
 #include <cmath>
@@ -111,6 +112,37 @@ int main()
     assert(NearlyEqual(restored->animations.front().DurationSeconds(), 0.5f));
     assert(restored->BuildGpuBonePalette({"Move", 0.25f}).size() == 1);
     assert(restored->GetRuntimeMemoryBytes() > sizeof(infernux::InxSkinnedMesh));
+
+    infernux::SkinPoseHistory poseHistory;
+    auto firstPose = restored->GetOrBuildGpuBonePalette({"Move", 0.0f});
+    poseHistory.Publish(firstPose, true);
+    const auto firstSnapshot = poseHistory.Acquire();
+    assert(firstSnapshot && firstSnapshot->IsValid());
+    assert(firstSnapshot->current == firstPose);
+    assert(firstSnapshot->previous == firstPose);
+
+    auto secondPose = restored->GetOrBuildGpuBonePalette({"Move", 0.25f});
+    poseHistory.Publish(secondPose, false);
+    const auto secondSnapshot = poseHistory.Acquire();
+    assert(secondSnapshot && secondSnapshot->IsValid());
+    assert(secondSnapshot->current == secondPose);
+    assert(secondSnapshot->previous == firstPose);
+    assert(secondSnapshot->revision > firstSnapshot->revision);
+
+    auto differentSkeleton = std::make_shared<const infernux::SkinPoseHistory::Palette>(2, glm::mat4(1.0f));
+    poseHistory.Publish(differentSkeleton, false);
+    const auto resizedSnapshot = poseHistory.Acquire();
+    assert(resizedSnapshot && resizedSnapshot->IsValid());
+    assert(resizedSnapshot->current == differentSkeleton);
+    assert(resizedSnapshot->previous == differentSkeleton);
+    assert(resizedSnapshot->revision > secondSnapshot->revision);
+
+    poseHistory.Reset();
+    const auto resetSnapshot = poseHistory.Acquire();
+    assert(resetSnapshot && !resetSnapshot->IsValid());
+    assert(!resetSnapshot->current);
+    assert(!resetSnapshot->previous);
+    assert(resetSnapshot->revision > resizedSnapshot->revision);
 
     const std::string empty = infernux::SkinnedMeshArtifact::SerializeEmpty(SourceHash);
     assert(!infernux::SkinnedMeshArtifact::Deserialize(empty, SourceHash));

@@ -110,9 +110,28 @@ class _Panel:
             "changed": True,
         }
 
-    def connect_exec(self, source_node_uid, target_node_uid):
-        self.calls.append(("connect", source_node_uid, target_node_uid))
-        return {"link_uid": "update::new-link", "changed": True}
+    def connect_exec(
+        self,
+        source_node_uid,
+        target_node_uid,
+        source_port="out",
+        target_port="in",
+    ):
+        self.calls.append(
+            (
+                "connect",
+                source_node_uid,
+                source_port,
+                target_node_uid,
+                target_port,
+            )
+        )
+        return {
+            "link_uid": "update::new-link",
+            "source_port": source_port,
+            "target_port": target_port,
+            "changed": True,
+        }
 
     def disconnect_link(self, link_uid):
         self.calls.append(("disconnect-link", link_uid))
@@ -253,6 +272,9 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     connected = mcp.tools["particle_graph_connect_exec"](
         "update::root.update", "update::new-node"
     )
+    joined = mcp.tools["particle_graph_connect_exec"](
+        "update::branch", "update::join", "out", "in1"
+    )
     disconnected = mcp.tools["particle_graph_disconnect_link"](
         "init::root-to-lifetime"
     )
@@ -322,6 +344,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert added["node"]["uid"] == "update::new-node"
     assert property_changed["value"] == [1.0, 2.0, 3.0]
     assert connected["link_uid"] == "update::new-link"
+    assert joined["target_port"] == "in1"
     assert disconnected["link_uid"] == "init::root-to-lifetime"
     assert value_connected["link_uid"] == "init::value-link"
     assert selected["stable_id"] == "target"
@@ -352,7 +375,20 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
             "degrees",
             [1.0, 2.0, 3.0],
         ),
-        ("connect", "update::root.update", "update::new-node"),
+        (
+            "connect",
+            "update::root.update",
+            "out",
+            "update::new-node",
+            "in",
+        ),
+        (
+            "connect",
+            "update::branch",
+            "out",
+            "update::join",
+            "in1",
+        ),
         ("disconnect-link", "init::root-to-lifetime"),
         ("value", "init::payload", "value", "init::size", "value"),
         ("select-emitter", "target"),
@@ -677,7 +713,9 @@ def test_particle_system_mcp_has_one_parameter_contract(monkeypatch):
 
 def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
     class _Component:
-        def request_gpu_diagnostics(self):
+        def request_gpu_diagnostics(self, sample_frames=60, state_sample_count=0):
+            assert sample_frames == 12
+            assert state_sample_count == 3
             return 77
 
         def poll_gpu_diagnostics(self, request_id):
@@ -689,6 +727,14 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
                     {
                         "stable_id": "target",
                         "alive_count": 12,
+                        "collision_hit_count": 31,
+                        "collision_response_count": 24,
+                        "collision_trigger_count": 7,
+                        "collision_enter_count": 9,
+                        "collision_stay_count": 18,
+                        "collision_exit_count": 4,
+                        "collision_max_outward_speed": 6.5,
+                        "collision_max_tangent_speed": 1.75,
                         "event_diagnostics": [
                             {
                                 "stable_id": "impact",
@@ -702,16 +748,22 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
                 ],
             }
 
-        def request_gpu_view_diagnostics(self, view):
+        def request_gpu_view_diagnostics(self, view, camera_component_id=0):
             assert view == "game"
+            assert camera_component_id == 44
             return 78
 
-        def poll_gpu_view_diagnostics(self, view, request_id):
+        def poll_gpu_view_diagnostics(
+            self, view, request_id, camera_component_id=0
+        ):
             assert view == "game"
             assert request_id == 78
+            assert camera_component_id == 44
             return {
                 "request_id": 78,
                 "view": "game",
+                "camera_component_id": 44,
+                "render_view_id": 701,
                 "status": "completed",
                 "outputs": [
                     {
@@ -719,6 +771,9 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
                         "cull_mode": "ribbon_segments",
                         "source_count": 20,
                         "visible_count": 7,
+                        "sort_mode": "front_to_back",
+                        "sort_group_count_x": 1,
+                        "sorter_allocated": True,
                     }
                 ],
             }
@@ -742,13 +797,15 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
     mcp = _FakeMcp()
     module.register_particle_runtime_tools(mcp)
 
-    requested = mcp.tools["particle_system_request_gpu_diagnostics"](456)
+    requested = mcp.tools["particle_system_request_gpu_diagnostics"](
+        456, sample_frames=12, state_sample_count=3
+    )
     polled = mcp.tools["particle_system_poll_gpu_diagnostics"](456, 77)
     view_requested = mcp.tools["particle_system_request_gpu_view_diagnostics"](
-        456, "GAME"
+        456, "GAME", camera_component_id=44
     )
     view_polled = mcp.tools["particle_system_poll_gpu_view_diagnostics"](
-        456, "game", 78
+        456, "game", 78, camera_component_id=44
     )
 
     assert requested == {
@@ -758,6 +815,18 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
         "status": "pending",
     }
     assert polled["diagnostics"]["emitters"][0]["alive_count"] == 12
+    assert polled["diagnostics"]["emitters"][0]["collision_hit_count"] == 31
+    assert polled["diagnostics"]["emitters"][0]["collision_response_count"] == 24
+    assert polled["diagnostics"]["emitters"][0]["collision_trigger_count"] == 7
+    assert polled["diagnostics"]["emitters"][0]["collision_enter_count"] == 9
+    assert polled["diagnostics"]["emitters"][0]["collision_stay_count"] == 18
+    assert polled["diagnostics"]["emitters"][0]["collision_exit_count"] == 4
+    assert (
+        polled["diagnostics"]["emitters"][0]["collision_max_outward_speed"] == 6.5
+    )
+    assert (
+        polled["diagnostics"]["emitters"][0]["collision_max_tangent_speed"] == 1.75
+    )
     assert (
         polled["diagnostics"]["emitters"][0]["event_diagnostics"][0][
             "overflow_count"
@@ -772,7 +841,12 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
     )
     assert view_requested["request_id"] == 78
     assert view_requested["view"] == "game"
+    assert view_requested["camera_component_id"] == 44
     assert view_polled["diagnostics"]["outputs"][0]["visible_count"] == 7
+    assert view_polled["diagnostics"]["outputs"][0]["sort_mode"] == "front_to_back"
+    assert view_polled["diagnostics"]["outputs"][0]["sort_group_count_x"] == 1
+    assert view_polled["diagnostics"]["outputs"][0]["sorter_allocated"] is True
+    assert view_polled["diagnostics"]["render_view_id"] == 701
 
 
 def test_particle_system_emitter_control_tools_are_indexed_no_ops(monkeypatch):

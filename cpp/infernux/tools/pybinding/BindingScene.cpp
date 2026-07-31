@@ -1200,7 +1200,7 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("far_clip", &Camera::GetFarClip, &Camera::SetFarClip, "Far clipping plane distance")
         // Multi-camera support
         .def_property("depth", &Camera::GetDepth, &Camera::SetDepth,
-                      "Rendering depth (lower depth renders first, like Unity Camera.depth)")
+                      "Rendering order for the Game camera stack; lower depth renders first")
         .def_property("culling_mask", &Camera::GetCullingMask, &Camera::SetCullingMask,
                       "Layer culling bitmask (which layers this camera renders)")
         // Clear flags & background color
@@ -2119,7 +2119,11 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property_readonly(
             "effective_game_camera", [](Scene &scene) { return scene.FindGameCamera(nullptr); },
             py::return_value_policy::reference,
-            "Get the active Camera currently selected for Game View after fallback resolution");
+            "Get the explicitly preferred active Camera, or the first active camera by depth")
+        .def_property_readonly(
+            "active_game_cameras", [](Scene &scene) { return scene.GetActiveGameCameras(nullptr); },
+            py::return_value_policy::reference,
+            "Get all active Game cameras in stable depth order");
 
     // ========================================================================
     // SceneManager binding (singleton - use nodelete to prevent pybind11 from deleting)

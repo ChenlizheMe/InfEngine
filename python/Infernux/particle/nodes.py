@@ -6,13 +6,14 @@ from dataclasses import dataclass, replace
 import hashlib
 import json
 from types import MappingProxyType
-from typing import Mapping
+from typing import Any, Mapping
 
 from Infernux.graph.registry import (
     COMMON_NODE_REGISTRY,
     NodeDef,
     NodeDefinitionRegistry,
     PortDef,
+    PortDimensionPolicy,
     PortDirection,
     PortKind,
     PropertyDef,
@@ -94,7 +95,108 @@ class ParticleGraphNodeDefinitionSet:
     event_field_by_port: Mapping[tuple[str, str], str]
     emitter_index_by_id: Mapping[str, int]
     emitter_capacity_by_id: Mapping[str, int]
+    output_definition_by_node: Mapping[tuple[str, str], NodeDef]
+    fragment_shader_choices: tuple[tuple[str, str], ...]
     abi_fingerprint: str
+
+
+_SHADER_PROPERTY_TYPES = MappingProxyType(
+    {
+        "Float": TypeRef(ValueType.F32),
+        "Float2": TypeRef(ValueType.VEC2),
+        "Float3": TypeRef(ValueType.VEC3),
+        "Float4": TypeRef(ValueType.VEC4),
+        "Color": TypeRef(ValueType.COLOR),
+        "Int": TypeRef(ValueType.I32),
+        "Mat4": TypeRef(ValueType.MAT4),
+        "Texture2D": TypeRef(ValueType.TEXTURE2D),
+    }
+)
+
+
+def particle_shader_property_port_id(name: str) -> str:
+    return f"shader.{str(name).strip()}"
+
+
+def _particle_fragment_shader_catalog():
+    """Return the imported fragment shader schema used by Particle Outputs."""
+    try:
+        from Infernux.engine.ui.inspector_shader_utils import (
+            _get_shader_properties_cached,
+            get_shader_candidates,
+        )
+
+        choices = tuple(
+            (str(label), str(shader_id))
+            for label, shader_id in get_shader_candidates(".frag")
+            if str(shader_id)
+        )
+        properties = {
+            shader_id: tuple(_get_shader_properties_cached(shader_id, ".frag"))
+            for _label, shader_id in choices
+        }
+        return choices, properties
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        return (("Particle Unlit", "Particle Unlit"),), {"Particle Unlit": ()}
+
+
+def _shader_property_default(item: Mapping[str, Any], value_type: TypeRef):
+    default = item.get("default")
+    if value_type.value_type is ValueType.TEXTURE2D:
+        token = str(default or "white").strip() or "white"
+        return AssetReference(guid=token).to_dict()
+    return default
+
+
+def _particle_output_definition(
+    base: NodeDef,
+    shader_id: str,
+    shader_properties: tuple[Mapping[str, Any], ...],
+    compile_type_id: str,
+    shader_choices: tuple[tuple[str, str], ...] = (),
+) -> NodeDef:
+    if shader_id and shader_id not in {value for _label, value in shader_choices}:
+        shader_choices = ((f"Missing: {shader_id}", shader_id), *shader_choices)
+    ports = list(base.ports)
+    for item in shader_properties:
+        name = str(item.get("name", "")).strip()
+        value_type = _SHADER_PROPERTY_TYPES.get(str(item.get("type", "")))
+        if not name or value_type is None:
+            continue
+        ports.append(
+            PortDef(
+                particle_shader_property_port_id(name),
+                PortDirection.INPUT,
+                value_type=value_type,
+                required=False,
+                default=_shader_property_default(item, value_type),
+                display_name=name,
+                dimension_policy=(
+                    PortDimensionPolicy.FIXED
+                    if value_type.value_type
+                    in {
+                        ValueType.F32,
+                        ValueType.VEC2,
+                        ValueType.VEC3,
+                        ValueType.VEC4,
+                        ValueType.COLOR,
+                    }
+                    else PortDimensionPolicy.EXACT
+                ),
+            )
+        )
+    return replace(
+        base,
+        type_id=compile_type_id,
+        display_name=f"{base.display_name}: {shader_id or 'None'}",
+        ports=tuple(ports),
+        properties=tuple(
+            PropertyDef("shader", TypeRef(ValueType.STRING), shader_id, shader_choices)
+            if item.id == "shader"
+            else item
+            for item in base.properties
+        ),
+    )
 
 
 def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
@@ -103,6 +205,10 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
     registry = NodeDefinitionRegistry()
     for definition in COMMON_NODE_REGISTRY.definitions():
         registry.register(definition)
+
+    fragment_shader_choices, fragment_shader_properties = (
+        _particle_fragment_shader_catalog()
+    )
 
     emitter_choices = tuple(
         (emitter.name, emitter.stable_id) for emitter in asset.emitters
@@ -236,6 +342,33 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
                 {"particle_hir": "event.trigger"},
             )
         )
+    output_definition_by_node: dict[tuple[str, str], NodeDef] = {}
+    for emitter in asset.emitters:
+        for node in emitter.rendering.nodes:
+            if node.type_id not in {
+                "particle.output.sprite",
+                "particle.output.mesh",
+                "particle.output.ribbon",
+            }:
+                continue
+            base = registry.get(node.type_id)
+            if base is None:
+                continue
+            shader_id = str(
+                node.properties.get("shader", "Particle Unlit")
+            ).strip()
+            digest = hashlib.sha256(
+                f"{emitter.stable_id}:{node.uid}:{shader_id}".encode("utf-8")
+            ).hexdigest()
+            definition = _particle_output_definition(
+                base,
+                shader_id,
+                fragment_shader_properties.get(shader_id, ()),
+                f"internal.particle.output.{digest}",
+                fragment_shader_choices,
+            )
+            registry.register(definition)
+            output_definition_by_node[(emitter.stable_id, node.uid)] = definition
     abi_payload = {
         "parameters": [
             {
@@ -260,6 +393,29 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
             for emitter in asset.emitters
         },
         "emitter_order": [emitter.stable_id for emitter in asset.emitters],
+        "outputs": {
+            f"{emitter_id}:{node_id}": {
+                "type_id": definition.type_id,
+                "shader": next(
+                    (
+                        item.default
+                        for item in definition.properties
+                        if item.id == "shader"
+                    ),
+                    "",
+                ),
+                "ports": [
+                    {
+                        "id": port.id,
+                        "type": port.value_type.to_dict(),
+                    }
+                    for port in definition.ports
+                    if port.id.startswith("shader.")
+                    and port.value_type is not None
+                ],
+            }
+            for (emitter_id, node_id), definition in output_definition_by_node.items()
+        },
     }
     encoded = json.dumps(
         abi_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -286,6 +442,8 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
         MappingProxyType(
             {emitter.stable_id: emitter.settings.capacity for emitter in asset.emitters}
         ),
+        MappingProxyType(output_definition_by_node),
+        fragment_shader_choices,
         hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
     )
 
@@ -348,10 +506,46 @@ def _attribute_operation(
                 value_type=value_type,
                 required=False,
                 default=default,
+                dimension_policy=PortDimensionPolicy.FIXED,
             ),
         ),
         properties,
         {"particle_hir": opcode},
+    )
+
+
+def _target_position_operation() -> NodeDef:
+    properties = (
+        PropertyDef(
+            "target",
+            TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+            [0.0, 0.0, 0.0],
+        ),
+        PropertyDef("speed", TypeRef(ValueType.F32), 5.0),
+        PropertyDef("responsiveness", TypeRef(ValueType.F32), 8.0),
+        PropertyDef("arrival_radius", TypeRef(ValueType.F32), 0.5),
+    )
+    return NodeDef(
+        "particle.motion.target_position",
+        "Target Position",
+        (
+            _exec("in", PortDirection.INPUT),
+            _exec("out", PortDirection.OUTPUT),
+            *(
+                PortDef(
+                    item.id,
+                    PortDirection.INPUT,
+                    value_type=item.value_type,
+                    required=False,
+                    default=item.default,
+                    display_name=item.id.replace("_", " ").title(),
+                    dimension_policy=PortDimensionPolicy.FIXED,
+                )
+                for item in properties
+            ),
+        ),
+        properties,
+        {"particle_hir": "motion.target_position"},
     )
 
 
@@ -377,6 +571,50 @@ def _vector_field_sample() -> NodeDef:
     )
 
 
+def _sdf_sample_distance() -> NodeDef:
+    return NodeDef(
+        "particle.sdf.sample_distance",
+        "Sample SDF Distance",
+        (
+            PortDef(
+                "position",
+                PortDirection.INPUT,
+                value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+                required=True,
+            ),
+            PortDef(
+                "distance",
+                PortDirection.OUTPUT,
+                value_type=TypeRef(ValueType.F32),
+            ),
+        ),
+        (PropertyDef("interface", TypeRef(ValueType.STRING), ""),),
+        {"expression": "sample_sdf_distance"},
+    )
+
+
+def _sdf_sample_gradient() -> NodeDef:
+    return NodeDef(
+        "particle.sdf.sample_gradient",
+        "Sample SDF Gradient",
+        (
+            PortDef(
+                "position",
+                PortDirection.INPUT,
+                value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+                required=True,
+            ),
+            PortDef(
+                "gradient",
+                PortDirection.OUTPUT,
+                value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+            ),
+        ),
+        (PropertyDef("interface", TypeRef(ValueType.STRING), ""),),
+        {"expression": "sample_sdf_gradient"},
+    )
+
+
 def _get_attribute() -> NodeDef:
     return NodeDef(
         "particle.attribute.get",
@@ -396,6 +634,70 @@ def _get_attribute() -> NodeDef:
             "expression": "load_attribute",
             "particle_hir": "attribute.capture",
         },
+    )
+
+
+def _mesh_sample() -> NodeDef:
+    return NodeDef(
+        "particle.mesh.sample",
+        "Sample Mesh",
+        (
+            PortDef(
+                "mesh",
+                PortDirection.INPUT,
+                value_type=TypeRef(ValueType.MESH),
+                required=False,
+                default=AssetReference().to_dict(),
+                display_name="Mesh",
+            ),
+            PortDef(
+                "sample",
+                PortDirection.INPUT,
+                value_type=TypeRef(ValueType.VEC3),
+                required=False,
+                default=[0.5, 0.5, 0.5],
+                display_name="Sample",
+            ),
+            PortDef(
+                "position",
+                PortDirection.OUTPUT,
+                value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+                display_name="Position",
+            ),
+            PortDef(
+                "normal",
+                PortDirection.OUTPUT,
+                value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+                display_name="Normal",
+            ),
+            PortDef(
+                "tangent",
+                PortDirection.OUTPUT,
+                value_type=TypeRef(ValueType.VEC4, CoordinateSpace.SIMULATION),
+                display_name="Tangent",
+            ),
+            PortDef(
+                "uv",
+                PortDirection.OUTPUT,
+                value_type=TypeRef(ValueType.VEC2),
+                display_name="UV",
+            ),
+            PortDef(
+                "barycentric",
+                PortDirection.OUTPUT,
+                value_type=TypeRef(ValueType.VEC3),
+                display_name="Barycentric",
+            ),
+        ),
+        (
+            PropertyDef(
+                "mode",
+                TypeRef(ValueType.STRING),
+                "surface",
+                (("Vertex", "vertex"), ("Edge", "edge"), ("Surface", "surface")),
+            ),
+        ),
+        {"expression": "sample_mesh"},
     )
 
 
@@ -424,6 +726,37 @@ def specialize_particle_event_document(document, definitions):
         elif type_id == PARTICLE_EVENT_TRIGGER_TYPE_ID and event_id:
             type_id = definitions.event_trigger_compile_type_by_id.get(event_id, type_id)
         replacement = replace(node, type_id=type_id)
+        nodes.append(replacement)
+        changed = changed or replacement != node
+    return replace(document, nodes=tuple(nodes)) if changed else document
+
+
+def particle_output_node_definition(
+    definitions: ParticleGraphNodeDefinitionSet,
+    emitter_id: str,
+    node,
+) -> NodeDef | None:
+    if node is None:
+        return None
+    node_uid = str(node.uid).split("::", 1)[-1]
+    return definitions.output_definition_by_node.get(
+        (str(emitter_id), node_uid)
+    ) or definitions.registry.get(node.type_id)
+
+
+def specialize_particle_output_document(document, definitions, emitter_id: str):
+    """Apply output-specific ShaderInfo ports in the compiler-only document."""
+    nodes = []
+    changed = False
+    for node in document.nodes:
+        definition = definitions.output_definition_by_node.get(
+            (str(emitter_id), str(node.uid))
+        )
+        replacement = (
+            replace(node, type_id=definition.type_id)
+            if definition is not None
+            else node
+        )
         nodes.append(replacement)
         changed = changed or replacement != node
     return replace(document, nodes=tuple(nodes)) if changed else document
@@ -462,8 +795,8 @@ def _attribute_cache_operation() -> NodeDef:
 
 def _get_parameter() -> NodeDef:
     return NodeDef(
-        "particle.parameter.get",
-        "Get Parameter",
+        "particle.parameter",
+        "Parameter",
         (
             PortDef(
                 "value",
@@ -640,6 +973,7 @@ PARTICLE_NODE_DEFINITIONS = (
         TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
         [0.0, 1.0, 0.0],
     ),
+    _target_position_operation(),
     _attribute_operation(
         "particle.attribute.lifetime",
         "Lifetime",
@@ -713,7 +1047,7 @@ PARTICLE_NODE_DEFINITIONS = (
         property_id="degrees",
     ),
     _operation(
-        "particle.update.collide_plane",
+        "particle.collision.plane",
         "Plane Collision",
         "collision.plane",
         (
@@ -733,7 +1067,7 @@ PARTICLE_NODE_DEFINITIONS = (
         ),
     ),
     _operation(
-        "particle.update.collide_sphere",
+        "particle.collision.sphere",
         "Sphere Collision",
         "collision.sphere",
         (
@@ -749,7 +1083,7 @@ PARTICLE_NODE_DEFINITIONS = (
         ),
     ),
     _operation(
-        "particle.update.collide_sdf",
+        "particle.collision.sdf",
         "SDF Collision",
         "collision.sdf",
         (
@@ -761,7 +1095,7 @@ PARTICLE_NODE_DEFINITIONS = (
         ),
     ),
     _operation(
-        "particle.update.kill_if",
+        "particle.lifecycle.kill_if",
         "Kill If",
         "lifecycle.kill_if",
         (PropertyDef("condition", TypeRef(ValueType.BOOL), False),),
@@ -771,7 +1105,7 @@ PARTICLE_NODE_DEFINITIONS = (
         "Sprite Output",
         (_exec("in", PortDirection.INPUT),),
         (
-            PropertyDef("material", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
+            PropertyDef("shader", TypeRef(ValueType.STRING), "Particle Unlit"),
             PropertyDef("receive_scene_lighting", TypeRef(ValueType.BOOL), False),
             PropertyDef("receive_shadows", TypeRef(ValueType.BOOL), False),
             PropertyDef("soft_particles", TypeRef(ValueType.BOOL), False),
@@ -787,10 +1121,19 @@ PARTICLE_NODE_DEFINITIONS = (
     NodeDef(
         "particle.output.mesh",
         "Static Mesh Output",
-        (_exec("in", PortDirection.INPUT),),
         (
-            PropertyDef("mesh", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
-            PropertyDef("material", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
+            _exec("in", PortDirection.INPUT),
+            PortDef(
+                "mesh",
+                PortDirection.INPUT,
+                value_type=TypeRef(ValueType.MESH),
+                required=False,
+                default=AssetReference().to_dict(),
+                display_name="Mesh",
+            ),
+        ),
+        (
+            PropertyDef("shader", TypeRef(ValueType.STRING), "Particle Unlit"),
             PropertyDef("receive_scene_lighting", TypeRef(ValueType.BOOL), False),
             PropertyDef("receive_shadows", TypeRef(ValueType.BOOL), False),
             PropertyDef("cast_shadows", TypeRef(ValueType.BOOL), False),
@@ -803,7 +1146,7 @@ PARTICLE_NODE_DEFINITIONS = (
         "Ribbon Output",
         (_exec("in", PortDirection.INPUT),),
         (
-            PropertyDef("material", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
+            PropertyDef("shader", TypeRef(ValueType.STRING), "Particle Unlit"),
             PropertyDef("receive_scene_lighting", TypeRef(ValueType.BOOL), False),
             PropertyDef("receive_shadows", TypeRef(ValueType.BOOL), False),
             PropertyDef("soft_particles", TypeRef(ValueType.BOOL), False),
@@ -815,6 +1158,9 @@ PARTICLE_NODE_DEFINITIONS = (
         {"particle_hir": "render.ribbon"},
     ),
     _vector_field_sample(),
+    _sdf_sample_distance(),
+    _sdf_sample_gradient(),
+    _mesh_sample(),
     NodeDef(
         "particle.attribute.normalized_age",
         "Normalized Age",
@@ -846,5 +1192,8 @@ __all__ = [
     "particle_event_payload_port_id",
     "particle_event_node_definition",
     "particle_graph_node_definitions",
+    "particle_output_node_definition",
+    "particle_shader_property_port_id",
     "specialize_particle_event_document",
+    "specialize_particle_output_document",
 ]

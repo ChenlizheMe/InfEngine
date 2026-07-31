@@ -348,8 +348,44 @@ void PhysicsECSStore::QueueBroadphaseAdd(uint32_t bodyId, bool isStatic)
 std::vector<std::pair<uint32_t, bool>> PhysicsECSStore::ConsumePendingBroadphaseAdds()
 {
     std::vector<std::pair<uint32_t, bool>> result;
-    result.swap(m_pendingBroadphaseAdds);
+    result.reserve(m_pendingBroadphaseAdds.size());
+    for (const auto &entry : m_pendingBroadphaseAdds) {
+        if (m_pendingBroadphaseSet.find(entry.first) != m_pendingBroadphaseSet.end())
+            result.push_back(entry);
+    }
+    m_pendingBroadphaseAdds.clear();
     m_pendingBroadphaseSet.clear();
+    return result;
+}
+
+bool PhysicsECSStore::CancelBroadphaseAdd(uint32_t bodyId)
+{
+    return bodyId != 0xFFFFFFFF && m_pendingBroadphaseSet.erase(bodyId) != 0;
+}
+
+void PhysicsECSStore::QueueBroadphaseRemove(uint32_t bodyId)
+{
+    if (bodyId == 0xFFFFFFFF)
+        return;
+    if (m_pendingBroadphaseRemoveSet.insert(bodyId).second)
+        m_pendingBroadphaseRemoves.push_back(bodyId);
+}
+
+bool PhysicsECSStore::CancelBroadphaseRemove(uint32_t bodyId)
+{
+    return bodyId != 0xFFFFFFFF && m_pendingBroadphaseRemoveSet.erase(bodyId) != 0;
+}
+
+std::vector<uint32_t> PhysicsECSStore::ConsumePendingBroadphaseRemoves()
+{
+    std::vector<uint32_t> result;
+    result.reserve(m_pendingBroadphaseRemoves.size());
+    for (const uint32_t bodyId : m_pendingBroadphaseRemoves) {
+        if (m_pendingBroadphaseRemoveSet.find(bodyId) != m_pendingBroadphaseRemoveSet.end())
+            result.push_back(bodyId);
+    }
+    m_pendingBroadphaseRemoves.clear();
+    m_pendingBroadphaseRemoveSet.clear();
     return result;
 }
 
@@ -359,6 +395,8 @@ void PhysicsECSStore::ClearPendingQueues()
     m_pendingBodyCreationSet.clear();
     m_pendingBroadphaseAdds.clear();
     m_pendingBroadphaseSet.clear();
+    m_pendingBroadphaseRemoves.clear();
+    m_pendingBroadphaseRemoveSet.clear();
     for (const ActorHandle actorHandle : m_dirtyActorList) {
         if (m_actorPool.IsAlive(actorHandle))
             m_actorPool.Get(actorHandle).transformDirtyQueued = false;

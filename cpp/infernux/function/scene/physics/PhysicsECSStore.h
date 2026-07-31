@@ -211,10 +211,28 @@ class PhysicsECSStore
     /// Consume pending broadphase additions.  Returns pairs of (bodyId, isStatic).
     std::vector<std::pair<uint32_t, bool>> ConsumePendingBroadphaseAdds();
 
+    /// Cancel an add that has not reached Jolt yet.
+    bool CancelBroadphaseAdd(uint32_t bodyId);
+
     /// True if any bodies are waiting to be added to the broadphase.
     [[nodiscard]] bool HasPendingBroadphaseAdds() const
     {
         return !m_pendingBroadphaseAdds.empty();
+    }
+
+    /// Queue a body for removal at the next pre-physics flush. Gameplay
+    /// callbacks must not mutate Jolt's broadphase directly.
+    void QueueBroadphaseRemove(uint32_t bodyId);
+
+    /// Cancel a removal when the Collider is re-enabled before the flush.
+    bool CancelBroadphaseRemove(uint32_t bodyId);
+
+    /// Consume pending broadphase removals.
+    std::vector<uint32_t> ConsumePendingBroadphaseRemoves();
+
+    [[nodiscard]] bool HasPendingBroadphaseRemoves() const
+    {
+        return !m_pendingBroadphaseRemoves.empty();
     }
 
     /// Pre-allocate internal pools and queues for @p count new colliders.
@@ -226,6 +244,8 @@ class PhysicsECSStore
         m_pendingBodyCreationSet.reserve(m_pendingBodyCreationSet.size() + count);
         m_pendingBroadphaseAdds.reserve(m_pendingBroadphaseAdds.size() + count);
         m_pendingBroadphaseSet.reserve(m_pendingBroadphaseSet.size() + count);
+        m_pendingBroadphaseRemoves.reserve(m_pendingBroadphaseRemoves.size() + count);
+        m_pendingBroadphaseRemoveSet.reserve(m_pendingBroadphaseRemoveSet.size() + count);
     }
 
     /// Clear all pending queues (body creation + broadphase adds + dirty tracking).
@@ -283,6 +303,11 @@ class PhysicsECSStore
     // Pending broadphase add queue — (bodyId, isStatic) pairs.
     std::vector<std::pair<uint32_t, bool>> m_pendingBroadphaseAdds;
     std::unordered_set<uint32_t> m_pendingBroadphaseSet; // deduplicate
+
+    // Pending broadphase removals. Entries remain in the vector after a
+    // cancellation and are filtered through the set during consume.
+    std::vector<uint32_t> m_pendingBroadphaseRemoves;
+    std::unordered_set<uint32_t> m_pendingBroadphaseRemoveSet;
 };
 
 } // namespace infernux

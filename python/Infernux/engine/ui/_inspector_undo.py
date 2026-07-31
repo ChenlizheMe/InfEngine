@@ -34,6 +34,50 @@ def _record_property(target, prop_name: str, old_value, new_value,
     _notify_scene_modified()
 
 
+def _record_python_component_document_edit(
+    component: InxComponent,
+    edit,
+    description: str,
+    *,
+    edit_key: str = "",
+    validate: bool = False,
+):
+    """Apply one Python-component edit and record its complete serialized state."""
+    from Infernux.engine.undo import UndoManager, PythonComponentDocumentCommand
+
+    serializer = getattr(component, "_serialize_fields_document", None)
+    if not callable(serializer):
+        result = edit()
+        _notify_scene_modified()
+        return result
+
+    manager = UndoManager.instance()
+    if manager is not None and manager.enabled:
+        with manager.suppress():
+            old_document = serializer()
+            result = edit()
+            if validate:
+                component._call_on_validate()
+            new_document = serializer()
+        if new_document != old_document:
+            manager.record(PythonComponentDocumentCommand(
+                component,
+                old_document,
+                new_document,
+                description,
+                edit_key=edit_key,
+            ))
+        return result
+
+    old_document = serializer()
+    result = edit()
+    if validate:
+        component._call_on_validate()
+    if serializer() != old_document:
+        _notify_scene_modified()
+    return result
+
+
 def _record_material_slot(renderer, slot: int, old_guid: str, new_guid: str,
                           description: str = ""):
     """Record a MeshRenderer material-slot change via SetMaterialSlotCommand."""

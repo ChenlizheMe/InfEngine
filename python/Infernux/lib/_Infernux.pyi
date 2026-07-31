@@ -140,6 +140,12 @@ class GraphPassType(IntEnum):
     PRESENT: int
 
 
+class GraphMaterialFilter(IntEnum):
+    ALL: int
+    DEFERRED_COMPATIBLE: int
+    DEFERRED_UNSUPPORTED: int
+
+
 class GraphBufferUsage(IntEnum):
     NONE: int
     STORAGE: int
@@ -158,6 +164,7 @@ class GraphBufferAccessType(IntEnum):
 
 class MaterialPassType(IntEnum):
     FORWARD: int
+    FORWARD_PLUS: int
     GBUFFER: int
     SHADOW: int
     DEPTH: int
@@ -1285,6 +1292,8 @@ class Scene:
     main_camera: Optional[Camera]
     @property
     def effective_game_camera(self) -> Optional[Camera]: ...
+    @property
+    def active_game_cameras(self) -> List[Camera]: ...
 
 
 class SceneManager:
@@ -1863,6 +1872,7 @@ class GraphCommandDesc:
 
     type: GraphCommandType
     material_pass: MaterialPassType
+    material_filter: GraphMaterialFilter
     queue_min: int
     queue_max: int
     sort_mode: str

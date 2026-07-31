@@ -110,7 +110,7 @@ bool SceneRenderTarget::Initialize(uint32_t width, uint32_t height)
 VkFormat SceneRenderTarget::GetDepthFormat() const
 {
     if (m_vkCore) {
-        return m_vkCore->GetDeviceContext().FindDepthFormat();
+        return m_vkCore->GetDeviceContext().FindSampledDepthFormat();
     }
     return VK_FORMAT_D32_SFLOAT;
 }
@@ -211,10 +211,14 @@ void SceneRenderTarget::CreateMsaaColorAttachment()
 
 void SceneRenderTarget::CreateDepthAttachment()
 {
-    VkFormat depthFormat = m_vkCore->GetDeviceContext().FindDepthFormat();
+    const VkFormat depthFormat = m_vkCore->GetDeviceContext().FindSampledDepthFormat();
+    if (depthFormat == VK_FORMAT_UNDEFINED) {
+        throw std::runtime_error("No depth format supports both attachment and sampled-image usage");
+    }
 
-    auto imageInfo = vkrender::MakeImageCreateInfo2D(m_width, m_height, depthFormat,
-                                                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, m_msaaSampleCount);
+    auto imageInfo = vkrender::MakeImageCreateInfo2D(
+        m_width, m_height, depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        m_msaaSampleCount);
 
     VmaAllocator allocator = m_vkCore->GetDeviceContext().GetVmaAllocator();
     VmaAllocationCreateInfo allocCreateInfo{};

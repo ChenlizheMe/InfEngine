@@ -49,6 +49,7 @@ list(APPEND INFERNUX_FOUNDATION_SOURCES
 set(INFERNUX_PARTICLE_RUNTIME_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuBounds.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuContinuationRuntime.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuContactRuntime.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuCollisionScene.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuCuller.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuDrawRegistry.cpp"
@@ -699,9 +700,11 @@ if(INFERNUX_BUILD_TESTS)
     add_executable(infernux_particle_gpu_runtime_tests
         cpp/tests/ParticleGpuRuntimeTests.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuBillboardRenderer.cpp
+        cpp/infernux/function/renderer/particle/ParticleGpuSurfaceBinding.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuMeshRenderer.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuBounds.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuContinuationRuntime.cpp
+        cpp/infernux/function/renderer/particle/ParticleGpuContactRuntime.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuCollisionScene.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuDrawRegistry.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuMigrator.cpp

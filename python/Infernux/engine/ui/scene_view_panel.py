@@ -193,6 +193,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
     KEY_C = _keys.KEY_C
     KEY_V = _keys.KEY_V
     KEY_X = _keys.KEY_X
+    KEY_DELETE = _keys.KEY_DELETE
     KEY_LEFT_CTRL = _keys.KEY_LEFT_CTRL
     KEY_RIGHT_CTRL = _keys.KEY_RIGHT_CTRL
     KEY_LEFT_SHIFT = _keys.KEY_LEFT_SHIFT
@@ -208,6 +209,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._copy_selected_callback = None
         self._paste_clipboard_callback = None
         self._has_clipboard_data_callback = None
+        self._delete_selected_callback = None
         
         # Scene render target size tracking
         self._last_scene_width = 0
@@ -344,6 +346,10 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._copy_selected_callback = copy_selected
         self._paste_clipboard_callback = paste_clipboard
         self._has_clipboard_data_callback = has_clipboard_data
+
+    def set_object_delete_handler(self, delete_selected):
+        """Use the hierarchy's structural delete transaction in Scene View."""
+        self._delete_selected_callback = delete_selected
 
     # ------------------------------------------------------------------
     # EditorPanel hooks
@@ -511,6 +517,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
             vp = capture_viewport_info(ctx)
             is_scene_hovered = vp.is_hovered
+            self._handle_object_clipboard_shortcuts(ctx, is_scene_hovered)
 
             overlay_hovered = self._render_overlays_and_shortcuts(
                 ctx,
@@ -541,6 +548,11 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
         panel_active = (ClosablePanel.get_active_panel_id() == self.window_id) or self._is_window_or_child_focused(ctx)
         if not (panel_active or is_scene_hovered):
+            return
+
+        if ctx.is_key_pressed(self.KEY_DELETE):
+            if self._delete_selected_callback:
+                self._delete_selected_callback()
             return
 
         ctrl = ctx.is_key_down(self.KEY_LEFT_CTRL) or ctx.is_key_down(self.KEY_RIGHT_CTRL)

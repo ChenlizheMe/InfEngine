@@ -22,7 +22,7 @@ from Infernux.graph.document import (
     GraphNodeRecord,
     GraphSourceLocation,
 )
-from Infernux.graph.types import AssetReference, TypeRef, ValueType
+from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 
 from .asset import (
     EmitterSettings,
@@ -34,11 +34,16 @@ from .asset import (
     particle_attribute_catalog,
     particle_attribute_zero,
 )
-from .data_interface import ParticleDataInterface, SdfVolume
+from .data_interface import (
+    MeshResourceBinding,
+    ParticleRuntimeResource,
+    SdfVolume,
+)
 from .nodes import (
     ATTRIBUTE_OPERATION_SPECS,
     particle_graph_node_definitions,
     specialize_particle_event_document,
+    specialize_particle_output_document,
 )
 
 
@@ -288,11 +293,20 @@ class ParticleStageHIR:
 
 
 @dataclass(frozen=True)
+class ParticleOutputShaderProperty:
+    name: str
+    value_type: TypeRef
+    default: Any
+    parameter_id: str = ""
+
+
+@dataclass(frozen=True)
 class ParticleOutputDescriptor:
     output_id: str
     output_type: str
     mesh: AssetReference
-    material: AssetReference
+    shader: str
+    shader_properties: tuple[ParticleOutputShaderProperty, ...]
     receive_scene_lighting: bool
     receive_shadows: bool
     cast_shadows: bool
@@ -305,6 +319,7 @@ class ParticleOutputDescriptor:
     flipbook_rows: int = 1
     sprite_alignment: str = "camera_plane"
     alignment_axis: tuple[float, float, float] = (0.0, 1.0, 0.0)
+    mesh_parameter: str = ""
 
 
 @dataclass(frozen=True)
@@ -326,7 +341,7 @@ class ParticleEmitterHIR:
     event_flows: tuple[ParticleStageHIR, ...]
     rendering: ParticleStageHIR
     render_plan: ParticleRenderPlan
-    data_interfaces: tuple[ParticleDataInterface, ...] = ()
+    data_interfaces: tuple[ParticleRuntimeResource, ...] = ()
 
     def lifecycle_stages(self) -> tuple[ParticleStageHIR, ...]:
         """Return active lifecycle stages in their deterministic execution order."""
@@ -617,7 +632,17 @@ class ParticleGraphCompiler:
                         {
                             "type": output.output_type,
                             "mesh": output.mesh.to_dict(),
-                            "material": output.material.to_dict(),
+                            "mesh_parameter": output.mesh_parameter,
+                            "shader": output.shader,
+                            "shader_properties": [
+                                {
+                                    "name": item.name,
+                                    "type": item.value_type.to_dict(),
+                                    "default": item.default,
+                                    "parameter_id": item.parameter_id,
+                                }
+                                for item in output.shader_properties
+                            ],
                             "receive_scene_lighting": output.receive_scene_lighting,
                             "receive_shadows": output.receive_shadows,
                             "cast_shadows": output.cast_shadows,
@@ -755,7 +780,6 @@ class ParticleGraphCompiler:
                 definitions,
                 events,
                 emitter,
-                entry_condition=stage.value,
                 source_name=source_name,
             )
 
@@ -795,7 +819,13 @@ class ParticleGraphCompiler:
             source_name=source_name,
         )
         outputs = tuple(
-            self._compile_output(operation)
+            self._compile_output(
+                operation,
+                rendering.expressions,
+                definitions.output_definition_by_node.get(
+                    (emitter.stable_id, operation.source_node_uid)
+                ),
+            )
             for operation in rendering.flow.iter_operations()
             if operation.opcode in {"render.sprite", "render.mesh", "render.ribbon"}
         )
@@ -902,6 +932,7 @@ class ParticleGraphCompiler:
                 output
                 for output in outputs
                 if output.output_type == "mesh"
+                and not output.mesh_parameter
                 and not (output.mesh.guid or output.mesh.path_hint)
             ),
             None,
@@ -915,17 +946,14 @@ class ParticleGraphCompiler:
                 output
                 for output in outputs
                 if output.output_type == "mesh"
-                and (
-                    output.soft_particles
-                    or output.sort_mode != "none"
-                )
+                and output.soft_particles
             ),
             None,
         )
         if unsupported_mesh_semantics is not None:
             raise ParticleCompileError(
                 f"particle mesh output {unsupported_mesh_semantics.output_id!r} currently "
-                "supports unsorted, non-soft rendering only"
+                "does not support soft-particle depth fading"
             )
         unsupported_ribbon_semantics = next(
             (
@@ -958,18 +986,43 @@ class ParticleGraphCompiler:
                 f"particle ribbon output {invalid_ribbon_uv.output_id!r} requires uv_mode "
                 "'stretch' or 'repeat' and a finite positive uv_scale"
             )
+        all_lifecycles = (
+            init,
+            update,
+            *(
+                stage
+                for stage in (collision_enter, collision_stay, collision_exit)
+                if stage
+            ),
+            *event_flows,
+            rendering,
+        )
+        lifecycle_operations = tuple(
+            operation
+            for stage in all_lifecycles
+            for operation in stage.flow.iter_operations()
+        )
         collision_opcodes = {
             "collision.plane",
             "collision.sphere",
             "collision.sdf",
         }
-        collision_indices = [
-            index
-            for index, operation in enumerate(update.flow.iter_operations())
-            if operation.opcode in collision_opcodes
-        ]
-        update_operations = tuple(update.flow.iter_operations())
-        for operation in (update_operations[index] for index in collision_indices):
+        for operation in lifecycle_operations:
+            if operation.opcode != "motion.target_position":
+                continue
+            parameters = operation.parameter_dict()
+            bindings = dict(operation.value_bindings)
+            for name in ("speed", "responsiveness", "arrival_radius"):
+                if name in bindings:
+                    continue
+                value = float(parameters[name])
+                if not math.isfinite(value) or value < 0.0:
+                    raise ParticleCompileError(
+                        f"Target Position {name} must be finite and non-negative"
+                    )
+        for operation in lifecycle_operations:
+            if operation.opcode not in collision_opcodes:
+                continue
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
             label = {
@@ -1019,13 +1072,6 @@ class ParticleGraphCompiler:
                     )
         orientation_opcodes = {"attribute.modify_orientation"}
         scale_opcodes = {"attribute.modify_scale"}
-        all_lifecycles = (
-            init,
-            update,
-            *(stage for stage in (collision_enter, collision_stay, collision_exit) if stage),
-            *event_flows,
-            rendering,
-        )
         event_flow_ids = {stage.flow_id for stage in event_flows}
         for stage_hir in all_lifecycles:
             for operation in stage_hir.flow.iter_operations():
@@ -1092,13 +1138,6 @@ class ParticleGraphCompiler:
                         "Attribute Cache storage must be owned by its graph node, got "
                         f"unknown slot {stable_id!r}"
                     )
-                if (
-                    catalog[stable_id].value_type.value_type is ValueType.TEXTURE2D
-                    and operation.parameter_dict().get("composition", "set") != "set"
-                ):
-                    raise ParticleCompileError(
-                        "Texture2D Attribute Cache nodes only support Set composition"
-                    )
         attributes = list(emitter.attributes)
         allocated = {attribute.stable_id for attribute in attributes}
 
@@ -1126,7 +1165,10 @@ class ParticleGraphCompiler:
             allocate("builtin.scale")
         if needs_flipbook_frame:
             allocate("builtin.flipbook_frame")
-        if emitter.settings.collision_enabled:
+        if emitter.settings.collision_enabled or any(
+            operation.opcode in collision_opcodes
+            for operation in lifecycle_operations
+        ):
             allocate("builtin.collision_hit")
             allocate("builtin.collision_normal")
             allocate("builtin.collision_point")
@@ -1134,15 +1176,34 @@ class ParticleGraphCompiler:
             allocate("builtin.collision_penetration")
             allocate("builtin.collision_is_trigger")
             allocate("builtin.collision_material")
-            allocate("internal.collision_current_id_low")
-            allocate("internal.collision_current_id_high")
-            allocate("builtin.collision_active")
-            allocate("internal.collision_active_id_low")
-            allocate("internal.collision_active_id_high")
+            allocate("builtin.collision_collider_id_low")
+            allocate("builtin.collision_collider_id_high")
         if any(output.output_type == "ribbon" for output in outputs):
             allocate("builtin.ribbon_strip_id")
             allocate("builtin.ribbon_order")
             allocate("builtin.ribbon_break")
+        compiled_interfaces = list(emitter.data_interfaces)
+        interface_ids = {
+            interface.stable_id for interface in compiled_interfaces
+        }
+        for stage_hir in all_lifecycles:
+            for instruction in stage_hir.expressions.instructions:
+                if instruction.opcode != "sample_mesh":
+                    continue
+                immediate = instruction.immediate_dict()
+                stable_id = str(immediate["interface"])
+                if stable_id in interface_ids:
+                    continue
+                compiled_interfaces.append(
+                    MeshResourceBinding(
+                        stable_id=stable_id,
+                        name="Sample Mesh Resource",
+                        mesh=AssetReference.from_dict(immediate["mesh"]),
+                        mesh_parameter=str(immediate["mesh_parameter"]),
+                        space=CoordinateSpace.EMITTER_LOCAL,
+                    )
+                )
+                interface_ids.add(stable_id)
         return ParticleEmitterHIR(
             emitter.stable_id,
             emitter.name,
@@ -1156,12 +1217,69 @@ class ParticleGraphCompiler:
             event_flows,
             rendering,
             ParticleRenderPlan(outputs),
-            emitter.data_interfaces,
+            tuple(compiled_interfaces),
         )
 
     @staticmethod
-    def _compile_output(operation: ParticleOperation) -> ParticleOutputDescriptor:
+    def _compile_output(
+        operation: ParticleOperation,
+        expressions: ExpressionProgram,
+        definition,
+    ) -> ParticleOutputDescriptor:
         parameters = operation.parameter_dict()
+        value_bindings = dict(operation.value_bindings)
+        instructions = {
+            instruction.result_id: instruction
+            for instruction in expressions.instructions
+        }
+
+        def direct_parameter_id(value_id: str) -> str:
+            visited = set()
+            while value_id and value_id not in visited:
+                visited.add(value_id)
+                instruction = instructions.get(value_id)
+                if instruction is None:
+                    return ""
+                if instruction.opcode == "load_parameter":
+                    return str(instruction.immediate_dict().get("parameter", ""))
+                if instruction.opcode not in {"numeric_resize", "convert_space"}:
+                    return ""
+                operands = [item for item in instruction.operands if item.value_id]
+                if len(operands) != 1:
+                    return ""
+                value_id = operands[0].value_id
+            return ""
+
+        shader_properties = []
+        if definition is not None:
+            for port in definition.ports:
+                if not port.id.startswith("shader.") or port.value_type is None:
+                    continue
+                property_name = port.id.removeprefix("shader.")
+                value_id = value_bindings.get(port.id, "")
+                parameter_id = direct_parameter_id(value_id)
+                if value_id and not parameter_id:
+                    raise ParticleCompileError(
+                        f"particle output shader property {property_name!r} currently "
+                        "requires a direct ParticleGraph Parameter connection"
+                    )
+                shader_properties.append(
+                    ParticleOutputShaderProperty(
+                        property_name,
+                        port.value_type,
+                        parameters.get(port.id, port.default),
+                        parameter_id,
+                    )
+                )
+        mesh_parameter = ""
+        if operation.opcode == "render.mesh":
+            mesh_value_id = value_bindings.get("mesh", "")
+            mesh_parameter = direct_parameter_id(mesh_value_id)
+            if mesh_value_id and not mesh_parameter:
+                raise ParticleCompileError(
+                    "particle mesh output Mesh input currently requires a direct "
+                    "ParticleGraph Mesh Parameter connection"
+                )
         output_type = {
             "render.sprite": "sprite",
             "render.mesh": "mesh",
@@ -1173,7 +1291,8 @@ class ParticleGraphCompiler:
             AssetReference.from_dict(
                 parameters.get("mesh", AssetReference().to_dict())
             ),
-            AssetReference.from_dict(parameters["material"]),
+            str(parameters["shader"]),
+            tuple(shader_properties),
             bool(parameters["receive_scene_lighting"]),
             bool(parameters["receive_shadows"]),
             bool(parameters["cast_shadows"]) if output_type == "mesh" else False,
@@ -1186,6 +1305,7 @@ class ParticleGraphCompiler:
             int(parameters.get("flipbook_rows", 1)),
             str(parameters.get("alignment", "camera_plane")),
             tuple(float(value) for value in parameters.get("alignment_axis", (0.0, 1.0, 0.0))),
+            mesh_parameter,
         )
 
     def _compile_stage(
@@ -1203,6 +1323,10 @@ class ParticleGraphCompiler:
         source_name: str = "",
     ) -> ParticleStageHIR:
         document = specialize_particle_event_document(document, definitions)
+        if stage is ParticleStage.RENDERING:
+            document = specialize_particle_output_document(
+                document, definitions, emitter.stable_id
+            )
         registry = definitions.registry
         root_type = root_type or f"particle.root.{stage.value}"
         root = next(node for node in document.nodes if node.type_id == root_type)
@@ -1278,6 +1402,12 @@ class ParticleGraphCompiler:
             definitions,
             events,
         )
+        expressions = self._resolve_mesh_sample_expressions(
+            expressions,
+            stage,
+            flow_id,
+            definitions,
+        )
         sampled_gets = {
             link.target_node
             for link in document.links
@@ -1308,19 +1438,6 @@ class ParticleGraphCompiler:
                 else:
                     rewritten.append(instruction)
             expressions = replace(expressions, instructions=tuple(rewritten))
-        if any(
-            instruction.opcode == "delta_time"
-            for instruction in expressions.instructions
-        ) and stage not in {
-            ParticleStage.UPDATE,
-            ParticleStage.COLLISION_ENTER,
-            ParticleStage.COLLISION_STAY,
-            ParticleStage.COLLISION_EXIT,
-            ParticleStage.EVENT,
-        }:
-            raise ParticleCompileError(
-                "Delta Time is only valid in Update, Collision, and Event flows"
-            )
         value_bindings = {
             (link.target_node, link.target_port): result_id
             for link, (result_id, _value_type) in zip(value_links, expressions.outputs)
@@ -1409,6 +1526,86 @@ class ParticleGraphCompiler:
         return ExpressionProgram(
             tuple(resolved), expressions.outputs, expressions.semantic_hash
         )
+
+    @staticmethod
+    def _resolve_mesh_sample_expressions(
+        expressions: ExpressionProgram,
+        stage: ParticleStage,
+        flow_id: str,
+        definitions,
+    ) -> ExpressionProgram:
+        if not any(
+            instruction.opcode == "sample_mesh"
+            for instruction in expressions.instructions
+        ):
+            return expressions
+
+        by_result = {
+            instruction.result_id: instruction
+            for instruction in expressions.instructions
+        }
+        resolved = []
+        for instruction in expressions.instructions:
+            if instruction.opcode != "sample_mesh":
+                resolved.append(instruction)
+                continue
+            if len(instruction.operands) != 2:
+                raise ParticleCompileError(
+                    "Sample Mesh requires one Mesh and one sample-coordinate input"
+                )
+            mesh_operand, sample_operand = instruction.operands
+            mesh_parameter = ""
+            if mesh_operand.value_id:
+                source = by_result.get(mesh_operand.value_id)
+                if (
+                    source is None
+                    or source.opcode != "load_parameter"
+                    or source.result_type.value_type is not ValueType.MESH
+                ):
+                    raise ParticleCompileError(
+                        "Sample Mesh Mesh input requires a direct Mesh parameter connection"
+                    )
+                mesh_parameter = str(
+                    source.immediate_dict().get("parameter", "")
+                )
+                parameter = definitions.parameter_by_id.get(mesh_parameter)
+                if (
+                    parameter is None
+                    or parameter.value_type.value_type is not ValueType.MESH
+                ):
+                    raise ParticleCompileError(
+                        f"Sample Mesh references unknown Mesh parameter {mesh_parameter!r}"
+                    )
+                reference = AssetReference.from_dict(parameter.default)
+            else:
+                reference = AssetReference.from_dict(mesh_operand.literal)
+
+            identity = (
+                f"parameter:{mesh_parameter}"
+                if mesh_parameter
+                else "constant:"
+                + json.dumps(
+                    reference.to_dict(), sort_keys=True, separators=(",", ":")
+                )
+            )
+            interface_id = (
+                "sample.mesh."
+                + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+            )
+            immediates = instruction.immediate_dict()
+            immediates.update(
+                interface=interface_id,
+                mesh=reference.to_dict(),
+                mesh_parameter=mesh_parameter,
+            )
+            resolved.append(
+                replace(
+                    instruction,
+                    operands=(sample_operand,),
+                    immediates=tuple(sorted(immediates.items())),
+                )
+            )
+        return replace(expressions, instructions=tuple(resolved))
 
     def _graph_operations(
         self,
@@ -1960,6 +2157,7 @@ class ParticleGraphCompiler:
         opcode = operation.opcode
         writes = {
             "emitter.sample_shape": {"builtin.position"},
+            "motion.target_position": {"builtin.velocity"},
             "collision.plane": {
                 "builtin.position",
                 "builtin.velocity",
@@ -2006,6 +2204,7 @@ class ParticleGraphCompiler:
         expression_reads: Mapping[str, frozenset[str]],
     ) -> frozenset[str]:
         reads = {
+            "motion.target_position": {"builtin.position", "builtin.velocity"},
             "collision.plane": {"builtin.position", "builtin.velocity"},
             "collision.sphere": {"builtin.position", "builtin.velocity"},
             "collision.sdf": {"builtin.position", "builtin.velocity"},
@@ -2047,6 +2246,8 @@ class ParticleGraphCompiler:
                                 "shape_dimensions": list(settings.shape.dimensions),
                                 "shape_mesh": settings.shape.mesh.to_dict(),
                                 "shape_mesh_mode": settings.shape.mesh_mode.value,
+                                "shape_sdf_interface": settings.shape.sdf_interface,
+                                "shape_sdf_mode": settings.shape.sdf_mode.value,
                             }.items()
                         )
                     ),
@@ -2099,6 +2300,7 @@ __all__ = [
     "ParticleGraphCompiler",
     "ParticleOperation",
     "ParticleOutputDescriptor",
+    "ParticleOutputShaderProperty",
     "ParticleProgramHIR",
     "ParticleRenderPlan",
     "ParticleStage",

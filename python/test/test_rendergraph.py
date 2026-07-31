@@ -8,7 +8,7 @@ import Infernux.lib as native
 from Infernux.lib import (
     CommandBuffer,
     RenderGraphDescription, GraphPassDesc, GraphTextureDesc,
-    GraphBufferUsage, GraphCommandType,
+    GraphBufferUsage, GraphCommandType, GraphMaterialFilter,
     GraphTextureRole,
     GraphPassType,
     MaterialPassType, PixelFormat, SampleCount,
@@ -239,6 +239,27 @@ class TestRenderPassBuilder:
             p.write_color("color")
             with pytest.raises(ValueError, match="Unknown material pass"):
                 p.draw_renderers(material_pass="magic")
+
+    def test_draw_renderers_serializes_deferred_material_filter(self):
+        graph = RenderGraph("DeferredFilter")
+        graph.create_texture("color", camera_target=True)
+        with graph.add_pass("ForwardFallback") as render_pass:
+            render_pass.write_color("color")
+            render_pass.draw_renderers(
+                material_pass="forward_plus",
+                material_filter="deferred_unsupported",
+            )
+
+        description = graph.build()
+        assert description.passes[0].commands[0].material_filter == GraphMaterialFilter.DEFERRED_UNSUPPORTED
+
+    def test_draw_renderers_rejects_unknown_material_filter(self):
+        graph = RenderGraph("InvalidDeferredFilter")
+        graph.create_texture("color", camera_target=True)
+        with graph.add_pass("Opaque") as render_pass:
+            render_pass.write_color("color")
+            with pytest.raises(ValueError, match="Unknown material filter"):
+                render_pass.draw_renderers(material_filter="sometimes")
 
     def test_draw_skybox(self):
         graph = _make_graph()

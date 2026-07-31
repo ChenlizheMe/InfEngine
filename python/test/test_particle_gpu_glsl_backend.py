@@ -84,11 +84,51 @@ class TimedMotion(ParticleScript):
     )
     kernel = ParticleKernelLowerer().lower(hir)
     source = GpuParticleGlslLowerer().lower(kernel)
+    assert source.emitters[0].collision_enabled is False
     update = source.emitters[0].update
 
     assert "inx_until_seconds(" in update
     assert "inx_until_frames(" in update
     assert update.count("state.a_builtin_velocity =") >= 2
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
+def test_target_position_motion_compiles_to_gpu_without_hidden_target_storage():
+    source_text = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class TargetMotion(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_lifetime(4.0)
+
+        def update(self, ctx, particles):
+            particles.target_position(
+                (1.0, 2.0, 3.0),
+                speed=7.0,
+                responsiveness=9.0,
+                arrival_radius=0.5,
+            )
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    source = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(
+            ParticleScriptCompiler().compile(
+                source_text,
+                source_name="TargetMotion.particle.py",
+            )
+        )
+    )
+
+    update = source.emitters[0].update
+    assert "inx_target_position_velocity(" in update
+    assert "a_target" not in update
     compiled = compile_gpu_particle_spirv(source)
     validate_gpu_particle_spirv(compiled, source)
 
@@ -325,6 +365,128 @@ def _collision_lifecycle_asset():
     )
     return ParticleGraphAsset(
         stable_id="collision-lifecycle-gpu",
+        emitters=(
+            ParticleEmitterAsset(
+                settings=EmitterSettings(collision_enabled=True),
+                collision_enter=collision_enter,
+            ),
+        ),
+    )
+
+
+def _collision_wait_asset():
+    collision_enter = GraphDocument(
+        "particle.collision_enter",
+        nodes=(
+            GraphNodeRecord("root.collision_enter", "particle.root.collision_enter"),
+            GraphNodeRecord(
+                "frames", "common.constant.i32", properties={"value": 3}
+            ),
+            GraphNodeRecord("wait", "particle.control.wait_frames"),
+            GraphNodeRecord(
+                "enter-size",
+                "particle.attribute.size",
+                properties={"value": 2.0},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "enter-wait",
+                "root.collision_enter",
+                "out",
+                "wait",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "frames-wait",
+                "frames",
+                "value",
+                "wait",
+                "frames",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "wait-size",
+                "wait",
+                "out",
+                "enter-size",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+    return ParticleGraphAsset(
+        stable_id="collision-wait-gpu",
+        emitters=(
+            ParticleEmitterAsset(
+                settings=EmitterSettings(collision_enabled=True),
+                collision_enter=collision_enter,
+            ),
+        ),
+    )
+
+
+def _collision_wait_join_asset():
+    collision_enter = GraphDocument(
+        "particle.collision_enter",
+        nodes=(
+            GraphNodeRecord("root.collision_enter", "particle.root.collision_enter"),
+            GraphNodeRecord("frames", "common.constant.i32", properties={"value": 3}),
+            GraphNodeRecord("wait", "particle.control.wait_frames"),
+            GraphNodeRecord(
+                "delayed-size",
+                "particle.attribute.size",
+                properties={"value": 2.0},
+            ),
+            GraphNodeRecord(
+                "immediate-position",
+                "particle.attribute.position",
+                properties={"value": [1.0, 2.0, 3.0]},
+            ),
+            GraphNodeRecord("join", "particle.control.join_all"),
+            GraphNodeRecord(
+                "tail-color",
+                "particle.attribute.color",
+                properties={"value": [0.25, 0.5, 0.75, 1.0]},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-wait", "root.collision_enter", "out", "wait", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "frames-wait", "frames", "value", "wait", "frames", PortKind.VALUE
+            ),
+            GraphLinkRecord(
+                "wait-size", "wait", "out", "delayed-size", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "size-join", "delayed-size", "out", "join", "in0", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "root-position",
+                "root.collision_enter",
+                "out",
+                "immediate-position",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "position-join",
+                "immediate-position",
+                "out",
+                "join",
+                "in1",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "join-tail", "join", "out", "tail-color", "in", PortKind.EXEC
+            ),
+        ),
+    )
+    return ParticleGraphAsset(
+        stable_id="collision-wait-join-gpu",
         emitters=(
             ParticleEmitterAsset(
                 settings=EmitterSettings(collision_enabled=True),
@@ -1058,13 +1220,70 @@ def test_collision_lifecycle_root_lowers_to_gpu_mask_and_valid_spirv():
     )
     source = GpuParticleGlslLowerer().lower(kernel)
     update = source.emitters[0].stages()["update"]
+    contact = source.emitters[0].stages()["contact_dispatch"]
 
     assert "inx_collide_scene(" in update
-    assert "state.a_builtin_collision_active" in update
-    assert "// enter-size" in update
-    assert "if (" in update
+    assert "if ((pc.diagnostic_flags & 1u) != 0u) {" in update
+    assert "atomicAdd(counters.collision_hit_count, 1u);" in update
+    assert "atomicAdd(counters.collision_response_count, 1u);" in update
+    assert "atomicAdd(counters.collision_trigger_count, 1u);" in update
+    assert "atomicAdd(counters.collision_enter_count, 1u);" in contact
+    assert "atomicAdd(counters.collision_stay_count, 1u);" in contact
+    assert "atomicAdd(counters.collision_exit_count, 1u);" in contact
+    assert "atomicMax(counters.collision_max_outward_speed_bits" in update
+    assert "atomicMax(counters.collision_max_tangent_speed_bits" in update
+    assert "// enter-size" in contact
+    assert "inx_contact_lifecycle == 0u" in contact
     compiled = compile_gpu_particle_spirv(source)
     assert compiled["emitters"][0]["stages"]["update"]["byte_size"] > 0
+    assert compiled["emitters"][0]["stages"]["contact_dispatch"]["byte_size"] > 0
+
+
+def test_contact_wait_uses_contact_scoped_snapshot_and_valid_spirv():
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(_collision_wait_asset())
+    )
+    source = GpuParticleGlslLowerer().lower(kernel)
+    emitter = source.emitters[0]
+    contact = emitter.contact_dispatch
+    continuation = emitter.continuation
+
+    assert continuation is not None
+    assert "inx_continuation_context_kind = INX_CONTINUATION_CONTEXT_CONTACT" in contact
+    assert "contact_continuation_snapshot_words[base + 23u]" in contact
+    assert "bool uses_lane_slot = inx_continuation_context_kind == 0u" in contact
+    assert "uint snapshot_base = inx_continuation_record_index * 24u" in continuation.dispatch
+    assert "Contact invocation completed independently" in continuation.dispatch
+    assert "state.update_resume_step = pc.simulation_step" not in continuation.dispatch
+    compiled = compile_gpu_particle_spirv(source)
+    assert compiled["emitters"][0]["stages"]["contact_dispatch"]["byte_size"] > 0
+    assert (
+        compiled["emitters"][0]["continuation"]["stages"]["dispatch"]["byte_size"]
+        > 0
+    )
+
+
+def test_contact_wait_join_uses_full_contact_identity_and_valid_spirv():
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(_collision_wait_join_asset())
+    )
+    source = GpuParticleGlslLowerer().lower(kernel)
+    emitter = source.emitters[0]
+    continuation = emitter.continuation
+
+    assert continuation is not None
+    assert continuation.join_count == 1
+    assert "ParticleContactContinuationJoinStates" in emitter.contact_dispatch
+    assert "inx_contact_continuation_join_begin" in emitter.contact_dispatch
+    assert "inx_continuation_context_identity_low = contact.identity.z" in emitter.contact_dispatch
+    assert "inx_continuation_context_identity_high = contact.identity.w" in emitter.contact_dispatch
+    assert "inx_contact_continuation_join_arrive" in continuation.dispatch
+    assert "contact_continuation_snapshot_words[snapshot_base + 2u]" in continuation.dispatch
+    assert "contact_continuation_snapshot_words[snapshot_base + 3u]" in continuation.dispatch
+    assert "contact Wait/Until branches cannot Join" not in continuation.dispatch
+
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
 
 
 def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
@@ -1080,6 +1299,10 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
         if value.opcode == "collide_scene"
     ]
     assert len(collision_instructions) == 1
+    assert not any(
+        value.opcode == "record_collision_diagnostics"
+        for value in kernel.emitters[0].update.instructions
+    )
     instruction = collision_instructions[0]
     assert instruction.result_id == ""
     assert [operand.value_type.value_type for operand in instruction.operands] == [
@@ -1092,8 +1315,8 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
         ValueType.F32,
     ]
     assert instruction.immediate_dict() == {
-        "collider_id_high_attribute": "internal.collision_current_id_high",
-        "collider_id_low_attribute": "internal.collision_current_id_low",
+        "collider_id_high_attribute": "builtin.collision_collider_id_high",
+        "collider_id_low_attribute": "builtin.collision_collider_id_low",
         "hit_attribute": "builtin.collision_hit",
         "material_attribute": "builtin.collision_material",
         "normal_attribute": "builtin.collision_normal",
@@ -1106,6 +1329,7 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
     }
 
     source = GpuParticleGlslLowerer().lower(kernel)
+    assert source.emitters[0].collision_enabled is True
     update_source = source.emitters[0].update
     assert "struct InxParticleAffine" in update_source
     assert "vec4 row0;" in update_source
@@ -1129,11 +1353,8 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
     assert [update_source.index(field) for field in collider_fields] == sorted(
         update_source.index(field) for field in collider_fields
     )
-    assert "binding = 10" in update_source
-    assert "binding = 11" in update_source
-    assert "binding = 12" in update_source
-    assert "binding = 13" in update_source
-    assert "binding = 14" in update_source
+    for binding in range(7):
+        assert f"set = 6, binding = {binding}" in update_source
     assert "inx_collide_scene(" in update_source
     assert "bool inx_collide_scene(" in update_source
     assert "out vec3 simulation_collision_normal" in update_source
@@ -1145,8 +1366,31 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
     assert "out uvec2 collision_collider_id" in update_source
     assert "primary_collider_id = collider_id" in update_source
     assert "if (is_trigger) continue;" in update_source
-    assert "state.a_internal_collision_current_id_low" in update_source
-    assert "state.a_internal_collision_current_id_high" in update_source
+    assert update_source.index("atomicAdd(counters.collision_trigger_count, 1u);") < update_source.index(
+        "if (is_trigger) continue;"
+    )
+    assert "state.a_builtin_collision_collider_id_low" in update_source
+    assert "state.a_builtin_collision_collider_id_high" in update_source
+    assert "uint collision_hit_count;" in update_source
+    assert "uint collision_exit_count;" in update_source
+    assert "uint collision_max_outward_speed_bits;" in update_source
+    assert "uint collision_max_tangent_speed_bits;" in update_source
+    assert "uint collision_candidate_overflow_count;" in update_source
+    assert "uint candidate_indices[16];" in update_source
+    assert "particle_colliders[existing_index].identity.xy" in update_source
+    assert "atomicAdd(counters.collision_candidate_overflow_count, 1u);" in update_source
+    assert update_source.index("uint candidate_indices[16];") < update_source.index(
+        "for (uint candidate = 0u; candidate < candidate_count; ++candidate)"
+    )
+    render_reset_source = source.emitters[0].render_reset
+    assert "(pc.diagnostic_flags & 2u) != 0u" in render_reset_source
+    assert "counters.collision_hit_count = 0u;" in render_reset_source
+    assert "counters.collision_max_outward_speed_bits = 0u;" in render_reset_source
+    assert "counters.collision_max_tangent_speed_bits = 0u;" in render_reset_source
+    assert "counters.collision_candidate_overflow_count = 0u;" in render_reset_source
+    assert render_reset_source.index("counters.collision_hit_count = 0u;") < render_reset_source.index(
+        "simulation_control.simulation_allowed == 0u"
+    )
     assert "particle_collision_grid_offsets[cell_index + 1u]" in update_source
     assert "bool inx_sweep_box(" in update_source
     assert "bool inx_sweep_sphere(" in update_source
@@ -1164,6 +1408,38 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
     assert update_source.index("inx_sweep_box(local_previous") < update_source.index(
         "else if (all(lessThanEqual(abs(local_position), half_extent)))"
     )
+
+    contact_prepare_source = source.emitters[0].contact_prepare
+    for binding in range(8):
+        assert f"set = 7, binding = {binding}" in contact_prepare_source
+    assert "const uint INX_CONTACTS_PER_PARTICLE = 8u;" in contact_prepare_source
+    assert "uint current_page = pc.simulation_step & 1u;" in contact_prepare_source
+    assert "previous_state.y + 1u == pc.simulation_step" in contact_prepare_source
+    assert "contact_particle_record_indices[current_base + slot]" in contact_prepare_source
+    assert "contact_counters.contact_current_record_count = 0u;" in contact_prepare_source
+    assert "contact_hash_slots[hash_slot].key = uvec4(INX_CONTACT_INVALID_INDEX);" in contact_prepare_source
+    assert "bool reset_all = (pc.diagnostic_flags & 4u) != 0u;" in contact_prepare_source
+    assert "for (uint page = 0u; page < 2u; ++page)" in contact_prepare_source
+    assert "contact_particle_states[particle_index] =\n                uvec4(INX_CONTACT_INVALID_INDEX" in contact_prepare_source
+    assert "uint work_capacity = inx_contact_record_capacity() * 2u;" in contact_prepare_source
+    assert "(pc.capacity + 255u) / 256u" in contact_prepare_source
+    assert "contact_work_items[work_index].identity =" in contact_prepare_source
+    assert "inx_store_contact(" in update_source
+    assert "particle_index * INX_CONTACTS_PER_PARTICLE + contact_slot" in update_source
+    assert "particle_state = uvec4(generation, pc.simulation_step, 0u, 0u);" in update_source
+    assert "atomicAdd(contact_counters.contact_current_record_count, 1u);" in update_source
+    assert "struct InxParticleContactRecord" in update_source
+
+    contact_solve_source = source.emitters[0].contact_solve
+    assert "uint hash_slot = inx_contact_hash(key) & hash_mask;" in contact_solve_source
+    assert "atomicCompSwap(" in contact_solve_source
+    assert "contact_hash_slots[physical_hash_slot].value = uvec4(" in contact_solve_source
+    assert "uint inx_find_contact_record(uint page, uvec4 key)" in contact_solve_source
+    assert "for (uint lifecycle = 0u; lifecycle < 2u; ++lifecycle)" in contact_solve_source
+    assert "contact_work_items[work_index].dispatch = uvec4(" in contact_solve_source
+    assert "2u, record_index, pc.simulation_step," in contact_solve_source
+    assert "contact_records[record_index].metadata.w" in contact_solve_source
+    assert "atomicAdd(contact_counters.contact_work_item_count, work_count);" in contact_solve_source
 
     payload = compile_gpu_particle_spirv(source)
     assert validate_gpu_particle_spirv(payload, source) is payload
@@ -1296,42 +1572,43 @@ def test_scene_collision_event_payload_reads_post_collision_state():
     attribute_ids = {attribute[0] for attribute in kernel.emitters[0].attributes}
     assert "builtin.collision_hit" in attribute_ids
     assert "builtin.collision_normal" in attribute_ids
-    instructions = kernel.emitters[0].update.instructions
+    update_instructions = kernel.emitters[0].update.instructions
+    contact_instructions = kernel.emitters[0].contact.instructions
     collision_index = next(
         index
-        for index, instruction in enumerate(instructions)
+        for index, instruction in enumerate(update_instructions)
         if instruction.opcode == "collide_scene"
     )
     event_index = next(
         index
-        for index, instruction in enumerate(instructions)
+        for index, instruction in enumerate(contact_instructions)
         if instruction.opcode == "event_enqueue"
     )
     post_collision_position_loads = [
         index
-        for index, instruction in enumerate(instructions)
+        for index, instruction in enumerate(contact_instructions)
         if instruction.opcode == "load_attribute"
         and instruction.immediate_dict()["attribute"] == "builtin.position"
-        and collision_index < index < event_index
+        and index < event_index
     ]
     assert post_collision_position_loads
     post_collision_hit_loads = [
         index
-        for index, instruction in enumerate(instructions)
+        for index, instruction in enumerate(contact_instructions)
         if instruction.opcode == "load_attribute"
         and instruction.immediate_dict()["attribute"] == "builtin.collision_hit"
-        and collision_index < index < event_index
+        and index < event_index
     ]
     post_collision_normal_loads = [
         index
-        for index, instruction in enumerate(instructions)
+        for index, instruction in enumerate(contact_instructions)
         if instruction.opcode == "load_attribute"
         and instruction.immediate_dict()["attribute"] == "builtin.collision_normal"
-        and collision_index < index < event_index
+        and index < event_index
     ]
     assert post_collision_hit_loads
     assert post_collision_normal_loads
-    collision_instruction = instructions[collision_index]
+    collision_instruction = update_instructions[collision_index]
     assert collision_instruction.immediate_dict()["hit_attribute"] == "builtin.collision_hit"
     assert (
         collision_instruction.immediate_dict()["normal_attribute"]
@@ -1355,7 +1632,7 @@ def test_gpu_parameters_use_one_stable_uvec4_slot_and_typed_loads():
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "wind",
-                "particle.parameter.get",
+                "particle.parameter",
                 properties={"parameter": "wind"},
             ),
             GraphNodeRecord("accelerate", "particle.attribute.velocity"),
@@ -1466,7 +1743,7 @@ def test_gpu_texture2d_parameter_lowers_to_rhi_resource_and_sample():
             GraphNodeRecord("set-color", "particle.attribute.color"),
             GraphNodeRecord(
                 "texture",
-                "particle.parameter.get",
+                "particle.parameter",
                 properties={"parameter": "smoke-texture"},
             ),
             GraphNodeRecord(
@@ -1526,107 +1803,15 @@ def test_gpu_texture2d_parameter_lowers_to_rhi_resource_and_sample():
     assert validate_gpu_particle_spirv(payload, source) is payload
 
 
-def test_gpu_texture2d_attribute_cache_stores_a_resource_handle_across_flows():
-    cache_id = particle_attribute_cache_id("init", "cache.texture")
-    init = GraphDocument(
-        "particle.init",
-        nodes=(
-            GraphNodeRecord("root.init", "particle.root.init"),
-            GraphNodeRecord(
-                "cache.texture",
-                "particle.attribute.cache",
-                properties={
-                    "name": "Cached Texture",
-                    "value_type": "texture2d",
-                    "value_space": "none",
-                    "composition": "set",
-                    "value": {"guid": "", "path_hint": ""},
-                },
-            ),
-            GraphNodeRecord(
-                "texture.parameter",
-                "particle.parameter.get",
-                properties={"parameter": "smoke-texture"},
-            ),
-        ),
-        links=(
-            GraphLinkRecord(
-                "root-cache",
-                "root.init",
-                "out",
-                "cache.texture",
-                "in",
-                PortKind.EXEC,
-            ),
-            GraphLinkRecord(
-                "texture-cache",
-                "texture.parameter",
-                "value",
-                "cache.texture",
-                "value",
-                PortKind.VALUE,
-            ),
-        ),
-    )
-    update = GraphDocument(
-        "particle.update",
-        nodes=(
-            GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("set-color", "particle.attribute.color"),
-            GraphNodeRecord(
-                "cached-texture",
-                "particle.attribute.get",
-                properties={"attribute": cache_id},
-            ),
-            GraphNodeRecord(
-                "uv",
-                "common.constant.vec2",
-                properties={"value": [0.25, 0.75]},
-            ),
-            GraphNodeRecord("sample", "common.texture.sample2d"),
-        ),
-        links=(
-            GraphLinkRecord(
-                "root-color", "root.update", "out", "set-color", "in", PortKind.EXEC
-            ),
-            GraphLinkRecord(
-                "cached-value",
-                "cached-texture",
-                "value",
-                "sample",
-                "texture",
-                PortKind.VALUE,
-            ),
-            GraphLinkRecord("uv-value", "uv", "value", "sample", "uv", PortKind.VALUE),
-            GraphLinkRecord(
-                "sample-color", "sample", "color", "set-color", "value", PortKind.VALUE
-            ),
-        ),
-    )
-    default = AssetReference("smoke-guid", "Assets/VFX/Smoke.png")
-    asset = ParticleGraphAsset(
-        parameters=(
-            ParticleParameter(
-                "smoke-texture",
-                "Smoke Texture",
-                TypeRef(ValueType.TEXTURE2D),
-                default.to_dict(),
-            ),
-        ),
-        emitters=(ParticleEmitterAsset(init=init, update=update),),
-    )
-
-    kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
-    source = GpuParticleGlslLowerer().lower(kernel)
-    emitter = source.emitters[0]
-    cache_field = next(field for field in emitter.attribute_fields if field[0] == cache_id)
-
-    assert cache_field[2:] == ("uint", cache_field[3], 4)
-    texture_handle = gpu_backend._texture_resource_handle("smoke-texture")
-    assert f"state.a_cache_init_cache_texture = {texture_handle}u;" in emitter.init
-    assert "inx_sample_parameter_texture(state.a_cache_init_cache_texture," in emitter.update
-    payload = compile_gpu_particle_spirv(source)
-    assert validate_gpu_particle_spirv(payload, source) is payload
+@pytest.mark.parametrize("value_type", (ValueType.TEXTURE2D, ValueType.MESH))
+def test_particle_resources_cannot_be_stored_as_per_particle_attributes(value_type):
+    with pytest.raises(ValueError, match="must use a GPU-storable type"):
+        ParticleAttribute(
+            "resource.attribute",
+            "Resource Attribute",
+            TypeRef(value_type),
+            AssetReference().to_dict(),
+        )
 
 
 def _kill_if_gpu_source():
@@ -1634,7 +1819,7 @@ def _kill_if_gpu_source():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("kill", "particle.update.kill_if"),
+            GraphNodeRecord("kill", "particle.lifecycle.kill_if"),
             GraphNodeRecord(
                 "age",
                 "particle.attribute.get",
@@ -2212,6 +2397,10 @@ def test_gpu_sprite_flipbook_exports_frame_and_remaps_atlas_uvs():
     assert "render_indices[output_index] = particle_index" in emitter.rendering
     assert "transforms.simulation_to_world * vec4(" in emitter.rendering
     assert "view.rendering_control.zw" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    assert "layout(location = 0) out vec3 out_world_position;" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    assert "layout(location = 10) out vec2 out_particle_next_uv;" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    assert "layout(location = 14) out float out_particle_alpha;" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    assert "layout(location = 15) flat out uint out_layer_mask;" in gpu_backend._BILLBOARD_VERTEX_GLSL
     payload = compile_gpu_particle_spirv(source)
     assert validate_gpu_particle_spirv(payload, source) is payload
 
@@ -2223,7 +2412,7 @@ def test_gpu_plane_collision_uses_portable_post_integration_helpers_and_compiles
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "collision",
-                "particle.update.collide_plane",
+                "particle.collision.plane",
                 properties={"radius": 0.2, "restitution": 0.65, "friction": 0.15},
             ),
         ),
@@ -2258,7 +2447,7 @@ def test_gpu_sphere_collision_uses_portable_post_integration_helpers_and_compile
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "collision",
-                "particle.update.collide_sphere",
+                "particle.collision.sphere",
                 properties={"sphere_radius": 1.5, "particle_radius": 0.1},
             ),
         ),
@@ -2338,7 +2527,7 @@ def _sdf_gpu_source():
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "collision",
-                "particle.update.collide_sdf",
+                "particle.collision.sdf",
                 properties={
                     "interface": "collision-field",
                     "particle_radius": 0.05,
@@ -2369,6 +2558,76 @@ def _sdf_gpu_source():
     return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
 
 
+def _sdf_sample_gpu_source():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "position",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.position"},
+            ),
+            GraphNodeRecord(
+                "distance",
+                "particle.sdf.sample_distance",
+                properties={"interface": "sample-field"},
+            ),
+            GraphNodeRecord(
+                "gradient",
+                "particle.sdf.sample_gradient",
+                properties={"interface": "sample-field"},
+            ),
+            GraphNodeRecord("size", "particle.attribute.size"),
+            GraphNodeRecord("velocity", "particle.attribute.velocity"),
+        ),
+        links=(
+            GraphLinkRecord("root-size", "root.update", "out", "size", "in", PortKind.EXEC),
+            GraphLinkRecord("size-velocity", "size", "out", "velocity", "in", PortKind.EXEC),
+            GraphLinkRecord("position-distance", "position", "value", "distance", "position"),
+            GraphLinkRecord("position-gradient", "position", "value", "gradient", "position"),
+            GraphLinkRecord("distance-size", "distance", "distance", "size", "value"),
+            GraphLinkRecord("gradient-velocity", "gradient", "gradient", "velocity", "value"),
+        ),
+    )
+    emitter = ParticleEmitterAsset(
+        stable_id="sdf-sample-emitter",
+        update=update,
+        data_interfaces=(
+            SdfVolume(
+                stable_id="sample-field",
+                texture=AssetReference(guid="sdf-texture-guid"),
+            ),
+        ),
+    )
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(stable_id="sdf-sample-gpu", emitters=(emitter,))
+    )
+    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+
+
+def _sdf_shape_gpu_source(mode: str):
+    interface = SdfVolume(
+        stable_id="spawn-field",
+        texture=AssetReference(guid="sdf-texture-guid"),
+    )
+    emitter = ParticleEmitterAsset(
+        stable_id=f"sdf-{mode}-emitter",
+        settings=EmitterSettings(
+            shape=EmitterShape(
+                kind="sdf",
+                sdf_interface=interface.stable_id,
+                sdf_mode=mode,
+            )
+        ),
+        data_interfaces=(interface,),
+    )
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(stable_id=f"sdf-{mode}-gpu", emitters=(emitter,))
+    )
+    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+
+
 def test_gpu_lowerer_emits_resident_compute_lifecycle_and_indirect_output():
     program = _gpu_source()
     assert len(program.emitters) == 1
@@ -2378,6 +2637,9 @@ def test_gpu_lowerer_emits_resident_compute_lifecycle_and_indirect_output():
         "bootstrap",
         "init",
         "update",
+        "contact_prepare",
+        "contact_solve",
+        "contact_dispatch",
         "render_reset",
         "rendering",
     }
@@ -2540,7 +2802,10 @@ def test_gpu_mesh_orientation_and_nonuniform_scale_use_current_instance_abi():
     assert "rotation_z * rotation_y * rotation_x" in gpu_backend._MESH_VERTEX_GLSL
     assert "view.rendering_control.y > 0.5" in gpu_backend._MESH_VERTEX_GLSL
     assert "world_position -= to_light * (view.camera_up.x * world_texel)" in gpu_backend._MESH_VERTEX_GLSL
-    assert "world_position -= out_normal * (view.camera_up.y * world_texel * normal_scale)" in gpu_backend._MESH_VERTEX_GLSL
+    assert (
+        "world_position -= surface_normal * (view.camera_up.y * world_texel * normal_scale)"
+        in gpu_backend._MESH_VERTEX_GLSL
+    )
     assert "gl_Position.z = max(gl_Position.z, 0.0)" in gpu_backend._MESH_VERTEX_GLSL
     assert "ParticleTileLightMasks" in gpu_backend._PARTICLE_FORWARD_PLUS_LIGHTING_GLSL
     assert "findLSB(light_mask)" in gpu_backend._PARTICLE_FORWARD_PLUS_LIGHTING_GLSL
@@ -2623,12 +2888,12 @@ def test_gpu_curve_and_gradient_parameters_use_fixed_hot_update_layouts():
             GraphNodeRecord("set-color", "particle.attribute.color"),
             GraphNodeRecord(
                 "curve-parameter",
-                "particle.parameter.get",
+                "particle.parameter",
                 properties={"parameter": "size-over-life"},
             ),
             GraphNodeRecord(
                 "gradient-parameter",
-                "particle.parameter.get",
+                "particle.parameter",
                 properties={"parameter": "color-over-life"},
             ),
             GraphNodeRecord("age", "particle.attribute.normalized_age"),
@@ -2814,20 +3079,105 @@ def test_gpu_mesh_shape_uses_shared_mesh_buffers_and_compiles(mode):
         ParticleKernelLowerer().lower(hir)
     ).emitters[0]
 
-    assert emitter.data_interface_layout["mesh_shape"] == {
-        "mesh": mesh.to_dict(),
-        "mode": mode.value,
-        "metadata_offset": 0,
-        "vertex_binding": 14,
-        "triangle_binding": 15,
-    }
-    assert "set = 1, binding = 14" in emitter.init
-    assert "set = 1, binding = 15" in emitter.init
+    assert emitter.data_interface_layout["mesh_interfaces"] == [
+        {
+            "stable_id": "__emitter_shape_mesh",
+            "name": "Emitter Shape Mesh",
+            "mesh": mesh.to_dict(),
+            "space": "emitter_local",
+            "mesh_to_space": [
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0,
+            ],
+            "interface_index": 0,
+            "metadata_offset": 0,
+            "vertex_binding": 1,
+            "triangle_binding": 2,
+            "influence_binding": 3,
+            "palette_binding": 4,
+            "shape_mode": mode.value,
+        }
+    ]
+    assert "set = 1, binding = 1" in emitter.init
+    assert "set = 1, binding = 2" in emitter.init
+    assert "set = 1, binding = 3" in emitter.init
+    assert "set = 1, binding = 4" in emitter.init
+    assert "InxMeshSkinInfluence" in emitter.init
+    assert "uint bone_count" in emitter.init
     assert "inx_sample_mesh_shape_position" in emitter.init
     if mode is MeshEmissionMode.SURFACE:
         assert "uintBitsToFloat" in emitter.init
     compiled = native._compile_compute_glsl_batch(
         emitter.stages(), f"particle-mesh-shape-{mode.value}"
+    )
+    assert set(compiled) == set(emitter.stages())
+
+
+def test_gpu_mesh_parameter_exposes_all_static_mesh_attributes_and_compiles():
+    source = '''\
+from Infernux.particle import AssetReference, EmitterSettings, Parameter, ParticleEmitter, ParticleScript
+
+class MeshSampling(ParticleScript):
+    parameters = (
+        Parameter(
+            "surface-mesh",
+            "Surface Mesh",
+            "mesh",
+            AssetReference(path_hint="Assets/Models/surface.fbx"),
+        ),
+    )
+
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_position(ctx.sample_mesh_position(ctx.parameter("Surface Mesh"), (0.1, 0.2, 0.3)))
+            particles.set_velocity(ctx.sample_mesh_normal(ctx.parameter("Surface Mesh"), (0.2, 0.3, 0.4), mode="edge"))
+            particles.set_attribute("Mesh UV", ctx.sample_mesh_uv(ctx.parameter("Surface Mesh"), (0.3, 0.4, 0.5), mode="vertex"))
+            particles.set_attribute("Mesh Barycentric", ctx.sample_mesh_barycentric(ctx.parameter("Surface Mesh"), (0.4, 0.5, 0.6)))
+
+        def update(self, ctx, particles):
+            particles.set_velocity(ctx.sample_mesh_tangent(ctx.parameter("Surface Mesh"), (0.5, 0.6, 0.7)))
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    hir = ParticleScriptCompiler().compile(source, source_name="MeshSampling.particle.py")
+    emitter = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(hir)
+    ).emitters[0]
+
+    mesh_interfaces = emitter.data_interface_layout["mesh_interfaces"]
+    assert len(mesh_interfaces) == 1
+    assert mesh_interfaces[0]["stable_id"].startswith("sample.mesh.")
+    assert mesh_interfaces[0]["mesh_parameter"] == "surface-mesh"
+    assert mesh_interfaces[0]["mesh"] == AssetReference(
+        path_hint="Assets/Models/surface.fbx"
+    ).to_dict()
+    combined = emitter.init + emitter.update
+    assert ".position" in combined
+    assert ".normal" in combined
+    assert ".tangent" in combined
+    assert ".uv" in combined
+    assert ".barycentric" in combined
+    assert "INX_MESH_SAMPLE_VERTEX" in combined
+    assert "INX_MESH_SAMPLE_EDGE" in combined
+    assert "INX_MESH_SAMPLE_SURFACE" in combined
+    assert "edge_count" in combined
+    assert "triangle_count +" in combined
+    assert "transformed_tangent -= result.normal" in combined
+    assert "inx_mesh_vertex_0" in combined
+    assert "inx_mesh_palette_0" in combined
+    assert "vec4 tangent" in combined
+    assert "tangent_handedness" in combined
+    assert "determinant(mat3(mesh_to_simulation))" in combined
+    assert combined.count("readonly buffer InxMeshVertices0") == 2
+    assert "InxMeshVertices1" not in combined
+    compiled = native._compile_compute_glsl_batch(
+        emitter.stages(), "particle-mesh-data-interface"
     )
     assert set(compiled) == set(emitter.stages())
 
@@ -2892,6 +3242,57 @@ def test_gpu_sdf_collision_uses_shared_volume_set_and_compiles_to_spirv():
     assert set(compiled) == set(emitter.stages())
 
 
+def test_gpu_sdf_distance_and_gradient_samples_share_one_volume_binding_and_compile():
+    emitter = _sdf_sample_gpu_source().emitters[0]
+
+    assert emitter.data_interface_layout["volume_interfaces"] == [
+        {
+            "kind": "sdf",
+            "stable_id": "sample-field",
+            "interface_index": 0,
+            "texture_binding": 1,
+            "filtering": "linear",
+        }
+    ]
+    assert "float inx_sample_sdf_distance_0" in emitter.update
+    assert "vec3 inx_sample_sdf_gradient_0" in emitter.update
+    assert "inx_sample_sdf_distance_0(" in emitter.update
+    assert "inx_sample_sdf_gradient_0(" in emitter.update
+
+    compiled = native._compile_compute_glsl_batch(
+        emitter.stages(), "particle-sdf-sample-test"
+    )
+    assert set(compiled) == set(emitter.stages())
+
+
+@pytest.mark.parametrize("mode,surface_literal", (("surface", "true"), ("volume", "false")))
+def test_gpu_sdf_emitter_shape_uses_bounded_spawn_only_sampling_and_valid_spirv(
+    mode, surface_literal
+):
+    emitter = _sdf_shape_gpu_source(mode).emitters[0]
+
+    assert emitter.data_interface_layout["volume_interfaces"] == [
+        {
+            "kind": "sdf",
+            "stable_id": "spawn-field",
+            "interface_index": 0,
+            "texture_binding": 1,
+            "filtering": "linear",
+        }
+    ]
+    assert "inx_sample_sdf_shape_position_0" in emitter.init
+    assert f", {surface_literal})" in emitter.init
+    assert "attempt < 16" in emitter.init
+    assert "iteration < 8" in emitter.init
+    assert emitter.init.count("inx_sample_sdf_shape_position_0") == 2
+    assert emitter.update.count("inx_sample_sdf_shape_position_0") == 1
+
+    compiled = native._compile_compute_glsl_batch(
+        emitter.stages(), f"particle-sdf-{mode}-shape-test"
+    )
+    assert set(compiled) == set(emitter.stages())
+
+
 def test_generated_gpu_particle_kernels_compile_to_vulkan_spirv(tmp_path):
     validator = shutil.which("glslangValidator")
     if validator is None:
@@ -2939,3 +3340,8 @@ def test_persisted_particle_spirv_is_compressed_and_integrity_checked():
     corrupted["emitters"][0]["stages"]["update"]["sha256"] = "0" * 64
     with pytest.raises(GpuParticleCompileError, match="integrity validation"):
         validate_gpu_particle_spirv(corrupted, source)
+
+    stale_graphics = copy.deepcopy(payload)
+    stale_graphics["graphics_abi_hash"] = "0" * 64
+    with pytest.raises(GpuParticleCompileError, match="header is incompatible"):
+        validate_gpu_particle_spirv(stale_graphics, source)
