@@ -668,8 +668,11 @@ if(INFERNUX_BUILD_TESTS)
     )
     if(MSVC)
         target_compile_options(infernux_vulkan_rhi_device_tests PRIVATE /utf-8)
+        target_link_libraries(infernux_vulkan_rhi_device_tests PRIVATE delayimp)
+        target_link_options(infernux_vulkan_rhi_device_tests PRIVATE /DELAYLOAD:vulkan-1.dll)
     endif()
     add_test(NAME infernux.vulkan_rhi_device COMMAND infernux_vulkan_rhi_device_tests)
+    set_tests_properties(infernux.vulkan_rhi_device PROPERTIES TIMEOUT 30)
 
     add_executable(infernux_vulkan_submission_executor_tests
         cpp/tests/VulkanSubmissionExecutorTests.cpp
