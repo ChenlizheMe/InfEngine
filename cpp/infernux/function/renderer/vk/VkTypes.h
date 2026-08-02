@@ -54,8 +54,11 @@ class RenderPass;
 struct QueueFamilyIndices
 {
     std::optional<uint32_t> graphicsFamily; ///< Graphics queue family index
+    std::optional<uint32_t> computeFamily;  ///< Compute queue family index
     std::optional<uint32_t> presentFamily;  ///< Present queue family index
     std::optional<uint32_t> transferFamily; ///< Transfer queue family index
+    uint32_t graphicsQueueIndex = 0;
+    uint32_t computeQueueIndex = 0;
 
     /**
      * @brief Check if all required queue families are available
@@ -63,7 +66,8 @@ struct QueueFamilyIndices
      */
     [[nodiscard]] bool IsComplete() const noexcept
     {
-        return graphicsFamily.has_value() && presentFamily.has_value() && transferFamily.has_value();
+        return graphicsFamily.has_value() && computeFamily.has_value() && presentFamily.has_value() &&
+               transferFamily.has_value();
     }
 
     /**
@@ -98,6 +102,7 @@ struct SwapchainSupportDetails
 struct QueueConfig
 {
     uint32_t graphicsQueueCount = 1; ///< Number of graphics queues to create
+    uint32_t computeQueueCount = 1;  ///< Number of compute queues to create
     uint32_t presentQueueCount = 1;  ///< Number of present queues to create
     uint32_t transferQueueCount = 1; ///< Number of transfer queues to create
 };

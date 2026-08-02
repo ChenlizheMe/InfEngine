@@ -1,20 +1,29 @@
-"""Path utilities for cross-language (Python ↔ C++) path safety.
-
-On Windows, non-ASCII paths can break the narrow ``std::string`` interface.
-:func:`safe_path` converts to an 8.3 short-path when possible.
-"""
+"""Authoritative Python filesystem path operations."""
 
 from __future__ import annotations
 
+import os
+from typing import TypeAlias
 
-def safe_path(path: str) -> str:
-    """Return an ASCII-safe version of *path* for consumption by C++.
+PathLike: TypeAlias = str | os.PathLike[str]
 
-    On non-Windows, or when the path is already ASCII-clean, returns
-    *path* unchanged.  On Windows, uses ``GetShortPathNameW`` to obtain
-    the 8.3 short-name form.
 
-    Args:
-        path: Filesystem path that may contain non-ASCII characters.
-    """
+def safe_path(path: PathLike) -> str:
+    """Normalize a Python path before crossing the UTF-8 C++ boundary."""
     ...
+
+
+def lexical_path(path: PathLike) -> str: ...
+def resolved_path(path: PathLike) -> str: ...
+def path_key(path: PathLike) -> str: ...
+def lexical_path_key(path: PathLike) -> str: ...
+def same_path(left: PathLike, right: PathLike) -> bool: ...
+def is_path_within(path: PathLike, root: PathLike, *, allow_root: bool = ...) -> bool: ...
+def relative_path(
+    path: PathLike,
+    root: PathLike,
+    *,
+    resolve: bool = ...,
+    allow_root: bool = ...,
+) -> str: ...
+def portable_path(path: PathLike) -> str: ...

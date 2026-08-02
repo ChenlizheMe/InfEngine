@@ -51,15 +51,14 @@ class RenderStackPipeline(RenderPipeline):
         self._cached_stack_version: int = -1
         self._cached_stack_scene_key: str = ""
 
-    def render(self, context, cameras) -> None:
-        """Called by the engine every frame."""
-        for camera in cameras:
-            render_stack = self._find_render_stack(context)
+    def render(self, context, camera) -> None:
+        """Render one engine-owned camera view."""
+        render_stack = self._find_render_stack(context)
 
-            if render_stack is not None:
-                render_stack.render(context, camera)
-            else:
-                self._render_fallback(context, camera)
+        if render_stack is not None:
+            render_stack.render(context, camera)
+        else:
+            self._render_fallback(context, camera)
 
     # ------------------------------------------------------------------
     # Private
@@ -93,6 +92,8 @@ class RenderStackPipeline(RenderPipeline):
             if cached is not None and not RenderStack._is_effectively_active(cached):
                 self._cached_stack = None
                 return None
+            if cached is not None:
+                RenderStack._active_instance = cached
             return cached
 
         # Slow path: scan scene (only when structure changes)
@@ -110,6 +111,8 @@ class RenderStackPipeline(RenderPipeline):
         self._cached_stack = found
         self._cached_stack_version = ver
         self._cached_stack_scene_key = scene_key
+        if found is not None:
+            RenderStack._active_instance = found
         return found
 
     def _render_fallback(self, context, camera) -> None:
@@ -134,4 +137,5 @@ class RenderStackPipeline(RenderPipeline):
             graph.set_output("color")
             self._fallback_desc = graph.build()
 
-        context.render_with_graph(camera, self._fallback_desc)
+        if not context.render_compiled(camera, self._fallback_desc.source_revision):
+            context.render_with_graph(camera, self._fallback_desc)

@@ -1,74 +1,25 @@
 // ============================================================================
-// default_gbuffer_evaluate.glsl — Engine default GBuffer packing (pre-lit)
+// default_gbuffer_evaluate.glsl — Engine PBR GBuffer packing
 //
-// Used automatically when a .shadingmodel file does not provide a custom
-// @target: gbuffer block.  Performs full PBR lighting evaluation identical to
-// the forward path and stores the HDR lit result in gbuf0 so that the
-// deferred lighting pass can simply pass the color through.
+// Used automatically by deferred-capable lit shading models that do not
+// provide custom packing. Lighting is deliberately absent here: this pass
+// records material state and the fullscreen deferred pass evaluates lights.
 //
 // G-Buffer layout:
-//   gbuf0.rgb  = lit HDR color (incl. emission), gbuf0.a = alpha
+//   gbuf0.rgb  = base color,                    gbuf0.a = alpha
 //   gbuf1.rgb  = normal (encoded),               gbuf1.a = smoothness
-//   gbuf2.r    = metallic, gbuf2.g = occlusion,  gbuf2.b = specularHighlights, gbuf2.a = 1.0
-//   gbuf3.rgb  = emission,                        gbuf3.a = 1.0
+//   gbuf2.r    = metallic, gbuf2.g = occlusion,  gbuf2.b = specularHighlights,
+//   gbuf2.a    = shadingParam0
+//   gbuf3.rgb  = emission,                        gbuf3.a = shadingParam1
+//   gbuf4.x    = object light-layer mask,          gbuf4.y = stable shading-model ID
 // ============================================================================
 
-void evaluate(in SurfaceData s, out vec4 gbuf0, out vec4 gbuf1,
-              out vec4 gbuf2, out vec4 gbuf3) {
-    vec3 albedo = clamp(s.albedo, 0.0, 1.0);
-    float metallic = clamp(s.metallic, 0.0, 1.0);
-    float perceptualRoughness = clamp(1.0 - s.smoothness, 0.045, 1.0);
-    float roughness = perceptualRoughness * perceptualRoughness;
-    float ao = clamp(s.occlusion, 0.0, 1.0);
-    vec3 N = normalize(s.normalWS);
-
-    roughness = GeometricSpecularAA(N, roughness);
-    perceptualRoughness = max(perceptualRoughness, sqrt(roughness));
-    vec3 V = normalize(lighting.cameraPos.xyz - v_WorldPos);
-
-    vec3  F0    = mix(vec3(0.04), albedo, metallic);
-    float f90   = ComputeF90(F0);
-    float NdotV = max(dot(N, V), 0.0);
-
-    vec2  envBrdf      = EnvBRDFApprox(perceptualRoughness, NdotV);
-    float reflectivity = envBrdf.x + envBrdf.y;
-    vec3  energyCompensation = 1.0 + F0 * (1.0 / max(reflectivity, 0.001) - 1.0);
-
-    Light mainLight = getMainLight(v_WorldPos, N, v_ViewDepth);
-    vec3 Lo = calculateAllLighting(v_WorldPos, N, V,
-                                   albedo, metallic,
-                                   roughness, perceptualRoughness,
-                                   F0, f90, energyCompensation,
-                                   mainLight.shadow);
-
-    vec3 diffuseIrradiance = mix(sampleAmbientProbe(N),
-                                 sampleAmbientProbeAverage(),
-                                 perceptualRoughness * perceptualRoughness * (1.0 - metallic));
-    vec3 reflDir = getSpecularAmbientDirection(N, V, perceptualRoughness);
-    float probeBlend = perceptualRoughness * perceptualRoughness * (1.0 - metallic);
-    vec3 specularIrradiance = mix(sampleAmbientProbe(reflDir),
-                                  sampleAmbientProbeAverage(),
-                                  probeBlend);
-
-    vec3 kS_env = F_SchlickRoughness(F0, f90, NdotV, perceptualRoughness);
-    vec3 kD_env = (1.0 - kS_env) * (1.0 - metallic);
-    vec3 diffuseEnv = kD_env * albedo * diffuseIrradiance * ao;
-
-    float specOcclusion = ComputeSpecularOcclusion(NdotV, ao, perceptualRoughness);
-    float smoothnessWeight = s.smoothness * s.smoothness;
-    float indirectSpecAtten = mix(smoothnessWeight, 1.0, metallic);
-    vec3 specEnv = specularIrradiance
-                 * (F0 * envBrdf.x + envBrdf.y)
-                 * energyCompensation
-                 * specOcclusion
-                 * indirectSpecAtten
-                 * s.specularHighlights;
-
-    vec3 ambient = diffuseEnv + specEnv;
-    vec3 litColor = ambient + Lo + s.emission;
-
-    gbuf0 = vec4(litColor, s.alpha);
+void packGBuffer(in SurfaceData s, out vec4 gbuf0, out vec4 gbuf1,
+                 out vec4 gbuf2, out vec4 gbuf3, out uvec2 gbuf4) {
+    gbuf0 = vec4(clamp(s.albedo, 0.0, 1.0), s.alpha);
     gbuf1 = vec4(normalize(s.normalWS) * 0.5 + 0.5, s.smoothness);
-    gbuf2 = vec4(metallic, s.occlusion, s.specularHighlights, 1.0);
-    gbuf3 = vec4(s.emission, 1.0);
+    gbuf2 = vec4(clamp(s.metallic, 0.0, 1.0), clamp(s.occlusion, 0.0, 1.0),
+                 clamp(s.specularHighlights, 0.0, 1.0), s.shadingParam0);
+    gbuf3 = vec4(s.emission, s.shadingParam1);
+    gbuf4 = uvec2(_inx_ObjectLayerMask, ${SHADING_MODEL_ID});
 }

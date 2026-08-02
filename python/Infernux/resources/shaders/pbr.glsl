@@ -1,4 +1,7 @@
-@shader_id: pbr
+ShaderInfo {
+    Name "PBR"
+    Imports ["Math"]
+}
 
 // ============================================================================
 // pbr.glsl — Cook-Torrance GGX BRDF (HDRP-aligned)
@@ -17,7 +20,6 @@
 // Requires: math.glsl (PI, INV_PI, EPSILON, saturate)
 // ============================================================================
 
-@import: math
 
 // ============================================================================
 // Fresnel (HDRP F_Schlick)
@@ -131,6 +133,17 @@ float ComputeSpecularOcclusion(float NdotV, float ao, float perceptualRoughness)
     return saturate(pow(NdotV + ao, exp2(-16.0 * perceptualRoughness - 1.0)) - 1.0 + ao);
 }
 
+// Horizon occlusion for indirect specular (HDRP GetHorizonOcclusion).
+// An analytic sky probe has no geometry occlusion, so when a normal-mapped
+// reflection vector dips below the *geometric* surface plane it would still
+// fetch full sky radiance and glow. Fade it out instead.
+// geomNormal must be the interpolated vertex normal, not the shading normal
+// (dot(R, N) with the shading normal is always >= 0 by construction).
+float HorizonOcclusion(vec3 R, vec3 geomNormal) {
+    float horizon = saturate(1.0 + dot(R, geomNormal));
+    return horizon * horizon;
+}
+
 // ============================================================================
 // Utility Functions
 // ============================================================================
@@ -173,7 +186,7 @@ float calculateSpotFalloff(vec3 lightDir, vec3 spotDir, float innerAngleCos, flo
 // Direct lighting path matches Unity HDRP Lit:
 //   Specular = F_Schlick(F0, f90, LdotH) · DV_SmithJointGGX() · energyCompensation
 //   Diffuse  = diffuseColor · DisneyDiffuse()
-//   Result   = (diffuse + specular) · radiance · NdotL
+//   Result   = (diffuse + specular) · radiance · NdotL · π   (π = Unity light unit)
 //
 // HDRP does NOT multiply diffuse by (1−F) per-light; the metallic factor
 // removes diffuse via diffuseColor = albedo·(1−metallic), and Disney diffuse
@@ -209,5 +222,13 @@ vec3 evaluatePBRLight(vec3 N, vec3 V, vec3 L, vec3 lightRadiance,
     float diffuseTerm = DisneyDiffuse(NdotV, NdotL, LdotV, perceptualRoughness);
     vec3  diffuse = albedo * (1.0 - metallic) * diffuseTerm;
 
-    return (diffuse + specular) * lightRadiance * NdotL;
+    // Photometric convention (Unity parity): Unity folds the BRDF's 1/π into
+    // the light unit — an intensity-1 directional light on a white Lambert
+    // surface yields albedo·NdotL, and URP's specular term is π-scaled to
+    // match. Our BRDF above is radiometric (D_GGX and DisneyDiffuse both
+    // carry 1/π), so scale the whole punctual-light response by π. Without
+    // this, authored Unity-style intensities render π× too dim relative to
+    // the ambient probe (which is irradiance-based and has no 1/π), making
+    // environment lighting visually dominate the sun.
+    return (diffuse + specular) * lightRadiance * (NdotL * PI);
 }

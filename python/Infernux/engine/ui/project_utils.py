@@ -8,9 +8,10 @@ import os
 from Infernux.debug import Debug
 
 from Infernux.engine.ide_preference import get_ide
+from Infernux.engine.path_utils import resolved_path
 
 # File extensions to hide
-HIDDEN_EXTENSIONS = {'.meta', '.pyc', '.pyo', '.tmp'}
+HIDDEN_EXTENSIONS = {'.meta', '.pyc', '.pyo', '.tmp', '.inxparticle'}
 HIDDEN_PREFIXES = {'.', '__'}
 HIDDEN_FILES = {'imgui.ini'}
 
@@ -136,7 +137,7 @@ def open_in_vscode(file_path: str, line: int = 0, project_root: str = "") -> boo
     if not file_path:
         return False
 
-    file_path = os.path.abspath(file_path)
+    file_path = resolved_path(file_path)
     if not os.path.isfile(file_path):
         return False
 
@@ -148,7 +149,7 @@ def open_in_vscode(file_path: str, line: int = 0, project_root: str = "") -> boo
 
     cmd = []
     if project_root:
-        project_root = os.path.abspath(project_root)
+        project_root = resolved_path(project_root)
         if os.path.isdir(project_root):
             cmd.append(project_root)
     cmd.extend(['--goto', target])
@@ -546,7 +547,7 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
     if not project_root:
         return False
 
-    project_root = os.path.abspath(project_root)
+    project_root = resolved_path(project_root)
 
     # Accept either a project directory or a file path inside the project.
     if os.path.isfile(project_root):
@@ -556,7 +557,7 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
         return False
 
     idea_dir = os.path.join(project_root, '.idea')
-    project_name = os.path.basename(os.path.normpath(project_root)) or 'Project'
+    project_name = os.path.basename(resolved_path(project_root)) or 'Project'
     module_name = 'project'
     module_rel_path = f'.idea/{module_name}.iml'
     setup_guide_path = os.path.join(project_root, 'PYCHARM_SETUP.zh-CN.en.md')
@@ -741,7 +742,7 @@ def open_in_pycharm(file_path: str, line: int = 0, project_root: str = "") -> bo
     if not file_path:
         return False
 
-    file_path = os.path.abspath(file_path)
+    file_path = resolved_path(file_path)
     if not os.path.isfile(file_path):
         return False
 
@@ -749,7 +750,7 @@ def open_in_pycharm(file_path: str, line: int = 0, project_root: str = "") -> bo
     if not pycharm_exe:
         return False
 
-    project_root = os.path.abspath(project_root) if project_root else ""
+    project_root = resolved_path(project_root) if project_root else ""
     if project_root:
         if os.path.isfile(project_root):
             project_root = os.path.dirname(project_root)
@@ -811,7 +812,7 @@ def open_in_pycharm(file_path: str, line: int = 0, project_root: str = "") -> bo
 
 
 
-def open_file_with_system(file_path: str, project_root: str = ""):
+def open_file_with_system(file_path: str, project_root: str = "") -> bool:
     """
     Open *file_path* with the OS default application.
 
@@ -838,7 +839,9 @@ def open_file_with_system(file_path: str, project_root: str = ""):
     # VS Code -> PyCharm.
     if ext in CODE_EXTENSIONS and project_root:
         preferred_ide = get_ide()
-        available_ides = detect_available_ides()
+        # Refresh here instead of trusting the startup cache. IDEs can be
+        # installed, updated, or selected while the editor is already running.
+        available_ides = detect_available_ides(force_refresh=True)
 
         ide_order = ["vscode", "pycharm"]
         if preferred_ide in available_ides:
@@ -850,28 +853,45 @@ def open_file_with_system(file_path: str, project_root: str = ""):
 
             if ide == "vscode":
                 if open_in_vscode(file_path, project_root=project_root):
-                    return
+                    return True
                 Debug.log("[ProjectPanel] VS Code launch failed, trying next IDE")
 
             elif ide == "pycharm":
                 if open_in_pycharm(file_path, project_root=project_root):
-                    return
+                    return True
                 Debug.log("[ProjectPanel] PyCharm launch failed, trying next IDE")
 
     # Fallback: open with OS default application
-    system = platform.system()
-    if system == 'Windows':
-        os.startfile(file_path)
-    elif system == 'Darwin':
-        subprocess.run(['open', file_path], check=True)
-    else:
-        subprocess.run(['xdg-open', file_path], check=True)
+    try:
+        system = platform.system()
+        if system == 'Windows':
+            try:
+                os.startfile(file_path)
+            except OSError as exc:
+                # ShellExecute reports ERROR_NO_ASSOCIATION (1155) when the
+                # extension has no registered handler. The `openas` shell verb
+                # opens Windows' native app picker instead of leaking the
+                # exception through the editor frame.
+                if getattr(exc, "winerror", None) != 1155 and exc.errno != 1155:
+                    raise
+                os.startfile(file_path, "openas")
+        elif system == 'Darwin':
+            subprocess.run(['open', file_path], check=True)
+        else:
+            subprocess.run(['xdg-open', file_path], check=True)
+        return True
+    except (OSError, subprocess.SubprocessError) as exc:
+        Debug.log_warning(
+            f"[ProjectPanel] No system application could open '{file_path}': {exc}"
+        )
+        return False
 
 
 def get_file_type(filename: str) -> str:
     """Return a short type tag string (e.g. ``[PY]``, ``[IMG]``) based on extension."""
     _, ext = os.path.splitext(filename)
     ext = ext.lower()
+    from Infernux.core.asset_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, MESH_EXTENSIONS
     types = {
         '.png': '[IMG]', '.jpg': '[IMG]', '.jpeg': '[IMG]', '.bmp': '[IMG]',
         '.tga': '[IMG]', '.gif': '[IMG]', '.psd': '[IMG]', '.hdr': '[IMG]',
@@ -881,11 +901,16 @@ def get_file_type(filename: str) -> str:
         '.vert': '[VERT]', '.frag': '[FRAG]', '.glsl': '[GLSL]', '.hlsl': '[HLSL]',
         '.mat': '[MAT]',
         '.fbx': '[3D]', '.obj': '[3D]', '.gltf': '[3D]', '.glb': '[3D]',
-        '.wav': '[SND]',
         '.json': '[JSON]', '.yaml': '[CFG]', '.yml': '[CFG]', '.xml': '[XML]',
         '.txt': '[TXT]', '.md': '[MD]',
         '.ttf': '[FNT]', '.otf': '[FNT]',
     }
+    if ext in IMAGE_EXTENSIONS:
+        return '[IMG]'
+    if ext in MESH_EXTENSIONS:
+        return '[3D]'
+    if ext in AUDIO_EXTENSIONS:
+        return '[SND]'
     return types.get(ext, '[FILE]')
 
 
@@ -909,7 +934,7 @@ def reveal_in_file_explorer(path: str):
     import platform
     import subprocess
 
-    path = os.path.abspath(path)
+    path = resolved_path(path)
     system = platform.system()
     if system == 'Windows':
         # /select highlights the file/folder in Explorer

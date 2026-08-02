@@ -7,18 +7,19 @@ followed by a fullscreen lighting pass, then transparent forward pass.
 
 GBuffer layout (MRT)::
 
-    Slot 0 — Lit Scene Color    (RGBA8_UNORM)
+    Slot 0 — Base Color         (RGBA16_SFLOAT)
     Slot 1 — World Normals      (RGBA16_SFLOAT)
     Slot 2 — Material Params    (RGBA8_UNORM)
     Slot 3 — Emission           (RGBA16_SFLOAT)
+    Slot 4 — Object Metadata    (RG32_UINT)
     Depth  — Scene depth        (D32_SFLOAT)
 
 Topology::
 
     ShadowCasterPass → GBufferPass → after_gbuffer
-    → DeferredLightingPass → after_opaque
+    → DeferredLightingPass → DeferredForwardFallbackPass → after_opaque
     → SkyboxPass → after_sky
-    → TransparentPass (forward) → after_transparent
+    → TransparentPass (Forward+) → after_transparent
     → [post-process injection points]
 
 Usage::
@@ -32,9 +33,8 @@ Usage::
     - Depth buffer as shader input — now supported
     - Deferred lighting shader (``deferred_lighting.frag``)
 
-    The deferred lighting shader is NOT yet shipped with the engine.
-    Users must provide their own ``deferred_lighting`` shader, or this
-    pipeline will fall back to a placeholder that outputs albedo only.
+    Deferred lighting uses the same camera-local light, shadow, layer-mask,
+    and Forward+ tile data as the built-in Forward+ path.
 """
 
 from __future__ import annotations
@@ -54,16 +54,20 @@ from Infernux.renderstack._pipeline_common import (
     GBUFFER_EMISSION_TEXTURE,
     GBUFFER_MATERIAL_TEXTURE,
     GBUFFER_NORMAL_TEXTURE,
+    GBUFFER_OBJECT_TEXTURE,
     GBUFFER_RESOURCES,
+    POST_PROCESS_RESOURCES,
     SCENE_RESOURCES,
     SHADOW_MAP_TEXTURE,
     add_shadow_caster_pass,
     add_skybox_pass,
+    add_motion_vector_pass,
     add_standard_post_process_section,
     add_transparent_pass,
     create_deferred_gbuffer,
     create_main_scene_targets,
     opaque_queue_range,
+    transparent_queue_range,
 )
 
 if TYPE_CHECKING:
@@ -120,12 +124,13 @@ class DefaultDeferredPipeline(RenderPipeline):
     # ------------------------------------------------------------------
 
     def define_topology(self, graph: "RenderGraph") -> None:
-        """Define deferred rendering topology skeleton.
+        """Define the built-in deferred rendering topology.
 
         Topology::
 
             ShadowCaster → GBuffer (MRT) → after_gbuffer
-            → DeferredLighting → after_opaque → Skybox → after_sky
+            → DeferredLighting → Deferred Forward+ Fallback → after_opaque
+            → Skybox → after_sky
             → Transparent (forward) → after_transparent
         """
         # Deferred pipeline does not support MSAA on GBuffer
@@ -134,7 +139,11 @@ class DefaultDeferredPipeline(RenderPipeline):
         shadow_res = self.shadow_resolution
 
         # ---- GBuffer textures (MRT) ----
-        create_main_scene_targets(graph, shadow_resolution=shadow_res)
+        create_main_scene_targets(
+            graph,
+            shadow_resolution=shadow_res,
+            msaa_samples=1,
+        )
         create_deferred_gbuffer(graph)
 
         # ---- Pass 0: Shadow casters ----
@@ -146,14 +155,35 @@ class DefaultDeferredPipeline(RenderPipeline):
             p.write_color(GBUFFER_NORMAL_TEXTURE, slot=1)
             p.write_color(GBUFFER_MATERIAL_TEXTURE, slot=2)
             p.write_color(GBUFFER_EMISSION_TEXTURE, slot=3)
+            p.write_color(GBUFFER_OBJECT_TEXTURE, slot=4)
             p.write_depth(DEPTH_TEXTURE)
             p.set_clear(
                 color=DEFERRED_GBUFFER_CLEAR_COLOR,
                 depth=1.0,
             )
-            p.draw_renderers(queue_range=opaque_queue_range(), sort_mode="front_to_back")
+            p.draw_renderers(
+                queue_range=opaque_queue_range(),
+                sort_mode="front_to_back",
+                material_pass="gbuffer",
+                material_filter="deferred_compatible",
+            )
+
+        add_motion_vector_pass(
+            graph,
+            name="OpaqueMotionPass",
+            queue_range=opaque_queue_range(),
+            clear=True,
+        )
 
         graph.injection_point("after_gbuffer", resources=GBUFFER_RESOURCES)
+        graph.effects(
+            "after_gbuffer",
+            scope="stage",
+            display_name="After GBuffer",
+            inputs=GBUFFER_RESOURCES,
+            outputs=GBUFFER_RESOURCES,
+            capabilities={"fullscreen", "multiple_render_targets"},
+        )
 
         # ---- Pass 2: Deferred lighting (fullscreen) ----
         with graph.add_pass("DeferredLightingPass") as p:
@@ -163,23 +193,77 @@ class DefaultDeferredPipeline(RenderPipeline):
                     "gNormal": GBUFFER_NORMAL_TEXTURE,
                     "gMaterial": GBUFFER_MATERIAL_TEXTURE,
                     "gEmission": GBUFFER_EMISSION_TEXTURE,
+                    "gObject": GBUFFER_OBJECT_TEXTURE,
                     "sceneDepth": DEPTH_TEXTURE,
-                    "shadowMap": SHADOW_MAP_TEXTURE,
                 }
             )
             p.write_color(COLOR_TEXTURE)
             p.set_clear(color=DEFERRED_LIGHTING_CLEAR_COLOR)
             p.fullscreen_quad(DEFERRED_LIGHTING_SHADER)
 
+        # Opaque shading models are Deferred-compatible by default. Models
+        # that explicitly declare Unsupported [Deferred] skip the GBuffer and
+        # render here with the camera's Forward+ light list while sharing the
+        # same scene color/depth. This is a real topology fallback, not an
+        # error-material substitution inside GBufferPass.
+        with graph.add_pass("DeferredForwardFallbackPass") as p:
+            p.write_color(COLOR_TEXTURE)
+            p.write_depth(DEPTH_TEXTURE)
+            p.draw_renderers(
+                queue_range=opaque_queue_range(),
+                sort_mode="front_to_back",
+                material_pass="forward_plus",
+                material_filter="deferred_unsupported",
+            )
+
         graph.injection_point("after_opaque", resources=SCENE_RESOURCES)
+        graph.effects(
+            "after_opaque",
+            scope="stage",
+            display_name="After Opaque Lighting",
+            inputs=SCENE_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
 
         # ---- Pass 3: Skybox ----
         add_skybox_pass(graph)
         graph.injection_point("after_sky", resources=SCENE_RESOURCES)
+        graph.effects(
+            "after_sky",
+            scope="composite",
+            display_name="After Sky",
+            inputs=SCENE_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
 
-        # ---- Pass 4: Transparent objects (forward rendering) ----
-        add_transparent_pass(graph)
+        # ---- Pass 4: Transparent objects (Forward+ rendering) ----
+        add_transparent_pass(graph, material_pass="forward_plus")
+        add_motion_vector_pass(
+            graph,
+            name="TransparentMotionPass",
+            queue_range=transparent_queue_range(),
+            sort_mode="back_to_front",
+        )
         graph.injection_point("after_transparent", resources=SCENE_RESOURCES)
+        graph.effects(
+            "after_transparent",
+            scope="composite",
+            display_name="After Transparent",
+            inputs=SCENE_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
+
+        graph.effects(
+            "final",
+            scope="composite",
+            display_name="Final Post Processing",
+            inputs=POST_PROCESS_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen", "hdr_to_display"},
+        )
 
         # ---- Post-process + ScreenUI injection points ----
         add_standard_post_process_section(graph, enable_screen_ui=self.enable_screen_ui)

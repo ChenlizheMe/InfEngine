@@ -16,6 +16,39 @@ from Infernux.engine.ui.theme import Theme, srgb_to_linear, srgb3, hex_to_linear
 
 # ── theme color utilities ────────────────────────────────────────────────
 
+def test_default_editor_and_game_ui_font_size_is_18px():
+    import inspect
+
+    from Infernux.engine.engine import Engine
+    from Infernux.ui import UIButton, UIText
+
+    assert Theme.UI_DEFAULT_FONT_SIZE == 18.0
+    assert UIText().font_size == 18.0
+    assert UIButton().font_size == 18.0
+    assert inspect.signature(Engine.set_gui_font).parameters["font_size"].default == 18
+
+
+def test_engine_gui_registration_forwards_overlay_priority():
+    from types import SimpleNamespace
+
+    from Infernux.engine.engine import Engine
+
+    calls = []
+    engine = Engine.__new__(Engine)
+    engine._engine = SimpleNamespace(
+        register_gui_renderable=lambda name, renderable, priority: calls.append(
+            (name, renderable, priority)
+        )
+    )
+    engine._gui_objects = {}
+    renderable = object()
+
+    engine.register_gui("global_overlay", renderable, priority=1000)
+
+    assert calls == [("global_overlay", renderable, 1000)]
+    assert engine._gui_objects["global_overlay"] is renderable
+
+
 class TestThemeColorMath:
     def test_srgb_to_linear_low_segment(self):
         assert srgb_to_linear(0.0) == 0.0
@@ -201,6 +234,49 @@ class TestWindowManager:
             manager.process_pending_actions()
             assert manager.get_window_state("dynamic") is WindowState.CLOSED
             assert "dynamic" not in engine.registered
+        finally:
+            WindowManager._instance = previous
+
+    def test_focus_window_requires_known_open_panel(self):
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.focused = []
+
+            def register_gui(self, _window_id, _instance):
+                pass
+
+            def select_docked_window(self, window_id):
+                self.focused.append(window_id)
+
+        class Panel:
+            def __init__(self):
+                self.is_open = True
+
+            def set_open(self, value):
+                self.is_open = bool(value)
+
+        previous = WindowManager._instance
+        try:
+            engine = Engine()
+            manager = WindowManager(engine)
+            panel = Panel()
+            manager.register_window_type("game_view", Panel, "Game", factory=Panel)
+            manager.register_existing_window("game_view", panel, "game_view")
+
+            manager.focus_window("game_view")
+            assert manager.get_window_state("game_view") is WindowState.FOCUS_REQUESTED
+            manager.process_pending_actions()
+            assert manager.get_window_state("game_view") is WindowState.FOCUSED
+            assert engine.focused == ["game_view"]
+
+            manager.close_window("game_view")
+            assert manager.get_window_state("game_view") is WindowState.CLOSED
+            with pytest.raises(RuntimeError, match="not open"):
+                manager.focus_window("game_view")
+            with pytest.raises(KeyError, match="Unknown window"):
+                manager.focus_window("missing")
         finally:
             WindowManager._instance = previous
 
@@ -500,6 +576,23 @@ def test_runtime_ui_revision_is_stable_and_tracks_visual_state():
     assert runtime_ui_revision(scene, canvases, 1280, 720, 2) != first
 
 
+def test_ui_scalar_reassignment_does_not_invalidate_runtime_commands():
+    from Infernux.ui import UIText
+    from Infernux.ui.ui_render_revision import get_runtime_ui_revision
+
+    text = UIText()
+    initial_global = get_runtime_ui_revision()
+    initial_local = getattr(text, "_ui_render_revision", 0)
+
+    text.text = text.text
+    assert get_runtime_ui_revision() == initial_global
+    assert getattr(text, "_ui_render_revision", 0) == initial_local
+
+    text.text = "Changed"
+    assert get_runtime_ui_revision() == initial_global + 1
+    assert text._ui_render_revision == initial_local + 1
+
+
 def test_persistent_event_combo_preserves_temporarily_unresolved_method():
     from Infernux.engine.ui.inspector_ui_components import _persistent_event_combo_options
 
@@ -723,6 +816,221 @@ class TestPanelFocusEvents:
             ("dirty_probe", False, "Probe"),
             ("dirty_probe", True, "Probe"),
         ]
+
+
+class TestSceneViewPicking:
+    def test_scene_click_keeps_immediate_cpu_pick_and_queues_gpu_refinement(self):
+        from Infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
+
+        class Context:
+            @staticmethod
+            def is_mouse_button_clicked(_button):
+                return True
+
+            @staticmethod
+            def is_key_down(_key):
+                return False
+
+        class Viewport:
+            width = 100.0
+            height = 80.0
+
+            @staticmethod
+            def mouse_local(_ctx):
+                return 10.0, 12.0
+
+        class Engine:
+            def __init__(self):
+                self.requests = []
+
+            def request_scene_object_pick(self, x, y, width, height):
+                self.requests.append((x, y, width, height))
+                return 7
+
+            @staticmethod
+            def query_scene_object_pick(_request_id):
+                return {"status": "pending"}
+
+        class PickingProbe(SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._box_select_active = False
+                self._pending_scene_pick = None
+                self._pick_cycle_candidates = [42]
+                self._pick_cycle_index = 0
+                self._pick_cycle_last_mouse = (10.0, 12.0)
+                self._pick_cycle_last_viewport = (100, 80)
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append((object_id, ctrl))
+
+            @staticmethod
+            def _pick_scene_object(_ctx, _viewport):
+                return 42
+
+        probe = PickingProbe()
+        probe._handle_picking_and_selection(
+            Context(), Viewport(), gizmo_consumed=False, overlay_hovered=False,
+            is_scene_hovered=True, play_border_clr=None,
+        )
+
+        assert probe.picked == [(42, False)]
+        assert probe._engine.requests == [(10.0, 12.0, 100.0, 80.0)]
+        assert probe._pending_scene_pick["cpu_id"] == 42
+        assert probe._pending_scene_pick["cpu_candidates"] == [42]
+
+    def test_particle_refinement_keeps_icon_selection_but_joins_cycle(self, monkeypatch):
+        from Infernux.engine.ui import _scene_view_picking as picking
+        from Infernux.engine.ui.selection_manager import SelectionManager
+
+        class Engine:
+            @staticmethod
+            def query_scene_object_pick(_request_id):
+                return {"status": "completed", "object_id": 99}
+
+            @staticmethod
+            def screen_to_world_ray(*_args):
+                return (0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+
+        class PickingProbe(picking.SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._pending_scene_pick = {
+                    "request_id": 1,
+                    "x": 10.0,
+                    "y": 12.0,
+                    "width": 100.0,
+                    "height": 80.0,
+                    "cpu_id": 42,
+                    "cpu_candidates": [42, 7],
+                }
+                self._pick_cycle_candidates = [42, 7]
+                self._pick_cycle_index = 0
+                self._pick_cycle_last_mouse = (-1.0, -1.0)
+                self._pick_cycle_last_viewport = (0, 0)
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append((object_id, ctrl))
+
+        monkeypatch.setattr(picking, "_owns_particle_system", lambda object_id: object_id == 99)
+        monkeypatch.setattr(picking, "_is_icon_only_pick_target", lambda object_id: object_id == 42)
+        monkeypatch.setattr(picking, "_object_ray_depth", lambda object_id, *_args: {
+            42: 1.0,
+            99: 2.0,
+            7: 3.0,
+        }[object_id])
+
+        sel = SelectionManager.instance()
+        previous = list(sel.get_ids())
+        sel.select(42)
+        try:
+            probe = PickingProbe()
+            probe._poll_scene_object_pick()
+            assert probe.picked == []
+            assert probe._pick_cycle_candidates == [42, 99, 7]
+            assert probe._pick_cycle_index == 0
+        finally:
+            if previous:
+                sel.set_ids(previous)
+            else:
+                sel.clear()
+
+    def test_particle_refinement_corrects_mesh_behind_spray(self, monkeypatch):
+        from Infernux.engine.ui import _scene_view_picking as picking
+        from Infernux.engine.ui.selection_manager import SelectionManager
+
+        class Engine:
+            @staticmethod
+            def query_scene_object_pick(_request_id):
+                return {"status": "completed", "object_id": 99}
+
+            @staticmethod
+            def screen_to_world_ray(*_args):
+                return (0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+
+        class PickingProbe(picking.SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._pending_scene_pick = {
+                    "request_id": 1,
+                    "x": 10.0,
+                    "y": 12.0,
+                    "width": 100.0,
+                    "height": 80.0,
+                    "cpu_id": 7,
+                    "cpu_candidates": [7],
+                }
+                self._pick_cycle_candidates = [7]
+                self._pick_cycle_index = 0
+                self._pick_cycle_last_mouse = (-1.0, -1.0)
+                self._pick_cycle_last_viewport = (0, 0)
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append((object_id, ctrl))
+
+        monkeypatch.setattr(picking, "_owns_particle_system", lambda object_id: object_id == 99)
+        monkeypatch.setattr(picking, "_is_icon_only_pick_target", lambda object_id: False)
+        monkeypatch.setattr(picking, "_object_ray_depth", lambda object_id, *_args: {
+            99: 1.0,
+            7: 3.0,
+        }[object_id])
+
+        sel = SelectionManager.instance()
+        previous = list(sel.get_ids())
+        sel.select(7)
+        try:
+            probe = PickingProbe()
+            probe._poll_scene_object_pick()
+            assert probe.picked == [(99, False)]
+            assert probe._pick_cycle_candidates == [99, 7]
+            assert probe._pick_cycle_index == 0
+        finally:
+            if previous:
+                sel.set_ids(previous)
+            else:
+                sel.clear()
+
+    def test_same_spot_click_keeps_particle_in_depth_cycle(self, monkeypatch):
+        from Infernux.engine.ui import _scene_view_picking as picking
+
+        class Engine:
+            @staticmethod
+            def pick_scene_object_ids(*_args):
+                return [42, 7]
+
+            @staticmethod
+            def screen_to_world_ray(*_args):
+                return (0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+
+        class Context:
+            @staticmethod
+            def mouse_local(_ctx=None):
+                return 10.0, 12.0
+
+        class Viewport:
+            width = 100.0
+            height = 80.0
+
+            @staticmethod
+            def mouse_local(_ctx):
+                return 10.0, 12.0
+
+        class PickingProbe(picking.SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._pick_cycle_candidates = [42, 99, 7]
+                self._pick_cycle_index = 0
+                self._pick_cycle_last_mouse = (10.0, 12.0)
+                self._pick_cycle_last_viewport = (100, 80)
+
+        monkeypatch.setattr(picking, "_owns_particle_system", lambda object_id: object_id == 99)
+        monkeypatch.setattr(picking, "_object_ray_depth", lambda object_id, *_args: {
+            42: 1.0,
+            99: 2.0,
+            7: 3.0,
+        }[object_id])
+
+        probe = PickingProbe()
+        assert probe._pick_scene_object(Context(), Viewport()) == 99
+        assert probe._pick_cycle_candidates == [42, 99, 7]
+        assert probe._pick_scene_object(Context(), Viewport()) == 7
 
 
 class TestEditorPanelVisibilityLifecycle:

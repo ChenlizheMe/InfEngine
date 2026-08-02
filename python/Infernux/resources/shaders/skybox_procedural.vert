@@ -1,29 +1,15 @@
 #version 450
 
-@shader_id: Infernux/Skybox-Procedural
-@cull: back
-@depth_write: false
-@depth_test: less_equal
-@hidden
-
-layout(std140, binding = 0) uniform UniformBufferObject {
-    mat4 model;
-    mat4 view;
-    mat4 proj;
-} ubo;
-
-layout(push_constant) uniform PushConstants {
-    mat4 model;
-    mat4 normalMat;
-} pc;
-
-layout(location = 0) in vec3 inPosition;
-layout(location = 1) in vec3 inNormal;
-layout(location = 2) in vec4 inTangent;
-layout(location = 3) in vec3 inColor;
-layout(location = 4) in vec2 inTexCoord;
-
-layout(location = 0) out vec3 fragWorldDir;
+ShaderInfo {
+    Name "Skybox Procedural"
+    Cull Back
+    DepthWrite Off
+    DepthTest LessEqual
+    Capabilities [Standalone]
+    Outputs {
+        Float3 fragWorldDir
+    }
+}
 
 void main() {
     // Strip translation from view matrix (skybox centered on camera)

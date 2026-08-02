@@ -98,8 +98,6 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
     const bool consoleHovered = ImGui::IsItemHovered();
     if (ImGui::IsItemClicked() && m_console)
         m_console->SelectEntry(m_latestUid);
-    if (consoleHovered && !m_latestMessage.empty())
-        ImGui::SetTooltip("%s", m_latestMessage.c_str());
     if (InxGUISemantics::IsCaptureEnabled())
         ctx->RecordSemanticItem("status_console", "Console", true, "status.console");
 
@@ -157,6 +155,9 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
                            m_statusKind);
 
     ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + barHeight));
+    // SetCursorScreenPos alone is not a layout item. Submit a zero-sized item
+    // so current ImGui versions can account for the explicit bar boundary.
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
 void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float height, const std::string &text,

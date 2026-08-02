@@ -13,6 +13,7 @@ except ImportError:
     _HAS_WATCHDOG = False
 
 from Infernux.lib import Infernux
+from Infernux.engine.path_utils import path_key, portable_path, same_path
 from Infernux.engine.script_compiler import get_script_compiler
 from Infernux.engine.import_coordinator import (
     AssetFsEvent,
@@ -28,6 +29,10 @@ class _AssetImportNotReady(RuntimeError):
     pass
 
 
+def _is_particle_script_path(file_path: str) -> bool:
+    return str(file_path or "").lower().endswith(".particle.py")
+
+
 class ResourceChangeHandler(FileSystemEventHandler):
 
     def __init__(self, engine: Infernux):
@@ -41,7 +46,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
 
     @staticmethod
     def _is_meta_sidecar_path(file_path: str) -> bool:
-        lower = file_path.replace("\\", "/").lower()
+        lower = portable_path(file_path).lower()
         return lower.endswith(".meta") and not lower.endswith(".meta.tmp")
 
     @staticmethod
@@ -50,7 +55,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
 
     def _should_ignore(self, file_path: str) -> bool:
         """Ignore meta/temp/cache files to avoid GUID churn and noisy events."""
-        lower = file_path.replace("\\", "/").lower()
+        lower = portable_path(file_path).lower()
         if (
             lower.endswith(".meta")
             or lower.endswith(".meta.tmp")
@@ -160,7 +165,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         elif event.kind is AssetFsEventKind.MODIFIED:
             self._commit_modified(event.path)
         elif event.kind is AssetFsEventKind.DELETED:
-            self._commit_deleted(event.path)
+            self._commit_deleted(event.path, guid_hint=event.guid_hint)
         elif event.kind is AssetFsEventKind.MOVED:
             self._commit_moved(event.path, event.destination)
         elif event.kind is AssetFsEventKind.META_DELETED:
@@ -174,14 +179,17 @@ class ResourceChangeHandler(FileSystemEventHandler):
             raise _AssetImportNotReady(f"created file is not ready: {path}")
         from Infernux.core.assets import AssetManager
         try:
-            AssetManager.import_asset(
+            result = AssetManager.import_asset(
                 path,
                 database=self._asset_database,
                 suppress_watcher_echo=False,
             )
+            if not result:
+                detail = str(getattr(result, "error", "") or "unknown import error")
+                raise _AssetImportNotReady(f"import failed: {path}: {detail}")
         except RuntimeError as exc:
             raise _AssetImportNotReady(str(exc)) from exc
-        if path.lower().endswith(".py"):
+        if path.lower().endswith(".py") and not _is_particle_script_path(path):
             self._check_script(path, catalog_event="created")
 
     def _commit_modified(self, path: str) -> None:
@@ -196,24 +204,26 @@ class ResourceChangeHandler(FileSystemEventHandler):
             raise _AssetImportNotReady(f"modified file is not ready: {path}")
         from Infernux.core.assets import AssetManager
         if self._asset_database.contains_path(path):
-            if not AssetManager.reimport_asset(
+            result = AssetManager.reimport_asset(
                 path,
                 database=self._asset_database,
                 suppress_watcher_echo=False,
-            ):
-                raise _AssetImportNotReady(f"reimport failed: {path}")
+            )
+            if not result:
+                detail = str(getattr(result, "error", "") or "unknown reimport error")
+                raise _AssetImportNotReady(f"reimport failed: {path}: {detail}")
         else:
             AssetManager.import_asset(
                 path,
                 database=self._asset_database,
                 suppress_watcher_echo=False,
             )
-        if path.lower().endswith(".py"):
+        if path.lower().endswith(".py") and not _is_particle_script_path(path):
             self._check_script(path, catalog_event="modified")
         elif path.lower().endswith((".vert", ".frag")):
             self._notify_shader_reloaded(path)
 
-    def _commit_deleted(self, path: str) -> None:
+    def _commit_deleted(self, path: str, *, guid_hint: str = "") -> None:
         from Infernux.core.assets import AssetManager
         # A replace-in-place write may surface as a delete followed by a move
         # or create. Watcher delivery can be reordered, so never let a stale
@@ -225,11 +235,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
             path,
             database=self._asset_database,
             suppress_watcher_echo=False,
+            guid_hint=guid_hint,
         ):
             raise RuntimeError(f"asset deletion failed: {path}")
-        if path.lower().endswith(".py"):
+        if path.lower().endswith(".py") and not _is_particle_script_path(path):
             from Infernux.components.script_loader import clear_deleted_script_errors
+            from Infernux.components.registry import unregister_component_script
             clear_deleted_script_errors(path)
+            unregister_component_script(path)
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(path, "deleted")
@@ -245,9 +258,11 @@ class ResourceChangeHandler(FileSystemEventHandler):
             suppress_watcher_echo=False,
         ):
             raise RuntimeError(f"asset move failed: {old_path} -> {new_path}")
-        if new_path.lower().endswith(".py"):
+        if new_path.lower().endswith(".py") and not _is_particle_script_path(new_path):
             from Infernux.components.script_loader import clear_deleted_script_errors
+            from Infernux.components.registry import unregister_component_script
             clear_deleted_script_errors(old_path)
+            unregister_component_script(old_path)
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(new_path, "moved")
@@ -310,7 +325,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             from Infernux.engine.scene_manager import SceneFileManager
             sfm = SceneFileManager.instance()
             active = getattr(sfm, "current_scene_path", "") if sfm else ""
-            return bool(active and os.path.abspath(path) == os.path.abspath(active))
+            return bool(active and same_path(path, active))
         except Exception:
             return False
 
@@ -323,6 +338,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
         errors = self._script_compiler.check_file(file_path)
         if errors:
             from Infernux.components.script_loader import set_script_error
+            from Infernux.components.registry import unregister_component_script
+            unregister_component_script(file_path)
             combined = "\n".join(
                 f"{os.path.basename(e.file_path)}:{e.line_number}  {e.message}"
                 for e in errors
@@ -335,14 +352,16 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     source_line=error.line_number)
         else:
             from Infernux.components.script_loader import _clear_script_error
+            from Infernux.components.registry import register_component_script
             _clear_script_error(file_path)
+            register_component_script(file_path)
             Debug.log_internal(f"[OK] Script OK: {os.path.basename(file_path)}")
             rm = ResourcesManager.instance()
             if rm is not None and catalog_event is not None:
                 rm.notify_script_catalog_changed(file_path, catalog_event)
             # Notify registered per-file callbacks (e.g. RenderStack pipeline reload)
             # Callbacks are stored on ResourcesManager to avoid handler-init races
-            abs_path = os.path.abspath(file_path)
+            abs_path = path_key(file_path)
             if rm is not None:
                 for cb in list(rm._script_reload_callbacks.get(abs_path, [])):
                     cb(file_path)
@@ -489,10 +508,19 @@ class ResourcesManager:
                 return
             dirs[:] = [d for d in dirs if d != '__pycache__']
             for fname in files:
-                if not fname.endswith('.py'):
+                if not fname.endswith('.py') or _is_particle_script_path(fname):
                     continue
                 fpath = os.path.join(root, fname)
-                results.append((fpath, tuple(compiler.check_file(fpath))))
+                errors = tuple(compiler.check_file(fpath))
+                results.append((fpath, errors))
+                from Infernux.components.registry import (
+                    register_component_script,
+                    unregister_component_script,
+                )
+                if errors:
+                    unregister_component_script(fpath)
+                else:
+                    register_component_script(fpath)
 
         with self._initial_scan_lock:
             if not self._stop_event.is_set():
@@ -552,8 +580,7 @@ class ResourcesManager:
         Called on the main thread after a successful syntax check.
         Safe to call multiple times (duplicates are ignored).
         """
-        import os as _os
-        abs_path = _os.path.abspath(file_path)
+        abs_path = path_key(file_path)
         cbs = self._script_reload_callbacks.setdefault(abs_path, [])
         if callback not in cbs:
             cbs.append(callback)
@@ -585,6 +612,18 @@ class ResourcesManager:
                 cb(file_path, event_type)
             except Exception as e:
                 Debug.log_error(f"Script catalog callback failed: {e}")
+
+    def reload_moved_script(self, old_path: str, new_path: str) -> None:
+        """Publish and hot-reload a GUID-stable script move on the main thread."""
+        if self._event_handler is None:
+            return
+        from Infernux.components.script_loader import clear_deleted_script_errors
+        from Infernux.components.registry import unregister_component_script
+
+        clear_deleted_script_errors(old_path)
+        unregister_component_script(old_path)
+        self.notify_script_catalog_changed(new_path, "moved")
+        self._event_handler._check_script(new_path, catalog_event=None)
 
     def register_shader_cache_callback(self, callback):
         """Register a callback to be called when shader cache should be invalidated."""

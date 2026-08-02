@@ -4,10 +4,10 @@
  *
  * This class manages GPU resource allocation and provides:
  * - Staging buffer pooling for efficient uploads
- * - Texture loading and caching
+ * - Backend-neutral RHI texture uploads
  * - Depth buffer management
  * - Command pool and command buffer management
- * - Descriptor pool and set management
+ * - Queue-manager-backed uploads and readbacks
  *
  * Architecture Notes:
  * - Resources are reference counted or managed via unique ownership
@@ -16,23 +16,23 @@
  *
  * Usage:
  *   VkResourceManager resources;
- *   resources.Initialize(deviceContext);
+ *   resources.Initialize(deviceContext, &queueManager);
  *
  *   // Create a vertex buffer
  *   auto vertexBuffer = resources.CreateVertexBuffer(vertices.data(), vertices.size() * sizeof(Vertex));
- *
- *   // Load a texture
- *   auto texture = resources.LoadTexture("textures/diffuse.png");
  */
 
 #pragma once
 
+#include <function/renderer/rhi/RhiSubmission.h>
+
+#include "../rhi/RhiBuffer.h"
+#include "../rhi/RhiTexture.h"
 #include "../rhi/RhiUpload.h"
 #include "AsyncTransferContext.h"
 #include "VkHandle.h"
 #include "VkTypes.h"
 #include <atomic>
-#include <function/resources/InxTexture/InxTexture.h>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -48,9 +48,11 @@ namespace vk
 
 // Forward declarations
 class VkDeviceContext;
+class VulkanQueueManager;
 class VkResourceManager;
 class GraphicsSubmissionTicket;
 class GraphicsImageReadbackRecorder;
+class VulkanRhiDevice;
 
 class BufferUploadTicket final
 {
@@ -72,12 +74,17 @@ class BufferUploadTicket final
         return m_size;
     }
     [[nodiscard]] const std::shared_ptr<VkBufferHandle> &GetBuffer() const;
+    [[nodiscard]] std::shared_ptr<rhi::BufferResource> GetRhiBuffer() const;
 
   private:
     friend class VkResourceManager;
     VkResourceManager *m_manager = nullptr;
     std::shared_ptr<VkBufferHandle> m_staging;
     std::shared_ptr<VkBufferHandle> m_destination;
+    // Publication must not make the upload queue an owner of the public RHI
+    // resource. m_destination independently keeps the Vulkan allocation alive
+    // until transfer completion.
+    std::weak_ptr<rhi::BufferResource> m_rhiBuffer;
     AsyncSubmissionHandle m_upload;
     VkDeviceSize m_size = 0;
     bool m_complete = false;
@@ -104,19 +111,14 @@ class TextureUploadTicket final
     {
         return m_residentBytes;
     }
-    [[nodiscard]] const std::shared_ptr<VkTexture> &GetTexture() const;
+    [[nodiscard]] const std::shared_ptr<rhi::TextureResource> &GetTexture() const;
 
   private:
     friend class VkResourceManager;
     VkResourceManager *m_manager = nullptr;
     std::shared_ptr<VkBufferHandle> m_staging;
-    std::shared_ptr<VkTexture> m_texture;
+    std::shared_ptr<rhi::TextureResource> m_texture;
     AsyncSubmissionHandle m_upload;
-    VkFormat m_format = VK_FORMAT_UNDEFINED;
-    VkFilter m_filter = VK_FILTER_LINEAR;
-    VkSamplerAddressMode m_addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    int m_aniso = -1;
-    uint32_t m_mipLevels = 0;
     VkDeviceSize m_residentBytes = 0;
     bool m_complete = false;
     bool m_published = false;
@@ -197,6 +199,8 @@ class GraphicsSubmissionTicket final
     friend class VkResourceManager;
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkFence m_fence = VK_NULL_HANDLE;
+    rhi::SubmissionTicket m_submission;
+    rhi::SubmissionSerial m_completionEpoch = rhi::InvalidSubmissionSerial;
     std::function<void()> m_releaseResources;
     std::atomic<bool> m_complete{false};
 };
@@ -276,7 +280,7 @@ class VkResourceManager
      * @param context Device context for Vulkan access
      * @return true if initialization succeeded
      */
-    bool Initialize(const VkDeviceContext &context);
+    bool Initialize(VkDeviceContext &context, VulkanQueueManager *queueManager = nullptr);
 
     /**
      * @brief Cleanup all managed resources
@@ -316,11 +320,11 @@ class VkResourceManager
 
     [[nodiscard]] std::shared_ptr<BufferUploadTicket> BeginBufferUpload(const rhi::BufferUploadRequest &request);
     [[nodiscard]] bool TryPublishBufferUpload(const std::shared_ptr<BufferUploadTicket> &ticket);
+    [[nodiscard]] std::shared_ptr<rhi::BufferResource>
+    GetPublishedRhiBuffer(const std::shared_ptr<BufferUploadTicket> &ticket);
     void DrainBufferUploads() noexcept;
 
-    [[nodiscard]] std::shared_ptr<TextureUploadTicket> BeginTextureUpload(const TextureCpuData &cpuData,
-                                                                          VkFormat format, VkFilter filter,
-                                                                          VkSamplerAddressMode addressMode, int aniso);
+    [[nodiscard]] std::shared_ptr<TextureUploadTicket> BeginTextureUpload(const rhi::TextureUploadRequest &request);
     [[nodiscard]] bool TryPublishTextureUpload(const std::shared_ptr<TextureUploadTicket> &ticket);
     void PollGpuUploads();
 
@@ -343,6 +347,10 @@ class VkResourceManager
     [[nodiscard]] uint64_t GetTimelineUploadPublicationCount() const noexcept
     {
         return m_timelineUploadPublicationCount;
+    }
+    [[nodiscard]] uint64_t GetBufferUploadSubmissionCount() const noexcept
+    {
+        return m_bufferUploadSubmissionCount;
     }
     [[nodiscard]] bool IsUploadTimelineEnabled() const noexcept
     {
@@ -440,53 +448,6 @@ class VkResourceManager
                                                                    VkFormat format = VK_FORMAT_UNDEFINED);
 
     /**
-     * @brief Load a texture from file
-     *
-     * @param filePath Path to image file
-     * @param generateMipmaps Whether to generate mipmaps
-     * @param format GPU texture format (SRGB for color, UNORM for linear data)
-     * @param maxSize Optional max dimension clamp (0 = no clamp)
-     * @param normalMapMode True when the texture is an authored tangent-space normal map.
-     *        This does not regenerate normals from height; it preserves the source pixels
-     *        and only lets higher-level code select linear sampling / normal-map handling.
-     * @return Unique pointer to texture handle
-     */
-    [[nodiscard]] std::unique_ptr<VkTexture>
-    LoadTexture(const std::string &filePath, bool generateMipmaps = true, VkFormat format = VK_FORMAT_R8G8B8A8_SRGB,
-                int maxSize = 0, bool normalMapMode = false, VkFilter filter = VK_FILTER_LINEAR,
-                VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, int aniso = -1);
-
-    /**
-     * @brief Create a texture immediately for renderer bootstrap resources.
-     *
-     * @param pixels Pixel data (RGBA)
-     * @param width Width
-     * @param height Height
-     * @param format Format
-     * @return Unique pointer to texture handle
-     */
-    [[nodiscard]] std::unique_ptr<VkTexture>
-    CreateTextureFromPixelsImmediate(const unsigned char *pixels, uint32_t width, uint32_t height,
-                                     VkFormat format = VK_FORMAT_R8G8B8A8_SRGB, bool generateMipmaps = false,
-                                     VkFilter filter = VK_FILTER_LINEAR,
-                                     VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, int aniso = -1);
-
-    /**
-     * @brief Create a solid color texture
-     *
-     * @param width Width
-     * @param height Height
-     * @param r Red component (0-255)
-     * @param g Green component (0-255)
-     * @param b Blue component (0-255)
-     * @param a Alpha component (0-255)
-     * @return Unique pointer to texture handle
-     */
-    [[nodiscard]] std::unique_ptr<VkTexture> CreateSolidColorTexture(uint32_t width, uint32_t height, uint8_t r,
-                                                                     uint8_t g, uint8_t b, uint8_t a = 255,
-                                                                     VkFormat format = VK_FORMAT_R8G8B8A8_SRGB);
-
-    /**
      * @brief Transition image layout
      *
      * @param image Image to transition
@@ -553,59 +514,6 @@ class VkResourceManager
     }
 
     // ========================================================================
-    // Descriptor Management
-    // ========================================================================
-
-    /**
-     * @brief Create a descriptor pool
-     *
-     * @param poolSizes Pool sizes for each descriptor type
-     * @param maxSets Maximum number of sets
-     * @return Descriptor pool handle
-     */
-    [[nodiscard]] VkDescriptorPool CreateDescriptorPool(const std::vector<VkDescriptorPoolSize> &poolSizes,
-                                                        uint32_t maxSets);
-
-    /**
-     * @brief Allocate descriptor sets
-     *
-     * @param pool Descriptor pool
-     * @param layouts Layouts to allocate
-     * @return Vector of allocated descriptor sets
-     */
-    [[nodiscard]] std::vector<VkDescriptorSet>
-    AllocateDescriptorSets(VkDescriptorPool pool, const std::vector<VkDescriptorSetLayout> &layouts);
-
-    /**
-     * @brief Update a descriptor set with a uniform buffer
-     *
-     * @param set Descriptor set
-     * @param binding Binding index
-     * @param buffer Buffer handle
-     * @param offset Offset in buffer
-     * @param range Range in buffer (VK_WHOLE_SIZE for entire buffer)
-     */
-    void UpdateDescriptorSet(VkDescriptorSet set, uint32_t binding, VkBuffer buffer, VkDeviceSize offset = 0,
-                             VkDeviceSize range = VK_WHOLE_SIZE);
-
-    /**
-     * @brief Update a descriptor set with a texture
-     *
-     * @param set Descriptor set
-     * @param binding Binding index
-     * @param imageView Image view
-     * @param sampler Sampler
-     * @param layout Image layout
-     */
-    void UpdateDescriptorSet(VkDescriptorSet set, uint32_t binding, VkImageView imageView, VkSampler sampler,
-                             VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-    /**
-     * @brief Destroy a descriptor pool
-     */
-    void DestroyDescriptorPool(VkDescriptorPool pool);
-
-    // ========================================================================
     // Sampler Management
     // ========================================================================
 
@@ -656,7 +564,6 @@ class VkResourceManager
     std::shared_ptr<VkBufferHandle> AcquireStagingBuffer(VkDeviceSize size);
     void RecycleStagingBuffer(std::shared_ptr<VkBufferHandle> buffer) noexcept;
     void ClearStagingPool() noexcept;
-    void FinalizeTextureUpload(TextureUploadTicket &ticket);
     void FinalizeImageReadback(const std::shared_ptr<ImageReadbackTicket> &ticket) noexcept;
     std::shared_ptr<ImageReadbackTicket> SubmitGraphicsImageReadback(GraphicsImageReadbackRecorder &recorder,
                                                                      std::function<void()> releaseResources);
@@ -693,6 +600,8 @@ class VkResourceManager
     VkDevice m_device = VK_NULL_HANDLE;
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
+    VulkanRhiDevice *m_rhiDevice = nullptr;
+    VulkanQueueManager *m_queueManager = nullptr;
     VkCommandPool m_commandPool = VK_NULL_HANDLE;
     std::thread::id m_ownerThread;
 
@@ -713,13 +622,11 @@ class VkResourceManager
     uint64_t m_stagingDiscardCount = 0;
     uint64_t m_requiredUploadTimelineValue = 0;
     uint64_t m_timelineUploadPublicationCount = 0;
+    uint64_t m_bufferUploadSubmissionCount = 0;
 
     // Cached samplers
     VkSampler m_linearSampler = VK_NULL_HANDLE;
     VkSampler m_nearestSampler = VK_NULL_HANDLE;
-
-    // Tracked descriptor pools for cleanup
-    std::vector<VkDescriptorPool> m_descriptorPools;
 
     // ────────────────────────────────────────────────────────────────────
     // Single-time-command pools.
@@ -742,6 +649,7 @@ class VkResourceManager
     std::vector<VkFence> m_freeSingleTimeFences;
     std::vector<VkFence> m_allSingleTimeFences;             // owned, destroyed in Destroy()
     std::vector<VkCommandBuffer> m_allSingleTimeCmdBuffers; // owned via m_commandPool
+    std::unordered_map<VkCommandBuffer, rhi::SubmissionSerial> m_singleTimeCompletionEpochs;
     std::vector<std::shared_ptr<GraphicsSubmissionTicket>> m_pendingAsyncGraphicsSubmissions;
     uint64_t m_asyncGraphicsSubmissionCount = 0;
     std::mutex m_singleTimeMutex;

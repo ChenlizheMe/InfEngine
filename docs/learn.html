@@ -32,7 +32,7 @@
                     <a href="learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a>
                     <a href="wiki/site/en/api/index.html" data-href-en="wiki/site/en/api/index.html" data-href-zh="wiki/site/zh/api/index.html" data-i18n="nav.api">API</a>
                     <a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a>
-                    <a href="community.html" class="nav-priority" data-i18n="nav.community">Community</a>
+                    <a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a>
                     <a href="download.html" data-i18n="nav.download">Download</a>
                     <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a>
                 </div>
@@ -58,16 +58,25 @@
                     <div class="learn-tags" aria-label="Chapter tags">
                         <button type="button" class="learn-tag is-active" data-learn-tag="all" aria-pressed="true">All</button>
                         <button type="button" class="learn-tag" data-learn-tag="basics" aria-pressed="false">Basics</button>
+                        <button type="button" class="learn-tag" data-learn-tag="rendering" aria-pressed="false">Rendering</button>
+                        <button type="button" class="learn-tag" data-learn-tag="shader" aria-pressed="false">Shader</button>
+                        <button type="button" class="learn-tag" data-learn-tag="python" aria-pressed="false">Python</button>
                         <button type="button" class="learn-tag" data-learn-tag="editor" aria-pressed="false">Editor</button>
                         <button type="button" class="learn-tag" data-learn-tag="api" aria-pressed="false">API</button>
                     </div>
                     <p class="learn-result-status" data-learn-status role="status" aria-live="polite"></p>
                 </section>
                 <section class="learn-list" aria-label="Learning chapters">
-                    <article class="learn-entry" data-learn-entry data-tags="basics editor api" data-search-en="learning documentation placeholder basics editor api examples" data-search-zh="学习 文档 占位 基础 编辑器 API 示例">
-                        <a href="learn/placeholder.html">
-                            <div><h2>Learning documentation placeholder</h2><p>A placeholder for the chapter-based learning library while the first human-written material is prepared.</p></div>
-                            <div class="learn-entry-tags"><span>Basics</span><span>Editor</span><span>API</span></div>
+                    <article class="learn-entry" data-learn-entry data-tags="basics rendering shader" data-search-en="shader guide beginner vertex fragment shading model standalone fullscreen glsl material" data-search-zh="着色器 shader 入门 顶点 片元 着色模型 完全自定义 GLSL 材质">
+                        <a href="learn/shaders.html">
+                            <div><h2>Writing shaders in Infernux</h2><p>Move from a first vertex/fragment material to custom shading models and fully controlled GPU stages.</p></div>
+                            <div class="learn-entry-tags"><span>Basics</span><span>Rendering</span><span>Shader</span></div>
+                        </a>
+                    </article>
+                    <article class="learn-entry" data-learn-entry data-tags="rendering python editor api" data-search-en="renderstack post processing render pipeline effect effectgroup mount point queue python runtime parameters" data-search-zh="RenderStack 后处理 渲染管线 Effect EffectGroup 挂载点 队列 Python 运行时 参数">
+                        <a href="learn/renderstack-post-processing.html">
+                            <div><h2>RenderStack and reusable post-processing</h2><p>Author a readable pipeline, expose stable effect stages, and reuse live Effect assets across scenes.</p></div>
+                            <div class="learn-entry-tags"><span>Rendering</span><span>Python</span><span>Editor</span><span>API</span></div>
                         </a>
                     </article>
                 </section>
@@ -84,16 +93,25 @@
                     <div class="learn-tags" aria-label="章节标签">
                         <button type="button" class="learn-tag is-active" data-learn-tag="all" aria-pressed="true">全部</button>
                         <button type="button" class="learn-tag" data-learn-tag="basics" aria-pressed="false">基础</button>
+                        <button type="button" class="learn-tag" data-learn-tag="rendering" aria-pressed="false">渲染</button>
+                        <button type="button" class="learn-tag" data-learn-tag="shader" aria-pressed="false">Shader</button>
+                        <button type="button" class="learn-tag" data-learn-tag="python" aria-pressed="false">Python</button>
                         <button type="button" class="learn-tag" data-learn-tag="editor" aria-pressed="false">编辑器</button>
                         <button type="button" class="learn-tag" data-learn-tag="api" aria-pressed="false">API</button>
                     </div>
                     <p class="learn-result-status" data-learn-status role="status" aria-live="polite"></p>
                 </section>
                 <section class="learn-list" aria-label="学习章节">
-                    <article class="learn-entry" data-learn-entry data-tags="basics editor api" data-search-en="learning documentation placeholder basics editor api examples" data-search-zh="学习 文档 占位 基础 编辑器 API 示例">
-                        <a href="learn/placeholder.html">
-                            <div><h2>学习文档占位</h2><p>章节式学习资料的占位文档，首批人工编写内容完成后会逐步替换。</p></div>
-                            <div class="learn-entry-tags"><span>基础</span><span>编辑器</span><span>API</span></div>
+                    <article class="learn-entry" data-learn-entry data-tags="basics rendering shader" data-search-en="shader guide beginner vertex fragment shading model standalone fullscreen glsl material" data-search-zh="着色器 shader 入门 顶点 片元 着色模型 完全自定义 GLSL 材质">
+                        <a href="learn/shaders.html">
+                            <div><h2>在 Infernux 中编写 Shader</h2><p>从第一组顶点/片元材质出发，逐步写到自定义着色模型与完全自定义 GPU 阶段。</p></div>
+                            <div class="learn-entry-tags"><span>基础</span><span>渲染</span><span>Shader</span></div>
+                        </a>
+                    </article>
+                    <article class="learn-entry" data-learn-entry data-tags="rendering python editor api" data-search-en="renderstack post processing render pipeline effect effectgroup mount point queue python runtime parameters" data-search-zh="RenderStack 后处理 渲染管线 Effect EffectGroup 挂载点 队列 Python 运行时 参数">
+                        <a href="learn/renderstack-post-processing.html">
+                            <div><h2>RenderStack 与通用后处理</h2><p>用清晰的 Python 管线声明挂载点，并让可热更新的 Effect 资源跨场景复用。</p></div>
+                            <div class="learn-entry-tags"><span>渲染</span><span>Python</span><span>编辑器</span><span>API</span></div>
                         </a>
                     </article>
                 </section>
@@ -101,7 +119,7 @@
         </div>
     </main>
 
-    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="start.html" data-i18n="nav.start">Start</a><a href="learn.html" data-i18n="nav.learn">Learn</a><a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="community.html" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="start.html" data-i18n="nav.start">Start</a><a href="learn.html" data-i18n="nav.learn">Learn</a><a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
     <script src="js/i18n-learn.js?v=1"></script>
     <script src="js/i18n.js?v=19"></script>
     <script src="js/main.js?v=14"></script>

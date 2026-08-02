@@ -11,8 +11,6 @@ const routeKeys = {
     index: "home.hero.title",
     start: "pageTitle.start",
     roadmap: "roadmap.hero.title",
-    community: "community.forum.title",
-    "community-topic": "community.topic.replies",
     download: "pageTitle.download",
 };
 
@@ -46,7 +44,7 @@ for (const [page, pageKey] of Object.entries(routeKeys)) {
         assert.equal(translate("nav.start", language), source[language]["nav.start"], `${page}: shared navigation copy must resolve in ${language}`);
         assert.equal(translate(pageKey, language), source[language][pageKey], `${page}: route copy must resolve in ${language}`);
     }
-    const foreignKey = page.startsWith("community") ? routeKeys.index : routeKeys.community;
+    const foreignKey = page === "index" ? routeKeys.download : routeKeys.index;
     assert.equal(translate(foreignKey, "en"), "", `${page}: another route's copy must not be delivered`);
     assert.equal("INFERNUX_PAGE_TRANSLATIONS" in sandbox, false, `${page}: staging data should be released after merge`);
     assert.equal(typeof listeners.get("DOMContentLoaded"), "function", `${page}: localization runtime should initialize after parsing`);

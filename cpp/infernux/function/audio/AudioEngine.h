@@ -77,6 +77,16 @@ class AudioEngine
     [[nodiscard]] bool HasVoiceFinished(SDL_AudioStream *stream) const;
 
     // ========================================================================
+    // Editor asset preview
+    // ========================================================================
+
+    /// Play one non-spatial clip through the shared audio device.
+    bool PlayPreview(const std::string &filePath);
+    void StopPreview();
+    [[nodiscard]] bool IsPreviewPlaying(const std::string &filePath = {}) const;
+    [[nodiscard]] std::string GetPreviewPath() const;
+
+    // ========================================================================
     // Source registration (for spatial audio)
     // ========================================================================
 
@@ -174,6 +184,11 @@ class AudioEngine
     std::vector<SDL_AudioStream *> m_activeStreams;
     mutable std::mutex m_streamsMutex;
     std::unordered_map<SDL_AudioStream *, std::shared_ptr<AudioVoiceState>> m_voiceStates;
+
+    mutable std::mutex m_previewMutex;
+    std::shared_ptr<AudioClip> m_previewClip;
+    SDL_AudioStream *m_previewStream = nullptr;
+    std::string m_previewPath;
 
     /// Registered AudioSources for spatial updates
     std::unordered_set<AudioSource *> m_registeredSources;

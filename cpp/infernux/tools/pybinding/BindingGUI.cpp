@@ -10,6 +10,7 @@
 #include "gui/InxResourcePreviewer.h"
 #include <function/editor/ConsolePanel.h>
 #include <function/editor/EditorPanel.h>
+#include <function/editor/EditorTheme.h>
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/editor/HierarchyPanel.h>
 #include <function/editor/InspectorPanel.h>
@@ -17,6 +18,7 @@
 #include <function/editor/ProjectPanel.h>
 #include <function/editor/StatusBarPanel.h>
 #include <function/editor/ToolbarPanel.h>
+#include <function/renderer/ProfileConfig.h>
 #include <memory>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
@@ -109,10 +111,16 @@ PropertyDesc DecodePropertyDesc(const py::dict &d)
         p.fVal[3] = d["f4"].cast<float>();
         break;
     }
-    if (d.contains("mn"))
-        p.rangeMin = d["mn"].cast<float>();
-    if (d.contains("mx"))
-        p.rangeMax = d["mx"].cast<float>();
+    if (d.contains("mn") && d.contains("mx")) {
+        p.hasRange = true;
+        if (p.type == PropertyDesc::Int) {
+            p.intRangeMin = d["mn"].cast<int>();
+            p.intRangeMax = d["mx"].cast<int>();
+        } else {
+            p.rangeMin = d["mn"].cast<float>();
+            p.rangeMax = d["mx"].cast<float>();
+        }
+    }
     if (d.contains("sp"))
         p.speed = d["sp"].cast<float>();
     if (d.contains("sl"))
@@ -223,6 +231,9 @@ py::dict EncodePropertyChanges(const std::vector<PropertyChange> &changes)
 
 void RegisterGUIBindings(py::module_ &m)
 {
+    m.def(
+        "is_frame_profile_enabled", []() { return INFERNUX_FRAME_PROFILE != 0; },
+        "Return whether this native module was built with detailed frame profiling enabled.");
     m.def("set_gui_semantic_capture_enabled", &InxGUISemantics::SetCaptureEnabled, py::arg("enabled"),
           "Enable or disable the read-only editor UI semantic capture registry.");
     m.def(
@@ -351,6 +362,14 @@ void RegisterGUIBindings(py::module_ &m)
                  ctx.Checkbox(label, &value);
                  return value;
              })
+        .def(
+            "checkbox_inspector",
+            [](InxGUIContext &ctx, const std::string &label, bool value) {
+                ctx.CheckboxInspector(label, &value);
+                return value;
+            },
+            py::arg("label"), py::arg("value"),
+            "Inspector checkbox: square scaled to 75%, label at ambient font size")
         .def("int_slider",
              [](InxGUIContext &ctx, const std::string &label, int value, int min, int max) {
                  ctx.IntSlider(label, &value, min, max);
@@ -371,6 +390,14 @@ void RegisterGUIBindings(py::module_ &m)
                  ctx.DragFloat(label, &value, speed, min, max);
                  return value;
              })
+        .def("drag_float_semantic",
+             [](InxGUIContext &ctx, const std::string &label, float value, float speed, float min, float max,
+                const std::string &semantic_id) {
+                 ctx.DragFloat(label, &value, speed, min, max, "%.3f", 1.0f, semantic_id);
+                 return value;
+             },
+             py::arg("label"), py::arg("value"), py::arg("speed"), py::arg("min"), py::arg("max"),
+             py::arg("semantic_id"))
         .def("text_input",
              [](InxGUIContext &ctx, const std::string &label, const std::string &value, size_t buffer_size) {
                  std::vector<char> buffer(buffer_size, 0);
@@ -405,6 +432,33 @@ void RegisterGUIBindings(py::module_ &m)
             },
             py::arg("label"), py::arg("value"), py::arg("step") = 1, py::arg("step_fast") = 100, py::arg("flags") = 0)
         .def(
+            "input_int_semantic",
+            [](InxGUIContext &ctx, const std::string &label, int value, const std::string &semantic_id, int step,
+               int step_fast, int flags) {
+                ctx.InputInt(label, &value, step, step_fast, flags, semantic_id);
+                return value;
+            },
+            py::arg("label"), py::arg("value"), py::arg("semantic_id"), py::arg("step") = 1,
+            py::arg("step_fast") = 100, py::arg("flags") = 0)
+        .def(
+            "input_uint",
+            [](InxGUIContext &ctx, const std::string &label, uint32_t value, uint32_t step, uint32_t step_fast,
+               int flags) {
+                ctx.InputUInt(label, &value, step, step_fast, flags);
+                return value;
+            },
+            py::arg("label"), py::arg("value"), py::arg("step") = 1u, py::arg("step_fast") = 100u,
+            py::arg("flags") = 0)
+        .def(
+            "input_uint_semantic",
+            [](InxGUIContext &ctx, const std::string &label, uint32_t value, const std::string &semantic_id,
+               uint32_t step, uint32_t step_fast, int flags) {
+                ctx.InputUInt(label, &value, step, step_fast, flags, semantic_id);
+                return value;
+            },
+            py::arg("label"), py::arg("value"), py::arg("semantic_id"), py::arg("step") = 1u,
+            py::arg("step_fast") = 100u, py::arg("flags") = 0)
+        .def(
             "input_float",
             [](InxGUIContext &ctx, const std::string &label, float value, float step, float step_fast, int flags) {
                 ctx.InputFloat(label, &value, step, step_fast, flags);
@@ -413,14 +467,25 @@ void RegisterGUIBindings(py::module_ &m)
             py::arg("label"), py::arg("value"), py::arg("step") = 0.0f, py::arg("step_fast") = 0.0f,
             py::arg("flags") = 0)
         .def(
+            "input_float_semantic",
+            [](InxGUIContext &ctx, const std::string &label, float value, const std::string &semantic_id, float step,
+               float step_fast, int flags) {
+                ctx.InputFloat(label, &value, step, step_fast, flags, semantic_id);
+                return value;
+            },
+            py::arg("label"), py::arg("value"), py::arg("semantic_id"), py::arg("step") = 0.0f,
+            py::arg("step_fast") = 0.0f, py::arg("flags") = 0)
+        .def(
             "color_edit",
-            [](InxGUIContext &ctx, const std::string &label, float r, float g, float b, float a) -> py::tuple {
+            [](InxGUIContext &ctx, const std::string &label, float r, float g, float b, float a,
+               bool hdr) -> py::tuple {
                 float color[4] = {r, g, b, a};
-                ctx.ColorEdit(label, color);
+                ctx.ColorEdit(label, color, hdr);
                 return py::make_tuple(py::float_(color[0]), py::float_(color[1]), py::float_(color[2]),
                                       py::float_(color[3]));
             },
-            py::arg("label"), py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a") = 1.0f)
+            py::arg("label"), py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a") = 1.0f,
+            py::arg("hdr") = false)
         .def(
             "color_picker",
             [](InxGUIContext &ctx, const std::string &label, float r, float g, float b, float a,
@@ -492,6 +557,8 @@ void RegisterGUIBindings(py::module_ &m)
              "Adjust scrolling amount to make current cursor position visible. 0.0=top, 0.5=center, 1.0=bottom")
         .def("get_scroll_y", &InxGUIContext::GetScrollY, "Get current scroll Y position")
         .def("get_scroll_max_y", &InxGUIContext::GetScrollMaxY, "Get maximum scroll Y value")
+        .def("set_scroll_x", &InxGUIContext::SetScrollX, py::arg("scroll_x"), "Set horizontal scroll position")
+        .def("set_scroll_y", &InxGUIContext::SetScrollY, py::arg("scroll_y"), "Set vertical scroll position")
         .def("separator", &InxGUIContext::Separator)
         .def("spacing", &InxGUIContext::Spacing)
         .def("dummy", &InxGUIContext::Dummy)
@@ -504,18 +571,32 @@ void RegisterGUIBindings(py::module_ &m)
         .def("set_next_item_allow_overlap", &InxGUIContext::SetNextItemAllowOverlap,
              "Allow the next item to be overlapped by a subsequent item (e.g. checkbox over CollapsingHeader).")
         .def("collapsing_header", &InxGUIContext::CollapsingHeader)
+        .def("render_compact_section_header", &InxGUIContext::RenderCompactSectionHeader,
+             py::arg("label"), py::arg("icon_id"), py::arg("default_open"), py::arg("open_condition"),
+             py::arg("allow_overlap"), py::arg("frame_pad_x"), py::arg("frame_pad_y"),
+             py::arg("item_spacing_x"), py::arg("item_spacing_y"), py::arg("border_size"),
+             py::arg("zero_indent"), py::arg("font_scale"), py::arg("right_margin"), py::arg("icon_size"),
+             py::arg("header_color"), py::arg("hover_color"), py::arg("active_color"),
+             py::arg("use_text_color"), py::arg("text_color"),
+             "Render shared compact Inspector header styling in one native call.")
         .def("is_item_clicked", &InxGUIContext::IsItemClicked, py::arg("mouse_button") = 0)
         .def("begin_tab_bar", &InxGUIContext::BeginTabBar)
         .def("end_tab_bar", &InxGUIContext::EndTabBar)
-        .def("begin_tab_item", &InxGUIContext::BeginTabItem)
+        .def(
+            "begin_tab_item",
+            [](InxGUIContext &context, const std::string &label) { return context.BeginTabItem(label, nullptr); },
+            py::arg("label"))
         .def("end_tab_item", &InxGUIContext::EndTabItem)
         .def("begin_main_menu_bar", &InxGUIContext::BeginMainMenuBar)
         .def("end_main_menu_bar", &InxGUIContext::EndMainMenuBar)
-        .def("begin_menu", &InxGUIContext::BeginMenu, py::arg("label"), py::arg("enabled") = true)
+        .def("begin_menu", &InxGUIContext::BeginMenu, py::arg("label"), py::arg("enabled") = true,
+             py::arg("semantic_id") = "")
         .def("end_menu", &InxGUIContext::EndMenu)
         .def("menu_item", &InxGUIContext::MenuItem,
              py::arg("label"), py::arg("shortcut") = "", py::arg("selected") = false, py::arg("enabled") = true)
-        .def("begin_child", &InxGUIContext::BeginChild)
+        .def("begin_child", &InxGUIContext::BeginChild, py::arg("id"), py::arg("width") = 0.0f,
+             py::arg("height") = 0.0f, py::arg("border") = false, py::arg("flags") = 0,
+             "Begin a child region. flags takes ImGuiWindowFlags (e.g. NoScrollWithMouse).")
         .def("end_child", &InxGUIContext::EndChild)
         .def("open_popup", &InxGUIContext::OpenPopup)
         .def("begin_popup", &InxGUIContext::BeginPopup)
@@ -595,6 +676,8 @@ void RegisterGUIBindings(py::module_ &m)
         .def("get_content_region_avail_height", &InxGUIContext::GetContentRegionAvailHeight)
         .def("get_cursor_pos_x", &InxGUIContext::GetCursorPosX)
         .def("get_cursor_pos_y", &InxGUIContext::GetCursorPosY)
+        .def("is_virtualized_region_visible", &InxGUIContext::IsVirtualizedRegionVisible, py::arg("height"),
+             "Return whether a measured vertical region intersects the current window clip rectangle.")
         .def("set_cursor_pos_x", &InxGUIContext::SetCursorPosX)
         .def("set_cursor_pos_y", &InxGUIContext::SetCursorPosY)
         .def("get_window_pos_x", &InxGUIContext::GetWindowPosX)
@@ -645,6 +728,9 @@ void RegisterGUIBindings(py::module_ &m)
              py::arg("type"), py::arg("data"), "Set drag-drop payload (string data)")
         .def("end_drag_drop_source", &InxGUIContext::EndDragDropSource, "End drag source")
         .def("begin_drag_drop_target", &InxGUIContext::BeginDragDropTarget, "Begin a drag-drop target on last item")
+        .def("begin_drag_drop_target_rect", &InxGUIContext::BeginDragDropTargetRect, py::arg("min_x"),
+             py::arg("min_y"), py::arg("max_x"), py::arg("max_y"), py::arg("target_id"),
+             "Begin a drag-drop target over an explicit screen-space rectangle")
         .def(
             "accept_drag_drop_payload",
             [](InxGUIContext &ctx, const std::string &type) -> py::
@@ -733,19 +819,9 @@ void RegisterGUIBindings(py::module_ &m)
             "Returns (x, y, width, height) of the main ImGui viewport (app window client area)")
         .def("set_clipboard_text", &InxGUIContext::SetClipboardText, py::arg("text"), "Set the system clipboard text")
         .def("get_clipboard_text", &InxGUIContext::GetClipboardText, "Get the system clipboard text")
-        .def(
-            "input_text_multiline",
-            [](InxGUIContext &ctx, const std::string &label, const std::string &value, size_t buffer_size, float width,
-               float height, int flags) {
-                std::vector<char> buffer(buffer_size, 0);
-                size_t copyLen = std::min(value.size(), buffer_size - 1);
-                std::copy(value.begin(), value.begin() + copyLen, buffer.begin());
-                ImGui::InputTextMultiline(label.c_str(), buffer.data(), buffer.size(), ImVec2(width, height), flags);
-                return std::string(buffer.data());
-            },
-            py::arg("label"), py::arg("text"), py::arg("buffer_size") = 4096, py::arg("width") = -1.0f,
-            py::arg("height") = -1.0f, py::arg("flags") = 0,
-            "Editable multiline text input. Returns the (possibly modified) text.")
+        .def("input_text_multiline", &InxGUIContext::InputTextMultiline, py::arg("label"), py::arg("text"),
+             py::arg("buffer_size") = 4096, py::arg("width") = -1.0f, py::arg("height") = -1.0f,
+             py::arg("flags") = 0, "Editable multiline text input. Returns the (possibly modified) text.")
         .def("draw_rect", &InxGUIContext::DrawRect, py::arg("min_x"), py::arg("min_y"), py::arg("max_x"),
              py::arg("max_y"), py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a"), py::arg("thickness") = 1.0f,
              py::arg("rounding") = 0.0f, "Draw a rectangle outline on the current window's draw list (screen coords)")
@@ -878,11 +954,58 @@ void RegisterGUIBindings(py::module_ &m)
             },
             py::arg("plan"), py::arg("values"), py::arg("label_width"),
             "Update only the values of a compiled property plan, render it, and return changed fields.")
+        .def(
+            "render_material_top",
+            [](InxGUIContext &ctx, const std::string &shaderSectionLabel, const std::string &vertexLabel,
+               const std::string &vertexDisplay, const std::string &fragmentLabel,
+               const std::string &fragmentDisplay, float shaderLabelWidth, const std::string &surfaceSectionLabel,
+               const std::shared_ptr<PropertyBatchPlan> &surfacePlan, py::sequence surfaceValues,
+               float surfaceLabelWidth, uint64_t pickerTextureId, uint64_t previewTextureId,
+               const std::string &previewUnavailableLabel, bool defaultOpen, bool readOnly) -> py::tuple {
+                if (surfacePlan)
+                    UpdatePropertyBatchValues(*surfacePlan, surfaceValues);
+                const auto interaction = ctx.RenderMaterialTop(
+                    shaderSectionLabel, vertexLabel, vertexDisplay, fragmentLabel, fragmentDisplay,
+                    shaderLabelWidth, surfaceSectionLabel, surfacePlan.get(), surfaceLabelWidth,
+                    pickerTextureId, previewTextureId, previewUnavailableLabel, defaultOpen, readOnly);
+                return py::make_tuple(
+                    interaction.vertexFlags, interaction.vertexPickerOpen, interaction.vertexPayload,
+                    interaction.vertexListPopupOpen, interaction.fragmentFlags, interaction.fragmentPickerOpen,
+                    interaction.fragmentPayload, interaction.fragmentListPopupOpen,
+                    EncodePropertyChanges(interaction.surfaceChanges));
+            },
+            py::arg("shader_section_label"), py::arg("vertex_label"), py::arg("vertex_display"),
+            py::arg("fragment_label"), py::arg("fragment_display"), py::arg("shader_label_width"),
+            py::arg("surface_section_label"), py::arg("surface_plan"), py::arg("surface_values"),
+            py::arg("surface_label_width"), py::arg("picker_texture_id"), py::arg("preview_texture_id"),
+            py::arg("preview_unavailable_label"), py::arg("default_open"), py::arg("read_only"),
+            "Render the stable material shader/surface/preview header in one native call.")
         .def("render_object_field_chrome", &InxGUIContext::RenderObjectFieldChrome, py::arg("field_id"),
              py::arg("display_text"), py::arg("type_hint"), py::arg("selected") = false,
              py::arg("clickable") = true, py::arg("has_picker") = false, py::arg("picker_texture_id") = 0,
              py::arg("semantic_id") = "",
-             "Render steady-state object-reference chrome in one native call; returns interaction flags.");
+             "Render steady-state object-reference chrome in one native call; returns interaction flags.")
+        .def(
+            "render_mesh_renderer_inspector_fields",
+            [](InxGUIContext &ctx, const std::string &meshFieldId, const std::string &meshLabel,
+               const std::string &meshDisplay, const std::vector<std::string> &slotLabels,
+               const std::vector<std::string> &slotDisplays, uint64_t pickerTextureId, float labelWidth) {
+                py::list result;
+                for (const auto &interaction : ctx.RenderMeshRendererInspectorFields(
+                         meshFieldId, meshLabel, meshDisplay, slotLabels, slotDisplays, pickerTextureId, labelWidth)) {
+                    py::dict item;
+                    item["index"] = interaction.index;
+                    item["flags"] = interaction.flags;
+                    item["popup_open"] = interaction.popupOpen;
+                    item["payload_type"] = interaction.payloadType;
+                    item["payload"] = interaction.payload;
+                    result.append(std::move(item));
+                }
+                return result;
+            },
+            py::arg("mesh_field_id"), py::arg("mesh_label"), py::arg("mesh_display"), py::arg("slot_labels"),
+            py::arg("slot_displays"), py::arg("picker_texture_id"), py::arg("label_width"),
+            "Render MeshRenderer mesh and material reference fields in one native call.");
 
     py::class_<InxGUIRenderable, PyGUIRenderable, std::shared_ptr<InxGUIRenderable>>(m, "InxGUIRenderable",
                                                                                      py::dynamic_attr())
@@ -1078,9 +1201,11 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("toggle_build_settings", &MenuBarPanel::toggleBuildSettings)
         .def_readwrite("toggle_preferences", &MenuBarPanel::togglePreferences)
         .def_readwrite("toggle_physics_layer_matrix", &MenuBarPanel::togglePhysicsLayerMatrix)
+        .def_readwrite("toggle_environment_settings", &MenuBarPanel::toggleEnvironmentSettings)
         .def_readwrite("is_build_settings_open", &MenuBarPanel::isBuildSettingsOpen)
         .def_readwrite("is_preferences_open", &MenuBarPanel::isPreferencesOpen)
         .def_readwrite("is_physics_layer_matrix_open", &MenuBarPanel::isPhysicsLayerMatrixOpen)
+        .def_readwrite("is_environment_settings_open", &MenuBarPanel::isEnvironmentSettingsOpen)
         .def_readwrite("translate", &MenuBarPanel::translate);
 
     // ── HierarchyPanel ─────────────────────────────────────────────────
@@ -1119,6 +1244,7 @@ void RegisterGUIBindings(py::module_ &m)
         // Undo callbacks
         .def_readwrite("undo_record_create", &HierarchyPanel::undoRecordCreate)
         .def_readwrite("undo_record_delete", &HierarchyPanel::undoRecordDelete)
+        .def_readwrite("undo_record_rename", &HierarchyPanel::undoRecordRename)
         .def_readwrite("undo_record_move", &HierarchyPanel::undoRecordMove)
         // Scene info callbacks
         .def_readwrite("get_scene_display_name", &HierarchyPanel::getSceneDisplayName)
@@ -1136,6 +1262,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("create_primitive", &HierarchyPanel::createPrimitive)
         .def_readwrite("create_light", &HierarchyPanel::createLight)
         .def_readwrite("create_empty", &HierarchyPanel::createEmpty)
+        .def_readwrite("create_empty_parent", &HierarchyPanel::createEmptyParent)
         .def("add_create_entry", &HierarchyPanel::AddCreateEntry, py::arg("category"), py::arg("locale_key"),
              py::arg("callback"), "Register a data-driven entry for the Hierarchy context menu")
         .def("clear_create_entries", &HierarchyPanel::ClearCreateEntries, "Remove all data-driven create-menu entries")
@@ -1199,7 +1326,9 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("create_animclip", &ProjectPanel::createAnimClip)
         .def_readwrite("create_animclip3d", &ProjectPanel::createAnimClip3D)
         .def_readwrite("create_animfsm", &ProjectPanel::createAnimFsm)
-        .def_readwrite("create_vfxsystem", &ProjectPanel::createVfxSystem)
+        .def_readwrite("create_particlegraph", &ProjectPanel::createParticleGraph)
+        .def_readwrite("create_render_effect", &ProjectPanel::createRenderEffect)
+        .def_readwrite("create_render_effect_group", &ProjectPanel::createRenderEffectGroup)
         .def_readwrite("create_animtimeline", &ProjectPanel::createAnimTimeline)
         .def_readwrite("create_timelinefsm", &ProjectPanel::createTimelineFsm)
         .def_readwrite("create_prefab_from_hierarchy", &ProjectPanel::createPrefabFromHierarchy)
@@ -1207,13 +1336,14 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("do_rename", &ProjectPanel::doRename)
         .def_readwrite("get_unique_name", &ProjectPanel::getUniqueName)
         .def_readwrite("move_item_to_directory", &ProjectPanel::moveItemToDirectory)
+        .def_readwrite("copy_item_to_path", &ProjectPanel::copyItemToPath)
         // Open/Reveal callbacks
         .def_readwrite("open_file", &ProjectPanel::openFile)
         .def_readwrite("open_scene", &ProjectPanel::openScene)
         .def_readwrite("open_prefab_mode", &ProjectPanel::openPrefabMode)
         .def_readwrite("open_anim_clip", &ProjectPanel::openAnimClip)
         .def_readwrite("open_anim_fsm", &ProjectPanel::openAnimFsm)
-        .def_readwrite("open_vfx_system", &ProjectPanel::openVfxSystem)
+        .def_readwrite("open_particle_graph", &ProjectPanel::openParticleGraph)
         .def_readwrite("open_anim_timeline", &ProjectPanel::openAnimTimeline)
         .def_readwrite("open_timeline_fsm", &ProjectPanel::openTimelineFsm)
         .def_readwrite("reveal_in_explorer", &ProjectPanel::revealInExplorer)
@@ -1230,6 +1360,7 @@ void RegisterGUIBindings(py::module_ &m)
     py::class_<ComponentInfo>(m, "InspectorComponentInfo")
         .def(py::init<>())
         .def_readwrite("type_name", &ComponentInfo::typeName)
+        .def_readwrite("display_name", &ComponentInfo::displayName)
         .def_readwrite("component_id", &ComponentInfo::componentId)
         .def_readwrite("enabled", &ComponentInfo::enabled)
         .def_readwrite("is_native", &ComponentInfo::isNative)

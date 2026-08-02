@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from Infernux.mcp import session
+from Infernux.engine.path_utils import resolved_path
 from Infernux.mcp.supervisor import SupervisorSession
 from Infernux.mcp.tools.common import fail, ok, register_tool_metadata
 from Infernux.mcp.tools.runtime import MotionCaptureStopMode, RuntimeAssertion
@@ -38,7 +39,7 @@ def register_player_tools(mcp, project_path: str) -> None:
         """Launch the Debug Player, optionally at a BuildManifest scene for validation."""
         try:
             supervisor = _supervisor()
-            executable = os.path.abspath(executable_path) if executable_path else _configured_executable(project_path)
+            executable = resolved_path(executable_path) if executable_path else _configured_executable(project_path)
             status = supervisor.launch_player(
                 executable,
                 start_scene=start_scene,
@@ -123,6 +124,40 @@ def register_player_tools(mcp, project_path: str) -> None:
         except Exception as exc:
             return _player_failure(exc)
 
+    @mcp.tool(name="player_validation_mouse_button")
+    def player_validation_mouse_button(
+        button: int,
+        pressed: bool,
+        x: float,
+        y: float,
+        timeout_seconds: float = 3.0,
+    ) -> dict:
+        """Send one mouse transition to Player through its SDL synthetic input queue."""
+        try:
+            return ok(_supervisor().player_send_mouse_button(
+                int(button),
+                bool(pressed),
+                float(x),
+                float(y),
+                timeout_seconds=timeout_seconds,
+            ))
+        except Exception as exc:
+            return _player_failure(exc)
+
+    @mcp.tool(name="player_validation_capture")
+    def player_validation_capture(
+        file_name: str = "player-game.png",
+        timeout_seconds: float = 30.0,
+    ) -> dict:
+        """Capture the standalone Player Game render target for human review."""
+        try:
+            return ok(_supervisor().player_capture_game(
+                file_name,
+                timeout_seconds=timeout_seconds,
+            ))
+        except Exception as exc:
+            return _player_failure(exc)
+
     @mcp.tool(name="player_validation_motion_capture_arm")
     def player_validation_motion_capture_arm(
         object_names: list[str],
@@ -132,6 +167,9 @@ def register_player_tools(mcp, project_path: str) -> None:
         trigger_timeout: float = 60.0,
         hold_key: str | int | None = None,
         hold_keys: list[str | int] | None = None,
+        hold_mouse_buttons: list[int] | None = None,
+        mouse_x: float = -10_000.0,
+        mouse_y: float = -10_000.0,
         frame_count: int | None = None,
         hold_frame_count: int | None = None,
         wait_frame_count: int | None = None,
@@ -161,6 +199,9 @@ def register_player_tools(mcp, project_path: str) -> None:
                 trigger_timeout=float(trigger_timeout),
                 hold_key=hold_key,
                 hold_keys=hold_keys,
+                hold_mouse_buttons=hold_mouse_buttons,
+                mouse_x=float(mouse_x),
+                mouse_y=float(mouse_y),
                 frame_count=frame_count,
                 hold_frame_count=hold_frame_count,
                 wait_frame_count=wait_frame_count,
@@ -227,7 +268,7 @@ def _configured_executable(project_path: str) -> str:
             settings = json.load(stream)
     except (OSError, json.JSONDecodeError) as exc:
         raise FileNotFoundError(f"Build Settings could not be read: {settings_path}") from exc
-    output_dir = os.path.abspath(str(settings.get("output_dir", "") or ""))
+    output_dir = resolved_path(str(settings.get("output_dir", "") or ""))
     game_name = str(settings.get("game_name", "") or "").strip()
     if not output_dir or not game_name:
         raise ValueError("Build Settings must define output_dir and game_name before Player validation.")
@@ -272,6 +313,16 @@ def _register_metadata() -> None:
             [],
         ),
         ("player_validation_key", "Send a human-equivalent SDL key transition to Player.", ["Queues Player input"]),
+        (
+            "player_validation_mouse_button",
+            "Send a human-equivalent SDL mouse transition to Player.",
+            ["Queues Player input"],
+        ),
+        (
+            "player_validation_capture",
+            "Capture the standalone Player Game render target through engine GPU readback.",
+            ["Queues GPU readback", "Writes one PNG under the session review directory"],
+        ),
         (
             "player_validation_press",
             "Press and release a Player key with engine-controlled timing and optional public component probes.",

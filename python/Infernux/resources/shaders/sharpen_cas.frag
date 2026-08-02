@@ -1,6 +1,22 @@
 #version 450
-@shader_id: sharpen_cas
-@hidden
+
+ShaderInfo {
+    Name "Sharpen CAS"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _SourceTex
+    }
+    PushConstants pc {
+        Float intensity
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Contrast Adaptive Sharpening (CAS) — AMD FidelityFX inspired.
 // Enhances local contrast without visible halos.
@@ -8,20 +24,12 @@
 // Push constants:
 //   [0] intensity — sharpening strength (0 = off, 1 = maximum)
 
-layout(set = 0, binding = 0) uniform sampler2D _SourceTex;
-
-layout(push_constant) uniform PushConstants {
-    float intensity;
-} pc;
-
-layout(location = 0) in  vec2 inUV;
-layout(location = 0) out vec4 outColor;
-
 void main() {
     vec2 texelSize = 1.0 / vec2(textureSize(_SourceTex, 0));
 
     // Sample 3x3 neighborhood (cross pattern for efficiency)
-    vec3 center = texture(_SourceTex, inUV).rgb;
+    vec4 centerSample = texture(_SourceTex, inUV);
+    vec3 center = centerSample.rgb;
     vec3 top    = texture(_SourceTex, inUV + vec2( 0.0, -texelSize.y)).rgb;
     vec3 bottom = texture(_SourceTex, inUV + vec2( 0.0,  texelSize.y)).rgb;
     vec3 left   = texture(_SourceTex, inUV + vec2(-texelSize.x,  0.0)).rgb;
@@ -43,5 +51,5 @@ void main() {
     vec3 average = (top + bottom + left + right) * 0.25;
     vec3 sharpened = center + (center - average) * w * sharpness * -4.0;
 
-    outColor = vec4(clamp(sharpened, 0.0, 1.0), 1.0);
+    outColor = vec4(clamp(sharpened, 0.0, 1.0), centerSample.a);
 }

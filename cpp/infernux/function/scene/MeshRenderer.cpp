@@ -690,7 +690,7 @@ void MeshRenderer::ValidateSerializedDocumentForType(const nlohmann::json &j, st
     } else if (expectedType != "MeshRenderer") {
         throw std::invalid_argument("unsupported MeshRenderer document type: " + std::string(expectedType));
     }
-    ValidateComponentDocumentFields(j, expectedType, 5, required, optional);
+    ValidateComponentDocumentFields(j, expectedType, required, optional);
 
     RequireUnsignedInteger(j, "meshId", expectedType);
     const auto &materials = j["materials"];

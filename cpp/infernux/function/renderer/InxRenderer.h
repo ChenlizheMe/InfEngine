@@ -1,10 +1,14 @@
 #pragma once
 
+#include <function/renderer/lighting/ShadowFrame.h>
+
 // Minimal includes required for public API value types and POD members
 #include "CaptureService.h"
 #include "GpuResidency.h"
 #include "InxRenderStruct.h"
 #include "ProfileConfig.h"
+#include "ScenePickingService.h"
+#include "particle/ParticleGpuViewDiagnostics.h"
 #include <array>
 #include <chrono>
 #include <core/log/InxLog.h>           // LogLevel enum (used in SetLogLevel)
@@ -28,7 +32,11 @@ namespace infernux
 class EditorGizmos;
 class EditorTools;
 class GizmosDrawCallBuffer;
-class ParticleDrawCallBuffer;
+namespace particle
+{
+class ParticleGpuDrawRegistry;
+class ParticleGpuSystemManager;
+} // namespace particle
 class InxGUI;
 class InxGUIRenderable;
 class InxMaterial;
@@ -38,11 +46,14 @@ class InxView;
 class OutlineRenderer;
 class RenderPipelineCallback;
 class ResourcePreviewManager;
+class Scene;
 class SceneRenderGraph;
 class SceneRenderTarget;
 class TransientResourcePool;
 class InxGUIContext;
 class InxScreenUIRenderer;
+struct ShaderProgramArtifact;
+struct ShaderProgramKey;
 namespace vk
 {
 class ImageReadbackTicket;
@@ -55,6 +66,9 @@ struct RendererFrameTelemetrySnapshot
     bool sceneTargetReady = false;
     bool gameCameraEnabled = false;
     bool gameCameraAvailable = false;
+    size_t gameCameraCount = 0;
+    std::vector<uint64_t> gameCameraIds;
+    std::vector<uint64_t> gameRenderViewIds;
     bool gameTargetReady = false;
     uint32_t sceneTargetWidth = 0;
     uint32_t sceneTargetHeight = 0;
@@ -64,8 +78,55 @@ struct RendererFrameTelemetrySnapshot
     size_t sceneShadowDrawCallCount = 0;
     size_t gameDrawCallCount = 0;
     size_t gameShadowDrawCallCount = 0;
+    uint32_t sceneShadowViewCount = 0;
+    uint32_t gameShadowViewCount = 0;
+    uint32_t sceneShadowAssignmentCount = 0;
+    uint32_t gameShadowAssignmentCount = 0;
+    uint64_t sceneShadowResourceIdentity = 0;
+    uint64_t gameShadowResourceIdentity = 0;
     size_t lightCount = 0;
-    size_t particleCount = 0;
+    bool canonicalLightGpuBufferReady = false;
+    uint64_t canonicalLightGpuBytes = 0;
+    uint64_t canonicalLightGeneration = 0;
+    uint32_t canonicalDirectionalLightCount = 0;
+    uint32_t canonicalLocalLightCount = 0;
+    uint64_t sceneTemporalDiscontinuityRevision = 0;
+    uint64_t temporalHistoryInvalidationCount = 0;
+    uint64_t sceneRenderViewId = 0;
+    uint64_t gameRenderViewId = 0;
+    size_t sceneTemporalHistoryCount = 0;
+    size_t gameTemporalHistoryCount = 0;
+    size_t sceneValidTemporalHistoryCount = 0;
+    size_t gameValidTemporalHistoryCount = 0;
+    uint32_t sceneTemporalSampleIndex = 0;
+    uint32_t gameTemporalSampleIndex = 0;
+    size_t gpuParticleSystemCount = 0;
+    size_t gpuParticleOutputCount = 0;
+    uint64_t gpuParticleCapacity = 0;
+    uint64_t gpuParticleLastScheduledFrame = 0;
+    size_t gpuParticleScheduledSystemCount = 0;
+    size_t gpuParticleSimulatingSystemCount = 0;
+    size_t gpuParticleRenderingSystemCount = 0;
+    uint64_t gpuParticleRequestedSpawnCount = 0;
+    size_t gpuParticleContinuationSystemCount = 0;
+    uint64_t gpuParticleContinuationCapacity = 0;
+    uint32_t gpuParticleContinuationProgramGeneration = 0;
+    uint64_t gpuParticleContinuationPrepareRecordCalls = 0;
+    uint64_t gpuParticleContinuationClassifyRecordCalls = 0;
+    uint64_t gpuParticleContinuationDispatchRecordCalls = 0;
+    size_t gpuParticleContinuationResetPendingCount = 0;
+    size_t gpuParticleContactRuntimeSystemCount = 0;
+    uint64_t gpuParticleContactRecordCapacity = 0;
+    uint64_t gpuParticleContactWorkItemCapacity = 0;
+    uint64_t gpuParticleContactResidentBytes = 0;
+    uint64_t gpuParticleContactPrepareRecordCalls = 0;
+    uint64_t gpuParticleContactSolveRecordCalls = 0;
+    uint64_t gpuParticleCollisionSceneRevision = 0;
+    uint32_t gpuParticleCollisionSceneColliderCount = 0;
+    uint64_t gpuParticleCollisionSceneTopologyRevision = 0;
+    uint32_t gpuParticleCollisionSceneMeshVertexCount = 0;
+    uint32_t gpuParticleCollisionSceneMeshIndexCount = 0;
+    uint32_t gpuParticleCollisionSceneMeshBvhNodeCount = 0;
     std::string sceneRenderGraphName;
     std::string gameRenderGraphName;
     uint64_t sceneRenderGraphExecutionCount = 0;
@@ -74,6 +135,20 @@ struct RendererFrameTelemetrySnapshot
     bool gameRenderGraphCurrentExecuted = false;
     std::vector<std::string> sceneRenderGraphPassNames;
     std::vector<std::string> gameRenderGraphPassNames;
+    std::string sceneRenderGraphDebug;
+    std::string gameRenderGraphDebug;
+    uint64_t submissionGeneration = 0;
+    bool submissionComposed = false;
+    bool submissionComputeQueueIndependent = false;
+    bool submissionTransferQueueIndependent = false;
+    bool submissionAsyncComputeActive = false;
+    bool submissionParallelComputeGraphics = false;
+    uint32_t submissionBatchCount = 0;
+    uint32_t submissionGraphicsBatchCount = 0;
+    uint32_t submissionComputeBatchCount = 0;
+    uint32_t submissionTransferBatchCount = 0;
+    uint32_t submissionCrossQueueDependencyCount = 0;
+    uint32_t submissionUnorderedComputeGraphicsPairCount = 0;
     double gameRenderMs = 0.0;
     double gameOnlyFrameMs = 0.0;
     double sceneUpdateMs = 0.0;
@@ -81,6 +156,22 @@ struct RendererFrameTelemetrySnapshot
     double prepareFrameMs = 0.0;
     std::unordered_map<std::string, double> guiPanelTimesMs;
     std::unordered_map<std::string, std::unordered_map<std::string, double>> guiPanelSubTimesMs;
+};
+
+struct MsaaStateSnapshot
+{
+    int activeSamples = 1;
+    int sceneRequestedSamples = 0;
+    int gameRequestedSamples = 0;
+    uint32_t supportedSampleMask = 0;
+    bool requestConflict = false;
+    bool sceneTargetAligned = true;
+    bool gameTargetAligned = true;
+    bool materialPipelinesAligned = true;
+    uint64_t sceneMsaaColorBytes = 0;
+    uint64_t gameMsaaColorBytes = 0;
+    uint64_t reconfigurationCount = 0;
+    uint64_t rejectedRequestCount = 0;
 };
 
 struct UIPerformanceMetricStats
@@ -162,7 +253,14 @@ class InxRenderer
     void SetMeshGpuBudgetBytes(uint64_t bytes);
     [[nodiscard]] size_t TrimMeshGpuBudget();
     [[nodiscard]] GpuResidencySnapshot GetGpuResidencySnapshot() const;
+    /// Non-blocking completion poll for headless/tool loops that are not
+    /// currently advancing DrawFrame(). Never waits for a queue or device.
+    void PollGpuCompletions();
     [[nodiscard]] RendererFrameTelemetrySnapshot GetFrameTelemetrySnapshot();
+    [[nodiscard]] uint64_t RequestGpuParticleViewDiagnostics(bool gameView, uint64_t graphInstanceId,
+                                                             uint64_t cameraComponentId = 0);
+    [[nodiscard]] particle::GpuParticleViewDiagnosticSnapshot
+    QueryGpuParticleViewDiagnostics(bool gameView, uint64_t requestId, uint64_t cameraComponentId = 0) const;
     [[nodiscard]] RendererUIPerformanceSnapshot GetUIPerformanceSnapshot(size_t maxSamples = 240) const;
     [[nodiscard]] uint64_t GetGpuResidencyBudgetBytes() const;
     void SetGpuResidencyBudgetBytes(uint64_t bytes);
@@ -170,6 +268,11 @@ class InxRenderer
     [[nodiscard]] std::vector<GpuAssetResidencyRecord> GetAssetGpuResidency() const;
 
     void LoadShader(const char *name, const std::vector<char> &code, const char *type);
+    bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
+    [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
+    [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
+    ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material);
+    void SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver);
     bool HasShader(const std::string &name, const std::string &type) const;
 
     /// @brief Store shader render-state annotations (forwarded to InxVkCoreModular)
@@ -202,7 +305,7 @@ class InxRenderer
 
     void SetGUIFont(const char *fontPath, float fontSize);
     float GetDisplayScale() const;
-    void RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable);
+    void RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable, int priority = 0);
     void UnregisterGUIRenderable(const char *name);
     void QueueDockTabSelection(const char *windowId);
     void SetGUIPlayerMode(bool enabled);
@@ -246,6 +349,8 @@ class InxRenderer
     [[nodiscard]] uint64_t RequestCapture(CaptureSource source, const std::string &outputPath);
     [[nodiscard]] CaptureSnapshot QueryCapture(uint64_t captureId) const;
     [[nodiscard]] bool CancelCapture(uint64_t captureId);
+    [[nodiscard]] uint64_t RequestScenePick(float x, float y, float viewportWidth, float viewportHeight);
+    [[nodiscard]] ScenePickSnapshot QueryScenePick(uint64_t requestId) const;
 
     // Editor gizmos
     void SetShowGrid(bool show);
@@ -258,22 +363,17 @@ class InxRenderer
     /// @brief Access the component gizmos draw call buffer used by the scripting layer
     GizmosDrawCallBuffer *GetGizmosDrawCallBuffer();
 
-    /// @brief Access the persistent particle billboard batch buffer.
-    ParticleDrawCallBuffer *GetParticleDrawCallBuffer();
+    particle::ParticleGpuDrawRegistry *GetParticleGpuDrawRegistry();
+    particle::ParticleGpuSystemManager *GetParticleGpuSystemManager();
+    [[nodiscard]] uint32_t GetMaxFramesInFlight() const noexcept;
+    [[nodiscard]] uint64_t GetNextFrameIndex() const noexcept
+    {
+        return m_frameCount + 1;
+    }
 
     /// @brief Set the selected object ID for outline tracking
-    void SetSelectedObjectId(uint64_t objectId)
-    {
-        m_selectedObjectId = objectId;
-        m_selectedOutlineObjectIds.clear();
-        if (objectId != 0)
-            m_selectedOutlineObjectIds.push_back(objectId);
-    }
-    void SetSelectedObjectIds(const std::vector<uint64_t> &objectIds)
-    {
-        m_selectedOutlineObjectIds = objectIds;
-        m_selectedObjectId = objectIds.empty() ? 0 : objectIds.back();
-    }
+    void SetSelectedObjectId(uint64_t objectId);
+    void SetSelectedObjectIds(const std::vector<uint64_t> &objectIds);
     [[nodiscard]] uint64_t GetSelectedObjectId() const
     {
         return m_selectedObjectId;
@@ -296,6 +396,9 @@ class InxRenderer
                                              const std::vector<std::shared_ptr<InxMaterial>> &materials, int size,
                                              const glm::mat4 &view, const glm::mat4 &proj, const glm::vec3 &cameraPos,
                                              bool cloneMaterials = false);
+
+    /// Currently-published live mesh preview descriptor id (0 when absent).
+    [[nodiscard]] uint64_t GetMeshPreviewDisplayTextureId() const;
 
     // Refresh all materials using a specific shader
     bool RefreshMaterialsUsingShader(const std::string &shaderId);
@@ -326,10 +429,13 @@ class InxRenderer
     // ========================================================================
 
     /// @brief Get Game View texture ID for ImGui display
-    uint64_t GetGameTextureId() const;
+    uint64_t GetGameTextureId();
 
     /// @brief Resize the game render target to match Game View panel size
     void ResizeGameRenderTarget(uint32_t width, uint32_t height);
+
+    /// @brief Invalidate accumulated temporal effects for selected render views.
+    void InvalidateTemporalHistory(bool sceneView = true, bool gameView = true);
 
     /// @brief Enable/disable game camera rendering
     void SetGameCameraEnabled(bool enabled);
@@ -393,6 +499,9 @@ class InxRenderer
 
     /// @brief Get current MSAA sample count (1 = off).
     int GetMsaaSamples() const;
+
+    /// @brief Read validated requests, device support and resource alignment.
+    [[nodiscard]] MsaaStateSnapshot GetMsaaStateSnapshot() const;
 
     // ========================================================================
     // Present Mode
@@ -464,6 +573,9 @@ class InxRenderer
     void RequestFullSpeedFrame();
 
   private:
+    void UpdateParticleCollisionScene();
+    void ConsumeSceneTemporalDiscontinuity();
+
     InxAppMetadata m_appMetadata;
     InxAppMetadata m_rendererMetadata;
 
@@ -479,17 +591,23 @@ class InxRenderer
     uint64_t m_frameCount = 0;
 
     std::unique_ptr<InxVkCoreModular> m_vkCore;
+    std::function<void(const std::shared_ptr<InxMaterial> &)> m_shaderProgramArtifactResolver;
     std::unique_ptr<InxGUI> m_gui;
     std::unique_ptr<InxView> m_view;
     bool m_guiPlayerMode = false;
     uint64_t m_lastSemanticSyntheticInputSequence = 0;
     std::unique_ptr<SceneRenderTarget> m_sceneRenderTarget;
     std::unique_ptr<SceneRenderGraph> m_sceneRenderGraph;
+    uint64_t m_temporalHistoryWorldId = 0;
+    uint64_t m_observedSceneTemporalDiscontinuityRevision = 0;
+    uint64_t m_temporalHistoryInvalidationCount = 0;
     std::unique_ptr<CaptureService> m_captureService;
+    std::unique_ptr<ScenePickingService> m_scenePickingService;
     struct PendingCapture
     {
         uint64_t id = 0;
         CaptureSource source = CaptureSource::Game;
+        uint64_t sourceGeneration = 0;
     };
     [[nodiscard]] bool HasPendingCapture(CaptureSource source) const;
     void SubmitPendingCaptureReadbacks();
@@ -499,15 +617,31 @@ class InxRenderer
     std::unique_ptr<EditorGizmos> m_editorGizmos;
     std::unique_ptr<EditorTools> m_editorTools;
     std::unique_ptr<GizmosDrawCallBuffer> m_componentGizmos;
-    std::unique_ptr<ParticleDrawCallBuffer> m_particleDrawCalls;
+    std::unique_ptr<particle::ParticleGpuDrawRegistry> m_particleGpuDrawRegistry;
+    std::unique_ptr<particle::ParticleGpuSystemManager> m_particleGpuSystemManager;
+    const Scene *m_particleCollisionSourceScene = nullptr;
+    uint64_t m_particleCollisionSourceRevision = 0;
+    uint64_t m_particleCollisionPublishedRevision = 1;
+    uint64_t m_particleCollisionTopologyFingerprint = 0;
+    uint64_t m_particleCollisionTopologyRevision = 1;
+    struct ParticleCollisionPublishedState
+    {
+        std::array<float, 12> worldToCollider{};
+        std::array<float, 4> worldAabbMin{};
+        std::array<float, 4> worldAabbMax{};
+    };
+    std::unordered_map<uint64_t, ParticleCollisionPublishedState> m_particleCollisionPublishedState;
     std::unique_ptr<OutlineRenderer> m_outlineRenderer;
     std::unique_ptr<TransientResourcePool> m_transientResourcePool;
     uint64_t m_gpuResidencyBudgetBytes = 0;
     uint32_t m_gpuResidencyCheckFrames = 0;
 
-    // Game Camera: separate render target + graph for Game View
+    // Game cameras share one output target but own independent RenderGraphs.
+    // This keeps camera matrices, shadows, Forward+ lists, particles and
+    // temporal history isolated while Camera.depth determines execution order.
     std::unique_ptr<SceneRenderTarget> m_gameRenderTarget;
-    std::unique_ptr<SceneRenderGraph> m_gameRenderGraph;
+    std::unordered_map<uint64_t, std::unique_ptr<SceneRenderGraph>> m_gameRenderGraphs;
+    SceneRenderGraph *m_gameRenderGraph = nullptr; ///< Representative graph for legacy single-view queries.
     std::unique_ptr<InxScreenUIRenderer> m_screenUIRenderer;
     bool m_gameCameraEnabled = false;
     bool m_sceneViewVisible = false; ///< Default false; Python editor sets true via SetSceneViewVisible()
@@ -533,17 +667,8 @@ class InxRenderer
     /// Per-frame cached game camera pointer, lazily resolved once per frame
     /// by FindGameCameraCached() and cleared at the start of each DrawFrame.
     class Camera *m_cachedGameCamera = nullptr;
+    std::vector<class Camera *> m_cachedGameCameras;
     bool m_gameCameraCacheValid = false;
-
-    // Per-camera shadow VP data for multi-camera shadow isolation.
-    // Editor camera shadow data goes into m_lightCollector (default path).
-    // Game camera shadow data is stored here and patched into the lighting
-    // UBO inline before the game render graph executes.
-    bool m_hasGameShadowData = false;
-    std::array<glm::mat4, 4> m_gameShadowVPs{};
-    std::array<float, 4> m_gameShadowSplits{};
-    uint32_t m_gameShadowCascadeCount = 0;
-    float m_gameShadowMapResolution = 0.0f;
 
     // Scriptable render pipeline (nullptr = default C++ path)
     std::shared_ptr<RenderPipelineCallback> m_renderPipeline;
@@ -586,9 +711,16 @@ class InxRenderer
     /// Returns the highest-priority active Camera (by depth), excluding the editor camera.
     class Camera *FindGameCamera();
 
+    /// @brief Find every active game camera in stable Camera.depth order.
+    std::vector<class Camera *> FindGameCameras();
+
     /// @brief Per-frame cached version of FindGameCamera().
     /// First call per frame does the actual discovery; subsequent calls return cached result.
     class Camera *FindGameCameraCached();
+
+    /// @brief Per-frame camera stack and per-camera RenderGraph ownership.
+    const std::vector<class Camera *> &FindGameCamerasCached();
+    SceneRenderGraph *EnsureGameRenderGraph(class Camera *camera);
 
     /// Callback invoked once per frame BEFORE GUI::BuildFrame().
     /// Used by Python to tick DeferredTaskRunner so that scene-mutating
@@ -608,7 +740,18 @@ class InxRenderer
 
     /// @brief Check scene & game render graph MSAA requests; apply if changed.
     /// @return true if MSAA change was triggered and DrawFrame should return early.
-    bool CheckAndApplyMsaaRequest();
+    bool CheckAndApplyMsaaRequest(bool finalFrameCheck, bool sceneViewActive, bool gameViewActive);
+
+    [[nodiscard]] uint32_t GetSupportedMsaaSampleMask() const;
+    [[nodiscard]] bool ApplyMsaaSamples(int samples, const char *source);
+    void SetEffectiveGraphMsaaSamples(int samples);
+
+    int m_sceneRequestedMsaaSamples = 0;
+    int m_gameRequestedMsaaSamples = 0;
+    bool m_msaaRequestConflict = false;
+    uint64_t m_msaaReconfigurationCount = 0;
+    uint64_t m_msaaRejectedRequestCount = 0;
+    uint64_t m_lastMsaaRejectionSignature = 0;
 
     /// @brief Build EngineGlobalsUBO and stage it for the current frame.
     void StageEngineGlobalsUBO();

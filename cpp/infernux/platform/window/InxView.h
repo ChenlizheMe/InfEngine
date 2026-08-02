@@ -125,6 +125,10 @@ class InxView
     {
         return m_lastPacingSample;
     }
+    [[nodiscard]] bool NeedsImmediateGuiRefresh() const noexcept
+    {
+        return m_needsImmediateGuiRefresh;
+    }
 
     /// Tell InxView whether the engine is in play mode.
     /// When true, the frame-rate cap and idle sleep are both disabled.
@@ -184,6 +188,7 @@ class InxView
     bool m_closeRequested = false;
     bool m_isMinimized = false;
     bool m_isPlayMode = false;
+    bool m_needsImmediateGuiRefresh = false;
     InxAppMetadata m_appMetadata;
 
     // ---- Power-save idle state ----

@@ -251,6 +251,14 @@ void PyComponentProxy::SyncPythonMirror() const
     SyncPythonMirrorState(m_pyComponent, this);
 }
 
+void PyComponentProxy::RebindPythonMirror()
+{
+    py::gil_scoped_acquire acquire;
+    BindPythonMirror();
+    SyncPythonMirror();
+    RefreshCoroutineSchedulerFlag();
+}
+
 void PyComponentProxy::Awake()
 {
     py::gil_scoped_acquire acquire;

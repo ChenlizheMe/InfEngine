@@ -1,4 +1,6 @@
-@shader_id: lib/uv
+ShaderInfo {
+    Name "Lib UV"
+}
 
 // ============================================================================
 // lib/uv.glsl — UV manipulation utilities
@@ -6,7 +8,7 @@
 // Full-coverage UV toolkit matching Unity ShaderGraph UV category.
 // Provides: tiling, rotation, flipbook, parallax, triplanar, polar,
 // radial shear, spherize, twirl, and more.
-// Usage: @import: lib/uv
+// Usage: ShaderInfo Imports: Lib UV
 // ============================================================================
 
 // ============================================================================
@@ -141,9 +143,12 @@ vec4 triplanarSample(sampler2D tex, vec3 worldPos, vec3 worldNormal, float tilin
 // Triplanar normal mapping  (project + blend normals per axis)
 vec3 triplanarNormal(sampler2D normalMap, vec3 worldPos, vec3 worldNormal, float tiling, float sharpness) {
     vec3 w = triplanarWeights(worldNormal, sharpness);
-    vec3 nx = (texture(normalMap, worldPos.yz * tiling).rgb * 2.0 - 1.0);
-    vec3 ny = (texture(normalMap, worldPos.xz * tiling).rgb * 2.0 - 1.0);
-    vec3 nz = (texture(normalMap, worldPos.xy * tiling).rgb * 2.0 - 1.0);
+    vec2 nxy = texture(normalMap, worldPos.yz * tiling).rg * 2.0 - 1.0;
+    vec2 nyx = texture(normalMap, worldPos.xz * tiling).rg * 2.0 - 1.0;
+    vec2 nzx = texture(normalMap, worldPos.xy * tiling).rg * 2.0 - 1.0;
+    vec3 nx = vec3(nxy, sqrt(max(1.0 - dot(nxy, nxy), 0.0)));
+    vec3 ny = vec3(nyx, sqrt(max(1.0 - dot(nyx, nyx), 0.0)));
+    vec3 nz = vec3(nzx, sqrt(max(1.0 - dot(nzx, nzx), 0.0)));
     vec3 tnx = vec3(0.0, nx.y, nx.x);
     vec3 tny = vec3(ny.x, 0.0, ny.y);
     vec3 tnz = vec3(nz.x, nz.y, 0.0);

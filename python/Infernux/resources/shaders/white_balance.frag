@@ -1,6 +1,25 @@
 #version 450
-@shader_id: white_balance
-@hidden
+
+ShaderInfo {
+    Name "White Balance"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _SourceTex
+    }
+    PushConstants pc {
+        Float temperature
+        Float tint
+        Float _pad0
+        Float _pad1
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // White Balance post-process — adjusts color temperature and tint.
 // Matches Unity URP White Balance.
@@ -8,18 +27,6 @@
 // Push constants:
 //   [0] temperature — color temperature shift (-100 to 100, 0 = neutral)
 //   [1] tint        — green-magenta tint (-100 to 100, 0 = neutral)
-
-layout(set = 0, binding = 0) uniform sampler2D _SourceTex;
-
-layout(push_constant) uniform PushConstants {
-    float temperature;
-    float tint;
-    float _pad0;
-    float _pad1;
-} pc;
-
-layout(location = 0) in  vec2 inUV;
-layout(location = 0) out vec4 outColor;
 
 // sRGB → Linear LMS (simplified Bradford chromatic adaptation)
 const mat3 LIN_2_LMS = mat3(
@@ -61,10 +68,11 @@ vec3 WhiteBalance(vec3 color, float temp, float tin) {
 }
 
 void main() {
-    vec3 color = texture(_SourceTex, inUV).rgb;
+    vec4 source = texture(_SourceTex, inUV);
+    vec3 color = source.rgb;
 
     color = WhiteBalance(color, pc.temperature, pc.tint);
     color = max(color, vec3(0.0));
 
-    outColor = vec4(color, 1.0);
+    outColor = vec4(color, source.a);
 }

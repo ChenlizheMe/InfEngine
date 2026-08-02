@@ -21,6 +21,7 @@ class SerializableObject:
     """
 
     _serialized_fields_: Dict[str, FieldMetadata]
+    __serialized_type_id__: str
 
     def __init__(self, **kwargs: Any) -> None: ...
     def _serialize(self) -> dict: ...

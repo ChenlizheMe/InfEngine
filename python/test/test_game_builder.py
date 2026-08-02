@@ -9,6 +9,8 @@ import sys
 import threading
 import time
 import zipfile
+import ctypes
+from ctypes import wintypes
 from types import SimpleNamespace
 
 import pytest
@@ -41,6 +43,78 @@ def _write_asset_script(project_root, relative_path: str, source: str) -> None:
     script_path = project_root / "Assets" / relative_path
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(source, encoding="utf-8")
+
+
+def _reference_particle_graph(project_root: Path, stable_id: str) -> Path:
+    graph_path = project_root / "Assets" / "VFX" / f"{stable_id}.particlegraph"
+    graph_path.parent.mkdir(parents=True, exist_ok=True)
+    graph_path.write_text(
+        json.dumps({"$schema": "infernux.particle_graph", "stable_id": stable_id}),
+        encoding="utf-8",
+    )
+    (project_root / "main.scene").write_text(
+        json.dumps(
+            {
+                "objects": [
+                    {
+                        "components": [
+                            {
+                                "data": {
+                                    "graph": {
+                                        "$type": "asset_ref",
+                                        "asset_type": "ParticleGraph",
+                                        "guid": "",
+                                        "path_hint": f"Assets/VFX/{stable_id}.particlegraph",
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return graph_path
+
+
+def test_validate_accepts_project_relative_build_scene_paths(tmp_path):
+    project_root = tmp_path / "project"
+    scene_path = project_root / "Assets" / "Acceptance" / "Burst Queue.scene"
+    scene_path.parent.mkdir(parents=True)
+    scene_path.write_text('{"objects": []}', encoding="utf-8")
+    settings_dir = project_root / "ProjectSettings"
+    settings_dir.mkdir()
+    (settings_dir / "BuildSettings.json").write_text(
+        json.dumps({"scenes": ["Assets/Acceptance/Burst Queue.scene"]}),
+        encoding="utf-8",
+    )
+    builder = GameBuilder(
+        str(project_root), str(tmp_path / "build_output"), game_name="TestGame"
+    )
+
+    builder._validate()
+
+
+def test_rewrite_build_settings_keeps_project_relative_scene_identity(tmp_path):
+    project_root = _make_project(tmp_path)
+    settings_path = project_root / "ProjectSettings" / "BuildSettings.json"
+    settings_path.write_text(
+        json.dumps({"scenes": ["main.scene"]}), encoding="utf-8"
+    )
+    final_settings = tmp_path / "dist" / "Data" / "ProjectSettings"
+    final_settings.mkdir(parents=True)
+    shutil.copy2(settings_path, final_settings / "BuildSettings.json")
+    builder = GameBuilder(
+        str(project_root), str(tmp_path / "build_output"), game_name="TestGame"
+    )
+
+    builder._relativize_scenes(str(tmp_path / "dist"))
+
+    rewritten = json.loads(
+        (final_settings / "BuildSettings.json").read_text(encoding="utf-8")
+    )
+    assert rewritten["scenes"] == ["main.scene"]
 
 
 def test_build_cancellation_is_not_reported_as_a_build_failure(tmp_path, monkeypatch):
@@ -196,7 +270,6 @@ def test_runtime_pack_cache_round_trip(tmp_path, monkeypatch):
     cache_manifest = json.loads(
         (cache_root / ("a" * 64) / "runtime-pack.json").read_text(encoding="utf-8")
     )
-    assert cache_manifest["schema_version"] == 4
     assert cache_manifest["compression"] == "zip-deflate-9"
     assert cache_manifest["lto"] is True
     assert cache_manifest["file_count"] == 2
@@ -364,6 +437,83 @@ def test_runtime_engine_fingerprint_ignores_editor_backups(tmp_path, monkeypatch
     assert builder._engine_content_fingerprint() == first
 
 
+def test_runtime_engine_fingerprint_tracks_loaded_native_payload(tmp_path, monkeypatch):
+    import Infernux
+
+    package_root = tmp_path / "Infernux"
+    package_root.mkdir()
+    package_init = package_root / "__init__.py"
+    package_init.write_text("", encoding="utf-8")
+    native_root = tmp_path / "native"
+    native_root.mkdir()
+    native_module = (
+        "_Infernux.cp312-win_amd64.pyd"
+        if sys.platform == "win32"
+        else "_Infernux.so"
+    )
+    (native_root / native_module).write_bytes(b"module")
+    companion = native_root / (
+        "InfernuxRuntime.dll" if sys.platform == "win32" else "libInfernuxRuntime.so"
+    )
+    companion.write_bytes(b"first")
+    monkeypatch.setattr(Infernux, "__file__", str(package_init))
+    monkeypatch.setenv("INFERNUX_NATIVE_MODULE_DIR", str(native_root))
+    monkeypatch.setattr(
+        nuitka_builder_module,
+        "_RUNTIME_PACK_DIR",
+        str(tmp_path / "runtime-packs"),
+    )
+
+    builder = object.__new__(NuitkaBuilder)
+    builder._engine_fingerprint_cache = ""
+    first = builder._engine_content_fingerprint()
+    companion.write_bytes(b"second")
+    builder._engine_fingerprint_cache = ""
+
+    assert builder._engine_content_fingerprint() != first
+
+
+def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
+    tmp_path, monkeypatch
+):
+    native_root = tmp_path / "native"
+    native_root.mkdir()
+    native_module = (
+        "_Infernux.cp312-win_amd64.pyd"
+        if sys.platform == "win32"
+        else "_Infernux.so"
+    )
+    companion = (
+        "InfernuxRuntime.dll" if sys.platform == "win32" else "libInfernuxRuntime.so"
+    )
+    (native_root / native_module).write_bytes(b"current-module")
+    if sys.platform == "win32":
+        # A stale short-name module can be left by Nuitka discovery. The
+        # ABI-tagged build output must win and replace it atomically.
+        (native_root / "_Infernux.pyd").write_bytes(b"stale-source-module")
+    (native_root / companion).write_bytes(b"current-runtime")
+    monkeypatch.setenv("INFERNUX_NATIVE_MODULE_DIR", str(native_root))
+
+    dist = tmp_path / "boot.dist"
+    package_lib = dist / "Infernux" / "lib"
+    package_lib.mkdir(parents=True)
+    (package_lib / native_module).write_bytes(b"stale-module")
+    canonical_module = "_Infernux.pyd" if sys.platform == "win32" else "_Infernux.so"
+    (package_lib / canonical_module).write_bytes(b"stale-canonical-module")
+    (package_lib / companion).write_bytes(b"stale-runtime")
+    if sys.platform == "win32":
+        (dist / companion).write_bytes(b"stale-root-runtime")
+
+    builder = object.__new__(NuitkaBuilder)
+    builder._inject_native_libs(str(dist))
+
+    assert (package_lib / native_module).read_bytes() == b"current-module"
+    assert (package_lib / canonical_module).read_bytes() == b"current-module"
+    assert (package_lib / companion).read_bytes() == b"current-runtime"
+    if sys.platform == "win32":
+        assert (dist / companion).read_bytes() == b"current-runtime"
+
+
 def test_cleanup_temp_removes_boot_directory_synchronously(tmp_path):
     boot_dir = tmp_path / "_build_temp"
     boot_dir.mkdir()
@@ -418,7 +568,84 @@ def test_windows_launcher_layout_hides_runtime_payload(tmp_path, monkeypatch):
     assert (data_root / "Runtime" / "python312.dll").read_bytes() == b"python"
     assert (data_root / "RuntimeModules" / "core" / "core-module.zip").read_bytes() == b"core"
     layout = json.loads((data_root / "PlayerLayout.json").read_text(encoding="utf-8"))
-    assert layout["layout"] == "infernux-windows-player-v3"
+    assert layout["layout"] == "infernux-windows-player"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PE resource contract")
+def test_windows_launcher_icon_is_replaced_with_project_icon(tmp_path):
+    launcher = (
+        Path(__file__).parents[1]
+        / "Infernux"
+        / "resources"
+        / "player"
+        / "InfernuxLauncher.exe"
+    )
+    project_icon = (
+        Path(__file__).parents[1]
+        / "Infernux"
+        / "resources"
+        / "icons"
+        / "icon.png"
+    )
+    executable = tmp_path / "BrandedGame.exe"
+    shutil.copy2(launcher, executable)
+
+    GameBuilder._apply_windows_executable_icon(str(executable), str(project_icon))
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.LoadLibraryExW.argtypes = [wintypes.LPCWSTR, wintypes.HANDLE, wintypes.DWORD]
+    kernel32.LoadLibraryExW.restype = wintypes.HMODULE
+    kernel32.FindResourceW.argtypes = [wintypes.HMODULE, ctypes.c_void_p, ctypes.c_void_p]
+    kernel32.FindResourceW.restype = wintypes.HRSRC
+    kernel32.SizeofResource.argtypes = [wintypes.HMODULE, wintypes.HRSRC]
+    kernel32.SizeofResource.restype = wintypes.DWORD
+    module = kernel32.LoadLibraryExW(str(executable), None, 0x00000002)
+    assert module
+    try:
+        group = kernel32.FindResourceW(module, ctypes.c_void_p(101), ctypes.c_void_p(14))
+        assert group
+        assert kernel32.SizeofResource(module, group) >= 6 + 14 * 6
+    finally:
+        kernel32.FreeLibrary.argtypes = [wintypes.HMODULE]
+        kernel32.FreeLibrary(module)
+
+
+def test_build_branding_assets_are_manifested_and_packed(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    icon = tmp_path / "project-icon.png"
+    splash = tmp_path / "opening.png"
+    icon.write_bytes(b"icon")
+    splash.write_bytes(b"splash")
+    builder.icon_path = str(icon)
+    builder.splash_items = [
+        {
+            "type": "image",
+            "path": str(splash),
+            "duration": 2.0,
+            "fade_in": 0.25,
+            "fade_out": 0.5,
+        }
+    ]
+    final_dir = tmp_path / "dist"
+    settings = final_dir / "Data" / "ProjectSettings"
+    settings.mkdir(parents=True)
+    (settings / "BuildSettings.json").write_text(
+        json.dumps({"scenes": ["main.scene"]}), encoding="utf-8"
+    )
+
+    builder._process_build_icon(str(final_dir))
+    builder._process_splash_items(str(final_dir))
+    builder._generate_manifest(str(final_dir))
+
+    manifest = json.loads(
+        (final_dir / "Data" / "BuildManifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["icon_path"] == "Branding/icon.png"
+    assert manifest["splash_items"][0]["path"] == "Splash/opening.png"
+    builder._pack_content_archive(str(final_dir))
+    with zipfile.ZipFile(final_dir / "Data" / "Content.inxpkg") as archive:
+        assert "Branding/icon.png" in archive.namelist()
+        assert "Splash/opening.png" in archive.namelist()
 
 
 def test_requirements_install_is_skipped_when_content_is_unchanged(tmp_path, monkeypatch):
@@ -483,6 +710,206 @@ def test_player_cleanup_removes_redundant_library_resources(tmp_path):
     assert not library_font.parent.parent.exists()
 
 
+def test_game_data_includes_render_effect_artifacts(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    artifact = (
+        Path(builder.project_path)
+        / "Library"
+        / "Artifacts"
+        / "RenderEffect"
+        / "bloom.inxeffect"
+    )
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text('{"$schema":"infernux.render_effect_artifact"}', encoding="utf-8")
+    final_dir = tmp_path / "dist"
+
+    builder._copy_game_data(str(final_dir))
+    shipped = (
+        final_dir
+        / "Data"
+        / "Library"
+        / "Artifacts"
+        / "RenderEffect"
+        / artifact.name
+    )
+
+    assert shipped.read_text(encoding="utf-8") == artifact.read_text(encoding="utf-8")
+
+    builder._pack_content_archive(str(final_dir))
+    with zipfile.ZipFile(final_dir / "Data" / builder._CONTENT_ARCHIVE_FILENAME) as archive:
+        assert "Library/Artifacts/RenderEffect/bloom.inxeffect" in archive.namelist()
+
+
+def test_game_data_includes_particle_artifacts(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    _reference_particle_graph(Path(builder.project_path), "smoke")
+    artifact = (
+        Path(builder.project_path)
+        / "Library"
+        / "Artifacts"
+        / "Particle"
+        / "smoke.inxparticle"
+    )
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(
+        '{"$schema":"infernux.particle_artifact","kernel_ir":{"emitters":[]}}',
+        encoding="utf-8",
+    )
+    final_dir = tmp_path / "dist"
+
+    builder._copy_game_data(str(final_dir))
+    shipped = (
+        final_dir
+        / "Data"
+        / "Library"
+        / "Artifacts"
+        / "Particle"
+        / artifact.name
+    )
+    assert shipped.read_text(encoding="utf-8") == artifact.read_text(encoding="utf-8")
+    runtime_index = json.loads(
+        (shipped.parent / builder._PARTICLE_RUNTIME_INDEX_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert runtime_index == {
+        "$schema": "infernux.particle_runtime_index",
+        "entries": [
+            {
+                "guid": "",
+                "path_hint": "Assets/VFX/smoke.particlegraph",
+                "stable_id": "smoke",
+            }
+        ],
+    }
+
+    builder._pack_content_archive(str(final_dir))
+    with zipfile.ZipFile(final_dir / "Data" / builder._CONTENT_ARCHIVE_FILENAME) as archive:
+        assert "Library/Artifacts/Particle/smoke.inxparticle" in archive.namelist()
+        assert "Library/Artifacts/Particle/RuntimeIndex.json" in archive.namelist()
+
+
+def test_game_data_excludes_unreachable_particle_artifacts(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    _reference_particle_graph(project, "reachable")
+    artifact_root = project / "Library" / "Artifacts" / "Particle"
+    artifact_root.mkdir(parents=True)
+    for stable_id in ("reachable", "unreachable"):
+        (artifact_root / f"{stable_id}.inxparticle").write_text(
+            '{"$schema":"infernux.particle_artifact","kernel_ir":{"emitters":[]}}',
+            encoding="utf-8",
+        )
+
+    final_dir = tmp_path / "dist"
+    builder._copy_game_data(str(final_dir))
+
+    shipped = final_dir / "Data" / "Library" / "Artifacts" / "Particle"
+    assert (shipped / "reachable.inxparticle").is_file()
+    assert not (shipped / "unreachable.inxparticle").exists()
+
+
+def test_game_data_requires_reachable_particle_artifact(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    _reference_particle_graph(project, "missing")
+    (project / "Library" / "Artifacts" / "Particle").mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="no current AOT artifact"):
+        builder._copy_game_data(str(tmp_path / "dist"))
+
+
+def test_particle_script_is_not_a_player_build_source(tmp_path):
+    source = tmp_path / "Smoke.particle.py"
+    source.write_text(
+        "from Infernux.particle import ParticleScript\n"
+        "class Smoke(ParticleScript):\n"
+        "    stable_id = 'smoke-script'\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="ParticleScript is Preview/Future"):
+        GameBuilder._particle_source_stable_id(str(source))
+
+
+def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    _reference_particle_graph(project, "interfaces")
+    particle_artifact = (
+        project / "Library" / "Artifacts" / "Particle" / "interfaces.inxparticle"
+    )
+    particle_artifact.parent.mkdir(parents=True)
+
+    def sample(opcode: str, stable_id: str) -> dict:
+        return {"opcode": opcode, "immediates": [["interface", stable_id]]}
+
+    particle_artifact.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.particle_artifact",
+                "kernel_ir": {
+                    "emitters": [
+                        {
+                            "data_interfaces": [
+                                {
+                                    "kind": "vector_field",
+                                    "stable_id": "wind",
+                                    "texture": {"guid": "field-guid", "path_hint": ""},
+                                },
+                                {
+                                    "kind": "vector_field",
+                                    "stable_id": "unused",
+                                    "texture": {"guid": "unused-guid", "path_hint": ""},
+                                },
+                                {
+                                    "kind": "sdf_volume",
+                                    "stable_id": "collision",
+                                    "texture": {"guid": "sdf-guid", "path_hint": ""},
+                                },
+                            ],
+                            "init": {"instructions": []},
+                            "update": {
+                                "instructions": [
+                                    sample("sample_vector_field", "wind"),
+                                    sample("collide_sdf_position", "collision"),
+                                    sample("collide_sdf_velocity", "collision"),
+                                ]
+                            },
+                            "rendering": {"instructions": []},
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    texture_artifact = (
+        project / "Library" / "Artifacts" / "Texture" / "field-guid.inxtex"
+    )
+    unused_artifact = (
+        project / "Library" / "Artifacts" / "Texture" / "unused-guid.inxtex"
+    )
+    sdf_artifact = (
+        project / "Library" / "Artifacts" / "Texture" / "sdf-guid.inxtex"
+    )
+    for path, payload in (
+        (texture_artifact, b"vector-field"),
+        (sdf_artifact, b"signed-distance-field"),
+        (unused_artifact, b"unused"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    final_dir = tmp_path / "dist"
+    builder._copy_game_data(str(final_dir))
+
+    shipped = final_dir / "Data" / "Library" / "Artifacts"
+    assert (shipped / "Texture" / texture_artifact.name).read_bytes() == b"vector-field"
+    assert (shipped / "Texture" / sdf_artifact.name).read_bytes() == b"signed-distance-field"
+    assert not (shipped / "Texture" / unused_artifact.name).exists()
+
+
 def test_payload_manifest_allows_project_asset_metadata(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"
@@ -512,6 +939,8 @@ def test_content_archive_replaces_loose_project_files(tmp_path):
     build_manifest = data / "BuildManifest.json"
     build_manifest.write_text('{"game_name": "TestGame"}', encoding="utf-8")
     (settings / "BuildSettings.json").write_text('{"scenes": ["Assets/Main.scene"]}', encoding="utf-8")
+    (settings / "mcp_capabilities.json").write_text('{"enabled": true}', encoding="utf-8")
+    (settings / "agent_tools.json").write_text('{"tools": []}', encoding="utf-8")
 
     builder._pack_content_archive(str(final_dir))
 
@@ -531,6 +960,42 @@ def test_content_archive_replaces_loose_project_files(tmp_path):
             "Assets/Player.pyc",
             "ProjectSettings/BuildSettings.json",
         }
+
+
+def test_content_archive_excludes_particle_authoring_and_keeps_aot(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    data = tmp_path / "dist" / "Data"
+    graph = data / "Assets" / "VFX" / "Smoke.particlegraph"
+    script = data / "Assets" / "VFX" / "Future.particle.py"
+    artifact = data / "Library" / "Artifacts" / "Particle" / "smoke.inxparticle"
+    runtime_index = artifact.parent / builder._PARTICLE_RUNTIME_INDEX_FILENAME
+    graph.parent.mkdir(parents=True)
+    artifact.parent.mkdir(parents=True)
+    graph.write_text('{"$schema":"infernux.particle_graph"}', encoding="utf-8")
+    graph.with_suffix(graph.suffix + ".meta").write_text("graph-meta", encoding="utf-8")
+    script.write_text("# Preview ParticleScript", encoding="utf-8")
+    script.with_suffix(".pyc").write_bytes(b"preview-bytecode")
+    script.with_suffix(script.suffix + ".meta").write_text("script-meta", encoding="utf-8")
+    cache = script.parent / "__pycache__"
+    cache.mkdir()
+    (cache / "Future.particle.cpython-312.pyc").write_bytes(b"preview-bytecode")
+    (cache / "Future.particle.cpython-312.opt-2.pyc").write_bytes(b"optimized-preview")
+    artifact.write_text('{"$schema":"infernux.particle_artifact"}', encoding="utf-8")
+    runtime_index.write_text(
+        '{"$schema":"infernux.particle_runtime_index","entries":[]}',
+        encoding="utf-8",
+    )
+
+    builder._pack_content_archive(str(tmp_path / "dist"))
+
+    with zipfile.ZipFile(data / builder._CONTENT_ARCHIVE_FILENAME) as archive:
+        names = set(archive.namelist())
+    assert "Library/Artifacts/Particle/smoke.inxparticle" in names
+    assert "Library/Artifacts/Particle/RuntimeIndex.json" in names
+    assert not any(name.casefold().endswith(".particlegraph") for name in names)
+    assert not any(".particle." in name.casefold() for name in names)
+    assert not graph.exists()
+    assert not script.exists()
 
 
 def test_content_archive_rejects_plaintext_project_scripts(tmp_path):
@@ -760,6 +1225,7 @@ class TestGameBuilderOutputSafety:
         assert payload["tool"] == "Infernux"
         assert payload["kind"] == "build-output"
         assert payload["project_name"] == "TestGame"
+        assert len(payload["project_identity"]) == 64
         assert "project_path" not in payload
 
 

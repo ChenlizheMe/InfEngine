@@ -15,6 +15,7 @@
 #include <InxLog.h>
 #include <algorithm>
 #include <function/audio/AudioEngine.h>
+#include <platform/input/InputManager.h>
 
 namespace
 {
@@ -28,6 +29,62 @@ double ProfileMsSince(ProfileClock::time_point start)
 
 namespace infernux
 {
+
+namespace
+{
+void UpdateCapturedEditorCamera(EditorCameraController &controller, float deltaTime)
+{
+    InputManager &input = InputManager::Instance();
+    const bool captured = input.IsEditorMouseCaptureActive();
+    const bool rightDown = captured && input.GetMouseButton(1);
+    const bool middleDown = captured && input.GetMouseButton(2);
+
+    static bool previousRightDown = false;
+    static bool previousMiddleDown = false;
+    if (rightDown != previousRightDown) {
+        if (rightDown)
+            controller.OnMouseButtonDown(1, 0.0f, 0.0f);
+        else
+            controller.OnMouseButtonUp(1, 0.0f, 0.0f);
+        previousRightDown = rightDown;
+    }
+    if (middleDown != previousMiddleDown) {
+        if (middleDown)
+            controller.OnMouseButtonDown(2, 0.0f, 0.0f);
+        else
+            controller.OnMouseButtonUp(2, 0.0f, 0.0f);
+        previousMiddleDown = middleDown;
+    }
+
+    if (captured) {
+        const auto [deltaX, deltaY] = input.ConsumeEditorMouseDelta();
+        if (rightDown && (deltaX != 0.0f || deltaY != 0.0f))
+            controller.ApplyRotation(deltaX, deltaY);
+        else if (middleDown && (deltaX != 0.0f || deltaY != 0.0f))
+            controller.ApplyPan(deltaX, deltaY);
+    }
+
+    const auto updateKey = [&](SDL_Scancode scancode, int controllerKey) {
+        if (rightDown && input.GetKey(static_cast<int>(scancode)))
+            controller.OnKeyDown(controllerKey);
+        else
+            controller.OnKeyUp(controllerKey);
+    };
+    updateKey(SDL_SCANCODE_W, 'W');
+    updateKey(SDL_SCANCODE_A, 'A');
+    updateKey(SDL_SCANCODE_S, 'S');
+    updateKey(SDL_SCANCODE_D, 'D');
+    updateKey(SDL_SCANCODE_Q, 'Q');
+    updateKey(SDL_SCANCODE_E, 'E');
+    const bool shiftDown = rightDown && (input.GetKey(SDL_SCANCODE_LSHIFT) || input.GetKey(SDL_SCANCODE_RSHIFT));
+    if (shiftDown)
+        controller.OnKeyDown(SDL_SCANCODE_LSHIFT);
+    else
+        controller.OnKeyUp(SDL_SCANCODE_LSHIFT);
+
+    controller.Update(std::max(deltaTime, 0.0f));
+}
+} // namespace
 
 SceneManager &SceneManager::Instance()
 {
@@ -205,10 +262,8 @@ void SceneManager::Update(float deltaTime)
 {
     m_lastFrameProfile = {};
 
-    // Editor camera navigation is advanced by Infernux::ProcessSceneViewInput,
-    // where the current Scene View hover/capture state is known. Updating it
-    // here would apply stale key state or move twice in one frame.
     auto t0 = ProfileClock::now();
+    UpdateCapturedEditorCamera(m_editorCamera, deltaTime);
     m_lastFrameProfile.editorCameraMs += ProfileMsSince(t0);
 
     if (!m_isPlaying && m_activeScene) {
@@ -300,7 +355,10 @@ void SceneManager::EnsurePhysicsQueriesCurrent()
     if (!m_activeScene)
         return;
     FlushPendingBroadphase();
-    SyncCollidersToPhysics(m_fixedTimeStep);
+    // Outside play mode nothing steps the simulation, so moved bodies must be
+    // teleported (dt = 0): the kinematic-velocity paths would otherwise leave
+    // bodies with a velocity that is never integrated nor settled.
+    SyncCollidersToPhysics(m_isPlaying ? m_fixedTimeStep : 0.0f);
 }
 
 void SceneManager::FixedUpdate()
@@ -555,7 +613,7 @@ void SceneManager::FlushPendingBroadphase()
 
     // ── Create deferred Jolt bodies ──
     auto pendingBodies = store.ConsumePendingBodyCreations();
-    if (pendingBodies.empty() && !store.HasPendingBroadphaseAdds())
+    if (pendingBodies.empty() && !store.HasPendingBroadphaseAdds() && !store.HasPendingBroadphaseRemoves())
         return;
 
     auto t0 = ProfileClock::now();
@@ -579,6 +637,14 @@ void SceneManager::FlushPendingBroadphase()
     }
 
     double createBodiesMs = ProfileMsSince(t0);
+
+    // ── Remove before add ──
+    // Gameplay Update/FixedUpdate may toggle Collider.enabled. Submit those
+    // mutations only at this fixed-step boundary so Jolt never observes a
+    // broadphase change from inside a component callback.
+    for (const uint32_t bodyId : store.ConsumePendingBroadphaseRemoves()) {
+        pw.RemoveBodyFromBroadphase(bodyId);
+    }
 
     // ── Batch add to broadphase ──
     auto t1 = ProfileClock::now();
@@ -626,7 +692,13 @@ void SceneManager::SyncTransforms()
     MeshCollider::FlushCompletedCooking(true);
     FlushPendingBroadphase();
     PhysicsECSStore::Instance().MarkAllCollidersDirty();
-    SyncCollidersToPhysics();
+    // During play, route moved kinematic / collider-only bodies through the
+    // velocity-driven move paths — the editor gizmo calls Physics.sync_transforms
+    // after every drag frame, and a dt of 0 would degrade those moves into
+    // zero-velocity teleports that push dynamic bodies aside without imparting
+    // any momentum. Outside play nothing steps the simulation, so moves must
+    // remain teleports.
+    SyncCollidersToPhysics(m_isPlaying ? m_fixedTimeStep : 0.0f);
 }
 
 void SceneManager::ForceAllBodiesToCurrentTransform()

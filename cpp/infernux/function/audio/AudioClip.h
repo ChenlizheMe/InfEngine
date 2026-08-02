@@ -40,7 +40,7 @@ class AudioClip
     // ========================================================================
 
     /// @brief Load audio data from a supported audio file
-    /// @param filePath Absolute path to a .wav file
+    /// @param filePath Absolute path to a supported audio file (.wav or .ogg)
     /// @return true on success
     bool LoadFromFile(const std::string &filePath);
 

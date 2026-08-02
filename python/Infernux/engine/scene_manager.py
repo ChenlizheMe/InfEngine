@@ -16,6 +16,7 @@ This module orchestrates those primitives into a complete workflow.
 """
 
 import os
+from Infernux.engine.path_utils import path_key, resolved_path
 import json
 from typing import Optional, Callable
 
@@ -41,9 +42,7 @@ KEY_RIGHT_CTRL = 531 # Right Ctrl
 
 
 def _empty_scene_document(name: str) -> dict:
-    # Must match Scene::DeserializeDocument / GameObject schema_version 2.
     return {
-        "schema_version": 2,
         "name": name,
         "isPlaying": False,
         "objects": [],
@@ -83,7 +82,7 @@ def _effective_project_root() -> Optional[str]:
         from Infernux.engine.ui.editor_services import EditorServices
         services = EditorServices.instance()
         if services and services.project_path and os.path.isdir(services.project_path):
-            return os.path.abspath(services.project_path)
+            return resolved_path(services.project_path)
     except Exception as exc:
         Debug.log_suppressed("scene_manager._effective_project_root.editor_services", exc)
 
@@ -297,7 +296,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
                 return False
 
         path = str(data.get("current_scene_path") or "").strip()
-        self._current_scene_path = os.path.abspath(path) if path and os.path.isfile(path) else None
+        self._current_scene_path = resolved_path(path) if path and os.path.isfile(path) else None
         self._dirty = True
         self._reset_undo_history(scene_is_dirty=True)
         if self._on_scene_changed:
@@ -541,7 +540,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
                     return
                 transaction.start()
                 self._scene_transaction = transaction
-                self._scene_transaction_path = os.path.abspath(path)
+                self._scene_transaction_path = resolved_path(path)
             except Exception as exc:
                 Debug.log_error(f"Scene load failed: {exc}")
                 self._load_in_progress = False
@@ -644,13 +643,16 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
         subsequent loads, but must not replace the Editor's persisted scene or
         clear its pre-play undo history.
         """
-        self._current_scene_path = os.path.abspath(path)
+        self._current_scene_path = resolved_path(path)
         self._dirty = False
         if not runtime_load:
             self._reset_undo_history(scene_is_dirty=False)
 
         from Infernux.lib import SceneManager
         scene = SceneManager.instance().get_active_scene()
+
+        from Infernux.renderstack.render_stack import RenderStack
+        RenderStack.refresh_active_instance(scene)
 
         # Force-init SpriteRenderer wrappers so their materials (texture,
         # color, uvRect) are created before the first render frame.
@@ -760,7 +762,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
             light.color = Vector3(1.0, 0.95, 0.9)
             light.intensity = 1.0
             light.shadows = LightShadows.Soft
-            light.shadow_bias = 0.0
   
 
     # ------------------------------------------------------------------
@@ -798,7 +799,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
         settings = _load_editor_settings()
         if "sceneCameraStates" not in settings:
             settings["sceneCameraStates"] = {}
-        key = os.path.normcase(os.path.abspath(scene_path))
+        key = path_key(scene_path)
         settings["sceneCameraStates"][key] = state
         _save_editor_settings(settings)
 
@@ -811,7 +812,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
             return
         settings = _load_editor_settings()
         states = settings.get("sceneCameraStates", {})
-        key = os.path.normcase(os.path.abspath(scene_path))
+        key = path_key(scene_path)
         state = states.get(key)
         if not state:
             return

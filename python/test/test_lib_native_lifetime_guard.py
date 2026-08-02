@@ -152,23 +152,39 @@ class TestInstantiateOverloads:
         prefab_ref = object()
 
         monkeypatch.setattr(lib_module, "_resolve_game_object_instantiate_source", lambda original: ("prefab", original))
-        monkeypatch.setattr(lib_module, "_instantiate_prefab_reference", lambda original: clone)
+        def instantiate_prefab(original, parent, world_space, configure_created):
+            assert original is prefab_ref
+            assert parent is None
+            assert world_space is True
+            configure_created(clone)
+            return clone
+
+        monkeypatch.setattr(lib_module, "_instantiate_prefab_reference", instantiate_prefab)
 
         assert GameObject.instantiate(prefab_ref) is clone
 
     def test_game_object_instantiate_applies_position_rotation_and_parent(self, monkeypatch):
         clone = _FakeClone()
+        source = object()
         parent = object()
         position = Vector3(9.0, 8.0, 7.0)
         rotation = _FakeQuat(0.0, 0.0, 0.0, 1.0)
 
         monkeypatch.setattr(lib_module, "_resolve_game_object_instantiate_source", lambda original: ("game_object", original))
         monkeypatch.setattr(lib_module, "_coerce_parent_game_object", lambda original: original)
-        monkeypatch.setattr(lib_module, "_native_game_object_instantiate", lambda original, parent=None: clone)
+        calls = []
 
-        result = GameObject.instantiate(object(), position, rotation, parent)
+        def instantiate_native(original, target_parent, world_space, configure_created):
+            calls.append((original, target_parent, world_space))
+            configure_created(clone)
+            return clone
+
+        monkeypatch.setattr(lib_module, "_native_game_object_instantiate", instantiate_native)
+
+        result = GameObject.instantiate(source, position, rotation, parent)
 
         assert result is clone
-        assert clone.parent_calls == [(parent, True)]
+        assert calls == [(source, parent, True)]
+        assert clone.parent_calls == []
         assert clone.transform.position is position
         assert clone.transform.rotation is rotation

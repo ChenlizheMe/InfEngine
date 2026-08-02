@@ -1,12 +1,30 @@
 #version 450
-@shader_id: tonemapping
-@hidden
+
+ShaderInfo {
+    Name "Tonemapping"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _SourceTex
+    }
+    PushConstants pc {
+        Float mode
+        Float exposure
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Tonemapping post-process pass.
 //
-// Converts linear HDR scene color to display-ready sRGB LDR.
-// The swapchain is UNORM (linear), so this shader handles gamma correction.
-// Supports multiple tone mapping operators via push constant mode selector.
+// Compresses linear HDR scene color into linear LDR [0,1]. The output stays
+// in *linear* space — the built-in display-encode pass at the end of the
+// pipeline performs the single linear → sRGB conversion. Doing gamma here as
+// well would double-encode and wash the image out to gray.
 //
 // Modes:
 //   0 — None (clamp only, no tone mapping)
@@ -16,18 +34,6 @@
 // Push constants:
 //   [0] mode      — tone mapping operator (0/1/2)
 //   [1] exposure  — pre-tonemap exposure multiplier
-//   [2] gamma     — gamma correction exponent (default 2.2)
-
-layout(set = 0, binding = 0) uniform sampler2D _SourceTex;
-
-layout(push_constant) uniform PushConstants {
-    float mode;
-    float exposure;
-    float gamma;
-} pc;
-
-layout(location = 0) in  vec2 inUV;
-layout(location = 0) out vec4 outColor;
 
 // ---- ACES Filmic (Stephen Hill's fit) ----
 vec3 ACESFilm(vec3 x) {
@@ -60,7 +66,8 @@ vec3 Reinhard(vec3 x) {
 }
 
 void main() {
-    vec3 hdr = texture(_SourceTex, inUV).rgb;
+    vec4 source = texture(_SourceTex, inUV);
+    vec3 hdr = source.rgb;
 
     // Apply exposure
     hdr *= pc.exposure;
@@ -76,8 +83,7 @@ void main() {
         ldr = clamp(hdr, 0.0, 1.0);
     }
 
-    // Gamma correction (linear → sRGB)
-    ldr = pow(ldr, vec3(1.0 / pc.gamma));
-
-    outColor = vec4(ldr, 1.0);
+    // Output remains linear; display encode happens in the built-in
+    // _DisplayEncode pass at the end of the pipeline.
+    outColor = vec4(ldr, source.a);
 }

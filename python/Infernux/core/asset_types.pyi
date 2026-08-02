@@ -14,6 +14,41 @@ class TextureType(IntEnum):
     DEFAULT = 0
     NORMAL_MAP = 1
     UI = 2
+    SPRITE = 3
+    DATA = 4
+
+
+class TextureCompression(IntEnum):
+    NONE = 0
+    AUTO = 1
+    BC1 = 2
+    BC3 = 3
+    BC4 = 4
+    BC5 = 5
+    @classmethod
+    def from_string(cls, value: str) -> TextureCompression: ...
+    def to_string(self) -> str: ...
+
+
+class TextureCompressionQuality(IntEnum):
+    FAST = 0
+    NORMAL = 1
+    HIGH = 2
+    @classmethod
+    def from_string(cls, value: str) -> TextureCompressionQuality: ...
+    def to_string(self) -> str: ...
+
+
+class TextureFormat(IntEnum):
+    AUTO = 0
+    RGBA8 = 1
+    RGBA4444 = 2
+    RGBA16_UNORM = 3
+    RGBA16_FLOAT = 4
+    RGBA32_FLOAT = 5
+    @classmethod
+    def from_string(cls, value: str) -> TextureFormat: ...
+    def to_string(self) -> str: ...
 
 
 class WrapMode(IntEnum):
@@ -64,6 +99,9 @@ class TextureImportSettings:
     srgb: bool = ...
     max_size: int = ...
     aniso_level: int = ...
+    format: TextureFormat = ...
+    compression: TextureCompression = ...
+    compression_quality: TextureCompressionQuality = ...
     def to_dict(self) -> Dict[str, Any]:
         """Serialize settings to a dictionary."""
         ...
@@ -154,7 +192,6 @@ MATERIAL_EXTENSIONS: FrozenSet[str]
 AUDIO_EXTENSIONS: FrozenSet[str]
 FONT_EXTENSIONS: FrozenSet[str]
 MESH_EXTENSIONS: FrozenSet[str]
-VFXSYSTEM_EXTENSIONS: FrozenSet[str]
 
 # ── Meta-file utilities ────────────────────────────────────────────────
 

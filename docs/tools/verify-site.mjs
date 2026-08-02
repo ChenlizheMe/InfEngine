@@ -12,7 +12,7 @@ async function exists(relative) {
     return stat(path.join(docsRoot, relative)).then(() => true).catch(() => false);
 }
 
-const rootPages = ["index.html", "start.html", "learn.html", "learn/placeholder.html", "roadmap.html", "community.html", "community-topic.html", "download.html", "404.html"];
+const rootPages = ["index.html", "start.html", "learn.html", "learn/shaders.html", "learn/renderstack-post-processing.html", "roadmap.html", "community.html", "download.html", "404.html"];
 for (const page of rootPages) {
     const html = await readFile(path.join(docsRoot, page), "utf8");
     if (!html.includes("start.html")) fail(`${page}: missing the hand-maintained Start route`);
@@ -33,12 +33,16 @@ for (const contract of [
 if (/since|last_verified|始于|验证于|zh\/manual\//i.test(start)) fail("start.html: generated-document metadata or source paths leaked into the simple guide");
 
 const learn = await readFile(path.join(docsRoot, "learn.html"), "utf8");
-for (const contract of ["data-learn-search", "data-learn-tag", "data-learn-entry", "learn/placeholder.html", "js/learn.js?v=1"]) {
+for (const contract of ["data-learn-search", "data-learn-tag", "data-learn-entry", "learn/shaders.html", "learn/renderstack-post-processing.html", "js/learn.js?v=1"]) {
     if (!learn.includes(contract)) fail(`learn.html: missing '${contract}'`);
 }
-const placeholder = await readFile(path.join(docsRoot, "learn", "placeholder.md"), "utf8");
-if (!placeholder.includes("API reference is generated automatically") || !placeholder.includes("正在人工编写")) {
-    fail("learn/placeholder.md: missing the reviewed documentation status copy");
+const shaderGuide = await readFile(path.join(docsRoot, "learn", "shaders.md"), "utf8");
+if (!shaderGuide.includes("ShaderInfo") || !shaderGuide.includes("着色模型") || !shaderGuide.includes("Capabilities [Standalone]")) {
+    fail("learn/shaders.md: shader learning contracts are incomplete");
+}
+const renderStackGuide = await readFile(path.join(docsRoot, "learn", "renderstack-post-processing.md"), "utf8");
+if (!renderStackGuide.includes("RenderStack") || !renderStackGuide.includes("EffectStage") || !renderStackGuide.includes("后处理")) {
+    fail("learn/renderstack-post-processing.md: RenderStack learning contracts are incomplete");
 }
 
 const download = await readFile(path.join(docsRoot, "download.html"), "utf8");
@@ -92,4 +96,4 @@ if (failures.length) {
     process.exit(1);
 }
 
-console.log("Website verification passed: simple Start, Hub-first downloads, API-only generated docs, and no Manual navigation.");
+console.log("Website verification passed: Start, rendering learning chapters, Hub-first downloads, API-only generated docs, and no Manual navigation.");

@@ -61,9 +61,6 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
     # Class-level storage for serialized field metadata
     _serialized_fields_: Dict[str, Any] = {}
 
-    # Schema version for serialization compatibility
-    __schema_version__ = 1
-
     # Active instance registry: go_id (int) → list of live InxComponent instances.
     # Used by GizmosCollector to skip the expensive get_all_objects() + get_py_components()
     # scene walk — instead we iterate only objects that actually have Python components.
@@ -158,7 +155,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
                     try:
                         resolved_hints[_k] = eval(_v, _globalns, dict(vars(cls)))  # noqa: S307
                     except Exception:
-                        pass  # keep raw string → legacy resolve_annotation path
+                        pass  # Keep raw strings for deferred annotation resolution.
                 else:
                     resolved_hints[_k] = _v
 
@@ -167,11 +164,16 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
 
         # ── Pass 1: attributes with a class-level value ──────────────────
         for attr_name in list(cls.__dict__):
-            if attr_name.startswith('_'):
-                continue
-
             # Raw attribute from class __dict__ (avoids descriptor protocol)
             attr = cls.__dict__[attr_name]
+            # Private annotations remain runtime-only by default. An explicit
+            # serialized_field(), however, is an authoring declaration; this
+            # is how hidden backing data participates in save and undo while
+            # staying out of the Inspector.
+            if attr_name.startswith('_') and not isinstance(
+                attr, SerializedFieldDescriptor
+            ):
+                continue
 
             if callable(attr) or isinstance(attr, (property, classmethod, staticmethod)):
                 continue
@@ -261,6 +263,9 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         # ── Register numeric fields with C++ ComponentDataStore ──
         from ._cds_bridge import register_class as _cds_register
         _cds_register(cls)
+
+        from .registry import register_component_type
+        register_component_type(cls)
     
     def __init__(self):
         """Internal framework initialization — **do not override**.
@@ -342,8 +347,8 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
                     # Non-CDS field: Python dict.
                     inst_id = id(self)
                     with descriptor._lock:
-                        descriptor._values[inst_id] = default_value
                         descriptor._weak_refs[inst_id] = weakref.ref(self, descriptor._make_ref_callback(inst_id))
+                        descriptor._values[inst_id] = default_value
             elif hasattr(descriptor, '_is_cpp_property'):
                 # Skip ALL CppProperty descriptors — their values come from C++.
                 continue

@@ -92,6 +92,7 @@
 // Device and infrastructure
 #include "VkDeviceContext.h"
 #include "VkSwapchainManager.h"
+#include "VulkanBackendContext.h"
 
 // Resource management
 #include "AsyncTransferContext.h"

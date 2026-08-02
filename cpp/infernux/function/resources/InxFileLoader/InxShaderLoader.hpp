@@ -1,121 +1,51 @@
 #pragma once
 
 #include <SPIRV/GlslangToSpv.h>
+#include <core/types/ShaderProgramArtifact.h>
 #include <core/types/ShaderTypes.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
+#include <function/resources/ShaderAsset/ShaderDescriptor.h>
+#include <function/resources/ShaderAsset/ShaderPassVariantPlanner.h>
+#include <function/resources/ShaderAsset/ShaderStageLinker.h>
 #include <functional>
 #include <glslang/Public/ShaderLang.h>
 #include <optional>
 #include <set>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace infernux
 {
 
-// ============================================================================
-// ShaderDescriptor IR — structured intermediate representation for parsed shaders
-// ============================================================================
-
-/// A single material property declared via @property annotation.
-struct ShaderProperty
+struct LinkedShaderProgramCompilation
 {
-    std::string name;
-    std::string type;     // "Float", "Float2", "Float3", "Float4", "Color", "Int", "Mat4", "Texture2D"
-    std::string glslType; // "float", "vec2", "vec3", "vec4", "int", "mat4", "" (Texture2D)
-    std::string defaultValue;
-    bool isTexture = false;
-    std::string textureDefault; // "white", "black", "normal" (Texture2D only)
-};
-
-/// Surface rendering options declared via annotations.
-struct SurfaceOptions
-{
-    std::string surfaceType = "opaque"; // "opaque" | "transparent"
-    std::string alphaClip = "off";      // "off" | threshold string e.g. "0.5"
-    std::string cullMode = "back";      // "back" | "front" | "none"
-    std::string blendMode = "off";      // "off" | "alpha" | "additive" | "premultiply"
-    bool receiveShadows = true;
-    bool castShadows = true;
-};
-
-/// Complete structured representation of a parsed shader source file.
-struct ShaderDescriptor
-{
-    // Identity
-    std::string shaderId;
-    std::string filePath;
-    std::string fileExtension; // ".vert", ".frag", ".glsl", ".shadingmodel"
-
-    // Shader stage
-    bool isVertexShader = false;
-    bool isFragmentShader = false;
-    bool isLibrary = false;      // .glsl
-    bool isShadingModel = false; // .shadingmodel
-
-    // Shading model (from @shading_model)
-    std::string shadingModel;     // "pbr", "unlit", "custom", etc.
-    bool hasExplicitType = false; // true when @shading_model is present
-    bool hasSurfaceFunc = false;  // source contains void surface(
-    bool hasMainFunc = false;     // source contains void main(
-    bool hasVertexFunc = false;   // source contains void vertex(
-
-    // Surface Options
-    SurfaceOptions surfaceOptions;
-
-    // Render state (from annotations)
-    int renderQueue = -1; // -1 = auto (opaque=2000, transparent=3000)
-    std::string passTag;
-    std::string depthWrite;
-    std::string depthTest;
-    std::string stencil;
-    bool hidden = false;
-
-    // Properties
-    std::vector<ShaderProperty> properties;
-    std::vector<ShaderProperty> textureProperties;
-
-    // @import list
-    std::vector<std::string> imports;
-
-    // #version directive (empty if not present, defaults to "#version 450")
-    std::string versionDirective;
-
-    // .shadingmodel target blocks (only populated for .shadingmodel files)
-    struct TargetBlock
-    {
-        std::string name; // "forward", "gbuffer", "shadow"
-        std::string code; // GLSL code for this target
-    };
-    std::vector<TargetBlock> targets;
-
-    /// Helper: find a target block by name, or nullptr.
-    const TargetBlock *FindTarget(const std::string &name) const
-    {
-        for (const auto &t : targets)
-            if (t.name == name)
-                return &t;
-        return nullptr;
-    }
-
-    /// Helper: does this shading model need LightingUBO?
-    bool NeedsLightingUBO() const
-    {
-        for (const auto &imp : imports)
-            if (imp == "lighting")
-                return true;
-        return false;
-    }
-
-    /// Helper: does this shading model need GBuffer outputs?
-    bool HasGBufferTarget() const
-    {
-        return FindTarget("gbuffer") != nullptr;
-    }
-
-    // Errors and warnings
+    ShaderCompileTarget target = ShaderCompileTarget::Forward;
+    ShaderProgramInterfaceArtifact interfaceArtifact;
+    std::string generatedVertexSource;
+    std::string generatedFragmentSource;
+    std::vector<char> vertexSpirv;
+    std::vector<char> fragmentSpirv;
     std::vector<std::string> errors;
-    std::vector<std::string> warnings;
+
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return interfaceArtifact.IsValid() && errors.empty() && !vertexSpirv.empty() && !fragmentSpirv.empty();
+    }
+
+    [[nodiscard]] ShaderProgramArtifact CreateRuntimeArtifact() const;
+};
+
+struct LinkedShaderProgramArtifactCompilation
+{
+    ShaderProgramInterfaceArtifact interfaceArtifact;
+    ShaderPassVariantPlan passPlan;
+    std::vector<LinkedShaderProgramCompilation> compiledVariants;
+    std::vector<ShaderCompileTarget> pendingTargets;
+    std::vector<std::string> errors;
+
+    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] ShaderProgramArtifact CreateRuntimeArtifact() const;
 };
 
 // ============================================================================
@@ -135,7 +65,7 @@ class InxShaderLoader
                     bool emitNonSemanticShaderDebugSource, bool compileOnly, bool optimizerAllowExpandedIDBound);
     void SetShaderCompilerOptions(const std::string &prop, bool value);
 
-    /// Register an additional directory to scan for @import resolution.
+    /// Register an additional directory to scan for ShaderInfo import resolution.
     static void AddShaderSearchPath(const std::string &dir);
 
     /// Invalidate cached shader-id maps and shading-model descriptors for a
@@ -160,9 +90,38 @@ class InxShaderLoader
     /// Returns compiled data as shared_ptr<vector<char>> (forward SPIR-V), or nullptr on failure.
     std::shared_ptr<std::vector<char>> Compile(const char *content, size_t contentSize, InxResourceMeta &metaData);
 
-    /// Parse a single "@key: value" or "// @key: value" annotation line.
-    /// Returns {key, value} or nullopt if the line is not an annotation.
-    static std::optional<std::pair<std::string, std::string>> ParseAnnotation(const std::string &line);
+    /// Link and compile a structured vertex/fragment pair as one Forward program.
+    [[nodiscard]] LinkedShaderProgramCompilation CompileLinkedForward(const std::string &vertexSource,
+                                                                      const std::string &vertexPath,
+                                                                      const std::string &fragmentSource,
+                                                                      const std::string &fragmentPath);
+
+    [[nodiscard]] LinkedShaderProgramCompilation CompileLinkedProgram(const std::string &vertexSource,
+                                                                      const std::string &vertexPath,
+                                                                      const std::string &fragmentSource,
+                                                                      const std::string &fragmentPath,
+                                                                      ShaderCompileTarget target);
+
+    /// Link once, plan every semantic pass, and AOT compile the complete set
+    /// currently supported by the runtime. Unsupported planned targets remain
+    /// explicit in pendingTargets and are never substituted with Forward code.
+    [[nodiscard]] LinkedShaderProgramArtifactCompilation CompileLinkedProgramArtifact(const std::string &vertexSource,
+                                                                                      const std::string &vertexPath,
+                                                                                      const std::string &fragmentSource,
+                                                                                      const std::string &fragmentPath);
+
+    /// Compile generated compute GLSL directly to SPIR-V. This bypasses the
+    /// authored material/shading-model preprocessor and is intended for AOT
+    /// backends such as Particle Kernel IR.
+    [[nodiscard]] std::vector<char> CompileComputeGlsl(const std::string &source,
+                                                       const std::string &virtualPath = "<generated-compute>");
+
+    /// Compile generated graphics GLSL directly to SPIR-V without invoking
+    /// the authored material/shading-model preprocessor.
+    [[nodiscard]] std::vector<char> CompileVertexGlsl(const std::string &source,
+                                                      const std::string &virtualPath = "<generated-vertex>");
+    [[nodiscard]] std::vector<char> CompileFragmentGlsl(const std::string &source,
+                                                        const std::string &virtualPath = "<generated-fragment>");
 
     /// Parse shader source into a structured ShaderDescriptor (single pass, no code generation).
     ShaderDescriptor ParseShaderSource(const std::string &source, const std::string &filePath) const;
@@ -170,24 +129,20 @@ class InxShaderLoader
     /// Last shader compile error message (empty on success).
     /// Set by Load() when glslang parse/link fails; read by Infernux::ReloadShaderRuntime.
     static std::string s_lastCompileError;
+    [[nodiscard]] static const std::string &GetLastCompileError() noexcept;
 
-    /// Shadow fragment variant SPIR-V cache.
-    /// Populated by Load() when a surface .frag is compiled; keyed by file path.
-    /// Consumed by Infernux::ReloadShaderRuntime to register the shadow variant.
-    static std::unordered_map<std::string, std::vector<char>> s_shadowVariantCache;
+    using CompiledVariantSet = std::unordered_map<ShaderCompileTarget, std::vector<char>>;
 
-    /// Shadow vertex variant SPIR-V cache.
-    /// Populated by Load() when a surface .vert is compiled; keyed by file path.
-    static std::unordered_map<std::string, std::vector<char>> s_shadowVertexVariantCache;
-
-    /// GBuffer variant SPIR-V cache.
-    /// Populated by Compile() when a surface .frag with a gbuffer-capable shading model is compiled.
-    /// Consumed by ShaderLoader to populate ShaderAsset::spirvGBuffer.
-    static std::unordered_map<std::string, std::vector<char>> s_gbufferVariantCache;
+    /// Consume optional pass variants produced alongside the Forward return
+    /// value. The returned entry is removed from the calling thread's transient
+    /// compiler cache, so parallel imports cannot exchange variant payloads.
+    [[nodiscard]] static CompiledVariantSet TakeCompiledVariants(const std::string &filePath);
 
   private:
-    glslang::SpvOptions m_options;
-    TBuiltInResource m_builtInResources;
+    static thread_local std::unordered_map<std::string, CompiledVariantSet> s_compiledVariantCache;
+
+    glslang::SpvOptions m_options{};
+    TBuiltInResource m_builtInResources{};
 
     void InitGLSLBuiltResources();
     EShLanguage GetShaderType(const std::string &typeStr);
@@ -199,25 +154,40 @@ class InxShaderLoader
     bool CompileGLSL(const std::string &glslSource, EShLanguage shaderType, const std::string &filePath,
                      std::vector<char> &outSpirv);
 
-    /// Preprocess and compile a shader variant (shadow/gbuffer), storing the result in cache.
+    [[nodiscard]] LinkedShaderProgramCompilation
+    CompileLinkedProgramVariant(const std::string &vertexSource, const std::string &vertexPath,
+                                const std::string &fragmentSource, const std::string &fragmentPath,
+                                ShaderCompileTarget target, const ShaderProgramInterfaceArtifact &interfaceArtifact);
+
+    /// Preprocess and compile a shader variant, storing it in the transient target cache.
     void CompileVariant(const char *content, const std::string &filePath, ShaderCompileTarget target,
-                        const std::string &variantName, std::unordered_map<std::string, std::vector<char>> &cache,
-                        EShLanguage shaderType = EShLangFragment);
+                        const std::string &variantName, EShLanguage shaderType = EShLangFragment);
 
     /// Full preprocessing pipeline: parse → resolve imports → generate GLSL.
     std::string PreprocessShaderSource(const std::string &source, const std::string &filePath = "",
-                                       ShaderCompileTarget target = ShaderCompileTarget::Forward);
+                                       ShaderCompileTarget target = ShaderCompileTarget::Forward,
+                                       const ShaderProgramInterfaceArtifact *linkedInterface = nullptr);
 
     /// Generate final GLSL text from a descriptor, import-resolved source, and optional shading model.
     std::string GenerateGLSL(const ShaderDescriptor &desc, const std::string &resolvedSource,
                              const ShaderDescriptor *shadingModel = nullptr,
-                             ShaderCompileTarget target = ShaderCompileTarget::Forward) const;
+                             ShaderCompileTarget target = ShaderCompileTarget::Forward,
+                             const ShaderProgramInterfaceArtifact *linkedInterface = nullptr,
+                             const std::string &deferredShadingRegistry = {}) const;
+
+    /// Build the generated Deferred dispatcher from every shading model that
+    /// does not explicitly declare Unsupported [Deferred].
+    std::string BuildDeferredShadingRegistry(const std::unordered_map<std::string, std::string> &shaderIdMap,
+                                             std::vector<ShaderDescriptor> &models) const;
+
+    /// Stable model identifier stored in the GBuffer object metadata target.
+    static uint32_t ShadingModelId(std::string_view name) noexcept;
 
     /// Build a mapping of shader_id → file_path by recursively scanning shader directories.
     std::unordered_map<std::string, std::string> BuildShaderIdMap(const std::string &dir);
 
-    /// Resolve @import directives by inlining referenced shader files.
-    std::string ResolveImports(const std::string &source,
+    /// Resolve structured Imports by inlining referenced shader libraries.
+    std::string ResolveImports(const std::string &source, const std::vector<std::string> &imports,
                                const std::unordered_map<std::string, std::string> &shaderIdMap,
                                std::set<std::string> &includeStack, int depth = 0);
 

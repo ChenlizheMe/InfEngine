@@ -7,8 +7,16 @@ from collections.abc import Callable
 from typing import Optional
 
 from Infernux.debug import Debug
+from Infernux.engine.i18n import t
+from Infernux.engine.path_utils import is_path_within, path_key, resolved_path
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.ui._dialogs import is_synthetic_input_frame, save_file_dialog
+from .editor_modal import (
+    EditorModalAction,
+    begin_editor_modal,
+    end_editor_modal,
+    render_editor_modal_actions,
+)
 
 
 class AssetSaveAsDialog:
@@ -62,7 +70,7 @@ class AssetSaveAsDialog:
         raw_root = project_root or get_project_root()
         if not raw_root:
             return False
-        root = os.path.abspath(raw_root)
+        root = resolved_path(raw_root)
 
         normalized_extension = str(extension or "").strip().lstrip(".")
         if not normalized_extension:
@@ -71,7 +79,7 @@ class AssetSaveAsDialog:
         self._title = str(title or "Save Asset")
         self._extension = normalized_extension
         self._project_root = root
-        self._current_path = os.path.normcase(os.path.abspath(current_path)) if current_path else ""
+        self._current_path = path_key(current_path) if current_path else ""
         self._folder = "Assets"
         self._name = self._strip_extension(default_name)
         self._error = ""
@@ -91,13 +99,9 @@ class AssetSaveAsDialog:
         if os.path.isabs(folder):
             return "", "Folder must be a project-relative path under Assets."
 
-        target_folder = os.path.abspath(os.path.join(self._project_root, folder))
-        assets_root = os.path.normcase(os.path.realpath(os.path.join(self._project_root, "Assets")))
-        target_real = os.path.normcase(os.path.realpath(target_folder))
-        try:
-            if os.path.commonpath((assets_root, target_real)) != assets_root:
-                return "", "Assets must be saved under the project's Assets directory."
-        except ValueError:
+        target_folder = resolved_path(os.path.join(self._project_root, folder))
+        assets_root = resolved_path(os.path.join(self._project_root, "Assets"))
+        if not is_path_within(target_folder, assets_root):
             return "", "Assets must be saved under the project's Assets directory."
 
         name = self._strip_extension(self._name)
@@ -113,17 +117,13 @@ class AssetSaveAsDialog:
         if not self._project_root:
             return "", "No project root is available."
 
-        target = os.path.abspath(str(path or ""))
+        target = resolved_path(str(path or ""))
         suffix = f".{self._extension}"
         if not target.lower().endswith(suffix.lower()):
             target += suffix
 
-        assets_root = os.path.normcase(os.path.realpath(os.path.join(self._project_root, "Assets")))
-        target_real = os.path.normcase(os.path.realpath(target))
-        try:
-            if os.path.commonpath((assets_root, target_real)) != assets_root:
-                return "", "Assets must be saved under the project's Assets directory."
-        except ValueError:
+        assets_root = resolved_path(os.path.join(self._project_root, "Assets"))
+        if not is_path_within(target, assets_root):
             return "", "Assets must be saved under the project's Assets directory."
 
         name = os.path.basename(target[: -len(suffix)])
@@ -147,37 +147,41 @@ class AssetSaveAsDialog:
             return
 
         popup_id = f"{self._title}###{self._semantic_prefix.replace('.', '_')}"
-        if self._requested:
-            ctx.open_popup(popup_id)
-            self._requested = False
-
-        # ImGuiWindowFlags_AlwaysAutoResize = 1 << 6 = 64.
-        if not ctx.begin_popup_modal(popup_id, 64):
+        request_open = self._requested
+        self._requested = False
+        if not begin_editor_modal(
+            ctx,
+            popup_id=popup_id,
+            title=self._title,
+            semantic_id=f"{self._semantic_prefix}.dialog",
+            request_open=request_open,
+            height=280.0,
+        ):
             return
-
-        ctx.record_semantic_window("modal", self._title, f"{self._semantic_prefix}.dialog")
-        ctx.label(f"Save this {self._asset_label} under the project's Assets directory.")
+        ctx.text_wrapped(t("editor.asset_save.message").format(asset=self._asset_label))
         ctx.spacing()
 
         self._folder = ctx.text_input(
-            f"Folder##{self._semantic_prefix}_folder", self._folder, 512
+            f"{t('editor.asset_save.folder')}##{self._semantic_prefix}_folder", self._folder, 512
         )
-        ctx.record_semantic_item("text_input", "Folder", True, f"{self._semantic_prefix}.folder")
+        ctx.record_semantic_item(
+            "text_input", t("editor.asset_save.folder"), True,
+            f"{self._semantic_prefix}.folder",
+        )
         if self._focus_name:
             ctx.set_keyboard_focus_here()
             self._focus_name = False
         self._name = ctx.text_input(
-            f"Name##{self._semantic_prefix}_name", self._name, 256
+            f"{t('editor.asset_save.name')}##{self._semantic_prefix}_name", self._name, 256
         )
-        ctx.record_semantic_item("text_input", "Name", True, f"{self._semantic_prefix}.name")
+        ctx.record_semantic_item(
+            "text_input", t("editor.asset_save.name"), True,
+            f"{self._semantic_prefix}.name",
+        )
 
         if self._error:
             ctx.spacing()
             ctx.text_wrapped(self._error)
-
-        ctx.spacing()
-        ctx.separator()
-        ctx.spacing()
 
         def _save() -> None:
             path, error = self.resolve_path()
@@ -194,12 +198,15 @@ class AssetSaveAsDialog:
                 cancel_callback()
             self._close(ctx)
 
-        ctx.button("Save##asset_save_as_confirm", _save)
-        ctx.record_semantic_item("button", "Save", True, f"{self._semantic_prefix}.confirm")
-        ctx.same_line()
-        ctx.button("Cancel##asset_save_as_cancel", _cancel)
-        ctx.record_semantic_item("button", "Cancel", True, f"{self._semantic_prefix}.cancel")
-        ctx.end_popup()
+        render_editor_modal_actions(
+            ctx,
+            [
+                EditorModalAction(t("editor.unsaved.save"), "confirm", _save),
+                EditorModalAction(t("editor.unsaved.cancel"), "cancel", _cancel),
+            ],
+            semantic_prefix=self._semantic_prefix,
+        )
+        end_editor_modal(ctx)
 
     def _save_with_native_dialog(
         self,
@@ -229,7 +236,7 @@ class AssetSaveAsDialog:
         self._save_path(path, save_callback)
 
     def _save_path(self, path: str, save_callback: Callable[[str], bool]) -> bool:
-        normalized_path = os.path.normcase(os.path.abspath(path))
+        normalized_path = path_key(path)
         if os.path.exists(path) and normalized_path != self._current_path:
             self._error = "An asset already exists at this location. Choose another name to avoid overwriting it."
             Debug.log_warning(f"[AssetSaveAsDialog] {self._error}")

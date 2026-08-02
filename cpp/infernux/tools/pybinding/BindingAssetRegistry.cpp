@@ -5,6 +5,7 @@
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
 
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -12,6 +13,56 @@ namespace py = pybind11;
 
 namespace infernux
 {
+namespace
+{
+py::array VolumeArray(const std::shared_ptr<InxTexture> &texture)
+{
+    if (!texture)
+        throw std::invalid_argument("texture is null");
+    const auto cpuData = texture->GetCpuData();
+    if (!cpuData || !cpuData->IsValid())
+        throw std::runtime_error("texture has no valid CPU data");
+    if (cpuData->dimension != TextureDimension::Texture3D ||
+        (cpuData->semantic != TextureSemantic::VectorField &&
+         cpuData->semantic != TextureSemantic::SignedDistanceField))
+        throw std::runtime_error("texture is not a supported volume Texture3D");
+    if (cpuData->format != TextureFormat::Rgba16Float && cpuData->format != TextureFormat::Rgba32Float)
+        throw std::runtime_error("volume texture requires rgba16_float or rgba32_float storage");
+
+    const TextureMipLevel &mip = cpuData->mipLevels.front();
+    const uint64_t texelBytes = TextureFormatBytesPerTexel(cpuData->format);
+    const uint64_t scalarBytes = cpuData->format == TextureFormat::Rgba16Float ? 2U : 4U;
+    const uint64_t minimumRowPitch = static_cast<uint64_t>(mip.width) * texelBytes;
+    const uint64_t minimumSlicePitch = static_cast<uint64_t>(mip.height) * mip.rowPitch;
+    const uint64_t requiredBytes = static_cast<uint64_t>(mip.depth) * mip.slicePitch;
+    if (mip.width == 0 || mip.height == 0 || mip.depth == 0 || mip.rowPitch < minimumRowPitch ||
+        mip.slicePitch < minimumSlicePitch || mip.byteOffset > cpuData->bytes.size() ||
+        requiredBytes > cpuData->bytes.size() - mip.byteOffset || requiredBytes > mip.byteSize)
+        throw std::runtime_error("volume texture base mip has invalid dimensions or pitches");
+
+    std::vector<py::ssize_t> shape{
+        static_cast<py::ssize_t>(mip.depth),
+        static_cast<py::ssize_t>(mip.height),
+        static_cast<py::ssize_t>(mip.width),
+        4,
+    };
+    std::vector<py::ssize_t> strides{
+        static_cast<py::ssize_t>(mip.slicePitch),
+        static_cast<py::ssize_t>(mip.rowPitch),
+        static_cast<py::ssize_t>(texelBytes),
+        static_cast<py::ssize_t>(scalarBytes),
+    };
+    auto *generation = new std::shared_ptr<const TextureCpuData>(cpuData);
+    py::capsule owner(generation,
+                      [](void *value) { delete static_cast<std::shared_ptr<const TextureCpuData> *>(value); });
+    const py::dtype dtype =
+        cpuData->format == TextureFormat::Rgba16Float ? py::dtype("float16") : py::dtype::of<float>();
+    py::array result(dtype, shape, strides, cpuData->bytes.data() + mip.byteOffset, owner);
+    result.attr("setflags")(false);
+    return result;
+}
+
+} // namespace
 
 void RegisterAssetRegistryBindings(py::module_ &m)
 {
@@ -108,6 +159,29 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 return d;
             },
             py::arg("index"), "Get submesh info as dict (name, index_start, index_count, ...)")
+        .def(
+            "_particle_sampling_data",
+            [](const InxMesh &self) -> py::dict {
+                const auto &vertices = self.GetVertices();
+                const auto &indices = self.GetIndices();
+                py::array_t<float> positions({static_cast<py::ssize_t>(vertices.size()), py::ssize_t{3}});
+                auto positionView = positions.mutable_unchecked<2>();
+                for (py::ssize_t index = 0; index < static_cast<py::ssize_t>(vertices.size()); ++index) {
+                    const auto &position = vertices[static_cast<size_t>(index)].pos;
+                    positionView(index, 0) = position.x;
+                    positionView(index, 1) = position.y;
+                    positionView(index, 2) = position.z;
+                }
+                py::array_t<uint32_t> encodedIndices(indices.size());
+                auto indexView = encodedIndices.mutable_unchecked<1>();
+                for (py::ssize_t index = 0; index < static_cast<py::ssize_t>(indices.size()); ++index)
+                    indexView(index) = indices[static_cast<size_t>(index)];
+                py::dict result;
+                result["positions"] = std::move(positions);
+                result["indices"] = std::move(encodedIndices);
+                return result;
+            },
+            "Internal immutable geometry snapshot for particle CPU sampling")
         .def("__repr__", [](const InxMesh &self) {
             return "<InxMesh '" + self.GetName() + "' " + std::to_string(self.GetVertexCount()) + " verts, " +
                    std::to_string(self.GetSubMeshCount()) + " submesh(es)>";
@@ -117,6 +191,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def_property_readonly("name", &InxTexture::GetName)
         .def_property_readonly("guid", &InxTexture::GetGuid)
         .def_property_readonly("file_path", &InxTexture::GetFilePath)
+        .def_property_readonly("generation", &InxTexture::GetGeneration)
         .def_property_readonly("mip_count",
                                [](const InxTexture &self) {
                                    const auto &cpu = self.GetCpuData();
@@ -132,17 +207,78 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                                    const auto &cpu = self.GetCpuData();
                                    return cpu && !cpu->mipLevels.empty() ? cpu->mipLevels.front().height : 0U;
                                })
+        .def_property_readonly("pixel_depth",
+                               [](const InxTexture &self) {
+                                   const auto &cpu = self.GetCpuData();
+                                   return cpu && !cpu->mipLevels.empty() ? cpu->mipLevels.front().depth : 0U;
+                               })
         .def_property_readonly("cpu_byte_size",
                                [](const InxTexture &self) {
                                    const auto &cpu = self.GetCpuData();
                                    return cpu ? cpu->bytes.size() : size_t{0};
                                })
-        .def_property_readonly("pixel_storage", [](const InxTexture &self) {
-            const auto &cpu = self.GetCpuData();
-            if (!cpu)
-                return std::string{};
-            return std::string(cpu->storage == TexturePixelStorage::Rgba8 ? "rgba8" : "rgba32_float");
-        });
+        .def_property_readonly(
+            "dimension",
+            [](const InxTexture &self) { return self.GetDimension() == TextureDimension::Texture3D ? "3d" : "2d"; })
+        .def_property_readonly("semantic",
+                               [](const InxTexture &self) {
+                                   switch (self.GetSemantic()) {
+                                   case TextureSemantic::Color:
+                                       return "color";
+                                   case TextureSemantic::Normal:
+                                       return "normal";
+                                   case TextureSemantic::Data:
+                                       return "data";
+                                   case TextureSemantic::UserInterface:
+                                       return "user_interface";
+                                   case TextureSemantic::Sprite:
+                                       return "sprite";
+                                   case TextureSemantic::VectorField:
+                                       return "vector_field";
+                                   case TextureSemantic::SignedDistanceField:
+                                       return "signed_distance_field";
+                                   }
+                                   return "unknown";
+                               })
+        .def_property_readonly("srgb", &InxTexture::IsSrgb)
+        .def_property_readonly("pixel_format",
+                               [](const InxTexture &self) {
+                                   const auto &cpu = self.GetCpuData();
+                                   return cpu ? std::string(TextureFormatName(cpu->format)) : std::string{};
+                               })
+        .def_property_readonly("pixel_storage",
+                               [](const InxTexture &self) {
+                                   const auto &cpu = self.GetCpuData();
+                                   if (!cpu)
+                                       return std::string{};
+                                   if (cpu->format == TextureFormat::Rgba32Float)
+                                       return std::string("rgba32_float");
+                                   if (cpu->format == TextureFormat::Rgba4UNormPack16)
+                                       return std::string("rgba4_unorm_pack16");
+                                   if (cpu->format == TextureFormat::Rgba16UNorm)
+                                       return std::string("rgba16_unorm");
+                                   if (cpu->format == TextureFormat::Rgba16Float)
+                                       return std::string("rgba16_float");
+                                   return TextureFormatIsBlockCompressed(cpu->format) ? std::string("block_compressed")
+                                                                                      : std::string("rgba8");
+                               })
+        .def_property_readonly("bake_basis",
+                               [](const InxTexture &self) {
+                                   const auto &cpu = self.GetCpuData();
+                                   return cpu ? cpu->bakeBasis : TextureCpuData{}.bakeBasis;
+                               })
+        .def_property_readonly("value_min",
+                               [](const InxTexture &self) {
+                                   const auto &cpu = self.GetCpuData();
+                                   return cpu ? cpu->valueMin : TextureCpuData{}.valueMin;
+                               })
+        .def_property_readonly("value_max",
+                               [](const InxTexture &self) {
+                                   const auto &cpu = self.GetCpuData();
+                                   return cpu ? cpu->valueMax : TextureCpuData{}.valueMax;
+                               })
+        .def("volume_array", &VolumeArray,
+             "Return a zero-copy, read-only (depth, height, width, 4) NumPy view of one volume generation");
 
     // ── AssetRegistry — unified asset cache (singleton) ─────────────────
     py::class_<AssetRegistry, std::unique_ptr<AssetRegistry, py::nodelete>>(m, "AssetRegistry")
@@ -228,6 +364,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             },
             py::arg("guid"), "Schedule texture artifact load/decode on JobSystem")
         .def("try_commit_asset_load", &AssetRegistry::TryCommitAssetLoad, py::arg("ticket"),
+             py::arg("allow_stale_if_unloaded") = false,
              "Publish a completed typed CPU payload; false means still pending")
 
         // Hot-reload / invalidation

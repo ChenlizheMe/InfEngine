@@ -56,6 +56,20 @@ def _resolve_target(stored_ref: Any, game_object_id: int,
         return obj
     if comp_type_name == "Transform":
         return getattr(obj, "transform", None)
+    component_id = int(getattr(stored_ref, "component_id", 0) or 0)
+    if component_id:
+        try:
+            for component in (obj.get_components() or ()):
+                if int(getattr(component, "component_id", 0) or 0) == component_id:
+                    return component
+        except Exception as exc:
+            Debug.log_suppressed("undo._resolve_target.component_id", exc)
+        try:
+            for component in (obj.get_py_components() or ()):
+                if int(getattr(component, "component_id", 0) or 0) == component_id:
+                    return component
+        except Exception as exc:
+            Debug.log_suppressed("undo._resolve_target.python_component_id", exc)
     try:
         live = obj.get_component(comp_type_name)
         if live is not None:

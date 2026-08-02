@@ -184,7 +184,6 @@ const foregroundSources = [
     "css/style.css",
     "css/mission.css",
     "css/start.css",
-    "css/community.css",
     "css/download.css",
     "css/roadmap.css",
     "css/docs-search.css",

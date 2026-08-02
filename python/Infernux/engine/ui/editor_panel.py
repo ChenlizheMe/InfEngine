@@ -29,6 +29,8 @@ from __future__ import annotations
 import os
 from typing import Any, List, Optional, TYPE_CHECKING
 
+from Infernux.engine.path_utils import lexical_path
+
 from .closable_panel import ClosablePanel
 
 if TYPE_CHECKING:
@@ -299,9 +301,8 @@ class EditorPanel(ClosablePanel):
             return text
         if "path" not in key.lower():
             return text
-        text = text.replace("/", os.sep)
         if os.path.isabs(text):
-            return os.path.normpath(text)
+            return lexical_path(text)
         try:
             from Infernux.engine.project_context import get_project_root
 
@@ -309,8 +310,8 @@ class EditorPanel(ClosablePanel):
         except Exception:
             root = None
         if root:
-            return os.path.normpath(os.path.join(root, text))
-        return os.path.abspath(text)
+            return lexical_path(os.path.join(root, text))
+        return lexical_path(text)
 
     @classmethod
     def _auto_state_serialize_value(
@@ -388,9 +389,8 @@ class EditorPanel(ClosablePanel):
             return text
         if "path" not in key.lower():
             return text
-        text = text.replace("/", os.sep)
         if os.path.isabs(text):
-            return os.path.normpath(text)
+            return lexical_path(text)
         try:
             from Infernux.engine.project_context import get_project_root
 
@@ -398,7 +398,7 @@ class EditorPanel(ClosablePanel):
         except Exception:
             root = None
         if root:
-            return os.path.normpath(os.path.join(root, text))
+            return lexical_path(os.path.join(root, text))
         return text
 
     def _apply_auto_state(self, data: dict) -> None:
@@ -430,10 +430,21 @@ class EditorPanel(ClosablePanel):
         """Restore panel state from persisted data."""
         if not isinstance(data, dict):
             return
-        # Backward compatibility: if a panel previously stored a flat dict,
-        # still allow auto-apply when it is fully JSON-safe.
-        auto_state = data.get("__auto_state__") if isinstance(data.get("__auto_state__"), dict) else data
-        self._apply_auto_state(auto_state)
+        if set(data) != {"__auto_state__"} or not isinstance(data["__auto_state__"], dict):
+            raise ValueError("editor panel state requires the canonical __auto_state__ document")
+        self._apply_auto_state(data["__auto_state__"])
+
+    def _persist_panel_state(self) -> None:
+        """Persist this panel immediately after an explicit document action."""
+        from . import panel_state
+
+        key = f"panel:{self.window_id}"
+        data = self.save_state()
+        if data:
+            panel_state.put(key, data)
+        else:
+            panel_state.delete(key)
+        panel_state.save()
 
     # ------------------------------------------------------------------
     # Unified Render Frame
@@ -465,20 +476,35 @@ class EditorPanel(ClosablePanel):
 
         # Push window styles.
         self._push_window_style(ctx)
+        try:
+            visible = self._begin_closable_window(ctx, self._window_flags())
+            try:
+                if visible:
+                    self._content_was_visible = True
+                    self._on_visible_pre(ctx)
+                    self.on_render_content(ctx)
+                else:
+                    if self._content_was_visible is not False:
+                        self._on_not_visible(ctx)
+                    self._content_was_visible = False
+            finally:
+                try:
+                    # Panel-close confirmations belong to this window's popup
+                    # hierarchy. Rendering them here keeps an undocked panel
+                    # from covering its own modal; engine-exit confirmations
+                    # continue to use the global overlay renderer.
+                    from .dirty_panel_confirmation import (
+                        DirtyPanelConfirmationCoordinator,
+                    )
 
-        visible = self._begin_closable_window(ctx, self._window_flags())
-        if visible:
-            self._content_was_visible = True
-            self._on_visible_pre(ctx)
-            self.on_render_content(ctx)
-        else:
-            if self._content_was_visible is not False:
-                self._on_not_visible(ctx)
-            self._content_was_visible = False
-        ctx.end_window()
-
-        # Pop window styles.
-        self._pop_window_style(ctx)
+                    DirtyPanelConfirmationCoordinator.instance().render(
+                        ctx, panel_host_id=self._window_id
+                    )
+                finally:
+                    ctx.end_window()
+        finally:
+            # Keep the ImGui style stack balanced even when panel code fails.
+            self._pop_window_style(ctx)
 
         # Fire the close hook when the panel is closed.
         # Also reset _enable_called so a future reopen runs on_enable() again,

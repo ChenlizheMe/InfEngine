@@ -4,6 +4,7 @@
 #include <core/log/InxLog.h>
 #include <function/renderer/InxRenderer.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/AssetImporter/AssetImporter.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
@@ -236,7 +237,7 @@ ImagePreviewer::~ImagePreviewer()
 
 std::vector<std::string> ImagePreviewer::GetSupportedExtensions() const
 {
-    return {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".hdr", ".gif", ".psd", ".pic", ".pnm", ".pgm", ".ppm"};
+    return asset_formats::ToVector(asset_formats::kTextureExtensions);
 }
 
 bool ImagePreviewer::Load(const std::string &filePath)
@@ -421,15 +422,13 @@ void ImagePreviewer::ApplyPreviewSettings()
     }
 
     // --- Step 3: sRGB toggle ---
-    // sRGB = true  → texture authored in sRGB, shown as-is (normal)
-    // sRGB = false → GPU will treat values as linear; simulate by removing gamma
-    //               so the preview looks darker, matching how it appears in-engine
+    // sRGB sources are already display-encoded and can be shown as-is. Linear
+    // data textures need display encoding because the ImGui upload itself is UNORM.
     if (!m_srgb) {
         for (size_t i = 0; i < processed.size(); i += 4) {
             for (int c = 0; c < 3; ++c) {
                 float v = processed[i + c] / 255.0f;
-                // Apply sRGB→linear (remove gamma)
-                v = (v <= 0.04045f) ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
+                v = (v <= 0.0031308f) ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
                 processed[i + c] = static_cast<unsigned char>(std::clamp(v * 255.0f, 0.0f, 255.0f));
             }
         }

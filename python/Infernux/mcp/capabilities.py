@@ -8,14 +8,13 @@ import os
 import tempfile
 from typing import Any
 
+from Infernux.engine.path_utils import resolved_path
+
 
 CONFIG_REL_PATH = os.path.join("ProjectSettings", "mcp_capabilities.json")
 
 
-# Profiles are intentionally narrow. Legacy ``research_full`` remains available
-# for existing projects, while new remote sessions opt into a constrained mode.
 PROFILE_TOOL_GROUPS: dict[str, frozenset[str] | None] = {
-    "research_full": None,
     "developer_assist": frozenset({
         "docs",
         "api",
@@ -28,6 +27,7 @@ PROFILE_TOOL_GROUPS: dict[str, frozenset[str] | None] = {
         "renderstack",
         "console",
         "camera",
+        "runtime",
         "ui",
         "transactions",
         "session",
@@ -39,11 +39,14 @@ PROFILE_TOOL_GROUPS: dict[str, frozenset[str] | None] = {
 }
 
 PROFILE_DISABLED_TOOLS: dict[str, frozenset[str]] = {
-    "research_full": frozenset(),
     "developer_assist": frozenset(),
     # Validation observes state but never uses direct editor/scene mutation
     # shortcuts. Interactions must travel through synthetic SDL input.
-    "global_validation": frozenset({"editor_select", "mcp_batch"}),
+    "global_validation": frozenset({
+        "editor_select",
+        "mcp_batch",
+        "project_build_scenes_set",
+    }),
 }
 
 DEFAULT_CAPABILITY_CONFIG: dict[str, Any] = {
@@ -135,7 +138,7 @@ _PROJECT_PATH = ""
 def configure(project_path: str, *, write_default: bool = True) -> dict[str, Any]:
     """Load, merge, and optionally materialize project MCP capability config."""
     global _CURRENT_CONFIG, _PROJECT_PATH
-    _PROJECT_PATH = os.path.abspath(project_path or "")
+    _PROJECT_PATH = resolved_path(project_path or "")
     config = load_capability_config(_PROJECT_PATH)
     _CURRENT_CONFIG = config
     if write_default and bool(config.get("write_default_config_on_bootstrap", True)):
@@ -152,7 +155,7 @@ def project_path() -> str:
 
 
 def config_path(project_path: str | None = None) -> str:
-    root = os.path.abspath(project_path or _PROJECT_PATH or "")
+    root = resolved_path(project_path or _PROJECT_PATH or "")
     return os.path.join(root, CONFIG_REL_PATH)
 
 
@@ -232,7 +235,7 @@ def tool_enabled(name: str) -> bool:
 
 
 def profile_name() -> str:
-    """Return the active MCP mode/profile, preserving legacy configs."""
+    """Return the active current MCP mode/profile."""
     profile = str(_CURRENT_CONFIG.get("profile", "developer_assist") or "developer_assist")
     return profile if profile in PROFILE_TOOL_GROUPS else "developer_assist"
 

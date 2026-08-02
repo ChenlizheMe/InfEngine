@@ -16,6 +16,9 @@ from Infernux.mcp.tools.common import fail, main_thread, ok, register_tool_metad
 _DIRECT_TEXT_TARGET_KINDS = {
     "text_input",
     "text_area",
+    "int_input",
+    "uint_input",
+    "float_input",
     "component_search",
     "hierarchy_rename",
     "hierarchy_search",
@@ -557,7 +560,7 @@ def register_editor_ui_tools(mcp) -> None:
         )
         if modifier_release is not None and not modifier_release.get("ok"):
             return modifier_release
-        if not focus_confirmation.get("focused"):
+        if not focus_confirmation.get("text_input_ready"):
             return fail(
                 "error.timeout",
                 "The text field did not become focused after the pointer click.",
@@ -609,7 +612,7 @@ def register_editor_ui_tools(mcp) -> None:
         )
         if modifier_release is not None and not modifier_release.get("ok"):
             return modifier_release
-        if not focus_confirmation.get("focused"):
+        if not focus_confirmation.get("text_input_ready"):
             return fail(
                 "error.timeout",
                 "The text field did not become focused after the pointer click.",
@@ -946,8 +949,7 @@ def _resolve_target(target_id: str, snapshot_id: str) -> dict[str, Any]:
             return {
                 "found": True,
                 **target,
-                # Keep the legacy field names for callers while routing the
-                # synthetic event through the native reachability-checked point.
+                # Internal tools consume the resolved reachability-checked point.
                 "center_x": click_x,
                 "center_y": click_y,
                 "click_x": click_x,
@@ -988,7 +990,12 @@ def _target_resolution_failure(
 
 
 def _wait_for_target_focus(target_id: str, *, timeout_seconds: float) -> dict[str, Any]:
-    """Wait until a clicked text target is confirmed focused in a rendered frame."""
+    """Wait until a clicked target can receive text in a rendered frame.
+
+    ImGui's numeric inputs switch to an internal temporary text widget.  The
+    outer InputScalar item remains active while ``IsItemFocused`` can be false,
+    so global ``WantTextInput`` is the authoritative second half of that state.
+    """
     deadline = time.monotonic() + _positive_finite("timeout_seconds", timeout_seconds, maximum=30.0)
     last: dict[str, Any] = {"found": False, "focused": False}
     while time.monotonic() < deadline:
@@ -1000,7 +1007,19 @@ def _wait_for_target_focus(target_id: str, *, timeout_seconds: float) -> dict[st
             for raw_target in raw.get("targets") or []:
                 target = _normalize_target(raw_target)
                 if target["target_id"] == target_id:
-                    return {"found": True, "snapshot_id": snapshot_id, **target}
+                    wants_text_input = bool(raw.get("wants_text_input"))
+                    text_input_ready = bool(target.get("focused")) or (
+                        bool(target.get("active"))
+                        and wants_text_input
+                        and str(target.get("kind") or "") in _TEXT_TARGET_KINDS
+                    )
+                    return {
+                        "found": True,
+                        "snapshot_id": snapshot_id,
+                        "wants_text_input": wants_text_input,
+                        "text_input_ready": text_input_ready,
+                        **target,
+                    }
             return {
                 "found": False,
                 "focused": False,
@@ -1020,12 +1039,13 @@ def _wait_for_target_focus(target_id: str, *, timeout_seconds: float) -> dict[st
                 "reason": str((response.get("error") or {}).get("message") or "Unable to read UI focus state."),
             }
         last = dict(response.get("data") or {})
-        if last.get("found") and last.get("focused"):
+        if last.get("found") and last.get("text_input_ready"):
             return last
         time.sleep(0.02)
     return {
         **last,
         "focused": False,
+        "text_input_ready": False,
         "reason": str(last.get("reason") or "Timed out waiting for the text target to become focused."),
     }
 

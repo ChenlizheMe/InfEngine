@@ -77,6 +77,14 @@ class SceneManager
         return m_activeScene;
     }
 
+    /// Publish an explicit time jump in the active world. This is intentionally
+    /// separate from Pause/Resume and ordinary simulation updates.
+    void MarkActiveSceneTemporalDiscontinuity() noexcept
+    {
+        if (m_activeScene)
+            m_activeScene->MarkTemporalDiscontinuity();
+    }
+
     /// @brief Unload a scene
     void UnloadScene(Scene *scene);
 

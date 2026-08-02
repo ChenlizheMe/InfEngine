@@ -129,14 +129,6 @@ inline void SafeDestroy(VkDevice device, VkDescriptorSetLayout &h)
     }
 }
 
-inline void SafeDestroy(VkDevice device, VkDescriptorPool &h)
-{
-    if (h != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, h, nullptr);
-        h = VK_NULL_HANDLE;
-    }
-}
-
 inline void SafeDestroy(VkDevice device, VkFramebuffer &h)
 {
     if (h != VK_NULL_HANDLE) {
@@ -191,19 +183,6 @@ inline bool CreateDescriptorSetLayout(VkDevice device, const VkDescriptorSetLayo
 
     outLayout = VK_NULL_HANDLE;
     return vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &outLayout) == VK_SUCCESS;
-}
-
-inline bool AllocateDescriptorSet(VkDevice device, VkDescriptorPool descriptorPool, VkDescriptorSetLayout layout,
-                                  VkDescriptorSet &outDescriptorSet)
-{
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &layout;
-
-    outDescriptorSet = VK_NULL_HANDLE;
-    return vkAllocateDescriptorSets(device, &allocInfo, &outDescriptorSet) == VK_SUCCESS;
 }
 
 inline void UpdateDescriptorSetWithBuffer(VkDevice device, VkDescriptorSet descriptorSet, uint32_t binding,

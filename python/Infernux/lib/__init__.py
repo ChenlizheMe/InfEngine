@@ -244,6 +244,7 @@ try:
         _cds_register_field,
         _cds_alloc,
         _cds_free,
+        _cds_is_alive,
         _cds_reserve,
         _cds_capacity,
         _cds_alive_count,
@@ -634,13 +635,24 @@ _native_game_object_get_component = GameObject.get_component
 _native_game_object_get_components = GameObject.get_components
 _native_game_object_get_component_in_children = GameObject.get_component_in_children
 _native_game_object_get_component_in_parent = GameObject.get_component_in_parent
-def _native_game_object_instantiate(original, parent=None):
+def _native_game_object_instantiate(
+    original,
+    parent=None,
+    instantiate_in_world_space=False,
+    configure_created=None,
+):
     scene = original.scene
     if scene is None:
         raise RuntimeError("instantiate(): source GameObject is detached from a Scene")
     from Infernux.engine.component_restore import clone_game_object_transactionally
 
-    return clone_game_object_transactionally(scene, original, parent)
+    return clone_game_object_transactionally(
+        scene,
+        original,
+        parent,
+        instantiate_in_world_space=instantiate_in_world_space,
+        configure_created=configure_created,
+    )
 
 
 def _call_native_game_object(method_name: str, native_method, game_object, *args):
@@ -709,7 +721,12 @@ def _coerce_parent_game_object(parent):
     )
 
 
-def _instantiate_prefab_reference(prefab_ref):
+def _instantiate_prefab_reference(
+    prefab_ref,
+    parent=None,
+    instantiate_in_world_space=False,
+    configure_created=None,
+):
     current_path = getattr(prefab_ref, "path_hint", "")
     guid = getattr(prefab_ref, "guid", "")
     if not guid and not current_path:
@@ -722,39 +739,25 @@ def _instantiate_prefab_reference(prefab_ref):
         registry = AssetRegistry.instance()
         if registry:
             adb = registry.get_asset_database()
-        result = instantiate_prefab(guid=guid, asset_database=adb)
+        result = instantiate_prefab(
+            guid=guid,
+            parent=parent,
+            asset_database=adb,
+            instantiate_in_world_space=instantiate_in_world_space,
+            configure_created=configure_created,
+        )
         if result is not None:
             return result
 
     if current_path and os.path.isfile(current_path):
-        return instantiate_prefab(file_path=current_path)
+        return instantiate_prefab(
+            file_path=current_path,
+            parent=parent,
+            instantiate_in_world_space=instantiate_in_world_space,
+            configure_created=configure_created,
+        )
 
     return None
-
-
-def _capture_local_transform(game_object):
-    if game_object is None:
-        return None
-    try:
-        transform = game_object.transform
-        return transform.local_position, transform.local_rotation, transform.local_scale
-    except Exception as _exc:
-        _log_suppressed(_exc)
-        return None
-
-
-def _restore_local_transform(game_object, local_transform):
-    if game_object is None or local_transform is None:
-        return
-    local_position, local_rotation, local_scale = local_transform
-    try:
-        transform = game_object.transform
-        transform.local_position = local_position
-        transform.local_rotation = local_rotation
-        transform.local_scale = local_scale
-    except Exception as _exc:
-        _log_suppressed(_exc)
-        return
 
 
 def _parse_instantiate_arguments(args, kwargs):
@@ -763,6 +766,7 @@ def _parse_instantiate_arguments(args, kwargs):
 
     position = kwargs.pop("position", None)
     rotation = kwargs.pop("rotation", None)
+    parent_was_keyword = "parent" in kwargs
     parent = kwargs.pop("parent", None)
     instantiate_in_world_space = kwargs.pop("instantiate_in_world_space", kwargs.pop("instantiateInWorldSpace", None))
     if kwargs:
@@ -789,7 +793,11 @@ def _parse_instantiate_arguments(args, kwargs):
     if rotation is not None and not _is_quat_like(rotation):
         raise TypeError("instantiate(): rotation must be a quatf")
     if instantiate_in_world_space is None:
-        instantiate_in_world_space = True
+        instantiate_in_world_space = not (
+            parent_was_keyword
+            and position is None
+            and rotation is None
+        )
     if not isinstance(instantiate_in_world_space, bool):
         raise TypeError("instantiate(): instantiate_in_world_space must be a bool")
 
@@ -800,28 +808,34 @@ def _game_object_instantiate(original, *args, **kwargs):
     position, rotation, parent_arg, instantiate_in_world_space = _parse_instantiate_arguments(args, kwargs)
     parent = _coerce_parent_game_object(parent_arg) if parent_arg is not None else None
 
+    def _configure_created(instance):
+        if position is not None:
+            instance.transform.position = position
+        if rotation is not None:
+            instance.transform.rotation = rotation
+
     source_kind, source = _resolve_game_object_instantiate_source(original)
     if source_kind == "prefab":
-        instance = _instantiate_prefab_reference(source)
-        source_local_transform = None
+        instance = _instantiate_prefab_reference(
+            source,
+            parent,
+            instantiate_in_world_space,
+            _configure_created,
+        )
     else:
         if source is None:
             return None
-        source_local_transform = _capture_local_transform(source)
-        instance = _call_native_game_object("instantiate", _native_game_object_instantiate, source, None)
+        instance = _call_native_game_object(
+            "instantiate",
+            _native_game_object_instantiate,
+            source,
+            parent,
+            instantiate_in_world_space,
+            _configure_created,
+        )
 
     if instance is None:
         return None
-
-    if parent is not None:
-        instance.set_parent(parent, instantiate_in_world_space)
-        if not instantiate_in_world_space and source_local_transform is not None:
-            _restore_local_transform(instance, source_local_transform)
-
-    if position is not None:
-        instance.transform.position = position
-    if rotation is not None:
-        instance.transform.rotation = rotation
 
     return instance
 
@@ -949,12 +963,14 @@ def _game_object_get_component(self, component_type):
         cpp_component = self.get_cpp_component(cpp_type_name)
         return _wrap_builtin_component(self, builtin_wrapper_cls, cpp_component)
 
-    python_component_cls = _resolve_python_component_class(component_type)
-    if python_component_cls is not None:
-        return self.get_py_component(python_component_cls)
-
     if isinstance(component_type, str):
         python_component = _find_python_component_by_name(self, component_type)
+        if python_component is not None:
+            return python_component
+
+    python_component_cls = _resolve_python_component_class(component_type)
+    if python_component_cls is not None:
+        python_component = self.get_py_component(python_component_cls)
         if python_component is not None:
             return python_component
 
@@ -981,14 +997,22 @@ def _game_object_get_components(self, component_type=None):
         cpp_components = self.get_cpp_components(cpp_type_name)
         return _wrap_builtin_component_list(self, builtin_wrapper_cls, cpp_components)
 
-    python_component_cls = _resolve_python_component_class(component_type)
-    if python_component_cls is not None:
-        return [component for component in (self.get_py_components() or []) if isinstance(component, python_component_cls)]
-
     if isinstance(component_type, str):
         python_components = _find_python_components_by_name(self, component_type)
         if python_components:
             return python_components
+
+    python_component_cls = _resolve_python_component_class(component_type)
+    if python_component_cls is not None:
+        python_components = [
+            component
+            for component in (self.get_py_components() or [])
+            if isinstance(component, python_component_cls)
+        ]
+        if python_components:
+            return python_components
+
+    if isinstance(component_type, str):
         return self.get_cpp_components(component_type)
 
     type_name = getattr(component_type, "__name__", "")

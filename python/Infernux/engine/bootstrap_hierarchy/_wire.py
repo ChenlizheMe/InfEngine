@@ -246,20 +246,17 @@ def _wire_drop_and_delete(ctx):
     hp.instantiate_prefab = _instantiate_prefab
     hp.create_model_object = _create_model_object
 
-    def _delete_selected_objects():
+    def _delete_selected_objects_impl(ids):
         from Infernux.lib import SceneManager
-        from Infernux.engine.undo import CompoundCommand, DeleteGameObjectCommand, UndoManager
+        from Infernux.engine.undo import DeleteGameObjectsCommand, UndoManager
         scene = SceneManager.instance().get_active_scene()
         if not scene:
             return
-        ids = list(sel.get_ids())
         if not ids:
             return
-        commands = [DeleteGameObjectCommand(oid, "Delete GameObject") for oid in ids]
         mgr = UndoManager.instance()
         if mgr:
-            cmd = commands[0] if len(commands) == 1 else CompoundCommand(commands, "Delete GameObjects")
-            mgr.execute(cmd)
+            mgr.execute(DeleteGameObjectsCommand(ids))
         else:
             for oid in ids:
                 obj = scene.find_by_id(oid)
@@ -268,11 +265,32 @@ def _wire_drop_and_delete(ctx):
             sfm2 = bs.scene_file_manager
             if sfm2:
                 sfm2.mark_dirty()
-        sel.clear()
-        if hp.on_selection_changed:
-            hp.on_selection_changed(0)
+            sel.clear()
+            if hp.on_selection_changed:
+                hp.on_selection_changed(0)
+
+    def _delete_selected_objects():
+        from Infernux.lib import SceneManager
+
+        scene = SceneManager.instance().get_active_scene()
+        ids = list(sel.get_ids())
+        if scene is None or not ids:
+            return
+        valid_ids = []
+        for object_id in ids:
+            obj = scene.find_by_id(object_id)
+            if obj is not None:
+                valid_ids.append(object_id)
+        if valid_ids:
+            _delete_selected_objects_impl(valid_ids)
 
     hp.delete_selected_objects = _delete_selected_objects
+    # Hierarchy is created before SceneView during bootstrap.  Keep the
+    # structural delete transaction on the bootstrap object so every selection
+    # surface can bind to the same action once it exists.
+    bs._delete_selected_objects = _delete_selected_objects
+    if bs.scene_view is not None:
+        bs.scene_view.set_object_delete_handler(_delete_selected_objects)
 
 
 def _finalize_drop(new_obj, parent_id, description, sel, undo, hp, SceneManager):
@@ -352,6 +370,7 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
     ctx.undo = undo
     hp.undo_record_create = lambda oid, desc: undo.record_create(oid, desc)
     hp.undo_record_delete = lambda oid, desc: undo.record_delete(oid, desc)
+    hp.undo_record_rename = lambda oid, old, new: undo.record_rename(oid, old, new)
     hp.undo_record_move = lambda oid, opid, npid, oidx, nidx: undo.record_move(oid, opid, npid, oidx, nidx)
 
     # -- Scene info --

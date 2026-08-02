@@ -39,10 +39,13 @@
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <mutex>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <sstream>
+#include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 
 namespace py = pybind11;
@@ -59,6 +62,7 @@ class ScenePlayModeSnapshot
 
     [[nodiscard]] py::tuple GetPythonComponentRecords() const
     {
+        static constexpr std::string_view kNativeTypePrefix = "native:infernux.";
         py::set objectIds;
         py::set nativeTypes;
         py::list descriptors;
@@ -100,8 +104,8 @@ class ScenePlayModeSnapshot
                     const auto typeIt = component.find("type_id");
                     if (typeIt != component.end() && typeIt->is_string()) {
                         const std::string &typeId = typeIt->get_ref<const std::string &>();
-                        if (typeId.rfind("native:", 0) == 0) {
-                            nativeTypes.add(py::make_tuple(objectId, typeId.substr(7)));
+                        if (typeId.rfind(kNativeTypePrefix, 0) == 0) {
+                            nativeTypes.add(py::make_tuple(objectId, typeId.substr(kNativeTypePrefix.size())));
                         } else if (typeId.rfind("python:", 0) == 0) {
                             descriptors.append(py::make_tuple(objectId,
                                                               "snapshot.objects[id=" + std::to_string(objectId) +
@@ -221,6 +225,34 @@ static void GetPrimitiveMeshData(PrimitiveType type, const std::vector<Vertex> *
         outDefaultName = "Quad";
         break;
     }
+}
+
+static std::shared_ptr<InxMesh> GetBuiltinPrimitiveMeshAsset(const std::string &name)
+{
+    static std::mutex cacheMutex;
+    static std::unordered_map<std::string, std::shared_ptr<InxMesh>> cache;
+    std::lock_guard lock(cacheMutex);
+    if (const auto found = cache.find(name); found != cache.end())
+        return found->second;
+
+    static const std::unordered_map<std::string, PrimitiveType> types = {
+        {"Cube", PrimitiveType::Cube},         {"Sphere", PrimitiveType::Sphere}, {"Capsule", PrimitiveType::Capsule},
+        {"Cylinder", PrimitiveType::Cylinder}, {"Plane", PrimitiveType::Plane},   {"Quad", PrimitiveType::Quad},
+    };
+    const auto type = types.find(name);
+    if (type == types.end())
+        throw std::invalid_argument("unknown built-in primitive Mesh '" + name + "'");
+
+    const std::vector<Vertex> *vertices = nullptr;
+    const std::vector<uint32_t> *indices = nullptr;
+    const char *defaultName = "Primitive";
+    GetPrimitiveMeshData(type->second, vertices, indices, defaultName);
+    auto mesh = std::make_shared<InxMesh>(defaultName);
+    mesh->SetGuid("builtin-mesh:" + name);
+    mesh->SetData(std::vector<Vertex>(vertices->begin(), vertices->end()),
+                  std::vector<uint32_t>(indices->begin(), indices->end()), {});
+    cache.emplace(name, mesh);
+    return mesh;
 }
 
 static void AddPrimitiveCollider(GameObject &object, PrimitiveType type)
@@ -520,6 +552,9 @@ void RegisterSceneBindings(py::module_ &m)
         .value("Plane", PrimitiveType::Plane)
         .value("Quad", PrimitiveType::Quad)
         .export_values();
+
+    m.def("get_builtin_primitive_mesh", &GetBuiltinPrimitiveMeshAsset, py::arg("name"),
+          "Return an immutable engine built-in primitive Mesh resource");
 
     // ========================================================================
     // Space enum (Unity: Space.Self, Space.World)
@@ -1014,9 +1049,15 @@ void RegisterSceneBindings(py::module_ &m)
              py::arg("blend_time_seconds") = 0.0f, py::arg("blend_weight") = 0.0f, py::arg("loop") = true,
              "Submit active and blend animation state in one native call. "
              "Empty take_name renders the bind pose; loop=False holds the end pose.")
-        .def_property("runtime_animation_time", &SkinnedMeshRenderer::GetRuntimeAnimationTime,
-                      &SkinnedMeshRenderer::SetRuntimeAnimationTime,
-                      "Current clip time in seconds (runtime; driven by SkeletalAnimator)")
+        .def_property(
+            "runtime_animation_time", &SkinnedMeshRenderer::GetRuntimeAnimationTime,
+            [](SkinnedMeshRenderer &renderer, float time) {
+                const float previous = renderer.GetRuntimeAnimationTime();
+                renderer.SetRuntimeAnimationTime(time);
+                if (previous != renderer.GetRuntimeAnimationTime())
+                    SceneManager::Instance().MarkActiveSceneTemporalDiscontinuity();
+            },
+            "Explicitly seek the current clip time in seconds")
         .def_property("runtime_animation_normalized_time", &SkinnedMeshRenderer::GetRuntimeAnimationNormalizedTime,
                       &SkinnedMeshRenderer::SetRuntimeAnimationNormalizedTime,
                       "Normalized clip time 0..1 (runtime; driven when duration is known)")
@@ -1119,19 +1160,25 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("spot_angle", &Light::GetSpotAngle, &Light::SetSpotAngle, "Inner spot angle in degrees")
         .def_property("outer_spot_angle", &Light::GetOuterSpotAngle, &Light::SetOuterSpotAngle,
                       "Outer spot angle in degrees")
+        .def_property("area_size", &Light::GetAreaSize, &Light::SetAreaSize, "Rectangle area-light width and height")
+        .def_property("area_two_sided", &Light::GetAreaTwoSided, &Light::SetAreaTwoSided,
+                      "Whether the rectangle emits from both sides")
 
         // Shadows
         .def_property("shadows", &Light::GetShadows, &Light::SetShadows, "Shadow type (None, Hard, Soft)")
         .def_property("shadow_strength", &Light::GetShadowStrength, &Light::SetShadowStrength, "Shadow strength (0-1)")
-        .def_property("shadow_bias", &Light::GetShadowBias, &Light::SetShadowBias, "Shadow depth bias")
-        .def_property("shadow_normal_bias", &Light::GetShadowNormalBias, &Light::SetShadowNormalBias,
-                      "Shadow normal-offset bias (world units along the surface normal)")
+        .def_property_readonly("shadow_bias", &Light::GetShadowBias, "Engine-managed shadow depth bias")
+        .def_property_readonly("shadow_normal_bias", &Light::GetShadowNormalBias, "Engine-managed shadow normal bias")
+        .def_property("shadow_softness", &Light::GetShadowSoftness, &Light::SetShadowSoftness,
+                      "Soft-shadow filter radius in shadow-map texels")
 
-        // Shadow mapping matrices
-        .def("get_light_view_matrix", &Light::GetLightViewMatrix, "Get the light's view matrix for shadow mapping")
-        .def("get_light_projection_matrix", &Light::GetLightProjectionMatrix, py::arg("shadow_extent") = 20.0f,
-             py::arg("near_plane") = 0.1f, py::arg("far_plane") = 100.0f,
-             "Get the light's projection matrix for shadow mapping")
+        // Influence domains are orthogonal to the GameObject layer mask.
+        .def_property("affect_geometry", &Light::GetAffectGeometry, &Light::SetAffectGeometry,
+                      "Whether this light affects geometry renderers")
+        .def_property("affect_particles", &Light::GetAffectParticles, &Light::SetAffectParticles,
+                      "Whether this light affects particle renderers")
+        .def_property("culling_mask", &Light::GetCullingMask, &Light::SetCullingMask,
+                      "Layer bitmask selecting which GameObjects this light affects")
 
         // Serialization
         .def("serialize", &Light::Serialize, "Serialize Light to JSON string");
@@ -1185,7 +1232,7 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("far_clip", &Camera::GetFarClip, &Camera::SetFarClip, "Far clipping plane distance")
         // Multi-camera support
         .def_property("depth", &Camera::GetDepth, &Camera::SetDepth,
-                      "Rendering depth (lower depth renders first, like Unity Camera.depth)")
+                      "Rendering order for the Game camera stack; lower depth renders first")
         .def_property("culling_mask", &Camera::GetCullingMask, &Camera::SetCullingMask,
                       "Layer culling bitmask (which layers this camera renders)")
         // Clear flags & background color
@@ -1652,6 +1699,43 @@ void RegisterSceneBindings(py::module_ &m)
                 return false;
             },
             py::arg("component"), "Remove a Python component instance")
+        .def(
+            "replace_py_component",
+            [](GameObject *obj, py::object oldComponent, py::object newComponent) -> py::object {
+                if (!py::hasattr(newComponent, "_bind_native_component")) {
+                    throw py::type_error("replacement Python component requires _bind_native_component");
+                }
+
+                for (const auto &component : obj->GetAllComponents()) {
+                    auto *oldProxy = dynamic_cast<PyComponentProxy *>(component.get());
+                    if (!oldProxy) {
+                        continue;
+                    }
+                    py::object attached = oldProxy->GetPyComponent();
+                    if (attached.is_none() || !attached.is(oldComponent)) {
+                        continue;
+                    }
+
+                    auto replacement = std::make_unique<PyComponentProxy>(newComponent);
+                    Component *published = obj->ReplacePythonComponent(oldProxy, std::move(replacement));
+                    if (!published) {
+                        throw std::runtime_error("attached Python component replacement failed");
+                    }
+
+                    if (py::hasattr(oldComponent, "_detach_native_binding_for_replacement")) {
+                        oldComponent.attr("_detach_native_binding_for_replacement")();
+                    } else if (py::hasattr(oldComponent, "_invalidate_native_binding")) {
+                        oldComponent.attr("_invalidate_native_binding")();
+                    }
+
+                    auto *newProxy = static_cast<PyComponentProxy *>(published);
+                    newProxy->RebindPythonMirror();
+                    return newComponent;
+                }
+                return py::none();
+            },
+            py::arg("old_component"), py::arg("new_component"),
+            "Replace an attached Python component without changing native identity or invoking on_destroy")
         .def("get_parent", &GameObject::GetParent, py::return_value_policy::reference, "Get the parent GameObject")
         .def("set_parent", &GameObject::SetParent, py::arg("parent"), py::arg("world_position_stays") = true,
              "Set the parent GameObject (None for root). world_position_stays preserves world transform.")
@@ -1874,6 +1958,62 @@ void RegisterSceneBindings(py::module_ &m)
 
     py::class_<Scene>(m, "Scene")
         .def_property("name", &Scene::GetName, &Scene::SetName)
+        .def(
+            "get_environment",
+            [](const Scene &scene) {
+                const SceneEnvironmentSettings &env = scene.GetEnvironment();
+                py::dict d;
+                d["skybox_material_guid"] = env.skyboxMaterialGuid;
+                d["sky_top_color"] = py::make_tuple(env.skyTopColor.r, env.skyTopColor.g, env.skyTopColor.b);
+                d["sky_horizon_color"] =
+                    py::make_tuple(env.skyHorizonColor.r, env.skyHorizonColor.g, env.skyHorizonColor.b);
+                d["sky_ground_color"] =
+                    py::make_tuple(env.skyGroundColor.r, env.skyGroundColor.g, env.skyGroundColor.b);
+                d["sky_exposure"] = env.skyExposure;
+                d["ambient_source"] = env.ambientSource;
+                d["ambient_intensity"] = env.ambientIntensity;
+                d["ambient_color"] = py::make_tuple(env.ambientColor.r, env.ambientColor.g, env.ambientColor.b);
+                d["ambient_sky_color"] =
+                    py::make_tuple(env.ambientSkyColor.r, env.ambientSkyColor.g, env.ambientSkyColor.b);
+                d["ambient_equator_color"] =
+                    py::make_tuple(env.ambientEquatorColor.r, env.ambientEquatorColor.g, env.ambientEquatorColor.b);
+                d["ambient_ground_color"] =
+                    py::make_tuple(env.ambientGroundColor.r, env.ambientGroundColor.g, env.ambientGroundColor.b);
+                return d;
+            },
+            "Get the scene environment (skybox material + ambient) settings as a dict")
+        .def(
+            "set_environment",
+            [](Scene &scene, const py::dict &d) {
+                SceneEnvironmentSettings env = scene.GetEnvironment();
+                const auto readColor = [&](const char *key, glm::vec3 &out) {
+                    if (!d.contains(key))
+                        return;
+                    py::sequence seq = d[key].cast<py::sequence>();
+                    out = glm::vec3(seq[0].cast<float>(), seq[1].cast<float>(), seq[2].cast<float>());
+                };
+                if (d.contains("skybox_material_guid"))
+                    env.skyboxMaterialGuid = d["skybox_material_guid"].cast<std::string>();
+                readColor("sky_top_color", env.skyTopColor);
+                readColor("sky_horizon_color", env.skyHorizonColor);
+                readColor("sky_ground_color", env.skyGroundColor);
+                if (d.contains("sky_exposure"))
+                    env.skyExposure = glm::clamp(d["sky_exposure"].cast<float>(), 0.0f, 8.0f);
+                if (d.contains("ambient_source"))
+                    env.ambientSource = glm::clamp(d["ambient_source"].cast<int>(), 0, 2);
+                if (d.contains("ambient_intensity"))
+                    env.ambientIntensity = glm::clamp(d["ambient_intensity"].cast<float>(), 0.0f, 8.0f);
+                readColor("ambient_color", env.ambientColor);
+                readColor("ambient_sky_color", env.ambientSkyColor);
+                readColor("ambient_equator_color", env.ambientEquatorColor);
+                readColor("ambient_ground_color", env.ambientGroundColor);
+                scene.SetEnvironment(env);
+            },
+            py::arg("settings"),
+            "Update scene environment settings from a dict (missing keys keep their current value)")
+        .def(
+            "resolve_skybox_material", [](const Scene &scene) { return scene.ResolveSkyboxMaterial(); },
+            "Resolve the active skybox material (environment asset or builtin procedural sky)")
         .def("set_playing", &Scene::SetPlaying, py::arg("playing"), "Set the scene play-state flag")
         .def("create_game_object", &Scene::CreateGameObject, py::return_value_policy::reference,
              py::arg("name") = "GameObject", "Create a new empty GameObject in this scene")
@@ -1953,7 +2093,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def("destroy_game_object", &Scene::DestroyGameObject, py::arg("game_object"),
              "Destroy a GameObject (will be removed at end of frame)")
         .def("_clone_game_object", &Scene::InstantiateGameObject, py::return_value_policy::reference, py::arg("source"),
-             py::arg("parent") = nullptr, "Internal native subtree clone; Python callers must preflight first")
+             py::arg("parent") = nullptr, py::arg("instantiate_in_world_space") = false,
+             "Internal native subtree clone; Python callers must preflight first")
         .def(
             "_instantiate_document",
             [](Scene &scene, py::handle document, GameObject *parent) {
@@ -2001,10 +2142,19 @@ void RegisterSceneBindings(py::module_ &m)
              "Get and clear pending Python components for restoration")
         .def_property_readonly("structure_version", &Scene::GetStructureVersion,
                                "Monotonic counter bumped on structural changes (add/remove/reparent)")
+        .def_property_readonly("temporal_discontinuity_revision", &Scene::GetTemporalDiscontinuityRevision,
+                               "Monotonic counter bumped only by explicit world-time jumps")
         .def_property_readonly("world_id", &Scene::GetWorldId, "Unique identity of this native Scene world")
         // Camera management
         .def_property("main_camera", &Scene::GetMainCamera, &Scene::SetMainCamera, py::return_value_policy::reference,
-                      "Get/set the main Camera component for this scene (used by Game View)");
+                      "Get/set the explicitly preferred Camera component for this scene")
+        .def_property_readonly(
+            "effective_game_camera", [](Scene &scene) { return scene.FindGameCamera(nullptr); },
+            py::return_value_policy::reference,
+            "Get the explicitly preferred active Camera, or the first active camera by depth")
+        .def_property_readonly(
+            "active_game_cameras", [](Scene &scene) { return scene.GetActiveGameCameras(nullptr); },
+            py::return_value_policy::reference, "Get all active Game cameras in stable depth order");
 
     // ========================================================================
     // SceneManager binding (singleton - use nodelete to prevent pybind11 from deleting)
@@ -2019,6 +2169,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def("get_active_scene", &SceneManager::GetActiveScene, py::return_value_policy::reference,
              "Get the currently active scene")
         .def("set_active_scene", &SceneManager::SetActiveScene, py::arg("scene"), "Set the active scene")
+        .def("mark_temporal_discontinuity", &SceneManager::MarkActiveSceneTemporalDiscontinuity,
+             "Mark an explicit time jump in the active scene for temporal render effects")
         .def("get_scene", &SceneManager::GetScene, py::return_value_policy::reference, py::arg("name"),
              "Get a scene by name")
         .def_property_readonly("scene_count", &SceneManager::GetSceneCount, "Number of currently loaded scenes")

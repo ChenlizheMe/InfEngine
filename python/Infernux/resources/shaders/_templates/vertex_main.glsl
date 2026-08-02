@@ -13,6 +13,9 @@ void main() {
     v.color    = inColor;
     v.texCoord = inTexCoord;
 ${VERTEX_CALL}
+    // Preserve the authored local position so Motion can evaluate the same
+    // vertex against the previous skeletal pose after current skinning.
+    vec3 inxUnskinnedPosition = v.position;
     SkinInstanceData skin = skinInstances[gl_InstanceIndex];
     if ((skin.flags & 1u) != 0u && skin.boneCount > 0u) {
         mat4 skinMat =
@@ -36,6 +39,11 @@ ${VERTEX_CALL}
     v_Tangent   = worldTangent;
     v_Color     = v.color;
     v_TexCoord  = v.texCoord;
-    v_ViewDepth = (ubo.view * worldPos).z;
+    // GLM_FORCE_LEFT_HANDED view space looks down +Z, so (view * pos).z is
+    // already the positive eye depth. Take abs() so CSM cascade selection and
+    // depth helpers always receive a positive linear depth regardless of the
+    // view-matrix handedness.
+    v_ViewDepth = abs((ubo.view * worldPos).z);
     gl_Position = ubo.proj * ubo.view * worldPos;
+${PASS_VERTEX_OUTPUT}
 }

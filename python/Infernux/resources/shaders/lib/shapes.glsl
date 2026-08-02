@@ -1,4 +1,6 @@
-@shader_id: lib/shapes
+ShaderInfo {
+    Name "Lib Shapes"
+}
 
 // ============================================================================
 // lib/shapes.glsl — Procedural shape functions (SDF-based)
@@ -7,7 +9,7 @@
 // Provides: checkerboard, circle, rounded rect, ring, polygon, star, grid,
 // ellipse, line segment, cross, pie, hexagon, heart, and more.
 // All functions operate on 2D UV coordinates.
-// Usage: @import: lib/shapes
+// Usage: ShaderInfo Imports: Lib Shapes
 // ============================================================================
 
 // ============================================================================

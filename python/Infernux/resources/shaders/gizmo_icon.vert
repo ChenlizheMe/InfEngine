@@ -1,4 +1,6 @@
 #version 450
 
-@shader_id: gizmo_icon
-@hidden
+ShaderInfo {
+    Name "Gizmo Icon"
+    Hidden On
+}

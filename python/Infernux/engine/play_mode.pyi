@@ -101,3 +101,6 @@ class PlayModeManager:
     def reload_components_from_script(self, file_path: str) -> None:
         """Hot-reload components defined in the given script file."""
         ...
+    def mark_components_missing_for_script(self, script_guid: str, file_path: str) -> int:
+        """Replace instances of a deleted script with preserving placeholders."""
+        ...

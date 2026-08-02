@@ -159,7 +159,7 @@ nlohmann::json AudioSource::SerializeDocument() const
 void AudioSource::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
-    ValidateComponentDocument(j, "AudioSource", 1,
+    ValidateComponentDocument(j, "AudioSource",
                               {"volume", "pitch", "loop", "play_on_awake", "mute", "min_distance", "max_distance",
                                "one_shot_pool_size", "output_bus", "track_count", "tracks"});
     const float volume = RequireFiniteFloat(j, "volume", "AudioSource");

@@ -102,9 +102,11 @@ class AssetRefBase:
 
     @classmethod
     def from_dict(cls, d: dict) -> "AssetRefBase":
-        if d is None:
-            return cls()
-        return cls(guid=d.get("guid", ""), path_hint=d.get("path_hint", ""))
+        if type(d) is not dict or set(d) != {"guid", "path_hint"}:
+            raise ValueError("asset reference must use the complete current field set")
+        if type(d["guid"]) is not str or type(d["path_hint"]) is not str:
+            raise TypeError("asset reference values must be strings")
+        return cls(guid=d["guid"], path_hint=d["path_hint"])
 
     # ── Display ────────────────────────────────────────────────────────
 
@@ -194,22 +196,80 @@ class AnimStateMachineRef(AssetRefBase):
         return None
 
 
-class VfxSystemRef(AssetRefBase):
-    """Reference to a strict VFX system authoring asset."""
+class ParticleGraphRef(AssetRefBase):
+    """Reference to a compiled ParticleGraph or ParticleScript asset."""
 
     def _do_resolve(self):
-        path = self._path_hint if not self._guid else ""
+        path = self._path_hint
         db = _get_asset_database()
-        if db and self._guid:
-            path = db.get_path_from_guid(self._guid) or ""
+        if self._guid:
+            path = (db.get_path_from_guid(self._guid) if db else "") or path
         if not path:
             return None
         try:
-            from Infernux.core.vfx_system import VfxSystem
+            if path.lower().endswith(".particle.py"):
+                from pathlib import Path
+                from Infernux.particle.script import ParticleScriptCompiler
 
-            return VfxSystem.load(path)
-        except (OSError, ValueError):
+                return ParticleScriptCompiler().parse(
+                    Path(path).read_text(encoding="utf-8"),
+                    source_name=path,
+                )
+            from Infernux.particle.asset import ParticleGraphAsset
+
+            return ParticleGraphAsset.load(path)
+        except (OSError, TypeError, ValueError):
             return None
+
+
+class RenderEffectRef(AssetRefBase):
+    """Reference to a ``.effect`` asset or reusable effect group source."""
+
+    def __init__(self, effect=None, *, guid: str = "", path_hint: str = ""):
+        if effect is None:
+            super().__init__(guid=guid, path_hint=path_hint)
+            return
+        effect_guid = str(getattr(effect, "guid", "") or guid)
+        effect_path = str(getattr(effect, "file_path", "") or path_hint)
+        super().__init__(guid=effect_guid, path_hint=effect_path)
+        self._cached = effect
+
+    def resolve(self):
+        if self._cached is not None:
+            return self._cached
+        self._cached = self._do_resolve()
+        return self._cached
+
+    def _do_resolve(self):
+        from Infernux.core.assets import AssetManager
+        from Infernux.renderstack.render_effect import RenderEffect
+
+        if self._guid:
+            effect = AssetManager.load_by_guid(self._guid, asset_type=RenderEffect)
+            if effect is not None:
+                return effect
+        if self._path_hint:
+            return AssetManager.load(self._path_hint, asset_type=RenderEffect)
+        return self._cached
+
+    def __bool__(self):
+        return bool(self._guid or self._path_hint or self._cached is not None)
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        effect = self.resolve()
+        if effect is None:
+            raise AttributeError(name)
+        return getattr(effect, name)
+
+    def __copy__(self):
+        copied = RenderEffectRef(guid=self._guid, path_hint=self._path_hint)
+        copied._cached = self._cached
+        return copied
+
+    def __deepcopy__(self, memo):
+        return self.__copy__()
 
 
 class TimelineFSMRef(AssetRefBase):
@@ -315,7 +375,7 @@ def _ensure_registry():
         "AudioClip": {
             "ref_class":  AudioClipRef,
             "drag_type":  "AUDIO_FILE",
-            "extensions": ("*.wav", "*.mp3", "*.ogg"),
+            "extensions": ("*.wav", "*.ogg"),
             "display":    "AudioClip",
             "prefix":     "aud",
         },
@@ -333,12 +393,19 @@ def _ensure_registry():
             "display":    "AnimFSM",
             "prefix":     "fsm",
         },
-        "VfxSystem": {
-            "ref_class":  VfxSystemRef,
-            "drag_type":  "VFXSYSTEM_FILE",
-            "extensions": ("*.vfxsystem",),
-            "display":    "VFX System",
-            "prefix":     "vfx",
+        "ParticleGraph": {
+            "ref_class":  ParticleGraphRef,
+            "drag_type":  "PARTICLE_GRAPH_FILE",
+            "extensions": ("*.particlegraph", "*.particle.py"),
+            "display":    "Particle Graph",
+            "prefix":     "particle",
+        },
+        "RenderEffect": {
+            "ref_class":  RenderEffectRef,
+            "drag_type":  "RENDER_EFFECT_FILE",
+            "extensions": ("*.effect", "*.effectgroup"),
+            "display":    "Render Effect / Group",
+            "prefix":     "effect",
         },
         "AnimationClip": {
             "ref_class":  AnimationClipRef,

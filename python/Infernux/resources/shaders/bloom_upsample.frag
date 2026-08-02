@@ -1,6 +1,23 @@
 #version 450
-@shader_id: bloom_upsample
-@hidden
+
+ShaderInfo {
+    Name "Bloom Upsample"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _SourceTex
+        Texture2D _DestTex
+    }
+    PushConstants pc {
+        Float scatter
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Bloom upsample pass — 9-tap tent filter
 // Aligned with Unity URP's _BloomMipUp kernel.
@@ -12,16 +29,6 @@
 // Texel size is computed from the source texture dimensions via textureSize().
 // Push constants layout:
 //   [0] scatter  — blend factor (0-1): how much lower-mip contributes
-
-layout(set = 0, binding = 0) uniform sampler2D _SourceTex;  // lower-res mip (bloom)
-layout(set = 0, binding = 1) uniform sampler2D _DestTex;    // higher-res mip (accumulator)
-
-layout(push_constant) uniform PushConstants {
-    float scatter;
-} pc;
-
-layout(location = 0) in  vec2 inUV;
-layout(location = 0) out vec4 outColor;
 
 void main() {
     vec2 texelSize = 1.0 / vec2(textureSize(_SourceTex, 0));

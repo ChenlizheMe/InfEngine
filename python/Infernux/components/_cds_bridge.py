@@ -179,13 +179,18 @@ def reserve_class(cls, capacity: int) -> None:
     _get_lib()._cds_reserve(info[0], capacity)
 
 
-def release_slot(cls, slot: tuple[int, int]) -> None:
-    """Release a CDS slot."""
-    info = _class_registry.get(_class_key(cls))
-    if info is None:
+def release_slot(cls, slot: tuple[int, int], class_id: Optional[int] = None) -> None:
+    """Release a CDS slot once, using the instance's allocation class ID."""
+    if class_id is None:
+        info = _class_registry.get(_class_key(cls))
+        if info is None:
+            return
+        class_id = info[0]
+    if slot is None:
         return
     lib = _get_lib()
-    lib._cds_free(info[0], slot)
+    if lib._cds_is_alive(class_id, slot):
+        lib._cds_free(class_id, slot)
 
 
 # ── Single-element access (called from SerializedFieldDescriptor) ───────

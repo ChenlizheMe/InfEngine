@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import re
 import time
 from typing import Literal
 
+from Infernux.engine.path_utils import relative_path, resolved_path
 from Infernux.mcp import session
 from Infernux.mcp.tools.common import fail, main_thread, register_tool_metadata
 
@@ -91,6 +93,76 @@ def register_capture_tools(mcp, project_path: str) -> None:
 
         return main_thread("capture_cancel", _cancel, arguments={"capture_id": int(capture_id)})
 
+    @mcp.tool(name="scene_pick_request")
+    def scene_pick_request(
+        normalized_x: float,
+        normalized_y: float,
+        viewport_width: int,
+        viewport_height: int,
+    ) -> dict:
+        """Request an asynchronous GPU object-ID pick from the Scene render target."""
+        x = _normalized_coordinate("normalized_x", normalized_x)
+        y = _normalized_coordinate("normalized_y", normalized_y)
+        width = _viewport_extent("viewport_width", viewport_width)
+        height = _viewport_extent("viewport_height", viewport_height)
+        pixel_x = x * float(max(width - 1, 0))
+        pixel_y = y * float(max(height - 1, 0))
+
+        def _request() -> dict:
+            request_id = int(
+                _native_editor_engine().request_scene_object_pick(
+                    pixel_x,
+                    pixel_y,
+                    float(width),
+                    float(height),
+                )
+            )
+            if request_id <= 0:
+                raise RuntimeError("Scene GPU picking request was rejected")
+            return {
+                "request_id": request_id,
+                "source": "scene",
+                "status": "pending",
+                "normalized_x": x,
+                "normalized_y": y,
+                "viewport_width": width,
+                "viewport_height": height,
+                "pixel_x": pixel_x,
+                "pixel_y": pixel_y,
+                "selection_changed": False,
+            }
+
+        return main_thread(
+            "scene_pick_request",
+            _request,
+            arguments={
+                "normalized_x": x,
+                "normalized_y": y,
+                "viewport_width": width,
+                "viewport_height": height,
+            },
+        )
+
+    @mcp.tool(name="scene_pick_status")
+    def scene_pick_status(request_id: int) -> dict:
+        """Poll one Scene GPU object-ID pick without changing editor selection."""
+
+        def _query() -> dict:
+            value = dict(
+                _native_editor_engine().query_scene_object_pick(int(request_id))
+            )
+            value["request_id"] = int(request_id)
+            value["source"] = "scene"
+            value["selection_changed"] = False
+            value["terminal"] = str(value.get("status", "")) != "pending"
+            return value
+
+        return main_thread(
+            "scene_pick_status",
+            _query,
+            arguments={"request_id": int(request_id)},
+        )
+
 
 def _capture_policy_error() -> dict | None:
     active = session.current()
@@ -109,6 +181,20 @@ def _capture_policy_error() -> dict | None:
     return None
 
 
+def _normalized_coordinate(name: str, value: float) -> float:
+    result = float(value)
+    if not math.isfinite(result) or result < 0.0 or result > 1.0:
+        raise ValueError(f"{name} must be finite and within [0, 1]")
+    return result
+
+
+def _viewport_extent(name: str, value: int) -> int:
+    result = int(value)
+    if result <= 0 or result > 32768:
+        raise ValueError(f"{name} must be within [1, 32768]")
+    return result
+
+
 def _artifact_path(source: str, file_name: str) -> str:
     active = session.current()
     review_dir = os.path.join(active.artifact_root, "review")
@@ -122,14 +208,14 @@ def _artifact_path(source: str, file_name: str) -> str:
         requested = f"{safe_stem}.png"
     else:
         requested = f"{source}-{time.time_ns()}.png"
-    return os.path.abspath(os.path.join(review_dir, requested))
+    return resolved_path(os.path.join(review_dir, requested))
 
 
 def _artifact_uri(output_path: str) -> str:
     if not output_path:
         return ""
     active = session.current()
-    relative = os.path.relpath(os.path.abspath(output_path), active.artifact_root).replace("\\", "/")
+    relative = relative_path(output_path, active.artifact_root)
     return relative
 
 
@@ -170,10 +256,10 @@ def _register_metadata() -> None:
             "source": {"type": "string", "enum": ["scene", "game"], "default": "game"},
             "file_name": {"type": "string", "description": "Optional artifact basename ending in .png."},
         },
-        preconditions=["Debug feedback profile", "recording_enabled=true", "source render target initialized"],
+        preconditions=["Debug feedback profile", "recording_enabled=true", "Game source requires a scene camera"],
         side_effects=["Queues GPU readback", "Writes one PNG under the session review directory"],
         next_suggested_tools=["capture_status"],
-        recovery=["Enable recording through the Supervisor", "Ensure the matching engine render target is initialized"],
+        recovery=["Enable recording through the Supervisor", "Add an enabled scene camera for Game captures"],
         invariants=invariants,
         risk_level="low",
         feature="engine_capture",
@@ -196,6 +282,42 @@ def _register_metadata() -> None:
         level="renderer",
         side_effects=["Cancels pending readback or discards an encoding result"],
         invariants=invariants,
+        risk_level="low",
+        feature="engine_capture",
+    )
+    picking_invariants = [
+        "Picking reads the engine Scene object-ID target; desktop pixels are never accessed.",
+        "The request is observational and does not change editor selection.",
+        "Coordinates are normalized against the explicitly supplied Scene viewport dimensions.",
+        "Particle outputs resolve to their owning GameObject ID.",
+    ]
+    register_tool_metadata(
+        "scene_pick_request",
+        summary="Request an asynchronous GPU object-ID pick in the Scene render target.",
+        category="capture",
+        level="renderer",
+        parameters={
+            "normalized_x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "normalized_y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "viewport_width": {"type": "integer", "minimum": 1},
+            "viewport_height": {"type": "integer", "minimum": 1},
+        },
+        preconditions=["A graphical Editor and Scene render target must be active"],
+        side_effects=["Queues one GPU object-ID readback"],
+        next_suggested_tools=["scene_pick_status"],
+        recovery=["Capture the Scene render target and use its dimensions and normalized coordinates"],
+        invariants=picking_invariants,
+        risk_level="low",
+        feature="engine_capture",
+    )
+    register_tool_metadata(
+        "scene_pick_status",
+        summary="Poll an asynchronous Scene GPU object-ID pick.",
+        category="capture",
+        level="renderer",
+        next_suggested_tools=["scene_pick_status", "gameobject_get"],
+        recovery=["Retry while status is pending"],
+        invariants=picking_invariants,
         risk_level="low",
         feature="engine_capture",
     )

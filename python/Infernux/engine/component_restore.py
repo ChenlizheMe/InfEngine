@@ -50,10 +50,10 @@ def _validate_reference_documents(
         target_id = value.get("object_id")
         if type(target_id) is not int or target_id < 0:
             raise PythonComponentRestoreError(f"{path}: GameObjectRef id must be a non-negative integer")
-        target_exists = (
-            target_id in document_object_ids
-            if document_object_ids is not None
-            else scene.find_by_id(target_id) is not None
+        target_exists = bool(
+            target_id == 0
+            or (document_object_ids is not None and target_id in document_object_ids)
+            or (scene is not None and scene.find_by_id(target_id) is not None)
         )
         if target_id and not target_exists:
             raise PythonComponentRestoreError(f"{path}: GameObjectRef target {target_id} does not exist")
@@ -67,21 +67,24 @@ def _validate_reference_documents(
         if target_id == 0:
             return
         target = scene.find_by_id(target_id) if scene is not None else None
-        target_exists = (
-            target_id in document_object_ids
-            if document_object_ids is not None
-            else target is not None
-        )
+        target_is_local = document_object_ids is not None and target_id in document_object_ids
+        target_exists = bool(target_is_local or target is not None)
         if not target_exists:
             raise PythonComponentRestoreError(f"{path}: ComponentRef GameObject {target_id} does not exist")
         if not type_name:
             raise PythonComponentRestoreError(f"{path}: non-null ComponentRef requires type_name")
-        native_exists = (
-            (target_id, type_name) in document_native_types
-            if document_native_types is not None
-            else target.get_cpp_component(type_name) is not None
+        native_exists = bool(
+            document_native_types is not None
+            and (target_id, type_name) in document_native_types
         )
-        if not native_exists and (target_id, type_name) not in pending_types:
+        python_exists = (target_id, type_name) in pending_types
+        if target is not None and not target_is_local:
+            native_exists = native_exists or target.get_cpp_component(type_name) is not None
+            python_exists = python_exists or any(
+                type(component).__name__ == type_name
+                for component in (target.get_py_components() or ())
+            )
+        if not native_exists and not python_exists:
             raise PythonComponentRestoreError(
                 f"{path}: ComponentRef target {target_id}:{type_name} does not exist"
             )
@@ -143,7 +146,7 @@ class PreparedPythonComponent:
 
 
 _COMPONENT_RECORD_FIELDS = {
-    "component_id", "type_id", "type_version", "enabled", "execution_order", "data",
+    "component_id", "type_id", "enabled", "execution_order", "data",
 }
 _NATIVE_TYPE_PREFIX = "native:infernux."
 _PYTHON_TYPE_PREFIX = "python:"
@@ -163,7 +166,7 @@ def _decode_python_component_record(record: dict, path: str) -> tuple[str, str, 
     script_guid, type_guid, module_name, qualified_name = parts
     data = record.get("data")
     if isinstance(data, dict) and {
-        "__schema_version__", "__type_name__", "__component_id__",
+        "__type_name__", "__component_id__",
     }.intersection(data):
         raise PythonComponentRestoreError(f"{path}.data contains reserved component metadata")
     return script_guid, type_guid, module_name, qualified_name, qualified_name.rsplit(".", 1)[-1]
@@ -247,6 +250,9 @@ def _prepare_python_component_records(
     native_types: set[tuple[int, str]],
     raw_descriptors: list[tuple[Optional[int], str, dict]],
     asset_database=None,
+    *,
+    prefer_loaded_types: bool = False,
+    reference_scene=None,
 ) -> PreparedPythonComponentGraph:
     pending_types: set[tuple[int, str]] = set()
     component_type_counts: dict[tuple[int, str], int] = {}
@@ -261,13 +267,10 @@ def _prepare_python_component_records(
         )
         enabled = descriptor.get("enabled")
         execution_order = descriptor.get("execution_order")
-        type_version = descriptor.get("type_version")
         data = descriptor.get("data")
         if (
             type(enabled) is not bool
             or type(execution_order) is not int
-            or type(type_version) is not int
-            or type_version <= 0
             or not isinstance(data, dict)
         ):
             raise PythonComponentRestoreError(f"Python component '{type_name}' has invalid typed fields")
@@ -280,7 +283,6 @@ def _prepare_python_component_records(
             )
         python_component_ids.add(component_id)
         fields = {
-            "__schema_version__": type_version,
             "__type_name__": type_name,
             "__component_id__": component_id,
             **data,
@@ -305,7 +307,7 @@ def _prepare_python_component_records(
             _validate_reference_documents(
                 fields,
                 f"{document_path}.py_fields",
-                None,
+                reference_scene,
                 pending_types,
                 document_object_ids=object_ids,
                 document_native_types=native_types,
@@ -319,6 +321,7 @@ def _prepare_python_component_records(
                     type_guid,
                     type_name,
                     asset_database,
+                    prefer_loaded_type=prefer_loaded_types,
                 )
             except Exception as exc:
                 construct_error = str(exc)
@@ -338,7 +341,10 @@ def _prepare_python_component_records(
                     error=f"Missing script '{type_name}': {detail}",
                 )
                 from Infernux.debug import Debug
-                Debug.log_error(instance._broken_error)
+                if construct_error:
+                    Debug.log_error(instance._broken_error)
+                else:
+                    Debug.log_internal(instance._broken_error)
             instance_type = type(instance)
             is_broken = bool(getattr(instance, "_is_broken", False))
             # Script file renames change the import module path. Class renames
@@ -458,6 +464,8 @@ def preflight_game_object_python_components(
     asset_database=None,
     *,
     preserve_document_ids: bool,
+    prefer_loaded_types: bool = False,
+    reference_scene=None,
 ) -> PreparedPythonComponentGraph:
     """Preflight one ObjectGraph before deserialize, instantiate, or clone."""
     object_ids: set[int] = set()
@@ -514,6 +522,8 @@ def preflight_game_object_python_components(
         native_types,
         descriptors,
         asset_database,
+        prefer_loaded_types=prefer_loaded_types,
+        reference_scene=reference_scene,
     )
     if not preserve_document_ids:
         for component in prepared.components:
@@ -576,14 +586,14 @@ def _remap_local_reference_document(value, object_id_map: dict[int, int], path: 
         if source_id == 0:
             return dict(value)
         remapped = dict(value)
-        remapped["object_id"] = object_id_map[source_id]
+        remapped["object_id"] = object_id_map.get(source_id, source_id)
         return remapped
     if document_type == COMPONENT_REF:
         source_id = value["game_object_id"]
         if source_id == 0:
             return copy.deepcopy(value)
         remapped = dict(value)
-        remapped["game_object_id"] = object_id_map[source_id]
+        remapped["game_object_id"] = object_id_map.get(source_id, source_id)
         return remapped
     return {
         key: _remap_local_reference_document(item, object_id_map, f"{path}.{key}")
@@ -853,6 +863,7 @@ def deserialize_game_object_document_transactionally(
         document,
         asset_database,
         preserve_document_ids=preserve_document_ids,
+        reference_scene=scene,
     )
     return commit_prepared_game_object_document(
         game_object,
@@ -871,14 +882,12 @@ def serialize_game_object_document_authoritatively(game_object) -> dict:
     """
     document = game_object.serialize_document()
     native_metadata = {
-        "schema_version",
         "type",
         "component_id",
         "enabled",
         "execution_order",
     }
     python_metadata = {
-        "__schema_version__",
         "__type_name__",
         "__component_id__",
     }
@@ -989,6 +998,7 @@ def instantiate_game_object_document_transactionally(
         document,
         asset_database,
         preserve_document_ids=False,
+        reference_scene=scene,
     )
     return instantiate_prepared_game_object_document(scene, document, prepared, parent)
 
@@ -1021,25 +1031,95 @@ def instantiate_prepared_game_object_document(
     return created
 
 
+def instantiate_prepared_game_object_documents(
+    scene,
+    entries: list[tuple[dict, PreparedPythonComponentGraph, Any]],
+) -> list:
+    """Instantiate multiple ObjectGraphs as one Python-reference transaction."""
+    _require_clean_pending_queue(scene)
+    prepared_graphs = [prepared for _document, prepared, _parent in entries]
+    for prepared in prepared_graphs:
+        prepared.require_open()
+
+    created = []
+    object_id_map: dict[int, int] = {}
+    try:
+        for document, _prepared, parent in entries:
+            instance = scene._instantiate_document(
+                _native_object_graph_document(document), parent
+            )
+            if instance is None:
+                raise PythonComponentRestoreError(
+                    "native ObjectGraph batch instantiate failed"
+                )
+            created.append(instance)
+            entry_map = _build_instantiated_object_id_map(document, instance)
+            overlap = set(object_id_map).intersection(entry_map)
+            if overlap:
+                raise PythonComponentRestoreError(
+                    f"ObjectGraph batch contains duplicate source IDs: {sorted(overlap)}"
+                )
+            object_id_map.update(entry_map)
+
+        combined = PreparedPythonComponentGraph([
+            component
+            for prepared in prepared_graphs
+            for component in prepared.components
+        ])
+        for prepared in prepared_graphs:
+            prepared.consume()
+        publish_prepared_scene_python_components(
+            scene,
+            combined,
+            clear_registries=False,
+            object_id_map=object_id_map,
+        )
+        return created
+    except Exception:
+        for prepared in prepared_graphs:
+            if not prepared._closed:
+                prepared.discard()
+        try:
+            scene.take_pending_py_components()
+        except Exception:
+            pass
+        for instance in reversed(created):
+            scene.destroy_game_object(instance)
+        if created:
+            scene.process_pending_destroys()
+        raise
+
+
 def clone_game_object_transactionally(
     scene,
     source,
     parent=None,
     asset_database=None,
+    *,
+    instantiate_in_world_space: bool = False,
+    configure_created=None,
 ):
     """Preflight a source snapshot before native subtree clone/publish."""
     _require_clean_pending_queue(scene)
-    source_document = source.serialize_document()
+    source_document = serialize_game_object_document_authoritatively(source)
     prepared = preflight_game_object_python_components(
         source_document,
         asset_database,
         preserve_document_ids=False,
+        prefer_loaded_types=True,
+        reference_scene=scene,
     )
-    created = scene._clone_game_object(source, parent)
+    created = scene._clone_game_object(
+        source,
+        parent,
+        bool(instantiate_in_world_space),
+    )
     if created is None:
         prepared.discard()
         return None
     try:
+        if configure_created is not None:
+            configure_created(created)
         object_id_map = _build_instantiated_object_id_map(source_document, created)
         publish_prepared_scene_python_components(
             scene,
@@ -1085,6 +1165,8 @@ def create_component_instance(
     type_guid: str,
     type_name: str,
     asset_database=None,
+    *,
+    prefer_loaded_type: bool = False,
 ):
     """Create a Python component instance from an exact stable identity.
 
@@ -1098,7 +1180,20 @@ def create_component_instance(
 
     instance = None
     loaded_from_asset = False
-    if script_path and os.path.exists(script_path):
+    asset_exists = bool(script_path and os.path.exists(script_path))
+    from Infernux.components.registry import get_type_by_identity
+    registered_type = get_type_by_identity(type_name, script_guid, type_guid)
+    registered_is_builtin = bool(
+        registered_type is not None
+        and not str(getattr(registered_type, "_asset_script_guid_", "") or "").strip()
+    )
+    if prefer_loaded_type and registered_type is not None and (asset_exists or registered_is_builtin):
+        component_type = registered_type
+        if component_type is not None:
+            instance = component_type()
+            instance._script_guid = script_guid
+            return instance, script_path
+    if asset_exists:
         loaded_from_asset = True
         if asset_database is not None:
             from Infernux.components.script_loader import load_and_create_component
@@ -1120,9 +1215,8 @@ def create_component_instance(
                 instance = construct_component(component_type)
         if instance is not None:
             instance._script_guid = script_guid
-    else:
-        from Infernux.components.registry import get_type_by_identity
-        comp_class = get_type_by_identity(type_name, script_guid, type_guid)
+    elif asset_database is None or registered_is_builtin:
+        comp_class = registered_type
         if comp_class:
             instance = comp_class()
             instance._script_guid = script_guid

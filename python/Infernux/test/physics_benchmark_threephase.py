@@ -38,6 +38,7 @@ from Infernux.components import InxComponent
 from Infernux.instantiate import Destroy
 from Infernux.lib import InxPhysicMaterial, SceneManager, PrimitiveType, Vector3
 from Infernux.debug import debug
+from Infernux.engine.path_utils import resolved_path
 import csv
 import os
 import random
@@ -239,11 +240,11 @@ class PhysicsBenchmarkTimeline(InxComponent):
 
     def _write_csv(self, mean_ff, mean_st, mean_rt):
         csv_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
+            os.path.dirname(resolved_path(__file__)),
             "..", "..", "..",     # up to project root
             "physics_bench_results.csv",
         )
-        csv_path = os.path.normpath(csv_path)
+        csv_path = resolved_path(csv_path)
 
         file_exists = os.path.isfile(csv_path)
         try:

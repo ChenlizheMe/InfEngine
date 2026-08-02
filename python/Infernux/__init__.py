@@ -8,6 +8,8 @@ import importlib
 
 # ── Runtime API (used by game scripts) ─────────────────────────────
 from Infernux.engine import release_engine, run_headless, Engine, LogLevel
+from Infernux.application import Application
+from Infernux.acceptance import RuntimeAcceptance, RuntimeAcceptanceManifest, RuntimeAcceptanceTest
 from Infernux.math import Vector2, Vector3, vec4f, quatf, vector2, vector3, vector4, quaternion
 from Infernux import components as _components_module
 from Infernux.components import *
@@ -62,6 +64,10 @@ def __getattr__(name: str):
 __all__ = [
     # Engine
     "Engine",
+    "Application",
+    "RuntimeAcceptance",
+    "RuntimeAcceptanceManifest",
+    "RuntimeAcceptanceTest",
     "LogLevel",
     "release_engine",
     "run_headless",
@@ -114,6 +120,7 @@ __all__ = [
     "SpriteRenderer",
     "SpiritAnimator",
     "SkeletalAnimator",
+    "RuntimeAcceptanceRunner",
     # Decorators
     "require_component",
     "disallow_multiple",
@@ -143,6 +150,7 @@ __all__ = [
     "AudioClipRef",
     "AnimationClipRef",
     "AnimStateMachineRef",
+    "RenderEffectRef",
     # Debug — class only (use Debug.log / Debug.log_warning / …)
     "Debug",
     # Submodules

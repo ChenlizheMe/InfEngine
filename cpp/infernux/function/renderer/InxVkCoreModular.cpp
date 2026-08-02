@@ -12,11 +12,11 @@
 #include "SceneRenderTarget.h"
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
+#include "vk/RhiVulkanTypes.h"
 
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
-#include <function/scene/SceneRenderer.h>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -86,13 +86,13 @@ void DestroyLingeringMaterialPassPipelines(VkDevice device)
 
 InxVkCoreModular::InxVkCoreModular(int maxFrameInFlight) : m_maxFramesInFlight(static_cast<uint32_t>(maxFrameInFlight))
 {
-    m_deletionQueue.Initialize(m_maxFramesInFlight);
+    m_deletionQueue.BindSerialSource([this] { return m_backend.Queues().GetLastReservedCompletionEpoch(); });
 }
 
 InxVkCoreModular::~InxVkCoreModular()
 {
-    if (m_deviceContext.IsValid() && !m_shuttingDown) {
-        m_deviceContext.WaitIdle();
+    if (m_backend.Device().IsValid() && !m_shuttingDown) {
+        m_backend.Device().WaitIdle();
     }
 
     // Async preview submissions retain transient buffers and cloned materials.
@@ -123,7 +123,7 @@ InxVkCoreModular::~InxVkCoreModular()
     if (m_shuttingDown) {
         m_resourceManager.SetSkipWaitIdle(true);
         m_pipelineManager.SetSkipWaitIdle(true);
-        m_swapchain.SetSkipWaitIdle(true);
+        m_backend.Presentation().SetSkipWaitIdle(true);
     }
 
     // Cleanup shadow pipeline resources before general cleanup
@@ -135,6 +135,11 @@ InxVkCoreModular::~InxVkCoreModular()
     // Cleanup engine globals descriptor resources
     DestroyGlobalsDescriptorResources();
 
+    // The shadow/view cleanup above may enqueue resources after the initial
+    // shutdown drain. The device is idle here, so release them before their
+    // resource manager and allocator disappear.
+    m_deletionQueue.FlushAll();
+
     // Explicit destruction in controlled order (avoids double-free from
     // RAII reverse-declaration order when handles are shared across systems).
     m_perObjectBuffers.clear();
@@ -142,22 +147,27 @@ InxVkCoreModular::~InxVkCoreModular()
     m_pendingSharedMeshBuffers.clear();
     m_pendingTextureCpuLoads.clear();
     m_pendingTextureGpuUploads.clear();
+
+    // Preview renderers are texture/material publication consumers. Destroy
+    // them before the residency cache so no TextureGpuView can outlive the RHI
+    // device through a preview-owned descriptor or asynchronous readback.
+    m_gpuMeshPreview.reset();
+    m_gpuMaterialPreview.reset();
     m_textureCache.Clear();
     m_shaderCache.Clear();
 
-    m_lightingUbo.reset();
-    m_lightingUboMapped = nullptr;
+    m_canonicalLightGpuBuffer.Shutdown();
     m_materialUbo.reset();
     m_materialUboMapped = nullptr;
-    m_sceneUbo.reset();
     m_globalsBuffers.clear();
-    m_gpuMeshPreview.reset();
-    m_gpuMaterialPreview.reset();
 
-    m_commandBuffers.clear();
     m_depthImage.reset();
 
-    m_renderGraph.Destroy();
+#if INFERNUX_FRAME_PROFILE
+    m_gpuTimestampQueries.Destroy();
+#endif
+    DestroyGuiRenderGraphs();
+    m_submissionExecutor.Destroy();
     m_resourceManager.Destroy();
     m_asyncReadbackContext.Destroy();
     m_asyncTransferContext.Destroy();
@@ -169,14 +179,15 @@ InxVkCoreModular::~InxVkCoreModular()
     m_pipelineManager.ClearTrackedNonPipelineResources();
     m_pipelineManager.Destroy();
 
-    m_swapchain.Destroy();
+    m_backend.Presentation().Destroy();
+    m_backend.Queues().Destroy();
 
-    // Some shutdown paths defer frees into the frame deletion queue. Flush one
+    // Some shutdown paths defer frees into the submission retirement queue. Flush one
     // final time after all subsystems have torn down but before destroying the
     // allocator/device.
     m_deletionQueue.FlushAll();
 
-    m_deviceContext.Destroy();
+    m_backend.Devices().Destroy();
 
     // All RAII destructors that fire after this point will find VK_NULL_HANDLE
     // in their stored device and skip Vulkan calls.
@@ -195,18 +206,18 @@ bool InxVkCoreModular::Init(InxAppMetadata appMetaData, InxAppMetadata rendererM
     m_deviceConfig.appName = appMetaData.appName ? appMetaData.appName : "Infernux App";
     m_deviceConfig.engineName = rendererMetaData.appName ? rendererMetaData.appName : "Infernux";
 
-#if defined(INFERNUX_VULKAN_VALIDATION_LAYERS)
+#if INFERNUX_VULKAN_VALIDATION_LAYERS
     m_deviceConfig.enableValidationLayers = true;
 #endif
 
     // Initialize instance only (device will be created in PrepareSurface after surface is available)
-    if (!m_deviceContext.InitializeInstance(m_deviceConfig)) {
+    if (!m_backend.Devices().InitializePrimaryInstance(m_deviceConfig)) {
         INXLOG_ERROR("Failed to initialize Vulkan instance");
         return false;
     }
 
     // Store instance for InxRenderer access
-    m_instance = m_deviceContext.GetInstance();
+    m_instance = m_backend.Device().GetInstance();
 
     INXLOG_INFO("InxVkCoreModular instance initialized successfully");
     return true;
@@ -221,13 +232,23 @@ bool InxVkCoreModular::PrepareSurface()
     }
 
     // Complete device initialization with the surface
-    if (!m_deviceContext.InitializeDevice(m_surface, m_deviceConfig)) {
+    if (!m_backend.Devices().InitializePrimaryDevice(m_surface, m_deviceConfig)) {
         INXLOG_ERROR("Failed to initialize Vulkan device");
         return false;
     }
+    if (!m_backend.Queues().Initialize(m_backend.Device(), m_maxFramesInFlight)) {
+        INXLOG_ERROR("Failed to initialize Vulkan queue manager");
+        return false;
+    }
+    if (!m_submissionExecutor.Initialize(m_backend.Device(), m_backend.Queues(), m_maxFramesInFlight)) {
+        INXLOG_ERROR("Failed to initialize Vulkan submission executor");
+        return false;
+    }
+    m_backend.Device().GetRhiDevice().GetDescriptorManager().UseSubmissionSerials(
+        [this] { return m_backend.Queues().GetLastReservedCompletionEpoch(); });
 
     // Now that device is ready, initialize resource manager
-    if (!m_resourceManager.Initialize(m_deviceContext)) {
+    if (!m_resourceManager.Initialize(m_backend.Device(), &m_backend.Queues())) {
         INXLOG_ERROR("Failed to initialize resource manager");
         return false;
     }
@@ -237,12 +258,14 @@ bool InxVkCoreModular::PrepareSurface()
     // a pooled-fence fast path; on GPUs with one (most discrete cards) it
     // unlocks truly parallel asset uploads. Failures are non-fatal — the
     // engine simply keeps using the synchronous VkResourceManager path.
-    const auto &queueIndices = m_deviceContext.GetQueueIndices();
+    const auto &queueIndices = m_backend.Device().GetQueueIndices();
     const uint32_t graphicsFamily = queueIndices.graphicsFamily.value_or(0);
     const uint32_t transferFamily = queueIndices.transferFamily.value_or(graphicsFamily);
     if (m_asyncTransferContext.Initialize(
-            m_deviceContext.GetDevice(), transferFamily, m_deviceContext.GetTransferQueue(),
-            m_deviceContext.HasDedicatedTransferQueue(), m_deviceContext.IsTimelineSemaphoreEnabled())) {
+            m_backend.Device().GetDevice(), transferFamily, m_backend.Device().GetTransferQueue(),
+            m_backend.Device().HasDedicatedTransferQueue(), m_backend.Device().IsTimelineSemaphoreEnabled(),
+            &m_backend.Queues(),
+            m_backend.Device().HasDedicatedTransferQueue() ? rhi::QueueRole::Transfer : rhi::QueueRole::Graphics)) {
         // Plug the async context into the resource manager so non-mipmap
         // texture uploads route through the dedicated DMA queue. Mipmap
         // generation still falls back to the graphics queue because
@@ -252,21 +275,27 @@ bool InxVkCoreModular::PrepareSurface()
         INXLOG_WARN("Async transfer context unavailable; uploads will use the graphics queue.");
     }
 
-    if (m_asyncReadbackContext.Initialize(m_deviceContext.GetDevice(), graphicsFamily,
-                                          m_deviceContext.GetGraphicsQueue(), false)) {
+    if (m_asyncReadbackContext.Initialize(m_backend.Device().GetDevice(), graphicsFamily,
+                                          m_backend.Device().GetGraphicsQueue(), false, false, &m_backend.Queues(),
+                                          rhi::QueueRole::Graphics)) {
         m_resourceManager.SetAsyncReadbackContext(&m_asyncReadbackContext);
     } else {
         INXLOG_WARN("Async graphics readback context unavailable.");
     }
 
     // Initialize pipeline manager
-    m_pipelineManager.Initialize(m_deviceContext.GetDevice());
+    m_pipelineManager.Initialize(m_backend.Device().GetDevice());
 
     // Initialize render graph
-    m_renderGraph.Initialize(&m_deviceContext, &m_pipelineManager);
+    m_renderGraph.Initialize(&m_backend.Device(), &m_pipelineManager, nullptr, &m_backend.Queues());
+#if INFERNUX_FRAME_PROFILE
+    if (!m_gpuTimestampQueries.Initialize(m_backend.Device(), m_maxFramesInFlight)) {
+        INXLOG_WARN("GPU timestamp queries are unavailable on this device");
+    }
+#endif
 
     // Get extent from surface capabilities
-    auto swapchainSupport = m_deviceContext.QuerySwapchainSupport();
+    auto swapchainSupport = m_backend.Device().QuerySwapchainSupport();
     uint32_t width = swapchainSupport.capabilities.currentExtent.width;
     uint32_t height = swapchainSupport.capabilities.currentExtent.height;
 
@@ -282,23 +311,27 @@ bool InxVkCoreModular::PrepareSurface()
     }
 
     // Create swapchain
-    if (!m_swapchain.Create(m_deviceContext, width, height)) {
+    if (!m_backend.Presentation().Create(m_backend.Device(), width, height)) {
         INXLOG_ERROR("Failed to create swapchain");
         return false;
     }
+    if (m_presentationView.id == rhi::InvalidRenderViewId)
+        m_presentationView.id = rhi::AllocateRenderViewId();
+    m_presentationView.device = m_backend.Device().GetDeviceId();
+    m_presentationView.kind = rhi::RenderViewKind::Presentation;
+    m_presentationView.output = rhi::RenderOutputKind::PresentationImage;
+    m_presentationView.width = width;
+    m_presentationView.height = height;
+    m_presentationView.colorFormat = rhi::FromVkFormat(m_backend.Presentation().GetImageFormat());
+    m_presentationView.samples = rhi::SampleCount::One;
+    ++m_presentationView.revision;
+    m_renderGraph.SetRenderView(m_presentationView);
 
     // Create depth resources
     CreateDepthResources();
 
     // Create uniform buffers
     CreateUniformBuffers();
-
-    // Allocate command buffers
-    m_commandBuffers.resize(m_maxFramesInFlight);
-    for (uint32_t i = 0; i < m_maxFramesInFlight; ++i) {
-        auto alloc = m_resourceManager.AllocatePrimaryCommandBuffer();
-        m_commandBuffers[i] = alloc.cmdBuffer;
-    }
 
     INXLOG_INFO("Surface prepared successfully");
     return true;
@@ -310,16 +343,17 @@ void InxVkCoreModular::PreparePipeline()
     m_textureCache.CreateDefaultWhiteTexture("white", m_resourceManager);
 
     // Create default flat normal texture (0.5, 0.5, 1.0 = tangent-space (0,0,1))
-    m_textureCache.CreateSolidColorTexture("_default_normal", 128, 128, 255, 255, VK_FORMAT_R8G8B8A8_UNORM,
-                                           m_resourceManager);
+    m_textureCache.CreateSolidColorTexture("_default_normal", 128, 128, 255, 255, m_resourceManager);
     INXLOG_INFO("Created default flat normal texture: _default_normal");
 
-    // Initialize material system (default material + pipelines)
-    InitializeMaterialSystem();
+    // Register the canonical per-view ABI before any ShaderProgram creates a
+    // pipeline layout. Descriptor sets are allocated later, after the default
+    // textures needed to initialize their shadow binding already exist.
+    if (!CreatePerViewDescriptorResources())
+        throw std::runtime_error("Failed to create per-view descriptor resources");
 
-    // Create per-view descriptor set layout and pool (multi-camera shadow isolation).
-    // Must be after InitializeMaterialSystem so default textures are available.
-    CreatePerViewDescriptorResources();
+    // Initialize material system (default material + pipelines).
+    InitializeMaterialSystem();
 
     // Create shadow depth sampler eagerly so that it is available when
     // RefreshPerViewShadowDescriptor runs (before the first DrawShadowCasters).
@@ -334,19 +368,9 @@ void InxVkCoreModular::PreparePipeline()
 // Texture Management (delegates to VkTextureCache)
 // ============================================================================
 
-void InxVkCoreModular::CreateTextureImage(std::string name, std::string path)
-{
-    m_textureCache.CreateTextureImage(name, path, m_resourceManager);
-}
-
 void InxVkCoreModular::CreateDefaultWhiteTexture(std::string name)
 {
     m_textureCache.CreateDefaultWhiteTexture(name, m_resourceManager);
-}
-
-void InxVkCoreModular::LoadTexture(const std::string &name, const std::string &path)
-{
-    m_textureCache.CreateTextureImage(name, path, m_resourceManager);
 }
 
 // ============================================================================
@@ -356,6 +380,59 @@ void InxVkCoreModular::LoadTexture(const std::string &name, const std::string &p
 void InxVkCoreModular::LoadShader(const char *name, const std::vector<char> &spirvCode, const char *type)
 {
     m_shaderCache.LoadShader(name, spirvCode, type, m_pipelineManager);
+}
+
+bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact)
+{
+    const auto publish = m_shaderCache.PublishProgramArtifact(artifact);
+    if (!publish.accepted)
+        return false;
+    if (!publish.changed)
+        return true;
+
+    if (m_materialPipelineManagerInitialized)
+        m_materialPipelineManager.InvalidateMaterialsUsingProgramPair(artifact.key.stages);
+
+    // Linked shadow pipelines are keyed by the stable stage pair plus artifact
+    // revision. Retire every older revision for this pair before its owning
+    // ShaderProgram modules leave the cache.
+    const std::string shadowProgramPrefix = artifact.key.stages.ToString() + "|";
+    const VkDevice device = GetDevice();
+    for (auto it = m_shadowPipelineCache.begin(); it != m_shadowPipelineCache.end();) {
+        if (it->first.rfind(shadowProgramPrefix, 0) != 0) {
+            ++it;
+            continue;
+        }
+        const VkPipeline pipeline = it->second;
+        if (pipeline != VK_NULL_HANDLE)
+            m_deletionQueue.Retire([device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
+        ++m_shaderHotReloadRetirementCount;
+        it = m_shadowPipelineCache.erase(it);
+    }
+
+    if (publish.replacedProgram) {
+        auto previousPrograms = m_shaderCache.GetProgramCache().TakePrograms(*publish.replacedProgram);
+        for (auto &previous : previousPrograms) {
+            m_deletionQueue.Retire([retired = std::move(previous)]() mutable { retired.reset(); });
+            ++m_shaderHotReloadRetirementCount;
+        }
+    }
+
+    INXLOG_INFO("Published shader program artifact '", artifact.key.ToString(), "'");
+    return true;
+}
+
+bool InxVkCoreModular::HasShaderProgramArtifact(const ShaderProgramKey &programKey) const
+{
+    const auto *artifact = m_shaderCache.FindProgramArtifact(programKey.stages);
+    return artifact && artifact->key == programKey;
+}
+
+std::shared_ptr<const ShaderProgramArtifact>
+InxVkCoreModular::CopyShaderProgramArtifact(const ShaderStagePair &stages) const
+{
+    const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
+    return artifact ? std::make_shared<const ShaderProgramArtifact>(*artifact) : nullptr;
 }
 
 void InxVkCoreModular::StoreShaderRenderMeta(const std::string &shaderId, const std::string &cullMode,
@@ -368,7 +445,7 @@ void InxVkCoreModular::StoreShaderRenderMeta(const std::string &shaderId, const 
 
 void InxVkCoreModular::UnloadShader(const char *name)
 {
-    m_shaderCache.UnloadShader(name, GetDevice());
+    m_shaderCache.UnloadShader(name, m_pipelineManager);
 }
 
 bool InxVkCoreModular::HasShader(const std::string &name, const std::string &type) const
@@ -390,8 +467,7 @@ void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId)
 
     auto retiredPrograms = m_shaderCache.GetProgramCache().TakeProgramsContainingShader(shaderId);
     for (auto &program : retiredPrograms) {
-        auto retired = std::shared_ptr<ShaderProgram>(std::move(program));
-        m_deletionQueue.Push([retired = std::move(retired)]() mutable { retired.reset(); });
+        m_deletionQueue.Retire([retired = std::move(program)]() mutable { retired.reset(); });
         ++m_shaderHotReloadRetirementCount;
     }
 
@@ -413,14 +489,14 @@ void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId)
         }
         const VkPipeline pipeline = it->second;
         if (pipeline != VK_NULL_HANDLE)
-            m_deletionQueue.Push([device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
+            m_deletionQueue.Retire([device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
         ++m_shaderHotReloadRetirementCount;
         it = m_shadowPipelineCache.erase(it);
     }
 
     // Shader modules are only consumed during pipeline creation, so their
     // standalone cache entry can be destroyed immediately on the owner thread.
-    m_shaderCache.UnloadShader(shaderId.c_str(), GetDevice());
+    m_shaderCache.UnloadShader(shaderId.c_str(), m_pipelineManager);
 
     INXLOG_INFO("Shader cache invalidated for: ", shaderId);
 }
@@ -460,18 +536,21 @@ void InxVkCoreModular::InvalidateTextureCache(const std::string &textureGuid)
         pending = m_pendingTextureGpuUploads.erase(pending);
     }
 
-    // Runtime materials such as SpriteRenderer instances are not represented
-    // in the asset dependency graph. Retiring their descriptor sets first keeps
-    // the texture lease alive until the frame deletion queue releases it.
-    if (m_materialPipelineManagerInitialized) {
-        m_materialPipelineManager.InvalidateMaterialsUsingTexture(textureGuid);
+    const uint64_t runtimeVersion = AssetRegistry::Instance().GetAssetVersion(textureGuid);
+    if (runtimeVersion == 0) {
+        INXLOG_WARN("Texture revision request has no published runtime version for GUID: ", textureGuid);
+        return;
     }
 
-    // Evict all cached variants for this GUID
-    size_t evicted = m_textureCache.EvictByPrefix(textureGuid);
-    (void)evicted;
+    // Preserve every resident variant as last-known-good. The stable slot tells
+    // particle consumers to resolve the requested revision, while material
+    // descriptors immediately enter their existing pending-refresh path.
+    const size_t requestedSlots = m_textureCache.RequestAssetRevision(textureGuid, runtimeVersion);
+    const uint32_t refreshedMaterials =
+        m_materialPipelineManagerInitialized ? m_materialPipelineManager.RefreshMaterialsUsingTexture(textureGuid) : 0;
 
-    INXLOG_INFO("Texture cache invalidated for GUID: ", textureGuid);
+    INXLOG_INFO("Texture revision requested for GUID: ", textureGuid, " revision=", runtimeVersion,
+                " slots=", requestedSlots, " materials=", refreshedMaterials);
 }
 
 void InxVkCoreModular::RemoveMaterialPipeline(const std::string &materialName)
@@ -505,6 +584,25 @@ void InxVkCoreModular::SetRenderGraphExecutor(std::function<void(VkCommandBuffer
     m_renderGraphExecutor = std::move(executor);
 }
 
+void InxVkCoreModular::SetFrameComputeExecutor(std::function<void(VkCommandBuffer cmdBuf)> executor)
+{
+    m_frameComputeExecutor = std::move(executor);
+}
+
+void InxVkCoreModular::SetFrameAsyncComputeExecutors(std::function<bool(VkCommandBuffer)> simulation,
+                                                     std::function<bool(VkCommandBuffer)> exportPhase,
+                                                     std::function<bool()> ready, std::function<uint64_t()> generation)
+{
+    m_frameAsyncSimulationExecutor = std::move(simulation);
+    m_frameAsyncExportExecutor = std::move(exportPhase);
+    m_frameAsyncComputeReady = std::move(ready);
+    m_frameAsyncComputeGeneration = std::move(generation);
+    m_frameAsyncComputePrimed = false;
+    m_frameAsyncComputePrimedGeneration = 0;
+    m_frameAsyncPreviousExportTimeline = VK_NULL_HANDLE;
+    m_frameAsyncPreviousExportTimelineValue = 0;
+}
+
 void InxVkCoreModular::SetGuiRenderCallback(std::function<void(vk::RenderContext &ctx)> callback)
 {
     m_guiRenderCallback = std::move(callback);
@@ -516,14 +614,8 @@ void InxVkCoreModular::SetGuiRenderCallback(std::function<void(vk::RenderContext
 
 void InxVkCoreModular::RecreateSwapchain()
 {
-    // Wait for device idle
-    m_deviceContext.WaitIdle();
-
-    // Cleanup old depth resources
-    m_depthImage.reset();
-
     // Get new extent from surface capabilities
-    auto swapchainSupport = m_deviceContext.QuerySwapchainSupport();
+    auto swapchainSupport = m_backend.Device().QuerySwapchainSupport();
     uint32_t width = swapchainSupport.capabilities.currentExtent.width;
     uint32_t height = swapchainSupport.capabilities.currentExtent.height;
 
@@ -544,44 +636,142 @@ void InxVkCoreModular::RecreateSwapchain()
         return;
     }
 
-    // Recreate swapchain
-    m_swapchain.Recreate(m_deviceContext, width, height);
+    // Presentation first builds a complete unpublished generation. Only at
+    // its commit point do we release framebuffers and aliases that reference
+    // the old image views; creation failure therefore leaves the active GUI
+    // and swapchain generation untouched.
+    const bool recreated =
+        m_backend.Presentation().Recreate(m_backend.Device(), m_backend.Queues(), width, height, [this]() {
+            DestroyGuiRenderGraphs();
+            m_depthImage.reset();
+        });
+    if (!recreated) {
+        return;
+    }
+
+    m_renderGraph.Initialize(&m_backend.Device(), &m_pipelineManager, nullptr, &m_backend.Queues());
+    const VkExtent2D extent = m_backend.Presentation().GetExtent();
+    m_presentationView.width = extent.width;
+    m_presentationView.height = extent.height;
+    m_presentationView.colorFormat = rhi::FromVkFormat(m_backend.Presentation().GetImageFormat());
+    ++m_presentationView.revision;
+    m_renderGraph.SetRenderView(m_presentationView);
 
     // Recreate depth resources
     CreateDepthResources();
 }
 
+void InxVkCoreModular::SetPresentMode(int mode)
+{
+    static constexpr VkPresentModeKHR kModes[] = {
+        VK_PRESENT_MODE_IMMEDIATE_KHR,
+        VK_PRESENT_MODE_MAILBOX_KHR,
+        VK_PRESENT_MODE_FIFO_KHR,
+        VK_PRESENT_MODE_FIFO_RELAXED_KHR,
+    };
+    if (mode < 0 || mode > 3)
+        return;
+    m_backend.Presentation().SetPreferredPresentMode(kModes[mode]);
+    RecreateSwapchain();
+}
+
+vk::RenderGraph &InxVkCoreModular::GetGuiRenderGraph(uint32_t imageIndex)
+{
+    if (imageIndex == 0)
+        return m_renderGraph;
+
+    const size_t additionalIndex = static_cast<size_t>(imageIndex - 1);
+    if (m_additionalGuiRenderGraphs.size() <= additionalIndex)
+        m_additionalGuiRenderGraphs.resize(additionalIndex + 1);
+
+    auto &graph = m_additionalGuiRenderGraphs[additionalIndex];
+    if (!graph) {
+        graph = std::make_unique<vk::RenderGraph>();
+        graph->Initialize(&m_backend.Device(), &m_pipelineManager, nullptr, &m_backend.Queues());
+        graph->SetRenderView(m_presentationView);
+    }
+    return *graph;
+}
+
+bool InxVkCoreModular::EnsureGuiRenderGraph(uint32_t imageIndex)
+{
+    vk::RenderGraph &guiGraph = GetGuiRenderGraph(imageIndex);
+    if (m_guiRenderGraphReady.size() <= imageIndex)
+        m_guiRenderGraphReady.resize(static_cast<size_t>(imageIndex) + 1, false);
+    if (m_guiRenderGraphReady[imageIndex])
+        return true;
+
+    guiGraph.Reset();
+    guiGraph.SetRenderView(m_presentationView);
+
+    const VkImage swapchainImage = m_backend.Presentation().GetImage(imageIndex);
+    const VkImageView swapchainView = m_backend.Presentation().GetImageView(imageIndex);
+    const VkExtent2D extent = m_backend.Presentation().GetExtent();
+    const VkFormat format = m_backend.Presentation().GetImageFormat();
+
+    vk::ResourceHandle backbuffer =
+        guiGraph.SetBackbuffer(swapchainImage, swapchainView, format, extent.width, extent.height,
+                               VK_SAMPLE_COUNT_1_BIT, rhi::TextureLayout::Undefined);
+
+    guiGraph.AddPass("GUI", [this, &backbuffer, extent](vk::PassBuilder &builder) {
+        backbuffer = builder.WriteColor(backbuffer, 0);
+        builder.SetRenderArea(extent.width, extent.height);
+        builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+        return [this, extent](vk::RenderContext &ctx) {
+            VkViewport viewport{};
+            viewport.width = static_cast<float>(extent.width);
+            viewport.height = static_cast<float>(extent.height);
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            ctx.SetViewport(viewport);
+
+            VkRect2D scissor{};
+            scissor.extent = extent;
+            ctx.SetScissor(scissor);
+
+            if (m_guiRenderCallback)
+                m_guiRenderCallback(ctx);
+        };
+    });
+
+    guiGraph.AddPresentPass("Present", [&backbuffer](vk::PassBuilder &builder) {
+        builder.PresentRead(backbuffer);
+        return [](vk::RenderContext &) {};
+    });
+
+    guiGraph.SetOutput(backbuffer);
+    if (!guiGraph.Compile()) {
+        INXLOG_ERROR("Failed to compile swapchain GUI render graph");
+        return false;
+    }
+    m_guiRenderGraphReady[imageIndex] = true;
+    return true;
+}
+
+void InxVkCoreModular::DestroyGuiRenderGraphs()
+{
+    for (auto &graph : m_additionalGuiRenderGraphs) {
+        if (graph)
+            graph->Destroy();
+    }
+    m_additionalGuiRenderGraphs.clear();
+    m_guiRenderGraphReady.clear();
+    m_renderGraph.Destroy();
+}
+
 void InxVkCoreModular::CreateDepthResources()
 {
-    VkExtent2D extent = m_swapchain.GetExtent();
-    VkFormat depthFormat = m_deviceContext.FindDepthFormat();
+    VkExtent2D extent = m_backend.Presentation().GetExtent();
+    VkFormat depthFormat = m_backend.Device().FindDepthFormat();
 
     m_depthImage = m_resourceManager.CreateDepthBuffer(extent.width, extent.height, depthFormat);
 }
 
 void InxVkCoreModular::CreateUniformBuffers()
 {
-    // Scene UBO (binding 0). Single buffer: all material descriptor sets
-    // reference it, and updates are recorded inline in the command buffer
-    // (CmdUpdateUniformBuffer) so the GPU never races a CPU write.
-    m_sceneUbo = m_resourceManager.CreateUniformBuffer(sizeof(UniformBufferObject));
-
-    // Lighting UBO (binding 1) — single buffer, persistently mapped.
-    VkDeviceSize lightingUboSize = sizeof(ShaderLightingUBO);
-    m_lightingUbo = m_resourceManager.CreateUniformBuffer(lightingUboSize);
-    m_lightingUboMapped = nullptr;
-    if (m_lightingUbo) {
-        m_lightingUboMapped = m_lightingUbo->Map(0, lightingUboSize);
-        if (m_lightingUboMapped) {
-            // Initialize with default ambient lighting (neutral white)
-            ShaderLightingUBO defaultLighting{};
-            defaultLighting.lightCounts = glm::ivec4(0, 0, 0, 0);
-            defaultLighting.ambientColor = glm::vec4(1.0f, 1.0f, 1.0f, 0.3f); // White ambient, low intensity
-            defaultLighting.cameraPos = glm::vec4(0.0f, 0.0f, 5.0f, 1.0f);
-            std::memcpy(m_lightingUboMapped, &defaultLighting, lightingUboSize);
-        }
-    }
-    INXLOG_INFO("Created lighting UBO: ", lightingUboSize, " bytes (single buffer)");
+    if (!m_canonicalLightGpuBuffer.Initialize(m_backend.Device().GetRhiDevice(), m_maxFramesInFlight))
+        throw std::runtime_error("Failed to initialize canonical light GPU buffers");
 
     // Default material UBO (binding 2) — single buffer, persistently mapped.
     // 256 bytes is a safe default for the fallback material UBO; per-material
@@ -601,7 +791,7 @@ void InxVkCoreModular::CreateUniformBuffers()
     CreateGlobalsDescriptorResources();
 }
 
-void InxVkCoreModular::RecordCommandBuffer(uint32_t imageIndex)
+bool InxVkCoreModular::RecordFrameCommands(VkCommandBuffer cmdBuf, uint32_t imageIndex)
 {
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
@@ -609,25 +799,11 @@ void InxVkCoreModular::RecordCommandBuffer(uint32_t imageIndex)
     auto _tNow = _tPrev;
 #endif
 
-    VkCommandBuffer cmdBuf = m_commandBuffers[m_currentFrame];
+#if INFERNUX_FRAME_PROFILE
+    m_gpuTimestampQueries.BeginFrame(cmdBuf, m_currentFrame);
+    const auto gpuFrameRegion = m_gpuTimestampQueries.BeginRegion(cmdBuf, "Frame", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+#endif
 
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-    if (vkBeginCommandBuffer(cmdBuf, &beginInfo) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to begin recording command buffer");
-        return;
-    }
-
-    // ========================================================================
-    // Inline UBO Updates (Fix 1: replaces CPU-side memcpy)
-    // ========================================================================
-    if (m_uboDirty) {
-        CmdUpdateUniformBuffer(cmdBuf, m_stagedUBO.view, m_stagedUBO.proj);
-        m_uboDirty = false;
-    }
-    CmdUpdateLightingUBO(cmdBuf);
-    CmdUpdateShadowUBO(cmdBuf);
     CmdUpdateGlobals(cmdBuf);
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
@@ -638,9 +814,16 @@ void InxVkCoreModular::RecordCommandBuffer(uint32_t imageIndex)
     // ========================================================================
     // Execute scene render graph (offscreen scene rendering)
     // ========================================================================
+#if INFERNUX_FRAME_PROFILE
+    const auto gpuSceneRegion =
+        m_gpuTimestampQueries.BeginRegion(cmdBuf, "SceneRenderGraph", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+#endif
     if (m_renderGraphExecutor) {
         m_renderGraphExecutor(cmdBuf);
     }
+#if INFERNUX_FRAME_PROFILE
+    m_gpuTimestampQueries.EndRegion(cmdBuf, gpuSceneRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+#endif
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
     m_drawSubMs[5] += std::chrono::duration<double, std::milli>(_tNow - _tPrev).count();
@@ -648,116 +831,38 @@ void InxVkCoreModular::RecordCommandBuffer(uint32_t imageIndex)
 #endif
 
     // ========================================================================
-    // Post-Scene-Render Callback (OutlineRenderer injection point)
+    // Swapchain GUI Pass via RenderGraph. Each swapchain image owns one
+    // persistent compiled graph because its VkImageView/framebuffer is stable
+    // until swapchain recreation. Rebuilding this one-pass graph every frame
+    // used to repeat RHI registration, graph compilation and framebuffer
+    // lookup on the hottest render path.
     // ========================================================================
-    if (m_postSceneRenderCallback) {
-        m_postSceneRenderCallback(cmdBuf, drawCalls());
+    vk::RenderGraph &guiGraph = GetGuiRenderGraph(imageIndex);
+    if (!EnsureGuiRenderGraph(imageIndex)) {
+#if INFERNUX_FRAME_PROFILE
+        m_gpuTimestampQueries.EndRegion(cmdBuf, gpuFrameRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        m_gpuTimestampQueries.FinishFrame(m_currentFrame);
+#endif
+        return false;
     }
+
+#if INFERNUX_FRAME_PROFILE
+    const auto gpuGuiRegion = m_gpuTimestampQueries.BeginRegion(cmdBuf, "GUI", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+#endif
+    guiGraph.Execute(cmdBuf);
+#if INFERNUX_FRAME_PROFILE
+    m_gpuTimestampQueries.EndRegion(cmdBuf, gpuGuiRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+#endif
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
     m_drawSubMs[6] += std::chrono::duration<double, std::milli>(_tNow - _tPrev).count();
-    _tPrev = _tNow;
 #endif
 
-    // ========================================================================
-    // Swapchain GUI Pass via RenderGraph
-    // ========================================================================
-    m_renderGraph.Reset();
-
-    VkImage swapchainImage = m_swapchain.GetImage(imageIndex);
-    VkImageView swapchainView = m_swapchain.GetImageView(imageIndex);
-    VkExtent2D extent = m_swapchain.GetExtent();
-    VkFormat format = m_swapchain.GetImageFormat();
-
-    vk::ResourceHandle backbuffer =
-        m_renderGraph.SetBackbuffer(swapchainImage, swapchainView, format, extent.width, extent.height,
-                                    VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_LAYOUT_UNDEFINED);
-
-    m_renderGraph.SetBackbufferFinalLayout(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-
-    auto guiCallback = m_guiRenderCallback;
-
-    m_renderGraph.AddPass("GUI", [backbuffer, extent, guiCallback](vk::PassBuilder &builder) {
-        builder.WriteColor(backbuffer, 0);
-        builder.SetRenderArea(extent.width, extent.height);
-        builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-
-        return [guiCallback, extent](vk::RenderContext &ctx) {
-            VkViewport viewport{};
-            viewport.x = 0.0f;
-            viewport.y = 0.0f;
-            viewport.width = static_cast<float>(extent.width);
-            viewport.height = static_cast<float>(extent.height);
-            viewport.minDepth = 0.0f;
-            viewport.maxDepth = 1.0f;
-            ctx.SetViewport(viewport);
-
-            VkRect2D scissor{};
-            scissor.offset = {0, 0};
-            scissor.extent = extent;
-            ctx.SetScissor(scissor);
-
-            if (guiCallback) {
-                guiCallback(ctx);
-            }
-        };
-    });
-
-    m_renderGraph.SetOutput(backbuffer);
-
-    if (!m_renderGraph.Compile()) {
-        INXLOG_ERROR("Failed to compile swapchain render graph");
-        vkEndCommandBuffer(cmdBuf);
-        return;
-    }
-
-    m_renderGraph.Execute(cmdBuf);
 #if INFERNUX_FRAME_PROFILE
-    _tNow = Clock::now();
-    m_drawSubMs[7] += std::chrono::duration<double, std::milli>(_tNow - _tPrev).count();
+    m_gpuTimestampQueries.EndRegion(cmdBuf, gpuFrameRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    m_gpuTimestampQueries.FinishFrame(m_currentFrame);
 #endif
-
-    if (vkEndCommandBuffer(cmdBuf) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to record command buffer");
-    }
-}
-
-void InxVkCoreModular::UpdateUniformBuffer(uint32_t currentImage, const float *viewPos, const float *viewLookAt,
-                                           const float *viewUp)
-{
-    UniformBufferObject ubo{};
-    ubo.model = glm::mat4(1.0f); // Identity - actual model matrices are per-object
-
-    // Use camera's actual matrices from SceneRenderBridge for consistency with picking
-    SceneRenderBridge &bridge = SceneRenderBridge::Instance();
-    Camera *activeCamera = bridge.GetEditorCamera();
-
-    if (activeCamera) {
-        // Use camera's actual view and projection matrices
-        ubo.view = activeCamera->GetViewMatrix();
-        ubo.proj = activeCamera->GetProjectionMatrix(); // Already has Y-flip for Vulkan
-    } else {
-        // Fallback to legacy calculation
-        glm::vec3 eye(viewPos[0], viewPos[1], viewPos[2]);
-        glm::vec3 center(viewLookAt[0], viewLookAt[1], viewLookAt[2]);
-        glm::vec3 up(viewUp[0], viewUp[1], viewUp[2]);
-        ubo.view = glm::lookAt(eye, center, up);
-
-        VkExtent2D extent = m_swapchain.GetExtent();
-        float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
-        if (m_sceneRenderTargetWidth > 0 && m_sceneRenderTargetHeight > 0) {
-            aspect = static_cast<float>(m_sceneRenderTargetWidth) / static_cast<float>(m_sceneRenderTargetHeight);
-        }
-        ubo.proj = glm::perspective(glm::radians(60.0f), aspect, 0.01f, 1000.0f);
-        ubo.proj[1][1] *= -1; // Flip Y for Vulkan
-    }
-
-    // Stage the UBO data — the actual GPU write happens inline in the
-    // command buffer via CmdUpdateUniformBuffer() during RecordCommandBuffer().
-    // This eliminates the CPU→GPU race on the scene UBO that previously
-    // required vkDeviceWaitIdle() for correctness.
-    m_stagedUBO = ubo;
-    m_uboDirty = true;
+    return true;
 }
 
 // ============================================================================
@@ -766,29 +871,40 @@ void InxVkCoreModular::UpdateUniformBuffer(uint32_t currentImage, const float *v
 
 void InxVkCoreModular::WaitForCurrentFrame()
 {
-    m_swapchain.WaitForFrame();
+    const uint32_t frameSlot = GetCurrentFrameSlot();
+    if (m_backend.Queues().WaitForGraphicsFrameSlot(frameSlot)) {
+        m_submissionExecutor.CompleteFrame(frameSlot);
+        (void)m_backend.Queues().CompleteFrameSlot(frameSlot);
+    }
 }
 
-void InxVkCoreModular::TickDeletionQueue()
+void InxVkCoreModular::CollectRetiredGpuResources()
 {
+#if INFERNUX_FRAME_PROFILE
+    (void)m_gpuTimestampQueries.CollectCompletedFrame(m_currentFrame);
+#endif
     m_resourceManager.PollGpuUploads();
     m_resourceManager.PollAsyncGraphicsSubmissions();
     m_resourceManager.PollImageReadbacks();
-    m_deletionQueue.Tick();
+    const auto completedEpoch = m_backend.Queues().GetCompletedCompletionEpoch();
+    (void)m_backend.Device().GetRhiDevice().CollectDescriptorRetirements(completedEpoch);
+    (void)m_deletionQueue.Collect(completedEpoch);
+    if ((m_ensureFrameCounter & 63u) == 0u)
+        CollectUnusedShadowMaterialBindings();
     if (m_materialPipelineManagerInitialized)
         (void)m_materialPipelineManager.CollectUnusedRenderData();
     (void)m_textureCache.TrimToBudget();
     (void)TrimMeshGpuBudget();
 }
 
-void InxVkCoreModular::FlushDeletionQueue()
+void InxVkCoreModular::FlushRetiredGpuResources()
 {
     m_deletionQueue.FlushAll();
 }
 
-void InxVkCoreModular::DeferDeletion(std::function<void()> deleter)
+void InxVkCoreModular::RetireGpuResource(std::function<void()> deleter)
 {
-    m_deletionQueue.Push(std::move(deleter));
+    m_deletionQueue.Retire(std::move(deleter));
 }
 
 } // namespace infernux

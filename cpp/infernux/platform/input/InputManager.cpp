@@ -234,6 +234,10 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
         m_mouseY = event.motion.y;
         m_mouseDX += event.motion.xrel;
         m_mouseDY += event.motion.yrel;
+        if (m_editorMouseCaptured) {
+            m_editorMouseDX += event.motion.xrel;
+            m_editorMouseDY += event.motion.yrel;
+        }
         break;
 
     // ---- Mouse wheel ----
@@ -391,6 +395,7 @@ void InputManager::ResetAll()
     m_prevMouseButtons.fill(0);
     m_mouseX = m_mouseY = 0.f;
     m_mouseDX = m_mouseDY = 0.f;
+    m_editorMouseDX = m_editorMouseDY = 0.f;
     m_scrollX = m_scrollY = 0.f;
     m_syntheticMouseX = m_syntheticMouseY = 0.f;
     m_hasSyntheticMousePositionThisFrame = false;
@@ -457,8 +462,18 @@ void InputManager::SetEditorMouseCapture(bool captured)
     if (captured == m_editorMouseCaptured)
         return;
 
+    m_editorMouseDX = 0.f;
+    m_editorMouseDY = 0.f;
     m_editorMouseCaptured = captured;
     ApplyRelativeMouseMode();
+}
+
+std::pair<float, float> InputManager::ConsumeEditorMouseDelta()
+{
+    const std::pair<float, float> delta{m_editorMouseDX, m_editorMouseDY};
+    m_editorMouseDX = 0.f;
+    m_editorMouseDY = 0.f;
+    return delta;
 }
 
 void InputManager::ApplyRelativeMouseMode()

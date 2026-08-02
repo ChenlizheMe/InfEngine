@@ -13,6 +13,7 @@ Usage::
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -50,14 +51,32 @@ class AnimationClip:
 
     @classmethod
     def from_dict(cls, d: dict) -> AnimationClip:
+        expected = {
+            "name", "authoring_texture_guid", "authoring_texture_path",
+            "frame_indices", "fps", "loop", "events",
+        }
+        if type(d) is not dict or set(d) != expected:
+            raise ValueError("animation clip must use the complete current field set")
+        string_fields = ("name", "authoring_texture_guid", "authoring_texture_path")
+        if any(type(d[field]) is not str for field in string_fields):
+            raise TypeError("animation clip identity fields must be strings")
+        if type(d["frame_indices"]) is not list or any(
+            type(index) is not int or index < 0 for index in d["frame_indices"]
+        ):
+            raise TypeError("animation clip frame_indices must be non-negative integers")
+        fps = d["fps"]
+        if isinstance(fps, bool) or not isinstance(fps, (int, float)) or not math.isfinite(fps) or fps <= 0.0:
+            raise ValueError("animation clip fps must be a positive finite number")
+        if type(d["loop"]) is not bool:
+            raise TypeError("animation clip loop must be a bool")
         return cls(
-            name=str(d.get("name", "New Animation Clip")),
-            authoring_texture_guid=str(d.get("authoring_texture_guid", "")),
-            authoring_texture_path=str(d.get("authoring_texture_path", "")),
-            frame_indices=list(d.get("frame_indices", [])),
-            fps=float(d.get("fps", 12.0)),
-            loop=bool(d.get("loop", True)),
-            events=events_from_list(d.get("events", [])),
+            name=d["name"],
+            authoring_texture_guid=d["authoring_texture_guid"],
+            authoring_texture_path=d["authoring_texture_path"],
+            frame_indices=list(d["frame_indices"]),
+            fps=float(fps),
+            loop=d["loop"],
+            events=events_from_list(d["events"]),
         )
 
     def copy(self) -> AnimationClip:
@@ -93,7 +112,7 @@ class AnimationClip:
             # Name always derives from filename
             clip.name = os.path.splitext(os.path.basename(path))[0]
             return clip
-        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
 
     # ── Helpers ───────────────────────────────────────────────────────

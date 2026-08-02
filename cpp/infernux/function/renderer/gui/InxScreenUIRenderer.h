@@ -18,8 +18,9 @@
 
 #pragma once
 
-#include "../FrameDeletionQueue.h"
+#include "../rhi/GpuRetirementQueue.h"
 
+#include <functional>
 #include <imgui.h>
 #include <string>
 #include <vector>
@@ -64,9 +65,14 @@ class InxScreenUIRenderer
      */
     bool Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat, VkSampleCountFlagBits msaaSamples);
 
-    void SetDeletionQueue(FrameDeletionQueue *queue)
+    void SetRetirementQueue(GpuRetirementQueue *queue)
     {
         m_deletionQueue = queue;
+    }
+
+    void SetTextureUsageValidator(std::function<bool(uint64_t)> validator)
+    {
+        m_textureUsageValidator = std::move(validator);
     }
 
     /**
@@ -255,7 +261,8 @@ class InxScreenUIRenderer
     uint32_t m_cachedHeight = 0;
     uint64_t m_cachedContentRevision = 0;
     ImTextureID m_cachedFontTextureId = 0;
-    FrameDeletionQueue *m_deletionQueue = nullptr;
+    GpuRetirementQueue *m_deletionQueue = nullptr;
+    std::function<bool(uint64_t)> m_textureUsageValidator;
 };
 
 } // namespace infernux

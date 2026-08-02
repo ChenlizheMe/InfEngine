@@ -25,7 +25,6 @@ class _FakeLight:
         self.color = None
         self.intensity = None
         self.shadows = None
-        self.shadow_bias = 0.0
 
 
 class _FakeGameObject:
@@ -77,6 +76,8 @@ def _load_scene_manager_module(monkeypatch):
 
     fake_path_utils = types.ModuleType("Infernux.engine.path_utils")
     fake_path_utils.safe_path = lambda path: path
+    fake_path_utils.path_key = lambda path: str(path).lower()
+    fake_path_utils.resolved_path = lambda path: str(path)
 
     monkeypatch.setitem(sys.modules, "Infernux", fake_infernux)
     monkeypatch.setitem(sys.modules, "Infernux.engine", fake_engine)
@@ -106,7 +107,7 @@ def _load_scene_manager_module(monkeypatch):
     return module
 
 
-def test_populate_default_objects_sets_light_shadow_bias(monkeypatch):
+def test_populate_default_objects_sets_light_defaults(monkeypatch):
     scene_manager = _load_scene_manager_module(monkeypatch)
     fake_lib = types.ModuleType("Infernux.lib")
     fake_math = types.ModuleType("Infernux.math")
@@ -132,4 +133,3 @@ def test_populate_default_objects_sets_light_shadow_bias(monkeypatch):
     light = scene.created[1].components["Light"]
     assert light.light_type == _LightType.Directional
     assert light.shadows == _LightShadows.Soft
-    assert light.shadow_bias == pytest.approx(0.0)

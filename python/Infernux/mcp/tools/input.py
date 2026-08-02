@@ -63,6 +63,22 @@ def register_input_tools(mcp) -> None:
             timeout_seconds=timeout_seconds,
         )
 
+    @mcp.tool(name="input_pointer_click")
+    def input_pointer_click(
+        x: float,
+        y: float,
+        button: int = 0,
+        timeout_seconds: float = 3.0,
+    ) -> dict:
+        """Click a window coordinate with move, press, and release rendered on separate frames."""
+        return perform_pointer_click(
+            x,
+            y,
+            button=button,
+            timeout_seconds=timeout_seconds,
+            trace_name="input_pointer_click",
+        )
+
     @mcp.tool(name="input_mouse_button")
     def input_mouse_button(
         button: int,
@@ -583,6 +599,36 @@ def perform_key_transition(
     )
 
 
+def perform_mouse_button_transition(
+    button: int,
+    pressed: bool,
+    *,
+    x: float = -10_000.0,
+    y: float = -10_000.0,
+    timeout_seconds: float = 3.0,
+    trace_name: str = "input_mouse_button_transition",
+) -> dict:
+    """Queue one gameplay mouse-button transition for composed input."""
+    session.require_mode("global_validation")
+    button = _validate_mouse_button(button)
+    _require_finite("x", x)
+    _require_finite("y", y)
+    return _queue_input(
+        trace_name,
+        lambda native: native.queue_synthetic_mouse_button_input(
+            button, bool(pressed), float(x), float(y)
+        ),
+        arguments={
+            "button": button,
+            "pressed": bool(pressed),
+            "x": float(x),
+            "y": float(y),
+        },
+        wait_for_delivery=True,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def perform_pointer_move(
     x: float,
     y: float,
@@ -894,6 +940,7 @@ def _press_target_accepted(status: dict[str, Any]) -> bool:
     reachable_without_active = {
         "menu",
         "menu_item",
+        "combo",
         "node_graph_node",
         "node_graph_node_drag_handle",
         "node_graph_port",
@@ -996,6 +1043,7 @@ def _register_metadata() -> None:
         ("input_key", "Send one keyboard press or release through the editor event queue."),
         ("input_key_chord", "Press a human-equivalent keyboard chord through the editor event queue."),
         ("input_pointer_move", "Move the editor pointer using window coordinates."),
+        ("input_pointer_click", "Click a window coordinate across human-equivalent rendered frames."),
         ("input_mouse_button", "Send one mouse press or release through the editor event queue."),
         ("input_mouse_wheel", "Send one mouse-wheel event through the editor event queue."),
         ("input_text", "Send UTF-8 text to the focused editor control."),

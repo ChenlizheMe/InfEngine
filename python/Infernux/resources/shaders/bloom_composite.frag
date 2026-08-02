@@ -1,6 +1,26 @@
 #version 450
-@shader_id: bloom_composite
-@hidden
+
+ShaderInfo {
+    Name "Bloom Composite"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _BloomTex
+        Texture2D _SceneColor
+    }
+    PushConstants pc {
+        Float intensity
+        Float tintR
+        Float tintG
+        Float tintB
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Bloom composite pass — additive blend bloom texture onto scene color.
 // Aligned with Unity URP's Bloom compositing.
@@ -11,22 +31,10 @@
 //   [2] tintG       — bloom tint color G
 //   [3] tintB       — bloom tint color B
 
-layout(set = 0, binding = 0) uniform sampler2D _BloomTex;   // final bloom result
-layout(set = 0, binding = 1) uniform sampler2D _SceneColor;  // original scene color
-
-layout(push_constant) uniform PushConstants {
-    float intensity;
-    float tintR;
-    float tintG;
-    float tintB;
-} pc;
-
-layout(location = 0) in  vec2 inUV;
-layout(location = 0) out vec4 outColor;
-
 void main() {
     vec3 bloom = texture(_BloomTex, inUV).rgb;
-    vec3 scene = texture(_SceneColor, inUV).rgb;
+    vec4 sceneSample = texture(_SceneColor, inUV);
+    vec3 scene = sceneSample.rgb;
 
     // Apply tint and intensity
     vec3 tint = vec3(pc.tintR, pc.tintG, pc.tintB);
@@ -35,5 +43,5 @@ void main() {
     // Additive blend
     vec3 result = scene + bloom;
 
-    outColor = vec4(result, 1.0);
+    outColor = vec4(result, sceneSample.a);
 }

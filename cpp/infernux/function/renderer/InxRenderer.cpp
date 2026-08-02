@@ -7,8 +7,9 @@
 #include "EditorTools.h"
 #include "GizmosDrawCallBuffer.h"
 #include "InxVkCoreModular.h"
+#include "MsaaPolicy.h"
 #include "OutlineRenderer.h"
-#include "ParticleDrawCallBuffer.h"
+#include "ScenePickingService.h"
 #include "SceneRenderGraph.h"
 #include "SceneRenderTarget.h"
 #include "ScriptableRenderContext.h"
@@ -17,7 +18,18 @@
 #include "gui/InxGUIContext.h"
 #include "gui/InxGUISemantics.h"
 #include "gui/InxScreenUIRenderer.h"
+#include "particle/ParticleGpuBounds.h"
+#include "particle/ParticleGpuCollisionScene.h"
+#include "particle/ParticleGpuCuller.h"
+#include "particle/ParticleGpuDrawRegistry.h"
+#include "particle/ParticleGpuMigrator.h"
+#include "particle/ParticleGpuRibbonRenderer.h"
+#include "particle/ParticleGpuRibbonTopology.h"
+#include "particle/ParticleGpuSorter.h"
+#include "particle/ParticleGpuSystemManager.h"
 #include "vk/RenderGraph.h"
+#include "vk/RhiVulkanTypes.h"
+#include "vk/VkHandle.h"
 #include "vk/VmaContext.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -25,20 +37,34 @@
 #include <cmath>
 #include <core/config/MathConstants.h>
 #include <core/threading/JobSystem.h>
+#include <cstring>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
+#include <function/scene/BoxCollider.h>
 #include <function/scene/Camera.h>
+#include <function/scene/CapsuleCollider.h>
+#include <function/scene/Collider.h>
+#include <function/scene/GameObject.h>
 #include <function/scene/Light.h>
 #include <function/scene/LightingData.h>
+#include <function/scene/MeshCollider.h>
 #include <function/scene/MeshRenderer.h>
 #include <function/scene/PrimitiveMeshes.h>
+#include <function/scene/Rigidbody.h>
 #include <function/scene/SceneManager.h>
-#include <function/scene/SceneRenderer.h>
+#include <function/scene/SceneRenderBridge.h>
+#include <function/scene/SkinnedMeshRenderer.h>
+#include <function/scene/SphereCollider.h>
 #include <function/scene/TransformECSStore.h>
+#include <function/scene/physics/PhysicsECSStore.h>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <iomanip>
 #include <iostream>
 #include <numeric>
+#include <platform/filesystem/InxPath.h>
 #include <platform/window/InxView.h>
 #include <sstream>
 #include <stdexcept>
@@ -46,11 +72,315 @@
 
 namespace infernux
 {
+namespace
+{
+
+uint64_t ParticleCollisionStableHash(std::string_view value) noexcept
+{
+    uint64_t hash = 1469598103934665603ull;
+    for (const unsigned char byte : value) {
+        hash ^= byte;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+void ParticleCollisionHashAppend(uint64_t &hash, uint64_t value) noexcept
+{
+    for (uint32_t byte = 0; byte < 8; ++byte) {
+        hash ^= static_cast<uint8_t>(value >> (byte * 8u));
+        hash *= 1099511628211ull;
+    }
+}
+
+bool ParticleCollisionFinite(const glm::mat4 &matrix) noexcept
+{
+    const float *values = glm::value_ptr(matrix);
+    return std::all_of(values, values + 16, [](float value) { return std::isfinite(value); });
+}
+
+void StoreParticleCollisionAffine(particle::GpuParticleAffineTransform &destination, const glm::mat4 &matrix)
+{
+    destination.row0 = {matrix[0][0], matrix[1][0], matrix[2][0], matrix[3][0]};
+    destination.row1 = {matrix[0][1], matrix[1][1], matrix[2][1], matrix[3][1]};
+    destination.row2 = {matrix[0][2], matrix[1][2], matrix[2][2], matrix[3][2]};
+}
+
+void CopyParticleCollisionAffine(particle::GpuParticleAffineTransform &destination, const std::array<float, 12> &source)
+{
+    std::copy_n(source.begin(), 4, destination.row0.begin());
+    std::copy_n(source.begin() + 4, 4, destination.row1.begin());
+    std::copy_n(source.begin() + 8, 4, destination.row2.begin());
+}
+
+void CopyParticleCollisionAffine(std::array<float, 12> &destination, const particle::GpuParticleAffineTransform &source)
+{
+    std::copy(source.row0.begin(), source.row0.end(), destination.begin());
+    std::copy(source.row1.begin(), source.row1.end(), destination.begin() + 4);
+    std::copy(source.row2.begin(), source.row2.end(), destination.begin() + 8);
+}
+
+void StoreParticleCollisionAabb(particle::GpuParticleColliderRecord &record, const glm::mat4 &localToWorld,
+                                const glm::vec3 &localMin, const glm::vec3 &localMax)
+{
+    const glm::vec3 localCenter = (localMin + localMax) * 0.5f;
+    const glm::vec3 localExtent = (localMax - localMin) * 0.5f;
+    const glm::vec3 worldCenter = glm::vec3(localToWorld * glm::vec4(localCenter, 1.0f));
+    const glm::mat3 linear(localToWorld);
+    const glm::vec3 worldExtent =
+        glm::abs(linear[0]) * localExtent.x + glm::abs(linear[1]) * localExtent.y + glm::abs(linear[2]) * localExtent.z;
+    const glm::vec3 worldMin = worldCenter - worldExtent;
+    const glm::vec3 worldMax = worldCenter + worldExtent;
+    record.worldAabbMin = {worldMin.x, worldMin.y, worldMin.z, 0.0f};
+    record.worldAabbMax = {worldMax.x, worldMax.y, worldMax.z, 0.0f};
+}
+
+struct CompiledParticleSortProgram
+{
+    std::array<std::vector<uint32_t>, 5> shaders;
+
+    [[nodiscard]] particle::GpuParticleSortProgram View() const noexcept
+    {
+        return {
+            {shaders[0].data(), shaders[0].size()}, {shaders[1].data(), shaders[1].size()},
+            {shaders[2].data(), shaders[2].size()}, {shaders[3].data(), shaders[3].size()},
+            {shaders[4].data(), shaders[4].size()},
+        };
+    }
+};
+
+struct CompiledParticleCullProgram
+{
+    std::array<std::vector<uint32_t>, 3> shaders;
+
+    [[nodiscard]] particle::GpuParticleCullProgram View() const noexcept
+    {
+        return {
+            {shaders[0].data(), shaders[0].size()},
+            {shaders[1].data(), shaders[1].size()},
+            {shaders[2].data(), shaders[2].size()},
+        };
+    }
+};
+
+struct CompiledParticleBoundsProgram
+{
+    std::array<std::vector<uint32_t>, 3> shaders;
+
+    [[nodiscard]] particle::GpuParticleBoundsProgram View() const noexcept
+    {
+        return {
+            {shaders[0].data(), shaders[0].size()},
+            {shaders[1].data(), shaders[1].size()},
+            {shaders[2].data(), shaders[2].size()},
+        };
+    }
+};
+
+struct CompiledParticleMigrationProgram
+{
+    std::array<std::vector<uint32_t>, 2> shaders;
+
+    [[nodiscard]] particle::GpuParticleMigrationProgram View() const noexcept
+    {
+        return {
+            {shaders[0].data(), shaders[0].size()},
+            {shaders[1].data(), shaders[1].size()},
+        };
+    }
+};
+
+struct CompiledParticleSpawnProgram
+{
+    std::array<std::vector<uint32_t>, 2> shaders;
+
+    [[nodiscard]] particle::GpuParticleSpawnProgram View() const noexcept
+    {
+        return {
+            {shaders[0].data(), shaders[0].size()},
+            {shaders[1].data(), shaders[1].size()},
+        };
+    }
+};
+
+struct CompiledParticleRibbonTopologyProgram
+{
+    std::array<std::vector<uint32_t>, 5> shaders;
+
+    [[nodiscard]] particle::GpuParticleRibbonProgram View() const noexcept
+    {
+        return {
+            {shaders[0].data(), shaders[0].size()}, {shaders[1].data(), shaders[1].size()},
+            {shaders[2].data(), shaders[2].size()}, {shaders[3].data(), shaders[3].size()},
+            {shaders[4].data(), shaders[4].size()},
+        };
+    }
+};
+
+struct CompiledParticleRibbonRenderProgram
+{
+    std::array<std::vector<uint32_t>, 4> shaders;
+
+    [[nodiscard]] particle::GpuParticleRibbonRenderProgram View() const noexcept
+    {
+        return {
+            {shaders[0].data(), shaders[0].size()},
+            {shaders[1].data(), shaders[1].size()},
+            {shaders[2].data(), shaders[2].size()},
+            {shaders[3].data(), shaders[3].size()},
+        };
+    }
+};
+
+CompiledParticleSortProgram CompileParticleSortProgram()
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const std::array<std::pair<std::string_view, const char *>, 5> sources = {{
+        {particle::GpuParticleSortShaderSources::Small(), "Infernux/ParticleSortSmall.comp"},
+        {particle::GpuParticleSortShaderSources::Generate(), "Infernux/ParticleSortGenerate.comp"},
+        {particle::GpuParticleSortShaderSources::Histogram(), "Infernux/ParticleSortHistogram.comp"},
+        {particle::GpuParticleSortShaderSources::Scan(), "Infernux/ParticleSortScan.comp"},
+        {particle::GpuParticleSortShaderSources::Scatter(), "Infernux/ParticleSortScatter.comp"},
+    }};
+    CompiledParticleSortProgram result;
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
+        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+            return {};
+        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
+        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+    }
+    return result;
+}
+
+CompiledParticleCullProgram CompileParticleCullProgram()
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const std::array<std::pair<std::string_view, const char *>, 3> sources = {{
+        {particle::GpuParticleCullShaderSources::Reset(), "Infernux/ParticleCullReset.comp"},
+        {particle::GpuParticleCullShaderSources::Cull(), "Infernux/ParticleCull.comp"},
+        {particle::GpuParticleCullShaderSources::Finalize(), "Infernux/ParticleCullFinalize.comp"},
+    }};
+    CompiledParticleCullProgram result;
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
+        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+            return {};
+        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
+        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+    }
+    return result;
+}
+
+CompiledParticleBoundsProgram CompileParticleBoundsProgram()
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const std::array<std::pair<std::string_view, const char *>, 3> sources = {{
+        {particle::GpuParticleBoundsShaderSources::Prepare(), "Infernux/ParticleVisibilityPrepare.comp"},
+        {particle::GpuParticleBoundsShaderSources::Reset(), "Infernux/ParticleBoundsReset.comp"},
+        {particle::GpuParticleBoundsShaderSources::Reduce(), "Infernux/ParticleBoundsReduce.comp"},
+    }};
+    CompiledParticleBoundsProgram result;
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
+        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+            return {};
+        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
+        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+    }
+    return result;
+}
+
+CompiledParticleMigrationProgram CompileParticleMigrationProgram()
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const std::array<std::pair<std::string_view, const char *>, 2> sources = {{
+        {particle::GpuParticleMigrationShaderSources::Reset(), "Infernux/ParticleMigrationReset.comp"},
+        {particle::GpuParticleMigrationShaderSources::Migrate(), "Infernux/ParticleMigration.comp"},
+    }};
+    CompiledParticleMigrationProgram result;
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
+        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+            return {};
+        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
+        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+    }
+    return result;
+}
+
+CompiledParticleSpawnProgram CompileParticleSpawnProgram()
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const std::array<std::pair<std::string_view, const char *>, 2> sources = {{
+        {particle::GpuParticleSpawnShaderSources::Advance(), "Infernux/ParticleSpawnAdvance.comp"},
+        {particle::GpuParticleSpawnShaderSources::Prepare(), "Infernux/ParticleSpawnPrepare.comp"},
+    }};
+    CompiledParticleSpawnProgram result;
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
+        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+            return {};
+        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
+        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+    }
+    return result;
+}
+
+CompiledParticleRibbonTopologyProgram CompileParticleRibbonTopologyProgram()
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const std::array<std::pair<std::string_view, const char *>, 5> sources = {{
+        {particle::GpuParticleRibbonShaderSources::Reset(), "Infernux/ParticleRibbonReset.comp"},
+        {particle::GpuParticleRibbonShaderSources::Initialize(), "Infernux/ParticleRibbonInitialize.comp"},
+        {particle::GpuParticleRibbonShaderSources::Histogram(), "Infernux/ParticleRibbonHistogram.comp"},
+        {particle::GpuParticleRibbonShaderSources::Scan(), "Infernux/ParticleRibbonScan.comp"},
+        {particle::GpuParticleRibbonShaderSources::Scatter(), "Infernux/ParticleRibbonScatter.comp"},
+    }};
+    CompiledParticleRibbonTopologyProgram result;
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
+        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+            return {};
+        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
+        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+    }
+    return result;
+}
+
+CompiledParticleRibbonRenderProgram CompileParticleRibbonRenderProgram()
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    CompiledParticleRibbonRenderProgram result;
+    const auto vertex = compiler.CompileVertexGlsl(
+        std::string(particle::GpuParticleRibbonRenderShaderSources::Vertex()), "Infernux/ParticleRibbon.vert");
+    const auto picking =
+        compiler.CompileFragmentGlsl(std::string(particle::GpuParticleRibbonRenderShaderSources::PickingFragment()),
+                                     "Infernux/ParticleRibbonPicking.frag");
+    const auto motionVertex =
+        compiler.CompileVertexGlsl(std::string(particle::GpuParticleRibbonRenderShaderSources::MotionVertex()),
+                                   "Infernux/ParticleRibbonMotion.vert");
+    const auto motionFragment =
+        compiler.CompileFragmentGlsl(std::string(particle::GpuParticleRibbonRenderShaderSources::MotionFragment()),
+                                     "Infernux/ParticleRibbonMotion.frag");
+    const std::array<const std::vector<char> *, 4> bytes = {&vertex, &picking, &motionVertex, &motionFragment};
+    for (size_t index = 0; index < bytes.size(); ++index) {
+        if (bytes[index]->size() < 5 * sizeof(uint32_t) || bytes[index]->size() % sizeof(uint32_t) != 0)
+            return {};
+        result.shaders[index].resize(bytes[index]->size() / sizeof(uint32_t));
+        std::memcpy(result.shaders[index].data(), bytes[index]->data(), bytes[index]->size());
+    }
+    return result;
+}
+
+} // namespace
+
 InxRenderer::InxRenderer()
 {
     m_vkCore = std::make_unique<InxVkCoreModular>();
     m_view = std::make_unique<InxView>();
     m_captureService = std::make_unique<CaptureService>();
+    m_scenePickingService = std::make_unique<ScenePickingService>();
 }
 
 InxRenderer::~InxRenderer()
@@ -72,12 +402,16 @@ InxRenderer::~InxRenderer()
 
     // 2. Destroy all subsystems that hold raw VkCore pointers — order:
     //    render graphs → screen UI → render targets → auxiliary renderers → GUI.
-    m_gameRenderGraph.reset();
+    m_gameRenderGraph = nullptr;
+    m_gameRenderGraphs.clear();
     m_sceneRenderGraph.reset();
+
+    m_particleGpuSystemManager.reset();
 
     m_screenUIRenderer.reset();
 
     m_captureService.reset();
+    m_scenePickingService.reset();
 
     m_gameRenderTarget.reset();
     m_sceneRenderTarget.reset();
@@ -88,7 +422,7 @@ InxRenderer::~InxRenderer()
     m_editorGizmos.reset();
     m_editorTools.reset();
     m_componentGizmos.reset();
-    m_particleDrawCalls.reset();
+    m_particleGpuDrawRegistry.reset();
 
     if (m_vkCore)
         m_vkCore->ReleaseGpuPreviews();
@@ -213,6 +547,7 @@ void InxRenderer::PreparePipeline()
 {
     if (m_vkCore) {
         m_vkCore->PreparePipeline();
+        m_scenePickingService->Initialize(m_vkCore.get());
 
         INXLOG_DEBUG("Init GUI.");
         m_gui = std::make_unique<InxGUI>(m_vkCore.get());
@@ -220,6 +555,7 @@ void InxRenderer::PreparePipeline()
 
         // Initialize scene render target with default size
         m_sceneRenderTarget = std::make_unique<SceneRenderTarget>(m_vkCore.get());
+        m_sceneRenderTarget->SetMsaaSampleCount(m_vkCore->GetMaterialPipelineManager().GetSampleCount());
         m_sceneRenderTarget->Initialize(800, 600);
         ++m_sceneRenderTargetGeneration;
 
@@ -228,41 +564,164 @@ void InxRenderer::PreparePipeline()
 
         // Initialize default scene with gizmos
         InitializeDefaultScene();
+        m_particleGpuSystemManager = std::make_unique<particle::ParticleGpuSystemManager>();
+        auto particleTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
+                                                               const std::string &bindingName) {
+            particle::GpuBillboardTextureLease lease;
+            TextureResolveResult resolved;
+            if (textureGuid.empty() || textureGuid == "white" || textureGuid == "black" || textureGuid == "normal") {
+                const bool normal = textureGuid == "normal" || bindingName.find("normal") != std::string::npos ||
+                                    bindingName.find("Normal") != std::string::npos;
+                auto residentSlot = core->GetTextureCache().Find(normal ? "_default_normal" : "white");
+                auto resident = residentSlot ? residentSlot->Acquire() : nullptr;
+                if (!resident || !resident->IsValid()) {
+                    lease.status = particle::GpuBillboardTextureStatus::Pending;
+                    return lease;
+                }
+                resolved.status = TextureResolveStatus::Ready;
+                resolved.binding.gpuSlot = std::move(residentSlot);
+                resolved.binding.gpuView = std::move(resident);
+            } else {
+                resolved = core->ResolveTextureForMaterial(textureGuid, bindingName);
+            }
+
+            if (resolved.status == TextureResolveStatus::Pending) {
+                lease.status = particle::GpuBillboardTextureStatus::Pending;
+                return lease;
+            }
+            if (resolved.status != TextureResolveStatus::Ready || !resolved.binding.gpuView ||
+                !resolved.binding.gpuView->IsValid()) {
+                lease.status = particle::GpuBillboardTextureStatus::Failed;
+                return lease;
+            }
+            lease.texture = resolved.binding.gpuView->GetView();
+            lease.sampler = resolved.binding.gpuView->GetSampler();
+            lease.gpuSlot = std::move(resolved.binding.gpuSlot);
+            lease.gpuView = std::move(resolved.binding.gpuView);
+            lease.status = particle::GpuBillboardTextureStatus::Ready;
+            return lease;
+        };
+        auto particleVectorFieldTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
+                                                                          bool linearFiltering, bool repeat) {
+            particle::GpuBillboardTextureLease lease;
+            auto resolved = core->ResolveTextureForVectorField(textureGuid, linearFiltering, repeat);
+            if (resolved.status == TextureResolveStatus::Pending) {
+                lease.status = particle::GpuBillboardTextureStatus::Pending;
+                return lease;
+            }
+            if (resolved.status != TextureResolveStatus::Ready || !resolved.binding.gpuView ||
+                !resolved.binding.gpuView->IsValid()) {
+                lease.status = particle::GpuBillboardTextureStatus::Failed;
+                return lease;
+            }
+            lease.texture = resolved.binding.gpuView->GetView();
+            lease.sampler = resolved.binding.gpuView->GetSampler();
+            lease.gpuSlot = std::move(resolved.binding.gpuSlot);
+            lease.gpuView = std::move(resolved.binding.gpuView);
+            lease.status = particle::GpuBillboardTextureStatus::Ready;
+            return lease;
+        };
+        const auto particleSortProgram = CompileParticleSortProgram();
+        if (!particleSortProgram.View().IsValid())
+            INXLOG_ERROR("Failed to compile the GPU particle sorting kernels");
+        const auto particleCullProgram = CompileParticleCullProgram();
+        if (!particleCullProgram.View().IsValid())
+            INXLOG_ERROR("Failed to compile the GPU particle view-culling kernels");
+        const auto particleBoundsProgram = CompileParticleBoundsProgram();
+        if (!particleBoundsProgram.View().IsValid())
+            INXLOG_ERROR("Failed to compile the GPU particle bounds kernels");
+        const auto particleMigrationProgram = CompileParticleMigrationProgram();
+        if (!particleMigrationProgram.View().IsValid())
+            INXLOG_ERROR("Failed to compile the GPU particle migration kernels");
+        const auto particleSpawnProgram = CompileParticleSpawnProgram();
+        if (!particleSpawnProgram.View().IsValid())
+            INXLOG_ERROR("Failed to compile the GPU particle graph spawn kernels");
+        const auto particleRibbonTopologyProgram = CompileParticleRibbonTopologyProgram();
+        if (!particleRibbonTopologyProgram.View().IsValid())
+            INXLOG_ERROR("Failed to compile the GPU particle Ribbon topology kernels");
+        const auto particleRibbonRenderProgram = CompileParticleRibbonRenderProgram();
+        if (!particleRibbonRenderProgram.View().IsValid())
+            INXLOG_ERROR("Failed to compile the GPU particle Ribbon render shaders");
+        const auto particleSkinnedMeshResolver =
+            [](const ObjectHandle &handle) -> std::optional<particle::GpuParticleSkinnedMeshSnapshot> {
+            Scene *scene = SceneManager::Instance().GetActiveScene();
+            auto *renderer = scene ? dynamic_cast<SkinnedMeshRenderer *>(scene->ResolveComponent(handle)) : nullptr;
+            if (!renderer || !renderer->GetGameObject() || !renderer->GetGameObject()->GetTransform())
+                return std::nullopt;
+            const auto pose = renderer->GetRuntimeSkinPoseSnapshot();
+            auto mesh = renderer->GetMeshAssetRef().Get();
+            auto model = renderer->GetRuntimeModelSnapshot();
+            if (!pose || !pose->IsValid() || !mesh || !model)
+                return std::nullopt;
+            particle::GpuParticleSkinnedMeshSnapshot snapshot;
+            snapshot.mesh = std::move(mesh);
+            snapshot.model = std::move(model);
+            snapshot.currentPalette = pose->current;
+            snapshot.previousPalette = pose->previous;
+            snapshot.revision = pose->revision;
+            const glm::mat4 &world = renderer->GetGameObject()->GetTransform()->GetWorldMatrix();
+            for (uint32_t row = 0; row < 4; ++row) {
+                for (uint32_t column = 0; column < 4; ++column)
+                    snapshot.sourceToWorld[row * 4 + column] = world[column][row];
+            }
+            return snapshot;
+        };
+        if (!m_particleGpuSystemManager->Initialize(
+                m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(), m_vkCore->GetResourceManager(),
+                m_vkCore->GetRetirementQueue(), *m_particleGpuDrawRegistry, std::move(particleTextureResolver),
+                std::move(particleVectorFieldTextureResolver), std::move(particleSkinnedMeshResolver),
+                particleSortProgram.View(), particleCullProgram.View(), particleBoundsProgram.View(),
+                particleMigrationProgram.View(), particleSpawnProgram.View(), particleRibbonTopologyProgram.View(),
+                particleRibbonRenderProgram.View(), m_vkCore->GetMaxFramesInFlight())) {
+            m_particleGpuSystemManager.reset();
+            INXLOG_ERROR("Failed to initialize the GPU particle system manager");
+        }
 
         // Initialize RenderGraph pipeline (scene rendering in pre-render pass)
         if (!m_sceneRenderGraph) {
             m_sceneRenderGraph = std::make_unique<SceneRenderGraph>();
         }
         if (m_sceneRenderGraph) {
-            m_sceneRenderGraph->Initialize(m_vkCore.get(), m_sceneRenderTarget.get());
+            if (!m_sceneRenderGraph->Initialize(m_vkCore.get(), m_sceneRenderTarget.get(),
+                                                rhi::RenderViewKind::Scene)) {
+                INXLOG_ERROR("Failed to initialize the Scene View render graph");
+                m_sceneRenderGraph.reset();
+            } else {
+                m_sceneRenderGraph->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
+            }
         }
+
+        m_vkCore->SetFrameComputeExecutor([this](VkCommandBuffer cmdBuf) {
+            if (!m_particleGpuSystemManager)
+                return;
+            UpdateParticleCollisionScene();
+            m_particleGpuSystemManager->Execute(cmdBuf);
+        });
+        m_vkCore->SetFrameAsyncComputeExecutors(
+            [this](VkCommandBuffer cmdBuf) {
+                if (!m_particleGpuSystemManager)
+                    return false;
+                UpdateParticleCollisionScene();
+                return m_particleGpuSystemManager->RecordAsyncSimulation(cmdBuf);
+            },
+            [this](VkCommandBuffer cmdBuf) {
+                return m_particleGpuSystemManager && m_particleGpuSystemManager->RecordAsyncExport(cmdBuf);
+            },
+            [this] { return m_particleGpuSystemManager && m_particleGpuSystemManager->CanExecuteAsync(); },
+            [this] { return m_particleGpuSystemManager ? m_particleGpuSystemManager->AsyncExecutionGeneration() : 0; });
 
         // Hook RenderGraph execution into the pre-render callback
         m_vkCore->SetRenderGraphExecutor([this](VkCommandBuffer cmdBuf) {
-            const bool sceneViewActive = ((m_sceneViewVisible || HasPendingCapture(CaptureSource::Scene)) &&
+            const bool sceneViewActive = ((m_sceneViewVisible || HasPendingCapture(CaptureSource::Scene) ||
+                                           (m_scenePickingService && m_scenePickingService->HasPendingRecord())) &&
                                           m_sceneRenderTarget && m_sceneRenderTarget->IsReady() &&
                                           m_sceneRenderTarget->GetWidth() > 1 && m_sceneRenderTarget->GetHeight() > 1);
-
-            // Pre-allocate instance SSBO for all graphs so the buffer (and its
-            // descriptor binding) never changes mid-recording.
-            {
-                size_t totalDC = 0;
-                if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls())
-                    totalDC += m_sceneRenderGraph->GetCachedDrawCalls().size();
-                if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedShadowDrawCalls())
-                    totalDC += m_sceneRenderGraph->GetCachedShadowDrawCalls().size();
-                if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls())
-                    totalDC += m_gameRenderGraph->GetCachedDrawCalls().size();
-                if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedShadowDrawCalls())
-                    totalDC += m_gameRenderGraph->GetCachedShadowDrawCalls().size();
-                m_vkCore->PreallocateInstances(totalDC);
-            }
 
 #if INFERNUX_FRAME_PROFILE
             using ExClock = std::chrono::high_resolution_clock;
             auto exT0 = ExClock::now();
 #endif
-            // ---- Scene View: editor camera VP is already in UBO from UpdateUniformBuffer ----
+            // ---- Scene View -------------------------------------------------
             if (sceneViewActive && m_sceneRenderGraph) {
                 // Swap in scene-specific draw calls (includes gizmos)
                 if (m_sceneRenderGraph->HasCachedDrawCalls()) {
@@ -275,124 +734,183 @@ void InxRenderer::PreparePipeline()
                 } else {
                     m_vkCore->SetShadowDrawCalls(nullptr);
                 }
-                // Set per-graph shadow descriptor (set 1) for multi-camera isolation
-                m_vkCore->SetActiveShadowDescriptorSet(m_sceneRenderGraph->GetPerViewDescriptorSet());
+                m_sceneRenderGraph->SetDrawViewMatrix(m_sceneRenderGraph->GetCachedView());
                 m_sceneRenderGraph->Execute(cmdBuf);
+                m_sceneRenderGraph->CommitCameraHistory();
             }
 #if INFERNUX_FRAME_PROFILE
             auto exT1 = ExClock::now();
 #endif
-            if (sceneViewActive && m_sceneRenderGraph) {
-                m_sceneRenderGraph->ResolveSceneMsaa(cmdBuf);
+            if (sceneViewActive && m_scenePickingService && m_scenePickingService->HasPendingRecord() &&
+                m_sceneRenderTarget) {
+                m_scenePickingService->Record(cmdBuf, m_sceneRenderTarget->GetWidth(), m_sceneRenderTarget->GetHeight(),
+                                              m_sceneRenderGraph->GetPerViewBindGroup(),
+                                              m_sceneRenderGraph->GetCachedView());
             }
 #if INFERNUX_FRAME_PROFILE
             auto exT2 = ExClock::now();
 #endif
 
-            // ---- Game View: render whenever the graph and a game camera exist.
-            // Long scene loads can temporarily leave cached draw calls / camera VP
-            // unset for a frame; skipping Execute() in that window leaves the old
-            // scene's image stuck in the game render target until some other view
-            // rebuilds the cache. Fall back to live camera matrices instead.
-            if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderTarget && m_gameRenderTarget->IsReady()) {
-                Camera *gameCam = FindGameCameraCached();
-                if (gameCam) {
-                    if (m_gameRenderGraph->HasCachedDrawCalls()) {
-                        m_vkCore->SetDrawCalls(&m_gameRenderGraph->GetCachedDrawCalls());
+            // ---- Game View: execute each camera-owned graph in depth order.
+            const bool gameViewActive = m_gameCameraEnabled || HasPendingCapture(CaptureSource::Game);
+            if (gameViewActive && m_gameRenderTarget && m_gameRenderTarget->IsReady()) {
+#if INFERNUX_FRAME_PROFILE
+                auto exTg0 = ExClock::now();
+#endif
+                for (Camera *gameCam : FindGameCamerasCached()) {
+                    SceneRenderGraph *graph = EnsureGameRenderGraph(gameCam);
+                    if (!graph)
+                        continue;
+                    if (graph->HasCachedDrawCalls()) {
+                        m_vkCore->SetDrawCalls(&graph->GetCachedDrawCalls());
                     } else {
                         m_vkCore->SetDrawCalls(nullptr);
                     }
-                    if (m_gameRenderGraph->HasCachedShadowDrawCalls()) {
-                        m_vkCore->SetShadowDrawCalls(&m_gameRenderGraph->GetCachedShadowDrawCalls());
+                    if (graph->HasCachedShadowDrawCalls()) {
+                        m_vkCore->SetShadowDrawCalls(&graph->GetCachedShadowDrawCalls());
                     } else {
                         m_vkCore->SetShadowDrawCalls(nullptr);
                     }
 
-                    glm::mat4 gameView = m_gameRenderGraph->HasCachedCameraVP() ? m_gameRenderGraph->GetCachedView()
-                                                                                : gameCam->GetViewMatrix();
-                    glm::mat4 gameProj = m_gameRenderGraph->HasCachedCameraVP() ? m_gameRenderGraph->GetCachedProj()
-                                                                                : gameCam->GetProjectionMatrix();
-
-                    m_vkCore->CmdUpdateUniformBuffer(cmdBuf, gameView, gameProj);
-
-                    {
-                        glm::mat4 invView = glm::inverse(gameView);
-                        glm::vec3 gameCamPos(invView[3]);
-                        m_vkCore->CmdUpdateLightingCameraPos(cmdBuf, gameCamPos);
-                    }
-
-                    if (m_hasGameShadowData) {
-                        m_vkCore->CmdUpdateShadowDataForCamera(cmdBuf, m_gameShadowVPs.data(), m_gameShadowCascadeCount,
-                                                               m_gameShadowSplits.data(), m_gameShadowMapResolution);
-                        m_vkCore->SetShadowCascadeVPOverride(m_gameShadowVPs.data(), m_gameShadowCascadeCount);
-                    }
-
-                    m_vkCore->SetActiveShadowDescriptorSet(m_gameRenderGraph->GetPerViewDescriptorSet());
-#if INFERNUX_FRAME_PROFILE
-                    auto exTg0 = ExClock::now();
-#endif
-                    m_gameRenderGraph->Execute(cmdBuf);
-#if INFERNUX_FRAME_PROFILE
-                    auto exTg1 = ExClock::now();
-#endif
-                    // Clear cascade VP override after game view execution
-                    m_vkCore->SetShadowCascadeVPOverride(nullptr, 0);
-                    m_gameRenderGraph->ResolveSceneMsaa(cmdBuf);
-#if INFERNUX_FRAME_PROFILE
-                    auto exTg2 = ExClock::now();
-#endif
-
-                    // Restore lighting UBO shadow fields + shadow cascade UBOs
-                    // back to editor values so that (a) any post-view passes see
-                    // correct editor data, and (b) the buffer ends the frame with
-                    // the same data the next frame will write, eliminating visual
-                    // artefacts from cross-frame GPU pipeline overlap.
-                    // Only needed when the scene view is actually active and has
-                    // valid cached state; otherwise no editor passes will run and
-                    // the UBO will be overwritten at the start of the next frame.
-                    if (sceneViewActive) {
-                        m_vkCore->CmdRestoreEditorShadowData(cmdBuf);
-
-                        if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedCameraVP()) {
-                            m_vkCore->CmdUpdateUniformBuffer(cmdBuf, m_sceneRenderGraph->GetCachedView(),
-                                                             m_sceneRenderGraph->GetCachedProj());
-                            const glm::mat4 &editorView = m_sceneRenderGraph->GetCachedView();
-                            glm::mat4 invEditorView = glm::inverse(editorView);
-                            glm::vec3 editorCamPos(invEditorView[3]);
-                            m_vkCore->CmdUpdateLightingCameraPos(cmdBuf, editorCamPos);
-                        }
-
-                        if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
-                            m_vkCore->SetDrawCalls(&m_sceneRenderGraph->GetCachedDrawCalls());
-                        } else {
-                            m_vkCore->SetDrawCalls(nullptr);
-                        }
-
-                        if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedShadowDrawCalls()) {
-                            m_vkCore->SetShadowDrawCalls(&m_sceneRenderGraph->GetCachedShadowDrawCalls());
-                        } else {
-                            m_vkCore->SetShadowDrawCalls(nullptr);
-                        }
-
-                        if (m_sceneRenderGraph) {
-                            m_vkCore->SetActiveShadowDescriptorSet(m_sceneRenderGraph->GetPerViewDescriptorSet());
-                        }
-                    }
-#if INFERNUX_FRAME_PROFILE
-                    auto exTg3 = ExClock::now();
-
-                    m_executorTiming.gameSetupMs += std::chrono::duration<double, std::milli>(exTg0 - exT2).count();
-                    m_executorTiming.gameExecMs += std::chrono::duration<double, std::milli>(exTg1 - exTg0).count();
-                    m_executorTiming.gameMsaaMs += std::chrono::duration<double, std::milli>(exTg2 - exTg1).count();
-                    m_executorTiming.gameRestoreMs += std::chrono::duration<double, std::milli>(exTg3 - exTg2).count();
-#endif
+                    const glm::mat4 gameView =
+                        graph->HasCachedCameraVP() ? graph->GetCachedView() : gameCam->GetViewMatrix();
+                    graph->SetDrawViewMatrix(gameView);
+                    graph->Execute(cmdBuf);
+                    graph->CommitCameraHistory();
                 }
+#if INFERNUX_FRAME_PROFILE
+                auto exTg1 = ExClock::now();
+#endif
+
+                if (sceneViewActive) {
+                    if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
+                        m_vkCore->SetDrawCalls(&m_sceneRenderGraph->GetCachedDrawCalls());
+                    } else {
+                        m_vkCore->SetDrawCalls(nullptr);
+                    }
+
+                    if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedShadowDrawCalls()) {
+                        m_vkCore->SetShadowDrawCalls(&m_sceneRenderGraph->GetCachedShadowDrawCalls());
+                    } else {
+                        m_vkCore->SetShadowDrawCalls(nullptr);
+                    }
+                }
+#if INFERNUX_FRAME_PROFILE
+                auto exTg3 = ExClock::now();
+
+                m_executorTiming.gameSetupMs += std::chrono::duration<double, std::milli>(exTg0 - exT2).count();
+                m_executorTiming.gameExecMs += std::chrono::duration<double, std::milli>(exTg1 - exTg0).count();
+                m_executorTiming.gameRestoreMs += std::chrono::duration<double, std::milli>(exTg3 - exTg1).count();
+#endif
             }
 
 #if INFERNUX_FRAME_PROFILE
             m_executorTiming.sceneExecMs += std::chrono::duration<double, std::milli>(exT1 - exT0).count();
             m_executorTiming.sceneMsaaMs += std::chrono::duration<double, std::milli>(exT2 - exT1).count();
 #endif
+        });
+
+        m_vkCore->SetFrameSubmissionBuilder([this](vk::VulkanFrameSubmission &submission, uint32_t frameSetupWorkItem) {
+            const bool sceneViewActive = ((m_sceneViewVisible || HasPendingCapture(CaptureSource::Scene) ||
+                                           (m_scenePickingService && m_scenePickingService->HasPendingRecord())) &&
+                                          m_sceneRenderTarget && m_sceneRenderTarget->IsReady() &&
+                                          m_sceneRenderTarget->GetWidth() > 1 && m_sceneRenderTarget->GetHeight() > 1);
+            const bool gameViewActive = m_gameCameraEnabled || HasPendingCapture(CaptureSource::Game);
+            std::vector<uint32_t> completedViews;
+
+            const auto activateView = [this](SceneRenderGraph *graph) {
+                if (!graph)
+                    return;
+                m_vkCore->SetDrawCalls(graph->HasCachedDrawCalls() ? &graph->GetCachedDrawCalls() : nullptr);
+                m_vkCore->SetShadowDrawCalls(graph->HasCachedShadowDrawCalls() ? &graph->GetCachedShadowDrawCalls()
+                                                                               : nullptr);
+            };
+
+            const auto appendView = [&](SceneRenderGraph *graph, bool sceneView, const glm::mat4 &view,
+                                        uint32_t predecessor, uint32_t *finalWorkItem) {
+                if (!graph || !graph->GetCompiledRenderGraph())
+                    return true;
+                graph->SetDrawViewMatrix(view);
+                vk::RenderGraph *compiled = graph->GetCompiledRenderGraph();
+                const auto &viewContext = graph->GetRenderViewContext();
+                std::vector<uint32_t> graphDependencies;
+                for (const rhi::QueueRole sourceQueue :
+                     {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer}) {
+                    if (!compiled->HasExternalQueueOwnershipReleases(sourceQueue))
+                        continue;
+                    std::vector<uint32_t> releaseDependencies;
+                    releaseDependencies.push_back(predecessor);
+                    graphDependencies.push_back(submission.AddWork(
+                        viewContext.device, sourceQueue, rhi::SubmissionDomain::Frame, viewContext.id,
+                        rhi::PipelineStage::AllCommands, std::move(releaseDependencies),
+                        [compiled, sourceQueue](VkCommandBuffer commandBuffer) {
+                            return compiled->RecordExternalQueueOwnershipReleases(sourceQueue, commandBuffer);
+                        }));
+                }
+                if (graphDependencies.empty())
+                    graphDependencies.push_back(predecessor);
+                const auto range = submission.AppendRenderGraph(
+                    *compiled, graphDependencies, [graph, activateView](uint32_t batchIndex, VkCommandBuffer) {
+                        activateView(graph);
+                        return batchIndex != 0 || graph->PrepareSubmissionExecution();
+                    });
+                if (range.Empty())
+                    return false;
+
+                const uint32_t finalize = submission.AddWork(
+                    viewContext.device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, viewContext.id,
+                    rhi::PipelineStage::AllGraphics, range.terminals,
+                    [this, graph, sceneView, activateView](VkCommandBuffer commandBuffer) {
+                        activateView(graph);
+                        if (!graph->CompleteSubmissionExecution(commandBuffer))
+                            return false;
+                        graph->CommitCameraHistory();
+                        if (sceneView && m_scenePickingService && m_scenePickingService->HasPendingRecord() &&
+                            m_sceneRenderTarget) {
+                            m_scenePickingService->Record(commandBuffer, m_sceneRenderTarget->GetWidth(),
+                                                          m_sceneRenderTarget->GetHeight(),
+                                                          graph->GetPerViewBindGroup(), graph->GetCachedView());
+                        }
+                        return true;
+                    });
+                completedViews.push_back(finalize);
+                if (finalWorkItem)
+                    *finalWorkItem = finalize;
+                return true;
+            };
+
+            if (sceneViewActive && m_sceneRenderGraph) {
+                if (!appendView(m_sceneRenderGraph.get(), true, m_sceneRenderGraph->GetCachedView(), frameSetupWorkItem,
+                                nullptr))
+                    return false;
+            }
+
+            if (gameViewActive && m_gameRenderTarget && m_gameRenderTarget->IsReady()) {
+                uint32_t cameraDependency = frameSetupWorkItem;
+                for (Camera *gameCam : FindGameCamerasCached()) {
+                    SceneRenderGraph *graph = EnsureGameRenderGraph(gameCam);
+                    if (!graph)
+                        continue;
+                    const glm::mat4 gameView =
+                        graph->HasCachedCameraVP() ? graph->GetCachedView() : gameCam->GetViewMatrix();
+                    uint32_t cameraFinal = cameraDependency;
+                    if (!appendView(graph, false, gameView, cameraDependency, &cameraFinal))
+                        return false;
+                    cameraDependency = cameraFinal;
+                }
+            }
+
+            if (sceneViewActive && m_sceneRenderGraph)
+                activateView(m_sceneRenderGraph.get());
+
+            const auto &presentation = m_vkCore->m_presentationView;
+            (void)submission.AddWork(presentation.device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame,
+                                     presentation.id, rhi::PipelineStage::AllGraphics, std::move(completedViews),
+                                     [](VkCommandBuffer commandBuffer) {
+                                         (void)commandBuffer;
+                                         return true;
+                                     });
+            return true;
         });
 
         // GUI is rendered via RenderGraph pass (no more imperative BeginRenderPass/EndRenderPass)
@@ -403,20 +921,8 @@ void InxRenderer::PreparePipeline()
         m_transientResourcePool = std::make_unique<TransientResourcePool>();
         m_transientResourcePool->Initialize(&m_vkCore->GetDeviceContext(), &m_vkCore->GetResourceManager());
 
-        // Create OutlineRenderer and wire post-scene-render callback
+        // The Scene RenderGraph owns the outline passes and target layouts.
         m_outlineRenderer = std::make_unique<OutlineRenderer>();
-
-        m_vkCore->SetPostSceneRenderCallback([this](VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls) {
-            // Post-processing effects are now integrated into the RenderGraph DAG
-
-            if (m_outlineRenderer && m_outlineRenderer->HasActiveOutline()) {
-                if (!m_outlineRenderer->RecordCommands(cmdBuf, drawCalls)) {
-                    m_outlineRenderer->RecordNoOutlineBarrier(cmdBuf);
-                }
-            } else if (m_outlineRenderer) {
-                m_outlineRenderer->RecordNoOutlineBarrier(cmdBuf);
-            }
-        });
     }
 }
 
@@ -495,6 +1001,8 @@ void InxRenderer::DrawFrame()
 
     // Invalidate per-frame game camera cache
     m_gameCameraCacheValid = false;
+    m_cachedGameCamera = nullptr;
+    m_cachedGameCameras.clear();
     // NOTE: do NOT reset m_lastGameRenderMs here — Python panels read it
     // during BuildFrame() which runs BEFORE the game camera render pass.
     // The value from the previous frame is the correct one for display.
@@ -546,7 +1054,7 @@ void InxRenderer::DrawFrame()
     if (m_view->IsMinimized()) {
         if (!m_guiPlayerMode && InxGUISemantics::HasPendingCaptureRequest()) {
             const auto guiBuildStart = std::chrono::high_resolution_clock::now();
-            m_gui->BuildFrame();
+            (void)m_gui->BuildFrameIfDue(true);
             m_guiBuildMs =
                 std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - guiBuildStart)
                     .count();
@@ -586,6 +1094,7 @@ void InxRenderer::DrawFrame()
 
     _scenePhaseT0 = std::chrono::high_resolution_clock::now();
     TransformECSStore::Instance().EndFrameCache();
+    ConsumeSceneTemporalDiscontinuity();
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.frameCacheEndMs =
         std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _scenePhaseT0).count();
@@ -610,26 +1119,29 @@ void InxRenderer::DrawFrame()
     // ========================================================================
     if (m_vkCore) {
         m_vkCore->WaitForCurrentFrame();
-        m_vkCore->TickDeletionQueue();
-        // Tell the swapchain to skip the redundant fence wait in AcquireNextImage
-        m_vkCore->GetSwapchain().MarkFenceAlreadyWaited();
+        m_vkCore->CollectRetiredGpuResources();
     }
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [3] after WaitForCurrentFrame (GPU fence)
 #endif
 
     auto _guiBuildStart = std::chrono::high_resolution_clock::now();
-    m_gui->BuildFrame();
+    const bool forceGuiBuild =
+        m_view->NeedsImmediateGuiRefresh() || (!m_guiPlayerMode && InxGUISemantics::HasPendingCaptureRequest());
+    const bool guiBuilt = m_gui->BuildFrameIfDue(forceGuiBuild);
     auto _guiBuildEnd = std::chrono::high_resolution_clock::now();
-    m_guiBuildMs = std::chrono::duration<double, std::milli>(_guiBuildEnd - _guiBuildStart).count();
-    RecordUIPerformanceFrame();
+    m_guiBuildMs = guiBuilt ? std::chrono::duration<double, std::milli>(_guiBuildEnd - _guiBuildStart).count() : 0.0;
+    if (guiBuilt)
+        RecordUIPerformanceFrame();
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [4] after GUI::BuildFrame (ImGui → Python panels)
 #endif
 
-    const bool sceneViewActive =
-        ((m_sceneViewVisible || HasPendingCapture(CaptureSource::Scene)) && m_sceneRenderTarget &&
-         m_sceneRenderTarget->IsReady() && m_sceneRenderTarget->GetWidth() > 1 && m_sceneRenderTarget->GetHeight() > 1);
+    const bool sceneViewActive = ((m_sceneViewVisible || HasPendingCapture(CaptureSource::Scene) ||
+                                   (m_scenePickingService && m_scenePickingService->HasPendingRecord())) &&
+                                  m_sceneRenderTarget && m_sceneRenderTarget->IsReady() &&
+                                  m_sceneRenderTarget->GetWidth() > 1 && m_sceneRenderTarget->GetHeight() > 1);
+    const bool gameViewActive = m_gameCameraEnabled || HasPendingCapture(CaptureSource::Game);
 
     // Prepare scene rendering data (collect + cull + sort) AFTER GUI processing
     // so we always operate on the current scene state.
@@ -650,7 +1162,7 @@ void InxRenderer::DrawFrame()
     // Update camera from scene system (uses PrepareFrame results)
     bridge.UpdateCameraData(m_cameraPos, m_cameraLookAt, m_cameraUp);
 
-    if (CheckAndApplyMsaaRequest())
+    if (CheckAndApplyMsaaRequest(false, sceneViewActive, gameViewActive))
         return;
 
     // Render scene via Python SRP render pipeline
@@ -661,7 +1173,6 @@ void InxRenderer::DrawFrame()
             gizmoCtx.gizmos = m_editorGizmos.get();
             gizmoCtx.editorTools = m_editorTools.get();
             gizmoCtx.componentGizmos = m_componentGizmos.get();
-            gizmoCtx.particles = m_particleDrawCalls.get();
             auto &registry = AssetRegistry::Instance();
             gizmoCtx.gizmoMaterial = registry.GetBuiltinMaterial("GizmoMaterial");
             gizmoCtx.gridMaterial = registry.GetBuiltinMaterial("GridMaterial");
@@ -670,7 +1181,7 @@ void InxRenderer::DrawFrame()
             gizmoCtx.componentGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoIconMaterial");
             gizmoCtx.cameraGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoCameraIconMaterial");
             gizmoCtx.lightGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoLightIconMaterial");
-            gizmoCtx.particleMaterial = registry.GetBuiltinMaterial("ParticleBillboardMaterial");
+            gizmoCtx.particleGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoParticleIconMaterial");
             gizmoCtx.selectedObjectId = m_selectedObjectId;
             gizmoCtx.activeScene = SceneManager::Instance().GetActiveScene();
             gizmoCtx.cameraPos = glm::vec3(m_cameraPos[0], m_cameraPos[1], m_cameraPos[2]);
@@ -684,25 +1195,24 @@ void InxRenderer::DrawFrame()
             }
             Camera *editorCam = SceneManager::Instance().GetEditorCameraController().GetCamera();
 
-            std::vector<Camera *> cameras;
-            if (editorCam) {
-                cameras.push_back(editorCam);
-            }
-
 #if INFERNUX_FRAME_PROFILE
             auto _srpT0 = std::chrono::high_resolution_clock::now();
 #endif
-            m_renderPipeline->Render(ctx, cameras);
+            if (editorCam)
+                m_renderPipeline->Render(ctx, editorCam);
 #if INFERNUX_FRAME_PROFILE
             auto _srpT1 = std::chrono::high_resolution_clock::now();
             _srpSceneViewMs += std::chrono::duration<double, std::milli>(_srpT1 - _srpT0).count();
 #endif
         }
 
-        // ---- Game View: use scene main camera (if enabled) ----
-        if (m_gameCameraEnabled && m_gameRenderTarget && m_gameRenderTarget->IsReady() && m_gameRenderGraph) {
-            Camera *gameCam = FindGameCameraCached();
-            if (gameCam) {
+        // ---- Game View: one context and one RenderView per active camera ----
+        if (gameViewActive && m_gameRenderTarget && m_gameRenderTarget->IsReady()) {
+            const auto _srpT2 = std::chrono::high_resolution_clock::now();
+            for (Camera *gameCam : FindGameCamerasCached()) {
+                SceneRenderGraph *graph = EnsureGameRenderGraph(gameCam);
+                if (!graph)
+                    continue;
                 // Set aspect ratio BEFORE SetupCameraProperties() so the
                 // projection matrix snapshot matches the render target size.
                 if (m_gameRenderTarget->GetHeight() > 0) {
@@ -712,28 +1222,20 @@ void InxRenderer::DrawFrame()
                     gameCam->SetScreenDimensions(m_gameRenderTarget->GetWidth(), m_gameRenderTarget->GetHeight());
                 }
 
-                // Game camera excludes editor-only gizmos/grid/outline, but
-                // particles are scene content and must be submitted for every
-                // camera that renders the scene.
+                // Game camera excludes editor-only gizmos/grid/outline.
                 EditorGizmosContext gameContentCtx;
-                gameContentCtx.particles = m_particleDrawCalls.get();
-                gameContentCtx.particleMaterial = gizmoCtx.particleMaterial;
-                ScriptableRenderContext gameCtx(m_vkCore.get(), m_gameRenderGraph.get(), gameContentCtx);
+                ScriptableRenderContext gameCtx(m_vkCore.get(), graph, gameContentCtx);
                 if (m_transientResourcePool) {
                     gameCtx.SetTransientResourcePool(m_transientResourcePool.get());
                 }
 
-                std::vector<Camera *> gameCameras;
-                gameCameras.push_back(gameCam);
-
-                auto _srpT2 = std::chrono::high_resolution_clock::now();
-                m_renderPipeline->Render(gameCtx, gameCameras);
-                auto _srpT3 = std::chrono::high_resolution_clock::now();
-                m_lastGameRenderMs = std::chrono::duration<double, std::milli>(_srpT3 - _srpT2).count();
-#if INFERNUX_FRAME_PROFILE
-                _srpGameViewMs += m_lastGameRenderMs;
-#endif
+                m_renderPipeline->Render(gameCtx, gameCam);
             }
+            const auto _srpT3 = std::chrono::high_resolution_clock::now();
+            m_lastGameRenderMs = std::chrono::duration<double, std::milli>(_srpT3 - _srpT2).count();
+#if INFERNUX_FRAME_PROFILE
+            _srpGameViewMs += m_lastGameRenderMs;
+#endif
         }
     } else {
         INXLOG_ERROR("No render pipeline set — scene will not be rendered. "
@@ -743,7 +1245,7 @@ void InxRenderer::DrawFrame()
     // RenderPipeline::Render() applies the current Python graph. Re-check the
     // requested MSAA here so a newly selected pipeline can switch sample count
     // before any stale render graph executes this frame.
-    if (CheckAndApplyMsaaRequest())
+    if (CheckAndApplyMsaaRequest(true, sceneViewActive, gameViewActive))
         return;
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [6] after RenderPipeline::Render (Python SRP)
@@ -767,17 +1269,67 @@ void InxRenderer::DrawFrame()
         m_outlineRenderer->SetOutlineObjectId(0);
     }
 
+    if (m_sceneRenderGraph)
+        m_sceneRenderGraph->SetOutlineRenderer(sceneViewActive ? m_outlineRenderer.get() : nullptr);
+
     if (sceneViewActive && m_sceneRenderGraph) {
         m_sceneRenderGraph->EnsureGraphBuilt();
     }
-    if (m_gameCameraEnabled && m_gameRenderGraph) {
-        m_gameRenderGraph->EnsureGraphBuilt();
+    if (gameViewActive) {
+        for (Camera *camera : FindGameCamerasCached()) {
+            if (SceneRenderGraph *graph = EnsureGameRenderGraph(camera))
+                graph->EnsureGraphBuilt();
+        }
     }
 
     StageEngineGlobalsUBO();
+
+    // Camera constants are immutable per RenderView/frame slot. Stage them
+    // before any command buffer is recorded so Scene and Game no longer rely
+    // on sequentially overwriting one shared UBO.
+    if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedCameraVP()) {
+        const glm::mat4 previous = m_sceneRenderGraph->GetPreviousViewProj();
+        (void)m_sceneRenderGraph->StageCameraMatrices(m_sceneRenderGraph->GetCachedView(),
+                                                      m_sceneRenderGraph->GetCachedProj(), &previous);
+    }
+    if (gameViewActive) {
+        for (Camera *gameCam : FindGameCamerasCached()) {
+            SceneRenderGraph *graph = EnsureGameRenderGraph(gameCam);
+            if (!graph)
+                continue;
+            const glm::mat4 view = graph->HasCachedCameraVP() ? graph->GetCachedView() : gameCam->GetViewMatrix();
+            const glm::mat4 proj = graph->HasCachedCameraVP() ? graph->GetCachedProj() : gameCam->GetProjectionMatrix();
+            const glm::mat4 previous = graph->GetPreviousViewProj();
+            (void)graph->StageCameraMatrices(view, proj, &previous);
+        }
+    }
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [9] after Outline+GraphBuild+UBO staging
 #endif
+
+    // Descriptor set 2 is shared by every render graph recorded this frame.
+    // Grow all instance streams before vkBeginCommandBuffer so a picking or
+    // motion pass cannot rewrite an already-bound descriptor set.
+    {
+        size_t requiredInstances = 0;
+        if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls())
+            requiredInstances += m_sceneRenderGraph->GetCachedDrawCalls().size();
+        if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedShadowDrawCalls())
+            requiredInstances +=
+                m_sceneRenderGraph->GetCachedShadowDrawCalls().size() * m_sceneRenderGraph->GetCameraShadowViewCount();
+        if (gameViewActive) {
+            for (Camera *camera : FindGameCamerasCached()) {
+                SceneRenderGraph *graph = EnsureGameRenderGraph(camera);
+                if (!graph)
+                    continue;
+                if (graph->HasCachedDrawCalls())
+                    requiredInstances += graph->GetCachedDrawCalls().size();
+                if (graph->HasCachedShadowDrawCalls())
+                    requiredInstances += graph->GetCachedShadowDrawCalls().size() * graph->GetCameraShadowViewCount();
+            }
+        }
+        m_vkCore->PreallocateInstances(requiredInstances);
+    }
 
     // Render frame with scene camera
     m_vkCore->DrawFrame(m_cameraPos, m_cameraLookAt, m_cameraUp);
@@ -919,8 +1471,10 @@ void InxRenderer::DrawFrame()
                 << "ms";
 
             {
-                const auto &bridgeProfile = SceneRenderBridge::Instance().GetSceneRenderer().GetProfileSnapshot();
+                const auto bridgeProfile = SceneRenderBridge::Instance().GetProfileSnapshot();
                 const auto srcProfile = ScriptableRenderContext::GetProfileSnapshot();
+                const auto deletionStats =
+                    m_vkCore ? m_vkCore->GetRetirementQueue().GetStats() : GpuRetirementQueue::Stats{};
 
                 oss << "\n  FrameCache: begin=" << (_detailAccum.frameCacheBeginMs / kWindow)
                     << "ms updateCall=" << (_detailAccum.sceneUpdateCallMs / kWindow)
@@ -956,9 +1510,14 @@ void InxRenderer::DrawFrame()
                     << "ms cache=" << (srcProfile.submitCalls ? srcProfile.cacheGraphMs / srcProfile.submitCalls : 0.0)
                     << "ms finalDraws/submit="
                     << (srcProfile.submitCalls ? srcProfile.finalDrawCalls / srcProfile.submitCalls : 0.0)
+                    << " listBorrowed=" << srcProfile.borrowedRendererListSubmits
+                    << " listOwned=" << srcProfile.ownedRendererListSubmits << " materialized/frame="
+                    << (srcProfile.submitCalls ? srcProfile.materializedDrawCalls / srcProfile.submitCalls : 0.0)
                     << "\n  CleanupDetail: collectIds=" << (_detailAccum.cleanupCollectIdsMs / kWindow)
                     << "ms release=" << (_detailAccum.cleanupReleaseMs / kWindow)
                     << "ms activeIds/frame=" << (_detailAccum.cleanupActiveIds / kWindow)
+                    << " retirePending=" << deletionStats.pending << " retireHighWater=" << deletionStats.highWatermark
+                    << " retired=" << deletionStats.retired << " retirePushed=" << deletionStats.pushed
                     << "\n  LightingDetail: collect=" << (_detailAccum.lightingCollectMs / kWindow)
                     << "ms shadowEditor=" << (_detailAccum.lightingShadowEditorMs / kWindow)
                     << "ms shadowGame=" << (_detailAccum.lightingShadowGameMs / kWindow)
@@ -973,6 +1532,7 @@ void InxRenderer::DrawFrame()
                     double n = static_cast<double>(drawN);
                     const auto rgProfile = infernux::vk::RenderGraph::GetExecuteProfileSnapshot();
                     const auto topPassProfiles = infernux::vk::RenderGraph::GetTopCallbackProfiles(6);
+                    const auto &gpuTimestamps = m_vkCore->GetLatestGpuTimestampFrame();
                     uint64_t filteredCalls = 0, filteredEligible = 0, filteredIssued = 0, filteredActualDraws = 0;
                     uint64_t shadowCalls = 0, shadowEligible = 0, shadowIssued = 0, shadowActualDraws = 0;
                     m_vkCore->GetDrawSubCounters(filteredCalls, filteredEligible, filteredIssued, filteredActualDraws,
@@ -980,7 +1540,7 @@ void InxRenderer::DrawFrame()
                     oss << "\n  DrawFrame: Acquire=" << (drawSub[0] / n) << "ms" << " Record=" << (drawSub[1] / n)
                         << "ms" << " Submit=" << (drawSub[2] / n) << "ms" << " Present=" << (drawSub[3] / n) << "ms"
                         << "\n    Record: UBO=" << (drawSub[4] / n) << "ms" << " SceneGraph=" << (drawSub[5] / n)
-                        << "ms" << " PostScene=" << (drawSub[6] / n) << "ms" << " GUIGraph=" << (drawSub[7] / n) << "ms"
+                        << "ms" << " GUIGraph=" << (drawSub[6] / n) << "ms"
                         << "\n    Filtered: total=" << (drawSub[8] / n) << "ms" << " filter=" << (drawSub[9] / n)
                         << "ms" << " sort=" << (drawSub[10] / n) << "ms" << " draw=" << (drawSub[11] / n) << "ms"
                         << " calls/frame=" << (static_cast<double>(filteredCalls) / n) << " eligible/call="
@@ -1022,6 +1582,14 @@ void InxRenderer::DrawFrame()
                         << (rgProfile.executeCalls ? static_cast<double>(rgProfile.barrierCallCount) /
                                                          static_cast<double>(rgProfile.executeCalls)
                                                    : 0.0);
+
+                    if (gpuTimestamps.available) {
+                        oss << "\n    GPU#" << gpuTimestamps.serial << ':';
+                        for (uint32_t i = 0; i < gpuTimestamps.sampleCount; ++i) {
+                            const auto &sample = gpuTimestamps.samples[i];
+                            oss << ' ' << sample.Name() << '=' << sample.milliseconds << "ms";
+                        }
+                    }
 
                     if (!topPassProfiles.empty()) {
                         oss << "\n    CallbackTop:";
@@ -1142,7 +1710,7 @@ void InxRenderer::DrawFrame()
                 m_vkCore->ResetDrawSubTimings();
             }
             infernux::vk::RenderGraph::ResetExecuteProfileSnapshot();
-            SceneRenderBridge::Instance().GetSceneRenderer().ResetProfileSnapshot();
+            SceneRenderBridge::Instance().ResetProfileSnapshot();
             ScriptableRenderContext::ResetProfileSnapshot();
             m_executorTiming = {};
             _fpCounter = 0;
@@ -1156,19 +1724,95 @@ void InxRenderer::DrawFrame()
 // DrawFrame sub-methods
 // ============================================================================
 
-bool InxRenderer::CheckAndApplyMsaaRequest()
+bool InxRenderer::CheckAndApplyMsaaRequest(bool finalFrameCheck, bool sceneViewActive, bool gameViewActive)
 {
-    auto checkGraph = [this](SceneRenderGraph *graph) -> bool {
-        if (!graph)
-            return false;
-        int requested = graph->GetRequestedMsaaSamples();
-        if (requested > 0 && requested != GetMsaaSamples()) {
-            SetMsaaSamples(requested);
-            return true;
+    m_sceneRequestedMsaaSamples = m_sceneRenderGraph ? m_sceneRenderGraph->GetRequestedMsaaSamples() : 0;
+    m_gameRequestedMsaaSamples = 0;
+    for (Camera *camera : FindGameCamerasCached()) {
+        if (SceneRenderGraph *graph = EnsureGameRenderGraph(camera)) {
+            const int request = graph->GetRequestedMsaaSamples();
+            if (m_gameRequestedMsaaSamples == 0)
+                m_gameRequestedMsaaSamples = request;
+            else if (request != 0 && request != m_gameRequestedMsaaSamples)
+                INXLOG_ERROR("Active game cameras requested conflicting MSAA sample counts");
         }
+    }
+
+    const MsaaRequestResolution rawResolution =
+        ResolveMsaaRequests(m_sceneRequestedMsaaSamples, m_gameRequestedMsaaSamples);
+    const int currentSamples = GetMsaaSamples();
+
+    // A RenderStack topology is published to Scene and Game by two SRP calls.
+    // Before those calls, one graph can still hold the previous revision. Do
+    // not turn that transient disagreement into a rejected user edit. The
+    // post-SRP check below considers only views that actually participated in
+    // this frame; if both active views still disagree, the request is rejected
+    // before command recording.
+    if (!finalFrameCheck && rawResolution.status == MsaaRequestStatus::ConflictingRequests) {
+        m_msaaRequestConflict = false;
+        SetEffectiveGraphMsaaSamples(currentSamples);
         return false;
+    }
+
+    const MsaaRequestResolution resolution =
+        finalFrameCheck ? ResolveActiveMsaaRequests(m_sceneRequestedMsaaSamples, sceneViewActive,
+                                                    m_gameRequestedMsaaSamples, gameViewActive)
+                        : rawResolution;
+
+    auto rejectRequest = [this, resolution](MsaaRequestStatus status, uint32_t supportedMask) {
+        const uint64_t signature = (static_cast<uint64_t>(status) << 56u) |
+                                   (static_cast<uint64_t>(m_sceneRequestedMsaaSamples & 0xff) << 40u) |
+                                   (static_cast<uint64_t>(m_gameRequestedMsaaSamples & 0xff) << 32u) | supportedMask;
+        if (signature == m_lastMsaaRejectionSignature)
+            return;
+        m_lastMsaaRejectionSignature = signature;
+        ++m_msaaRejectedRequestCount;
+
+        if (status == MsaaRequestStatus::ConflictingRequests) {
+            INXLOG_ERROR(
+                "Scene and Game render graphs request incompatible global MSAA settings (Scene=",
+                m_sceneRequestedMsaaSamples, "x, Game=", m_gameRequestedMsaaSamples,
+                "x). Keeping the last-known-good setting; both graphs must agree while material pipelines are shared.");
+        } else if (status == MsaaRequestStatus::InvalidSceneRequest ||
+                   status == MsaaRequestStatus::InvalidGameRequest) {
+            INXLOG_ERROR("Invalid render graph MSAA request (Scene=", m_sceneRequestedMsaaSamples,
+                         "x, Game=", m_gameRequestedMsaaSamples, "x). Valid values are 0, 1, 2, 4, and 8.");
+        } else {
+            INXLOG_ERROR("Requested ", resolution.samples,
+                         "x MSAA is unsupported by the HDR color/depth target pair (supported mask=", supportedMask,
+                         "). Keeping the last-known-good setting.");
+        }
     };
-    return checkGraph(m_sceneRenderGraph.get()) || checkGraph(m_gameRenderGraph.get());
+
+    if (resolution.status == MsaaRequestStatus::NoRequest) {
+        m_msaaRequestConflict = false;
+        m_lastMsaaRejectionSignature = 0;
+        SetEffectiveGraphMsaaSamples(currentSamples);
+        return false;
+    }
+
+    if (!resolution.IsAccepted()) {
+        m_msaaRequestConflict = resolution.status == MsaaRequestStatus::ConflictingRequests;
+        rejectRequest(resolution.status, GetSupportedMsaaSampleMask());
+        SetEffectiveGraphMsaaSamples(currentSamples);
+        return finalFrameCheck;
+    }
+
+    const uint32_t supportedMask = GetSupportedMsaaSampleMask();
+    if (!SupportsMsaaSampleCount(static_cast<rhi::SampleCountMask>(supportedMask), resolution.samples)) {
+        m_msaaRequestConflict = false;
+        rejectRequest(MsaaRequestStatus::Accepted, supportedMask);
+        SetEffectiveGraphMsaaSamples(currentSamples);
+        return false;
+    }
+
+    m_msaaRequestConflict = false;
+    m_lastMsaaRejectionSignature = 0;
+    SetEffectiveGraphMsaaSamples(resolution.samples);
+    const bool reconfigured = ApplyMsaaSamples(resolution.samples, "render graph");
+    if (!reconfigured)
+        SetEffectiveGraphMsaaSamples(GetMsaaSamples());
+    return reconfigured;
 }
 
 void InxRenderer::StageEngineGlobalsUBO()
@@ -1247,13 +1891,10 @@ void InxRenderer::WaitForGpuIdle()
     if (m_sceneRenderGraph) {
         m_sceneRenderGraph->ClearCachedFrameState();
     }
-    if (m_gameRenderGraph) {
-        m_gameRenderGraph->ClearCachedFrameState();
+    for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+        (void)cameraId;
+        graph->ClearCachedFrameState();
     }
-
-    m_hasGameShadowData = false;
-    m_gameShadowCascadeCount = 0;
-    m_gameShadowMapResolution = 0.0f;
 
     // Drop the currently staged draw list as well. If the upcoming frame skips
     // re-submitting one of the graphs (for example because no valid game camera
@@ -1264,7 +1905,7 @@ void InxRenderer::WaitForGpuIdle()
     // A full device drain avoids probabilistic crashes from old-scene resources
     // still being referenced by previously submitted command buffers.
     m_vkCore->GetDeviceContext().WaitIdle();
-    m_vkCore->FlushDeletionQueue();
+    m_vkCore->FlushRetiredGpuResources();
 
     // Pump the OS message queue so Windows does not flag the application
     // as "Not Responding" during long GPU drains (scene switch, MSAA change).
@@ -1451,7 +2092,6 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
     snapshot.deviceLocalBudgetBytes = statistics.deviceLocalBudgetBytes;
     snapshot.allocatorAllocationCount = statistics.allocationCount;
     snapshot.meshBytes = m_vkCore->GetMeshGpuResidentBytes();
-    snapshot.particleBytes = m_particleDrawCalls ? m_particleDrawCalls->GetResidentBytes() : 0;
     snapshot.textureBytes = m_vkCore->GetTextureGpuResidentBytes();
     snapshot.imguiTextureBytes = m_gui ? m_gui->GetImGuiTextureResidentBytes() : 0;
     snapshot.pendingImguiTextureBytes = m_gui ? m_gui->GetPendingImGuiTextureUploadBytes() : 0;
@@ -1469,8 +2109,11 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
     snapshot.asyncGraphicsSubmissionCount = m_vkCore->GetResourceManager().GetAsyncGraphicsSubmissionCount();
     snapshot.renderTargetBytes = (m_sceneRenderTarget ? m_sceneRenderTarget->GetResidentBytes() : 0) +
                                  (m_gameRenderTarget ? m_gameRenderTarget->GetResidentBytes() : 0);
-    snapshot.renderGraphBytes = (m_sceneRenderGraph ? m_sceneRenderGraph->GetTransientResidentBytes() : 0) +
-                                (m_gameRenderGraph ? m_gameRenderGraph->GetTransientResidentBytes() : 0);
+    snapshot.renderGraphBytes = m_sceneRenderGraph ? m_sceneRenderGraph->GetTransientResidentBytes() : 0;
+    for (const auto &[cameraId, graph] : m_gameRenderGraphs) {
+        (void)cameraId;
+        snapshot.renderGraphBytes += graph->GetTransientResidentBytes();
+    }
     snapshot.transientPoolBytes = m_transientResourcePool ? m_transientResourcePool->GetResidentBytes() : 0;
     const MaterialGpuResidencySnapshot materialResidency = m_vkCore->GetMaterialGpuResidency();
     snapshot.materialUboBytes = materialResidency.uboBytes;
@@ -1478,16 +2121,22 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
     snapshot.runtimeMaterialCount = materialResidency.runtimeMaterialCount;
     snapshot.assetMaterialCount = materialResidency.assetMaterialCount;
     snapshot.materialDescriptorSetCount = materialResidency.descriptorSetCount;
+    snapshot.pendingMaterialTextureDescriptorSetCount = materialResidency.pendingTextureDescriptorSetCount;
     snapshot.retiredMaterialDescriptorSetCount = materialResidency.retiredDescriptorSetCount;
     snapshot.materialDescriptorPoolCount = materialResidency.descriptorPoolCount;
     snapshot.materialPipelineCount = materialResidency.pipelineCount;
+    snapshot.shadowMaterialDescriptorSetCount = materialResidency.shadowDescriptorSetCount;
+    snapshot.shadowMaterialDescriptorPoolCount = materialResidency.shadowDescriptorPoolCount;
+    snapshot.shadowMaterialBindingCacheHits = materialResidency.shadowBindingCacheHits;
+    snapshot.shadowMaterialBindingCacheMisses = materialResidency.shadowBindingCacheMisses;
+    snapshot.shadowMaterialBindingRetirements = materialResidency.shadowBindingRetirements;
     snapshot.runtimeMeshEntryCount = m_vkCore->GetRuntimeMeshGpuEntryCount();
     snapshot.runtimeMeshBytes = m_vkCore->GetRuntimeMeshGpuResidentBytes();
     snapshot.scheduledReleaseBytes = m_vkCore->GetRetiredMeshGpuLeaseBytes() +
                                      m_vkCore->GetRetiredTextureGpuLeaseBytes() +
                                      (m_gui ? m_gui->GetScheduledTextureReleaseBytes() : 0);
-    snapshot.trackedBytes = snapshot.meshBytes + snapshot.particleBytes + snapshot.textureBytes +
-                            snapshot.imguiTextureBytes + snapshot.pendingImguiTextureBytes + snapshot.stagingPoolBytes +
+    snapshot.trackedBytes = snapshot.meshBytes + snapshot.textureBytes + snapshot.imguiTextureBytes +
+                            snapshot.pendingImguiTextureBytes + snapshot.stagingPoolBytes +
                             snapshot.pendingReadbackBytes + snapshot.renderTargetBytes + snapshot.renderGraphBytes +
                             snapshot.transientPoolBytes + snapshot.materialUboBytes;
     snapshot.unclassifiedBytes = snapshot.allocatorAllocationBytes > snapshot.trackedBytes
@@ -1500,6 +2149,12 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
                                    ? snapshot.effectiveAllocationBytes - snapshot.budgetBytes
                                    : 0;
     return snapshot;
+}
+
+void InxRenderer::PollGpuCompletions()
+{
+    if (m_vkCore)
+        m_vkCore->CollectRetiredGpuResources();
 }
 
 void InxRenderer::SetGpuResidencyBudgetBytes(uint64_t bytes)
@@ -1575,6 +2230,33 @@ std::vector<GpuAssetResidencyRecord> InxRenderer::GetAssetGpuResidency() const
 void InxRenderer::LoadShader(const char *name, const std::vector<char> &code, const char *type)
 {
     m_vkCore->LoadShader(name, code, type);
+}
+
+bool InxRenderer::PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact)
+{
+    return m_vkCore && m_vkCore->PublishShaderProgramArtifact(artifact);
+}
+
+bool InxRenderer::HasShaderProgramArtifact(const ShaderProgramKey &programKey) const
+{
+    return m_vkCore && m_vkCore->HasShaderProgramArtifact(programKey);
+}
+
+std::shared_ptr<const ShaderProgramArtifact>
+InxRenderer::ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material)
+{
+    if (!m_vkCore || !material)
+        return nullptr;
+    if (m_shaderProgramArtifactResolver)
+        m_shaderProgramArtifactResolver(material);
+    return m_vkCore->CopyShaderProgramArtifact({material->GetVertShaderName(), material->GetFragShaderName()});
+}
+
+void InxRenderer::SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver)
+{
+    m_shaderProgramArtifactResolver = std::move(resolver);
+    if (m_vkCore)
+        m_vkCore->SetShaderProgramArtifactResolver(m_shaderProgramArtifactResolver);
 }
 
 void InxRenderer::StoreShaderRenderMeta(const std::string &shaderId, const std::string &cullMode,
@@ -1724,10 +2406,10 @@ float InxRenderer::GetDisplayScale() const
     return 1.0f;
 }
 
-void InxRenderer::RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable)
+void InxRenderer::RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable, int priority)
 {
     if (m_gui) {
-        m_gui->Register(name, renderable);
+        m_gui->Register(name, std::move(renderable), priority);
     } else {
         INXLOG_ERROR("InxGUI is not initialized.");
     }
@@ -1884,7 +2566,9 @@ void InxRenderer::InitializeDefaultScene()
 
     // Initialize component gizmos buffer used by the scripting layer
     m_componentGizmos = std::make_unique<GizmosDrawCallBuffer>();
-    m_particleDrawCalls = std::make_unique<ParticleDrawCallBuffer>();
+    m_particleGpuDrawRegistry = std::make_unique<particle::ParticleGpuDrawRegistry>();
+    if (m_scenePickingService)
+        m_scenePickingService->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
 
     // Pass gizmos reference to VkCore for rendering
     if (m_vkCore) {
@@ -1958,59 +2642,40 @@ void InxRenderer::UpdateSceneLighting()
     m_frameDetailTiming.lightingCollectMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
 
-    // Compute shadow VP from the first shadow-casting directional light.
-    // Must happen BEFORE UpdateLightingUBO which uploads lightVP to GPU.
-    // Use the editor camera for the scene view's shadow cascades.
     Camera *editorCam = SceneRenderBridge::Instance().GetEditorCamera();
 #if INFERNUX_FRAME_PROFILE
     t0 = Clock::now();
 #endif
-    collector.ComputeShadowVP(activeScene, cameraPos, 4096.0f, editorCam);
+    m_vkCore->UpdateLightingState();
+    const ShaderLightingUBO environmentLighting = collector.GetShaderLightingUBO();
+    if (m_sceneRenderGraph && editorCam)
+        m_sceneRenderGraph->StageCameraLighting(activeScene, editorCam, cameraPos, environmentLighting);
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.lightingShadowEditorMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
 
-    // Compute separate shadow VP for the game camera (if active).
-    // This data is patched into the lighting UBO inline before the game
-    // render graph executes, preventing shadow contamination from the
-    // editor camera's frustum shape.
-    m_hasGameShadowData = false;
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.lightingShadowGameMs = 0.0;
 #endif
-    if (m_gameCameraEnabled) {
-        Camera *gameCam = FindGameCameraCached();
-        if (gameCam) {
-            SceneLightCollector gameCollector;
-            // Skip CollectLights — it produces identical results to the
-            // editor collector (same scene, same lights).  Only the
-            // shadow VP matrices differ per camera.
+    if (m_gameCameraEnabled || HasPendingCapture(CaptureSource::Game)) {
 #if INFERNUX_FRAME_PROFILE
-            t0 = Clock::now();
+        t0 = Clock::now();
 #endif
-            gameCollector.ComputeShadowVP(activeScene, cameraPos, 4096.0f, gameCam);
-#if INFERNUX_FRAME_PROFILE
-            m_frameDetailTiming.lightingShadowGameMs =
-                std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-#endif
-            if (gameCollector.IsShadowEnabled()) {
-                m_hasGameShadowData = true;
-                m_gameShadowCascadeCount = gameCollector.GetShadowCascadeCount();
-                m_gameShadowMapResolution = gameCollector.GetShadowMapResolution();
-                const auto &splits = gameCollector.GetShadowCascadeSplits();
-                for (uint32_t i = 0; i < 4; ++i) {
-                    m_gameShadowVPs[i] = gameCollector.GetShadowLightVP(i);
-                    m_gameShadowSplits[i] = splits[i];
-                }
-            }
+        for (Camera *gameCam : FindGameCamerasCached()) {
+            glm::vec3 gameCameraPosition = cameraPos;
+            if (const Transform *transform = gameCam->GetTransform())
+                gameCameraPosition = transform->GetWorldPosition();
+            if (SceneRenderGraph *graph = EnsureGameRenderGraph(gameCam))
+                graph->StageCameraLighting(activeScene, gameCam, gameCameraPosition, environmentLighting);
         }
+#if INFERNUX_FRAME_PROFILE
+        m_frameDetailTiming.lightingShadowGameMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+#endif
     }
 
-    // Build shader-compatible UBO and upload to GPU
 #if INFERNUX_FRAME_PROFILE
     t0 = Clock::now();
 #endif
-    m_vkCore->UpdateLightingUBO(cameraPos);
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.lightingUploadMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
@@ -2045,9 +2710,20 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
                                                  [](const DrawCall &drawCall) { return drawCall.castsShadows; }));
     };
     snapshot.frame = m_frameCount;
+    snapshot.sceneTemporalDiscontinuityRevision = m_observedSceneTemporalDiscontinuityRevision;
+    snapshot.temporalHistoryInvalidationCount = m_temporalHistoryInvalidationCount;
     snapshot.sceneViewVisible = m_sceneViewVisible;
     snapshot.gameCameraEnabled = m_gameCameraEnabled;
-    snapshot.gameCameraAvailable = FindGameCameraCached() != nullptr;
+    const auto &gameCameras = FindGameCamerasCached();
+    snapshot.gameCameraAvailable = !gameCameras.empty();
+    snapshot.gameCameraCount = gameCameras.size();
+    snapshot.gameCameraIds.reserve(gameCameras.size());
+    snapshot.gameRenderViewIds.reserve(gameCameras.size());
+    for (Camera *camera : gameCameras) {
+        snapshot.gameCameraIds.push_back(camera->GetComponentID());
+        if (SceneRenderGraph *graph = EnsureGameRenderGraph(camera))
+            snapshot.gameRenderViewIds.push_back(graph->GetRenderViewContext().id);
+    }
     snapshot.sceneTargetReady = m_sceneRenderTarget && m_sceneRenderTarget->IsReady();
     snapshot.gameTargetReady = m_gameRenderTarget && m_gameRenderTarget->IsReady();
     if (m_sceneRenderTarget) {
@@ -2059,29 +2735,115 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
         snapshot.gameTargetHeight = m_gameRenderTarget->GetHeight();
     }
     if (m_sceneRenderGraph) {
+        snapshot.sceneRenderViewId = m_sceneRenderGraph->GetRenderViewContext().id;
+        snapshot.sceneTemporalHistoryCount = m_sceneRenderGraph->GetTemporalHistoryCount();
+        snapshot.sceneValidTemporalHistoryCount = m_sceneRenderGraph->GetValidTemporalHistoryCount();
+        snapshot.sceneTemporalSampleIndex = m_sceneRenderGraph->GetTemporalSampleIndex();
         snapshot.sceneRenderGraphName = m_sceneRenderGraph->GetGraphName();
         snapshot.sceneRenderGraphExecutionCount = m_sceneRenderGraph->GetExecutionCount();
         snapshot.sceneRenderGraphCurrentExecuted = m_sceneRenderGraph->HasExecutedCurrentGraph();
         snapshot.sceneRenderGraphPassNames = m_sceneRenderGraph->GetExecutedPassNames();
+        snapshot.sceneRenderGraphDebug = m_sceneRenderGraph->GetDebugString();
+        snapshot.sceneShadowViewCount = m_sceneRenderGraph->GetCameraShadowViewCount();
+        snapshot.sceneShadowAssignmentCount = m_sceneRenderGraph->GetCameraShadowAssignmentCount();
+        snapshot.sceneShadowResourceIdentity = m_sceneRenderGraph->GetShadowResourceIdentity();
         if (m_sceneRenderGraph->HasCachedDrawCalls())
             snapshot.sceneDrawCallCount = m_sceneRenderGraph->GetCachedDrawCalls().size();
         if (m_sceneRenderGraph->HasCachedShadowDrawCalls())
             snapshot.sceneShadowDrawCallCount = countShadowCasters(m_sceneRenderGraph->GetCachedShadowDrawCalls());
     }
     if (m_gameRenderGraph) {
+        snapshot.gameRenderViewId = m_gameRenderGraph->GetRenderViewContext().id;
+        snapshot.gameTemporalHistoryCount = m_gameRenderGraph->GetTemporalHistoryCount();
+        snapshot.gameValidTemporalHistoryCount = m_gameRenderGraph->GetValidTemporalHistoryCount();
+        snapshot.gameTemporalSampleIndex = m_gameRenderGraph->GetTemporalSampleIndex();
         snapshot.gameRenderGraphName = m_gameRenderGraph->GetGraphName();
         snapshot.gameRenderGraphExecutionCount = m_gameRenderGraph->GetExecutionCount();
         snapshot.gameRenderGraphCurrentExecuted = m_gameRenderGraph->HasExecutedCurrentGraph();
         snapshot.gameRenderGraphPassNames = m_gameRenderGraph->GetExecutedPassNames();
+        snapshot.gameRenderGraphDebug = m_gameRenderGraph->GetDebugString();
+        snapshot.gameShadowViewCount = m_gameRenderGraph->GetCameraShadowViewCount();
+        snapshot.gameShadowAssignmentCount = m_gameRenderGraph->GetCameraShadowAssignmentCount();
+        snapshot.gameShadowResourceIdentity = m_gameRenderGraph->GetShadowResourceIdentity();
         if (m_gameRenderGraph->HasCachedDrawCalls())
             snapshot.gameDrawCallCount = m_gameRenderGraph->GetCachedDrawCalls().size();
         if (m_gameRenderGraph->HasCachedShadowDrawCalls())
             snapshot.gameShadowDrawCallCount = countShadowCasters(m_gameRenderGraph->GetCachedShadowDrawCalls());
     }
-    if (m_vkCore)
+    if (gameCameras.size() > 1) {
+        snapshot.gameTemporalHistoryCount = 0;
+        snapshot.gameValidTemporalHistoryCount = 0;
+        snapshot.gameDrawCallCount = 0;
+        snapshot.gameShadowDrawCallCount = 0;
+        snapshot.gameShadowViewCount = 0;
+        snapshot.gameShadowAssignmentCount = 0;
+        for (Camera *camera : gameCameras) {
+            SceneRenderGraph *graph = EnsureGameRenderGraph(camera);
+            if (!graph)
+                continue;
+            snapshot.gameTemporalHistoryCount += graph->GetTemporalHistoryCount();
+            snapshot.gameValidTemporalHistoryCount += graph->GetValidTemporalHistoryCount();
+            snapshot.gameShadowViewCount += graph->GetCameraShadowViewCount();
+            snapshot.gameShadowAssignmentCount += graph->GetCameraShadowAssignmentCount();
+            if (graph->HasCachedDrawCalls())
+                snapshot.gameDrawCallCount += graph->GetCachedDrawCalls().size();
+            if (graph->HasCachedShadowDrawCalls())
+                snapshot.gameShadowDrawCallCount += countShadowCasters(graph->GetCachedShadowDrawCalls());
+        }
+    }
+    if (m_vkCore) {
         snapshot.lightCount = m_vkCore->GetLightCollector().GetTotalLightCount();
-    if (m_particleDrawCalls)
-        snapshot.particleCount = m_particleDrawCalls->GetParticleCount();
+        const FrameSubmissionTelemetry &submission = m_vkCore->GetFrameSubmissionTelemetry();
+        snapshot.submissionGeneration = submission.generation;
+        snapshot.submissionComposed = submission.composed;
+        snapshot.submissionComputeQueueIndependent = submission.computeQueueIndependent;
+        snapshot.submissionTransferQueueIndependent = submission.transferQueueIndependent;
+        snapshot.submissionAsyncComputeActive = submission.asyncComputeActive;
+        snapshot.submissionParallelComputeGraphics = submission.parallelComputeGraphics;
+        snapshot.submissionBatchCount = submission.batchCount;
+        snapshot.submissionGraphicsBatchCount = submission.graphicsBatchCount;
+        snapshot.submissionComputeBatchCount = submission.computeBatchCount;
+        snapshot.submissionTransferBatchCount = submission.transferBatchCount;
+        snapshot.submissionCrossQueueDependencyCount = submission.crossQueueDependencyCount;
+        snapshot.submissionUnorderedComputeGraphicsPairCount = submission.unorderedComputeGraphicsPairCount;
+        if (const auto *lights = m_vkCore->GetCanonicalLightGpuFrame()) {
+            snapshot.canonicalLightGpuBufferReady = lights->buffer.IsValid();
+            snapshot.canonicalLightGpuBytes = lights->dataBytes;
+            snapshot.canonicalLightGeneration = lights->generation;
+            snapshot.canonicalDirectionalLightCount = lights->directionalCount;
+            snapshot.canonicalLocalLightCount = lights->localCount;
+        }
+    }
+    if (m_particleGpuSystemManager) {
+        const auto gpuParticles = m_particleGpuSystemManager->TelemetrySnapshot();
+        snapshot.gpuParticleSystemCount = gpuParticles.systemCount;
+        snapshot.gpuParticleOutputCount = gpuParticles.outputCount;
+        snapshot.gpuParticleCapacity = gpuParticles.totalCapacity;
+        snapshot.gpuParticleLastScheduledFrame = gpuParticles.lastScheduledFrame;
+        snapshot.gpuParticleScheduledSystemCount = gpuParticles.scheduledSystemCount;
+        snapshot.gpuParticleSimulatingSystemCount = gpuParticles.simulatingSystemCount;
+        snapshot.gpuParticleRenderingSystemCount = gpuParticles.renderingSystemCount;
+        snapshot.gpuParticleRequestedSpawnCount = gpuParticles.requestedSpawnCount;
+        snapshot.gpuParticleContinuationSystemCount = gpuParticles.continuationSystemCount;
+        snapshot.gpuParticleContinuationCapacity = gpuParticles.totalContinuationCapacity;
+        snapshot.gpuParticleContinuationProgramGeneration = gpuParticles.maximumContinuationProgramGeneration;
+        snapshot.gpuParticleContinuationPrepareRecordCalls = gpuParticles.continuationPrepareRecordCalls;
+        snapshot.gpuParticleContinuationClassifyRecordCalls = gpuParticles.continuationClassifyRecordCalls;
+        snapshot.gpuParticleContinuationDispatchRecordCalls = gpuParticles.continuationDispatchRecordCalls;
+        snapshot.gpuParticleContinuationResetPendingCount = gpuParticles.continuationResetPendingCount;
+        snapshot.gpuParticleContactRuntimeSystemCount = gpuParticles.contactRuntimeSystemCount;
+        snapshot.gpuParticleContactRecordCapacity = gpuParticles.totalContactRecordCapacity;
+        snapshot.gpuParticleContactWorkItemCapacity = gpuParticles.totalContactWorkItemCapacity;
+        snapshot.gpuParticleContactResidentBytes = gpuParticles.totalContactResidentBytes;
+        snapshot.gpuParticleContactPrepareRecordCalls = gpuParticles.contactPrepareRecordCalls;
+        snapshot.gpuParticleContactSolveRecordCalls = gpuParticles.contactSolveRecordCalls;
+        snapshot.gpuParticleCollisionSceneRevision = gpuParticles.collisionSceneRevision;
+        snapshot.gpuParticleCollisionSceneColliderCount = gpuParticles.collisionSceneColliderCount;
+        snapshot.gpuParticleCollisionSceneTopologyRevision = gpuParticles.collisionSceneTopologyRevision;
+        snapshot.gpuParticleCollisionSceneMeshVertexCount = gpuParticles.collisionSceneMeshVertexCount;
+        snapshot.gpuParticleCollisionSceneMeshIndexCount = gpuParticles.collisionSceneMeshIndexCount;
+        snapshot.gpuParticleCollisionSceneMeshBvhNodeCount = gpuParticles.collisionSceneMeshBvhNodeCount;
+    }
     snapshot.gameRenderMs = m_lastGameRenderMs;
     snapshot.gameOnlyFrameMs = m_gameOnlyFrameMs;
     snapshot.sceneUpdateMs = m_sceneUpdateMs;
@@ -2185,14 +2947,36 @@ uint64_t InxRenderer::RequestCapture(CaptureSource source, const std::string &ou
     if (!m_captureService)
         throw std::logic_error("Capture service is not initialized");
     const bool gameView = source == CaptureSource::Game;
+    if (gameView && (!m_gameRenderTarget || !m_gameRenderTarget->IsReady())) {
+        if (!FindGameCameraCached())
+            throw std::logic_error("Game camera is not available");
+        constexpr uint32_t kBackgroundCaptureWidth = 1280;
+        constexpr uint32_t kBackgroundCaptureHeight = 720;
+        ResizeGameRenderTarget(kBackgroundCaptureWidth, kBackgroundCaptureHeight);
+    }
+    if (gameView)
+        (void)FindGameCamerasCached();
     const uint64_t generation = gameView ? m_gameRenderTargetGeneration : m_sceneRenderTargetGeneration;
     SceneRenderTarget *target = gameView ? m_gameRenderTarget.get() : m_sceneRenderTarget.get();
     if (!target || !target->IsReady())
         throw std::logic_error(gameView ? "Game render target is not initialized"
                                         : "Scene render target is not initialized");
 
-    const uint64_t captureId = m_captureService->Request(source, generation, m_frameCount, outputPath);
-    m_pendingCaptures.push_back({captureId, source});
+    SceneRenderGraph *sourceGraph = gameView ? m_gameRenderGraph : m_sceneRenderGraph.get();
+    if (!sourceGraph || !sourceGraph->GetRenderViewContext().IsValid())
+        throw std::logic_error("Capture source render view is not initialized");
+    rhi::RenderViewContext captureView = sourceGraph->GetRenderViewContext();
+    captureView.source = captureView.id;
+    captureView.id = rhi::AllocateRenderViewId();
+    captureView.kind = rhi::RenderViewKind::Capture;
+    captureView.output = rhi::RenderOutputKind::Readback;
+    // Capture metadata identifies the source but never owns its live handles.
+    captureView.color = {};
+    captureView.depth = {};
+    captureView.motion = {};
+    captureView.history = {};
+    const uint64_t captureId = m_captureService->Request(source, captureView, generation, m_frameCount, outputPath);
+    m_pendingCaptures.push_back({captureId, source, generation});
     return captureId;
 }
 
@@ -2212,6 +2996,29 @@ void InxRenderer::SubmitPendingCaptureReadbacks()
     for (const PendingCapture &capture : pending) {
         try {
             const bool gameView = capture.source == CaptureSource::Game;
+            const CaptureSnapshot snapshot = m_captureService->Query(capture.id);
+            if (snapshot.status != CaptureStatus::PendingGpu)
+                continue;
+
+            const uint64_t currentGeneration = gameView ? m_gameRenderTargetGeneration : m_sceneRenderTargetGeneration;
+            if (capture.sourceGeneration != currentGeneration) {
+                m_captureService->InvalidateSource(capture.source, currentGeneration);
+                continue;
+            }
+
+            if (gameView)
+                (void)FindGameCamerasCached();
+            SceneRenderGraph *graph = gameView ? m_gameRenderGraph : m_sceneRenderGraph.get();
+            SceneRenderTarget *target = gameView ? m_gameRenderTarget.get() : m_sceneRenderTarget.get();
+            if (!graph || !target || !target->IsReady() || !graph->HasExecutedCurrentGraph()) {
+                // A target recreated for a dynamic MSAA/resize request is not a
+                // valid capture source until its current graph has produced a
+                // complete frame. Keep the request pending instead of reading
+                // uninitialized or retired Vulkan resources.
+                m_pendingCaptures.push_back(capture);
+                RequestFullSpeedFrame();
+                continue;
+            }
             (void)m_captureService->AttachReadback(capture.id, RequestRenderTargetReadback(gameView), m_frameCount);
         } catch (const std::exception &exc) {
             const std::string error = std::string("Capture readback submission failed: ") + exc.what();
@@ -2239,28 +3046,80 @@ bool InxRenderer::CancelCapture(uint64_t captureId)
     return true;
 }
 
+uint64_t InxRenderer::RequestScenePick(float x, float y, float viewportWidth, float viewportHeight)
+{
+    if (!m_scenePickingService)
+        return 0;
+    const uint64_t requestId = m_scenePickingService->Request(x, y, viewportWidth, viewportHeight);
+    if (requestId != 0)
+        RequestFullSpeedFrame();
+    return requestId;
+}
+
+ScenePickSnapshot InxRenderer::QueryScenePick(uint64_t requestId) const
+{
+    if (!m_scenePickingService)
+        return {requestId, ScenePickStatus::Unknown, 0, "Scene picking service is unavailable"};
+    return m_scenePickingService->Query(requestId);
+}
+
 void InxRenderer::ResizeSceneRenderTarget(uint32_t width, uint32_t height)
 {
     if (m_sceneRenderTarget && width > 0 && height > 0 &&
         (width != m_sceneRenderTarget->GetWidth() || height != m_sceneRenderTarget->GetHeight())) {
-        m_sceneRenderTarget->Resize(width, height);
+        auto replacementTarget = std::make_unique<SceneRenderTarget>(m_vkCore.get());
+        replacementTarget->SetMsaaSampleCount(m_sceneRenderTarget->GetMsaaSampleCount());
+        if (!replacementTarget->Initialize(width, height)) {
+            INXLOG_ERROR("Failed to prepare replacement Scene render target for resize to ", width, "x", height,
+                         "; keeping the current generation.");
+            return;
+        }
+
+        std::unique_ptr<OutlineRenderer> replacementOutline;
+        if (m_outlineRenderer) {
+            replacementOutline = std::make_unique<OutlineRenderer>();
+            if (m_outlineRenderer->IsReady() &&
+                !replacementOutline->Initialize(m_vkCore.get(), replacementTarget.get())) {
+                const rhi::SubmissionSerial failedCandidateEpoch =
+                    m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
+                replacementTarget->RetireResourcesAfter(m_vkCore->GetRetirementQueue(), failedCandidateEpoch);
+                INXLOG_ERROR("Failed to prepare replacement Outline generation for Scene resize to ", width, "x",
+                             height, "; keeping the current generation.");
+                return;
+            }
+        }
+
+        const rhi::SubmissionSerial cutoverEpoch =
+            m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
+        if (m_sceneRenderGraph)
+            m_sceneRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch);
+
+        std::unique_ptr<SceneRenderTarget> retiredTarget = std::move(m_sceneRenderTarget);
+        std::unique_ptr<OutlineRenderer> retiredOutline = std::move(m_outlineRenderer);
+        m_sceneRenderTarget = std::move(replacementTarget);
+        m_outlineRenderer = std::move(replacementOutline);
+        if (m_sceneRenderGraph)
+            m_sceneRenderGraph->ReplaceSceneTarget(m_sceneRenderTarget.get());
+
+        auto &retirementQueue = m_vkCore->GetRetirementQueue();
+        if (retiredOutline) {
+            std::shared_ptr<OutlineRenderer> retired(retiredOutline.release());
+            retirementQueue.RetireAfter(cutoverEpoch, [retired = std::move(retired)] { retired->Cleanup(false); });
+        }
+        retiredTarget->RetireResourcesAfter(retirementQueue, cutoverEpoch);
+
         ++m_sceneRenderTargetGeneration;
         if (m_captureService)
             m_captureService->InvalidateSource(CaptureSource::Scene, m_sceneRenderTargetGeneration);
-        if (m_sceneRenderGraph) {
-            m_sceneRenderGraph->OnResize(width, height);
-        }
         // Update aspect ratio for projection matrix calculation
         if (m_vkCore) {
             m_vkCore->SetSceneRenderTargetSize(width, height);
         }
-        // Recreate outline framebuffers to match new dimensions
-        if (m_outlineRenderer) {
-            m_outlineRenderer->OnResize(width, height);
-        }
 
         // Update scene camera aspect ratio
         SceneRenderBridge::Instance().OnWindowResize(width, height);
+        if (m_gui)
+            m_gui->RequestFrame();
     }
 }
 
@@ -2295,9 +3154,201 @@ GizmosDrawCallBuffer *InxRenderer::GetGizmosDrawCallBuffer()
     return m_componentGizmos.get();
 }
 
-ParticleDrawCallBuffer *InxRenderer::GetParticleDrawCallBuffer()
+particle::ParticleGpuDrawRegistry *InxRenderer::GetParticleGpuDrawRegistry()
 {
-    return m_particleDrawCalls.get();
+    return m_particleGpuDrawRegistry.get();
+}
+
+particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
+{
+    return m_particleGpuSystemManager.get();
+}
+
+void InxRenderer::UpdateParticleCollisionScene()
+{
+    if (!m_particleGpuSystemManager)
+        return;
+
+    auto &store = PhysicsECSStore::Instance();
+    Scene *scene = SceneManager::Instance().GetActiveScene();
+    const uint64_t sourceRevision = store.GetCollisionSceneRevision();
+    if (scene == m_particleCollisionSourceScene && sourceRevision == m_particleCollisionSourceRevision)
+        return;
+
+    const bool sceneChanged = scene != m_particleCollisionSourceScene;
+    if (sceneChanged)
+        m_particleCollisionPublishedState.clear();
+
+    uint64_t topologyFingerprint = 1469598103934665603ull;
+    store.ForEachAliveCollider([&](const ColliderECSData &data) {
+        const auto *mesh = dynamic_cast<const MeshCollider *>(data.owner);
+        if (!mesh || !mesh->IsEnabled())
+            return;
+        const GameObject *gameObject = mesh->GetGameObject();
+        if (!gameObject || gameObject->GetScene() != scene || !gameObject->IsActiveInHierarchy() ||
+            mesh->GetCollisionPositions().empty() || mesh->GetCollisionIndices().empty())
+            return;
+        ParticleCollisionHashAppend(topologyFingerprint, ParticleCollisionStableHash(mesh->GetInstanceGuid()));
+        ParticleCollisionHashAppend(topologyFingerprint, mesh->GetCollisionGeometryRevision());
+        ParticleCollisionHashAppend(topologyFingerprint, mesh->GetCollisionPositions().size());
+        ParticleCollisionHashAppend(topologyFingerprint, mesh->GetCollisionIndices().size());
+    });
+    const bool replaceTopology = sceneChanged || topologyFingerprint != m_particleCollisionTopologyFingerprint;
+    const uint64_t topologyRevision =
+        replaceTopology ? m_particleCollisionTopologyRevision + 1u : m_particleCollisionTopologyRevision;
+
+    particle::GpuParticleCollisionSceneSnapshot snapshot;
+    ++m_particleCollisionPublishedRevision;
+    if (m_particleCollisionPublishedRevision == 0)
+        ++m_particleCollisionPublishedRevision;
+    snapshot.revision = m_particleCollisionPublishedRevision;
+    snapshot.topologyRevision = topologyRevision;
+    snapshot.replaceMeshTopology = replaceTopology;
+    if (replaceTopology) {
+        store.ForEachAliveCollider([&](const ColliderECSData &data) {
+            const auto *mesh = dynamic_cast<const MeshCollider *>(data.owner);
+            if (!mesh || !mesh->IsEnabled())
+                return;
+            const GameObject *gameObject = mesh->GetGameObject();
+            if (!gameObject || gameObject->GetScene() != scene || !gameObject->IsActiveInHierarchy())
+                return;
+            const auto &positions = mesh->GetCollisionPositions();
+            const auto &indices = mesh->GetCollisionIndices();
+            if (positions.empty() || indices.empty())
+                return;
+            particle::GpuParticleCollisionMeshGeometry geometry;
+            geometry.identity = ParticleCollisionStableHash(mesh->GetInstanceGuid());
+            geometry.positions.reserve(positions.size());
+            for (const auto &position : positions)
+                geometry.positions.push_back({position.x, position.y, position.z, 0.0f});
+            geometry.indices = indices;
+            snapshot.meshGeometries.push_back(std::move(geometry));
+        });
+    }
+    snapshot.staticColliders.reserve(store.GetAliveColliderCount());
+    snapshot.dynamicColliders.reserve(store.GetAliveColliderCount());
+    std::unordered_map<uint64_t, ParticleCollisionPublishedState> nextPublishedState;
+    nextPublishedState.reserve(store.GetAliveColliderCount());
+
+    store.ForEachAliveCollider([&](const ColliderECSData &data) {
+        Collider *collider = data.owner;
+        if (!collider || !collider->IsEnabled())
+            return;
+        GameObject *gameObject = collider->GetGameObject();
+        if (!gameObject || gameObject->GetScene() != scene || !gameObject->IsActiveInHierarchy())
+            return;
+        Transform *transform = gameObject->GetTransform();
+        if (!transform)
+            return;
+
+        particle::GpuParticleColliderRecord record;
+        particle::GpuParticleColliderType type;
+        glm::vec3 localBoundsMin(-0.5f);
+        glm::vec3 localBoundsMax(0.5f);
+        if (const auto *box = dynamic_cast<const BoxCollider *>(collider)) {
+            type = particle::GpuParticleColliderType::Box;
+            const glm::vec3 size = box->GetSize();
+            record.shape = {size.x, size.y, size.z, 0.0f};
+            localBoundsMin = -size * 0.5f;
+            localBoundsMax = size * 0.5f;
+        } else if (const auto *sphere = dynamic_cast<const SphereCollider *>(collider)) {
+            type = particle::GpuParticleColliderType::Sphere;
+            record.shape = {sphere->GetRadius(), 0.0f, 0.0f, 0.0f};
+            localBoundsMin = glm::vec3(-sphere->GetRadius());
+            localBoundsMax = glm::vec3(sphere->GetRadius());
+        } else if (const auto *capsule = dynamic_cast<const CapsuleCollider *>(collider)) {
+            type = particle::GpuParticleColliderType::Capsule;
+            record.shape = {capsule->GetRadius(), capsule->GetHeight(), static_cast<float>(capsule->GetDirection()),
+                            0.0f};
+            const float halfHeight = std::max(capsule->GetHeight() * 0.5f, capsule->GetRadius());
+            localBoundsMin = glm::vec3(-capsule->GetRadius());
+            localBoundsMax = glm::vec3(capsule->GetRadius());
+            const auto axis = static_cast<size_t>(capsule->GetDirection());
+            localBoundsMin[axis] = -halfHeight;
+            localBoundsMax[axis] = halfHeight;
+        } else if (const auto *mesh = dynamic_cast<const MeshCollider *>(collider)) {
+            type = particle::GpuParticleColliderType::Mesh;
+            const auto &positions = mesh->GetCollisionPositions();
+            if (positions.empty() || mesh->GetCollisionIndices().empty())
+                return;
+            localBoundsMin = positions.front();
+            localBoundsMax = positions.front();
+            for (const auto &position : positions) {
+                localBoundsMin = glm::min(localBoundsMin, position);
+                localBoundsMax = glm::max(localBoundsMax, position);
+            }
+            record.shape = {0.0f, 0.0f, 0.0f, 0.0f};
+        } else {
+            return;
+        }
+
+        const glm::mat4 colliderToWorld =
+            transform->GetWorldMatrix() * glm::translate(glm::mat4(1.0f), collider->GetCenter());
+        const float determinant = glm::determinant(glm::mat3(colliderToWorld));
+        if (!ParticleCollisionFinite(colliderToWorld) || !std::isfinite(determinant) ||
+            std::abs(determinant) <= 1.0e-8f)
+            return;
+        const glm::mat4 worldToCollider = glm::inverse(colliderToWorld);
+        if (!ParticleCollisionFinite(worldToCollider))
+            return;
+        StoreParticleCollisionAffine(record.colliderToWorld, colliderToWorld);
+        StoreParticleCollisionAffine(record.worldToCollider, worldToCollider);
+        StoreParticleCollisionAabb(record, colliderToWorld, localBoundsMin, localBoundsMax);
+
+        uint32_t flags = collider->IsTrigger() ? particle::GpuParticleColliderTrigger : 0u;
+        if (const auto *mesh = dynamic_cast<const MeshCollider *>(collider); mesh && mesh->IsConvex())
+            flags |= particle::GpuParticleColliderConvex;
+        if (Rigidbody *rigidbody = collider->GetCachedRigidbody(); rigidbody && rigidbody->IsEnabled()) {
+            flags |= particle::GpuParticleColliderDynamic;
+            const glm::vec3 velocity = rigidbody->GetVelocity();
+            record.linearVelocity = {velocity.x, velocity.y, velocity.z, 0.0f};
+        }
+        record.material = {collider->GetFriction(), collider->GetBounciness(),
+                           static_cast<float>(collider->GetFrictionCombine()),
+                           static_cast<float>(collider->GetBounceCombine())};
+        record.metadata = {static_cast<uint32_t>(type), 1u << static_cast<uint32_t>(gameObject->GetLayer()), flags, 0u};
+        const uint64_t componentIdentity = ParticleCollisionStableHash(collider->GetInstanceGuid());
+        const uint64_t objectIdentity = gameObject->GetID();
+        record.identity = {static_cast<uint32_t>(componentIdentity), static_cast<uint32_t>(componentIdentity >> 32u),
+                           static_cast<uint32_t>(objectIdentity), static_cast<uint32_t>(objectIdentity >> 32u)};
+        const auto previous = m_particleCollisionPublishedState.find(componentIdentity);
+        if (previous != m_particleCollisionPublishedState.end()) {
+            CopyParticleCollisionAffine(record.previousWorldToCollider, previous->second.worldToCollider);
+            record.previousWorldAabbMin = previous->second.worldAabbMin;
+            record.previousWorldAabbMax = previous->second.worldAabbMax;
+        } else {
+            record.previousWorldToCollider = record.worldToCollider;
+            record.previousWorldAabbMin = record.worldAabbMin;
+            record.previousWorldAabbMax = record.worldAabbMax;
+        }
+        auto &nextState = nextPublishedState[componentIdentity];
+        CopyParticleCollisionAffine(nextState.worldToCollider, record.worldToCollider);
+        nextState.worldAabbMin = record.worldAabbMin;
+        nextState.worldAabbMax = record.worldAabbMax;
+        if ((flags & particle::GpuParticleColliderDynamic) != 0)
+            snapshot.dynamicColliders.push_back(record);
+        else
+            snapshot.staticColliders.push_back(record);
+    });
+
+    std::string error;
+    const bool published = m_particleGpuSystemManager->PublishCollisionScene(snapshot, &error);
+    if (published) {
+        m_particleCollisionSourceScene = scene;
+        m_particleCollisionSourceRevision = sourceRevision;
+        m_particleCollisionPublishedState = std::move(nextPublishedState);
+        if (replaceTopology) {
+            m_particleCollisionTopologyFingerprint = topologyFingerprint;
+            m_particleCollisionTopologyRevision = topologyRevision;
+        }
+    } else {
+        INXLOG_ERROR("Failed to publish GPU particle collision scene: ", error);
+    }
+}
+
+uint32_t InxRenderer::GetMaxFramesInFlight() const noexcept
+{
+    return m_vkCore ? m_vkCore->GetMaxFramesInFlight() : 0;
 }
 
 bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
@@ -2316,6 +3367,8 @@ bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
         return false;
     }
 
+    const auto shaderProgram = ResolveShaderProgramArtifact(material);
+
     // Get shader names from material
     const std::string &vertName = material->GetVertShaderName();
     const std::string &fragName = material->GetFragShaderName();
@@ -2327,8 +3380,18 @@ bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
         return false;
     }
 
-    // Load and compile shaders, then update pipeline
-    return m_vkCore->RefreshMaterialPipeline(material, vertName, fragName);
+    bool refreshed = true;
+    if (!shaderProgram || shaderProgram->domain != ShaderProgramDomain::ParticleSprite)
+        refreshed = m_vkCore->RefreshMaterialPipeline(material, vertName, fragName);
+
+    if (m_particleGpuSystemManager) {
+        std::string particleError;
+        if (!m_particleGpuSystemManager->RefreshMaterialProgram(material, shaderProgram, &particleError)) {
+            INXLOG_ERROR("RefreshMaterialPipeline: ", particleError);
+            refreshed = false;
+        }
+    }
+    return refreshed;
 }
 
 std::shared_ptr<vk::ImageReadbackTicket>
@@ -2336,6 +3399,8 @@ InxRenderer::BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &materia
 {
     if (!m_vkCore || !material)
         return nullptr;
+    if (m_shaderProgramArtifactResolver)
+        m_shaderProgramArtifactResolver(material);
     return m_vkCore->BeginMaterialPreviewGPU(material, size);
 }
 
@@ -2353,6 +3418,12 @@ InxRenderer::BeginMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::sha
 {
     if (!m_vkCore)
         return nullptr;
+    if (m_shaderProgramArtifactResolver) {
+        for (const auto &material : materials) {
+            if (material)
+                m_shaderProgramArtifactResolver(material);
+        }
+    }
     return m_vkCore->BeginMeshPreviewGPU(mesh, materials, size);
 }
 
@@ -2374,6 +3445,11 @@ uint64_t InxRenderer::RenderMeshPreviewGPUImGuiCamera(const InxMesh &mesh,
     return m_vkCore->RenderMeshPreviewGPUImGuiCamera(mesh, materials, size, view, proj, cameraPos, cloneMaterials);
 }
 
+uint64_t InxRenderer::GetMeshPreviewDisplayTextureId() const
+{
+    return m_vkCore ? m_vkCore->GetMeshPreviewDisplayTextureId() : 0;
+}
+
 void InxRenderer::InvalidateShaderCache(const std::string &shaderId)
 {
     INXLOG_DEBUG("InvalidateShaderCache called: ", shaderId);
@@ -2381,6 +3457,16 @@ void InxRenderer::InvalidateShaderCache(const std::string &shaderId)
     if (!m_vkCore) {
         INXLOG_ERROR("InvalidateShaderCache: VkCore is null");
         return;
+    }
+
+    // Fullscreen RenderEffect pipelines are not part of the material cache.
+    // Retire their old shader revision before publishing the replacement raw
+    // module so the next graph record cannot silently keep the old effect.
+    if (m_sceneRenderGraph)
+        m_sceneRenderGraph->InvalidateFullscreenShader(shaderId);
+    for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+        (void)cameraId;
+        graph->InvalidateFullscreenShader(shaderId);
     }
 
     m_vkCore->InvalidateShaderCache(shaderId);
@@ -2438,12 +3524,7 @@ bool InxRenderer::RefreshMaterialsUsingShader(const std::string &shaderId)
                 return true;
             if (name.empty())
                 return false;
-            size_t lastSlash = name.find_last_of("/\\");
-            std::string fileName = (lastSlash != std::string::npos) ? name.substr(lastSlash + 1) : name;
-            size_t dotPos = fileName.find_last_of('.');
-            if (dotPos != std::string::npos)
-                fileName = fileName.substr(0, dotPos);
-            return fileName == shaderId;
+            return PortablePathStem(name) == shaderId;
         };
         bool matches = matchesId(vertName) || matchesId(fragName);
 
@@ -2462,6 +3543,51 @@ bool InxRenderer::RefreshMaterialsUsingShader(const std::string &shaderId)
 SceneRenderGraph *InxRenderer::GetSceneRenderGraph()
 {
     return m_sceneRenderGraph.get();
+}
+
+uint64_t InxRenderer::RequestGpuParticleViewDiagnostics(bool gameView, uint64_t graphInstanceId,
+                                                        uint64_t cameraComponentId)
+{
+    SceneRenderGraph *graph = m_sceneRenderGraph.get();
+    if (gameView) {
+        (void)FindGameCamerasCached();
+        if (cameraComponentId == 0) {
+            graph = m_gameRenderGraph;
+        } else if (const auto found = m_gameRenderGraphs.find(cameraComponentId); found != m_gameRenderGraphs.end()) {
+            graph = found->second.get();
+        } else {
+            graph = nullptr;
+        }
+    } else if (cameraComponentId != 0) {
+        return 0;
+    }
+    return graph ? graph->RequestParticleViewDiagnostics(graphInstanceId) : 0;
+}
+
+particle::GpuParticleViewDiagnosticSnapshot
+InxRenderer::QueryGpuParticleViewDiagnostics(bool gameView, uint64_t requestId, uint64_t cameraComponentId) const
+{
+    const SceneRenderGraph *graph = m_sceneRenderGraph.get();
+    uint64_t resolvedCameraComponentId = 0;
+    if (gameView) {
+        if (cameraComponentId == 0) {
+            graph = m_gameRenderGraph;
+            resolvedCameraComponentId = m_cachedGameCamera ? m_cachedGameCamera->GetComponentID() : 0;
+        } else if (const auto found = m_gameRenderGraphs.find(cameraComponentId); found != m_gameRenderGraphs.end()) {
+            graph = found->second.get();
+            resolvedCameraComponentId = cameraComponentId;
+        } else {
+            graph = nullptr;
+        }
+    } else if (cameraComponentId != 0) {
+        graph = nullptr;
+    }
+    if (!graph)
+        return {};
+    auto snapshot = graph->QueryParticleViewDiagnostics(requestId);
+    snapshot.cameraComponentId = resolvedCameraComponentId;
+    snapshot.renderViewId = graph->GetRenderViewContext().id;
+    return snapshot;
 }
 
 std::shared_ptr<InxMaterial> InxRenderer::GetFirstMeshRendererMaterial()
@@ -2521,28 +3647,92 @@ Camera *InxRenderer::FindGameCamera()
     return activeScene->FindGameCamera(editorCam);
 }
 
-Camera *InxRenderer::FindGameCameraCached()
+std::vector<Camera *> InxRenderer::FindGameCameras()
+{
+    Scene *activeScene = SceneManager::Instance().GetActiveScene();
+    if (!activeScene)
+        return {};
+    Camera *editorCam = SceneManager::Instance().GetEditorCameraController().GetCamera();
+    return activeScene->GetActiveGameCameras(editorCam);
+}
+
+SceneRenderGraph *InxRenderer::EnsureGameRenderGraph(Camera *camera)
+{
+    if (!camera || !m_gameRenderTarget || !m_gameRenderTarget->IsReady() || !m_vkCore)
+        return nullptr;
+
+    const uint64_t cameraId = camera->GetComponentID();
+    auto found = m_gameRenderGraphs.find(cameraId);
+    if (found != m_gameRenderGraphs.end())
+        return found->second.get();
+
+    auto graph = std::make_unique<SceneRenderGraph>();
+    if (!graph->Initialize(m_vkCore.get(), m_gameRenderTarget.get(), rhi::RenderViewKind::Game)) {
+        INXLOG_ERROR("Failed to initialize Game RenderGraph for Camera component ", cameraId);
+        return nullptr;
+    }
+    graph->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
+    graph->SetEffectiveMsaaSamples(GetMsaaSamples());
+    SceneRenderGraph *result = graph.get();
+    m_gameRenderGraphs.emplace(cameraId, std::move(graph));
+    return result;
+}
+
+const std::vector<Camera *> &InxRenderer::FindGameCamerasCached()
 {
     if (m_gameCameraCacheValid)
-        return m_cachedGameCamera;
+        return m_cachedGameCameras;
+
+    m_cachedGameCameras = FindGameCameras();
     m_cachedGameCamera = FindGameCamera();
     m_gameCameraCacheValid = true;
+
+    for (auto it = m_gameRenderGraphs.begin(); it != m_gameRenderGraphs.end();) {
+        const bool active = std::any_of(
+            m_cachedGameCameras.begin(), m_cachedGameCameras.end(),
+            [cameraId = it->first](const Camera *camera) { return camera && camera->GetComponentID() == cameraId; });
+        if (active) {
+            ++it;
+            continue;
+        }
+        if (m_gameRenderGraph == it->second.get())
+            m_gameRenderGraph = nullptr;
+        it = m_gameRenderGraphs.erase(it);
+    }
+
+    // Screen-space UI is a property of the final Game output, not of every
+    // camera layer. Keep it attached only to the highest-depth active camera.
+    for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+        (void)cameraId;
+        graph->SetScreenUIRenderer(nullptr);
+    }
+    for (Camera *camera : m_cachedGameCameras)
+        (void)EnsureGameRenderGraph(camera);
+    if (!m_cachedGameCameras.empty()) {
+        if (SceneRenderGraph *last = EnsureGameRenderGraph(m_cachedGameCameras.back()))
+            last->SetScreenUIRenderer(m_screenUIRenderer.get());
+    }
+
+    m_gameRenderGraph = m_cachedGameCamera ? EnsureGameRenderGraph(m_cachedGameCamera) : nullptr;
+    if (!m_gameRenderGraph && !m_cachedGameCameras.empty())
+        m_gameRenderGraph = EnsureGameRenderGraph(m_cachedGameCameras.front());
+
+    return m_cachedGameCameras;
+}
+
+Camera *InxRenderer::FindGameCameraCached()
+{
+    (void)FindGameCamerasCached();
     return m_cachedGameCamera;
 }
 
-uint64_t InxRenderer::GetGameTextureId() const
+uint64_t InxRenderer::GetGameTextureId()
 {
     if (m_gameRenderTarget && m_gameRenderTarget->IsReady()) {
-        // Use the per-frame cached camera instead of re-scanning the scene.
-        // The cache is populated by FindGameCameraCached() during DrawFrame.
-        if (m_gameCameraCacheValid && m_cachedGameCamera)
+        // Resolving here makes the GUI's no-camera state change in the same
+        // frame instead of briefly presenting the previous camera image.
+        if (FindGameCameraCached())
             return m_gameRenderTarget->GetImGuiTextureId();
-
-        // Fallback: check the scene's cached main camera (O(1) pointer check)
-        Scene *activeScene = SceneManager::Instance().GetActiveScene();
-        if (activeScene && activeScene->GetMainCamera())
-            return m_gameRenderTarget->GetImGuiTextureId();
-
         return 0;
     }
     return 0;
@@ -2569,36 +3759,97 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
         m_gameRenderTarget->Initialize(width, height);
         ++m_gameRenderTargetGeneration;
 
-        // Create a dedicated SceneRenderGraph for game camera
-        m_gameRenderGraph = std::make_unique<SceneRenderGraph>();
-        m_gameRenderGraph->Initialize(m_vkCore.get(), m_gameRenderTarget.get());
-
         // Create the screen UI renderer for GPU-based 2D UI in the game render graph
         if (!m_screenUIRenderer) {
             m_screenUIRenderer = std::make_unique<InxScreenUIRenderer>();
             m_screenUIRenderer->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
                                            m_gameRenderTarget->GetColorFormat(),
                                            m_gameRenderTarget->GetMsaaSampleCount());
-            m_screenUIRenderer->SetDeletionQueue(&m_vkCore->GetDeletionQueue());
+            m_screenUIRenderer->SetRetirementQueue(&m_vkCore->GetRetirementQueue());
+            m_screenUIRenderer->SetTextureUsageValidator(
+                [this](uint64_t textureId) { return m_gui && m_gui->TouchImGuiTextureId(textureId); });
         }
-        m_gameRenderGraph->SetScreenUIRenderer(m_screenUIRenderer.get());
-
-        // Pre-discover game camera so GetGameTextureId() returns a valid
-        // texture on the very first frame (avoids "No Camera" flicker).
-        FindGameCamera();
+        // Pre-discover the ordered camera stack and create one graph per
+        // camera so the first Game frame cannot reuse Scene-view state.
+        m_gameCameraCacheValid = false;
+        (void)FindGameCamerasCached();
 
         return;
     }
 
     if (m_gameRenderTarget && (width != m_gameRenderTarget->GetWidth() || height != m_gameRenderTarget->GetHeight())) {
-        m_gameRenderTarget->Resize(width, height);
+        auto replacementTarget = std::make_unique<SceneRenderTarget>(m_vkCore.get());
+        replacementTarget->SetMsaaSampleCount(m_gameRenderTarget->GetMsaaSampleCount());
+        if (!replacementTarget->Initialize(width, height)) {
+            INXLOG_ERROR("Failed to prepare replacement Game render target for resize to ", width, "x", height,
+                         "; keeping the current generation.");
+            return;
+        }
+
+        const rhi::SubmissionSerial cutoverEpoch =
+            m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
+        for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+            (void)cameraId;
+            graph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch);
+        }
+
+        std::unique_ptr<SceneRenderTarget> retiredTarget = std::move(m_gameRenderTarget);
+        m_gameRenderTarget = std::move(replacementTarget);
+        for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+            (void)cameraId;
+            graph->ReplaceSceneTarget(m_gameRenderTarget.get());
+        }
+        retiredTarget->RetireResourcesAfter(m_vkCore->GetRetirementQueue(), cutoverEpoch);
+
         ++m_gameRenderTargetGeneration;
         if (m_captureService)
             m_captureService->InvalidateSource(CaptureSource::Game, m_gameRenderTargetGeneration);
-        if (m_gameRenderGraph) {
-            m_gameRenderGraph->OnResize(width, height);
+        if (m_gui)
+            m_gui->RequestFrame();
+    }
+}
+
+void InxRenderer::InvalidateTemporalHistory(bool sceneView, bool gameView)
+{
+    bool invalidated = false;
+    if (sceneView && m_sceneRenderGraph) {
+        m_sceneRenderGraph->InvalidateTemporalHistory();
+        invalidated = true;
+    }
+    if (gameView) {
+        for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+            (void)cameraId;
+            graph->InvalidateTemporalHistory();
+            invalidated = true;
         }
     }
+    if (invalidated)
+        ++m_temporalHistoryInvalidationCount;
+}
+
+void InxRenderer::ConsumeSceneTemporalDiscontinuity()
+{
+    Scene *scene = SceneManager::Instance().GetActiveScene();
+    const uint64_t worldId = scene ? scene->GetWorldId() : 0;
+    if (worldId != m_temporalHistoryWorldId) {
+        m_temporalHistoryWorldId = worldId;
+        m_observedSceneTemporalDiscontinuityRevision = scene ? scene->GetTemporalDiscontinuityRevision() : 0;
+        InvalidateTemporalHistory();
+        m_gameRenderGraph = nullptr;
+        m_gameRenderGraphs.clear();
+        m_gameCameraCacheValid = false;
+        m_cachedGameCamera = nullptr;
+        m_cachedGameCameras.clear();
+        return;
+    }
+    if (!scene)
+        return;
+
+    const uint64_t revision = scene->GetTemporalDiscontinuityRevision();
+    if (revision == m_observedSceneTemporalDiscontinuityRevision)
+        return;
+    m_observedSceneTemporalDiscontinuityRevision = revision;
+    InvalidateTemporalHistory();
 }
 
 void InxRenderer::SetSceneViewVisible(bool visible)
@@ -2607,11 +3858,11 @@ void InxRenderer::SetSceneViewVisible(bool visible)
         return;
     m_sceneViewVisible = visible;
 
-    // When hiding the scene view, clear stale cached draw calls so they
-    // don't poison CleanupDrawCallBuffers (keeping zombie buffers alive)
-    // and don't interfere with the game view's rendering state.
+    // Hiding a panel only invalidates its camera-dependent submissions.  The
+    // compiled graph description remains authoritative for shared pipeline
+    // settings such as the shadow atlas resolution.
     if (!visible && m_sceneRenderGraph) {
-        m_sceneRenderGraph->ClearCachedFrameState();
+        m_sceneRenderGraph->ClearCachedViewSubmission();
     }
 }
 
@@ -2634,97 +3885,240 @@ InxScreenUIRenderer *InxRenderer::GetScreenUIRenderer()
 // MSAA Configuration
 // ============================================================================
 
-static VkSampleCountFlagBits IntToSampleCount(int samples)
+uint32_t InxRenderer::GetSupportedMsaaSampleMask() const
 {
-    switch (samples) {
-    case 1:
-        return VK_SAMPLE_COUNT_1_BIT;
-    case 2:
-        return VK_SAMPLE_COUNT_2_BIT;
-    case 4:
-        return VK_SAMPLE_COUNT_4_BIT;
-    case 8:
-        return VK_SAMPLE_COUNT_8_BIT;
-    default:
-        INXLOG_WARN("Invalid MSAA sample count ", samples, ", clamping to 4");
-        return VK_SAMPLE_COUNT_4_BIT;
-    }
+    if (!m_vkCore)
+        return 0;
+    const VkFormat colorFormat =
+        m_sceneRenderTarget ? m_sceneRenderTarget->GetColorFormat() : VK_FORMAT_R16G16B16A16_SFLOAT;
+    const VkFormat depthFormat =
+        m_sceneRenderTarget ? m_sceneRenderTarget->GetDepthFormat() : m_vkCore->GetDeviceContext().FindDepthFormat();
+    const auto &deviceContext = m_vkCore->GetDeviceContext();
+    const auto colorSamples = deviceContext.GetImageSampleCountMask(colorFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                                                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    const auto resolveSamples = deviceContext.GetImageSampleCountMask(
+        colorFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    const auto depthSamples =
+        deviceContext.GetImageSampleCountMask(depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    return GetSceneTargetSampleCountMask(colorSamples, resolveSamples, depthSamples);
 }
 
 void InxRenderer::SetMsaaSamples(int samples)
 {
-    VkSampleCountFlagBits vkSamples = IntToSampleCount(samples);
+    if (!ApplyMsaaSamples(samples, "engine API"))
+        SetEffectiveGraphMsaaSamples(GetMsaaSamples());
+}
 
-    // Check if already set
-    if (m_sceneRenderTarget && m_sceneRenderTarget->GetMsaaSampleCount() == vkSamples) {
-        return; // No change
+bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
+{
+    if (!IsValidMsaaSampleCount(samples)) {
+        ++m_msaaRejectedRequestCount;
+        INXLOG_ERROR("Rejected invalid ", source, " MSAA request ", samples, "x; valid values are 1, 2, 4, and 8.");
+        return false;
     }
 
-    // Must drain GPU before destroying Vulkan resources
-    if (m_vkCore) {
-        m_vkCore->GetDeviceContext().WaitIdle();
+    const uint32_t supportedMask = GetSupportedMsaaSampleMask();
+    if (!SupportsMsaaSampleCount(static_cast<rhi::SampleCountMask>(supportedMask), samples)) {
+        ++m_msaaRejectedRequestCount;
+        INXLOG_ERROR("Rejected unsupported ", source, " MSAA request ", samples,
+                     "x for the HDR color/depth target pair (supported mask=", supportedMask,
+                     "). The active setting remains unchanged.");
+        return false;
     }
 
-    // 1. Recreate scene render target with new sample count
-    if (m_sceneRenderTarget) {
-        uint32_t w = m_sceneRenderTarget->GetWidth();
-        uint32_t h = m_sceneRenderTarget->GetHeight();
-        m_sceneRenderTarget->SetMsaaSampleCount(vkSamples);
-        m_sceneRenderTarget->Cleanup();
-        m_sceneRenderTarget->Initialize(w, h);
+    const VkSampleCountFlagBits vkSamples = rhi::ToVkSampleCount(ToRhiSampleCount(samples));
+    const bool sceneAligned = !m_sceneRenderTarget || m_sceneRenderTarget->GetMsaaSampleCount() == vkSamples;
+    const bool gameAligned = !m_gameRenderTarget || m_gameRenderTarget->GetMsaaSampleCount() == vkSamples;
+    const bool materialsAligned = !m_vkCore || m_vkCore->GetMaterialPipelineManager().GetSampleCount() == vkSamples;
 
-        // Force render graph rebuild to pick up new MSAA resources
-        // (OnResize is a no-op when dimensions haven't changed)
-        if (m_sceneRenderGraph) {
-            m_sceneRenderGraph->MarkDirty();
+    if (sceneAligned && gameAligned && materialsAligned)
+        return false;
+
+    std::unique_ptr<SceneRenderTarget> replacementSceneTarget;
+    std::unique_ptr<SceneRenderTarget> replacementGameTarget;
+    std::unique_ptr<InxScreenUIRenderer> replacementScreenUI;
+    std::unique_ptr<OutlineRenderer> replacementOutline;
+
+    auto createReplacement = [this, vkSamples](const SceneRenderTarget &source) {
+        auto replacement = std::make_unique<SceneRenderTarget>(m_vkCore.get());
+        replacement->SetMsaaSampleCount(vkSamples);
+        if (!replacement->Initialize(source.GetWidth(), source.GetHeight()))
+            replacement.reset();
+        return replacement;
+    };
+
+    if (!sceneAligned) {
+        replacementSceneTarget = createReplacement(*m_sceneRenderTarget);
+        if (!replacementSceneTarget) {
+            INXLOG_ERROR("Failed to create the replacement Scene target for ", samples,
+                         "x MSAA; keeping all current resources.");
+            return false;
         }
     }
 
-    // 2. Recreate game render target with new sample count
-    if (m_gameRenderTarget) {
-        uint32_t w = m_gameRenderTarget->GetWidth();
-        uint32_t h = m_gameRenderTarget->GetHeight();
-        m_gameRenderTarget->SetMsaaSampleCount(vkSamples);
-        m_gameRenderTarget->Cleanup();
-        m_gameRenderTarget->Initialize(w, h);
-
-        // Force render graph rebuild to pick up new MSAA resources
-        if (m_gameRenderGraph) {
-            m_gameRenderGraph->MarkDirty();
-        }
-
-        // Reinitialize ScreenUIRenderer with new sample count
-        if (m_screenUIRenderer) {
-            m_screenUIRenderer = std::make_unique<InxScreenUIRenderer>();
-            m_screenUIRenderer->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
-                                           m_gameRenderTarget->GetColorFormat(),
-                                           m_gameRenderTarget->GetMsaaSampleCount());
-            m_screenUIRenderer->SetDeletionQueue(&m_vkCore->GetDeletionQueue());
-            if (m_gameRenderGraph) {
-                m_gameRenderGraph->SetScreenUIRenderer(m_screenUIRenderer.get());
-            }
+    if (!gameAligned) {
+        replacementGameTarget = createReplacement(*m_gameRenderTarget);
+        if (!replacementGameTarget) {
+            INXLOG_ERROR("Failed to create the replacement Game target for ", samples,
+                         "x MSAA; keeping all current resources.");
+            return false;
         }
     }
 
-    // 3. Reinitialize material pipeline manager with new MSAA setting
-    if (m_vkCore) {
-        m_vkCore->ReinitializeMaterialPipelines(vkSamples);
+    if (m_gameRenderTarget && (!gameAligned || !materialsAligned)) {
+        replacementScreenUI = std::make_unique<InxScreenUIRenderer>();
+        if (!replacementScreenUI->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
+                                             m_gameRenderTarget->GetColorFormat(), vkSamples)) {
+            INXLOG_ERROR("Failed to create the replacement Screen UI pipeline for ", samples,
+                         "x MSAA; keeping all current resources.");
+            return false;
+        }
+        replacementScreenUI->SetRetirementQueue(&m_vkCore->GetRetirementQueue());
+        replacementScreenUI->SetTextureUsageValidator(
+            [this](uint64_t textureId) { return m_gui && m_gui->TouchImGuiTextureId(textureId); });
     }
 
-    // 4. Reset outline renderer — it caches framebuffers and image views
-    //    from the old SceneRenderTarget.  Without cleanup it would use
-    //    destroyed Vulkan handles on the next frame → crash.
-    if (m_outlineRenderer) {
-        m_outlineRenderer->Cleanup();
+    if (replacementSceneTarget && m_outlineRenderer) {
+        replacementOutline = std::make_unique<OutlineRenderer>();
+        if (m_outlineRenderer->IsReady() &&
+            !replacementOutline->Initialize(m_vkCore.get(), replacementSceneTarget.get())) {
+            INXLOG_ERROR("Failed to prepare the replacement Outline generation for ", samples,
+                         "x MSAA; keeping all current resources.");
+            return false;
+        }
     }
+
+    // No command buffer is submitted after this snapshot and before the
+    // generation commit. Every old object therefore shares one cross-queue
+    // retirement boundary, including asynchronous particle compute/export.
+    const rhi::SubmissionSerial cutoverEpoch = m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
+
+    // Material pipelines are the only fallible part of the publication step.
+    // Prepare and commit their complete generation before replacing any live
+    // render target so a pipeline build failure leaves the old frame coherent.
+    if (m_vkCore && !m_vkCore->CommitMaterialPipelineGeneration(vkSamples)) {
+        ++m_msaaRejectedRequestCount;
+        INXLOG_ERROR("Failed to prepare the material pipeline generation for ", samples,
+                     "x MSAA; keeping the previous setting.");
+        return false;
+    }
+
+    std::unique_ptr<SceneRenderTarget> retiredSceneTarget;
+    std::unique_ptr<SceneRenderTarget> retiredGameTarget;
+    std::unique_ptr<InxScreenUIRenderer> retiredScreenUI;
+    std::unique_ptr<OutlineRenderer> retiredOutline;
+
+    // Framebuffers own references to target image views. Detach them before
+    // publishing the replacement target and before queuing target retirement.
+    if (replacementSceneTarget && m_sceneRenderGraph)
+        m_sceneRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch);
+    if (replacementGameTarget) {
+        for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+            (void)cameraId;
+            graph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch);
+        }
+    }
+
+    if (replacementSceneTarget) {
+        retiredSceneTarget = std::move(m_sceneRenderTarget);
+        m_sceneRenderTarget = std::move(replacementSceneTarget);
+        if (m_sceneRenderGraph)
+            m_sceneRenderGraph->ReplaceSceneTarget(m_sceneRenderTarget.get());
+        ++m_sceneRenderTargetGeneration;
+        if (m_captureService)
+            m_captureService->InvalidateSource(CaptureSource::Scene, m_sceneRenderTargetGeneration);
+
+        retiredOutline = std::move(m_outlineRenderer);
+        m_outlineRenderer = std::move(replacementOutline);
+    }
+    if (replacementGameTarget) {
+        retiredGameTarget = std::move(m_gameRenderTarget);
+        m_gameRenderTarget = std::move(replacementGameTarget);
+        for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+            (void)cameraId;
+            graph->ReplaceSceneTarget(m_gameRenderTarget.get());
+        }
+        ++m_gameRenderTargetGeneration;
+        if (m_captureService)
+            m_captureService->InvalidateSource(CaptureSource::Game, m_gameRenderTargetGeneration);
+    }
+    if (replacementScreenUI) {
+        retiredScreenUI = std::move(m_screenUIRenderer);
+        m_screenUIRenderer = std::move(replacementScreenUI);
+        m_gameCameraCacheValid = false;
+        (void)FindGameCamerasCached();
+    }
+
+    auto &retirementQueue = m_vkCore->GetRetirementQueue();
+    if (retiredOutline) {
+        std::shared_ptr<OutlineRenderer> retired(retiredOutline.release());
+        retirementQueue.RetireAfter(cutoverEpoch, [retired = std::move(retired)] { retired->Cleanup(false); });
+    }
+    if (retiredScreenUI) {
+        std::shared_ptr<InxScreenUIRenderer> retired(retiredScreenUI.release());
+        retirementQueue.RetireAfter(cutoverEpoch, [retired = std::move(retired)] {});
+    }
+    if (retiredSceneTarget)
+        retiredSceneTarget->RetireResourcesAfter(retirementQueue, cutoverEpoch);
+    if (retiredGameTarget)
+        retiredGameTarget->RetireResourcesAfter(retirementQueue, cutoverEpoch);
+
+    // BuildFrame() ran before the MSAA request was observed. Replacing render
+    // targets and preview renderers invalidates texture descriptor sets already
+    // baked into that ImDrawData. Make the next editor frame rebuild the GUI
+    // before it can submit those stale handles.
+    if (m_gui)
+        m_gui->RequestFrame();
+
+    SetEffectiveGraphMsaaSamples(samples);
+    ++m_msaaReconfigurationCount;
+    INXLOG_INFO("Applied ", samples, "x MSAA from ", source,
+                " to Scene, Game, material, preview, and Screen UI paths.");
+    return true;
 }
 
 int InxRenderer::GetMsaaSamples() const
 {
-    if (m_sceneRenderTarget) {
+    if (m_sceneRenderTarget)
         return static_cast<int>(m_sceneRenderTarget->GetMsaaSampleCount());
-    }
+    if (m_gameRenderTarget)
+        return static_cast<int>(m_gameRenderTarget->GetMsaaSampleCount());
+    if (m_vkCore)
+        return static_cast<int>(m_vkCore->GetMaterialPipelineManager().GetSampleCount());
     return 4; // default
+}
+
+void InxRenderer::SetEffectiveGraphMsaaSamples(int samples)
+{
+    if (m_sceneRenderGraph)
+        m_sceneRenderGraph->SetEffectiveMsaaSamples(samples);
+    for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+        (void)cameraId;
+        graph->SetEffectiveMsaaSamples(samples);
+    }
+}
+
+MsaaStateSnapshot InxRenderer::GetMsaaStateSnapshot() const
+{
+    MsaaStateSnapshot snapshot;
+    snapshot.activeSamples = GetMsaaSamples();
+    snapshot.sceneRequestedSamples = m_sceneRequestedMsaaSamples;
+    snapshot.gameRequestedSamples = m_gameRequestedMsaaSamples;
+    snapshot.supportedSampleMask = GetSupportedMsaaSampleMask();
+    snapshot.requestConflict = m_msaaRequestConflict;
+    snapshot.sceneTargetAligned =
+        !m_sceneRenderTarget || static_cast<int>(m_sceneRenderTarget->GetMsaaSampleCount()) == snapshot.activeSamples;
+    snapshot.gameTargetAligned =
+        !m_gameRenderTarget || static_cast<int>(m_gameRenderTarget->GetMsaaSampleCount()) == snapshot.activeSamples;
+    snapshot.materialPipelinesAligned =
+        !m_vkCore ||
+        static_cast<int>(m_vkCore->GetMaterialPipelineManager().GetSampleCount()) == snapshot.activeSamples;
+    snapshot.sceneMsaaColorBytes = m_sceneRenderTarget ? m_sceneRenderTarget->GetMsaaColorResidentBytes() : 0;
+    snapshot.gameMsaaColorBytes = m_gameRenderTarget ? m_gameRenderTarget->GetMsaaColorResidentBytes() : 0;
+    snapshot.reconfigurationCount = m_msaaReconfigurationCount;
+    snapshot.rejectedRequestCount = m_msaaRejectedRequestCount;
+    return snapshot;
 }
 
 void InxRenderer::SetPresentMode(int mode)
@@ -2784,13 +4178,41 @@ float InxRenderer::GetEditorFpsCap() const
 
 void InxRenderer::SetPlayModeRendering(bool play)
 {
+    const bool changed = m_view && m_view->IsPlayMode() != play;
     if (m_view)
         m_view->SetPlayMode(play);
+    if (changed)
+        InvalidateTemporalHistory();
 }
 
 bool InxRenderer::IsPlayModeRendering() const
 {
     return m_view ? m_view->IsPlayMode() : false;
+}
+
+void InxRenderer::SetSelectedObjectId(uint64_t objectId)
+{
+    SetSelectedObjectIds(objectId == 0 ? std::vector<uint64_t>{} : std::vector<uint64_t>{objectId});
+}
+
+void InxRenderer::SetSelectedObjectIds(const std::vector<uint64_t> &objectIds)
+{
+    if (m_selectedOutlineObjectIds == objectIds)
+        return;
+
+    m_selectedOutlineObjectIds = objectIds;
+    m_selectedObjectId = objectIds.empty() ? 0 : objectIds.back();
+
+    // Selection changes are editor state publications, not ordinary scene
+    // mutations. Publish them to the outline owner immediately so an idle or
+    // throttled Scene view cannot keep a stale graph topology until another
+    // operation (such as capture) happens to wake rendering.
+    if (m_outlineRenderer)
+        m_outlineRenderer->SetOutlineObjectIds(m_selectedOutlineObjectIds);
+    if (m_sceneRenderGraph)
+        m_sceneRenderGraph->SetOutlineRenderer(m_sceneViewVisible ? m_outlineRenderer.get() : nullptr);
+
+    RequestFullSpeedFrame();
 }
 
 void InxRenderer::RequestFullSpeedFrame()

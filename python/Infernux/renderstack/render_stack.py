@@ -2,85 +2,65 @@
 RenderStack — Scene-level rendering configuration component.
 
 RenderStack is a scene-singleton InxComponent that manages:
-- The active RenderPipeline (topology skeleton + injection points)
-- All mounted RenderPass instances (user effects + built-in passes)
-- Graph construction: combines pipeline topology with injected passes
+- The active RenderPipeline (topology skeleton + EffectStages)
+- Ordered reusable Effect assets mounted into those stages
+- Graph construction and parameter-only hot updates
 
 Architecture::
 
     RenderStack (InxComponent, scene singleton)
       ├── selected_pipeline: RenderPipeline  (defines topology skeleton)
-      └── pass_entries: List[PassEntry]      (user-mounted passes)
+      └── effect_slots: List[EffectSlot]      (stage-owned reusable assets)
 
     Each frame:
       1. RenderStack.render(context, camera)
       2. Lazy-build graph if invalidated
       3. context.apply_graph(desc) + context.submit_culling(culling)
 
-Build flow (Section 7.1)::
-
-    graph = RenderGraph("Pipeline+Stack")
-    bus = ResourceBus()
-    pipeline.define_topology(graph, bus, callback)
-      └── callback triggers _inject_passes_at for each injection point
-    graph.set_output(bus.get("color"))
-    graph.build() → RenderGraphDescription
-
 Usage::
 
     # In a scene setup script
     stack = game_object.add_component(RenderStack)
+    # Empty selection already means Default Forward. Select another built-in
+    # pipeline explicitly only when the scene needs it.
     stack.set_pipeline("Default Forward")
-    stack.add_pass(BloomPass())
+    stack.add_effect_slot("final", bloom_effect_ref)
 """
 
 from __future__ import annotations
 
 import json as _json
-import sys
 import warnings
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Dict, Optional, TYPE_CHECKING
 
 from Infernux.components.component import InxComponent
+from Infernux.components.serialized_field import FieldType, list_field
 from Infernux.components.decorators import disallow_multiple, add_component_menu
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
     ensure_standard_post_process_points,
 )
-from Infernux.renderstack.injection_point import InjectionPoint
+from Infernux.renderstack.effect_slot import EffectSlot
 from Infernux.renderstack.resource_bus import ResourceBus
 
 if TYPE_CHECKING:
     from Infernux.rendergraph.graph import RenderGraph
-    from Infernux.renderstack.render_pass import RenderPass
 
 
-@dataclass
-class PassEntry:
-    """Persistent data for a mounted RenderStack pass slot."""
-
-    render_pass: "RenderPass"
-    enabled: bool = True
-    order: int = 0
-    # injection_point is read from render_pass.injection_point.
-
-
-from ._render_pass_mgmt import RenderPassManagementMixin
 from ._render_pipeline_reload import PipelineReloadMixin
 
 @disallow_multiple
 @add_component_menu("Rendering/RenderStack")
-class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
+class RenderStack(PipelineReloadMixin, InxComponent):
     """Scene-level rendering configuration component.
 
-    Manages the active RenderPipeline and all mounted RenderPass instances for
+    Manages the active RenderPipeline and its reusable EffectStage assets for
     the current scene. At most one RenderStack can be active at a time.
 
     Attributes:
         pipeline_class_name: Selected pipeline class name. Empty means the
             default pipeline.
-        pass_entries: Mounted pass list.
+        effect_slots: Ordered Effect assets grouped by pipeline stage.
     """
 
     _component_category_ = "Rendering"
@@ -98,6 +78,37 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         return inst
 
     @classmethod
+    def refresh_active_instance(
+        cls,
+        scene=None,
+        *,
+        exclude: Optional["RenderStack"] = None,
+    ) -> Optional["RenderStack"]:
+        """Resolve ownership once after a scene graph has been published."""
+        cls._active_instance = None
+        if scene is None:
+            try:
+                from Infernux.lib import SceneManager as _NativeSceneManager
+                scene = _NativeSceneManager.instance().get_active_scene()
+            except Exception:
+                return None
+        if scene is None or not hasattr(scene, "get_all_objects"):
+            return None
+        for obj in scene.get_all_objects() or ():
+            if not obj.is_active_in_hierarchy():
+                continue
+            for component in obj.get_py_components() or ():
+                if (
+                    isinstance(component, cls)
+                    and component is not exclude
+                    and cls._is_effectively_active(component)
+                ):
+                    cls._active_instance = component
+                    component.invalidate_graph()
+                    return component
+        return None
+
+    @classmethod
     def _is_effectively_active(cls, stack: Optional["RenderStack"]) -> bool:
         if stack is None or not stack.is_valid or not stack.enabled:
             return False
@@ -106,19 +117,29 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
 
     # ---- Serialized fields ----
     pipeline_class_name: str = ""
-    mounted_passes_json: str = ""   # Persisted pass configuration.
     pipeline_params_json: str = ""  # Persisted pipeline parameter snapshot.
-
+    effect_slots: list = list_field(
+        element_type=FieldType.SERIALIZABLE_OBJECT,
+        element_class=EffectSlot,
+        default=[],
+        tooltip="Ordered Effect assets mounted into pipeline stages.",
+    )
     # ---- Runtime state (not serialized) ----
     _pipeline = None  # Optional[RenderPipeline]
     _graph_desc = None  # cached RenderGraphDescription
     _resource_bus: Optional[ResourceBus] = None
     _build_failed: bool = False  # True after a build error; cleared by invalidate_graph()
     _pipeline_module = None  # module object for watchdog hot-reload subscription
-    _pass_entries: List[PassEntry] = None  # initialized properly in awake()
     _pipeline_param_store: Dict[str, Dict[str, object]] = None
     _pipeline_catalog_signature: tuple = ()
     _topology_probe_cache = None
+    _last_valid_topology_probe = None
+    _topology_probe_error: str = ""
+    _last_valid_graph_desc = None
+    _compiled_effect_bindings = None
+    _effect_upload_revisions = None
+    _effect_compile_errors: tuple[str, ...] = ()
+    _effect_artifact_topology_generation = 0
 
     # ==================================================================
     # Lifecycle
@@ -133,10 +154,14 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         """
         # Initialize instance-level fields (not serialized), but do NOT
         # stomp values already restored by on_after_deserialize().
-        if self._pass_entries is None:
-            self._pass_entries = []
         if self._pipeline_param_store is None:
             self._pipeline_param_store = {}
+        if self.effect_slots is None:
+            self.effect_slots = []
+        if self._compiled_effect_bindings is None:
+            self._compiled_effect_bindings = []
+        if self._effect_upload_revisions is None:
+            self._effect_upload_revisions = {}
         self._pipeline_catalog_signature = ()
         self._register_pipeline_catalog_reload()
         self._sync_pipeline_catalog()
@@ -164,7 +189,13 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
             self._pipeline.dispose()
         self._pipeline = None
         self._graph_desc = None
+        self._last_valid_graph_desc = None
+        self._last_valid_topology_probe = None
+        self._topology_probe_error = ""
         self._resource_bus = None
+        self._compiled_effect_bindings = []
+        self._effect_upload_revisions = {}
+        self._effect_artifact_topology_generation = 0
         if was_active:
             self._promote_next_stack()
 
@@ -193,143 +224,175 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         except Exception as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
-        if scene is None:
-            return
-        for obj in scene.get_all_objects():
-            if not obj.is_active_in_hierarchy():
-                continue
-            for comp in obj.get_py_components():
-                if (isinstance(comp, RenderStack)
-                        and comp is not self
-                        and RenderStack._is_effectively_active(comp)):
-                    RenderStack._active_instance = comp
-                    comp.invalidate_graph()
-                    return
-
-    # ------------------------------------------------------------------
-    # Custom inspector
-    # ------------------------------------------------------------------
-
-    def on_inspector_gui(self, ctx) -> None:
-        """Render the RenderStack custom inspector panel."""
-        from Infernux.engine.ui.inspector_renderstack import render_renderstack_inspector
-        render_renderstack_inspector(ctx, self)
+        RenderStack.refresh_active_instance(scene, exclude=self)
 
     # ------------------------------------------------------------------
     # Serialization hooks
     # ------------------------------------------------------------------
 
     def on_before_serialize(self) -> None:
-        """Save pass_entries into mounted_passes_json."""
+        """Persist the current pipeline parameter snapshot."""
+        self.sync_pipeline_parameters()
+
+    def sync_pipeline_parameters(self) -> None:
+        """Mirror live pipeline parameters into the serialized component state."""
         self._save_current_pipeline_params()
-        entries = []
-        for e in self._pass_entries:
-            entry_data = {
-                "class": type(e.render_pass).__name__,
-                "enabled": e.enabled,
-                "order": e.order,
-            }
-            # FullScreenEffect: also persist tuneable parameters
-            from Infernux.renderstack.fullscreen_effect import FullScreenEffect
-            if isinstance(e.render_pass, FullScreenEffect):
-                entry_data["params"] = e.render_pass.get_params_dict()
-            entries.append(entry_data)
-        # Only overwrite when we actually have runtime entries; when
-        # _pass_entries is empty (e.g. discover_passes() failed) preserve the
-        # existing serialised data so the play-mode snapshot keeps the values.
-        if entries:
-            self.mounted_passes_json = _json.dumps(entries)
-        self.pipeline_params_json = _json.dumps(self._pipeline_param_store) if self._pipeline_param_store else ""
+        serialized = _json.dumps(self._pipeline_param_store)
+        if self.pipeline_params_json != serialized:
+            self.pipeline_params_json = serialized
+
+    def _deserialize_fields_document(
+        self, data: dict, *, _skip_on_after_deserialize: bool = False
+    ) -> None:
+        if not isinstance(data, dict):
+            raise TypeError("RenderStack fields document must be an object")
+        obsolete = {"effect_stage_bindings_json", "mounted_passes_json"}.intersection(data)
+        if obsolete:
+            raise ValueError(
+                "RenderStack contains removed fields: " + ", ".join(sorted(obsolete))
+            )
+        super()._deserialize_fields_document(
+            data,
+            _skip_on_after_deserialize=_skip_on_after_deserialize,
+        )
 
     def on_after_deserialize(self) -> None:
-        """Recreate pass_entries from mounted_passes_json."""
+        """Restore the canonical pipeline and EffectStage state."""
         # Register as the active instance so that the fast-path in
         # RenderStackPipeline._find_render_stack works even in edit mode
         # (where awake() is not called).
         if RenderStack.instance() is None and RenderStack._is_effectively_active(self):
             RenderStack._active_instance = self
 
-        # Ensure _pass_entries is initialized (may be called before awake())
-        if self._pass_entries is None:
-            self._pass_entries = []
-        else:
-            # Scene / project reopen can invoke deserialization multiple times
-            # during object reconstruction. Always rebuild from JSON instead of
-            # appending onto previously restored runtime state.
-            self._pass_entries.clear()
         if self._pipeline_param_store is None:
             self._pipeline_param_store = {}
 
+        self._normalize_effect_slots()
+
         if self.pipeline_params_json:
-            try:
-                data = _json.loads(self.pipeline_params_json)
-                if isinstance(data, dict):
-                    self._pipeline_param_store = data
-            except (ValueError, _json.JSONDecodeError):
-                self._pipeline_param_store = {}
+            data = _json.loads(self.pipeline_params_json)
+            if type(data) is not dict:
+                raise TypeError("RenderStack pipeline parameters must be an object")
+            self._pipeline_param_store = data
 
-        if not self.mounted_passes_json:
-            return
-        from Infernux.renderstack.discovery import discover_passes
-
-        all_passes = discover_passes()
-        items = _json.loads(self.mounted_passes_json)
-        restored_keys = set()
-        for item in items:
-            cls_name = item.get("class", "")
-            cls = all_passes.get(cls_name)
-            if cls is None:
-                # Also try name→class mapping by class __name__
-                for pcls in all_passes.values():
-                    if pcls.__name__ == cls_name:
-                        cls = pcls
-                        break
-            if cls is None:
-                print(
-                    f"[RenderStack] Cannot restore pass '{cls_name}' "
-                    f"— class not found.",
-                    file=sys.stderr,
-                )
-                continue
-            inst = cls()
-            # FullScreenEffect: restore tuneable parameters
-            from Infernux.renderstack.fullscreen_effect import FullScreenEffect
-            if isinstance(inst, FullScreenEffect) and "params" in item:
-                inst.set_params_dict(item["params"])
-            entry = PassEntry(
-                render_pass=inst,
-                enabled=item.get("enabled", True),
-                order=item.get("order", 0),
-            )
-            inst.enabled = entry.enabled
-            key = (inst.injection_point, inst.name)
-            if key in restored_keys:
-                continue
-            restored_keys.add(key)
-            self._pass_entries.append(entry)
-
-        # Validate injection points (warn only — don't drop entries, because
-        # the pipeline might not be loaded yet or may change later).
-        if self._pass_entries:
-            try:
-                valid_points = {p.name for p in self.injection_points}
-                for entry in self._pass_entries:
-                    ip = entry.render_pass.injection_point
-                    if ip not in valid_points:
-                        print(
-                            f"[RenderStack] Restored pass '{entry.render_pass.name}' "
-                            f"has unknown injection_point '{ip}'. "
-                            f"Valid: {sorted(valid_points)}",
-                            file=sys.stderr,
-                        )
-            except (RuntimeError, AttributeError) as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass  # pipeline not available yet — skip validation
-            self.invalidate_graph()
+        # Deserialization may be repeated on an existing editor component.
+        # Recreate the selected pipeline only after its parameter store exists.
+        self._pipeline = None
+        self._topology_probe_cache = None
+        self._cached_ips = None
 
     # ==================================================================
     # Pipeline management
     # ==================================================================
+
+    @property
+    def effect_compile_errors(self) -> tuple[str, ...]:
+        """Current non-destructive diagnostics for mounted Effect assets."""
+        if self._topology_probe_error:
+            return (*self._effect_compile_errors, self._topology_probe_error)
+        return self._effect_compile_errors
+
+    @property
+    def effect_stages(self):
+        """Pipeline-declared EffectStages in topology order."""
+        return tuple(self._build_full_topology_probe().effect_stages)
+
+    @property
+    def orphan_effect_slots(self):
+        """Saved slots whose stage was removed from the current pipeline."""
+        stages = self.effect_stages
+        return tuple(
+            slot
+            for slot in (self.effect_slots or ())
+            if not any(stage.stable_id == slot.stage_id for stage in stages)
+        )
+
+    def _resolve_effect_stage(self, stage_id: str):
+        from Infernux.renderstack.effect_stage import validate_effect_stage_id
+
+        normalized_id = validate_effect_stage_id(stage_id)
+        for stage in self.effect_stages:
+            if stage.stable_id == normalized_id:
+                return stage
+        valid = [stage.stable_id for stage in self.effect_stages]
+        raise ValueError(
+            f"pipeline '{self.pipeline.name}' does not declare EffectStage "
+            f"{normalized_id!r}; valid stages: {valid}"
+        )
+
+    def get_effect_stage_slots(self, stage_id: str):
+        """Return the ordered structured slots for one stable EffectStage."""
+        stage = self._resolve_effect_stage(stage_id)
+        return tuple(
+            slot for slot in (self.effect_slots or ()) if stage.stable_id == slot.stage_id
+        )
+
+    def set_effect_stage_slots(self, stage_id: str, slots) -> None:
+        """Replace one stage list while preserving all other stage bindings."""
+        stage = self._resolve_effect_stage(stage_id)
+        replacement = []
+        for slot in slots:
+            if not isinstance(slot, EffectSlot):
+                raise TypeError("RenderStack stage slots must be EffectSlot values")
+            slot.stage_id = stage.stable_id
+            replacement.append(slot)
+        self.effect_slots = [
+            slot for slot in self.effect_slots if stage.stable_id != slot.stage_id
+        ] + replacement
+        self._normalize_effect_slots()
+        self.invalidate_graph()
+
+    def add_effect_slot(self, stage_id: str, effect=None, *, enabled: bool = True) -> EffectSlot:
+        """Append a serializable Effect asset slot to one pipeline stage."""
+        stage = self._resolve_effect_stage(stage_id)
+        slot = EffectSlot(
+            stage_id=stage.stable_id,
+            effect=effect,
+            enabled=enabled,
+        )
+        self.effect_slots = [*self.effect_slots, slot]
+        self.invalidate_graph()
+        return slot
+
+    def get_effect(self, stage_id: str, index: int = 0):
+        """Resolve one mounted Effect for ordinary runtime scripts."""
+        slots = self.get_effect_stage_slots(stage_id)
+        if index < 0 or index >= len(slots):
+            return None
+        return slots[index].effect
+
+    def remap_orphan_effect_stage(self, old_stage_id: str, new_stage_id: str) -> int:
+        """Move preserved orphan slots onto one currently declared stage."""
+        from Infernux.renderstack.effect_stage import validate_effect_stage_id
+
+        old_id = validate_effect_stage_id(old_stage_id)
+        if any(stage.stable_id == old_id for stage in self.effect_stages):
+            raise ValueError(f"EffectStage {old_id!r} is declared and is not orphaned")
+        target = self._resolve_effect_stage(new_stage_id)
+        remapped = 0
+        for slot in self.effect_slots or ():
+            if slot.stage_id == old_id:
+                slot.stage_id = target.stable_id
+                remapped += 1
+        if remapped:
+            self._normalize_effect_slots()
+            self.invalidate_graph()
+        return remapped
+
+    def _normalize_effect_slots(self) -> None:
+        import uuid
+        from Infernux.renderstack.effect_stage import validate_effect_stage_id
+
+        slot_ids = set()
+        for slot in self.effect_slots or []:
+            if not isinstance(slot, EffectSlot):
+                raise TypeError("RenderStack.effect_slots must contain EffectSlot values")
+            slot.stage_id = validate_effect_stage_id(slot.stage_id)
+            if not slot.slot_id:
+                slot.slot_id = uuid.uuid4().hex
+            if slot.slot_id in slot_ids:
+                raise ValueError(f"duplicate effect slot_id: {slot.slot_id!r}")
+            slot_ids.add(slot.slot_id)
 
     @staticmethod
     def discover_pipelines() -> Dict[str, type]:
@@ -368,50 +431,80 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         return self._pipeline
 
     # ==================================================================
-    # Pass management
-    # ==================================================================
-
-    # ==================================================================
     # Graph construction
     # ==================================================================
 
     def _build_full_topology_probe(self):
         """Return a RenderGraph with the pipeline-defined topology.
 
-        Used by ``injection_points`` and the inspector renderer to display
-        the same sequence the pipeline explicitly defines.
+        Used by the common Inspector model to display the same sequence the
+        pipeline explicitly defines.
         """
         if self._topology_probe_cache is not None:
             return self._topology_probe_cache
 
         from Infernux.rendergraph.graph import RenderGraph
-        g = RenderGraph("_FullTopologyProbe")
-        self.pipeline.define_topology(g)
-        # Keep the inspector probe consistent with build(): post-process
-        # injection points are guaranteed to exist even when Screen UI is off.
-        ensure_standard_post_process_points(g)
+
+        try:
+            g = RenderGraph("_FullTopologyProbe")
+            self.pipeline.define_topology(g)
+            # Keep the inspector probe consistent with build(): post-process
+            # injection points are guaranteed to exist even when Screen UI is off.
+            ensure_standard_post_process_points(g)
+        except Exception as exc:
+            diagnostic = (
+                f"Pipeline topology is invalid: {type(exc).__name__}: {exc}. "
+                "The last valid Inspector topology remains active."
+            )
+            if diagnostic != self._topology_probe_error:
+                from Infernux.debug import Debug
+
+                Debug.log_error(f"[RenderStack] {diagnostic}")
+            self._topology_probe_error = diagnostic
+            if self._last_valid_topology_probe is not None:
+                return self._last_valid_topology_probe
+
+            # A newly-created broken custom pipeline has no previous topology.
+            # Show the standard mount points so the Inspector remains usable;
+            # never let a pipeline authoring error escape into ImGui's stack.
+            from Infernux.renderstack.default_forward_pipeline import (
+                DefaultForwardPipeline,
+            )
+
+            try:
+                g = RenderGraph("_SafeTopologyProbe")
+                DefaultForwardPipeline().define_topology(g)
+                ensure_standard_post_process_points(g)
+                return g
+            except Exception as fallback_exc:
+                Debug.log_error(
+                    "[RenderStack] Safe Inspector topology also failed: "
+                    f"{type(fallback_exc).__name__}: {fallback_exc}"
+                )
+                return RenderGraph("_EmptyTopologyProbe")
+
+        self._topology_probe_error = ""
         self._topology_probe_cache = g
+        self._last_valid_topology_probe = g
         return g
 
     def invalidate_graph(self) -> None:
         """Mark the graph as needing a rebuild.
 
-        This is called automatically after pass changes and pipeline switches.
+        This is called automatically after effect or pipeline changes.
         """
         self._graph_desc = None
         self._build_failed = False  # allow retry after explicit invalidation
         self._topology_probe_cache = None
+        # Keep the bindings and upload revisions paired with the last valid
+        # graph until a replacement graph has built successfully. A rejected
+        # edit must not disable live parameters on the graph still on screen.
 
     def build_graph(self):  # -> RenderGraphDescription
         """Build the complete RenderGraph.
 
-        Steps:
-            1. Create ``RenderGraph("Pipeline+Stack")``
-            2. Install the injection callback for mounted passes
-            3. Call ``pipeline.define_topology(graph)``
-            4. Validate that no injection point appears before the first pass
-            5. Set the final graph output
-            6. Build the graph description
+        The pipeline defines topology and EffectStages. Structured EffectSlot
+        assets are compiled only at those stages before the graph is built.
 
         Returns:
             Compiled ``RenderGraphDescription`` ready for
@@ -419,26 +512,76 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         """
         from Infernux.rendergraph.graph import RenderGraph
 
-        # Guard: ensure pass_entries is initialized even if awake() hasn't run yet
-        if self._pass_entries is None:
-            self._pass_entries = []
-
         graph = RenderGraph("Pipeline+Stack")
-        bus = ResourceBus()
-        self._resource_bus = bus
+        self._resource_bus = ResourceBus()
+        compiled_effects = []
+        effect_errors = []
 
-        # Callback: invoked every time pipeline calls graph.injection_point()
-        def on_injection_point(point_name: str) -> None:
-            # Sync bus with all graph textures (add any new ones)
-            for tex in graph._textures:
-                if not bus.has(tex.name):
-                    bus.set(tex.name, tex)
-            self._inject_passes_at(point_name, graph, bus)
+        def on_effect_stage(stage) -> None:
+            from Infernux.renderstack.render_effect_compiler import compile_effect_slots
 
-        graph._injection_callback = on_injection_point
+            # A route/layer/stage/composite mount owns a local semantic image
+            # set. Reusing one bus across mount points leaks the last isolated
+            # route color into the final scene output.
+            bus = ResourceBus()
+            self._resource_bus = bus
+            semantic_resources = graph.current_effect_resources
+            for resource_name in stage.contract.inputs:
+                resource = semantic_resources.get(resource_name)
+                if resource is None:
+                    resource = graph.get_texture(resource_name)
+                if resource is not None:
+                    bus.set(resource_name, resource)
+
+            stage_color = bus.get(COLOR_TEXTURE)
+            bindings, errors = compile_effect_slots(
+                stage,
+                self.get_effect_stage_slots(stage.stable_id),
+                graph,
+                bus,
+            )
+            compiled_effects.extend(bindings)
+            effect_errors.extend(errors)
+
+            effect_color = bus.get(COLOR_TEXTURE)
+            if (stage_color is not None
+                    and effect_color is not None
+                    and effect_color is not stage_color):
+                with graph.name_scope(f"effects/{stage.stable_id}"):
+                    with graph.add_pass("Commit") as render_pass:
+                        render_pass.set_texture("_SourceTex", effect_color)
+                        render_pass.write_color(stage_color)
+                        render_pass.fullscreen_quad("Fullscreen Blit")
+                bus.set(COLOR_TEXTURE, stage_color)
+
+        graph._effect_stage_callback = on_effect_stage
+
+        from Infernux.renderstack.render_effect_compiler import (
+            resolve_effect_stage_route_policy,
+        )
+
+        graph._effect_route_policy_resolver = lambda stage_ids: (
+            resolve_effect_stage_route_policy(
+                stage_ids,
+                self.get_effect_stage_slots,
+            )
+        )
+        graph._effect_stage_active_resolver = lambda stage_id: any(
+            slot.enabled for slot in self.get_effect_stage_slots(stage_id)
+        )
 
         # Pipeline populates graph with passes + injection points
         self.pipeline.define_topology(graph)
+        from Infernux.renderstack.render_effect_compiler import (
+            RenderEffectArtifactRegistry,
+        )
+
+        self._effect_artifact_topology_generation = (
+            RenderEffectArtifactRegistry.topology_generation()
+        )
+        self._compiled_effect_bindings = compiled_effects
+        self._effect_compile_errors = tuple(effect_errors)
+        self._effect_upload_revisions = {}
 
         # Ensure before/after_post_process injection points exist WHILE the
         # callback is still active. graph.build() also auto-injects these,
@@ -447,39 +590,24 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         # here triggers the callback so mounted effects are properly inserted.
         ensure_standard_post_process_points(graph)
 
+        # Built-in display encode: the swapchain and editor viewport are UNORM
+        # surfaces without hardware sRGB, so every pipeline must end with an
+        # explicit linear → sRGB encode. Pipelines with a ScreenUI section
+        # already inserted it before the overlay pass; this is the fallback
+        # for pipelines without one (idempotent).
+        graph.display_encode_section()
+
         # Validate: no injection point before first pass
         graph.validate_no_ip_before_first_pass()
 
-        # If post-processing effects redirected "color" to a different
-        # texture, blit the result back to the original camera target
-        # (backbuffer) so it gets presented to the screen.
-        original_color = graph.get_texture(COLOR_TEXTURE)
-        final_color = bus.get(COLOR_TEXTURE)
-        if (final_color is not None
-                and original_color is not None
-                and final_color is not original_color):
-            # Move _ScreenUI_Overlay (if present) so it renders AFTER the
-            # final blit — otherwise the blit overwrites the overlay UI.
-            overlay_pass = graph.remove_pass("_ScreenUI_Overlay")
-
-            with graph.add_pass("_FinalCompositeBlit") as p:
-                p.set_texture("_SourceTex", final_color)
-                p.write_color(original_color)
-                p.fullscreen_quad("fullscreen_blit")
-
-            # Re-append overlay after the blit
-            if overlay_pass is not None:
-                graph.append_pass(overlay_pass)
-
-            graph.set_output(original_color)
-        elif final_color is not None:
-            graph.set_output(final_color)
-        elif graph._output is None:
+        # Every mounted effect is committed back to the image owned by its
+        # stage. The pipeline therefore remains the sole authority for the
+        # final scene output; a route-local bus must never override it.
+        if graph._output is None:
             # Only override if the pipeline didn't call set_output() itself.
             # Pipelines that use non-standard output names (e.g. "final")
             # will have already set _output inside define_topology().
             graph.set_output(COLOR_TEXTURE)
-        # else: pipeline already called graph.set_output() — respect it.
 
         return graph.build()
 
@@ -493,18 +621,43 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
             context: The render context provided by the engine.
             camera: The camera to render from.
         """
-        # Guard: ensure pass_entries is initialized even if awake() hasn't run yet
-        if self._pass_entries is None:
-            self._pass_entries = []
+        if self._graph_desc is not None:
+            from Infernux.renderstack.render_effect_compiler import (
+                RenderEffectArtifactRegistry,
+            )
+
+            if (
+                RenderEffectArtifactRegistry.topology_generation()
+                != self._effect_artifact_topology_generation
+            ):
+                self.invalidate_graph()
+
+        if self._graph_desc is not None:
+            requires_rebuild, updates = self._collect_effect_parameter_updates(context)
+            if requires_rebuild:
+                self.invalidate_graph()
+            elif updates:
+                context.update_parameter_blocks(updates)
 
         # Lazy build graph topology (skip if last build failed)
         if self._graph_desc is None and not self._build_failed:
             context.setup_camera_properties(camera)
             culling = context.cull(camera)
+            previous_graph = self._last_valid_graph_desc
             try:
                 self._graph_desc = self.build_graph()
             except Exception as exc:
-                self._graph_desc = self._fallback_on_build_failure(exc)
+                from Infernux.debug import Debug
+
+                if previous_graph is not None:
+                    Debug.log_error(
+                        f"[RenderStack] Pipeline graph rebuild rejected: {exc}. "
+                        "Keeping the last valid graph until parameters change."
+                    )
+                    self._graph_desc = previous_graph
+                    self._build_failed = True
+                else:
+                    self._graph_desc = self._fallback_on_build_failure(exc)
 
             if self._graph_desc is None:
                 # Build failed and fallback also failed; skip rendering
@@ -515,6 +668,7 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
 
             try:
                 context.apply_graph(self._graph_desc)
+                self._last_valid_graph_desc = self._graph_desc
             except Exception as exc:
                 from Infernux.debug import Debug
                 Debug.log_error(
@@ -528,6 +682,7 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
                     return
                 try:
                     context.apply_graph(self._graph_desc)
+                    self._last_valid_graph_desc = self._graph_desc
                 except Exception as exc2:
                     from Infernux.debug import Debug
                     Debug.log_error(
@@ -541,8 +696,55 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
 
             context.submit_culling(culling)
         elif self._graph_desc is not None:
-            # Fast path: single C++ call avoids 3 extra Python→C++ round-trips
-            context.render_with_graph(camera, self._graph_desc)
+            # Steady state sends only a revision integer. A second camera or a
+            # rebuilt native graph falls back to the full description once.
+            if not context.render_compiled(camera, self._graph_desc.source_revision):
+                context.render_with_graph(camera, self._graph_desc)
+                # The native graph may have re-recorded its passes from the
+                # description, whose push constants were baked at build time.
+                # Drop this graph's upload cache so any live effect edits made
+                # since then are collected and resent on the next frame.
+                if self._effect_upload_revisions:
+                    graph_id = int(getattr(context, "graph_instance_id", 0) or 0)
+                    stale_keys = [
+                        key for key in self._effect_upload_revisions if key[0] == graph_id
+                    ]
+                    for key in stale_keys:
+                        del self._effect_upload_revisions[key]
+
+    def _collect_effect_parameter_updates(self, context):
+        bindings = self._compiled_effect_bindings or ()
+        if not bindings:
+            return False, []
+        graph_id = int(getattr(context, "graph_instance_id", 0) or 0)
+        if self._effect_upload_revisions is None:
+            self._effect_upload_revisions = {}
+        updates = []
+        for binding in bindings:
+            revision_key = (graph_id, binding.binding_id)
+            revision = binding.source.revision
+            if self._effect_upload_revisions.get(revision_key) == revision:
+                continue
+            try:
+                requires_rebuild, binding_updates = binding.collect_updates()
+            except (TypeError, ValueError) as exc:
+                diagnostic = f"{binding.binding_id}: {exc}"
+                self._effect_compile_errors = tuple(
+                    dict.fromkeys((*self._effect_compile_errors, diagnostic))
+                )
+                self._effect_upload_revisions[revision_key] = revision
+                continue
+            if requires_rebuild:
+                return True, []
+            updates.extend(binding_updates)
+            self._effect_upload_revisions[revision_key] = revision
+            diagnostic_prefix = f"{binding.binding_id}: "
+            self._effect_compile_errors = tuple(
+                error
+                for error in self._effect_compile_errors
+                if not error.startswith(diagnostic_prefix)
+            )
+        return False, updates
 
     # ==================================================================
     # Private helpers
@@ -678,56 +880,3 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
                     continue
         finally:
             pipeline._inf_deserializing = False
-
-    def _inject_passes_at(
-        self,
-        point_name: str,
-        graph: "RenderGraph",
-        bus: ResourceBus,
-    ) -> None:
-        """Inject all enabled passes for a given injection point in order.
-
-        Responsibilities:
-            1. Gather pass entries for the injection point in order
-            2. Validate resource requirements for each pass
-            3. Call ``pass.inject(graph, bus)``
-
-        Args:
-            point_name: Injection point name.
-            graph: RenderGraph currently being built.
-            bus: Resource bus.
-        """
-        entries = self.get_passes_at(point_name)
-        enabled = [e for e in entries if e.enabled]
-
-        if not enabled:
-            return
-
-        for entry in enabled:
-            rp = entry.render_pass
-
-            # Validate resource requirements before injection
-            errors = rp.validate(bus.available_resources)
-            if errors:
-                for err in errors:
-                    print(f"[RenderStack] {err}", file=sys.stderr)
-                print(
-                    f"[RenderStack] Skipping pass '{rp.name}' at "
-                    f"'{point_name}' due to validation errors.",
-                    file=sys.stderr,
-                )
-                continue
-
-            # Warn on creates collision
-            for res_name in rp.creates:
-                if bus.has(res_name):
-                    warnings.warn(
-                        f"[RenderStack] Pass '{rp.name}' creates "
-                        f"resource '{res_name}' which already exists "
-                        f"in bus. It will be overwritten.",
-                        stacklevel=2,
-                    )
-
-            rp.inject(graph, bus)
-
-

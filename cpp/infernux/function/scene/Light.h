@@ -6,6 +6,7 @@
 #endif
 
 #include "Component.h"
+#include <algorithm>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -20,7 +21,7 @@ enum class LightType
     Directional = 0, ///< Infinite distance light (sun-like)
     Point = 1,       ///< Omni-directional point light
     Spot = 2,        ///< Cone-shaped spotlight
-    Area = 3         ///< Area/Rectangle light (for baked lighting)
+    Area = 3         ///< Rectangle emitter evaluated at runtime
 };
 
 /**
@@ -30,7 +31,7 @@ enum class LightShadows
 {
     None = 0, ///< No shadows
     Hard = 1, ///< Hard edge shadows
-    Soft = 2  ///< Soft shadows with PCF/VSM
+    Soft = 2  ///< Filtered soft shadows
 };
 
 /**
@@ -42,6 +43,15 @@ enum class LightRenderMode
     ForcePixel = 1, ///< Always per-pixel lighting
     ForceVertex = 2 ///< Always per-vertex lighting
 };
+
+enum class LightInfluenceDomain : uint32_t
+{
+    Geometry = 1u << 0u,
+    Particles = 1u << 1u,
+};
+
+constexpr uint32_t AllLightInfluenceDomains =
+    static_cast<uint32_t>(LightInfluenceDomain::Geometry) | static_cast<uint32_t>(LightInfluenceDomain::Particles);
 
 /**
  * @brief Light component - Base class for all light sources.
@@ -59,6 +69,9 @@ enum class LightRenderMode
 class Light : public Component
 {
   public:
+    static constexpr float ShadowDepthBiasTexels = 1.0f;
+    static constexpr float ShadowNormalBiasTexels = 1.0f;
+
     Light() = default;
     ~Light() override;
 
@@ -108,7 +121,7 @@ class Light : public Component
     }
     void SetIntensity(float intensity)
     {
-        m_intensity = intensity;
+        m_intensity = std::max(intensity, 0.0f);
     }
 
     /// @brief Get final light color (color * intensity)
@@ -128,7 +141,7 @@ class Light : public Component
     }
     void SetRange(float range)
     {
-        m_range = range;
+        m_range = std::max(range, 0.001f);
     }
 
     // ========================================================================
@@ -142,7 +155,7 @@ class Light : public Component
     }
     void SetSpotAngle(float angle)
     {
-        m_spotAngle = angle;
+        m_spotAngle = glm::clamp(angle, 0.1f, std::max(m_outerSpotAngle, 0.1f));
     }
 
     /// @brief Get outer spot angle in degrees
@@ -152,7 +165,24 @@ class Light : public Component
     }
     void SetOuterSpotAngle(float angle)
     {
-        m_outerSpotAngle = angle;
+        m_outerSpotAngle = glm::clamp(angle, std::max(m_spotAngle, 0.1f), 179.0f);
+    }
+
+    [[nodiscard]] glm::vec2 GetAreaSize() const
+    {
+        return m_areaSize;
+    }
+    void SetAreaSize(const glm::vec2 &size)
+    {
+        m_areaSize = glm::max(size, glm::vec2(0.001f));
+    }
+    [[nodiscard]] bool GetAreaTwoSided() const
+    {
+        return m_areaTwoSided;
+    }
+    void SetAreaTwoSided(bool twoSided)
+    {
+        m_areaTwoSided = twoSided;
     }
 
     // ========================================================================
@@ -179,20 +209,21 @@ class Light : public Component
 
     [[nodiscard]] float GetShadowBias() const
     {
-        return m_shadowBias;
-    }
-    void SetShadowBias(float bias)
-    {
-        m_shadowBias = bias * 0.1f;
+        return ShadowDepthBiasTexels;
     }
 
     [[nodiscard]] float GetShadowNormalBias() const
     {
-        return m_shadowNormalBias;
+        return ShadowNormalBiasTexels;
     }
-    void SetShadowNormalBias(float bias)
+
+    [[nodiscard]] float GetShadowSoftness() const
     {
-        m_shadowNormalBias = bias;
+        return m_shadowSoftness;
+    }
+    void SetShadowSoftness(float softness)
+    {
+        m_shadowSoftness = glm::clamp(softness, 0.25f, 8.0f);
     }
 
     // ========================================================================
@@ -218,6 +249,27 @@ class Light : public Component
         m_cullingMask = mask;
     }
 
+    [[nodiscard]] uint32_t GetInfluenceDomains() const
+    {
+        return m_influenceDomains;
+    }
+    [[nodiscard]] bool GetAffectGeometry() const
+    {
+        return (m_influenceDomains & static_cast<uint32_t>(LightInfluenceDomain::Geometry)) != 0u;
+    }
+    void SetAffectGeometry(bool enabled)
+    {
+        SetInfluenceDomain(LightInfluenceDomain::Geometry, enabled);
+    }
+    [[nodiscard]] bool GetAffectParticles() const
+    {
+        return (m_influenceDomains & static_cast<uint32_t>(LightInfluenceDomain::Particles)) != 0u;
+    }
+    void SetAffectParticles(bool enabled)
+    {
+        SetInfluenceDomain(LightInfluenceDomain::Particles, enabled);
+    }
+
     // ========================================================================
     // Baking
     // ========================================================================
@@ -231,24 +283,6 @@ class Light : public Component
     {
         m_baked = baked;
     }
-
-    // ========================================================================
-    // Shadow mapping — light view/projection helpers
-    // ========================================================================
-
-    /// @brief Get the light's view matrix for shadow mapping.
-    /// For directional lights, uses an orthographic view looking along the light direction.
-    /// @param shadowCenter Center point for the shadow volume (typically camera position).
-    ///        For directional lights, the ortho frustum is centered on this point.
-    [[nodiscard]] glm::mat4 GetLightViewMatrix(const glm::vec3 &shadowCenter = glm::vec3(0.0f)) const;
-
-    /// @brief Get the light's projection matrix for shadow mapping.
-    /// Directional: orthographic, Spot: perspective, Point: not yet supported.
-    /// @param shadowExtent Half-size of the orthographic shadow volume (default 20m)
-    /// @param nearPlane Near clip plane for shadow frustum
-    /// @param farPlane Far clip plane for shadow frustum
-    [[nodiscard]] glm::mat4 GetLightProjectionMatrix(float shadowExtent = 20.0f, float nearPlane = 0.1f,
-                                                     float farPlane = 100.0f) const;
 
     // ========================================================================
     // Serialization
@@ -271,19 +305,28 @@ class Light : public Component
     // Spot light
     float m_spotAngle = 30.0f;      // Inner cone angle
     float m_outerSpotAngle = 45.0f; // Outer cone angle
+    glm::vec2 m_areaSize{1.6f, 1.0f};
+    bool m_areaTwoSided = false;
 
     // Shadows
     LightShadows m_shadows = LightShadows::Hard;
     float m_shadowStrength = 1.0f;
-    float m_shadowBias = 0.0f;
-    float m_shadowNormalBias = 0.01f;
+    float m_shadowSoftness = 1.5f;
 
     // Rendering
     LightRenderMode m_renderMode = LightRenderMode::Auto;
     uint32_t m_cullingMask = 0xFFFFFFFF; // All layers by default
+    uint32_t m_influenceDomains = AllLightInfluenceDomains;
 
     // Baking
     bool m_baked = false;
+
+  private:
+    void SetInfluenceDomain(LightInfluenceDomain domain, bool enabled)
+    {
+        const uint32_t bit = static_cast<uint32_t>(domain);
+        m_influenceDomains = enabled ? (m_influenceDomains | bit) : (m_influenceDomains & ~bit);
+    }
 };
 
 } // namespace infernux

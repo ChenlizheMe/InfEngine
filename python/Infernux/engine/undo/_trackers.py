@@ -182,6 +182,26 @@ class HierarchyUndoTracker:
                 if sfm:
                     sfm.mark_dirty()
 
+    def record_rename(self, object_id: int, old_name: str, new_name: str,
+                      description: str = "Rename GameObject") -> None:
+        old_name = str(old_name)
+        new_name = str(new_name)
+        if not new_name or old_name == new_name:
+            return
+        scene = _get_active_scene()
+        obj = scene.find_by_id(object_id) if scene else None
+        if obj is None:
+            return
+        mgr = self._mgr()
+        if mgr and mgr.enabled:
+            from Infernux.engine.undo._property_commands import SetPropertyCommand
+            mgr.record(SetPropertyCommand(obj, "name", old_name, new_name, description))
+            return
+        from Infernux.engine.scene_manager import SceneFileManager
+        sfm = SceneFileManager.instance()
+        if sfm:
+            sfm.mark_dirty()
+
     def record_reparent(self, object_id: int,
                         old_parent_id: Optional[int],
                         new_parent_id: Optional[int],

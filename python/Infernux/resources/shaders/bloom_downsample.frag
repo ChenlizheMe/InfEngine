@@ -1,6 +1,19 @@
 #version 450
-@shader_id: bloom_downsample
-@hidden
+
+ShaderInfo {
+    Name "Bloom Downsample"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _SourceTex
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Bloom downsample pass — 13-tap downsample filter
 // Aligned with Unity URP's _BloomMipDown kernel.
@@ -10,11 +23,6 @@
 //
 // Texel size is computed from the source texture dimensions via textureSize().
 // No push constants required.
-
-layout(set = 0, binding = 0) uniform sampler2D _SourceTex;
-
-layout(location = 0) in  vec2 inUV;
-layout(location = 0) out vec4 outColor;
 
 void main() {
     vec2 texelSize = 1.0 / vec2(textureSize(_SourceTex, 0));

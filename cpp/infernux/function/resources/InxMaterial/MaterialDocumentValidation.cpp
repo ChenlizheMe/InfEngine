@@ -164,7 +164,7 @@ void ValidateProperty(const std::string &name, const json &document, std::string
 {
     static const std::unordered_set<std::string> textureFields = {"type", "guid"};
     static const std::unordered_set<std::string> valueFields = {"type", "value"};
-    static const std::unordered_set<std::string> metadataFields = {"hdr"};
+    static const std::unordered_set<std::string> metadataFields = {"hdr", "range"};
     if (name.empty())
         Fail(path, "property name must not be empty");
     if (!document.is_object() || !document.contains("type") || !document["type"].is_number_integer())
@@ -177,6 +177,20 @@ void ValidateProperty(const std::string &name, const json &document, std::string
     const auto propertyType = static_cast<MaterialPropertyType>(type);
     if (document.contains("hdr") && !document["hdr"].is_boolean())
         Fail(path, "hdr must be a boolean");
+    if (document.contains("range")) {
+        const auto &range = document["range"];
+        if (propertyType != MaterialPropertyType::Float && propertyType != MaterialPropertyType::Int)
+            Fail(path, "range is only valid for Float and Int properties");
+        if (!range.is_array() || range.size() != 2 || !range[0].is_number() || !range[1].is_number())
+            Fail(path, "range must contain exactly two numbers");
+        const double minimum = range[0].get<double>();
+        const double maximum = range[1].get<double>();
+        if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum >= maximum)
+            Fail(path, "range bounds must be finite and strictly increasing");
+        if (propertyType == MaterialPropertyType::Int &&
+            (!range[0].is_number_integer() || !range[1].is_number_integer()))
+            Fail(path, "Int property range bounds must be integers");
+    }
     if (propertyType == MaterialPropertyType::Texture2D) {
         RequireExactFields(document, textureFields, metadataFields, path);
         if (!document["guid"].is_string())
@@ -223,12 +237,26 @@ void ValidateProperty(const std::string &name, const json &document, std::string
     }
 }
 
+void ValidateShaderReference(const json &document, std::string_view path)
+{
+    static const std::unordered_set<std::string> fields = {"guid", "shader_id", "path_hint"};
+    RequireExactFields(document, fields, {}, path);
+    for (const char *field : {"guid", "shader_id", "path_hint"}) {
+        if (!document[field].is_string())
+            Fail(path, std::string(field) + " must be a string");
+    }
+    if (document["guid"].get_ref<const std::string &>().empty() &&
+        document["shader_id"].get_ref<const std::string &>().empty()) {
+        Fail(path, "requires guid or shader_id");
+    }
+}
+
 } // namespace
 
 void ValidateMaterialDocument(const nlohmann::json &document, std::string_view path)
 {
     static const std::unordered_set<std::string> required = {
-        "material_version", "name", "builtin", "shaders", "renderState", "properties",
+        "name", "builtin", "shaders", "renderState", "properties",
     };
     static const std::unordered_set<std::string> optional = {
         "passTag",
@@ -237,8 +265,6 @@ void ValidateMaterialDocument(const nlohmann::json &document, std::string_view p
     };
     static const std::unordered_set<std::string> shaderFields = {"vertex", "fragment"};
     RequireExactFields(document, required, optional, path);
-    if (!document["material_version"].is_number_integer() || document["material_version"].get<int>() != 3)
-        Fail(path, "material_version must be 3");
     if (!document["name"].is_string())
         Fail(path, "name must be a string");
     if (!document["builtin"].is_boolean())
@@ -246,8 +272,8 @@ void ValidateMaterialDocument(const nlohmann::json &document, std::string_view p
 
     const std::string shadersPath = std::string(path) + ".shaders";
     RequireExactFields(document["shaders"], shaderFields, {}, shadersPath);
-    if (!document["shaders"]["vertex"].is_string() || !document["shaders"]["fragment"].is_string())
-        Fail(shadersPath, "vertex and fragment must be strings");
+    ValidateShaderReference(document["shaders"]["vertex"], shadersPath + ".vertex");
+    ValidateShaderReference(document["shaders"]["fragment"], shadersPath + ".fragment");
 
     ValidateRenderState(document["renderState"], std::string(path) + ".renderState");
     if (document.contains("passTag") && !document["passTag"].is_string())

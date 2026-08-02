@@ -36,6 +36,7 @@
 #include "../Collider.h"
 #include "../Component.h"
 #include "../GameObject.h"
+#include "../Rigidbody.h"
 #include "../Scene.h"
 #include "../SceneManager.h"
 #include "../Transform.h"
@@ -433,6 +434,7 @@ void PhysicsWorld::Shutdown()
     m_bodyToCollider.clear();
     m_poseReadbackBodyIds.clear();
     m_continuousBodyIds.clear();
+    m_kinematicMoveStates.clear();
     m_lastDynamicCCDSplitCount = 0;
 
     // Step 2: tear down subsystems in dependency order (newest first).
@@ -551,12 +553,65 @@ float PhysicsWorld::FindEarliestDynamicCCDFraction(float deltaTime) const
     return earliestFraction;
 }
 
+void PhysicsWorld::SettleKinematicMoves()
+{
+    if (m_kinematicMoveStates.empty())
+        return;
+
+    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
+    for (auto it = m_kinematicMoveStates.begin(); it != m_kinematicMoveStates.end();) {
+        KinematicMoveState &state = it->second;
+        if (state.movedThisStep) {
+            // A target arrived since the previous step — let this step
+            // integrate it, then re-evaluate.
+            state.movedThisStep = false;
+            ++it;
+            continue;
+        }
+
+        const JPH::BodyID id(it->first);
+
+        // The body arrived at its last target and no new target came in.
+        // Without this, the MoveKinematic velocity persists and the body
+        // glides away from its Transform forever.
+        if (state.idleSteps == 0)
+            bi.SetLinearAndAngularVelocity(id, JPH::Vec3::sZero(), JPH::Vec3::sZero());
+        ++state.idleSteps;
+
+        if (!state.restoreStatic) {
+            // Genuine kinematic Rigidbody — stopping it is all we owe it.
+            it = m_kinematicMoveStates.erase(it);
+            continue;
+        }
+
+        // Temporarily-kinematic static: keep it kinematic for a few idle
+        // steps, since a gizmo drag does not deliver a new pose on every
+        // fixed step, then restore. SetMotionType(Static) deactivates the
+        // body and zeroes its velocity inside Jolt.
+        constexpr int kRestoreAfterIdleSteps = 3;
+        if (state.idleSteps >= kRestoreAfterIdleSteps) {
+            bool restore = true;
+            if (auto found = m_bodyToCollider.find(it->first); found != m_bodyToCollider.end() && found->second) {
+                const Rigidbody *rb = found->second->GetCachedRigidbody();
+                restore = (rb == nullptr || !rb->IsEnabled());
+            }
+            if (restore)
+                bi.SetMotionType(id, JPH::EMotionType::Static, JPH::EActivation::DontActivate);
+            it = m_kinematicMoveStates.erase(it);
+            continue;
+        }
+        ++it;
+    }
+}
+
 void PhysicsWorld::Step(float deltaTime)
 {
     m_poseReadbackBodyIds.clear();
     m_lastDynamicCCDSplitCount = 0;
     if (!m_initialized)
         return;
+
+    SettleKinematicMoves();
 
     JPH::BodyIDVector activeBefore;
     m_physicsSystem->GetActiveBodies(JPH::EBodyType::RigidBody, activeBefore);
@@ -814,6 +869,7 @@ void PhysicsWorld::DestroyBody(Collider *collider)
 
     m_bodyToCollider.erase(id);
     m_continuousBodyIds.erase(id);
+    m_kinematicMoveStates.erase(id);
 }
 
 void PhysicsWorld::SetBodyPosition(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot)
@@ -984,6 +1040,9 @@ void PhysicsWorld::SetBodyMotionType(uint32_t bodyId, int motionType)
     bi.SetObjectLayer(JPH::BodyID(bodyId), layer);
     if (mt != JPH::EMotionType::Dynamic)
         m_continuousBodyIds.erase(bodyId);
+    // An explicit motion-type change supersedes any pending drag tracking —
+    // never restore this body to Static behind the caller's back.
+    m_kinematicMoveStates.erase(bodyId);
 }
 
 void PhysicsWorld::SetBodyGameLayer(uint32_t bodyId, int gameLayer)
@@ -1085,6 +1144,12 @@ void PhysicsWorld::SetBodyLinearVelocity(uint32_t bodyId, const glm::vec3 &vel)
 
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     bi.SetLinearVelocity(JPH::BodyID(bodyId), JPH::Vec3(vel.x, vel.y, vel.z));
+
+    // An explicit velocity supersedes a pending MoveKinematic arrival stop
+    // (e.g. constant-velocity kinematic platforms). Drag-converted statics
+    // stay tracked so they are still restored to Static.
+    if (auto it = m_kinematicMoveStates.find(bodyId); it != m_kinematicMoveStates.end() && !it->second.restoreStatic)
+        m_kinematicMoveStates.erase(it);
 }
 
 glm::vec3 PhysicsWorld::GetBodyAngularVelocity(uint32_t bodyId) const
@@ -1104,6 +1169,9 @@ void PhysicsWorld::SetBodyAngularVelocity(uint32_t bodyId, const glm::vec3 &vel)
 
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     bi.SetAngularVelocity(JPH::BodyID(bodyId), JPH::Vec3(vel.x, vel.y, vel.z));
+
+    if (auto it = m_kinematicMoveStates.find(bodyId); it != m_kinematicMoveStates.end() && !it->second.restoreStatic)
+        m_kinematicMoveStates.erase(it);
 }
 
 void PhysicsWorld::AddBodyForce(uint32_t bodyId, const glm::vec3 &force)
@@ -1241,14 +1309,66 @@ void PhysicsWorld::SetBodyMaxLinearVelocity(uint32_t bodyId, float maxVel)
 // ---- Kinematic move ----
 
 void PhysicsWorld::MoveBodyKinematic(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
-                                     float deltaTime)
+                                     float deltaTime, float maxSpeed)
 {
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
-    bi.MoveKinematic(JPH::BodyID(bodyId), JPH::RVec3(targetPos.x, targetPos.y, targetPos.z),
-                     JPH::Quat(targetRot.x, targetRot.y, targetRot.z, targetRot.w), deltaTime);
+    const JPH::BodyID id(bodyId);
+    const JPH::RVec3 target(targetPos.x, targetPos.y, targetPos.z);
+    const JPH::Quat targetQuat = ToJoltQuat(targetRot);
+
+    if (maxSpeed > 0.0f && deltaTime > 0.0f) {
+        // Cap the contact velocity the move can impart (matches PhysX's
+        // default maxDepenetrationVelocity). Excess displacement — a scripted
+        // long-range teleport, or the first sync after un-pausing — is applied
+        // as a teleport so the body never lags behind its Transform, and
+        // trigger/contact detection still sees the body at its new location
+        // in the very next step.
+        const JPH::Vec3 delta(target - bi.GetPosition(id));
+        const float maxStepDistance = maxSpeed * deltaTime;
+        const float distance = delta.Length();
+        if (distance > maxStepDistance) {
+            const JPH::RVec3 nearTarget = target - JPH::RVec3(delta * (maxStepDistance / distance));
+            bi.SetPositionAndRotation(id, nearTarget, targetQuat, JPH::EActivation::Activate);
+        }
+    }
+
+    bi.MoveKinematic(id, target, targetQuat, deltaTime);
+
+    // Track the move so SettleKinematicMoves() can zero the velocity once the
+    // body has arrived — MoveKinematic velocity persists in Jolt otherwise.
+    auto &state = m_kinematicMoveStates[bodyId];
+    state.movedThisStep = true;
+    state.idleSteps = 0;
+}
+
+void PhysicsWorld::MoveStaticBodyWithVelocity(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
+                                              float deltaTime)
+{
+    if (!m_initialized || bodyId == 0xFFFFFFFF || deltaTime <= 0.0f)
+        return;
+
+    const JPH::BodyID id(bodyId);
+    JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
+
+    const JPH::EMotionType motionType = bi.GetMotionType(id);
+    if (motionType == JPH::EMotionType::Dynamic) {
+        // A Rigidbody took ownership of this body mid-drag — plain teleport.
+        SetBodyPosition(bodyId, targetPos, targetRot);
+        return;
+    }
+
+    if (motionType == JPH::EMotionType::Static) {
+        // The object layer is intentionally left unchanged (still non-moving):
+        // statics never collide with each other, and dynamic bodies pair with
+        // the non-moving layer, which is all a drag push needs.
+        bi.SetMotionType(id, JPH::EMotionType::Kinematic, JPH::EActivation::Activate);
+    }
+
+    MoveBodyKinematic(bodyId, targetPos, targetRot, deltaTime, kMaxTransformDriveSpeed);
+    m_kinematicMoveStates[bodyId].restoreStatic = true;
 }
 
 bool PhysicsWorld::IsBodySleeping(uint32_t bodyId) const

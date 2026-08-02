@@ -299,10 +299,6 @@ class MeshRenderer : public Component
     [[nodiscard]] nlohmann::json SerializeDocument() const override;
     static void ValidateSerializedDocument(const nlohmann::json &document);
     bool DeserializeDocument(const nlohmann::json &document) override;
-    [[nodiscard]] int GetSerializationSchemaVersion() const override
-    {
-        return 5;
-    }
     [[nodiscard]] std::unique_ptr<Component> Clone() const override;
 
   protected:

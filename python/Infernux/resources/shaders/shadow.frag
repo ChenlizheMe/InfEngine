@@ -1,8 +1,11 @@
 #version 450
 
-@shader_id: shadow
-@pass_tag: shadow
-@hidden
+ShaderInfo {
+    Name "Shadow"
+    Hidden On
+    PassTag Shadow
+    Capabilities [Standalone]
+}
 
 void main() {
 }

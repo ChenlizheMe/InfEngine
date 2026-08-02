@@ -29,6 +29,13 @@ bool NearlyEqual(float left, float right)
 
 int main()
 {
+    const infernux::Vertex defaultVertex{};
+    assert(defaultVertex.pos == glm::vec3(0.0f));
+    assert(defaultVertex.normal == glm::vec3(0.0f, 1.0f, 0.0f));
+    assert(defaultVertex.tangent == glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
+    assert(defaultVertex.color == glm::vec3(1.0f));
+    assert(defaultVertex.texCoord == glm::vec2(0.0f));
+
     const auto &sphereVertices = infernux::PrimitiveMeshes::GetSphereVertices();
     const auto &sphereIndices = infernux::PrimitiveMeshes::GetSphereIndices();
     assert(sphereIndices.size() % 3 == 0);
@@ -42,6 +49,7 @@ int main()
     }
 
     infernux::InxMesh source("artifact-probe");
+    assert(source.GetGeneration() == 0);
     infernux::Vertex vertex{};
     vertex.pos = {1.0f, 2.0f, 3.0f};
     vertex.normal = {0.0f, 1.0f, 0.0f};
@@ -60,6 +68,9 @@ int main()
     subMesh.boundsMax = vertex.pos;
     subMesh.name = "triangle";
     source.SetData({vertex}, {0, 0, 0}, {subMesh});
+    assert(source.GetGeneration() == 1);
+    source.SetData({vertex}, {0, 0, 0}, {subMesh});
+    assert(source.GetGeneration() == 2);
     source.SetMaterialSlotNames({"surface"});
     infernux::MaterialSlotData material;
     material.baseColor = {0.1f, 0.2f, 0.3f, 0.4f};

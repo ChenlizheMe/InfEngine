@@ -13,8 +13,7 @@ class InxMesh;
 class MeshArtifact final
 {
   public:
-    static constexpr uint32_t FormatVersion = 1;
-
+    [[nodiscard]] static bool HasCurrentHeader(std::string_view bytes) noexcept;
     [[nodiscard]] static std::string Serialize(const InxMesh &mesh, std::string_view sourceContentHash);
     [[nodiscard]] static std::shared_ptr<InxMesh> Deserialize(std::string_view bytes,
                                                               std::string_view expectedSourceContentHash);

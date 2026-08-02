@@ -5,9 +5,16 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from Infernux.core.assets import AssetManager
 from Infernux.engine.engine import Engine
-from Infernux.engine.resources_manager import ResourceChangeHandler, ResourcesManager
+from Infernux.engine.import_coordinator import AssetFsEventKind
+from Infernux.engine.resources_manager import (
+    ResourceChangeHandler,
+    ResourcesManager,
+    _AssetImportNotReady,
+)
 from Infernux.lib import AssetMutationResult, RuntimeMode
 
 
@@ -120,6 +127,33 @@ def test_python_bytecode_and_cache_sidecars_never_enter_import_queue(tmp_path):
     assert database.mutations == []
 
 
+def test_deleted_script_event_preserves_queued_guid_for_missing_component_replacement(monkeypatch, tmp_path):
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    calls = []
+    _patch_asset_manager(monkeypatch, calls)
+    script = tmp_path / "Attached.py"
+    path = str(script.resolve())
+    database.guid_by_path[path] = "attached-guid"
+    marked = []
+
+    class _PlayMode:
+        @staticmethod
+        def mark_components_missing_for_script(guid, deleted_path):
+            marked.append((guid, deleted_path))
+
+    from Infernux.engine.play_mode import PlayModeManager
+    monkeypatch.setattr(PlayModeManager, "instance", classmethod(lambda _cls: _PlayMode()))
+
+    handler._coordinator.submit(
+        AssetFsEventKind.DELETED,
+        path,
+        guid_hint="attached-guid",
+    )
+    assert handler.process_pending_reloads(force=True) == 1
+    assert marked == [("attached-guid", path)]
+
+
 def test_reimport_meta_write_suppresses_meta_deleted_echo(monkeypatch, tmp_path):
     database = _AssetDatabaseProbe()
     handler = ResourceChangeHandler(_EngineProbe(database))
@@ -147,7 +181,7 @@ def test_asset_manager_delete_clears_live_python_references_after_database_commi
     database = _AssetDatabaseProbe()
     calls = []
     _patch_asset_manager(monkeypatch, calls)
-    asset = tmp_path / "RaceDust.vfxsystem"
+    asset = tmp_path / "RaceDust.particlegraph"
     asset.write_text("{}", encoding="utf-8")
     path = str(asset.resolve())
     database.guid_by_path[path] = "race-dust-guid"
@@ -226,6 +260,26 @@ def test_watcher_thread_only_submits_and_main_thread_commits(monkeypatch, tmp_pa
     assert [entry[0] for entry in database.mutations] == ["modified"]
     assert asset_calls[0][-1] == threading.get_ident()
     assert database.mutations[0][-1] == threading.get_ident()
+
+
+def test_modified_asset_failure_surfaces_runtime_compile_detail(monkeypatch, tmp_path):
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    path = tmp_path / "Tone.effect"
+    path.write_text("{}", encoding="utf-8")
+    resolved = str(path.resolve())
+    database.guid_by_path[resolved] = "tone-guid"
+    failure = AssetMutationResult()
+    failure.succeeded = False
+    failure.error = "tone mapping enum compile failed"
+    monkeypatch.setattr(
+        AssetManager,
+        "reimport_asset",
+        classmethod(lambda _cls, *_args, **_kwargs: failure),
+    )
+
+    with pytest.raises(_AssetImportNotReady, match="tone mapping enum compile failed"):
+        handler._commit_modified(resolved)
 
 
 def test_move_query_may_run_on_watcher_but_mutation_waits_for_owner(monkeypatch, tmp_path):
@@ -437,8 +491,10 @@ def test_initial_script_scan_publishes_artifact_for_main_thread(monkeypatch, tmp
     assets.mkdir()
     valid = assets / "valid.py"
     invalid = assets / "invalid.py"
+    particle = assets / "smoke.particle.py"
     valid.write_text("value = 1\n", encoding="utf-8")
     invalid.write_text("def broken(:\n", encoding="utf-8")
+    particle.write_text("this is checked by the particle compiler\n", encoding="utf-8")
 
     manager = ResourcesManager(str(tmp_path), _EngineProbe(_AssetDatabaseProbe()))
     commits = []

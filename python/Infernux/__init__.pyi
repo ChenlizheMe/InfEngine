@@ -5,6 +5,10 @@ from Infernux.engine import release_engine as release_engine
 from Infernux.engine import run_headless as run_headless
 from Infernux.engine import Engine as Engine
 from Infernux.engine import LogLevel as LogLevel
+from Infernux.application import Application as Application
+from Infernux.acceptance import RuntimeAcceptance as RuntimeAcceptance
+from Infernux.acceptance import RuntimeAcceptanceManifest as RuntimeAcceptanceManifest
+from Infernux.acceptance import RuntimeAcceptanceTest as RuntimeAcceptanceTest
 # Math
 from Infernux.math import Vector2 as Vector2
 from Infernux.math import Vector3 as Vector3
@@ -53,6 +57,7 @@ from Infernux.components import AudioListener as AudioListener
 from Infernux.components import SpriteRenderer as SpriteRenderer
 from Infernux.components import SpiritAnimator as SpiritAnimator
 from Infernux.components import SkeletalAnimator as SkeletalAnimator
+from Infernux.components import RuntimeAcceptanceRunner as RuntimeAcceptanceRunner
 # Decorators
 from Infernux.components import require_component as require_component
 from Infernux.components import disallow_multiple as disallow_multiple
@@ -82,6 +87,7 @@ from Infernux.core import ShaderRef as ShaderRef
 from Infernux.core import AudioClipRef as AudioClipRef
 from Infernux.core import AnimationClipRef as AnimationClipRef
 from Infernux.core import AnimStateMachineRef as AnimStateMachineRef
+from Infernux.core import RenderEffectRef as RenderEffectRef
 # Debug — class only (use Debug.log / Debug.log_warning / …)
 from Infernux.debug import Debug as Debug
 # Submodules

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "rhi/RhiSubmission.h"
+
 #include <cstdint>
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
@@ -8,6 +10,7 @@ namespace infernux
 {
 
 class InxVkCoreModular;
+class GpuRetirementQueue;
 
 /**
  * @brief Manages an offscreen render target for scene rendering.
@@ -29,11 +32,6 @@ class SceneRenderTarget
     /// @param height Height of the render target
     /// @return true if successful
     bool Initialize(uint32_t width, uint32_t height);
-
-    /// @brief Resize the render target (recreates resources)
-    /// @param width New width
-    /// @param height New height
-    void Resize(uint32_t width, uint32_t height);
 
     /// @brief Get the ImGui texture ID for displaying this render target
     /// @return Texture ID (VkDescriptorSet) or 0 if not ready
@@ -103,7 +101,7 @@ class SceneRenderTarget
         return m_msaaSampleCount;
     }
 
-    /// @brief Set MSAA sample count (takes effect on next Initialize/Resize)
+    /// @brief Set MSAA sample count (takes effect on Initialize)
     void SetMsaaSampleCount(VkSampleCountFlagBits sampleCount)
     {
         m_msaaSampleCount = sampleCount;
@@ -140,6 +138,7 @@ class SceneRenderTarget
     VkFormat GetDepthFormat() const;
 
     [[nodiscard]] uint64_t GetResidentBytes() const;
+    [[nodiscard]] uint64_t GetMsaaColorResidentBytes() const;
 
     // ========================================================================
     // Outline Mask Render Target (for post-process selection outline)
@@ -166,6 +165,13 @@ class SceneRenderTarget
     /// @brief Cleanup all resources
     void Cleanup();
 
+    /// @brief Transfer all currently owned GPU and ImGui resources to deferred retirement.
+    ///
+    /// The target is left uninitialized with every owned handle cleared immediately. The
+    /// resources are destroyed after @p retirementSerial completes, without waiting for
+    /// the device in this call or in the target's subsequent destruction.
+    void RetireResourcesAfter(GpuRetirementQueue &retirementQueue, rhi::SubmissionSerial retirementSerial);
+
   private:
     void CreateColorAttachment();
     void CreateMsaaColorAttachment();
@@ -173,6 +179,7 @@ class SceneRenderTarget
     void CreateOutlineMaskAttachment();
     void CreateImGuiDescriptor();
     void CleanupResources();
+    [[nodiscard]] bool HasOwnedResources() const noexcept;
 
     InxVkCoreModular *m_vkCore = nullptr;
 
@@ -186,12 +193,12 @@ class SceneRenderTarget
     VmaAllocation m_colorAllocation = VK_NULL_HANDLE;
     VkImageView m_colorImageView = VK_NULL_HANDLE;
 
-    // MSAA color attachment (4x, transient render target)
+    // MSAA color attachment (2x/4x/8x; absent at 1x)
     VkImage m_msaaColorImage = VK_NULL_HANDLE;
     VmaAllocation m_msaaColorAllocation = VK_NULL_HANDLE;
     VkImageView m_msaaColorImageView = VK_NULL_HANDLE;
 
-    // Depth attachment (4x to match MSAA color)
+    // Depth attachment (sample count matches the active color target)
     VkImage m_depthImage = VK_NULL_HANDLE;
     VmaAllocation m_depthAllocation = VK_NULL_HANDLE;
     VkImageView m_depthImageView = VK_NULL_HANDLE;

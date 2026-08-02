@@ -449,13 +449,11 @@ void MaterialPreviewRenderer::RenderPreview(const PreviewMaterialParams &params,
     const glm::vec3 sphereCenter(0.0f, 0.0f, 0.0f);
     const float sphereRadius = 1.0f;
 
+    // Single key light from above (matches the GPU preview rig — no lower
+    // fill light, ambient keeps the dark side readable).
     const glm::vec3 lightDir0 = glm::normalize(glm::vec3(0.8f, 1.0f, 0.6f));
     const glm::vec3 lightColor0(1.0f, 0.95f, 0.9f);
     const float lightIntensity0 = 2.0f;
-
-    const glm::vec3 lightDir1 = glm::normalize(glm::vec3(-0.6f, -0.3f, 0.8f));
-    const glm::vec3 lightColor1(0.6f, 0.7f, 0.85f);
-    const float lightIntensity1 = 0.6f;
 
     const glm::vec3 ambientColor(0.03f, 0.03f, 0.04f);
 
@@ -562,7 +560,6 @@ void MaterialPreviewRenderer::RenderPreview(const PreviewMaterialParams &params,
             };
 
             addLight(lightDir0, lightColor0, lightIntensity0);
-            addLight(lightDir1, lightColor1, lightIntensity1);
 
             float NdotV = std::max(glm::dot(normal, V), 0.001f);
             glm::vec3 Fa = FresnelSchlick(NdotV, F0);

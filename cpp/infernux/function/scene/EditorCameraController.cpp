@@ -24,6 +24,10 @@ void EditorCameraController::OnMouseButtonDown(int button, float x, float y)
 
     // ImGui convention: Button 0 = left, 1 = right, 2 = middle
     if (button == 1) { // Right mouse button
+        // Camera transforms can be restored or changed independently of this
+        // controller. Start every look drag from the orientation that is
+        // actually rendered so the first delta cannot snap to stale angles.
+        SyncAnglesFromTransform();
         m_rightMouseDown = true;
     } else if (button == 2) { // Middle mouse button
         m_middleMouseDown = true;
@@ -166,11 +170,7 @@ void EditorCameraController::FocusOn(const glm::vec3 &point, float distance)
     transform->SetPosition(point + direction * distance);
     transform->LookAt(point);
 
-    // Extract yaw/pitch from the camera's forward direction
-    // This is more reliable than using euler angles which have gimbal issues
-    glm::vec3 forward = transform->GetForward();
-    m_yaw = glm::degrees(std::atan2(forward.x, forward.z));
-    m_pitch = glm::degrees(std::asin(forward.y));
+    SyncAnglesFromTransform();
 }
 
 void EditorCameraController::Reset()
@@ -183,13 +183,23 @@ void EditorCameraController::Reset()
     transform->LookAt(glm::vec3(0.0f, 0.0f, 0.0f));
 
     m_focusPoint = glm::vec3(0.0f);
-    m_focusDistance = 10.0f;
+    m_focusDistance = glm::length(m_focusPoint - transform->GetPosition());
 
-    // Extract yaw/pitch from the camera's forward direction
-    // This is more reliable than using euler angles which have gimbal issues
-    glm::vec3 forward = transform->GetForward();
+    SyncAnglesFromTransform();
+}
+
+void EditorCameraController::SyncAnglesFromTransform()
+{
+    if (!m_camera || !m_camera->GetGameObject())
+        return;
+
+    const glm::vec3 forward = m_camera->GetGameObject()->GetTransform()->GetForward();
     m_yaw = glm::degrees(std::atan2(forward.x, forward.z));
-    m_pitch = glm::degrees(std::asin(forward.y));
+
+    // Transform's Unity-style positive X rotation looks downward: forward.y
+    // is therefore -sin(pitch), not sin(pitch).
+    const float forwardY = std::clamp(forward.y, -1.0f, 1.0f);
+    m_pitch = -glm::degrees(std::asin(forwardY));
 }
 
 void EditorCameraController::UpdateFlyMode(float deltaTime)

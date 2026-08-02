@@ -15,6 +15,11 @@ _PLAYER_MODE = os.environ.get("_INFERNUX_PLAYER_MODE")
 class Engine():
     def __init__(self, engine_log_level=LogLevel.Info, mode=RuntimeMode.Graphical):
         self._mode = RuntimeMode(mode)
+        self._application_role = (
+            "headless" if self._mode == RuntimeMode.Headless
+            else "player" if _PLAYER_MODE
+            else "editor"
+        )
         self._engine = Infernux(_safe_path(lib_dir), self._mode)
         self.set_log_level(engine_log_level)
         self._gui_objects = {}
@@ -32,6 +37,13 @@ class Engine():
         self._resources_manager = None  # Set in init_renderer (editor only)
         self._before_exit_callback = None
         self._editor_frame_sync_callback = None
+        from Infernux.application import Application
+        Application._bind_engine(self, self._application_role)
+
+    def _set_application_role(self, runtime_kind: str):
+        self._application_role = str(runtime_kind).strip().lower()
+        from Infernux.application import Application
+        Application._bind_engine(self, self._application_role)
 
     @staticmethod
     def _parse_present_mode(value) -> int | None:
@@ -262,6 +274,7 @@ class Engine():
             try:
                 from Infernux.core.assets import AssetManager
                 AssetManager.flush_pending_gpu_texture_reloads()
+                AssetManager.poll_pending_asset_writes()
             except Exception as exc:
                 Debug.log_suppressed("Engine.post_draw_tick.flush_texture_reloads", exc)
 
@@ -316,7 +329,7 @@ class Engine():
 
     def request_exit(self):
         """Request a safe close, preserving graphical Editor confirmations."""
-        if self._mode == RuntimeMode.Graphical:
+        if self._mode == RuntimeMode.Graphical and self._application_role == "editor":
             try:
                 from Infernux.engine.scene_manager import SceneFileManager
 
@@ -363,7 +376,11 @@ class Engine():
         # valid for that composition as well.
         if is_playing:
             pmm.tick(delta_time)
+            self._tick_runtime_acceptance(delta_time)
         else:
+            from Infernux.acceptance import RuntimeAcceptance
+            if RuntimeAcceptance.is_active():
+                RuntimeAcceptance.reset()
             from Infernux.lib import SceneManager
             native_scene_manager = SceneManager.instance()
             if native_scene_manager.is_playing() and not native_scene_manager.is_paused():
@@ -385,6 +402,41 @@ class Engine():
         
         return delta_time
 
+    @staticmethod
+    def _tick_runtime_acceptance(delta_time: float) -> None:
+        """Advance the opt-in Editor/Player acceptance control plane."""
+        from Infernux.acceptance import RuntimeAcceptance
+        from Infernux.application import Application
+
+        if RuntimeAcceptance.is_active():
+            try:
+                RuntimeAcceptance.tick(delta_time)
+            except Exception as exc:
+                Debug.log_error(
+                    f"[RuntimeAcceptance] runner failed: {type(exc).__name__}: {exc}"
+                )
+                try:
+                    RuntimeAcceptance.fail_current(
+                        f"{type(exc).__name__}: {exc}",
+                        {"phase": "engine_tick"},
+                    )
+                except Exception as nested:
+                    Debug.log_suppressed(
+                        "Engine._tick_runtime_acceptance.fail_current", nested
+                    )
+                    return
+        status = RuntimeAcceptance._consume_completion()
+        if not status:
+            return
+        summary = status.get("summary", {})
+        Debug.log(
+            "[RuntimeAcceptance] finished "
+            f"status={status.get('status')} passed={summary.get('passed', 0)}/"
+            f"{summary.get('total', 0)}"
+        )
+        if Application.is_player():
+            Application.quit(0 if status.get("status") == "passed" else 1)
+
     def _tick_gizmos(self):
         """Collect component gizmos and upload to C++ each frame."""
         if self._gizmos_collector is None:
@@ -395,12 +447,17 @@ class Engine():
 
     @staticmethod
     def _flush_pending_material_saves():
-        """Flush all Material wrappers that have throttled pending saves."""
+        """Flush throttled mutable rendering-asset saves."""
         try:
             from Infernux.core.material import Material
             Material.flush_all_pending()
         except Exception as exc:
             Debug.log_suppressed("Engine._flush_pending_material_saves", exc)
+        try:
+            from Infernux.renderstack.render_effect import RenderEffect
+            RenderEffect.flush_all_pending()
+        except Exception as exc:
+            Debug.log_suppressed("Engine._flush_pending_effect_saves", exc)
 
     def _clear_uploaded_gizmos(self):
         """Clear uploaded gizmo buffers once when Scene View is hidden."""
@@ -474,6 +531,12 @@ class Engine():
         #    on already-invalid Python state, and physics/audio may block.
         self._shutdown_play_mode()
 
+        try:
+            from Infernux.core.assets import AssetManager
+            AssetManager.flush_all_asset_writes()
+        except Exception as exc:
+            Debug.log_error(f"Failed to flush pending asset writes during shutdown: {exc}")
+
         # 1. Stop the observer and commit any events it already delivered while
         #    AssetDatabase, AssetRegistry, renderer, and editor caches are alive.
         if self._resources_manager:
@@ -487,6 +550,8 @@ class Engine():
         self._gui_objects.clear()
         self._engine = None
         self._resources_manager = None
+        from Infernux.application import Application
+        Application._unbind_engine(self)
         shutdown_complete.set()
 
     def _shutdown_play_mode(self):
@@ -564,8 +629,10 @@ class Engine():
     def set_log_level(self, engine_log_level):
         self._engine.set_log_level(engine_log_level)
 
-    def register_gui(self, name: str, gui_object: InxGUIRenderable):
-        self._engine.register_gui_renderable(name, gui_object)
+    def register_gui(
+        self, name: str, gui_object: InxGUIRenderable, *, priority: int = 0
+    ):
+        self._engine.register_gui_renderable(name, gui_object, int(priority))
         self._gui_objects[name] = gui_object
 
     def unregister_gui(self, name: str):
@@ -680,6 +747,11 @@ class Engine():
         """Resize the scene render target to match viewport size."""
         if self._engine:
             self._engine.resize_scene_render_target(width, height)
+
+    def invalidate_temporal_history(self, *, scene_view: bool = True, game_view: bool = True):
+        """Discard accumulated temporal effect history for selected render views."""
+        if self._engine:
+            self._engine.invalidate_temporal_history(bool(scene_view), bool(game_view))
 
     # ========================================================================
     # Game Render Target API - for game camera rendering
@@ -802,6 +874,17 @@ class Engine():
         if self._engine is None:
             return []
         return list(self._engine.pick_scene_object_ids(screen_x, screen_y, viewport_width, viewport_height))
+
+    def request_scene_object_pick(self, screen_x: float, screen_y: float, viewport_width: float, viewport_height: float) -> int:
+        if self._engine is None:
+            return 0
+        return int(self._engine.request_scene_object_pick(screen_x, screen_y, viewport_width, viewport_height))
+
+    def query_scene_object_pick(self, request_id: int) -> dict:
+        if self._engine is None:
+            return {"request_id": int(request_id), "status": "unknown", "object_id": 0,
+                    "error": "Engine is unavailable"}
+        return dict(self._engine.query_scene_object_pick(int(request_id)))
 
     # ========================================================================
     # Render Pipeline API (SRP)

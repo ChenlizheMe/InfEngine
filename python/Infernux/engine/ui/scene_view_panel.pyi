@@ -24,6 +24,7 @@ class SceneViewPanel(EditorPanel):
     KEY_C: int
     KEY_V: int
     KEY_X: int
+    KEY_DELETE: int
     KEY_LEFT_CTRL: int
     KEY_RIGHT_CTRL: int
     KEY_LEFT_SHIFT: int
@@ -41,6 +42,7 @@ class SceneViewPanel(EditorPanel):
         paste_clipboard: Callable,
         has_clipboard_data: Optional[Callable] = None,
     ) -> None: ...
+    def set_object_delete_handler(self, delete_selected: Callable) -> None: ...
 
     def reset_camera(self) -> None:
         """Reset camera to the default position and orientation."""

@@ -14,6 +14,7 @@ from Infernux.lib import (
     _preflight_scene_resource_dependencies,
     _schedule_scene_document_read,
 )
+from Infernux.engine.path_utils import resolved_path
 
 
 class SceneDocumentTransactionError(RuntimeError):
@@ -204,7 +205,7 @@ class SceneDocumentTransaction:
         if self._path is None:
             self._state = SceneDocumentTransactionState.DOCUMENT_READY
         else:
-            self._ticket = _schedule_scene_document_read(os.path.abspath(self._path))
+            self._ticket = _schedule_scene_document_read(resolved_path(self._path))
             self._state = SceneDocumentTransactionState.READING
         return self
 

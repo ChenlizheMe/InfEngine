@@ -17,7 +17,6 @@ class ComponentSerializationMixin:
         
         fields = get_serialized_fields(self.__class__)
         data = {
-            "__schema_version__": getattr(self, "__schema_version__", 1),
             "__type_name__": self.__class__.__name__,
             "__component_id__": self._component_id,
         }
@@ -43,7 +42,6 @@ class ComponentSerializationMixin:
     ) -> None:
         """Restore fields from a typed document, transactionally per component."""
         from .serialized_field import (
-            copy_serialized_field_default,
             get_raw_field_value,
             get_serialized_fields,
         )
@@ -51,13 +49,6 @@ class ComponentSerializationMixin:
         if not isinstance(data, dict):
             raise TypeError("Python component fields document must be an object")
 
-        schema_version = data.get("__schema_version__")
-        current_version = getattr(self, "__schema_version__", 1)
-        if type(schema_version) is not int or schema_version != current_version:
-            raise ValueError(
-                f"{self.__class__.__name__} requires schema {current_version}, "
-                f"got {schema_version!r}"
-            )
         type_name = data.get("__type_name__")
         if type_name != self.__class__.__name__:
             raise ValueError(
@@ -66,35 +57,32 @@ class ComponentSerializationMixin:
             )
 
         fields = get_serialized_fields(self.__class__)
-        metadata_keys = {"__schema_version__", "__type_name__", "__component_id__"}
-        document_fields = set(data) - metadata_keys
-        expected_fields = set(fields)
-        unknown = sorted(document_fields - expected_fields)
-        unknown_metadata = sorted(
-            key for key in data if key.startswith("__") and key not in metadata_keys
+        metadata_keys = {"__type_name__"}
+        if "__component_id__" in data:
+            metadata_keys.add("__component_id__")
+        from .serialized_field import validate_serialized_field_document
+        validate_serialized_field_document(
+            data,
+            fields,
+            owner_name=self.__class__.__name__,
+            metadata_keys=metadata_keys,
+            allow_missing=True,
         )
-        if unknown or unknown_metadata:
-            raise ValueError(
-                f"{self.__class__.__name__} field schema mismatch: "
-                f"unknown={unknown + unknown_metadata}"
-            )
 
         saved_id = data.get("__component_id__")
         if saved_id is not None and (type(saved_id) is not int or saved_id <= 0):
             raise ValueError("__component_id__ must be a positive integer when present")
 
         from .value_codec import VALUE_CODECS
-        for name, meta in fields.items():
-            if name in data:
-                VALUE_CODECS.validate(data[name], meta, f"{self.__class__.__name__}.{name}")
+        present_fields = {
+            name: meta for name, meta in fields.items() if name in data
+        }
+        for name, meta in present_fields.items():
+            VALUE_CODECS.validate(data[name], meta, f"{self.__class__.__name__}.{name}")
 
         decoded = {
-            name: (
-                self._deserialize_value(data[name], meta)
-                if name in data
-                else copy_serialized_field_default(meta)
-            )
-            for name, meta in fields.items()
+            name: self._deserialize_value(data[name], meta)
+            for name, meta in present_fields.items()
         }
         previous_values = {
             name: get_raw_field_value(self, name)

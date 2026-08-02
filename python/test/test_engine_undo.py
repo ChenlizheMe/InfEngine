@@ -89,6 +89,7 @@ GenericComponentCommand = _undo_mod.GenericComponentCommand
 BuiltinPropertyCommand = _undo_mod.BuiltinPropertyCommand
 CreateGameObjectCommand = _undo_mod.CreateGameObjectCommand
 DeleteGameObjectCommand = _undo_mod.DeleteGameObjectCommand
+DeleteGameObjectsCommand = _undo_mod.DeleteGameObjectsCommand
 ReparentCommand = _undo_mod.ReparentCommand
 MoveGameObjectCommand = _undo_mod.MoveGameObjectCommand
 MaterialDocumentCommand = _undo_mod.MaterialDocumentCommand
@@ -100,12 +101,14 @@ PrefabUnpackCommand = _undo_mod.PrefabUnpackCommand
 PrefabRevertCommand = _undo_mod.PrefabRevertCommand
 InspectorSnapshotCommand = _undo_mod.InspectorSnapshotCommand
 InspectorUndoTracker = _undo_mod.InspectorUndoTracker
+HierarchyUndoTracker = _undo_mod.HierarchyUndoTracker
 RenderStackFieldCommand = _undo_mod.RenderStackFieldCommand
 _snapshot_value = _undo_mod._snapshot_value
 SelectionManager = _sel_mod.SelectionManager
 _helpers_mod = sys.modules["Infernux.engine.undo._helpers"]
 _property_mod = sys.modules["Infernux.engine.undo._property_commands"]
 _structural_mod = sys.modules["Infernux.engine.undo._structural_commands"]
+_trackers_mod = sys.modules["Infernux.engine.undo._trackers"]
 _recreate_mod = sys.modules["Infernux.engine.undo._recreate"]
 
 
@@ -1158,6 +1161,40 @@ class TestInspectorUndoTracker:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# HierarchyUndoTracker
+# ══════════════════════════════════════════════════════════════════════
+
+class TestHierarchyUndoTracker:
+    def test_rename_records_undo_and_redo(self, monkeypatch, _reset_undo_manager):
+        class _GameObject:
+            def __init__(self):
+                self.id = 7
+                self.name = "New Name"
+
+        class _Scene:
+            def __init__(self, obj):
+                self.obj = obj
+
+            def find_by_id(self, object_id):
+                return self.obj if object_id == self.obj.id else None
+
+        obj = _GameObject()
+        scene = _Scene(obj)
+        monkeypatch.setattr(_trackers_mod, "_get_active_scene", lambda: scene)
+        monkeypatch.setattr(_helpers_mod, "_get_active_scene", lambda: scene)
+
+        tracker = HierarchyUndoTracker()
+        tracker.record_rename(obj.id, "Old Name", "New Name")
+
+        mgr = _reset_undo_manager
+        assert mgr.undo_description == "Rename GameObject"
+        mgr.undo()
+        assert obj.name == "Old Name"
+        mgr.redo()
+        assert obj.name == "New Name"
+
+
+# ══════════════════════════════════════════════════════════════════════
 # SelectionManager.set_ids
 # ══════════════════════════════════════════════════════════════════════
 
@@ -1228,7 +1265,7 @@ class TestSelectionUndoIntegration:
     def _apply_fn(self, ids):
         self.sel.set_ids(ids)
 
-    def test_editor_navigation_does_not_push_main_undo(self, _reset_undo_manager):
+    def test_editor_navigation_pushes_non_dirty_undo(self, _reset_undo_manager):
         module = _direct_import(
             "Infernux.engine._bootstrap_selection",
             "engine/_bootstrap_selection.py",
@@ -1237,9 +1274,21 @@ class TestSelectionUndoIntegration:
         selection = module.BootstrapSelectionMixin()
         selection._prev_selection_ids = []
         selection._prev_selected_file = ""
+        selection._apply_editor_selection_undo = lambda ids, path: (
+            setattr(selection, "_prev_selection_ids", list(ids)),
+            setattr(selection, "_prev_selected_file", path or ""),
+        )
         selection._record_editor_selection_change([42], "")
 
-        assert _reset_undo_manager._undo_stack == []
+        assert len(_reset_undo_manager._undo_stack) == 1
+        assert isinstance(_reset_undo_manager._undo_stack[0], EditorSelectionCommand)
+        assert not _reset_undo_manager._undo_stack[0].marks_dirty
+        assert selection._prev_selection_ids == [42]
+
+        _reset_undo_manager.undo()
+        assert selection._prev_selection_ids == []
+
+        _reset_undo_manager.redo()
         assert selection._prev_selection_ids == [42]
 
     def test_select_undo_redo_cycle(self, _reset_undo_manager, _fresh_selection):
@@ -1379,6 +1428,69 @@ class TestDeleteCommandSelectionRestore:
             DeleteGameObjectCommand._selection_restore_fn = old_fn
 
 
+class TestDeleteGameObjectsCommand:
+    class _Transform:
+        def __init__(self, sibling_index):
+            self._sibling_index = sibling_index
+
+        def get_sibling_index(self):
+            return self._sibling_index
+
+    class _Object:
+        def __init__(self, object_id, sibling_index, parent=None):
+            self.id = object_id
+            self.transform = TestDeleteGameObjectsCommand._Transform(sibling_index)
+            self._parent = parent
+
+        def get_parent(self):
+            return self._parent
+
+    class _Scene:
+        def __init__(self, objects):
+            self.objects = {obj.id: obj for obj in objects}
+
+        def find_by_id(self, object_id):
+            return self.objects.get(object_id)
+
+    def test_filters_selected_descendants_and_restores_sibling_order(self, monkeypatch):
+        first = self._Object(10, 0)
+        parent = self._Object(20, 1)
+        child = self._Object(21, 0, parent)
+        scene = self._Scene([first, parent, child])
+        destroyed = []
+        restored = []
+
+        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
+        monkeypatch.setattr(_structural_mod, "_get_current_selection_ids", lambda: [20, 21, 10])
+        monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda obj: {"id": obj.id})
+        monkeypatch.setattr(
+            _structural_mod,
+            "_destroy_game_object_immediately",
+            lambda _scene, obj: destroyed.append(obj.id),
+        )
+        monkeypatch.setattr(_structural_mod, "_bump_inspector_structure", lambda: None)
+        monkeypatch.setattr(_structural_mod, "_notify_gizmos_scene_changed", lambda: None)
+
+        old_fn = DeleteGameObjectsCommand._selection_restore_fn
+        DeleteGameObjectsCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
+        try:
+            command = DeleteGameObjectsCommand([20, 21, 10])
+            assert [entry["object_id"] for entry in command._entries] == [20, 10]
+
+            command.execute()
+            assert destroyed == [20, 10]
+
+            with _override_recreate_game_object(
+                lambda document, parent_id, sibling_index: restored.append(
+                    (document["id"], parent_id, sibling_index)
+                )
+            ):
+                command.undo()
+            assert restored == [[], (10, None, 0), (20, None, 1), [20, 21, 10]]
+        finally:
+            DeleteGameObjectsCommand._selection_restore_fn = old_fn
+
+
 class TestCreateCommandSelectionRestore:
     """CreateGameObjectCommand should clear selection on undo and re-select
     on redo via _selection_restore_fn."""
@@ -1476,7 +1588,13 @@ class TestImmediateDestroyHelpers:
                 self.transform = _FakeTransform()
 
             def serialize_document(self):
-                return {"id": self.id}
+                return {"id": self.id, "components": [], "children": []}
+
+            def get_components(self):
+                return []
+
+            def get_children(self):
+                return []
 
             def get_parent(self):
                 return None

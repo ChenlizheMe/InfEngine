@@ -41,7 +41,6 @@ from .anim_state_machine import (
     AnimParameter,
 )
 from .assets import AssetManager
-from .vfx_system import VfxAttribute, VfxEmitter, VfxRenderer, VfxSchemaError, VfxSystem
 from .parallel_backend import (
     ParallelBackend,
     ParallelBufferView,
@@ -49,7 +48,8 @@ from .parallel_backend import (
     ParallelTaskState,
 )
 from .asset_types import (
-    TextureImportSettings, TextureType, WrapMode, FilterMode, SpriteFrame,
+    TextureCompression, TextureCompressionQuality, TextureFormat, TextureImportSettings,
+    TextureType, WrapMode, FilterMode, SpriteFrame,
     ShaderAssetInfo, FontAssetInfo, asset_category_from_extension,
     AudioImportSettings, AudioCompressionFormat,
     MeshImportSettings,
@@ -66,7 +66,8 @@ from .asset_ref import (
     AnimationClip3DRef,
     AnimStateMachineRef,
     PhysicMaterialRef,
-    VfxSystemRef,
+    ParticleGraphRef,
+    RenderEffectRef,
 )
 
 __all__ = [
@@ -82,16 +83,14 @@ __all__ = [
     "AnimTransition",
     "AnimParameter",
     "AssetManager",
-    "VfxAttribute",
-    "VfxEmitter",
-    "VfxRenderer",
-    "VfxSchemaError",
-    "VfxSystem",
     "ParallelBackend",
     "ParallelBufferView",
     "ParallelCapabilities",
     "ParallelTaskState",
     "TextureImportSettings",
+    "TextureCompression",
+    "TextureCompressionQuality",
+    "TextureFormat",
     "TextureType",
     "WrapMode",
     "FilterMode",
@@ -107,5 +106,6 @@ __all__ = [
     "AnimationClip3DRef",
     "AnimStateMachineRef",
     "PhysicMaterialRef",
-    "VfxSystemRef",
+    "ParticleGraphRef",
+    "RenderEffectRef",
 ]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from Infernux.engine.path_utils import portable_path, relative_path, resolved_path, same_path
 from Infernux.mcp.tools.common import (
     coerce_vector3,
     find_game_object,
@@ -101,8 +102,8 @@ def register_scene_tools(mcp) -> None:
                 raise RuntimeError("SceneFileManager is not available.")
             if getattr(sfm, "is_dirty", False):
                 raise RuntimeError("The active scene is dirty. Call scene_save before scene.open.")
-            current_path = os.path.abspath(str(getattr(sfm, "current_scene_path", "") or ""))
-            if current_path and os.path.abspath(scene_path) == current_path:
+            current_path = resolved_path(str(getattr(sfm, "current_scene_path", "") or ""))
+            if current_path and same_path(scene_path, current_path):
                 return {
                     "accepted": True,
                     "already_open": True,
@@ -224,8 +225,20 @@ def register_scene_tools(mcp) -> None:
 
             if script_path:
                 from Infernux.components import load_and_create_component
-                from Infernux.mcp.tools.common import get_asset_database
-                comp = load_and_create_component(script_path, asset_database=get_asset_database(), type_name=component_type)
+                from Infernux.mcp import capabilities
+                from Infernux.mcp.tools.common import (
+                    get_asset_database,
+                    resolve_asset_path,
+                )
+
+                resolved_script_path = resolve_asset_path(
+                    capabilities.project_path(), script_path
+                )
+                comp = load_and_create_component(
+                    resolved_script_path,
+                    asset_database=get_asset_database(),
+                    type_name=component_type,
+                )
                 if comp is None:
                     raise RuntimeError(f"Script did not create component '{component_type}'.")
                 comp = obj.add_py_component(comp)
@@ -238,7 +251,8 @@ def register_scene_tools(mcp) -> None:
                 raise RuntimeError(f"Failed to add component '{component_type}'.")
 
             for key, value in (fields or {}).items():
-                setattr(comp, key, _coerce_property_value(key, value))
+                current_value = _component_field_value(comp, key)
+                setattr(comp, key, _coerce_component_property_value(comp, key, value, current_value))
 
             from Infernux.engine.ui._inspector_undo import _record_add_component_compound
             _record_add_component_compound(obj, component_type, comp, before_ids, is_py=is_py)
@@ -249,6 +263,74 @@ def register_scene_tools(mcp) -> None:
             }
 
         return main_thread("gameobject_add_component", _add, arguments={"object_id": object_id, "component_type": component_type, "knowledge_token": knowledge_token})
+
+    @mcp.tool(name="gameobject_create_from_model")
+    def gameobject_create_from_model(
+        model_path: str,
+        parent_id: int = 0,
+        name: str = "",
+        select: bool = True,
+    ) -> dict:
+        """Instantiate an imported model asset through the Editor's normal model path."""
+
+        def _create():
+            from Infernux.engine.project_context import get_project_root
+            from Infernux.engine.undo._trackers import HierarchyUndoTracker
+            from Infernux.mcp.tools.common import get_asset_database
+            from Infernux.lib import SceneManager
+
+            absolute_path = resolve_asset_path(get_project_root(), model_path)
+            asset_database = get_asset_database()
+            guid = str(asset_database.get_guid_from_path(absolute_path) or "")
+            if not guid:
+                raise FileNotFoundError(
+                    f"Imported model asset was not found in AssetDatabase: {model_path}"
+                )
+
+            scene = SceneManager.instance().get_active_scene()
+            if not scene:
+                raise RuntimeError("No active scene.")
+            obj = scene.create_from_model(guid)
+            if obj is None:
+                raise RuntimeError(f"Failed to instantiate model asset: {model_path}")
+
+            if parent_id:
+                parent = scene.find_by_id(int(parent_id))
+                if parent is None:
+                    scene.destroy_game_object(obj)
+                    raise FileNotFoundError(f"Parent GameObject {parent_id} was not found.")
+                obj.set_parent(parent)
+            if name:
+                obj.name = str(name)
+
+            HierarchyUndoTracker().record_create(
+                int(obj.id), "MCP Create GameObject From Model"
+            )
+            if select:
+                from Infernux.engine.ui.selection_manager import SelectionManager
+
+                SelectionManager.instance().select(int(obj.id))
+
+            value = _serialize_object(
+                obj,
+                depth=2,
+                include_components=True,
+                include_inactive=True,
+            )
+            value["model_path"] = _project_rel(absolute_path)
+            value["model_guid"] = guid
+            return value
+
+        return main_thread(
+            "gameobject_create_from_model",
+            _create,
+            arguments={
+                "model_path": model_path,
+                "parent_id": parent_id,
+                "name": name,
+                "select": select,
+            },
+        )
 
     @mcp.tool(name="gameobject_get")
     def gameobject_get(object_id: int, depth: int = 1, include_components: bool = True) -> dict:
@@ -492,7 +574,7 @@ def register_scene_tools(mcp) -> None:
             created = []
             parent_id = 0
             current_path = ""
-            target_path = str(path).replace("\\", "/").strip("/")
+            target_path = portable_path(str(path)).strip("/")
             for part in [p for p in target_path.split("/") if p]:
                 current_path = f"{current_path}/{part}" if current_path else part
                 existing = _find_by_path_exact(current_path)
@@ -734,8 +816,8 @@ def register_scene_tools(mcp) -> None:
             comp = _find_component(obj, component_type, int(ordinal))
             if comp is None:
                 raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
-            old_value = getattr(comp, field)
-            new_value = _coerce_property_value(field, value)
+            old_value = _component_field_value(comp, field)
+            new_value = _coerce_component_property_value(comp, field, value, old_value)
             from Infernux.engine.ui._inspector_undo import _record_property
             _record_property(comp, field, old_value, new_value, f"Set {component_type}.{field}")
             return {
@@ -757,12 +839,49 @@ def register_scene_tools(mcp) -> None:
             comp = _find_component(obj, component_type, int(ordinal))
             if comp is None:
                 raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
-            from Infernux.engine.ui._inspector_undo import _record_property
-            changed = {}
+            changes = []
             for field, value in (values or {}).items():
-                old_value = getattr(comp, field)
-                new_value = _coerce_property_value(field, value)
-                _record_property(comp, field, old_value, new_value, f"Set {component_type}.{field}")
+                old_value = _component_field_value(comp, field)
+                new_value = _coerce_component_property_value(comp, field, value, old_value)
+                changes.append((field, old_value, new_value))
+
+            from Infernux.engine.undo import (
+                CompoundCommand,
+                SetPropertyCommand,
+                UndoManager,
+            )
+            commands = [
+                SetPropertyCommand(
+                    comp,
+                    field,
+                    old_value,
+                    new_value,
+                    f"Set {component_type}.{field}",
+                )
+                for field, old_value, new_value in changes
+            ]
+            manager = UndoManager.instance()
+            if manager and commands:
+                command = commands[0] if len(commands) == 1 else CompoundCommand(
+                    commands,
+                    f"Set {component_type} Fields",
+                )
+                manager.execute(command)
+            elif commands:
+                applied = []
+                try:
+                    for field, old_value, new_value in changes:
+                        setattr(comp, field, new_value)
+                        applied.append((field, old_value))
+                except Exception:
+                    for field, old_value in reversed(applied):
+                        setattr(comp, field, old_value)
+                    raise
+                from Infernux.engine.ui._inspector_undo import _notify_scene_modified
+                _notify_scene_modified()
+
+            changed = {}
+            for field, _old_value, _new_value in changes:
                 changed[field] = serialize_value(getattr(comp, field))
             return {"object_id": int(obj.id), "component": serialize_component(comp), "changed": changed}
 
@@ -810,7 +929,8 @@ def register_scene_tools(mcp) -> None:
                 _record_add_component_compound(obj, component_type, comp, before_ids, is_py=is_py)
                 created = True
             for key, value in (fields or {}).items():
-                setattr(comp, key, _coerce_property_value(key, value))
+                current_value = _component_field_value(comp, key)
+                setattr(comp, key, _coerce_component_property_value(comp, key, value, current_value))
             return {"object_id": int(obj.id), "created": created, "component": serialize_component(comp), "components": _all_components(obj)}
 
         return main_thread("component_ensure", _ensure, arguments={"object_id": object_id, "component_type": component_type, "knowledge_token": knowledge_token})
@@ -1061,7 +1181,7 @@ def _find_by_path_exact(path: str):
     scene = SceneManager.instance().get_active_scene()
     if not scene:
         raise RuntimeError("No active scene.")
-    normalized = str(path).replace("\\", "/").strip("/")
+    normalized = portable_path(str(path)).strip("/")
     if not normalized:
         return None
     for obj in list(scene.get_all_objects() or []):
@@ -1072,16 +1192,42 @@ def _find_by_path_exact(path: str):
 
 def _find_component(obj, component_type: str, ordinal: int):
     matches = []
+    seen_component_ids: set[int] = set()
+
+    def _append(comp) -> None:
+        type_name = getattr(comp, "type_name", type(comp).__name__)
+        if type_name != component_type and type(comp).__name__ != component_type:
+            return
+        try:
+            from Infernux.components import BuiltinComponent
+
+            if not isinstance(comp, BuiltinComponent):
+                wrapper_cls = BuiltinComponent._builtin_registry.get(type_name)
+                if wrapper_cls is not None:
+                    comp = wrapper_cls._get_or_create_wrapper(comp, obj)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            # Some native-only components intentionally have no public wrapper.
+            # Keep those available through their pybind surface.
+            pass
+        component_id = int(getattr(comp, "component_id", 0) or 0)
+        if component_id and component_id in seen_component_ids:
+            return
+        if component_id:
+            seen_component_ids.add(component_id)
+        matches.append(comp)
+
+    # Built-in Python wrappers expose the supported public API surface (for
+    # example MeshRenderer.material_guid) while sharing the native component
+    # identity. Prefer them over the raw pybind object and only fall back to
+    # native components when no wrapper exists.
     try:
-        for comp in obj.get_components() or []:
-            if getattr(comp, "type_name", type(comp).__name__) == component_type:
-                matches.append(comp)
+        for comp in obj.get_py_components() or []:
+            _append(comp)
     except Exception:
         pass
     try:
-        for comp in obj.get_py_components() or []:
-            if getattr(comp, "type_name", type(comp).__name__) == component_type or type(comp).__name__ == component_type:
-                matches.append(comp)
+        for comp in obj.get_components() or []:
+            _append(comp)
     except Exception:
         pass
     if ordinal < 0 or ordinal >= len(matches):
@@ -1092,10 +1238,27 @@ def _find_component(obj, component_type: str, ordinal: int):
 def _component_snapshot(obj, comp) -> dict[str, Any]:
     fields = {}
     try:
-        from Infernux.components.serialized_field import get_serialized_fields
-        for name in get_serialized_fields(type(comp)):
+        from Infernux.components.serialized_field import FieldType, get_serialized_fields
+        from Infernux.components.value_codec import VALUE_CODECS
+        from Infernux.components.value_document import make_enum
+
+        for name, metadata in get_serialized_fields(type(comp)).items():
             try:
-                fields[name] = serialize_value(getattr(comp, name))
+                metadata = _resolved_component_field_metadata(metadata)
+                value = getattr(comp, name)
+                if metadata.field_type == FieldType.ENUM:
+                    enum_type = metadata.enum_type
+                    member_name = str(getattr(value, "name", "") or "")
+                    if enum_type is None:
+                        raise TypeError(f"{type(comp).__name__}.{name} has no enum type")
+                    if member_name not in enum_type.__members__:
+                        member_name = enum_type(int(value)).name
+                    fields[name] = make_enum(enum_type.__qualname__, member_name)
+                    continue
+                fields[name] = VALUE_CODECS.encode(
+                    value,
+                    f"{type(comp).__name__}.{name}",
+                )
             except Exception:
                 pass
     except Exception:
@@ -1108,10 +1271,76 @@ def _component_snapshot(obj, comp) -> dict[str, Any]:
     }
 
 
-def _coerce_property_value(field: str, value: Any) -> Any:
+def _coerce_property_value(field: str, value: Any, current_value: Any = None) -> Any:
     if isinstance(value, dict) and {"x", "y", "z"}.issubset(value.keys()):
         return coerce_vector3(value)
+    if isinstance(value, (list, tuple)) and current_value is not None:
+        if all(hasattr(current_value, axis) for axis in ("x", "y", "z")):
+            if hasattr(current_value, "w") and len(value) >= 4:
+                try:
+                    return type(current_value)(*(float(item) for item in value[:4]))
+                except (TypeError, ValueError):
+                    pass
+            if len(value) >= 3:
+                return coerce_vector3(value)
+        if all(hasattr(current_value, axis) for axis in ("x", "y")) and len(value) >= 2:
+            try:
+                return type(current_value)(float(value[0]), float(value[1]))
+            except (TypeError, ValueError):
+                pass
     return value
+
+
+def _component_field_value(comp, field: str) -> Any:
+    from Infernux.components.serialized_field import (
+        get_raw_field_value,
+        get_serialized_fields,
+    )
+
+    if field in get_serialized_fields(type(comp)):
+        return get_raw_field_value(comp, field)
+    return getattr(comp, field)
+
+
+def _coerce_component_property_value(
+    comp,
+    field: str,
+    value: Any,
+    current_value: Any = None,
+) -> Any:
+    from Infernux.components.serialized_field import (
+        coerce_serialized_field_input,
+        get_serialized_fields,
+    )
+
+    metadata = get_serialized_fields(type(comp)).get(field)
+    if metadata is not None:
+        metadata = _resolved_component_field_metadata(metadata)
+        if metadata.readonly:
+            raise AttributeError(f"{type(comp).__name__}.{field} is readonly")
+        value = _coerce_property_value(field, value, current_value)
+        return coerce_serialized_field_input(
+            value,
+            metadata,
+            f"{type(comp).__name__}.{field}",
+        )
+    return _coerce_property_value(field, value, current_value)
+
+
+def _resolved_component_field_metadata(metadata):
+    """Resolve lazy built-in enum names to their public pybind enum class."""
+    from dataclasses import replace
+
+    from Infernux.components.serialized_field import FieldType
+
+    if metadata.field_type != FieldType.ENUM or not isinstance(metadata.enum_type, str):
+        return metadata
+    from Infernux import lib
+
+    enum_type = getattr(lib, metadata.enum_type, None)
+    if enum_type is None or not getattr(enum_type, "__members__", None):
+        raise TypeError(f"Unknown built-in enum type: {metadata.enum_type}")
+    return replace(metadata, enum_type=enum_type)
 
 
 def _is_python_script_component(comp) -> bool:
@@ -1482,7 +1711,7 @@ def _project_rel(path: str | None) -> str:
         from Infernux.engine.project_context import get_project_root
         root = get_project_root()
         if root:
-            return os.path.relpath(os.path.abspath(path), os.path.abspath(root)).replace("\\", "/")
+            return relative_path(path, root, allow_root=True)
     except Exception:
         pass
     return str(path)

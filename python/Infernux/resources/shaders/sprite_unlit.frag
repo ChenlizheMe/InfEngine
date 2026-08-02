@@ -1,14 +1,18 @@
 #version 450
 
-@shader_id: sprite_unlit
-@shading_model: unlit
-@queue: 2000
-@cull: none
-@property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
-@property: texSampler, Texture2D, white
-@alpha_clip: on
-@property: uvRect, Float4, [0.0, 0.0, 1.0, 1.0]
-@property: displayScale, Float4, [1.0, 1.0, 0.0, 0.0]
+ShaderInfo {
+    Name "Sprite Unlit"
+    ShadingModel Unlit
+    Queue 2000
+    Cull None
+    AlphaClip on
+    Properties {
+        Color baseColor = [1.0, 1.0, 1.0, 1.0]
+        Texture2D texSampler = white
+        Float4 uvRect = [0.0, 0.0, 1.0, 1.0]
+        Float4 displayScale = [1.0, 1.0, 0.0, 0.0]
+    }
+}
 
 void surface(out SurfaceData s) {
     s = InitSurfaceData();

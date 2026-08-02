@@ -1,14 +1,18 @@
 #pragma once
 
+#include <array>
 #include <core/types/InxFwdType.h>
+#include <core/types/ShaderAssetReference.h>
 #include <core/types/ShaderTypes.h>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <variant>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -135,6 +139,7 @@ struct MaterialProperty
     MaterialPropertyType type;
     MaterialPropertyValue value;
     bool hdr = false;
+    std::optional<std::array<double, 2>> range;
 };
 
 /**
@@ -231,41 +236,81 @@ class InxMaterial
     /// @brief Set both vertex and fragment shader to the same name (convenience).
     void SetShader(const std::string &shaderName)
     {
-        m_vertShaderName = shaderName;
-        m_fragShaderName = shaderName;
+        const ShaderAssetReference reference{"", shaderName, ""};
+        if (m_vertexShader == reference && m_fragmentShader == reference)
+            return;
+        m_vertexShader = reference;
+        m_fragmentShader = reference;
         m_pipelineDirty = true;
+        ++m_version;
     }
 
     /// @brief Set vertex shader name independently.
     void SetVertShader(const std::string &name)
     {
-        m_vertShaderName = name;
+        const ShaderAssetReference reference{"", name, ""};
+        if (m_vertexShader == reference)
+            return;
+        m_vertexShader = reference;
         m_pipelineDirty = true;
+        ++m_version;
     }
 
     /// @brief Set fragment shader name independently.
     void SetFragShader(const std::string &name)
     {
-        m_fragShaderName = name;
+        const ShaderAssetReference reference{"", name, ""};
+        if (m_fragmentShader == reference)
+            return;
+        m_fragmentShader = reference;
         m_pipelineDirty = true;
+        ++m_version;
+    }
+
+    void SetVertShaderReference(ShaderAssetReference reference)
+    {
+        if (m_vertexShader == reference)
+            return;
+        m_vertexShader = std::move(reference);
+        m_pipelineDirty = true;
+        ++m_version;
+    }
+
+    void SetFragShaderReference(ShaderAssetReference reference)
+    {
+        if (m_fragmentShader == reference)
+            return;
+        m_fragmentShader = std::move(reference);
+        m_pipelineDirty = true;
+        ++m_version;
     }
 
     /// @brief Get the fragment shader name (primary identity for render meta).
     [[nodiscard]] const std::string &GetShaderName() const
     {
-        return m_fragShaderName;
+        return m_fragmentShader.shaderId;
     }
 
     /// @brief Get vertex shader name.
     [[nodiscard]] const std::string &GetVertShaderName() const
     {
-        return m_vertShaderName;
+        return m_vertexShader.shaderId;
     }
 
     /// @brief Get fragment shader name.
     [[nodiscard]] const std::string &GetFragShaderName() const
     {
-        return m_fragShaderName;
+        return m_fragmentShader.shaderId;
+    }
+
+    [[nodiscard]] const ShaderAssetReference &GetVertShaderReference() const noexcept
+    {
+        return m_vertexShader;
+    }
+
+    [[nodiscard]] const ShaderAssetReference &GetFragShaderReference() const noexcept
+    {
+        return m_fragmentShader;
     }
 
     // ========================================================================
@@ -278,8 +323,11 @@ class InxMaterial
     }
     void SetRenderState(const RenderState &state)
     {
+        if (m_renderState == state)
+            return;
         m_renderState = state;
         m_pipelineDirty = true;
+        ++m_version;
     }
 
     [[nodiscard]] int32_t GetRenderQueue() const
@@ -288,7 +336,10 @@ class InxMaterial
     }
     void SetRenderQueue(int32_t queue)
     {
+        if (m_renderState.renderQueue == queue)
+            return;
         m_renderState.renderQueue = queue;
+        ++m_version;
     }
 
     [[nodiscard]] const std::string &GetPassTag() const
@@ -301,7 +352,7 @@ class InxMaterial
     }
 
     /// @brief Apply shader render-state annotations to this material.
-    /// Shader annotations (@cull, @depth_write, @depth_test, @blend, @queue, @pass_tag, @alpha_clip)
+    /// Render-state defaults imported from ShaderInfo.
     /// set default RenderState values only for fields NOT manually overridden.
     void ApplyShaderRenderMeta(const std::string &cullMode, const std::string &depthWrite, const std::string &depthTest,
                                const std::string &blend, int queue, const std::string &passTag = "",
@@ -364,6 +415,7 @@ class InxMaterial
     /// Empty input explicitly clears the property; paths and missing assets fail.
     static std::string RequireTextureGuid(const std::string &textureGuid);
     void ClearTexture(const std::string &name);
+    bool RemoveProperty(const std::string &name);
 
     [[nodiscard]] bool HasProperty(const std::string &name) const;
     [[nodiscard]] const MaterialProperty *GetProperty(const std::string &name) const;
@@ -399,7 +451,7 @@ class InxMaterial
     /// @brief Get unique shader ID for pipeline caching.
     [[nodiscard]] std::string GetShaderId() const
     {
-        return m_vertShaderName + "|" + m_fragShaderName;
+        return m_vertexShader.StableKey() + "|" + m_fragmentShader.StableKey();
     }
 
     /// @brief Get a unique key for this material (for pipeline/render-data caching)
@@ -426,7 +478,7 @@ class InxMaterial
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout layout = VK_NULL_HANDLE;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-        ShaderProgram *shaderProgram = nullptr;
+        std::shared_ptr<const ShaderProgram> shaderProgram;
     };
 
     /// Access per-pass pipeline data by compile target.
@@ -457,11 +509,16 @@ class InxMaterial
         return PassPipeline_(target).descriptorSet;
     }
 
-    void SetPassShaderProgram(ShaderCompileTarget target, ShaderProgram *program)
+    void SetPassShaderProgram(ShaderCompileTarget target, std::shared_ptr<const ShaderProgram> program)
     {
-        PassPipeline_(target).shaderProgram = program;
+        PassPipeline_(target).shaderProgram = std::move(program);
     }
-    [[nodiscard]] ShaderProgram *GetPassShaderProgram(ShaderCompileTarget target) const
+    [[nodiscard]] const ShaderProgram *GetPassShaderProgram(ShaderCompileTarget target) const
+    {
+        return PassPipeline_(target).shaderProgram.get();
+    }
+    [[nodiscard]] const std::shared_ptr<const ShaderProgram> &
+    GetPassShaderProgramPublication(ShaderCompileTarget target) const
     {
         return PassPipeline_(target).shaderProgram;
     }
@@ -500,8 +557,11 @@ class InxMaterial
     /// @brief Create a default unlit opaque material
     static std::shared_ptr<InxMaterial> CreateDefaultUnlit();
 
-    /// @brief Create the default alpha-blended billboard particle material.
-    static std::shared_ptr<InxMaterial> CreateParticleBillboardMaterial();
+    /// @brief Create the default GPU ParticleGraph sprite material.
+    static std::shared_ptr<InxMaterial> CreateParticleSpriteMaterial();
+
+    /// @brief Create the read-only built-in six-way lit smoke particle material.
+    static std::shared_ptr<InxMaterial> CreateParticleSixWaySmokeMaterial();
 
     /// @brief Create a gizmo material (uses gizmo shader, unlit, no depth write)
     static std::shared_ptr<InxMaterial> CreateGizmoMaterial();
@@ -523,6 +583,9 @@ class InxMaterial
 
     /// @brief Create the built-in textured light icon billboard material.
     static std::shared_ptr<InxMaterial> CreateComponentGizmoLightIconMaterial();
+
+    /// @brief Create the built-in textured particle-system icon billboard material.
+    static std::shared_ptr<InxMaterial> CreateComponentGizmoParticleIconMaterial();
 
     /// @brief Create a procedural skybox material (gradient sky + sun)
     static std::shared_ptr<InxMaterial> CreateSkyboxProceduralMaterial();
@@ -560,10 +623,10 @@ class InxMaterial
     bool m_builtin = false; // Built-in materials cannot have shader changed
 
     // Shader identity — separate vert/frag names allow different combinations.
-    std::string m_vertShaderName; // e.g. "lit" — lookup key for vertex pass variants
-    std::string m_fragShaderName; // e.g. "lit" — lookup key for fragment pass variants
+    ShaderAssetReference m_vertexShader;
+    ShaderAssetReference m_fragmentShader;
 
-    // Pass tag for draw call filtering (set from @pass_tag shader annotation)
+    // Pass tag for draw call filtering, initialized from ShaderInfo.
     std::string m_passTag;
 
     // Render state

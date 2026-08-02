@@ -31,14 +31,16 @@ class Engine:
     def tick_play_mode(self, external_delta_time: Optional[float] = ...) -> float:
         """Advance play-mode timing before the native scene update."""
         ...
-    def set_gui_font(self, font_path: str, font_size: int = ...) -> None:
+    def set_gui_font(self, font_path: str, font_size: int = 18) -> None:
         """Set the ImGui font from a TTF file."""
         ...
     def set_log_level(self, engine_log_level: LogLevel) -> None:
         """Set the engine log verbosity level."""
         ...
-    def register_gui(self, name: str, gui_object: InxGUIRenderable) -> None:
-        """Register an ImGui renderable panel by name."""
+    def register_gui(
+        self, name: str, gui_object: InxGUIRenderable, *, priority: int = ...
+    ) -> None:
+        """Register an ImGui renderable panel by name and presentation priority."""
         ...
     def unregister_gui(self, name: str) -> None:
         """Unregister an ImGui renderable panel."""
@@ -131,6 +133,8 @@ class Engine:
     def pick_scene_object_ids(self, screen_x: float, screen_y: float, viewport_width: float, viewport_height: float) -> List[int]:
         """Pick ordered candidate object IDs at screen coordinates."""
         ...
+    def request_scene_object_pick(self, screen_x: float, screen_y: float, viewport_width: float, viewport_height: float) -> int: ...
+    def query_scene_object_pick(self, request_id: int) -> dict: ...
 
     # Editor Tools API
     def set_editor_tool_highlight(self, axis: int) -> None:

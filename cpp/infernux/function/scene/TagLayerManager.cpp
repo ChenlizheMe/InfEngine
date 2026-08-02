@@ -261,8 +261,6 @@ uint32_t TagLayerManager::GetMask(const std::vector<std::string> &layerNames) co
 std::string TagLayerManager::Serialize() const
 {
     json j;
-    j["schema_version"] = 1;
-
     // Only serialize custom tags (indices >= kBuiltinTagCount)
     json customTags = json::array();
     for (int i = kBuiltinTagCount; i < static_cast<int>(m_tags.size()); ++i) {
@@ -290,10 +288,10 @@ bool TagLayerManager::Deserialize(const std::string &jsonStr)
 {
     try {
         json j = json::parse(jsonStr);
-        if (!j.is_object() || j.size() != 4 || j.value("schema_version", 0) != 1 || !j.contains("custom_tags") ||
-            !j["custom_tags"].is_array() || !j.contains("layers") || !j["layers"].is_array() ||
-            !j.contains("layer_collision_masks") || !j["layer_collision_masks"].is_array()) {
-            throw std::invalid_argument("expected the complete TagLayerSettings schema_version 1 document");
+        if (!j.is_object() || j.size() != 3 || !j.contains("custom_tags") || !j["custom_tags"].is_array() ||
+            !j.contains("layers") || !j["layers"].is_array() || !j.contains("layer_collision_masks") ||
+            !j["layer_collision_masks"].is_array()) {
+            throw std::invalid_argument("expected the complete TagLayerSettings document");
         }
 
         static const std::unordered_set<std::string> builtinTags = {

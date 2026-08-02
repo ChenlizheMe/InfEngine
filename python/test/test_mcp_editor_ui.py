@@ -96,6 +96,31 @@ def _focused_numeric_snapshot(frame: int = 42) -> dict:
     return snapshot
 
 
+def _focused_int_input_snapshot(frame: int = 42) -> dict:
+    snapshot = _snapshot(frame)
+    snapshot["wants_text_input"] = True
+    snapshot["focused_window"] = "Particle Graph Editor"
+    snapshot["focused_window_id"] = "particle_graph_editor"
+    snapshot["targets"][1] = {
+        "id": "int_input:particle_graph_editor:particle_graph.canvas.inline.wait.frames:203",
+        "semantic_id": "particle_graph.canvas.inline.wait.frames",
+        "label": "Frames",
+        "kind": "int_input",
+        "window": "Particle Graph Editor",
+        "window_id": "particle_graph_editor",
+        "item_id": 203,
+        "rect": (320.0, 180.0, 76.0, 22.0),
+        "enabled": True,
+        "visible": True,
+        "active": True,
+        # ImGui InputScalar's temporary InputText owns keyboard focus while
+        # the semantic outer item remains active.
+        "focused": False,
+        "value": 1,
+    }
+    return snapshot
+
+
 def test_register_editor_ui_tools_leaves_continuous_capture_disabled(tmp_path, monkeypatch):
     session.configure(str(tmp_path), {"profile": "global_validation", "session": {"build_profile": "debug_feedback"}})
     capture_states = []
@@ -163,7 +188,7 @@ def test_editor_ui_snapshot_explains_native_window_occlusion(tmp_path, monkeypat
             "window": "Timeline Editor",
             "window_id": "animtimeline_editor",
             "occluded_by_window": "VFX Graph Editor",
-            "occluded_by_window_id": "vfx_graph_editor",
+            "occluded_by_window_id": "particle_graph_editor",
             "item_id": 101,
             "rect": (299.0, 92.0, 38.0, 21.0),
             "enabled": False,
@@ -182,7 +207,7 @@ def test_editor_ui_snapshot_explains_native_window_occlusion(tmp_path, monkeypat
     assert response["ok"] is True
     target = response["data"]["targets"][0]
     assert target["occluded_by_window"] == "VFX Graph Editor"
-    assert target["occluded_by_window_id"] == "vfx_graph_editor"
+    assert target["occluded_by_window_id"] == "particle_graph_editor"
     assert target["actions"] == []
 
 
@@ -414,7 +439,7 @@ def test_editor_ui_wait_for_window_focus_accepts_a_focused_child_window(tmp_path
                 "frame": 42,
                 "snapshot_id": "42",
                 "focused_window": "VFX Graph Editor",
-                "focused_window_id": "vfx_graph_editor",
+                "focused_window_id": "particle_graph_editor",
             },
             {
                 "capture_enabled": True,
@@ -1089,6 +1114,56 @@ def test_editor_ui_replace_text_ctrl_clicks_numeric_vector_axis(tmp_path, monkey
         ),
         ("chord", ["Left Ctrl", "A"], {"timeout_seconds": 3.0, "trace_name": "editor_ui_replace_text.select_all"}),
         ("text", "3.5", {"timeout_seconds": 3.0, "trace_name": "editor_ui_replace_text.type"}),
+    ]
+
+
+def test_editor_ui_replace_text_accepts_native_integer_input(tmp_path, monkeypatch):
+    session.configure(str(tmp_path), {"profile": "global_validation", "session": {"build_profile": "debug_feedback"}})
+    _install_main_queue(monkeypatch)
+    monkeypatch.setattr(editor_ui, "set_semantic_capture_enabled", lambda enabled: True)
+    monkeypatch.setattr(editor_ui, "_read_native_snapshot", lambda: _focused_int_input_snapshot())
+    calls: list[tuple] = []
+
+    monkeypatch.setattr(
+        input_tools,
+        "perform_pointer_click",
+        lambda x, y, **kwargs: calls.append(("focus", x, y, kwargs)) or ok({"delivered": True}),
+    )
+    monkeypatch.setattr(
+        input_tools,
+        "perform_key_chord",
+        lambda keys, **kwargs: calls.append(("chord", keys, kwargs)) or ok({"delivered": True}),
+    )
+    monkeypatch.setattr(
+        input_tools,
+        "perform_text_input",
+        lambda text, **kwargs: calls.append(("text", text, kwargs)) or ok({"delivered": True}),
+    )
+
+    fake = _FakeMcp()
+    editor_ui.register_editor_ui_tools(fake)
+    response = fake.tools["editor_ui_replace_text"](
+        "int_input:particle_graph_editor:particle_graph.canvas.inline.wait.frames:203",
+        "42",
+        "5",
+    )
+
+    assert response["ok"] is True
+    assert response["data"]["action_path"] == "synthetic_sdl_pointer_and_keyboard"
+    assert calls == [
+        (
+            "focus",
+            358.0,
+            191.0,
+            {
+                "button": 0,
+                "timeout_seconds": 3.0,
+                "trace_name": "editor_ui_replace_text.focus",
+                "expected_target_id": "int_input:particle_graph_editor:particle_graph.canvas.inline.wait.frames:203",
+            },
+        ),
+        ("chord", ["Left Ctrl", "A"], {"timeout_seconds": 3.0, "trace_name": "editor_ui_replace_text.select_all"}),
+        ("text", "5", {"timeout_seconds": 3.0, "trace_name": "editor_ui_replace_text.type"}),
     ]
 
 

@@ -33,7 +33,7 @@ class WhiteBalanceEffect(FullScreenEffect):
     tint: float = serialized_field(default=0.0, range=(-100.0, 100.0), slider=False)
 
     def get_shader_list(self) -> List[str]:
-        return ["fullscreen_triangle", "white_balance"]
+        return ["Fullscreen Triangle", "White Balance"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from Infernux.rendergraph.graph import Format
@@ -43,7 +43,7 @@ class WhiteBalanceEffect(FullScreenEffect):
             bus,
             output_name="_whitebal_out",
             pass_name="WhiteBal_Apply",
-            shader_name="white_balance",
+            shader_name="White Balance",
             format=Format.RGBA16_SFLOAT,
             params={
                 "temperature": self.temperature,

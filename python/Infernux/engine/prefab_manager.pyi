@@ -37,6 +37,9 @@ def instantiate_prefab(
     guid: Optional[str] = None,
     parent: Any = None,
     asset_database: Any = None,
+    *,
+    instantiate_in_world_space: bool = False,
+    configure_created: Any = None,
 ) -> Any:
     """Instantiate a prefab into the active scene.
 

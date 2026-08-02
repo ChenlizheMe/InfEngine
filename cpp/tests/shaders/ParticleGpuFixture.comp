@@ -1,0 +1,68 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer States { uvec4 states[]; };
+layout(set = 0, binding = 1, std430) buffer FreeList { uint freeSlots[]; };
+layout(set = 0, binding = 2, std430) buffer Counters
+{
+    uint freeCount;
+    uint visibleCount;
+    uint droppedCount;
+    uint reservedCount;
+} counters;
+
+struct ParticleInstance
+{
+    vec4 positionSize;
+    vec4 color;
+    vec4 rotationCustom;
+    vec4 scaleCustom;
+    uvec4 ribbonData;
+    vec4 customData;
+    vec4 previousPositionHistory;
+};
+
+layout(set = 0, binding = 3, std430) buffer Instances { ParticleInstance instances[]; };
+layout(set = 0, binding = 4, std430) buffer IndirectArguments
+{
+    uint vertexCount;
+    uint instanceCount;
+    uint firstVertex;
+    uint firstInstance;
+} indirectArgs;
+layout(set = 0, binding = 5, std140) uniform Transforms { mat4 transforms[4]; };
+layout(set = 0, binding = 6, std430) buffer RenderIndices { uint renderIndices[]; };
+
+layout(push_constant) uniform PushConstants
+{
+    uint capacity;
+    uint invocationCount;
+    uint spawnBaseId;
+    uint spawnGeneration;
+    uint systemSeed;
+    uint simulationStep;
+    float deltaTime;
+    uint reserved;
+} pc;
+
+void main()
+{
+    if (gl_GlobalInvocationID.x != 0u)
+        return;
+    states[0] = uvec4(1u, pc.simulationStep, pc.systemSeed, pc.capacity);
+    freeSlots[0] = 0u;
+    counters.visibleCount = 1u;
+    instances[0].positionSize = vec4(0.0, 0.0, 0.0, 0.65);
+    instances[0].color = vec4(0.9, 0.2, 0.1, 1.0);
+    instances[0].rotationCustom = vec4(0.0);
+    instances[0].scaleCustom = vec4(1.0, 1.0, 1.0, 0.0);
+    instances[0].ribbonData = uvec4(7u, pc.simulationStep, 0u, pc.spawnBaseId);
+    instances[0].customData = vec4(0.0);
+    instances[0].previousPositionHistory = vec4(0.0, 0.0, 0.0, uintBitsToFloat(pc.spawnGeneration));
+    renderIndices[0] = 0u;
+    indirectArgs.vertexCount = 6u;
+    indirectArgs.instanceCount = 1u;
+    indirectArgs.firstVertex = 0u;
+    indirectArgs.firstInstance = 0u;
+}

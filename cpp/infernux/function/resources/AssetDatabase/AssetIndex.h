@@ -34,7 +34,6 @@ struct AssetIndexEntry
     ResourceType resourceType = ResourceType::DefaultText;
     AssetFileFingerprint source;
     AssetFileFingerprint meta;
-    int importerVersion = 0;
     std::string contentHash;
     std::vector<std::string> dependencies;
     bool readOnly = false;
@@ -47,8 +46,6 @@ struct AssetIndexEntry
 class AssetIndex final
 {
   public:
-    static constexpr int SchemaVersion = 1;
-
     void Reset(std::string normalizedProjectRoot);
     [[nodiscard]] bool Load(const std::string &path, const std::string &normalizedProjectRoot);
     void Save(const std::string &path) const;

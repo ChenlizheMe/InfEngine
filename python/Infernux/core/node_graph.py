@@ -90,6 +90,25 @@ class PinDef:
             raise ValueError("max_connections must be -1 or non-negative")
 
 
+@dataclass(frozen=True)
+class NodeInlineFieldDef:
+    """Editable literal displayed inside a node when no wire supplies it."""
+
+    id: str
+    label: str
+    data_type: str
+    default: Any = None
+    asset_type: str = ""
+    enum_values: tuple[str, ...] = ()
+    enum_labels: tuple[str, ...] = ()
+    visible_when_field: str = ""
+    visible_when_value: Any = None
+
+    def __post_init__(self) -> None:
+        if self.enum_labels and len(self.enum_labels) != len(self.enum_values):
+            raise ValueError("inline enum labels must match enum values")
+
+
 @dataclass
 class NodeTypeDef:
     """Registered blueprint for a category of nodes."""
@@ -101,6 +120,10 @@ class NodeTypeDef:
     min_width: float = 140.0
     deletable: bool = True
     body_bottom_pad: float = 0.0  # extra height below pins for custom body UI (px at zoom=1)
+    visual_style: str = "graph"
+    category_label: str = ""
+    show_header_color_swatch: bool = True
+    inline_fields: List[NodeInlineFieldDef] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         pin_ids = [pin.id for pin in self.pins]
@@ -231,6 +254,8 @@ class NodeGraph:
         ("int", "float"),
         ("vec3", "color"),
         ("color", "vec3"),
+        ("vec4", "color"),
+        ("color", "vec4"),
     }
 
     def __init__(
@@ -256,6 +281,10 @@ class NodeGraph:
     def get_type(self, type_id: str) -> Optional[NodeTypeDef]:
         return self._type_registry.get(type_id)
 
+    def get_node_type(self, node: GraphNode) -> Optional[NodeTypeDef]:
+        """Resolve a node instance's effective type definition."""
+        return self.get_type(node.type_id)
+
     def registered_types(self) -> List[NodeTypeDef]:
         return list(self._type_registry.values())
 
@@ -267,16 +296,16 @@ class NodeGraph:
     def add_node(
         self,
         type_id: str,
-        x: float = 0.0,
-        y: float = 0.0,
+        canvas_x: float = 0.0,
+        canvas_y: float = 0.0,
         uid: Optional[str] = None,
         **data: Any,
     ) -> GraphNode:
         node = GraphNode(
             uid=uid or uuid.uuid4().hex[:8],
             type_id=type_id,
-            pos_x=x,
-            pos_y=y,
+            pos_x=canvas_x,
+            pos_y=canvas_y,
             data=data,
         )
         self.nodes.append(node)
@@ -319,6 +348,29 @@ class NodeGraph:
             data=data,
         )
         self.links.append(link)
+        return link
+
+    def replace_link(
+        self,
+        link_uid: str,
+        src_node: str,
+        src_pin: str,
+        dst_node: str,
+        dst_pin: str,
+    ) -> Optional[GraphLink]:
+        link = self.find_link(link_uid)
+        if link is None or not self.validate_link(
+            src_node,
+            src_pin,
+            dst_node,
+            dst_pin,
+            ignore_link_uid=link_uid,
+        ):
+            return None
+        link.source_node = src_node
+        link.source_pin = src_pin
+        link.target_node = dst_node
+        link.target_pin = dst_pin
         return link
 
     def validate_link(
@@ -376,7 +428,7 @@ class NodeGraph:
         return LinkValidationResult(True)
 
     def _find_pin_def(self, node: GraphNode, pin_id: str) -> Optional[PinDef]:
-        typedef = self.get_type(node.type_id)
+        typedef = self.get_node_type(node)
         if typedef is None:
             return None
         return next((pin for pin in typedef.pins if pin.id == pin_id), None)

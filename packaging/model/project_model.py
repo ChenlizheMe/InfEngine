@@ -17,6 +17,294 @@ import logging
 # Suppress console windows for all child processes on Windows
 _NO_WINDOW: int = 0x08000000 if sys.platform == "win32" else 0
 
+_COMPONENT_SCRIPT_NAMESPACE = uuid.UUID("594f85cc-9c3a-4ea9-93ed-65a26f77e3a4")
+_COMPONENT_TYPE_NAMESPACE = uuid.UUID("41934666-ab60-4a29-b7ae-c8e15faf83c2")
+
+_FALLBACK_PROJECT_GITIGNORE = """# Infernux generated state
+/Library/
+/Temp/
+/Logs/
+/Cache/
+/.runtime/
+/.venv/
+/Build/
+/Builds/
+/Dist/
+/Export/
+/Exports/
+/ProjectSettings/.infernux-engine-lock.json
+__pycache__/
+*.py[cod]
+*.meta.tmp
+*.tmp
+*.bak
+*.log
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+imgui.ini
+"""
+
+
+def _engine_component_type_id(module_name: str, qualified_name: str) -> str:
+    """Return the stable scene identity used by engine-owned Python components."""
+    script_guid = uuid.uuid5(_COMPONENT_SCRIPT_NAMESPACE, module_name).hex
+    type_guid = uuid.uuid5(
+        _COMPONENT_TYPE_NAMESPACE,
+        f"{module_name}:{qualified_name}",
+    ).hex
+    return f"python:{script_guid}:{type_guid}:{module_name}:{qualified_name}"
+
+
+def _write_json_document(path: str, document: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as stream:
+        json.dump(document, stream, ensure_ascii=False, indent=2, sort_keys=True)
+        stream.write("\n")
+
+
+def _default_scene_document() -> dict:
+    render_stack_type = _engine_component_type_id(
+        "Infernux.renderstack.render_stack",
+        "RenderStack",
+    )
+    return {
+        "isPlaying": False,
+        "mainCameraComponentId": 2,
+        "name": "Start",
+        "objects": [
+            {
+                "active": True,
+                "children": [],
+                "components": [
+                    {
+                        "component_id": 2,
+                        "data": {
+                            "aspectRatio": 1.7777777910232544,
+                            "backgroundColor": [0.1, 0.1, 0.1, 1.0],
+                            "clearFlags": 0,
+                            "cullingMask": 4294967295,
+                            "depth": 0.0,
+                            "farClip": 5000.0,
+                            "fov": 60.0,
+                            "nearClip": 0.01,
+                            "orthoSize": 5.0,
+                            "projectionMode": 0,
+                        },
+                        "enabled": True,
+                        "execution_order": 0,
+                        "type_id": "native:infernux.Camera",
+                    }
+                ],
+                "id": 1,
+                "is_static": False,
+                "layer": 0,
+                "name": "Main Camera",
+                "tag": "MainCamera",
+                "transform": {
+                    "component_id": 1,
+                    "enabled": True,
+                    "execution_order": 0,
+                    "position": [0.0, 1.0, -10.0],
+                    "rotation": [0.0, 0.0, 0.0],
+                    "scale": [1.0, 1.0, 1.0],
+                    "type": "Transform",
+                },
+            },
+            {
+                "active": True,
+                "children": [],
+                "components": [
+                    {
+                        "component_id": 4,
+                        "data": {
+                            "baked": False,
+                            "areaSize": [1.6, 1.0],
+                            "areaTwoSided": False,
+                            "color": [1.0, 0.95, 0.9],
+                            "cullingMask": 4294967295,
+                            "influenceDomains": 3,
+                            "intensity": 1.0,
+                            "lightType": 0,
+                            "outerSpotAngle": 45.0,
+                            "range": 10.0,
+                            "renderMode": 0,
+                            "shadowBias": 1.0,
+                            "shadowNormalBias": 1.0,
+                            "shadowSoftness": 1.5,
+                            "shadowStrength": 1.0,
+                            "shadows": 2,
+                            "spotAngle": 30.0,
+                        },
+                        "enabled": True,
+                        "execution_order": 0,
+                        "type_id": "native:infernux.Light",
+                    }
+                ],
+                "id": 2,
+                "is_static": False,
+                "layer": 0,
+                "name": "Directional Light",
+                "tag": "Untagged",
+                "transform": {
+                    "component_id": 3,
+                    "enabled": True,
+                    "execution_order": 0,
+                    "position": [0.0, 0.0, 0.0],
+                    "rotation": [50.0, 330.0, 0.0],
+                    "scale": [1.0, 1.0, 1.0],
+                    "type": "Transform",
+                },
+            },
+            {
+                "active": True,
+                "children": [],
+                "components": [
+                    {
+                        "component_id": 6,
+                        "data": {
+                            "effect_slots": [
+                                {
+                                    "$type": "serializable_object",
+                                    "fields": {
+                                        "effect": {
+                                            "$type": "asset_ref",
+                                            "asset_type": "RenderEffect",
+                                            "guid": "",
+                                            "path_hint": "Assets/Rendering/Default Post Processing.effectgroup",
+                                        },
+                                        "enabled": True,
+                                        "slot_id": "default_post_processing",
+                                        "stage_id": "final",
+                                    },
+                                    "type_id": "Infernux.renderstack.effect_slot:EffectSlot",
+                                }
+                            ],
+                            "pipeline_class_name": "",
+                            "pipeline_params_json": "",
+                        },
+                        "enabled": True,
+                        "execution_order": 0,
+                        "type_id": render_stack_type,
+                    }
+                ],
+                "id": 3,
+                "is_static": False,
+                "layer": 0,
+                "name": "RenderStack",
+                "tag": "Untagged",
+                "transform": {
+                    "component_id": 5,
+                    "enabled": True,
+                    "execution_order": 0,
+                    "position": [0.0, 0.0, 0.0],
+                    "rotation": [0.0, 0.0, 0.0],
+                    "scale": [1.0, 1.0, 1.0],
+                    "type": "Transform",
+                },
+            },
+        ],
+    }
+
+
+def _create_default_project_content(
+    staging_dir: str,
+    final_dir: str,
+    project_name: str,
+) -> None:
+    assets_dir = os.path.join(staging_dir, "Assets")
+    for folder in (
+        "Scenes",
+        "Rendering",
+        "Materials",
+        "Scripts",
+        "Textures",
+        "Models",
+        "Audio",
+    ):
+        os.makedirs(os.path.join(assets_dir, folder), exist_ok=True)
+
+    bloom = {
+        "$schema": "infernux.render_effect",
+        "dependencies": [],
+        "feature_type": "infernux.post.bloom",
+        "parameters": {
+            "clamp": 65472.0,
+            "intensity": 0.8,
+            "max_iterations": 5,
+            "scatter": 0.7,
+            "threshold": 1.0,
+            "tint": [1.0, 1.0, 1.0, 1.0],
+        },
+    }
+    tone_mapping = {
+        "$schema": "infernux.render_effect",
+        "dependencies": [],
+        "feature_type": "infernux.post.tonemapping",
+        "parameters": {"exposure": 1.0, "mode": 2},
+    }
+    effect_group = {
+        "$schema": "infernux.render_effect_group",
+        "entries": [
+            {
+                "asset": {
+                    "guid": "",
+                    "path_hint": "Assets/Rendering/Bloom.effect",
+                },
+                "enabled": True,
+                "entry_id": "bloom",
+                "overrides": {},
+            },
+            {
+                "asset": {
+                    "guid": "",
+                    "path_hint": "Assets/Rendering/ACES Tone Mapping.effect",
+                },
+                "enabled": True,
+                "entry_id": "tonemapping",
+                "overrides": {},
+            },
+        ],
+    }
+    rendering_dir = os.path.join(assets_dir, "Rendering")
+    _write_json_document(os.path.join(rendering_dir, "Bloom.effect"), bloom)
+    _write_json_document(
+        os.path.join(rendering_dir, "ACES Tone Mapping.effect"),
+        tone_mapping,
+    )
+    _write_json_document(
+        os.path.join(rendering_dir, "Default Post Processing.effectgroup"),
+        effect_group,
+    )
+
+    scene_path = os.path.join(assets_dir, "Scenes", "Start.scene")
+    _write_json_document(scene_path, _default_scene_document())
+    final_scene_path = os.path.join(final_dir, "Assets", "Scenes", "Start.scene")
+    _write_json_document(
+        os.path.join(staging_dir, "ProjectSettings", "BuildSettings.json"),
+        {
+            "debug_mode": False,
+            "display_mode": "windowed",
+            "enable_jit": False,
+            "game_name": project_name,
+            "icon_path": "",
+            "lto": True,
+            "output_dir": "",
+            "scenes": [final_scene_path],
+            "splash_items": [],
+            "window_height": 720,
+            "window_resizable": True,
+            "window_width": 1280,
+        },
+    )
+    _write_json_document(
+        os.path.join(staging_dir, "ProjectSettings", "EditorSettings.json"),
+        {"lastOpenedScene": final_scene_path},
+    )
+
 
 def _popen_kwargs(*, capture_output: bool = False) -> dict:
     """Common subprocess kwargs: suppress console window for child processes.
@@ -411,9 +699,16 @@ class ProjectModel:
             for subdir in ("ProjectSettings", "Logs", "Library", "Assets"):
                 os.makedirs(os.path.join(staging_dir, subdir))
 
-            readme_path = os.path.join(staging_dir, "Assets", "README.md")
-            with open(readme_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write("# Project Assets\n\nThis folder contains all the assets for the project.\n")
+            _create_default_project_content(
+                staging_dir,
+                final_dir,
+                project_name,
+            )
+
+            self._copy_bundled_project_gitignore(
+                os.path.join(staging_dir, ".gitignore"),
+                engine_version,
+            )
 
             req_path = os.path.join(staging_dir, "ProjectSettings", "requirements.txt")
             self._copy_bundled_requirements(req_path, engine_version)
@@ -453,25 +748,28 @@ class ProjectModel:
     # Private helpers
     # -----------------------------------------------------------------
 
-    def _copy_bundled_requirements(self, dest_path: str, engine_version: str) -> None:
-        """Copy the default requirements.txt to *dest_path*.
-
-        Resolves the file from the source tree (dev mode) or extracts it
-        from the engine wheel, avoiding any ``import Infernux`` in the Hub
-        process (which doesn't have the engine package installed).
-        """
+    def _copy_bundled_support_file(
+        self,
+        source_name: str,
+        dest_path: str,
+        engine_version: str,
+    ) -> bool:
+        """Copy one support template from the source tree or selected wheel."""
         import zipfile
 
-        # 1) Dev mode: resolve from the source tree next to this repo
         engine_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        source_req = os.path.join(
-            engine_root, "python", "Infernux", "resources", "supports", "requirements.txt",
+        source_path = os.path.join(
+            engine_root,
+            "python",
+            "Infernux",
+            "resources",
+            "supports",
+            source_name,
         )
-        if os.path.isfile(source_req):
-            shutil.copy2(source_req, dest_path)
-            return
+        if os.path.isfile(source_path):
+            shutil.copy2(source_path, dest_path)
+            return True
 
-        # 2) Extract from the wheel (a zip file)
         wheel = ""
         if engine_version and self.version_manager is not None:
             wheel = self.version_manager.get_wheel_path(engine_version) or ""
@@ -480,14 +778,34 @@ class ProjectModel:
         if wheel and os.path.isfile(wheel):
             try:
                 with zipfile.ZipFile(wheel) as zf:
+                    archive_suffix = f"resources/supports/{source_name}"
                     for name in zf.namelist():
-                        if name.endswith("resources/supports/requirements.txt"):
+                        if name.endswith(archive_suffix):
                             with zf.open(name) as src, open(dest_path, "wb") as dst:
                                 shutil.copyfileobj(src, dst)
-                            return
-            except zipfile.BadZipFile as _exc:
-                logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-                pass
+                            return True
+            except zipfile.BadZipFile as exc:
+                logging.getLogger(__name__).debug(
+                    "[Suppressed] %s: %s", type(exc).__name__, exc
+                )
+        return False
+
+    def _copy_bundled_project_gitignore(self, dest_path: str, engine_version: str) -> None:
+        if self._copy_bundled_support_file(
+            "project.gitignore.txt", dest_path, engine_version
+        ):
+            return
+        with open(dest_path, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(_FALLBACK_PROJECT_GITIGNORE)
+
+    def _copy_bundled_requirements(self, dest_path: str, engine_version: str) -> None:
+        """Copy the default requirements.txt to *dest_path*.
+
+        Resolves the file from the source tree (dev mode) or extracts it
+        from the engine wheel, avoiding any ``import Infernux`` in the Hub
+        process (which doesn't have the engine package installed).
+        """
+        self._copy_bundled_support_file("requirements.txt", dest_path, engine_version)
 
     @staticmethod
     def _get_project_python(project_dir: str) -> str:

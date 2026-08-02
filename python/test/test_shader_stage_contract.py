@@ -30,4 +30,7 @@ def test_shader_file_creation_accepts_graphics_stages(tmp_path):
     for stage in ("vert", "frag"):
         ok, error = create_shader(str(tmp_path), f"Stage_{stage}", stage)
         assert ok, error
-        assert (tmp_path / f"Stage_{stage}.{stage}").is_file()
+        source = (tmp_path / f"Stage_{stage}.{stage}").read_text(encoding="utf-8")
+        assert "ShaderInfo {" in source
+        assert f'Name "Stage {stage.title()}"' in source
+        assert "@" not in source

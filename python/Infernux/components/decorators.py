@@ -110,6 +110,8 @@ def add_component_menu(path: str) -> Callable:
     """
     def decorator(cls):
         cls._component_menu_path_ = path
+        from .registry import register_component_type
+        register_component_type(cls)
         return cls
     return decorator
 

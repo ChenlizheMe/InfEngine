@@ -1,4 +1,4 @@
-"""Strict, versioned value codecs shared by Python serialization surfaces."""
+"""Strict value codecs shared by Python serialization surfaces."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,7 +16,6 @@ class ValueCodecDescriptor:
     """
 
     name: str
-    version: int
     can_encode: Callable[[Any], bool]
     can_decode: Callable[[Any], bool]
     encode: Callable[[Any, str, "ValueCodecRegistry"], Any]
@@ -26,28 +25,24 @@ class ValueCodecDescriptor:
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
             raise ValueError("value codec name must be a non-empty string")
-        if type(self.version) is not int or self.version <= 0:
-            raise ValueError(f"value codec {self.name!r} version must be a positive integer")
         for field_name in ("can_encode", "can_decode", "encode", "validate", "decode"):
             if not callable(getattr(self, field_name)):
                 raise TypeError(f"value codec {self.name!r} {field_name} must be callable")
 
     @property
     def identity(self) -> str:
-        return f"{self.name}@{self.version}"
+        return self.name
 
 
 class ValueCodecRegistry:
     """Current-schema codec registry with validate-before-decode semantics."""
 
     BUILTIN_CODEC_NAME = "infernux.current-schema"
-    BUILTIN_CODEC_VERSION = 1
 
     def __init__(self) -> None:
         self._codecs: list[ValueCodecDescriptor] = []
         self._builtin_codec = ValueCodecDescriptor(
             name=self.BUILTIN_CODEC_NAME,
-            version=self.BUILTIN_CODEC_VERSION,
             can_encode=lambda _value: True,
             can_decode=lambda _field: True,
             encode=lambda value, path, registry: registry._encode_builtin(value, path),
@@ -287,7 +282,7 @@ class ValueCodecRegistry:
         if field_type == FieldType.COLOR:
             return normalize_rgba(self._require_numbers(value, path, "COLOR"))
         if field_type == FieldType.ENUM:
-            return field_meta_or_type.enum_type[value["name"]]
+            return field_meta_or_type.enum_type.__members__[value["name"]]
 
         if isinstance(value, list):
             return [self.decode(item, FieldType.UNKNOWN, f"{path}[{index}]") for index, item in enumerate(value)]
@@ -393,8 +388,6 @@ class ValueCodecRegistry:
     def _validate_typed_document(value: dict, path: str) -> str | None:
         from .value_document import (
             TYPE_KEY,
-            VERSION_KEY,
-            SCHEMA_VERSION,
             ENUM,
             GAME_OBJECT_REF,
             COMPONENT_REF,
@@ -402,23 +395,20 @@ class ValueCodecRegistry:
             SERIALIZABLE_OBJECT,
         )
 
-        if TYPE_KEY not in value and VERSION_KEY not in value:
+        if TYPE_KEY not in value:
             return None
         document_type = value.get(TYPE_KEY)
         if not isinstance(document_type, str):
             raise TypeError(f"{path}: typed value document requires a string {TYPE_KEY}")
-        if value.get(VERSION_KEY) != SCHEMA_VERSION:
-            raise ValueError(f"{path}: typed value document requires schema {SCHEMA_VERSION}")
-
         if document_type == ENUM:
-            if set(value) != {TYPE_KEY, VERSION_KEY, "enum_type", "name"}:
+            if set(value) != {TYPE_KEY, "enum_type", "name"}:
                 raise ValueError(f"{path}: enum document has unknown or missing fields")
             if not isinstance(value["enum_type"], str) or not isinstance(value["name"], str):
                 raise TypeError(f"{path}: enum type and member names must be strings")
             return document_type
 
         if document_type == GAME_OBJECT_REF:
-            if set(value) != {TYPE_KEY, VERSION_KEY, "object_id"}:
+            if set(value) != {TYPE_KEY, "object_id"}:
                 raise ValueError(f"{path}: GameObjectRef document has unknown or missing fields")
             target_id = value["object_id"]
             if type(target_id) is not int or target_id < 0:
@@ -426,7 +416,7 @@ class ValueCodecRegistry:
             return document_type
 
         if document_type == COMPONENT_REF:
-            if set(value) != {TYPE_KEY, VERSION_KEY, "game_object_id", "component_type"}:
+            if set(value) != {TYPE_KEY, "game_object_id", "component_type"}:
                 raise ValueError(f"{path}: ComponentRef document has unknown or missing fields")
             if type(value["game_object_id"]) is not int or value["game_object_id"] < 0:
                 raise TypeError(f"{path}: ComponentRef go_id must be a non-negative integer")
@@ -435,7 +425,7 @@ class ValueCodecRegistry:
             return document_type
 
         if document_type == ASSET_REF:
-            if set(value) != {TYPE_KEY, VERSION_KEY, "asset_type", "guid", "path_hint"}:
+            if set(value) != {TYPE_KEY, "asset_type", "guid", "path_hint"}:
                 raise ValueError(f"{path}: asset reference document has unknown or missing fields")
             if not all(isinstance(value[key], str) for key in ("asset_type", "guid", "path_hint")):
                 raise TypeError(f"{path}: asset reference values must be strings")

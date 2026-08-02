@@ -11,6 +11,7 @@ import numpy as np
 from pathlib import Path
 
 from Infernux import Engine
+from Infernux.engine.path_utils import resolved_path
 from Infernux.lib import (
     ImageReadbackStatus,
     InxMaterial,
@@ -63,7 +64,7 @@ def main() -> int:
         second_texture_path.write_bytes(second_texture_bytes)
         skinned_source = project / "Assets" / "GpuSkinnedProbe.fbx"
         skinned_fixture = (
-            Path(__file__).resolve().parents[3]
+            Path(resolved_path(__file__)).parents[3]
             / "external"
             / "assimp"
             / "test"
@@ -72,8 +73,14 @@ def main() -> int:
             / "animation_with_skeleton.fbx"
         )
         skinned_source.write_bytes(skinned_fixture.read_bytes())
-        lit_shader_path = Path(__file__).resolve().parents[1] / "resources" / "shaders" / "lit.frag"
+        lit_shader_path = Path(resolved_path(__file__)).parents[1] / "resources" / "shaders" / "lit.frag"
         assert lit_shader_path.is_file()
+        hot_reload_shader_path = project / "Assets" / "GpuReloadProbe.frag"
+        hot_reload_shader_source = lit_shader_path.read_text(encoding="utf-8").replace(
+            'Name "Lit"', 'Name "GPU Reload Probe"', 1
+        )
+        assert hot_reload_shader_source != lit_shader_path.read_text(encoding="utf-8")
+        hot_reload_shader_path.write_text(hot_reload_shader_source, encoding="utf-8")
 
         frontend = Engine()
         engine = frontend.get_native_engine()
@@ -84,6 +91,11 @@ def main() -> int:
             except (OSError, RuntimeError) as exception:
                 print(f"GPU upload ticket smoke test skipped: {exception}")
                 return 77
+            # This smoke test advances work from a post-draw callback and does
+            # not exercise editor frame pacing. Keep it out of the idle tier so
+            # its 240-frame failure guard remains a seconds-scale timeout.
+            engine.set_editor_fps_cap(240.0)
+            engine.set_editor_idle_fps(0.0)
             scene = SceneManager.instance().get_active_scene()
             assert scene is not None
             frontend.resize_scene_render_target(32, 24)
@@ -114,50 +126,9 @@ def main() -> int:
             second_texture_guid = frontend.get_asset_database().get_guid_from_path(str(second_texture_path))
             assert second_texture_guid
             material = InxMaterial.create_default_lit()
+            material.frag_shader_name = "GPU Reload Probe"
             material.set_texture_guid("texSampler", texture_guid)
             renderer.set_material(0, material)
-
-            try:
-                engine.submit_particle_instances(701, np.zeros((2, 8), dtype=np.float32))
-                raise AssertionError("invalid particle instance shape was accepted")
-            except ValueError:
-                pass
-            try:
-                non_contiguous_particles = np.zeros((3, 18), dtype=np.float32)[:, ::2]
-                engine.submit_particle_instances(701, non_contiguous_particles)
-                raise AssertionError("non-contiguous particle instances were accepted")
-            except ValueError:
-                pass
-
-            particle_instances = np.array(
-                [
-                    [-0.7, 0.2, 0.0, 0.5, 1.0, 0.1, 0.1, 0.9, 0.0],
-                    [0.0, 0.4, 0.0, 0.6, 0.1, 1.0, 0.2, 0.8, 0.2],
-                    [0.7, 0.2, 0.0, 0.5, 0.2, 0.4, 1.0, 0.9, -0.2],
-                ],
-                dtype=np.float32,
-            )
-            non_finite_particles = particle_instances.copy()
-            non_finite_particles[0, 0] = np.nan
-            try:
-                engine.submit_particle_instances(701, non_finite_particles)
-                raise AssertionError("non-finite particle instances were accepted")
-            except ValueError:
-                pass
-            negative_size_particles = particle_instances.copy()
-            negative_size_particles[0, 3] = -1.0
-            try:
-                engine.submit_particle_instances(701, negative_size_particles)
-                raise AssertionError("negative particle size was accepted")
-            except ValueError:
-                pass
-            try:
-                engine.submit_particle_instances(701, particle_instances, "missing-particle-material")
-                raise AssertionError("missing particle material GUID was accepted")
-            except ValueError:
-                pass
-            engine.submit_particle_instances(701, particle_instances)
-            assert engine.gpu_residency_snapshot["particle_bytes"] == 3 * 64
 
             gui_pixels = bytes(
                 channel
@@ -232,6 +203,7 @@ def main() -> int:
             observed_timeline_publication_in_flight = False
             texture_reload_requested = False
             texture_reload_wait_idle_count = 0
+            texture_runtime_version_before_reload = 0
             shader_reload_requested = False
             shader_reload_wait_idle_count = 0
             shader_retirement_count_before_reload = 0
@@ -254,6 +226,7 @@ def main() -> int:
                 nonlocal readback_ticket, cancelled_readback_ticket, readback_complete
                 nonlocal observed_timeline_publication_in_flight
                 nonlocal texture_reload_requested, texture_reload_wait_idle_count
+                nonlocal texture_runtime_version_before_reload
                 nonlocal shader_reload_requested, shader_reload_wait_idle_count
                 nonlocal shader_retirement_count_before_reload
                 nonlocal timeline_cube_preview_complete, observed_async_graphics_in_flight
@@ -404,39 +377,27 @@ def main() -> int:
                     and not texture_reload_requested
                 ):
                     texture_reload_wait_idle_count = engine.gpu_residency_snapshot["device_wait_idle_count"]
+                    texture_record = next(
+                        record for record in engine.asset_runtime_records if record.guid == second_texture_guid
+                    )
+                    texture_runtime_version_before_reload = texture_record.runtime_version
+                    mutated_texture = bytearray(second_texture_bytes)
+                    mutated_texture[-2] ^= 0x55
+                    second_texture_path.write_bytes(mutated_texture)
                     engine.reload_texture(str(second_texture_path))
                     assert (
                         engine.gpu_residency_snapshot["device_wait_idle_count"]
                         == texture_reload_wait_idle_count
                     )
+                    texture_record = next(
+                        record for record in engine.asset_runtime_records if record.guid == second_texture_guid
+                    )
+                    assert texture_record.runtime_version > texture_runtime_version_before_reload
                     texture_reload_requested = True
                 elif (
                     uploads_complete
                     and switched_texture
                     and texture_reload_requested
-                    and texture_submitted >= 3
-                    and engine.staging_buffer_reuse_count > 0
-                    and not shader_reload_requested
-                ):
-                    shader_residency = engine.gpu_residency_snapshot
-                    shader_reload_wait_idle_count = shader_residency["device_wait_idle_count"]
-                    shader_retirement_count_before_reload = shader_residency[
-                        "shader_hot_reload_retirement_count"
-                    ]
-                    error = engine.reload_shader_runtime(str(lit_shader_path), "lit")
-                    assert error == "", error
-                    shader_residency = engine.gpu_residency_snapshot
-                    assert shader_residency["device_wait_idle_count"] == shader_reload_wait_idle_count
-                    assert (
-                        shader_residency["shader_hot_reload_retirement_count"]
-                        > shader_retirement_count_before_reload
-                    )
-                    shader_reload_requested = True
-                elif (
-                    uploads_complete
-                    and switched_texture
-                    and texture_reload_requested
-                    and shader_reload_requested
                     and texture_submitted >= 3
                     and engine.staging_buffer_reuse_count > 0
                     and material_preview_complete
@@ -471,7 +432,118 @@ def main() -> int:
                     engine.exit()
 
             engine.set_post_draw_callback(finish_after_uploads)
+            engine.set_play_mode_rendering(True)
             engine.run()
+            engine.set_play_mode_rendering(False)
+
+            # Shader hot reload is a resource transaction, not a draw callback.
+            # Exercise it after the frame loop has reached a stable boundary so
+            # the Python SRP trampoline cannot be re-entered while GPU-backed
+            # material objects are being retired.
+            # The frame loop deliberately shrinks the global GPU budget to one
+            # byte and may evict this runtime material. Re-prime one live
+            # program so every following reload has a concrete old generation
+            # to retire.
+            assert engine.refresh_material_pipeline(material)
+            shader_residency = engine.gpu_residency_snapshot
+            shader_reload_wait_idle_count = shader_residency["device_wait_idle_count"]
+            shader_retirement_count_before_reload = shader_residency[
+                "shader_hot_reload_retirement_count"
+            ]
+            previous_retirement_count = shader_retirement_count_before_reload
+            shader_retirement_counts: list[int] = []
+            for revision in range(8):
+                reload_gain = 0.91 + revision * 0.01
+                revision_source = hot_reload_shader_source.replace(
+                    "s.albedo     = texColor.rgb * getVertexColor() * material.baseColor.rgb;",
+                    "s.albedo     = texColor.rgb * getVertexColor() * "
+                    f"material.baseColor.rgb * {reload_gain:.2f};",
+                    1,
+                )
+                assert revision_source != hot_reload_shader_source
+                hot_reload_shader_path.write_text(
+                    revision_source,
+                    encoding="utf-8",
+                )
+                error = engine.reload_shader_runtime(
+                    str(hot_reload_shader_path), "GPU Reload Probe"
+                )
+                assert error == "", error
+                assert engine.refresh_material_pipeline(material), revision
+                shader_residency = engine.gpu_residency_snapshot
+                shader_retirement_counts.append(
+                    shader_residency["shader_hot_reload_retirement_count"]
+                )
+                assert (
+                    shader_residency["device_wait_idle_count"]
+                    == shader_reload_wait_idle_count
+                )
+                assert (
+                    shader_residency["shader_hot_reload_retirement_count"]
+                    > previous_retirement_count
+                ), (revision, shader_retirement_counts, shader_residency)
+                previous_retirement_count = shader_residency[
+                    "shader_hot_reload_retirement_count"
+                ]
+
+            # A failed candidate must not become visible, retire the active
+            # publication, or make the material disappear. This exercises the
+            # same last-known-good transaction used by editor hot reload.
+            invalid_source = revision_source.replace(
+                "void surface(out SurfaceData s)",
+                "void surface(out SurfaceData s) this_is_not_valid_glsl",
+                1,
+            )
+            assert invalid_source != revision_source
+            hot_reload_shader_path.write_text(invalid_source, encoding="utf-8")
+            invalid_error = engine.reload_shader_runtime(
+                str(hot_reload_shader_path), "GPU Reload Probe"
+            )
+            assert invalid_error, "invalid shader candidate was unexpectedly published"
+            invalid_residency = engine.gpu_residency_snapshot
+            assert (
+                invalid_residency["shader_hot_reload_retirement_count"]
+                == previous_retirement_count
+            ), invalid_residency
+            assert (
+                invalid_residency["device_wait_idle_count"]
+                == shader_reload_wait_idle_count
+            ), invalid_residency
+            assert engine.refresh_material_pipeline(material)
+
+            # Recover from the rejected candidate with one more valid revision.
+            recovery_source = revision_source.replace(
+                f"material.baseColor.rgb * {reload_gain:.2f};",
+                "material.baseColor.rgb * 1.03;",
+                1,
+            )
+            assert recovery_source != revision_source
+            hot_reload_shader_path.write_text(recovery_source, encoding="utf-8")
+            recovery_error = engine.reload_shader_runtime(
+                str(hot_reload_shader_path), "GPU Reload Probe"
+            )
+            assert recovery_error == "", recovery_error
+            assert engine.refresh_material_pipeline(material)
+            recovery_residency = engine.gpu_residency_snapshot
+            assert (
+                recovery_residency["shader_hot_reload_retirement_count"]
+                > previous_retirement_count
+            ), recovery_residency
+            assert (
+                recovery_residency["device_wait_idle_count"]
+                == shader_reload_wait_idle_count
+            ), recovery_residency
+            shader_reload_requested = True
+
+            # The final shader revisions publish asynchronous transfer work
+            # after the draw loop has stopped. Poll normal completion instead
+            # of using a device-wide idle wait, then require every ticket to
+            # retire before evaluating residency.
+            for _ in range(240):
+                engine.poll_gpu_completions()
+                if engine.gpu_residency_snapshot["pending_gpu_transfer_count"] == 0:
+                    break
+                threading.Event().wait(0.001)
 
             diagnostics = (
                 f"frames={frames}, submitted={engine.submitted_mesh_gpu_upload_count}, "
@@ -503,7 +575,6 @@ def main() -> int:
                 f"thumbnail_readback_in_flight={observed_thumbnail_readback_in_flight}, "
                 f"pending_readbacks={engine.gpu_residency_snapshot['pending_readback_count']}, "
                 f"pending_graphics={engine.gpu_residency_snapshot['pending_async_graphics_submission_count']}, "
-                f"particle_bytes={engine.gpu_residency_snapshot['particle_bytes']}, "
                 f"texture_gpu_resident={engine.texture_gpu_resident_bytes}, "
                 f"texture_gpu_budget={engine.texture_gpu_budget_bytes}, "
                 f"texture_gpu_entries={engine.texture_gpu_cache_entry_count}, "
@@ -566,6 +637,7 @@ def main() -> int:
             residency = engine.gpu_residency_snapshot
             assert texture_reload_requested, diagnostics
             assert shader_reload_requested, diagnostics
+            assert texture_runtime_version_before_reload > 0, diagnostics
             assert residency["device_wait_idle_count"] == texture_reload_wait_idle_count, residency
             assert residency["device_wait_idle_count"] == shader_reload_wait_idle_count, residency
             assert (
@@ -592,7 +664,6 @@ def main() -> int:
             assert residency["device_local_allocation_bytes"] > 0, residency
             assert residency["device_local_budget_bytes"] > 0, residency
             assert residency["render_target_bytes"] > 0, residency
-            assert residency["particle_bytes"] == 3 * 64, residency
             assert residency["tracked_bytes"] >= residency["render_target_bytes"], residency
             assert residency["effective_allocation_bytes"] <= residency["allocator_allocation_bytes"], residency
             assert residency["over_budget_bytes"] > 0, residency
@@ -612,8 +683,6 @@ def main() -> int:
             assert engine.schedule_texture_preview_from_memory(
                 "gpu-smoke-shutdown-drain", texture_bytes, 1
             )
-            engine.remove_particle_batch(701)
-            assert engine.gpu_residency_snapshot["particle_bytes"] == 0
         finally:
             engine.cleanup()
         assert shutdown_readback is not None

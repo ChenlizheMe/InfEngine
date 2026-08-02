@@ -64,6 +64,7 @@ class InxGUISemantics
 
     static void BeginFrame(uint64_t frame);
     static void EndFrame();
+    static void AbortFrame() noexcept;
 
     static void RecordLastItem(const std::string &kind, const std::string &label, bool enabled = true,
                                const std::string &semanticId = "", std::optional<bool> boolValue = std::nullopt,

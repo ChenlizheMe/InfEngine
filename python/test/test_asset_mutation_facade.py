@@ -144,6 +144,37 @@ def test_move_commits_mapping_before_patching_loaded_path(monkeypatch):
     assert order == ["db-move", "registry-move", "py-evict", "editor-moved"]
 
 
+def test_programmatic_script_move_explicitly_hot_reloads_after_guid_move(monkeypatch):
+    order = []
+    database = _Database(order)
+    database.paths = {"old.py": "guid"}
+    _isolate_side_effects(monkeypatch, order)
+
+    class _Resources:
+        @staticmethod
+        def reload_moved_script(old_path, new_path):
+            order.append(("script-reload", old_path, new_path))
+
+    from Infernux.engine.resources_manager import ResourcesManager
+
+    monkeypatch.setattr(
+        ResourcesManager,
+        "instance",
+        classmethod(lambda _cls: _Resources()),
+    )
+
+    result = AssetManager.move_asset("old.py", "new.py", database=database)
+
+    assert result and result.guid == "guid"
+    assert order == [
+        "db-move",
+        "registry-move",
+        "py-evict",
+        "editor-moved",
+        ("script-reload", "old.py", "new.py"),
+    ]
+
+
 def test_shader_reimport_mutates_database_once_before_runtime_compile(monkeypatch):
     order = []
     database = _Database(order)
@@ -152,11 +183,39 @@ def test_shader_reimport_mutates_database_once_before_runtime_compile(monkeypatc
     native = _NativeEngine(order)
     monkeypatch.setattr(AssetManager, "_native_engine", classmethod(lambda _cls: native))
     shader_utils = importlib.import_module("Infernux.engine.ui.inspector_shader_utils")
-    monkeypatch.setattr(shader_utils, "bump_shader_property_generation", lambda: None)
+    monkeypatch.setattr(
+        shader_utils,
+        "bump_shader_property_generation",
+        lambda: order.append("shader-authoring-cache"),
+    )
 
     result = AssetManager.reimport_asset("old.vert", database=database)
     assert result and result.guid == "guid"
-    assert order == ["db-reimport", "shader-runtime", "py-evict", "editor-modified"]
+    assert order == [
+        "db-reimport",
+        "shader-runtime",
+        "shader-authoring-cache",
+        "py-evict",
+        "editor-modified",
+    ]
+
+
+def test_shader_import_invalidates_authoring_cache_without_runtime(monkeypatch):
+    order = []
+    database = _Database(order)
+    _isolate_side_effects(monkeypatch, order)
+    monkeypatch.setattr(AssetManager, "_prime_material_preview", classmethod(lambda _cls, _path: None))
+    shader_utils = importlib.import_module("Infernux.engine.ui.inspector_shader_utils")
+    monkeypatch.setattr(
+        shader_utils,
+        "bump_shader_property_generation",
+        lambda: order.append("shader-authoring-cache"),
+    )
+
+    result = AssetManager.import_asset("new.frag", database=database)
+
+    assert result and result.guid == "new-guid"
+    assert order == ["db-import", "shader-authoring-cache", "editor-created"]
 
 
 def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):

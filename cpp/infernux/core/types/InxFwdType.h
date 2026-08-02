@@ -16,7 +16,9 @@ enum class ResourceType
     Audio,    // Audio (.wav) - audio clip for playback via AudioSource
     DefaultText,
     DefaultBinary,
-    PhysicMaterial // Physics surface material (.physicMaterial)
+    PhysicMaterial, // Physics surface material (.physicMaterial)
+    RenderEffect,   // Reusable render effect or effect group source document
+    ParticleGraph   // GPU particle authoring graph (.particlegraph)
 };
 
 } // namespace infernux

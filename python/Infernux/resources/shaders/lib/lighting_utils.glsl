@@ -1,12 +1,14 @@
-@shader_id: lib/lighting_utils
+ShaderInfo {
+    Name "Lib Lighting Utils"
+}
 
 // ============================================================================
 // lib/lighting_utils.glsl — Lighting helper functions
 //
 // Full-coverage lighting toolkit matching Unity ShaderGraph Lighting category.
 // Standalone lighting utilities for surface shaders.
-// For full PBR pipeline: use @import: pbr instead.
-// Usage: @import: lib/lighting_utils
+// For full PBR pipeline: use ShaderInfo Imports: PBR instead.
+// Usage: ShaderInfo Imports: Lib Lighting Utils
 // ============================================================================
 
 // ============================================================================

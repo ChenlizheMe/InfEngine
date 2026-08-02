@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -10,31 +11,159 @@ namespace infernux
 
 class InxResourceMeta;
 
-enum class TexturePixelStorage : uint32_t
+enum class TextureDimension : uint32_t
 {
-    Rgba8 = 1,
-    Rgba32Float = 2,
+    Texture2D = 1,
+    Texture3D = 2,
+};
+
+enum class TextureSemantic : uint32_t
+{
+    Color = 1,
+    Normal = 2,
+    Data = 3,
+    UserInterface = 4,
+    Sprite = 5,
+    VectorField = 6,
+    SignedDistanceField = 7,
+};
+
+/// Concrete texel representation stored in .inxtex and uploaded to the RHI.
+/// Color-space is part of the format so an sRGB decision cannot drift between
+/// importer, runtime cache, and backend image creation.
+enum class TextureFormat : uint32_t
+{
+    Rgba8UNorm = 1,
+    Rgba8Srgb = 2,
+    Rgba32Float = 3,
+    BC1RgbaUNorm = 4,
+    BC1RgbaSrgb = 5,
+    BC3UNorm = 6,
+    BC3Srgb = 7,
+    BC4UNorm = 8,
+    BC5UNorm = 9,
+    BC6HUFloat = 10,
+    BC7UNorm = 11,
+    BC7Srgb = 12,
+    Rgba4UNormPack16 = 13,
+    Rgba16UNorm = 14,
+    Rgba16Float = 15,
 };
 
 struct TextureMipLevel
 {
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t depth = 1;
     uint64_t byteOffset = 0;
     uint64_t byteSize = 0;
+    uint64_t rowPitch = 0;
+    uint64_t slicePitch = 0;
 };
 
 struct TextureCpuData
 {
-    TexturePixelStorage storage = TexturePixelStorage::Rgba8;
+    TextureDimension dimension = TextureDimension::Texture2D;
+    TextureSemantic semantic = TextureSemantic::Color;
+    TextureFormat format = TextureFormat::Rgba8Srgb;
     std::vector<TextureMipLevel> mipLevels;
     std::vector<uint8_t> bytes;
+    std::array<float, 16> bakeBasis = {
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+    };
+    std::array<float, 4> valueMin = {0.0f, 0.0f, 0.0f, 0.0f};
+    std::array<float, 4> valueMax = {1.0f, 1.0f, 1.0f, 1.0f};
 
     [[nodiscard]] bool IsValid() const noexcept
     {
         return !mipLevels.empty() && !bytes.empty();
     }
 };
+
+[[nodiscard]] constexpr bool TextureFormatIsSrgb(TextureFormat format) noexcept
+{
+    return format == TextureFormat::Rgba8Srgb || format == TextureFormat::BC1RgbaSrgb ||
+           format == TextureFormat::BC3Srgb || format == TextureFormat::BC7Srgb;
+}
+
+[[nodiscard]] constexpr bool TextureFormatIsBlockCompressed(TextureFormat format) noexcept
+{
+    return format >= TextureFormat::BC1RgbaUNorm && format <= TextureFormat::BC7Srgb;
+}
+
+[[nodiscard]] constexpr uint32_t TextureFormatBlockBytes(TextureFormat format) noexcept
+{
+    switch (format) {
+    case TextureFormat::BC1RgbaUNorm:
+    case TextureFormat::BC1RgbaSrgb:
+    case TextureFormat::BC4UNorm:
+        return 8;
+    case TextureFormat::BC3UNorm:
+    case TextureFormat::BC3Srgb:
+    case TextureFormat::BC5UNorm:
+    case TextureFormat::BC6HUFloat:
+    case TextureFormat::BC7UNorm:
+    case TextureFormat::BC7Srgb:
+        return 16;
+    default:
+        return 0;
+    }
+}
+
+[[nodiscard]] constexpr uint32_t TextureFormatBytesPerTexel(TextureFormat format) noexcept
+{
+    switch (format) {
+    case TextureFormat::Rgba8UNorm:
+    case TextureFormat::Rgba8Srgb:
+        return 4;
+    case TextureFormat::Rgba32Float:
+        return 16;
+    case TextureFormat::Rgba4UNormPack16:
+        return 2;
+    case TextureFormat::Rgba16UNorm:
+    case TextureFormat::Rgba16Float:
+        return 8;
+    default:
+        return 0;
+    }
+}
+
+[[nodiscard]] constexpr const char *TextureFormatName(TextureFormat format) noexcept
+{
+    switch (format) {
+    case TextureFormat::Rgba8UNorm:
+        return "rgba8_unorm";
+    case TextureFormat::Rgba8Srgb:
+        return "rgba8_srgb";
+    case TextureFormat::Rgba32Float:
+        return "rgba32_float";
+    case TextureFormat::BC1RgbaUNorm:
+        return "bc1_rgba_unorm";
+    case TextureFormat::BC1RgbaSrgb:
+        return "bc1_rgba_srgb";
+    case TextureFormat::BC3UNorm:
+        return "bc3_unorm";
+    case TextureFormat::BC3Srgb:
+        return "bc3_srgb";
+    case TextureFormat::BC4UNorm:
+        return "bc4_unorm";
+    case TextureFormat::BC5UNorm:
+        return "bc5_unorm";
+    case TextureFormat::BC6HUFloat:
+        return "bc6h_ufloat";
+    case TextureFormat::BC7UNorm:
+        return "bc7_unorm";
+    case TextureFormat::BC7Srgb:
+        return "bc7_srgb";
+    case TextureFormat::Rgba4UNormPack16:
+        return "rgba4_unorm_pack16";
+    case TextureFormat::Rgba16UNorm:
+        return "rgba16_unorm";
+    case TextureFormat::Rgba16Float:
+        return "rgba16_float";
+    }
+    return "unknown";
+}
 
 /**
  * @brief Lightweight C++ asset representing a texture's import settings.
@@ -97,7 +226,7 @@ class InxTexture
 
     [[nodiscard]] bool IsSrgb() const
     {
-        return m_srgb;
+        return m_cpuData ? TextureFormatIsSrgb(m_cpuData->format) : m_srgb;
     }
     void SetSrgb(bool srgb)
     {
@@ -158,7 +287,20 @@ class InxTexture
     /// Solely based on the srgb import setting — no hardcoded texture_type logic.
     [[nodiscard]] bool IsLinear() const
     {
-        return !m_srgb;
+        return !IsSrgb();
+    }
+
+    [[nodiscard]] TextureDimension GetDimension() const noexcept
+    {
+        return m_cpuData ? m_cpuData->dimension : TextureDimension::Texture2D;
+    }
+    [[nodiscard]] TextureSemantic GetSemantic() const noexcept
+    {
+        return m_cpuData ? m_cpuData->semantic : TextureSemantic::Color;
+    }
+    [[nodiscard]] TextureFormat GetFormat() const noexcept
+    {
+        return m_cpuData ? m_cpuData->format : (m_srgb ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm);
     }
 
     void ApplyImportSettings(const InxResourceMeta &metadata);
@@ -167,9 +309,14 @@ class InxTexture
     {
         return m_cpuData;
     }
+    [[nodiscard]] uint64_t GetGeneration() const noexcept
+    {
+        return m_generation;
+    }
     void SetCpuData(std::shared_ptr<const TextureCpuData> cpuData)
     {
         m_cpuData = std::move(cpuData);
+        ++m_generation;
     }
 
     // ── Clone (Unity-style Object.Instantiate) ─────────────────────────────
@@ -195,6 +342,7 @@ class InxTexture
     std::string m_wrapMode = "repeat";     // "repeat", "clamp", "mirror"
     int m_anisoLevel = -1;                 // -1 = device max, 0 = off, 1-16 = explicit
     std::shared_ptr<const TextureCpuData> m_cpuData;
+    uint64_t m_generation = 0;
 };
 
 } // namespace infernux

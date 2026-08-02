@@ -1,6 +1,25 @@
 #version 450
-@shader_id: outline_composite
-@hidden
+
+ShaderInfo {
+    Name "Outline Composite"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D maskTex
+    }
+    PushConstants pc {
+        Float4 outlineColor
+        Float2 texelSize
+        Float outlineWidth
+        Float _padding
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Screen-space edge detection + compositing for Blender/Unity style outline.
 //
@@ -12,18 +31,6 @@
 //
 // The caller composites this onto the scene color via alpha blending
 // (srcAlpha, oneMinusSrcAlpha).
-
-layout(set = 0, binding = 0) uniform sampler2D maskTex;
-
-layout(push_constant) uniform PushConstants {
-    vec4  outlineColor;   // rgba outline color
-    vec2  texelSize;      // 1.0 / vec2(screenWidth, screenHeight)
-    float outlineWidth;   // outline width in pixels
-    float _padding;
-} pc;
-
-layout(location = 0) in  vec2 inUV;
-layout(location = 0) out vec4 outColor;
 
 void main() {
     float center = texture(maskTex, inUV).r;

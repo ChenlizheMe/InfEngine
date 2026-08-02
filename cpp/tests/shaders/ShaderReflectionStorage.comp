@@ -1,0 +1,26 @@
+#version 450
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 1, binding = 2, rgba8) readonly uniform image2D sourceImage;
+layout(set = 1, binding = 3, rgba8) writeonly uniform image2D destinationImage;
+layout(set = 2, binding = 0) uniform texture2D sampledTexture;
+layout(set = 2, binding = 1) uniform sampler sampledSampler;
+
+layout(set = 3, binding = 0, std430) readonly buffer InputData
+{
+    vec4 values[];
+} inputData;
+
+layout(set = 3, binding = 1, std430) writeonly buffer OutputData
+{
+    vec4 values[];
+} outputData;
+
+void main()
+{
+    vec4 value = imageLoad(sourceImage, ivec2(0));
+    value += texture(sampler2D(sampledTexture, sampledSampler), vec2(0.5));
+    imageStore(destinationImage, ivec2(0), value);
+    outputData.values[0] = inputData.values[0] + value;
+}

@@ -398,6 +398,11 @@ static void CDS_FreeSlot(uint32_t classId, py::handle handle)
     ComponentDataStore::Instance().ReleaseSlot(classId, CDS_ParseHandle(handle));
 }
 
+static bool CDS_IsAlive(uint32_t classId, py::handle handle)
+{
+    return ComponentDataStore::Instance().IsAlive(classId, CDS_ParseHandle(handle));
+}
+
 static void CDS_ReserveClass(uint32_t classId, size_t capacity)
 {
     ComponentDataStore::Instance().ReserveClass(classId, capacity);
@@ -664,6 +669,7 @@ void RegisterBatchBindings(py::module_ &m)
     m.def("_cds_register_field", &CDS_RegisterField, py::arg("class_id"), py::arg("name"), py::arg("type_code"));
     m.def("_cds_alloc", &CDS_AllocSlot, py::arg("class_id"));
     m.def("_cds_free", &CDS_FreeSlot, py::arg("class_id"), py::arg("slot"));
+    m.def("_cds_is_alive", &CDS_IsAlive, py::arg("class_id"), py::arg("slot"));
     m.def("_cds_reserve", &CDS_ReserveClass, py::arg("class_id"), py::arg("capacity"));
     m.def(
         "_cds_capacity", [](uint32_t classId) { return ComponentDataStore::Instance().GetClassCapacity(classId); },

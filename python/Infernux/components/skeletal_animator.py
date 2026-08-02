@@ -21,6 +21,7 @@ from Infernux.core.anim_state_machine import (
 from Infernux.core.animation_clip3d import AnimationClip3D, resolve_disk_path_for_guid_string
 from Infernux.core.asset_ref import AnimStateMachineRef
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import lexical_path, portable_path
 
 
 def _normalize_guid_key(s: str) -> str:
@@ -37,7 +38,7 @@ def _try_guid_for_model_path(db, path: str) -> str:
         return ""
     seen = set()
     cands: list = []
-    for p in (p0, os.path.normpath(p0), os.path.normpath(os.path.abspath(p0))):
+    for p in (p0, portable_path(p0), lexical_path(p0), portable_path(lexical_path(p0))):
         if p and p not in seen:
             seen.add(p)
             cands.append(p)
@@ -743,54 +744,31 @@ class SkeletalAnimator(InxComponent):
         if state is not None and getattr(state, "kind", "clip") == "blend":
             if self._submit_blend_state(cpp, state):
                 return
-        submit_pose = getattr(cpp, "submit_animation_pose", None)
-        if callable(submit_pose):
-            # A finished non-looping clip keeps submitting its take with
-            # loop=False so the native sampler holds the END pose; an empty
-            # take renders the bind pose (mesh always stays visible).
-            has_clip = self._current_clip is not None and bool(self.current_take_name)
-            take_name = self.current_take_name if has_clip else ""
-            state = self._get_current_state()
-            loop = bool(state.loop) if state is not None else True
-            normalized = float(self.normalized_time) if take_name else 0.0
-            blend_take = ""
-            blend_time = 0.0
-            blend_weight = 0.0
-            if self._blend_from_clip is not None and self._blend_duration > 0.0:
-                progress = min(max(self._blend_elapsed / self._blend_duration, 0.0), 1.0)
-                blend_take = self._blend_from_take_name
-                blend_time = float(self._blend_from_elapsed)
-                blend_weight = float(1.0 - progress)
-            submit_pose(
-                take_name,
-                float(self._elapsed) if take_name else 0.0,
-                normalized,
-                blend_take,
-                blend_time,
-                blend_weight,
-                loop,
-            )
-            self._last_native_take_name = take_name
-            return
-
-        if self._playing and self._current_clip is not None:
-            cpp.runtime_animation_time = float(self._elapsed)
-            cpp.runtime_animation_normalized_time = float(self.normalized_time)
-            if self._blend_from_clip is not None and self._blend_duration > 0.0:
-                progress = min(max(self._blend_elapsed / self._blend_duration, 0.0), 1.0)
-                cpp.blend_take_name = self._blend_from_take_name
-                cpp.blend_animation_time = float(self._blend_from_elapsed)
-                cpp.blend_weight = float(1.0 - progress)
-            else:
-                clear = getattr(cpp, "clear_animation_blend", None)
-                if callable(clear):
-                    clear()
-        else:
-            cpp.runtime_animation_time = 0.0
-            cpp.runtime_animation_normalized_time = 0.0
-            clear = getattr(cpp, "clear_animation_blend", None)
-            if callable(clear):
-                clear()
+        # Continuous playback has one current native submission path. Explicit
+        # runtime_animation_time assignment is reserved for discontinuous seek.
+        has_clip = self._current_clip is not None and bool(self.current_take_name)
+        take_name = self.current_take_name if has_clip else ""
+        state = self._get_current_state()
+        loop = bool(state.loop) if state is not None else True
+        normalized = float(self.normalized_time) if take_name else 0.0
+        blend_take = ""
+        blend_time = 0.0
+        blend_weight = 0.0
+        if self._blend_from_clip is not None and self._blend_duration > 0.0:
+            progress = min(max(self._blend_elapsed / self._blend_duration, 0.0), 1.0)
+            blend_take = self._blend_from_take_name
+            blend_time = float(self._blend_from_elapsed)
+            blend_weight = float(1.0 - progress)
+        cpp.submit_animation_pose(
+            take_name,
+            float(self._elapsed) if take_name else 0.0,
+            normalized,
+            blend_take,
+            blend_time,
+            blend_weight,
+            loop,
+        )
+        self._last_native_take_name = take_name
 
     def _get_current_state(self) -> Optional[AnimState]:
         if self._fsm and self._current_state_name:

@@ -6,7 +6,8 @@ RenderPipelineAsset acts as a factory for pipeline instances.
 
 RenderStack integration:
     Subclasses implement ``define_topology(graph)`` to declare passes
-    and injection points inline on the ``RenderGraph``.  The system
+    and stable EffectStages inline on the ``RenderGraph``. Injection points
+    remain available for mounted RenderPass instances. The system
     auto-records the topology sequence. ScreenUI/post-process section is
     inserted explicitly by calling ``graph.screen_ui_section()``.
 
@@ -90,8 +91,9 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
 
     RenderStack integration:
         Subclasses implement ``define_topology(graph)`` to declare passes
-        and injection points inline.  The ``RenderGraph`` auto-records
-        the topology sequence.
+        and ``graph.effects(stable_id, ...)`` attachment stages inline. The
+        ``RenderGraph`` auto-records the topology sequence; scene RenderStacks
+        may only bind effects to those declarations.
     """
 
     # Display name for Editor UI and discovery. Subclasses should override.
@@ -100,7 +102,9 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
     # Class-level storage for serialized field metadata (same pattern as InxComponent)
     _serialized_fields_: Dict[str, Any] = {}
 
-    _reserved_attrs_ = frozenset({"name"})
+    # Pipeline routing constants describe the implementation and must not be
+    # serialized as user-facing pipeline parameters.
+    _reserved_attrs_ = frozenset({"name", "material_pass"})
 
     # Optional back-reference to owning RenderStack (set when pipeline is
     # created by RenderStack, used to invalidate_graph on param change).
@@ -130,17 +134,17 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
     # Standalone render entry point (without RenderStack)
     # ==================================================================
 
-    def render(self, context, cameras):
-        """Render all cameras.
+    def render(self, context, camera):
+        """Render one camera through its dedicated context.
 
         The base implementation builds the graph once from
-        ``define_topology()``, filters cameras via ``should_render_camera()``,
-        then calls ``render_camera()`` for each accepted camera.
+        ``define_topology()``, filters the camera via
+        ``should_render_camera()``, then calls ``render_camera()``.
 
-        Override this method entirely if you need fully custom loop logic
-        (e.g. multi-pass techniques that interleave multiple cameras).
-        For simple camera filtering, override ``should_render_camera()``
-        instead.
+        The renderer owns multi-camera enumeration and creates a distinct
+        context and RenderView for every camera. Pipelines must never loop
+        cameras inside one context. For camera filtering, override
+        ``should_render_camera()``.
         """
         from Infernux.rendergraph.graph import RenderGraph
 
@@ -149,12 +153,11 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
             self.define_topology(g)
             self._standalone_desc = g.build()
 
-        for camera in cameras:
-            if not self.should_render_camera(camera):
-                continue
-            context.setup_camera_properties(camera)
-            culling = context.cull(camera)
-            self.render_camera(context, camera, culling)
+        if not self.should_render_camera(camera):
+            return
+        context.setup_camera_properties(camera)
+        culling = context.cull(camera)
+        self.render_camera(context, camera, culling)
 
     def should_render_camera(self, camera) -> bool:
         """Decide whether *camera* should be rendered this frame.
@@ -165,7 +168,7 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
             def should_render_camera(self, camera):
                 return not camera.is_editor_camera
 
-        Returns ``True`` by default (render all cameras).
+        Returns ``True`` by default.
         """
         return True
 
@@ -181,7 +184,8 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
             camera: The current camera being rendered.
             culling: Culling results from ``context.cull(camera)``.
         """
-        context.apply_graph(self._standalone_desc)
+        if not context.is_graph_revision_current(self._standalone_desc.source_revision):
+            context.apply_graph(self._standalone_desc)
         context.submit_culling(culling)
 
     def dispose(self):
@@ -199,7 +203,7 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         Subclass implementation should:
         1. Create textures via ``graph.create_texture(...)``
         2. Add passes via ``graph.add_pass(...)``
-        3. Declare injection points via ``graph.injection_point(...)``
+        3. Declare user stages via ``graph.effects(...)``
         4. Call ``graph.set_output(...)``
 
         **Rules**:
@@ -208,6 +212,24 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         Args:
             graph: The ``RenderGraph`` builder to populate.
         """
+        from Infernux.renderstack.pipeline_compiler import (
+            compile_pipeline_definition,
+        )
+        from Infernux.renderstack.pipeline_dsl import PipelineBuilder
+
+        builder = PipelineBuilder()
+        self.define(builder)
+        definition = builder.build()
+        self._declarative_definition = definition
+        compile_pipeline_definition(definition, graph)
+
+    def define(self, pipeline) -> None:
+        """Declare a low-nesting pipeline topology.
+
+        New pipelines override this method. Existing pipelines that override
+        :meth:`define_topology` continue to use the lower-level RenderGraph API.
+        """
         raise NotImplementedError(
-            f"{type(self).__name__} must implement define_topology()"
+            f"{type(self).__name__} must implement define(pipeline) or "
+            "define_topology(graph)"
         )

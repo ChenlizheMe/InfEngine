@@ -1,8 +1,13 @@
 #version 450
-@shader_id: outline_composite
-@hidden
 
-layout(location = 0) out vec2 outUV;
+ShaderInfo {
+    Name "Outline Composite"
+    Hidden On
+    Capabilities [Fullscreen]
+    Outputs {
+        Float2 outUV
+    }
+}
 
 void main() {
     // Generate full-screen triangle

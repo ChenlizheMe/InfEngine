@@ -22,6 +22,109 @@ namespace infernux
 namespace vk
 {
 
+namespace
+{
+
+VkPipelineStageFlags ToVkPipelineStages(rhi::PipelineStage stages)
+{
+    VkPipelineStageFlags result = 0;
+    if (rhi::HasAny(stages, rhi::PipelineStage::Top))
+        result |= VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::DrawIndirect))
+        result |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::VertexInput))
+        result |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::VertexShader))
+        result |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::FragmentShader))
+        result |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::EarlyDepth))
+        result |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::LateDepth))
+        result |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::ColorOutput))
+        result |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::ComputeShader))
+        result |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::Transfer))
+        result |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::Bottom))
+        result |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::Host))
+        result |= VK_PIPELINE_STAGE_HOST_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::AllGraphics))
+        result |= VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::AllCommands))
+        result |= VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    return result;
+}
+
+VkAccessFlags ToVkAccessFlags(rhi::Access access)
+{
+    VkAccessFlags result = 0;
+    if (rhi::HasAny(access, rhi::Access::IndirectRead))
+        result |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::IndexRead))
+        result |= VK_ACCESS_INDEX_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::VertexRead))
+        result |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::UniformRead))
+        result |= VK_ACCESS_UNIFORM_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::ShaderRead))
+        result |= VK_ACCESS_SHADER_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::ShaderWrite))
+        result |= VK_ACCESS_SHADER_WRITE_BIT;
+    if (rhi::HasAny(access, rhi::Access::ColorRead))
+        result |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::ColorWrite))
+        result |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    if (rhi::HasAny(access, rhi::Access::DepthRead))
+        result |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::DepthWrite))
+        result |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    if (rhi::HasAny(access, rhi::Access::TransferRead))
+        result |= VK_ACCESS_TRANSFER_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::TransferWrite))
+        result |= VK_ACCESS_TRANSFER_WRITE_BIT;
+    if (rhi::HasAny(access, rhi::Access::HostRead))
+        result |= VK_ACCESS_HOST_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::HostWrite))
+        result |= VK_ACCESS_HOST_WRITE_BIT;
+    if (rhi::HasAny(access, rhi::Access::MemoryRead))
+        result |= VK_ACCESS_MEMORY_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::MemoryWrite))
+        result |= VK_ACCESS_MEMORY_WRITE_BIT;
+    return result;
+}
+
+VkImageLayout ToVkImageLayout(rhi::TextureLayout layout)
+{
+    switch (layout) {
+    case rhi::TextureLayout::General:
+        return VK_IMAGE_LAYOUT_GENERAL;
+    case rhi::TextureLayout::ColorAttachment:
+        return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    case rhi::TextureLayout::DepthStencilAttachment:
+        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    case rhi::TextureLayout::DepthStencilReadOnly:
+        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    case rhi::TextureLayout::ShaderReadOnly:
+        return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    case rhi::TextureLayout::TransferSource:
+        return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    case rhi::TextureLayout::TransferDestination:
+        return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    case rhi::TextureLayout::Present:
+        return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    case rhi::TextureLayout::Automatic:
+    case rhi::TextureLayout::Undefined:
+    default:
+        return VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+}
+
+} // namespace
+
 // ============================================================================
 // Pass Culling & Resource Lifetimes
 // ============================================================================
@@ -32,20 +135,51 @@ void RenderGraph::CullPasses()
     for (auto &pass : m_passes) {
         pass.refCount = 0;
         pass.culled = true;
+        pass.cullReason = PassCullReason::Unreachable;
     }
 
-    // Find passes that write to the output
-    std::queue<uint32_t> workQueue;
-
-    for (uint32_t i = 0; i < m_passes.size(); i++) {
-        for (const auto &write : m_passes[i].writes) {
-            if (write.handle == m_output || write.handle == m_backbuffer) {
-                m_passes[i].culled = false;
-                m_passes[i].refCount = 1;
-                workQueue.push(i);
-                break;
-            }
+    // A resource version has exactly one producer. Build this once so both
+    // output rooting and backward propagation use the SSA-style handle rather
+    // than conflating every write to the same physical allocation.
+    std::unordered_map<ResourceHandle, uint32_t, ResourceHandleHash> producers;
+    for (uint32_t passId = 0; passId < m_passes.size(); ++passId) {
+        for (const auto &write : m_passes[passId].writes) {
+            producers.emplace(write.handle, passId);
         }
+    }
+
+    // Find the pass that writes the selected output version.
+    std::queue<uint32_t> workQueue;
+    auto retainRoot = [&](uint32_t passId, PassCullReason reason) {
+        auto &pass = m_passes[passId];
+        if (pass.culled) {
+            pass.culled = false;
+            pass.refCount = 1;
+            pass.cullReason = reason;
+            workQueue.push(passId);
+        } else {
+            ++pass.refCount;
+            if (reason == PassCullReason::GraphOutput)
+                pass.cullReason = reason;
+        }
+    };
+
+    ResourceHandle root = m_output.IsValid() ? m_output : m_backbuffer;
+    auto rootProducer = producers.find(root);
+    if (rootProducer != producers.end())
+        retainRoot(rootProducer->second, PassCullReason::GraphOutput);
+
+    for (uint32_t passId = 0; passId < m_passes.size(); ++passId) {
+        const auto &pass = m_passes[passId];
+        if (pass.hasSideEffect) {
+            retainRoot(passId, PassCullReason::SideEffect);
+            continue;
+        }
+        const bool writesExternal = std::any_of(pass.writes.begin(), pass.writes.end(), [&](const auto &write) {
+            return write.handle.id < m_resources.size() && m_resources[write.handle.id].isExternal;
+        });
+        if (writesExternal)
+            retainRoot(passId, PassCullReason::ExternalWrite);
     }
 
     // Backward propagation
@@ -55,32 +189,28 @@ void RenderGraph::CullPasses()
 
         const auto &pass = m_passes[passId];
 
-        // Find passes that produce resources this pass reads
+        // Find the exact producer of every version this pass reads.
         for (const auto &read : pass.reads) {
-            for (uint32_t i = 0; i < m_passes.size(); i++) {
-                if (i == passId)
-                    continue;
-
-                for (const auto &write : m_passes[i].writes) {
-                    if (write.handle.id == read.handle.id) {
-                        if (m_passes[i].culled) {
-                            m_passes[i].culled = false;
-                            workQueue.push(i);
-                        }
-                        m_passes[i].refCount++;
-                    }
-                }
+            auto producer = producers.find(read.handle);
+            if (producer == producers.end() || producer->second == passId)
+                continue;
+            auto &producerPass = m_passes[producer->second];
+            if (producerPass.culled) {
+                producerPass.culled = false;
+                producerPass.cullReason = PassCullReason::Dependency;
+                workQueue.push(producer->second);
             }
+            producerPass.refCount++;
         }
     }
 
-    // Log culled passes for debugging — these passes are unreachable from
-    // the output and will not execute.
+    // Dead-pass elimination is expected for optional branches such as motion
+    // vectors when no mounted effect consumes them. Keep it available to
+    // graph diagnostics without presenting normal compilation as a warning.
     for (uint32_t i = 0; i < m_passes.size(); i++) {
         if (m_passes[i].culled) {
-            INXLOG_WARN("RenderGraph::CullPasses - Pass '", m_passes[i].name, "' (index ", i,
-                        ") was culled (no path to output). "
-                        "Check that downstream passes read this pass's outputs.");
+            INXLOG_DEBUG("RenderGraph::CullPasses - Pass '", m_passes[i].name, "' (index ", i,
+                         ") was culled (no path to output)");
         }
     }
 }
@@ -93,21 +223,19 @@ void RenderGraph::ComputeResourceLifetimes()
         resource.refCount = 0;
     }
 
-    for (uint32_t i = 0; i < m_passes.size(); i++) {
-        if (m_passes[i].culled)
-            continue;
-
-        for (const auto &read : m_passes[i].reads) {
+    for (uint32_t executionIndex = 0; executionIndex < m_executionOrder.size(); ++executionIndex) {
+        const auto &pass = m_passes[m_executionOrder[executionIndex]];
+        for (const auto &read : pass.reads) {
             auto &resource = m_resources[read.handle.id];
-            resource.firstPass = std::min(resource.firstPass, i);
-            resource.lastPass = std::max(resource.lastPass, i);
+            resource.firstPass = std::min(resource.firstPass, executionIndex);
+            resource.lastPass = std::max(resource.lastPass, executionIndex);
             resource.refCount++;
         }
 
-        for (const auto &write : m_passes[i].writes) {
+        for (const auto &write : pass.writes) {
             auto &resource = m_resources[write.handle.id];
-            resource.firstPass = std::min(resource.firstPass, i);
-            resource.lastPass = std::max(resource.lastPass, i);
+            resource.firstPass = std::min(resource.firstPass, executionIndex);
+            resource.lastPass = std::max(resource.lastPass, executionIndex);
             resource.refCount++;
         }
     }
@@ -117,9 +245,11 @@ void RenderGraph::ComputeResourceLifetimes()
 // Topological Sort (Kahn's Algorithm)
 // ============================================================================
 
-void RenderGraph::TopologicalSort()
+bool RenderGraph::TopologicalSort()
 {
     m_executionOrder.clear();
+    for (auto &pass : m_passes)
+        pass.dependsOn.clear();
 
     // Collect non-culled pass indices
     std::vector<uint32_t> activePasses;
@@ -130,7 +260,7 @@ void RenderGraph::TopologicalSort()
     }
 
     if (activePasses.empty()) {
-        return;
+        return true;
     }
 
     // Build adjacency list: edge A→B means pass A must execute before pass B
@@ -143,61 +273,42 @@ void RenderGraph::TopologicalSort()
         inDegree[passId] = 0;
     }
 
-    // ====================================================================
-    // Build a resource_id → writer_pass_id map first, then connect reader
-    // passes from that map. This avoids the previous deeply nested scan.
-    // ====================================================================
-
-    // A single resource may be written by multiple passes (e.g. depth
-    // written and then rewritten by a later pass).  Store ALL writers.
-    std::unordered_map<uint32_t, std::vector<uint32_t>> resourceWriters; // resource_id → [writer pass ids]
-    std::unordered_map<uint32_t, std::vector<uint32_t>> depthWriters;    // depth resource_id → [writer pass ids]
-
+    std::unordered_map<ResourceHandle, uint32_t, ResourceHandleHash> producers;
+    std::unordered_map<ResourceHandle, std::vector<uint32_t>, ResourceHandleHash> readers;
     for (uint32_t writePassId : activePasses) {
         const auto &writePass = m_passes[writePassId];
         for (const auto &write : writePass.writes) {
-            resourceWriters[write.handle.id].push_back(writePassId);
+            producers.emplace(write.handle, writePassId);
         }
-        if (writePass.depthOutput.IsValid()) {
-            depthWriters[writePass.depthOutput.id].push_back(writePassId);
+    }
+    for (uint32_t readPassId : activePasses) {
+        const auto &readPass = m_passes[readPassId];
+        for (const auto &read : readPass.reads) {
+            readers[read.handle].push_back(readPassId);
+            auto producer = producers.find(read.handle);
+            if (producer != producers.end() && producer->second != readPassId) {
+                adjacency[producer->second].push_back(readPassId);
+                m_passes[readPassId].dependsOn.push_back(producer->second);
+            }
         }
     }
 
-    // For each reader pass, look up writers via the map — O(1) per resource
-    // For each reader pass, look up writers via the map.
-    // IMPORTANT: Only create edges from writers declared BEFORE the reader
-    // (writePassId < readPassId).  Without this constraint, a resource that
-    // is written by an early pass, read by a middle pass, and written again
-    // by a late pass would create a spurious backward edge late→middle,
-    // forming a cycle.  The render graph does not version resources, so
-    // declaration order is used as a proxy for the intended data-flow
-    // timeline.  This matches the Python-side declaration order which is
-    // always the logical execution order.
-    for (uint32_t readPassId : activePasses) {
-        const auto &readPass = m_passes[readPassId];
-
-        for (const auto &read : readPass.reads) {
-            auto it = resourceWriters.find(read.handle.id);
-            if (it != resourceWriters.end()) {
-                for (uint32_t writePassId : it->second) {
-                    if (writePassId != readPassId && writePassId < readPassId) {
-                        adjacency[writePassId].push_back(readPassId);
-                        inDegree[readPassId]++;
-                    }
-                }
-            }
-        }
-
-        // depthInput: if a pass reads depth from another pass
-        if (readPass.depthInput.IsValid()) {
-            auto it = depthWriters.find(readPass.depthInput.id);
-            if (it != depthWriters.end()) {
-                for (uint32_t writePassId : it->second) {
-                    if (writePassId != readPassId && writePassId < readPassId) {
-                        adjacency[writePassId].push_back(readPassId);
-                        inDegree[readPassId]++;
-                    }
-                }
+    // Multiple versions share one physical allocation. Readers of version N
+    // must complete before the producer of N+1 overwrites that allocation.
+    // This anti-dependency is what makes reading an older branch deterministic
+    // even when the newer write was declared first.
+    for (const auto &[version, versionReaders] : readers) {
+        if (version.version == std::numeric_limits<uint32_t>::max())
+            continue;
+        ResourceHandle nextVersion = version;
+        ++nextVersion.version;
+        auto nextProducer = producers.find(nextVersion);
+        if (nextProducer == producers.end())
+            continue;
+        for (uint32_t readerPassId : versionReaders) {
+            if (readerPassId != nextProducer->second) {
+                adjacency[readerPassId].push_back(nextProducer->second);
+                m_passes[nextProducer->second].dependsOn.push_back(readerPassId);
             }
         }
     }
@@ -206,6 +317,10 @@ void RenderGraph::TopologicalSort()
     for (auto &[passId, deps] : adjacency) {
         std::sort(deps.begin(), deps.end());
         deps.erase(std::unique(deps.begin(), deps.end()), deps.end());
+    }
+    for (auto &pass : m_passes) {
+        std::sort(pass.dependsOn.begin(), pass.dependsOn.end());
+        pass.dependsOn.erase(std::unique(pass.dependsOn.begin(), pass.dependsOn.end()), pass.dependsOn.end());
     }
 
     // Recount in-degrees after dedup
@@ -248,71 +363,405 @@ void RenderGraph::TopologicalSort()
     // Check for cycles
     if (m_executionOrder.size() != activePasses.size()) {
         INXLOG_ERROR("RenderGraph::TopologicalSort - Cycle detected! Sorted ", m_executionOrder.size(), " of ",
-                     activePasses.size(), " passes. Falling back to declaration order.");
-        m_executionOrder.clear();
+                     activePasses.size(), " passes. Versioned graph compilation was rejected.");
         for (uint32_t passId : activePasses) {
-            m_executionOrder.push_back(passId);
+            if (inDegree[passId] != 0) {
+                INXLOG_ERROR("  unresolved pass [", passId, "] '", m_passes[passId].name, "' has remaining in-degree ",
+                             inDegree[passId]);
+            }
+        }
+        m_executionOrder.clear();
+        return false;
+    }
+    return true;
+}
+
+bool RenderGraph::CompileSubmissionPlan()
+{
+    std::vector<rhi::SubmissionWorkItem> workItems;
+    workItems.reserve(m_executionOrder.size());
+    for (const uint32_t passIndex : m_executionOrder) {
+        if (passIndex >= m_passes.size() || m_passes[passIndex].culled)
+            continue;
+        const auto &pass = m_passes[passIndex];
+        rhi::PipelineStage waitStages = rhi::PipelineStage::None;
+        for (const auto &read : pass.reads)
+            waitStages = waitStages | read.stages;
+        if (waitStages == rhi::PipelineStage::None) {
+            switch (pass.type) {
+            case PassType::Graphics:
+                waitStages = rhi::PipelineStage::AllGraphics;
+                break;
+            case PassType::Compute:
+                waitStages = rhi::PipelineStage::ComputeShader;
+                break;
+            case PassType::Transfer:
+                waitStages = rhi::PipelineStage::Transfer;
+                break;
+            case PassType::Present:
+                waitStages = rhi::PipelineStage::Bottom;
+                break;
+            }
+        }
+        workItems.push_back({pass.id, pass.device, pass.queue, pass.submissionDomain, pass.view, waitStages,
+                             pass.dependsOn, pass.forceSubmissionBoundary});
+    }
+
+    std::string error;
+    if (!rhi::BuildSubmissionPlan(workItems, m_submissionPlan, error)) {
+        INXLOG_ERROR("RenderGraph::CompileSubmissionPlan - ", error);
+        return false;
+    }
+    return true;
+}
+
+bool RenderGraph::CompileQueueOwnershipTransfers()
+{
+    m_queueOwnershipTransfers.clear();
+    m_queueOwnershipTransferInfos.clear();
+    m_batchOutgoingOwnershipTransfers.clear();
+    m_batchOutgoingOwnershipTransfers.resize(m_submissionPlan.batches.size());
+    for (auto &transfers : m_externalOutgoingOwnershipTransfers)
+        transfers.clear();
+
+    std::vector<uint32_t> passToBatch(m_passes.size(), rhi::InvalidSubmissionBatchIndex);
+    for (const auto &batch : m_submissionPlan.batches) {
+        for (const uint32_t passId : batch.workItems) {
+            if (passId < passToBatch.size())
+                passToBatch[passId] = batch.index;
         }
     }
+
+    std::vector<ResourceState> states = m_initialResourceStates;
+    states.resize(m_resources.size());
+
+    auto bindingFor = [&](rhi::QueueRole role) -> NativeQueueBinding {
+        if (role == rhi::QueueRole::Count)
+            return {};
+        return m_queueTopology[static_cast<size_t>(role)];
+    };
+
+    auto processAccess = [&](const RenderPassData &pass, const ResourceAccess &access, bool isWrite) -> bool {
+        if ((access.usage & ResourceUsage::VersionDependency) != ResourceUsage::None ||
+            access.handle.id >= m_resources.size())
+            return true;
+        const auto &resource = m_resources[access.handle.id];
+        if (resource.type == ResourceType::RendererList)
+            return true;
+
+        const bool present = (access.usage & ResourceUsage::Present) != ResourceUsage::None;
+        const rhi::QueueRole targetQueue = present ? rhi::QueueRole::Present : pass.queue;
+        const NativeQueueBinding targetBinding = bindingFor(targetQueue);
+        if (!targetBinding.IsValid()) {
+            INXLOG_ERROR("RenderGraph::CompileQueueOwnershipTransfers - Pass '", pass.name,
+                         "' targets an unavailable native queue");
+            return false;
+        }
+
+        ResourceState &state = states[access.handle.id];
+        const bool hasPreviousOwner =
+            state.queueFamily != VK_QUEUE_FAMILY_IGNORED && state.nativeQueueLane != UINT32_MAX;
+        const bool laneChange = hasPreviousOwner && state.nativeQueueLane != targetBinding.lane;
+        const bool familyChange = hasPreviousOwner && state.queueFamily != targetBinding.family;
+
+        const uint32_t sourceBatch = state.writerPassId < passToBatch.size() ? passToBatch[state.writerPassId]
+                                                                             : rhi::InvalidSubmissionBatchIndex;
+        const uint32_t targetBatch =
+            pass.id < passToBatch.size() ? passToBatch[pass.id] : rhi::InvalidSubmissionBatchIndex;
+        if (!present && laneChange && sourceBatch != rhi::InvalidSubmissionBatchIndex &&
+            targetBatch != rhi::InvalidSubmissionBatchIndex && sourceBatch < targetBatch) {
+            auto &waits = m_submissionPlan.batches[targetBatch].waitsFor;
+            const auto existing = std::find_if(waits.begin(), waits.end(),
+                                               [&](const auto &wait) { return wait.sourceBatch == sourceBatch; });
+            if (existing == waits.end())
+                waits.push_back({sourceBatch, access.stages});
+            else
+                existing->waitStages = existing->waitStages | access.stages;
+        }
+
+        // PresentRead is itself the release operation recorded on Graphics;
+        // vkQueuePresentKHR and renderFinished form the consumer side.
+        if (!present && familyChange && !resource.concurrentQueueSharing) {
+            if (targetBatch == rhi::InvalidSubmissionBatchIndex) {
+                INXLOG_ERROR("RenderGraph::CompileQueueOwnershipTransfers - Missing target batch for pass '", pass.name,
+                             "'");
+                return false;
+            }
+
+            QueueOwnershipTransfer transfer;
+            transfer.info.resourceId = access.handle.id;
+            transfer.info.sourcePass = state.writerPassId;
+            transfer.info.targetPass = pass.id;
+            transfer.info.sourceBatch = sourceBatch;
+            transfer.info.targetBatch = targetBatch;
+            transfer.info.sourceFamily = state.queueFamily;
+            transfer.info.targetFamily = targetBinding.family;
+            transfer.sourceState = state;
+            transfer.targetAccess = access;
+
+            const uint32_t transferIndex = static_cast<uint32_t>(m_queueOwnershipTransfers.size());
+            m_queueOwnershipTransfers.push_back(transfer);
+            m_queueOwnershipTransferInfos.push_back(transfer.info);
+            if (sourceBatch != rhi::InvalidSubmissionBatchIndex) {
+                if (sourceBatch >= m_batchOutgoingOwnershipTransfers.size() || sourceBatch >= targetBatch) {
+                    INXLOG_ERROR("RenderGraph::CompileQueueOwnershipTransfers - Invalid ownership order for resource '",
+                                 resource.name, "'");
+                    return false;
+                }
+                m_batchOutgoingOwnershipTransfers[sourceBatch].push_back(transferIndex);
+            } else if (transfer.sourceState.queue != rhi::QueueRole::Count) {
+                m_externalOutgoingOwnershipTransfers[static_cast<size_t>(transfer.sourceState.queue)].push_back(
+                    transferIndex);
+            }
+        }
+
+        state.layout = access.layout;
+        state.accessMask = access.access;
+        state.stages = access.stages;
+        state.writerPassId = pass.id;
+        state.queue = targetQueue;
+        state.queueFamily = targetBinding.family;
+        state.nativeQueueLane = targetBinding.lane;
+
+        if (isWrite && pass.type == PassType::Graphics && pass.vulkanRenderPass != VK_NULL_HANDLE &&
+            (access.usage & ResourceUsage::DepthOutput) != ResourceUsage::None &&
+            IsResourceUsedAfter(access.handle.id, pass.id)) {
+            state.layout = rhi::TextureLayout::DepthStencilReadOnly;
+        }
+        return true;
+    };
+
+    for (const uint32_t passId : m_executionOrder) {
+        if (passId >= m_passes.size() || m_passes[passId].culled)
+            continue;
+        const auto &pass = m_passes[passId];
+        for (const auto &read : pass.reads) {
+            if (!processAccess(pass, read, false))
+                return false;
+        }
+        for (const auto &write : pass.writes) {
+            if (!processAccess(pass, write, true))
+                return false;
+        }
+        if (pass.depthInput.IsValid() && !pass.depthOutput.IsValid() && pass.depthInput.id < states.size()) {
+            ResourceState &state = states[pass.depthInput.id];
+            state.layout = rhi::TextureLayout::DepthStencilReadOnly;
+            state.accessMask = rhi::Access::DepthRead;
+            state.stages = rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
+        }
+    }
+    return true;
+}
+
+std::vector<uint64_t> RenderGraph::BuildStructuralSignature() const
+{
+    std::vector<uint64_t> signature;
+    signature.reserve(16 + m_resources.size() * 16 + m_passes.size() * 24);
+
+    auto appendString = [&](const std::string &value) {
+        signature.push_back(value.size());
+        uint64_t chunk = 0;
+        uint32_t shift = 0;
+        for (const unsigned char byte : value) {
+            chunk |= static_cast<uint64_t>(byte) << shift;
+            shift += 8;
+            if (shift == 64) {
+                signature.push_back(chunk);
+                chunk = 0;
+                shift = 0;
+            }
+        }
+        if (shift != 0)
+            signature.push_back(chunk);
+    };
+    auto appendHandle = [&](ResourceHandle handle) {
+        signature.push_back(handle.IsValid() ? handle.id : UINT32_MAX);
+        signature.push_back(handle.IsValid() ? handle.version : UINT32_MAX);
+    };
+    auto appendAccess = [&](const ResourceAccess &resourceAccess) {
+        appendHandle(resourceAccess.handle);
+        signature.push_back(static_cast<uint64_t>(resourceAccess.usage));
+        signature.push_back(static_cast<uint64_t>(resourceAccess.stages));
+        signature.push_back(static_cast<uint64_t>(resourceAccess.access));
+        signature.push_back(static_cast<uint64_t>(resourceAccess.layout));
+    };
+
+    signature.push_back(0x494e585247535452ull); // "INXRGSTR"
+    signature.push_back(m_resources.size());
+    signature.push_back(m_passes.size());
+    appendHandle(m_backbuffer);
+    appendHandle(m_output);
+
+    for (size_t index = 0; index < m_resources.size(); ++index) {
+        const auto &resource = m_resources[index];
+        signature.push_back(0x52534f5552434500ull); // "RSOURCE"
+        appendString(resource.name);
+        signature.push_back(static_cast<uint64_t>(resource.type));
+        signature.push_back(resource.isExternal);
+        signature.push_back(index < m_resourceVersions.size() ? m_resourceVersions[index] : 0);
+
+        appendString(resource.textureDesc.name);
+        signature.push_back(resource.textureDesc.width);
+        signature.push_back(resource.textureDesc.height);
+        signature.push_back(resource.textureDesc.depth);
+        signature.push_back(resource.textureDesc.mipLevels);
+        signature.push_back(resource.textureDesc.arrayLayers);
+        signature.push_back(static_cast<uint64_t>(resource.textureDesc.format));
+        signature.push_back(static_cast<uint64_t>(resource.textureDesc.samples));
+        signature.push_back(resource.textureDesc.isTransient);
+
+        appendString(resource.bufferDesc.name);
+        signature.push_back(resource.bufferDesc.size);
+        signature.push_back(resource.bufferDesc.usage);
+        signature.push_back(resource.bufferDesc.isTransient);
+    }
+
+    for (const auto &pass : m_passes) {
+        signature.push_back(0x5041535300000000ull); // "PASS"
+        appendString(pass.name);
+        signature.push_back(pass.id);
+        signature.push_back(static_cast<uint64_t>(pass.type));
+        signature.push_back(pass.device);
+        signature.push_back(static_cast<uint64_t>(pass.queue));
+        signature.push_back(static_cast<uint64_t>(pass.submissionDomain));
+        signature.push_back(pass.forceSubmissionBoundary ? 1u : 0u);
+        signature.push_back(pass.view);
+        signature.push_back(pass.hasSideEffect);
+        signature.push_back(pass.renderArea.width);
+        signature.push_back(pass.renderArea.height);
+        signature.push_back(pass.clearColorEnabled);
+        signature.push_back(pass.clearDepthEnabled);
+        signature.push_back(pass.hasResolveAttachment);
+        signature.push_back(pass.skipCallbackWhenRendererListsEmpty);
+
+        signature.push_back(pass.reads.size());
+        for (const auto &read : pass.reads)
+            appendAccess(read);
+        signature.push_back(pass.writes.size());
+        for (const auto &write : pass.writes)
+            appendAccess(write);
+
+        signature.push_back(pass.colorOutputs.size());
+        for (const auto output : pass.colorOutputs)
+            appendHandle(output);
+        appendHandle(pass.depthOutput);
+        appendHandle(pass.depthInput);
+        appendHandle(pass.resolveOutput);
+    }
+
+    return signature;
+}
+
+bool RenderGraph::RestoreStructuralCompilation(const std::vector<uint64_t> &signature)
+{
+    const auto found = std::find_if(m_structuralCompileCache.begin(), m_structuralCompileCache.end(),
+                                    [&](const auto &entry) { return entry.signature == signature; });
+    if (found == m_structuralCompileCache.end() || found->passes.size() != m_passes.size() ||
+        found->resources.size() != m_resources.size()) {
+        ++m_structuralCacheMisses;
+        return false;
+    }
+
+    for (size_t index = 0; index < m_passes.size(); ++index) {
+        m_passes[index].refCount = found->passes[index].refCount;
+        m_passes[index].culled = found->passes[index].culled;
+        m_passes[index].cullReason = found->passes[index].cullReason;
+        m_passes[index].dependsOn = found->passes[index].dependencies;
+    }
+    for (size_t index = 0; index < m_resources.size(); ++index) {
+        m_resources[index].firstPass = found->resources[index].firstPass;
+        m_resources[index].lastPass = found->resources[index].lastPass;
+        m_resources[index].refCount = found->resources[index].refCount;
+    }
+    m_executionOrder = found->executionOrder;
+    ++m_structuralCacheHits;
+    return true;
+}
+
+void RenderGraph::StoreStructuralCompilation(std::vector<uint64_t> signature)
+{
+    StructuralCompileCacheEntry entry;
+    entry.signature = std::move(signature);
+    entry.executionOrder = m_executionOrder;
+    entry.passes.reserve(m_passes.size());
+    for (const auto &pass : m_passes)
+        entry.passes.push_back({pass.refCount, pass.culled, pass.cullReason, pass.dependsOn});
+    entry.resources.reserve(m_resources.size());
+    for (const auto &resource : m_resources)
+        entry.resources.push_back({resource.firstPass, resource.lastPass, resource.refCount});
+
+    if (m_structuralCompileCache.size() == kStructuralCacheCapacity)
+        m_structuralCompileCache.erase(m_structuralCompileCache.begin());
+    m_structuralCompileCache.push_back(std::move(entry));
 }
 
 // ============================================================================
 // Helper Functions
 // ============================================================================
 
-VkImageLayout RenderGraph::UsageToLayout(ResourceUsage usage, ResourceType type)
+rhi::TextureLayout RenderGraph::UsageToLayout(ResourceUsage usage, ResourceType type)
 {
     if (static_cast<int>(usage & ResourceUsage::ColorOutput) != 0)
-        return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        return rhi::TextureLayout::ColorAttachment;
     if (static_cast<int>(usage & ResourceUsage::DepthOutput) != 0)
-        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        return rhi::TextureLayout::DepthStencilAttachment;
     if (static_cast<int>(usage & ResourceUsage::DepthRead) != 0)
-        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        return rhi::TextureLayout::DepthStencilAttachment;
     if (static_cast<int>(usage & ResourceUsage::ShaderRead) != 0)
-        return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return rhi::TextureLayout::ShaderReadOnly;
     if (static_cast<int>(usage & ResourceUsage::Transfer) != 0)
-        return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        return rhi::TextureLayout::TransferSource;
+    if (static_cast<int>(usage & ResourceUsage::Storage) != 0)
+        return rhi::TextureLayout::General;
     if (static_cast<int>(usage & ResourceUsage::ReadWrite) != 0)
-        return VK_IMAGE_LAYOUT_GENERAL;
-    return VK_IMAGE_LAYOUT_UNDEFINED;
+        return rhi::TextureLayout::General;
+    return rhi::TextureLayout::Undefined;
 }
 
-VkAccessFlags RenderGraph::UsageToAccessMask(ResourceUsage usage)
+rhi::Access RenderGraph::UsageToAccessMask(ResourceUsage usage)
 {
-    VkAccessFlags flags = 0;
+    rhi::Access flags = rhi::Access::None;
     if (static_cast<int>(usage & ResourceUsage::ColorOutput) != 0)
-        flags |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        flags = flags | rhi::Access::ColorWrite;
     if (static_cast<int>(usage & ResourceUsage::DepthOutput) != 0)
-        flags |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        flags = flags | rhi::Access::DepthWrite;
     if (static_cast<int>(usage & ResourceUsage::DepthRead) != 0)
-        flags |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+        flags = flags | rhi::Access::DepthRead;
     if (static_cast<int>(usage & ResourceUsage::ShaderRead) != 0)
-        flags |= VK_ACCESS_SHADER_READ_BIT;
+        flags = flags | rhi::Access::ShaderRead;
     if (static_cast<int>(usage & ResourceUsage::Transfer) != 0)
-        flags |= VK_ACCESS_TRANSFER_READ_BIT;
+        flags = flags | rhi::Access::TransferRead;
+    if (static_cast<int>(usage & ResourceUsage::IndirectArgument) != 0)
+        flags = flags | rhi::Access::IndirectRead;
+    if (static_cast<int>(usage & ResourceUsage::Storage) != 0)
+        flags = flags | rhi::Access::ShaderRead | rhi::Access::ShaderWrite;
     if (static_cast<int>(usage & (ResourceUsage::ReadWrite)) != 0)
-        flags |= VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        flags = flags | rhi::Access::ShaderRead | rhi::Access::ShaderWrite;
     if (static_cast<int>(usage & ResourceUsage::Read) != 0 && static_cast<int>(usage & ResourceUsage::Write) == 0 &&
-        flags == 0)
-        flags = VK_ACCESS_SHADER_READ_BIT;
+        flags == rhi::Access::None)
+        flags = rhi::Access::ShaderRead;
     return flags;
 }
 
-VkPipelineStageFlags RenderGraph::UsageToStageFlags(ResourceUsage usage)
+rhi::PipelineStage RenderGraph::UsageToStageFlags(ResourceUsage usage)
 {
-    VkPipelineStageFlags flags = 0;
+    rhi::PipelineStage flags = rhi::PipelineStage::None;
     if (static_cast<int>(usage & ResourceUsage::ColorOutput) != 0)
-        flags |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        flags = flags | rhi::PipelineStage::ColorOutput;
     if (static_cast<int>(usage & ResourceUsage::DepthOutput) != 0)
-        flags |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        flags = flags | rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
     if (static_cast<int>(usage & ResourceUsage::DepthRead) != 0)
-        flags |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        flags = flags | rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
     if (static_cast<int>(usage & ResourceUsage::ShaderRead) != 0)
-        flags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        flags = flags | rhi::PipelineStage::FragmentShader;
     if (static_cast<int>(usage & ResourceUsage::Transfer) != 0)
-        flags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-    if (flags == 0)
-        flags = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+        flags = flags | rhi::PipelineStage::Transfer;
+    if (static_cast<int>(usage & ResourceUsage::IndirectArgument) != 0)
+        flags = flags | rhi::PipelineStage::DrawIndirect;
+    if (static_cast<int>(usage & ResourceUsage::Storage) != 0)
+        flags = flags | rhi::PipelineStage::ComputeShader;
+    if (flags == rhi::PipelineStage::None)
+        flags = rhi::PipelineStage::AllGraphics;
     return flags;
 }
 
@@ -357,7 +806,7 @@ bool RenderGraph::IsResourceUsedAfter(uint32_t resourceId, uint32_t passIndex) c
 // ============================================================================
 
 size_t RenderGraph::HashRenderPassConfig(VkFormat colorFmt, VkFormat depthFmt, VkSampleCountFlagBits samples,
-                                         bool clearColor, bool clearDepth, bool storeDepth,
+                                         bool clearColor, bool clearDepth, bool storeColor, bool storeDepth,
                                          VkImageLayout colorFinalLayout, bool hasResolve, VkFormat resolveFormat,
                                          bool hasColorAttachments, bool readOnlyDepth)
 {
@@ -369,6 +818,7 @@ size_t RenderGraph::HashRenderPassConfig(VkFormat colorFmt, VkFormat depthFmt, V
     hashCombine(std::hash<uint32_t>{}(static_cast<uint32_t>(samples)));
     hashCombine(std::hash<bool>{}(clearColor));
     hashCombine(std::hash<bool>{}(clearDepth));
+    hashCombine(std::hash<bool>{}(storeColor));
     hashCombine(std::hash<bool>{}(storeDepth));
     hashCombine(std::hash<bool>{}(readOnlyDepth));
     hashCombine(std::hash<uint32_t>{}(static_cast<uint32_t>(colorFinalLayout)));
@@ -395,10 +845,10 @@ size_t RenderGraph::HashFramebuffer(VkRenderPass renderPass, const std::vector<V
 
 void RenderGraph::FlushUnusedCaches()
 {
-    if (!m_context)
+    if (!m_context || !m_deletionQueue)
         return;
 
-    VkDevice device = m_context->GetDevice();
+    const VkDevice device = m_context->GetDevice();
 
     // Increment unused counter for framebuffers not used this frame
     for (auto &[key, entry] : m_framebufferCache) {
@@ -415,15 +865,22 @@ void RenderGraph::FlushUnusedCaches()
 
     // Remove entries unused for more than 60 frames
     constexpr uint32_t GC_THRESHOLD = 60;
+    std::vector<VkFramebuffer> retiredFramebuffers;
     for (auto it = m_framebufferCache.begin(); it != m_framebufferCache.end();) {
         if (it->second.unusedFrames > GC_THRESHOLD) {
-            if (it->second.framebuffer != VK_NULL_HANDLE) {
-                vkDestroyFramebuffer(device, it->second.framebuffer, nullptr);
-            }
+            if (it->second.framebuffer != VK_NULL_HANDLE)
+                retiredFramebuffers.push_back(it->second.framebuffer);
             it = m_framebufferCache.erase(it);
         } else {
             ++it;
         }
+    }
+
+    if (!retiredFramebuffers.empty()) {
+        m_deletionQueue->Retire([device, framebuffers = std::move(retiredFramebuffers)]() {
+            for (VkFramebuffer framebuffer : framebuffers)
+                vkDestroyFramebuffer(device, framebuffer, nullptr);
+        });
     }
 }
 
@@ -452,6 +909,7 @@ bool RenderGraph::AllocateResources()
     };
 
     std::vector<AllocationRequest> imageAllocRequests;
+    std::vector<AllocationRequest> bufferAllocRequests;
 
     for (uint32_t ri = 0; ri < static_cast<uint32_t>(m_resources.size()); ++ri) {
         auto &resource = m_resources[ri];
@@ -502,6 +960,19 @@ bool RenderGraph::AllocateResources()
                 }
             }
 
+            for (const auto &pass : m_passes) {
+                if (pass.culled)
+                    continue;
+                const auto usesStorage = [ri](const ResourceAccess &access) {
+                    return access.handle.id == ri && static_cast<int>(access.usage & ResourceUsage::Storage) != 0;
+                };
+                if (std::any_of(pass.reads.begin(), pass.reads.end(), usesStorage) ||
+                    std::any_of(pass.writes.begin(), pass.writes.end(), usesStorage)) {
+                    imageInfo.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+                    break;
+                }
+            }
+
             // Add transfer usage flags if any pass uses this resource for
             // transfer operations (blit/copy source or destination).
             for (const auto &pass : m_passes) {
@@ -538,7 +1009,6 @@ bool RenderGraph::AllocateResources()
             imageAllocRequests.push_back({ri, memReqs, memTypeIndex});
 
         } else if (resource.type == ResourceType::Buffer) {
-            // Buffers are allocated individually (no aliasing benefit for buffers)
             VkBufferCreateInfo bufferInfo{};
             bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
             bufferInfo.size = resource.bufferDesc.size;
@@ -546,22 +1016,23 @@ bool RenderGraph::AllocateResources()
             bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
             if (vkCreateBuffer(device, &bufferInfo, nullptr, &resource.allocatedBuffer) != VK_SUCCESS) {
-                INXLOG_ERROR("Failed to create buffer for resource: ", resource.name);
+                resource.allocatedBuffer = VK_NULL_HANDLE;
+                INXLOG_ERROR("Failed to create buffer resource '", resource.name, "'");
                 return false;
             }
 
-            VmaAllocator allocator = m_context->GetVmaAllocator();
-            VmaAllocationCreateInfo allocCreateInfo{};
-            allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+            VkMemoryRequirements memReqs{};
+            vkGetBufferMemoryRequirements(device, resource.allocatedBuffer, &memReqs);
 
-            VmaAllocationInfo vmaAllocInfo;
-            if (vmaAllocateMemoryForBuffer(allocator, resource.allocatedBuffer, &allocCreateInfo,
-                                           &resource.allocatedMemory, &vmaAllocInfo) != VK_SUCCESS) {
-                INXLOG_ERROR("Failed to allocate memory for buffer: ", resource.name);
+            VmaAllocationCreateInfo probeAllocInfo{};
+            probeAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+            uint32_t memTypeIndex = 0;
+            if (vmaFindMemoryTypeIndexForBufferInfo(m_context->GetVmaAllocator(), &bufferInfo, &probeAllocInfo,
+                                                    &memTypeIndex) != VK_SUCCESS) {
+                INXLOG_ERROR("Failed to select memory for buffer resource '", resource.name, "'");
                 return false;
             }
-
-            vkBindBufferMemory(device, resource.allocatedBuffer, vmaAllocInfo.deviceMemory, vmaAllocInfo.offset);
+            bufferAllocRequests.push_back({ri, memReqs, memTypeIndex});
         }
     }
 
@@ -726,6 +1197,10 @@ bool RenderGraph::AllocateResources()
             INXLOG_ERROR("Failed to create image view for resource: ", resource.name);
             return false;
         }
+        resource.rhiView =
+            m_rhiDevice ? m_rhiDevice->RegisterTextureView(resource.allocatedView) : rhi::TextureViewHandle{};
+        resource.rhiTexture =
+            m_rhiDevice ? m_rhiDevice->RegisterTexture(resource.allocatedImage) : rhi::TextureHandle{};
     }
 
     // Track aliased memory heaps for cleanup
@@ -744,6 +1219,83 @@ bool RenderGraph::AllocateResources()
         if (!ownedByResource) {
             m_aliasedMemoryHeaps.push_back(heap.allocation);
         }
+    }
+
+    // Transient buffers use the same interval-colouring rule as images, but
+    // remain in separate heaps because Vulkan memory requirements are
+    // resource-class specific. Distinct VkBuffer handles alias only the raw
+    // allocation and therefore preserve their declared usages.
+    std::sort(bufferAllocRequests.begin(), bufferAllocRequests.end(),
+              [](const AllocationRequest &a, const AllocationRequest &b) { return a.memReqs.size > b.memReqs.size; });
+
+    struct BufferMemoryHeap
+    {
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkDeviceSize size = 0;
+        uint32_t memoryTypeIndex = 0;
+        std::vector<std::pair<uint32_t, uint32_t>> occupants;
+    };
+    std::vector<BufferMemoryHeap> bufferHeaps;
+
+    for (const auto &req : bufferAllocRequests) {
+        auto &resource = m_resources[req.resourceIndex];
+        bool placed = false;
+
+        if (resource.bufferDesc.isTransient && resource.firstPass <= resource.lastPass) {
+            for (auto &heap : bufferHeaps) {
+                if (heap.memoryTypeIndex != req.memoryTypeIndex || req.memReqs.size > heap.size)
+                    continue;
+
+                const bool overlaps = std::any_of(heap.occupants.begin(), heap.occupants.end(), [&](const auto &life) {
+                    return lifetimesOverlap(resource.firstPass, resource.lastPass, life.first, life.second);
+                });
+                if (overlaps)
+                    continue;
+
+                if (vkBindBufferMemory(device, resource.allocatedBuffer, heap.memory, 0) != VK_SUCCESS)
+                    continue;
+
+                resource.allocatedMemory = VK_NULL_HANDLE;
+                heap.occupants.push_back({resource.firstPass, resource.lastPass});
+                placed = true;
+                break;
+            }
+        }
+
+        if (!placed) {
+            VmaAllocationCreateInfo allocCreateInfo{};
+            allocCreateInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+            allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+
+            VmaAllocation allocation = VK_NULL_HANDLE;
+            VmaAllocationInfo allocationInfo{};
+            if (vmaAllocateMemory(m_context->GetVmaAllocator(), &req.memReqs, &allocCreateInfo, &allocation,
+                                  &allocationInfo) != VK_SUCCESS) {
+                INXLOG_ERROR("Failed to allocate memory for buffer resource: ", resource.name);
+                return false;
+            }
+            if (vkBindBufferMemory(device, resource.allocatedBuffer, allocationInfo.deviceMemory, 0) != VK_SUCCESS) {
+                vmaFreeMemory(m_context->GetVmaAllocator(), allocation);
+                INXLOG_ERROR("Failed to bind memory for buffer resource: ", resource.name);
+                return false;
+            }
+
+            resource.allocatedMemory = allocation;
+            if (resource.bufferDesc.isTransient && resource.firstPass <= resource.lastPass) {
+                BufferMemoryHeap heap;
+                heap.allocation = allocation;
+                heap.memory = allocationInfo.deviceMemory;
+                heap.size = req.memReqs.size;
+                heap.memoryTypeIndex = req.memoryTypeIndex;
+                heap.occupants.push_back({resource.firstPass, resource.lastPass});
+                bufferHeaps.push_back(std::move(heap));
+            }
+        }
+
+        resource.rhiBuffer = m_rhiDevice
+                                 ? m_rhiDevice->RegisterBuffer(resource.allocatedBuffer, resource.bufferDesc.size)
+                                 : rhi::BufferHandle{};
     }
 
     return true;
@@ -804,6 +1356,7 @@ bool RenderGraph::CreateVulkanRenderPasses()
         config.hasDepth = effectiveDepth.IsValid();
         config.clearColor = pass.clearColorEnabled;
         config.clearDepth = pass.clearDepthEnabled;
+        config.storeColor = !hasColorOutputs || IsResourceUsedAfter(pass.colorOutputs[0].id, pass.id);
         config.storeDepth = needStoreDepth;
         // Read-only depth: the pass reads depth (depthInput) but never writes it (no depthOutput).
         // This requires DEPTH_STENCIL_READ_ONLY_OPTIMAL layouts throughout.
@@ -832,15 +1385,16 @@ bool RenderGraph::CreateVulkanRenderPasses()
             pass.hasResolveAttachment = true;
         }
 
-        // Color final layout — COLOR_ATTACHMENT_OPTIMAL for offscreen scene targets,
-        // PRESENT_SRC_KHR for swapchain targets (set via SetBackbufferFinalLayout)
-        config.colorFinalLayout = m_backbufferFinalLayout;
+        // Graphics passes leave their color attachment writable. A typed Present
+        // pass owns the final swapchain transition explicitly.
+        config.colorFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
         // Use RenderPass cache
         // Include MRT attachment count + formats in cache key
-        size_t cacheKey = HashRenderPassConfig(
-            colorFormat, depthFormat, sampleCount, config.clearColor, config.clearDepth, config.storeDepth,
-            config.colorFinalLayout, config.hasResolve, config.resolveFormat, hasColorOutputs, config.readOnlyDepth);
+        size_t cacheKey =
+            HashRenderPassConfig(colorFormat, depthFormat, sampleCount, config.clearColor, config.clearDepth,
+                                 config.storeColor, config.storeDepth, config.colorFinalLayout, config.hasResolve,
+                                 config.resolveFormat, hasColorOutputs, config.readOnlyDepth);
         // Fold MRT info into cache key
         {
             auto hashCombine = [&cacheKey](size_t val) {
@@ -855,13 +1409,25 @@ bool RenderGraph::CreateVulkanRenderPasses()
         auto cacheIt = m_renderPassCache.find(cacheKey);
         if (cacheIt != m_renderPassCache.end()) {
             pass.vulkanRenderPass = cacheIt->second;
+            const auto layoutIt = m_renderTargetLayoutCache.find(cacheKey);
+            if (layoutIt != m_renderTargetLayoutCache.end())
+                pass.renderTargetLayout = layoutIt->second;
         } else {
             pass.vulkanRenderPass = m_pipelineManager->CreateRenderPass(config);
             if (pass.vulkanRenderPass == VK_NULL_HANDLE) {
                 INXLOG_ERROR("Failed to create render pass for: ", pass.name);
                 return false;
             }
+            if (!m_pipelineManager->DetachRenderPass(pass.vulkanRenderPass)) {
+                INXLOG_ERROR("Failed to transfer render pass ownership for: ", pass.name);
+                m_pipelineManager->DestroyRenderPass(pass.vulkanRenderPass);
+                pass.vulkanRenderPass = VK_NULL_HANDLE;
+                return false;
+            }
             m_renderPassCache[cacheKey] = pass.vulkanRenderPass;
+            pass.renderTargetLayout = m_rhiDevice ? m_rhiDevice->RegisterRenderTargetLayout(pass.vulkanRenderPass)
+                                                  : rhi::RenderTargetLayoutHandle{};
+            m_renderTargetLayoutCache[cacheKey] = pass.renderTargetLayout;
         }
         m_usedRenderPassKeys.push_back(cacheKey);
     }
@@ -1008,40 +1574,109 @@ void RenderGraph::PrecomputeExecuteData()
 
 void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
 {
-    // Precise barrier insertion with tracked resource layouts
     const auto &pass = m_passes[passIndex];
 
     m_barrierScratch.clear();
+    m_bufferBarrierScratch.clear();
     VkPipelineStageFlags srcStageMask = 0;
     VkPipelineStageFlags dstStageMask = 0;
 
-    // Helper: generate barrier for a resource access
+    const auto bindingFor = [&](rhi::QueueRole role) -> NativeQueueBinding {
+        if (role == rhi::QueueRole::Count)
+            return {};
+        return m_queueTopology[static_cast<size_t>(role)];
+    };
+    const rhi::QueueRole recordingQueue = m_recordingSubmissionBatches ? pass.queue : m_immediateRecordingQueue;
+
+    const auto aspectMaskFor = [](const ResourceData &resource, bool isDepthInput) {
+        bool isDepthResource = resource.type == ResourceType::DepthStencil || isDepthInput;
+        if (!isDepthResource) {
+            const VkFormat format = resource.textureDesc.format;
+            isDepthResource = format == VK_FORMAT_D32_SFLOAT || format == VK_FORMAT_D24_UNORM_S8_UINT ||
+                              format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+        }
+        return isDepthResource ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    };
+
     auto addBarrier = [&](const ResourceAccess &access, bool isDepthInput = false) {
+        if ((access.usage & ResourceUsage::VersionDependency) != ResourceUsage::None)
+            return;
         if (access.handle.id >= m_resources.size())
             return;
 
         const auto &resource = m_resources[access.handle.id];
-        if (resource.type == ResourceType::Buffer)
+        if (resource.type == ResourceType::RendererList)
             return;
+
+        const auto &prevState = m_resourceStates[access.handle.id];
+        const bool present = (access.usage & ResourceUsage::Present) != ResourceUsage::None;
+        const rhi::QueueRole targetQueue = present ? rhi::QueueRole::Present : recordingQueue;
+        const NativeQueueBinding targetBinding = bindingFor(targetQueue);
+        const bool hasPreviousOwner = prevState.queueFamily != VK_QUEUE_FAMILY_IGNORED &&
+                                      prevState.nativeQueueLane != UINT32_MAX && targetBinding.IsValid();
+        const bool laneChange = hasPreviousOwner && prevState.nativeQueueLane != targetBinding.lane;
+        const bool familyChange = hasPreviousOwner && prevState.queueFamily != targetBinding.family;
+        const bool ownershipTransfer =
+            m_recordingSubmissionBatches && laneChange && familyChange && !resource.concurrentQueueSharing;
+
+        VkAccessFlags srcAccessMask = ToVkAccessFlags(prevState.accessMask);
+        VkAccessFlags dstAccessMask = ToVkAccessFlags(access.access);
+        VkPipelineStageFlags srcStages = ToVkPipelineStages(prevState.stages);
+        VkPipelineStageFlags dstStages = ToVkPipelineStages(access.stages);
+        if (!present && laneChange) {
+            // A timeline wait makes the source writes available. The target
+            // command buffer only performs visibility/layout acquisition.
+            srcAccessMask = 0;
+            srcStages = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        } else if (present) {
+            // PresentRead is the producer-side release/layout transition.
+            dstAccessMask = 0;
+            dstStages = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        }
+        if (srcStages == 0)
+            srcStages = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        if (dstStages == 0)
+            dstStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+
+        if (resource.type == ResourceType::Buffer) {
+            const VkBuffer buffer = resource.isExternal ? resource.externalBuffer : resource.allocatedBuffer;
+            if (buffer == VK_NULL_HANDLE)
+                return;
+
+            const bool previousWrite =
+                rhi::HasAny(prevState.accessMask, rhi::Access::ShaderWrite | rhi::Access::TransferWrite |
+                                                      rhi::Access::MemoryWrite | rhi::Access::HostWrite);
+            const bool currentWrite = (static_cast<int>(access.usage & ResourceUsage::Write) != 0);
+            if (!previousWrite && !currentWrite && !laneChange)
+                return;
+
+            VkBufferMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            barrier.srcAccessMask = srcAccessMask;
+            barrier.dstAccessMask = dstAccessMask;
+            barrier.srcQueueFamilyIndex = ownershipTransfer ? prevState.queueFamily : VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = ownershipTransfer ? targetBinding.family : VK_QUEUE_FAMILY_IGNORED;
+            barrier.buffer = buffer;
+            barrier.offset = 0;
+            barrier.size = resource.bufferDesc.size;
+            m_bufferBarrierScratch.push_back(barrier);
+            srcStageMask |= srcStages;
+            dstStageMask |= dstStages;
+            return;
+        }
 
         VkImage image = resource.isExternal ? resource.externalImage : resource.allocatedImage;
         if (image == VK_NULL_HANDLE)
             return;
 
-        // Look up previous state (direct index — vectors kept in sync with m_resources)
-        const auto &prevState = m_resourceStates[access.handle.id];
-        VkImageLayout oldLayout = prevState.layout;
-        VkAccessFlags srcAccessMask = prevState.accessMask;
-        VkPipelineStageFlags srcStages = prevState.stages;
-        if (srcStages == 0)
-            srcStages = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-
-        VkImageLayout newLayout = access.layout;
+        const VkImageLayout oldLayout = ToVkImageLayout(prevState.layout);
+        const VkImageLayout newLayout = ToVkImageLayout(access.layout);
 
         // Skip barrier if layout is already correct and no write hazard
-        if (oldLayout == newLayout && (static_cast<int>(access.usage & ResourceUsage::Write) == 0) &&
-            (srcAccessMask & (VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                              VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT)) == 0) {
+        if (oldLayout == newLayout && (static_cast<int>(access.usage & ResourceUsage::Write) == 0) && !laneChange &&
+            !rhi::HasAny(prevState.accessMask, rhi::Access::ColorWrite | rhi::Access::DepthWrite |
+                                                   rhi::Access::ShaderWrite | rhi::Access::TransferWrite |
+                                                   rhi::Access::MemoryWrite | rhi::Access::HostWrite)) {
             return;
         }
 
@@ -1049,36 +1684,36 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = oldLayout;
         barrier.newLayout = newLayout;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.srcQueueFamilyIndex = ownershipTransfer ? prevState.queueFamily : VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = ownershipTransfer ? targetBinding.family : VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
-
-        // Determine correct aspect mask for the barrier.
-        // Depth-formatted images (including Texture2D with depth format,
-        // e.g. shadow maps) must use DEPTH_BIT, not COLOR_BIT.
-        bool isDepthResource = (resource.type == ResourceType::DepthStencil || isDepthInput);
-        if (!isDepthResource) {
-            VkFormat fmt = resource.textureDesc.format;
-            isDepthResource = (fmt == VK_FORMAT_D32_SFLOAT || fmt == VK_FORMAT_D24_UNORM_S8_UINT ||
-                               fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT);
-        }
-
-        if (isDepthResource) {
-            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        } else {
-            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        }
-
+        barrier.subresourceRange.aspectMask = aspectMaskFor(resource, isDepthInput);
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = 1;
         barrier.srcAccessMask = srcAccessMask;
-        barrier.dstAccessMask = access.access;
+        barrier.dstAccessMask = dstAccessMask;
 
         m_barrierScratch.push_back(barrier);
         srcStageMask |= srcStages;
-        dstStageMask |= access.stages;
+        dstStageMask |= dstStages;
+    };
+
+    auto updateState = [&](const ResourceAccess &access, rhi::TextureLayout layout) {
+        if (access.handle.id >= m_resourceStates.size())
+            return;
+        const bool present = (access.usage & ResourceUsage::Present) != ResourceUsage::None;
+        const rhi::QueueRole targetQueue = present ? rhi::QueueRole::Present : recordingQueue;
+        const NativeQueueBinding targetBinding = bindingFor(targetQueue);
+        auto &state = m_resourceStates[access.handle.id];
+        state.layout = layout;
+        state.accessMask = access.access;
+        state.stages = access.stages;
+        state.writerPassId = passIndex;
+        state.queue = targetQueue;
+        state.queueFamily = targetBinding.family;
+        state.nativeQueueLane = targetBinding.lane;
     };
 
     // Process read accesses
@@ -1100,24 +1735,26 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
             break;
     }
 
-    if (hasReadWriteOverlap && !m_barrierScratch.empty()) {
+    if (hasReadWriteOverlap && (!m_barrierScratch.empty() || !m_bufferBarrierScratch.empty())) {
         if (srcStageMask == 0)
             srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         if (dstStageMask == 0)
-            dstStageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+            dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 
-        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, dstStageMask, 0, 0, nullptr, 0, nullptr,
+        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, dstStageMask, 0, 0, nullptr,
+                             static_cast<uint32_t>(m_bufferBarrierScratch.size()), m_bufferBarrierScratch.data(),
                              static_cast<uint32_t>(m_barrierScratch.size()), m_barrierScratch.data());
 
         m_barrierScratch.clear();
+        m_bufferBarrierScratch.clear();
         srcStageMask = 0;
         dstStageMask = 0;
     }
 
     for (const auto &read : pass.reads) {
-        if (read.handle.id < m_resources.size()) {
-            m_resourceStates[read.handle.id] = {read.layout, read.access, read.stages, passIndex};
-        }
+        if ((read.usage & ResourceUsage::VersionDependency) != ResourceUsage::None)
+            continue;
+        updateState(read, read.layout);
     }
 
     // Process write accesses
@@ -1125,13 +1762,14 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         addBarrier(write);
     }
 
-    if (!m_barrierScratch.empty()) {
+    if (!m_barrierScratch.empty() || !m_bufferBarrierScratch.empty()) {
         if (srcStageMask == 0)
             srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         if (dstStageMask == 0)
-            dstStageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+            dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 
-        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, dstStageMask, 0, 0, nullptr, 0, nullptr,
+        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, dstStageMask, 0, 0, nullptr,
+                             static_cast<uint32_t>(m_bufferBarrierScratch.size()), m_bufferBarrierScratch.data(),
                              static_cast<uint32_t>(m_barrierScratch.size()), m_barrierScratch.data());
     }
 
@@ -1141,7 +1779,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     // a resource leaves it in the write layout).
     for (const auto &write : pass.writes) {
         if (write.handle.id < m_resources.size()) {
-            VkImageLayout postPassLayout = write.layout;
+            rhi::TextureLayout postPassLayout = write.layout;
 
             // For graphics passes, vkCmdEndRenderPass performs an implicit
             // layout transition from the subpass layout to the attachment's
@@ -1155,12 +1793,12 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
                     // storeDepth=false → finalLayout = DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                     bool usedLater = IsResourceUsedAfter(write.handle.id, pass.id);
                     if (usedLater) {
-                        postPassLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+                        postPassLayout = rhi::TextureLayout::DepthStencilReadOnly;
                     }
                 }
             }
 
-            m_resourceStates[write.handle.id] = {postPassLayout, write.access, write.stages, passIndex};
+            updateState(write, postPassLayout);
         }
     }
 
@@ -1168,9 +1806,97 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     // uses DEPTH_STENCIL_READ_ONLY_OPTIMAL throughout (initial & final layout
     // are both READ_ONLY_OPTIMAL when readOnlyDepth=true in CreateRenderPass).
     if (pass.depthInput.IsValid() && !pass.depthOutput.IsValid()) {
-        m_resourceStates[pass.depthInput.id] = {
-            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, passIndex};
+        auto &state = m_resourceStates[pass.depthInput.id];
+        state.layout = rhi::TextureLayout::DepthStencilReadOnly;
+        state.accessMask = rhi::Access::DepthRead;
+        state.stages = rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
+    }
+}
+
+void RenderGraph::InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32_t batchIndex)
+{
+    const std::vector<uint32_t> *outgoing = nullptr;
+    if (batchIndex == rhi::InvalidSubmissionBatchIndex) {
+        const rhi::QueueRole recordingQueue = m_immediateRecordingQueue;
+        if (recordingQueue == rhi::QueueRole::Count)
+            return;
+        outgoing = &m_externalOutgoingOwnershipTransfers[static_cast<size_t>(recordingQueue)];
+    } else {
+        if (batchIndex >= m_batchOutgoingOwnershipTransfers.size())
+            return;
+        outgoing = &m_batchOutgoingOwnershipTransfers[batchIndex];
+    }
+
+    m_barrierScratch.clear();
+    m_bufferBarrierScratch.clear();
+    VkPipelineStageFlags srcStageMask = 0;
+
+    const auto aspectMaskFor = [](const ResourceData &resource) {
+        const VkFormat format = resource.textureDesc.format;
+        const bool depth = resource.type == ResourceType::DepthStencil || format == VK_FORMAT_D32_SFLOAT ||
+                           format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D16_UNORM ||
+                           format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+        return depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    };
+
+    for (const uint32_t transferIndex : *outgoing) {
+        if (transferIndex >= m_queueOwnershipTransfers.size())
+            continue;
+        const auto &transfer = m_queueOwnershipTransfers[transferIndex];
+        if (transfer.info.resourceId >= m_resources.size())
+            continue;
+        const auto &resource = m_resources[transfer.info.resourceId];
+        if (resource.concurrentQueueSharing)
+            continue;
+
+        VkPipelineStageFlags sourceStages = ToVkPipelineStages(transfer.sourceState.stages);
+        if (sourceStages == 0)
+            sourceStages = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        srcStageMask |= sourceStages;
+
+        if (resource.type == ResourceType::Buffer) {
+            const VkBuffer buffer = resource.isExternal ? resource.externalBuffer : resource.allocatedBuffer;
+            if (buffer == VK_NULL_HANDLE)
+                continue;
+            VkBufferMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            barrier.srcAccessMask = ToVkAccessFlags(transfer.sourceState.accessMask);
+            barrier.dstAccessMask = 0;
+            barrier.srcQueueFamilyIndex = transfer.info.sourceFamily;
+            barrier.dstQueueFamilyIndex = transfer.info.targetFamily;
+            barrier.buffer = buffer;
+            barrier.offset = 0;
+            barrier.size = resource.bufferDesc.size;
+            m_bufferBarrierScratch.push_back(barrier);
+            continue;
+        }
+
+        const VkImage image = resource.isExternal ? resource.externalImage : resource.allocatedImage;
+        if (image == VK_NULL_HANDLE)
+            continue;
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask = ToVkAccessFlags(transfer.sourceState.accessMask);
+        barrier.dstAccessMask = 0;
+        barrier.oldLayout = ToVkImageLayout(transfer.sourceState.layout);
+        barrier.newLayout = ToVkImageLayout(transfer.targetAccess.layout);
+        barrier.srcQueueFamilyIndex = transfer.info.sourceFamily;
+        barrier.dstQueueFamilyIndex = transfer.info.targetFamily;
+        barrier.image = image;
+        barrier.subresourceRange.aspectMask = aspectMaskFor(resource);
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        m_barrierScratch.push_back(barrier);
+    }
+
+    if (!m_barrierScratch.empty() || !m_bufferBarrierScratch.empty()) {
+        if (srcStageMask == 0)
+            srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr,
+                             static_cast<uint32_t>(m_bufferBarrierScratch.size()), m_bufferBarrierScratch.data(),
+                             static_cast<uint32_t>(m_barrierScratch.size()), m_barrierScratch.data());
     }
 }
 
@@ -1185,6 +1911,20 @@ void RenderGraph::FreeResources()
     }
 
     VkDevice device = m_context->GetDevice();
+
+    // RHI registrations are graph-resource lifetime aliases, including
+    // external resources. Release them before the no-transient early-out and
+    // before any owned native resource is destroyed.
+    if (m_rhiDevice) {
+        for (auto &resource : m_resources) {
+            m_rhiDevice->Release(resource.rhiView);
+            resource.rhiView = {};
+            m_rhiDevice->Release(resource.rhiTexture);
+            resource.rhiTexture = {};
+            m_rhiDevice->Release(resource.rhiBuffer);
+            resource.rhiBuffer = {};
+        }
+    }
 
     // ========================================================================
     // Fix 6: Early-out when there are no transient resources to free.
@@ -1202,7 +1942,7 @@ void RenderGraph::FreeResources()
         }
     }
 
-    if (!hasTransientResources && m_aliasedMemoryHeaps.empty()) {
+    if (!hasTransientResources && m_aliasedMemoryHeaps.empty() && m_framebufferCache.empty()) {
         // No GPU resources to destroy — just clear pass framebuffer references
         for (auto &pass : m_passes) {
             pass.framebuffer = VK_NULL_HANDLE;
@@ -1210,64 +1950,72 @@ void RenderGraph::FreeResources()
         return;
     }
 
-    if (!m_context->IsShuttingDown()) {
-        vkDeviceWaitIdle(device);
-        SDL_PumpEvents();
-    }
-
-    // Framebuffers reference VkImageViews that we are about to destroy.
-    // Cached framebuffers become INVALID when their referenced views are
-    // destroyed (Vulkan spec: "a framebuffer is invalid if one of its
-    // referenced VkImageViews was destroyed").  If the driver recycles
-    // VkImageView handles, a subsequent Compile could return a stale
-    // framebuffer from the cache via hash collision, causing device lost.
-    // Flush the entire framebuffer cache to prevent this.
+    std::vector<VkFramebuffer> framebuffers;
+    framebuffers.reserve(m_framebufferCache.size());
     for (auto &[key, entry] : m_framebufferCache) {
-        if (entry.framebuffer != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(device, entry.framebuffer, nullptr);
-        }
+        if (entry.framebuffer != VK_NULL_HANDLE)
+            framebuffers.push_back(entry.framebuffer);
     }
     m_framebufferCache.clear();
 
-    // Clear pass framebuffer references.
-    for (auto &pass : m_passes) {
+    for (auto &pass : m_passes)
         pass.framebuffer = VK_NULL_HANDLE;
-    }
 
-    // Free allocated transient resources (images/buffers/memory)
+    std::vector<VkImageView> imageViews;
+    std::vector<VkImage> images;
+    std::vector<VkBuffer> buffers;
+    std::unordered_set<VmaAllocation> allocationSet;
     for (auto &resource : m_resources) {
         if (resource.isExternal)
             continue;
 
         if (resource.allocatedView != VK_NULL_HANDLE) {
-            vkDestroyImageView(device, resource.allocatedView, nullptr);
+            imageViews.push_back(resource.allocatedView);
             resource.allocatedView = VK_NULL_HANDLE;
         }
-
         if (resource.allocatedImage != VK_NULL_HANDLE) {
-            vkDestroyImage(device, resource.allocatedImage, nullptr);
+            images.push_back(resource.allocatedImage);
             resource.allocatedImage = VK_NULL_HANDLE;
         }
-
         if (resource.allocatedBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(device, resource.allocatedBuffer, nullptr);
+            buffers.push_back(resource.allocatedBuffer);
             resource.allocatedBuffer = VK_NULL_HANDLE;
         }
-
         if (resource.allocatedMemory != VK_NULL_HANDLE) {
-            vmaFreeMemory(m_context->GetVmaAllocator(), resource.allocatedMemory);
+            allocationSet.insert(resource.allocatedMemory);
             resource.allocatedMemory = VK_NULL_HANDLE;
         }
     }
 
-    // Free aliased memory heaps (not owned by any single resource)
-    VmaAllocator allocator = m_context->GetVmaAllocator();
-    for (VmaAllocation heap : m_aliasedMemoryHeaps) {
-        if (heap != VK_NULL_HANDLE) {
-            vmaFreeMemory(allocator, heap);
-        }
-    }
+    allocationSet.insert(m_aliasedMemoryHeaps.begin(), m_aliasedMemoryHeaps.end());
     m_aliasedMemoryHeaps.clear();
+
+    std::vector<VmaAllocation> allocations(allocationSet.begin(), allocationSet.end());
+    const VmaAllocator allocator = m_context->GetVmaAllocator();
+    auto destroyRetired = [device, allocator, framebuffers = std::move(framebuffers),
+                           imageViews = std::move(imageViews), images = std::move(images), buffers = std::move(buffers),
+                           allocations = std::move(allocations)]() mutable {
+        for (VkFramebuffer framebuffer : framebuffers)
+            vkDestroyFramebuffer(device, framebuffer, nullptr);
+        for (VkImageView view : imageViews)
+            vkDestroyImageView(device, view, nullptr);
+        for (VkImage image : images)
+            vkDestroyImage(device, image, nullptr);
+        for (VkBuffer buffer : buffers)
+            vkDestroyBuffer(device, buffer, nullptr);
+        for (VmaAllocation allocation : allocations)
+            vmaFreeMemory(allocator, allocation);
+    };
+
+    if (m_deletionQueue && !m_context->IsShuttingDown()) {
+        m_deletionQueue->Retire(std::move(destroyRetired));
+    } else {
+        if (!m_context->IsShuttingDown()) {
+            vkDeviceWaitIdle(device);
+            SDL_PumpEvents();
+        }
+        destroyRetired();
+    }
 }
 
 uint64_t RenderGraph::GetTransientResidentBytes() const
@@ -1289,6 +2037,17 @@ uint64_t RenderGraph::GetTransientResidentBytes() const
         bytes += info.size;
     }
     return bytes;
+}
+
+size_t RenderGraph::GetTransientAllocationCount() const
+{
+    std::unordered_set<VmaAllocation> allocations;
+    for (const auto &resource : m_resources) {
+        if (!resource.isExternal && resource.allocatedMemory != VK_NULL_HANDLE)
+            allocations.insert(resource.allocatedMemory);
+    }
+    allocations.insert(m_aliasedMemoryHeaps.begin(), m_aliasedMemoryHeaps.end());
+    return allocations.size();
 }
 
 } // namespace vk

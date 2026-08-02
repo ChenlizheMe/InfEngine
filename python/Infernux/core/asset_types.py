@@ -30,6 +30,74 @@ class TextureType(IntEnum):
     NORMAL_MAP = 1
     UI = 2
     SPRITE = 3
+    DATA = 4
+    VECTOR_FIELD = 5
+    SDF = 6
+
+
+class TextureCompression(IntEnum):
+    NONE = 0
+    AUTO = 1
+    BC1 = 2
+    BC3 = 3
+    BC4 = 4
+    BC5 = 5
+
+    @classmethod
+    def from_string(cls, value: str) -> "TextureCompression":
+        return {
+            "none": cls.NONE,
+            "auto": cls.AUTO,
+            "bc1": cls.BC1,
+            "bc3": cls.BC3,
+            "bc4": cls.BC4,
+            "bc5": cls.BC5,
+        }.get(str(value).lower(), cls.AUTO)
+
+    def to_string(self) -> str:
+        return ("none", "auto", "bc1", "bc3", "bc4", "bc5")[self.value]
+
+
+class TextureCompressionQuality(IntEnum):
+    FAST = 0
+    NORMAL = 1
+    HIGH = 2
+
+    @classmethod
+    def from_string(cls, value: str) -> "TextureCompressionQuality":
+        return {
+            "fast": cls.FAST,
+            "normal": cls.NORMAL,
+            "high": cls.HIGH,
+        }.get(str(value).lower(), cls.NORMAL)
+
+    def to_string(self) -> str:
+        return ("fast", "normal", "high")[self.value]
+
+
+class TextureFormat(IntEnum):
+    AUTO = 0
+    RGBA8 = 1
+    RGBA4444 = 2
+    RGBA16_UNORM = 3
+    RGBA16_FLOAT = 4
+    RGBA32_FLOAT = 5
+
+    @classmethod
+    def from_string(cls, value: str) -> "TextureFormat":
+        return {
+            "auto": cls.AUTO,
+            "rgba8": cls.RGBA8,
+            "rgba4444": cls.RGBA4444,
+            "rgba16_unorm": cls.RGBA16_UNORM,
+            "rgba16_float": cls.RGBA16_FLOAT,
+            "rgba32_float": cls.RGBA32_FLOAT,
+        }.get(str(value).lower(), cls.AUTO)
+
+    def to_string(self) -> str:
+        return (
+            "auto", "rgba8", "rgba4444", "rgba16_unorm", "rgba16_float", "rgba32_float",
+        )[self.value]
 
 
 class WrapMode(IntEnum):
@@ -86,12 +154,22 @@ class SpriteFrame:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "SpriteFrame":
+        expected = {"name", "x", "y", "w", "h", "pivot_x", "pivot_y"}
+        if type(d) is not dict or set(d) != expected:
+            raise ValueError("sprite frame must use the complete current field set")
+        if type(d["name"]) is not str:
+            raise TypeError("sprite frame name must be a string")
+        if any(type(d[field]) is not int for field in ("x", "y", "w", "h")):
+            raise TypeError("sprite frame rectangle must use integers")
+        if d["w"] < 0 or d["h"] < 0:
+            raise ValueError("sprite frame dimensions must be non-negative")
+        pivots = (d["pivot_x"], d["pivot_y"])
+        if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+               for value in pivots):
+            raise TypeError("sprite frame pivots must be finite numbers")
         return cls(
-            name=str(d.get("name", "")),
-            x=int(d.get("x", 0)), y=int(d.get("y", 0)),
-            w=int(d.get("w", 0)), h=int(d.get("h", 0)),
-            pivot_x=float(d.get("pivot_x", 0.5)),
-            pivot_y=float(d.get("pivot_y", 0.5)),
+            name=d["name"], x=d["x"], y=d["y"], w=d["w"], h=d["h"],
+            pivot_x=float(d["pivot_x"]), pivot_y=float(d["pivot_y"]),
         )
 
 
@@ -110,19 +188,25 @@ class TextureImportSettings:
     srgb: bool = True
     max_size: int = 2048
     aniso_level: int = 1
+    format: TextureFormat = TextureFormat.AUTO
+    compression: TextureCompression = TextureCompression.AUTO
+    compression_quality: TextureCompressionQuality = TextureCompressionQuality.NORMAL
     sprite_frames: List[SpriteFrame] = field(default_factory=list)
 
     def _sync_derived_fields(self):
         """Re-derive settings from texture_type. Call after mutating texture_type.
 
         NORMAL_MAP forces sRGB off.
-        SPRITE forces point filtering, clamp wrapping, no mipmaps.
+        UI and SPRITE default to clamp wrapping with no mipmaps; sprites also use point filtering.
         Other modes leave the current values unchanged.
         """
-        if self.texture_type == TextureType.NORMAL_MAP:
+        if self.texture_type in {TextureType.NORMAL_MAP, TextureType.DATA, TextureType.VECTOR_FIELD, TextureType.SDF}:
             self.srgb = False
-        elif self.texture_type == TextureType.SPRITE:
-            self.filter_mode = FilterMode.POINT
+        elif self.texture_type in {TextureType.UI, TextureType.SPRITE}:
+            if self.texture_type == TextureType.SPRITE:
+                self.filter_mode = FilterMode.POINT
+            else:
+                self.filter_mode = FilterMode.BILINEAR
             self.wrap_mode = WrapMode.CLAMP
             self.generate_mipmaps = False
             self.srgb = True
@@ -138,6 +222,9 @@ class TextureImportSettings:
             "srgb": self.srgb,
             "max_size": self.max_size,
             "aniso_level": self.aniso_level,
+            "texture_format": self.format.to_string(),
+            "texture_compression": self.compression.to_string(),
+            "texture_compression_quality": self.compression_quality.to_string(),
         }
         if self.sprite_frames:
             d["sprite_frames"] = [f.to_dict() for f in self.sprite_frames]
@@ -145,28 +232,69 @@ class TextureImportSettings:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "TextureImportSettings":
-        tt_str = d.get("texture_type", "default")
-        tt_map = {"default": TextureType.DEFAULT, "normal_map": TextureType.NORMAL_MAP, "ui": TextureType.UI, "sprite": TextureType.SPRITE}
-        tt = tt_map.get(tt_str, TextureType.DEFAULT)
+        required = {
+            "texture_type", "wrap_mode", "filter_mode", "generate_mipmaps", "srgb",
+            "max_size", "aniso_level", "texture_format", "texture_compression",
+            "texture_compression_quality",
+        }
+        if type(d) is not dict:
+            raise TypeError("texture import settings must be an object")
+        missing = required - set(d)
+        if missing:
+            raise ValueError(f"texture import settings are missing current fields: {sorted(missing)}")
+        string_fields = (
+            "texture_type", "wrap_mode", "filter_mode", "texture_format",
+            "texture_compression", "texture_compression_quality",
+        )
+        if any(type(d[field]) is not str for field in string_fields):
+            raise TypeError("texture import setting enum fields must be strings")
+        if type(d["generate_mipmaps"]) is not bool or type(d["srgb"]) is not bool:
+            raise TypeError("texture import setting flags must be bools")
+        if type(d["max_size"]) is not int or d["max_size"] <= 0:
+            raise ValueError("texture max_size must be a positive integer")
+        if type(d["aniso_level"]) is not int or not 1 <= d["aniso_level"] <= 16:
+            raise ValueError("texture aniso_level must be an integer in [1, 16]")
+        tt_str = d["texture_type"]
+        tt_map = {
+            "default": TextureType.DEFAULT,
+            "normal_map": TextureType.NORMAL_MAP,
+            "ui": TextureType.UI,
+            "sprite": TextureType.SPRITE,
+            "data": TextureType.DATA,
+            "vector_field": TextureType.VECTOR_FIELD,
+            "sdf": TextureType.SDF,
+        }
+        if tt_str not in tt_map:
+            raise ValueError(f"unsupported texture_type: {tt_str}")
+        tt = tt_map[tt_str]
         raw_frames = d.get("sprite_frames", [])
-        # raw_frames may be a JSON string if C++ round-tripped the .meta
-        if isinstance(raw_frames, str):
-            try:
-                import json as _json
-                raw_frames = _json.loads(raw_frames)
-            except Exception:
-                raw_frames = []
+        if type(raw_frames) is not list:
+            raise TypeError("texture sprite_frames must be an array")
         frames = [SpriteFrame.from_dict(f) for f in raw_frames] if raw_frames else []
-        return cls(
+        enum_values = {
+            "wrap_mode": {"repeat", "clamp", "mirror"},
+            "filter_mode": {"point", "linear", "trilinear"},
+            "texture_format": {"auto", "rgba8", "rgba4444", "rgba16_unorm", "rgba16_float", "rgba32_float"},
+            "texture_compression": {"none", "auto", "bc1", "bc3", "bc4", "bc5"},
+            "texture_compression_quality": {"fast", "normal", "high"},
+        }
+        for field_name, allowed in enum_values.items():
+            if d[field_name] not in allowed:
+                raise ValueError(f"unsupported {field_name}: {d[field_name]}")
+        result = cls(
             texture_type=tt,
-            wrap_mode=WrapMode.from_string(d.get("wrap_mode", "repeat")),
-            filter_mode=FilterMode.from_string(d.get("filter_mode", "linear")),
-            generate_mipmaps=bool(d.get("generate_mipmaps", True)),
-            srgb=bool(d.get("srgb", tt != TextureType.NORMAL_MAP)),
-            max_size=int(d.get("max_size", 2048)),
-            aniso_level=int(d.get("aniso_level", 1)),
+            wrap_mode=WrapMode.from_string(d["wrap_mode"]),
+            filter_mode=FilterMode.from_string(d["filter_mode"]),
+            generate_mipmaps=d["generate_mipmaps"], srgb=d["srgb"],
+            max_size=d["max_size"], aniso_level=d["aniso_level"],
+            format=TextureFormat.from_string(d["texture_format"]),
+            compression=TextureCompression.from_string(d["texture_compression"]),
+            compression_quality=TextureCompressionQuality.from_string(d["texture_compression_quality"]),
             sprite_frames=frames,
         )
+        if result.format != TextureFormat.AUTO:
+            result.compression = TextureCompression.NONE
+        return result
 
     def copy(self) -> "TextureImportSettings":
         """Return a deep copy (sprite_frames are duplicated)."""
@@ -178,6 +306,9 @@ class TextureImportSettings:
             srgb=self.srgb,
             max_size=self.max_size,
             aniso_level=self.aniso_level,
+            format=self.format,
+            compression=self.compression,
+            compression_quality=self.compression_quality,
             sprite_frames=[SpriteFrame(**f.__dict__) for f in self.sprite_frames],
         )
 
@@ -191,6 +322,9 @@ class TextureImportSettings:
                 and self.srgb == other.srgb
                 and self.max_size == other.max_size
                 and self.aniso_level == other.aniso_level
+                and self.format == other.format
+                and self.compression == other.compression
+                and self.compression_quality == other.compression_quality
                 and self.sprite_frames == other.sprite_frames)
 
 
@@ -261,14 +395,24 @@ class AudioImportSettings:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "AudioImportSettings":
-        fmt_str = d.get("compression_format", "pcm")
+        required = {"force_mono", "load_in_background", "quality", "compression_format"}
+        if type(d) is not dict or not required.issubset(d):
+            raise ValueError("audio import settings must use the complete current field set")
+        if type(d["force_mono"]) is not bool or type(d["load_in_background"]) is not bool:
+            raise TypeError("audio import setting flags must be bools")
+        quality = d["quality"]
+        if isinstance(quality, bool) or not isinstance(quality, (int, float)) or not math.isfinite(quality):
+            raise TypeError("audio quality must be a finite number")
+        if not 0.0 <= float(quality) <= 1.0:
+            raise ValueError("audio quality must be in [0, 1]")
+        fmt_str = d["compression_format"]
         fmt_map = {"pcm": AudioCompressionFormat.PCM, "vorbis": AudioCompressionFormat.VORBIS,
                     "adpcm": AudioCompressionFormat.ADPCM}
+        if type(fmt_str) is not str or fmt_str not in fmt_map:
+            raise ValueError(f"unsupported audio compression_format: {fmt_str}")
         return cls(
-            force_mono=bool(d.get("force_mono", False)),
-            load_in_background=bool(d.get("load_in_background", False)),
-            quality=float(d.get("quality", 1.0)),
-            compression_format=fmt_map.get(fmt_str, AudioCompressionFormat.PCM),
+            force_mono=d["force_mono"], load_in_background=d["load_in_background"],
+            quality=float(quality), compression_format=fmt_map[fmt_str],
         )
 
     def copy(self) -> "AudioImportSettings":
@@ -295,10 +439,8 @@ class AudioImportSettings:
 def _load_strict_meta_root(meta_path: str) -> Dict[str, Any]:
     with open(meta_path, "r", encoding="utf-8") as f:
         root = json.load(f)
-    if type(root) is not dict or set(root) != {"meta_version", "metadata"}:
-        raise ValueError("meta document must contain exactly meta_version and metadata")
-    if type(root["meta_version"]) is not int or root["meta_version"] != 2:
-        raise ValueError("meta_version must be 2")
+    if type(root) is not dict or set(root) != {"metadata"}:
+        raise ValueError("meta document must contain exactly metadata")
     entries = root["metadata"]
     if type(entries) is not dict:
         raise TypeError("metadata must be an object")
@@ -309,6 +451,8 @@ def _load_strict_meta_root(meta_path: str) -> Dict[str, Any]:
         value = entry["value"]
         if type(tag) is not str:
             raise TypeError(f"metadata type tag must be a string: {key}")
+        if key == "sprite_frames" and tag != "json_array":
+            raise TypeError("metadata sprite_frames must use json_array")
         valid = (
             (tag == "string" and type(value) is str)
             or (tag == "int" and type(value) is int)
@@ -415,23 +559,51 @@ def _python_type_to_meta_tag(value) -> str:
 def read_texture_import_settings(asset_path: str) -> TextureImportSettings:
     """Read texture import settings from the asset's .meta file.
 
-    Missing keys are back-filled with defaults (matching TextureImporter C++ defaults).
+    A missing sidecar uses defaults; an existing sidecar must contain the current fields.
     """
     meta = read_meta_file(asset_path)
-    if meta is None:
-        return TextureImportSettings()
-    return TextureImportSettings.from_dict(meta)
+    settings = TextureImportSettings() if meta is None else TextureImportSettings.from_dict(meta)
+    if os.path.splitext(asset_path)[1].lower() == ".inxvfield":
+        settings.texture_type = TextureType.VECTOR_FIELD
+        settings.srgb = False
+        settings.compression = TextureCompression.NONE
+        if settings.format not in {TextureFormat.RGBA16_FLOAT, TextureFormat.RGBA32_FLOAT}:
+            settings.format = TextureFormat.RGBA16_FLOAT
+    elif os.path.splitext(asset_path)[1].lower() == ".inxsdf":
+        settings.texture_type = TextureType.SDF
+        settings.srgb = False
+        settings.generate_mipmaps = False
+        settings.wrap_mode = WrapMode.CLAMP
+        settings.compression = TextureCompression.NONE
+        if settings.format not in {TextureFormat.RGBA16_FLOAT, TextureFormat.RGBA32_FLOAT}:
+            settings.format = TextureFormat.RGBA16_FLOAT
+    return settings
 
 
 def write_texture_import_settings(asset_path: str, settings: TextureImportSettings) -> bool:
     """Write texture import settings back to the .meta file."""
-    return write_meta_fields(asset_path, settings.to_dict())
+    canonical = settings.copy()
+    if os.path.splitext(asset_path)[1].lower() == ".inxvfield":
+        canonical.texture_type = TextureType.VECTOR_FIELD
+        canonical.srgb = False
+        canonical.compression = TextureCompression.NONE
+        if canonical.format not in {TextureFormat.RGBA16_FLOAT, TextureFormat.RGBA32_FLOAT}:
+            canonical.format = TextureFormat.RGBA16_FLOAT
+    elif os.path.splitext(asset_path)[1].lower() == ".inxsdf":
+        canonical.texture_type = TextureType.SDF
+        canonical.srgb = False
+        canonical.generate_mipmaps = False
+        canonical.wrap_mode = WrapMode.CLAMP
+        canonical.compression = TextureCompression.NONE
+        if canonical.format not in {TextureFormat.RGBA16_FLOAT, TextureFormat.RGBA32_FLOAT}:
+            canonical.format = TextureFormat.RGBA16_FLOAT
+    return write_meta_fields(asset_path, canonical.to_dict())
 
 
 def read_audio_import_settings(asset_path: str) -> AudioImportSettings:
     """Read audio import settings from the asset's .meta file.
 
-    Missing keys are back-filled with defaults (matching AudioImporter C++ defaults).
+    A missing sidecar uses defaults; an existing sidecar must contain the current fields.
     """
     meta = read_meta_file(asset_path)
     if meta is None:
@@ -453,11 +625,10 @@ def write_audio_import_settings(asset_path: str, settings: AudioImportSettings) 
 class MeshImportSettings:
     """Import settings for 3D model assets — stored in .meta alongside the source file."""
 
-    scale_factor: float = 0.01
+    scale_factor: float = 1.0
     generate_normals: bool = True
     generate_tangents: bool = True
-    # Internal compatibility knob: Unity-like default for DCC-authored meshes is
-    # to keep model/textures aligned without requiring per-asset UV flipping.
+    # DCC-authored meshes keep model/textures aligned without per-asset UV flipping.
     flip_uvs: bool = True
     # Unity-style public setting: swap primary/secondary UV channels.
     swap_uv_channels: bool = False
@@ -475,19 +646,22 @@ class MeshImportSettings:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "MeshImportSettings":
-        importer_version = int(d.get("importer_version", 1) or 1)
-        flip_uvs = bool(d.get("flip_uvs", True))
-        # Migration: importer v1 defaulted to false, which breaks many Blender/DCC assets
-        # in our Vulkan path. v2 aligns to Unity-like import expectations.
-        if importer_version < 2:
-            flip_uvs = True
+        required = {
+            "scale_factor", "generate_normals", "generate_tangents", "flip_uvs",
+            "swap_uv_channels", "optimize_mesh",
+        }
+        if type(d) is not dict or not required.issubset(d):
+            raise ValueError("mesh import settings must use the complete current field set")
+        scale = d["scale_factor"]
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0.0:
+            raise ValueError("mesh scale_factor must be a positive finite number")
+        bool_fields = required - {"scale_factor"}
+        if any(type(d[field]) is not bool for field in bool_fields):
+            raise TypeError("mesh import setting flags must be bools")
         return cls(
-            scale_factor=float(d.get("scale_factor", 0.01)),
-            generate_normals=bool(d.get("generate_normals", True)),
-            generate_tangents=bool(d.get("generate_tangents", True)),
-            flip_uvs=flip_uvs,
-            swap_uv_channels=bool(d.get("swap_uv_channels", False)),
-            optimize_mesh=bool(d.get("optimize_mesh", True)),
+            scale_factor=float(scale), generate_normals=d["generate_normals"],
+            generate_tangents=d["generate_tangents"], flip_uvs=d["flip_uvs"],
+            swap_uv_channels=d["swap_uv_channels"], optimize_mesh=d["optimize_mesh"],
         )
 
     def copy(self) -> "MeshImportSettings":
@@ -530,7 +704,8 @@ def write_mesh_import_settings(asset_path: str, settings: MeshImportSettings) ->
 
 # Image extensions supported by InxTextureLoader / stb_image
 IMAGE_EXTENSIONS = frozenset({
-    ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".hdr", ".pic", ".pnm", ".pgm", ".ppm",
+    ".png", ".jpg", ".jpeg", ".jpe", ".bmp", ".tga", ".gif", ".psd", ".hdr", ".pic", ".pnm", ".pgm", ".ppm",
+    ".inxvfield", ".inxsdf",
 })
 
 # Shader extensions supported by ShaderImporter
@@ -541,16 +716,20 @@ SHADER_EXTENSIONS = frozenset({
 # Material extension
 MATERIAL_EXTENSIONS = frozenset({".mat"})
 PHYSIC_MATERIAL_EXTENSIONS = frozenset({".physicmaterial"})
+RENDER_EFFECT_EXTENSIONS = frozenset({".effect", ".effectgroup"})
+PARTICLE_GRAPH_EXTENSIONS = frozenset({".particlegraph"})
 
 # Audio extensions supported by AudioImporter
-AUDIO_EXTENSIONS = frozenset({".wav"})
+AUDIO_EXTENSIONS = frozenset({".wav", ".ogg"})
 
 # Font extensions recognized by the editor asset pipeline.
 FONT_EXTENSIONS = frozenset({".ttf", ".otf"})
 
 # 3D model extensions supported by ModelImporter / MeshLoader
 MESH_EXTENSIONS = frozenset({
-    ".fbx", ".obj", ".gltf", ".glb", ".dae", ".3ds", ".ply", ".stl",
+    ".fbx", ".obj", ".gltf", ".glb", ".dae", ".3ds", ".ply", ".stl", ".x", ".b3d", ".ase", ".blend",
+    ".bvh", ".cob", ".c4d", ".csm", ".dxf", ".hmp", ".ifc", ".iqm", ".irrmesh", ".lwo", ".lws",
+    ".m3d", ".md2", ".md3", ".md4", ".md5mesh", ".mdc", ".mmd", ".ms3d", ".nff", ".off", ".ogex", ".x3d",
 })
 
 # Prefab extension
@@ -565,9 +744,6 @@ ANIMCLIP3D_EXTENSIONS = frozenset({".animclip3d"})
 # Animation state machine extension
 ANIMFSM_EXTENSIONS = frozenset({".animfsm"})
 
-# VFX system authoring asset extension
-VFXSYSTEM_EXTENSIONS = frozenset({".vfxsystem"})
-
 # Transform timeline extension
 ANIMTIMELINE_EXTENSIONS = frozenset({".animtimeline"})
 
@@ -576,12 +752,16 @@ TIMELINEFSM_EXTENSIONS = frozenset({".timelinefsm"})
 
 
 def asset_category_from_extension(ext: str) -> Optional[str]:
-    """Return 'material' | 'texture' | 'shader' | 'audio' | 'font' | 'mesh' | 'prefab' | None for a file extension."""
+    """Return the editor asset category for a file extension."""
     ext = ext.lower()
     if ext in MATERIAL_EXTENSIONS:
         return "material"
     if ext in PHYSIC_MATERIAL_EXTENSIONS:
         return "physic_material"
+    if ext in RENDER_EFFECT_EXTENSIONS:
+        return "render_effect"
+    if ext in PARTICLE_GRAPH_EXTENSIONS:
+        return "particle_graph"
     if ext in IMAGE_EXTENSIONS:
         return "texture"
     if ext in SHADER_EXTENSIONS:
@@ -600,8 +780,6 @@ def asset_category_from_extension(ext: str) -> Optional[str]:
         return "animclip3d"
     if ext in ANIMFSM_EXTENSIONS:
         return "animfsm"
-    if ext in VFXSYSTEM_EXTENSIONS:
-        return "vfxsystem"
     if ext in ANIMTIMELINE_EXTENSIONS:
         return "animtimeline"
     if ext in TIMELINEFSM_EXTENSIONS:

@@ -6,12 +6,12 @@ import json
 
 import pytest
 
-from Infernux.mcp import capabilities, session
+from Infernux.mcp import capabilities, server, session
 from Infernux.mcp import client as client_module
 from Infernux.mcp.client import create_loopback_client
 from Infernux.mcp.threading import MainThreadCommandQueue
 from Infernux.mcp.tools import register_all_tools
-from Infernux.mcp.tools import api, project, runtime
+from Infernux.mcp.tools import api, common, material, project, runtime
 
 
 class _FakeMcp:
@@ -48,6 +48,53 @@ class _AssetDatabase:
         return guid == self.guid
 
 
+class _MaterialPropertyRecorder:
+    def __init__(self) -> None:
+        self.values: dict[str, object] = {}
+
+    def set_float(self, name: str, value: float) -> None:
+        self.values[name] = value
+
+
+class _Vector4:
+    x = 0.25
+    y = 0.5
+    z = 0.75
+    w = 0.125
+
+
+def test_mcp_value_serialization_preserves_vector4_w_component():
+    assert common.serialize_value(_Vector4()) == [0.25, 0.5, 0.75, 0.125]
+
+
+def test_mcp_connection_helpers_report_the_active_bound_endpoint(monkeypatch):
+    monkeypatch.setattr(server, "_active_host", "127.0.0.1")
+    monkeypatch.setattr(server, "_active_port", 9714)
+
+    assert server.endpoint_url() == "http://127.0.0.1:9714/mcp"
+    assert server.health_url() == "http://127.0.0.1:9714/health"
+    assert server.connection_info()["port"] == 9714
+    assert server.endpoint_url(port=9800) == "http://127.0.0.1:9800/mcp"
+
+
+def test_runtime_error_window_ignores_preexisting_errors():
+    old = {"time": "00:00:01", "level": "ERROR", "message": "old"}
+    new = {"time": "00:00:02", "level": "ERROR", "message": "new"}
+
+    assert runtime._new_runtime_errors([old, new], [old]) == [new]
+    assert runtime._new_runtime_errors([old], [old]) == []
+
+
+def test_material_property_writer_rejects_render_state_names():
+    recorder = _MaterialPropertyRecorder()
+
+    with pytest.raises(ValueError, match="render state"):
+        material._set_one(recorder, "blend_enable", 1.0, "float")
+
+    material._set_one(recorder, "emission_strength", 2.0, "float")
+    assert recorder.values == {"emission_strength": 2.0}
+
+
 def _registered_mcp(tmp_path, profile: str) -> _FakeMcp:
     settings = tmp_path / "ProjectSettings"
     settings.mkdir()
@@ -74,15 +121,39 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "mcp_supervisor_shutdown",
         "mcp_attempt_start",
         "mcp_attempt_stop",
+        "editor_save_focused",
+        "editor_save_document",
+        "editor_focus_panel",
         "project_script_write",
+        "project_build_scenes_get",
+        "project_build_scenes_set",
         "public_api_validate_script",
         "scene_new",
         "scene_save",
+        "gameobject_create_from_model",
         "hierarchy_create_object",
         "component_ensure",
         "ui_bind_click",
+        "material_set_render_queue",
+        "material_set_surface_type",
+        "render_effect_create",
+        "asset_create_particle_graph",
+        "particle_graph_inspect_editor",
+        "particle_graph_list_node_types",
+        "particle_graph_set_node_asset",
+        "particle_graph_set_rendering_output",
+        "particle_graph_connect_exec",
+        "particle_graph_disconnect_link",
+        "particle_graph_reload_editor",
+        "scene_pick_request",
+        "scene_pick_status",
+        "runtime_wait",
+        "runtime_run_for",
+        "runtime_read_errors",
     } <= tools
     assert "mcp_report_blocker" not in tools
+    assert "particle_graph_connect_stream" not in tools
+    assert "particle_graph_disconnect_stream" not in tools
     assert "input_key" not in tools
     assert "editor_ui_click" not in tools
 
@@ -98,7 +169,14 @@ def test_global_validation_exposes_blocker_tools_without_script_or_scene_mutatio
         "mcp_report_blocker",
         "project_asset_state",
         "project_wait_for_asset",
+        "project_build_scenes_get",
         "runtime_assert",
+        "particle_system_inspect_runtime",
+        "particle_system_start_emitter",
+        "particle_system_pause_emitter",
+        "particle_system_terminate_emitter",
+        "particle_system_restart_emitter",
+        "particle_system_seek",
         "input_key",
         "input_text",
         "editor_ui_snapshot",
@@ -109,10 +187,13 @@ def test_global_validation_exposes_blocker_tools_without_script_or_scene_mutatio
         "editor_ui_hover",
     } <= tools
     assert "project_script_write" not in tools
+    assert "project_build_scenes_set" not in tools
     assert "release_whl_read_source" not in tools
     assert "scene_new" not in tools
     assert "editor_select" not in tools
     assert "editor_play" not in tools
+    assert "particle_graph_connect_exec" not in tools
+    assert "particle_graph_disconnect_link" not in tools
 
 
 def test_global_validation_discovery_only_describes_registered_tools(tmp_path):
@@ -373,6 +454,50 @@ def test_project_asset_state_settles_directories_without_file_meta_or_guid(tmp_p
     assert state["meta_exists"] is False
     assert state["mapping_consistent"] is False
     assert project._asset_expectation_met(state, True) is True
+
+
+def test_project_build_scenes_set_validates_and_preserves_other_settings(tmp_path, monkeypatch):
+    assets = tmp_path / "Assets" / "Scenes"
+    assets.mkdir(parents=True)
+    start = assets / "Start.scene"
+    gallery = assets / "VFX Gallery.scene"
+    start.write_text("{}", encoding="utf-8")
+    gallery.write_text("{}", encoding="utf-8")
+    settings = tmp_path / "ProjectSettings"
+    settings.mkdir()
+    build_settings = settings / "BuildSettings.json"
+    build_settings.write_text(
+        json.dumps({"game_name": "Gallery", "lto": True, "scenes": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(project, "track_project_path_before_change", lambda *_args, **_kwargs: None)
+
+    result = project._set_build_scenes(
+        str(tmp_path),
+        ["Assets/Scenes/Start.scene", "Assets/Scenes/VFX Gallery.scene"],
+    )
+
+    saved = json.loads(build_settings.read_text(encoding="utf-8"))
+    assert result["scenes"] == [
+        "Assets/Scenes/Start.scene",
+        "Assets/Scenes/VFX Gallery.scene",
+    ]
+    assert result["startup_scene"] == "Assets/Scenes/Start.scene"
+    assert all(entry["exists"] and entry["valid_path"] for entry in result["entries"])
+    assert saved["game_name"] == "Gallery"
+    assert saved["lto"] is True
+    assert saved["scenes"] == [
+        "Assets/Scenes/Start.scene",
+        "Assets/Scenes/VFX Gallery.scene",
+    ]
+
+    with pytest.raises(ValueError, match="Duplicate build scene"):
+        project._set_build_scenes(
+            str(tmp_path),
+            ["Assets/Scenes/Start.scene", "Assets/Scenes/Start.scene"],
+        )
+    with pytest.raises(ValueError, match="must reference a .scene"):
+        project._set_build_scenes(str(tmp_path), ["Assets/Scenes/NotAScene.txt"])
 
 
 def test_asset_identity_uses_samefile_for_alias_paths(tmp_path, monkeypatch):

@@ -19,6 +19,7 @@ namespace infernux
 struct ComponentInfo
 {
     std::string typeName;
+    std::string displayName;
     uint64_t componentId = 0;
     bool enabled = true;
     bool isNative = true;
@@ -226,9 +227,6 @@ class InspectorPanel : public EditorPanel
     std::vector<AddComponentEntry> m_addCompEntries;
     bool m_addCompNeedsFocus = false;
 
-    // ── Idle-skip state ──────────────────────────────────────────────
-    int m_idleFrames = 0;
-
     // ── Timing ───────────────────────────────────────────────────────
     float m_frameTimeNow = 0.0f;
     // ── Split sub-timings (accumulated ms, consumed by profile) ───
@@ -243,6 +241,7 @@ class InspectorPanel : public EditorPanel
     PrefabInfo m_cachedPrefabInfo;
     uint64_t m_cachedComponentListObjId = 0;
     std::vector<ComponentInfo> m_cachedComponents;
+    std::unordered_map<uint64_t, float> m_cachedComponentBodyHeights;
     uint64_t m_cachedValueGeneration = 0;
     float m_cachedValueRefreshTime = 0.0f;
     static constexpr float VALUE_CACHE_TTL = 0.20f;
@@ -273,6 +272,7 @@ class InspectorPanel : public EditorPanel
 
     // ── Cached icon IDs ──────────────────────────────────────────────
     uint64_t m_cachedTransformIconId = 0;
+    float m_cachedTransformBodyHeight = 0.0f;
 
     // ── Render helpers ───────────────────────────────────────────────
     void RenderPropertiesModule(InxGUIContext *ctx, float height);
@@ -296,7 +296,8 @@ class InspectorPanel : public EditorPanel
     std::pair<bool, bool> RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName,
                                                 const std::string &headerId, uint64_t iconId, bool showEnabled,
                                                 bool isEnabled, const std::string &suffix = "", bool defaultOpen = true,
-                                                const std::string &semanticId = "");
+                                                const std::string &semanticId = "",
+                                                const std::string &contextPopupId = "");
 
     bool RenderInspectorCheckbox(InxGUIContext *ctx, const char *label, bool value);
 

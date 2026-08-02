@@ -28,6 +28,7 @@ from Infernux.engine.undo._property_commands import (
     SetPropertyCommand,
     BuiltinPropertyCommand,
     GenericComponentCommand,
+    PythonComponentDocumentCommand,
     MaterialDocumentCommand,
     ResourceDocumentCommand,
     SetMaterialSlotCommand,
@@ -37,6 +38,7 @@ from Infernux.engine.undo._property_commands import (
 from Infernux.engine.undo._structural_commands import (
     CreateGameObjectCommand,
     DeleteGameObjectCommand,
+    DeleteGameObjectsCommand,
     ReparentCommand,
     MoveGameObjectCommand,
     SelectionCommand,
@@ -87,14 +89,8 @@ from Infernux.engine.undo._snapshots import (
 
 # -- RenderStack --
 from Infernux.engine.undo._renderstack import (
-    snapshot_renderstack,
-    restore_renderstack,
     RenderStackFieldCommand,
     RenderStackSetPipelineCommand,
-    RenderStackAddPassCommand,
-    RenderStackMovePassCommand,
-    RenderStackTogglePassCommand,
-    RenderStackRemovePassCommand,
 )
 
 # -- Recreate --
@@ -113,8 +109,8 @@ from Infernux.engine.undo._animfsm_commands import (
 __all__ = [
     "UndoCommand", "CompoundCommand", "LambdaCommand",
     "SetPropertyCommand", "BuiltinPropertyCommand",
-    "GenericComponentCommand", "MaterialDocumentCommand", "ResourceDocumentCommand", "SetMaterialSlotCommand",
-    "CreateGameObjectCommand", "DeleteGameObjectCommand",
+    "GenericComponentCommand", "PythonComponentDocumentCommand", "MaterialDocumentCommand", "ResourceDocumentCommand", "SetMaterialSlotCommand",
+    "CreateGameObjectCommand", "DeleteGameObjectCommand", "DeleteGameObjectsCommand",
     "ReparentCommand", "MoveGameObjectCommand",
     "SelectionCommand", "EditorSelectionCommand", "PrefabModeCommand", "PrefabUnpackCommand",
     "PrefabRevertCommand",
@@ -122,10 +118,7 @@ __all__ = [
     "AddPyComponentCommand", "RemovePyComponentCommand",
     "UndoManager",
     "InspectorSnapshotCommand", "InspectorUndoTracker", "HierarchyUndoTracker",
-    "snapshot_renderstack", "restore_renderstack",
     "RenderStackFieldCommand", "RenderStackSetPipelineCommand",
-    "RenderStackAddPassCommand", "RenderStackMovePassCommand",
-    "RenderStackTogglePassCommand", "RenderStackRemovePassCommand",
     "NodeGraphSnapshotCommand", "record_node_graph_snapshot",
     "AnimFSMSnapshotCommand", "record_animfsm_snapshot",
 ]

@@ -5,6 +5,7 @@
 
 #include "AsyncTransferContext.h"
 #include "VkDeviceContext.h"
+#include "VulkanQueueManager.h"
 #include <core/log/InxLog.h>
 
 namespace infernux
@@ -42,7 +43,8 @@ AsyncTransferContext::~AsyncTransferContext()
 }
 
 bool AsyncTransferContext::Initialize(VkDevice device, uint32_t transferQueueFamily, VkQueue transferQueue,
-                                      bool hasDedicatedTransferQueue, bool enableTimelineSemaphore)
+                                      bool hasDedicatedTransferQueue, bool enableTimelineSemaphore,
+                                      VulkanQueueManager *queueManager, rhi::QueueRole submissionRole)
 {
     if (device == VK_NULL_HANDLE || transferQueue == VK_NULL_HANDLE) {
         INXLOG_ERROR("AsyncTransferContext::Initialize: null device or queue");
@@ -53,6 +55,8 @@ bool AsyncTransferContext::Initialize(VkDevice device, uint32_t transferQueueFam
     m_queue = transferQueue;
     m_queueFamily = transferQueueFamily;
     m_hasDedicatedQueue = hasDedicatedTransferQueue;
+    m_queueManager = queueManager;
+    m_submissionRole = submissionRole;
 
     // Pool flags:
     //   - TRANSIENT_BIT: hint that command buffers are short-lived (driver
@@ -103,6 +107,8 @@ void AsyncTransferContext::Destroy() noexcept
             if (up.fence != VK_NULL_HANDLE) {
                 WaitFence(m_device, up.fence);
             }
+            if (m_queueManager)
+                m_queueManager->MarkCompleted(up.ticket);
         }
         m_inFlight.clear();
 
@@ -133,6 +139,8 @@ void AsyncTransferContext::Destroy() noexcept
     m_queue = VK_NULL_HANDLE;
     m_queueFamily = 0;
     m_hasDedicatedQueue = false;
+    m_queueManager = nullptr;
+    m_submissionRole = rhi::QueueRole::Transfer;
     m_nextTimelineValue.store(1, std::memory_order_relaxed);
 }
 
@@ -240,8 +248,19 @@ void AsyncTransferContext::EndSync(VkCommandBuffer cmd)
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd;
 
-    vkQueueSubmit(m_queue, 1, &submit, fence);
+    const auto ticket = m_queueManager ? m_queueManager->Reserve(m_submissionRole) : rhi::SubmissionTicket{};
+    const VkResult submitResult = m_queueManager ? m_queueManager->SubmitReserved(ticket, submit, fence)
+                                                 : vkQueueSubmit(m_queue, 1, &submit, fence);
+    if (submitResult != VK_SUCCESS) {
+        INXLOG_ERROR("AsyncTransferContext::EndSync: vkQueueSubmit failed");
+        std::lock_guard<std::mutex> guard(m_mutex);
+        m_freeFences.push_back(fence);
+        m_freeCmdBuffers.push_back(cmd);
+        return;
+    }
     WaitFence(m_device, fence);
+    if (m_queueManager)
+        m_queueManager->MarkCompleted(ticket);
 
     std::lock_guard<std::mutex> guard(m_mutex);
     m_freeFences.push_back(fence);
@@ -283,8 +302,17 @@ AsyncSubmissionHandle AsyncTransferContext::EndAsync(VkCommandBuffer cmd)
         submit.pSignalSemaphores = &m_timelineSemaphore;
     }
 
-    if (vkQueueSubmit(m_queue, 1, &submit, fence) != VK_SUCCESS) {
-        INXLOG_ERROR("AsyncTransferContext::EndAsync: vkQueueSubmit failed");
+    const auto ticket = m_queueManager ? m_queueManager->Reserve(m_submissionRole) : rhi::SubmissionTicket{};
+    const VkResult submitResult = m_queueManager ? m_queueManager->SubmitReserved(ticket, submit, fence)
+                                                 : vkQueueSubmit(m_queue, 1, &submit, fence);
+    if (submitResult != VK_SUCCESS) {
+        static int s_asyncSubmitFailLogs = 0;
+        if (s_asyncSubmitFailLogs < 3) {
+            INXLOG_ERROR("AsyncTransferContext::EndAsync: vkQueueSubmit failed");
+        } else if (s_asyncSubmitFailLogs == 3) {
+            INXLOG_ERROR("Further async GPU upload submit failures suppressed (device likely lost)");
+        }
+        ++s_asyncSubmitFailLogs;
         std::lock_guard<std::mutex> guard(m_mutex);
         m_freeFences.push_back(fence);
         m_freeCmdBuffers.push_back(cmd);
@@ -293,9 +321,8 @@ AsyncSubmissionHandle AsyncTransferContext::EndAsync(VkCommandBuffer cmd)
 
     handle.id = m_nextId.fetch_add(1, std::memory_order_relaxed);
     handle.timelineValue = timelineValue;
-
     std::lock_guard<std::mutex> guard(m_mutex);
-    m_inFlight.push_back({handle.id, fence, cmd});
+    m_inFlight.push_back({handle.id, fence, cmd, ticket});
     return handle;
 }
 
@@ -304,6 +331,8 @@ void AsyncTransferContext::ReapCompletedLocked()
     for (auto it = m_inFlight.begin(); it != m_inFlight.end();) {
         VkResult result = vkGetFenceStatus(m_device, it->fence);
         if (result == VK_SUCCESS) {
+            if (m_queueManager)
+                m_queueManager->MarkCompleted(it->ticket);
             m_freeFences.push_back(it->fence);
             m_freeCmdBuffers.push_back(it->cmd);
             it = m_inFlight.erase(it);
@@ -338,6 +367,8 @@ bool AsyncTransferContext::IsComplete(AsyncSubmissionHandle handle)
         if (up.id == handle.id) {
             VkResult result = vkGetFenceStatus(m_device, up.fence);
             if (result == VK_SUCCESS) {
+                if (m_queueManager)
+                    m_queueManager->MarkCompleted(up.ticket);
                 VkFence fence = VK_NULL_HANDLE;
                 VkCommandBuffer cmd = VK_NULL_HANDLE;
                 RetireLocked(handle.id, fence, cmd);
@@ -363,11 +394,13 @@ void AsyncTransferContext::Wait(AsyncSubmissionHandle handle)
     }
 
     VkFence fence = VK_NULL_HANDLE;
+    rhi::SubmissionTicket ticket{};
     {
         std::lock_guard<std::mutex> guard(m_mutex);
         for (const auto &up : m_inFlight) {
             if (up.id == handle.id) {
                 fence = up.fence;
+                ticket = up.ticket;
                 break;
             }
         }
@@ -383,6 +416,8 @@ void AsyncTransferContext::Wait(AsyncSubmissionHandle handle)
     VkFence retiredFence = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     RetireLocked(handle.id, retiredFence, cmd);
+    if (m_queueManager)
+        m_queueManager->MarkCompleted(ticket);
     if (retiredFence != VK_NULL_HANDLE) {
         m_freeFences.push_back(retiredFence);
     }

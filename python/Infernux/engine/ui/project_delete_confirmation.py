@@ -7,6 +7,14 @@ from collections.abc import Callable, Iterable
 from typing import Optional
 
 from Infernux.debug import Debug
+from Infernux.engine.i18n import t
+from Infernux.engine.path_utils import path_key, resolved_path
+from .editor_modal import (
+    EditorModalAction,
+    begin_editor_modal,
+    end_editor_modal,
+    render_editor_modal_actions,
+)
 
 
 class ProjectDeleteConfirmationCoordinator:
@@ -44,8 +52,8 @@ class ProjectDeleteConfirmationCoordinator:
         unique: list[str] = []
         seen: set[str] = set()
         for value in paths:
-            path = os.path.abspath(str(value or ""))
-            key = os.path.normcase(path)
+            path = resolved_path(str(value or ""))
+            key = path_key(path)
             if not value or key in seen or not os.path.exists(path):
                 continue
             seen.add(key)
@@ -62,37 +70,42 @@ class ProjectDeleteConfirmationCoordinator:
         if not self.is_active:
             return
 
-        popup_id = "Delete Assets###project_delete_confirm"
-        if self._requested:
-            ctx.open_popup(popup_id)
-            self._requested = False
-        if not ctx.begin_popup_modal(popup_id, 64):
+        popup_id = f"{t('project.delete_confirm_title')}###project_delete_confirm"
+        request_open = self._requested
+        self._requested = False
+        if not begin_editor_modal(
+            ctx,
+            popup_id=popup_id,
+            title=t("project.delete_confirm_title"),
+            semantic_id="project.delete.dialog",
+            request_open=request_open,
+        ):
             return
 
-        ctx.record_semantic_window("modal", "Delete Assets", "project.delete.dialog")
         if len(self._paths) == 1:
-            ctx.text_wrapped(f"Delete '{os.path.basename(self._paths[0])}' permanently?")
+            message = t("project.delete_confirm_msg").format(
+                name=os.path.basename(self._paths[0])
+            )
         else:
-            ctx.text_wrapped(f"Delete {len(self._paths)} selected assets permanently?")
-        ctx.text_wrapped("This operation cannot be undone.")
+            message = t("project.delete_confirm_multi_msg").format(count=len(self._paths))
+        ctx.text_wrapped(message)
         if self._error:
             ctx.spacing()
-            ctx.text_wrapped(self._error)
-        ctx.spacing()
-        ctx.separator()
-        ctx.spacing()
-
-        ctx.button("Delete##project_delete_confirm", lambda: self._confirm(ctx))
-        ctx.record_semantic_item("button", "Delete", True, "project.delete.confirm")
-        ctx.same_line()
-        ctx.button("Cancel##project_delete_cancel", lambda: self._cancel(ctx))
-        ctx.record_semantic_item("button", "Cancel", True, "project.delete.cancel")
-        ctx.end_popup()
+            ctx.text_wrapped(t(self._error))
+        render_editor_modal_actions(
+            ctx,
+            [
+                EditorModalAction(t("editor.modal.delete"), "confirm", lambda: self._confirm(ctx)),
+                EditorModalAction(t("editor.modal.cancel"), "cancel", lambda: self._cancel(ctx)),
+            ],
+            semantic_prefix="project.delete",
+        )
+        end_editor_modal(ctx)
 
     def _confirm(self, ctx) -> None:
         handler = self._delete_handler
         if handler is None:
-            self._error = "The delete operation is no longer available."
+            self._error = "project.delete_unavailable"
             return
         try:
             deleted = bool(handler(list(self._paths)))
@@ -100,7 +113,7 @@ class ProjectDeleteConfirmationCoordinator:
             Debug.log_error(f"Project asset deletion failed: {exc}")
             deleted = False
         if not deleted:
-            self._error = "One or more assets could not be deleted. Check the Console for details."
+            self._error = "project.delete_failed"
             return
         self._close(ctx)
 

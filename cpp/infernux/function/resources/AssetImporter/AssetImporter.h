@@ -48,7 +48,6 @@ struct ImportArtifact
     {
         RuntimeArtifactKind kind = RuntimeArtifactKind::Primary;
         ResourceType resourceType = ResourceType::DefaultBinary;
-        uint32_t formatVersion = 0;
         std::string bytes;
     };
 
@@ -72,8 +71,9 @@ struct ImportArtifact
  *     asset into an in-memory object (InxMesh, InxTexture, …).
  *     AssetRegistry delegates Load / Reload / ScanDependencies here.
  *
- * Legacy helpers in InxFileLoader/ (InxDefaultTextLoader, etc.) also
- * implement IAssetLoader for generic text/binary files and scripts.
+ * The generic helpers in InxFileLoader/ implement IAssetLoader for
+ * text, binary, and script resources.
+ *
  * ──────────────────────────────────────────────────────────────────
  *
  * Each concrete importer handles one category of resource

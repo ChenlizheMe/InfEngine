@@ -46,11 +46,21 @@ static Collider *GetPrimaryBodyCollider(GameObject *go)
     const uint32_t bodyId = Collider::GetSharedBodyId(go);
     if (bodyId == 0xFFFFFFFF)
         return nullptr;
+    Collider *allocatedBody = nullptr;
     for (const auto &component : go->GetAllComponents()) {
         auto *col = dynamic_cast<Collider *>(component.get());
-        if (col && col->GetBodyId() == bodyId)
+        if (!col || col->GetBodyId() != bodyId)
+            continue;
+        allocatedBody = col;
+        if (col->IsEnabled())
             return col;
     }
+    // A disabled Collider keeps its Jolt body allocation so re-enabling is
+    // cheap, but that body is not resident in the broadphase. Rigidbody
+    // properties must fall back to Transform state until an enabled Collider
+    // makes the shared body operational again.
+    if (allocatedBody)
+        return nullptr;
     throw std::logic_error("Physics actor body exists without an owning collider");
 }
 
@@ -279,6 +289,7 @@ void Rigidbody::SetIsKinematic(bool kinematic)
     bool wasKinematic = d.isKinematic;
     d.isKinematic = kinematic;
     NotifyCollidersBodyTypeChanged();
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 
     // When switching kinematic → dynamic, synchronise interpolation caches
     // from the current Jolt body position.  During kinematic mode neither
@@ -394,6 +405,7 @@ void Rigidbody::SetVelocity(const glm::vec3 &vel)
             data.hasLinearVelocity = false;
         }
     }
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
 
 glm::vec3 Rigidbody::GetAngularVelocity() const
@@ -1055,7 +1067,7 @@ nlohmann::json Rigidbody::SerializeDocument() const
 void Rigidbody::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
-    ValidateComponentDocument(j, "Rigidbody", 1,
+    ValidateComponentDocument(j, "Rigidbody",
                               {"mass", "drag", "angular_drag", "use_gravity", "is_kinematic", "constraints",
                                "collision_detection_mode", "interpolation", "max_angular_velocity",
                                "max_linear_velocity"});

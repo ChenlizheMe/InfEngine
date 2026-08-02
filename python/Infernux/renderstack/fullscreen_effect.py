@@ -209,7 +209,7 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
 
         Returns:
             Shader ids such as
-            ``["bloom_prefilter", "bloom_downsample", ...]``.
+            ``["Bloom Prefilter", "Bloom Downsample", ...]``.
         """
         return []
 
@@ -250,25 +250,31 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
         from Infernux.components.serialized_field import get_serialized_fields, FieldType
 
         fields = get_serialized_fields(self.__class__)
+        if type(params) is not dict:
+            raise TypeError(f"{type(self).__name__} parameters must be an object")
         self._inf_deserializing = True
         try:
             for field_name, value in params.items():
                 meta = fields.get(field_name)
                 if meta is None:
-                    continue
-                try:
-                    if (meta.field_type == FieldType.ENUM
-                            and isinstance(value, dict)
-                            and "__enum_name__" in value):
-                        enum_cls = meta.enum_type
+                    raise ValueError(f"{type(self).__name__} has no parameter '{field_name}'")
+                if meta.field_type == FieldType.ENUM:
+                    enum_cls = meta.enum_type
+                    if enum_cls is None:
+                        raise ValueError(f"{type(self).__name__}.{field_name} has no enum type")
+                    if type(value) is dict and set(value) == {"__enum_name__"}:
                         enum_name = value["__enum_name__"]
-                        if enum_cls is not None and enum_name in enum_cls.__members__:
-                            setattr(self, field_name, enum_cls[enum_name])
-                            continue
-                    setattr(self, field_name, value)
-                except (AttributeError, TypeError, ValueError) as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+                        if type(enum_name) is not str or enum_name not in enum_cls.__members__:
+                            raise ValueError(f"{type(self).__name__}.{field_name} has an unknown enum value")
+                        setattr(self, field_name, enum_cls[enum_name])
+                        continue
+                    try:
+                        enum_value = enum_cls(value)
+                    except (TypeError, ValueError):
+                        raise ValueError(f"{type(self).__name__}.{field_name} has an unknown enum value")
+                    setattr(self, field_name, enum_value)
                     continue
+                setattr(self, field_name, value)
         finally:
             self._inf_deserializing = False
 

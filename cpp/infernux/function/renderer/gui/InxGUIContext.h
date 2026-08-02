@@ -45,6 +45,9 @@ struct PropertyDesc
     std::string sVal;             // String value
     float rangeMin = -1e6f;
     float rangeMax = 1e6f;
+    int intRangeMin = 0;
+    int intRangeMax = 0;
+    bool hasRange = false;
     float speed = 0.1f;
     bool slider = false;
     bool multiline = false;
@@ -66,9 +69,31 @@ struct PropertyChange
     std::string sVal;
 };
 
+struct ObjectFieldInteraction
+{
+    int index = -1;
+    uint32_t flags = 0;
+    bool popupOpen = false;
+    std::string payloadType;
+    std::string payload;
+};
+
 struct PropertyBatchPlan
 {
     std::vector<PropertyDesc> descriptors;
+};
+
+struct MaterialTopInteraction
+{
+    uint32_t vertexFlags = 0;
+    bool vertexPickerOpen = false;
+    std::string vertexPayload;
+    bool vertexListPopupOpen = false;
+    uint32_t fragmentFlags = 0;
+    bool fragmentPickerOpen = false;
+    std::string fragmentPayload;
+    bool fragmentListPopupOpen = false;
+    std::vector<PropertyChange> surfaceChanges;
 };
 
 class InxGUIContext
@@ -77,6 +102,11 @@ class InxGUIContext
     /* DPI scale — set by InxGUI::Init, read by Python/UI code */
     static float s_dpiScale;
     float GetDpiScale() const;
+
+    /// True only while ImGui is inside a frame with an active window.
+    /// Native batch renderers use this to avoid entering widgets from
+    /// selection/change callbacks that can run between panel renders.
+    [[nodiscard]] bool CanRenderWidgets() const;
     /* basic text & labels */
     void Label(const std::string &text);
     void TextWrapped(const std::string &text);
@@ -89,10 +119,12 @@ class InxGUIContext
 
     /* value editors */
     void Checkbox(const std::string &label, bool *value);
+    /// Inspector checkbox: square at ``INSPECTOR_CHECKBOX_BOX_SCALE``, label at normal font size.
+    bool CheckboxInspector(const std::string &label, bool *value);
     void IntSlider(const std::string &label, int *value, int min, int max);
     void FloatSlider(const std::string &label, float *value, float min, float max);
     bool DragFloat(const std::string &label, float *value, float speed = 1.0f, float min = 0.0f, float max = 0.0f,
-                   const char *fmt = "%.3f", float power = 1.0f);
+                   const char *fmt = "%.3f", float power = 1.0f, const std::string &semanticId = "");
     bool DragInt(const std::string &label, int *value, float speed = 1.0f, int min = 0, int max = 0,
                  const char *fmt = "%d");
 
@@ -100,10 +132,14 @@ class InxGUIContext
     void TextArea(const std::string &label, char *buffer, size_t bufferSize);
     bool InputTextWithHint(const std::string &label, const std::string &hint, char *buffer, size_t bufferSize,
                            int flags = 0);
-    bool InputInt(const std::string &label, int *value, int step = 1, int stepFast = 100, int flags = 0);
-    bool InputFloat(const std::string &label, float *value, float step = 0.0f, float stepFast = 0.0f, int flags = 0);
+    bool InputInt(const std::string &label, int *value, int step = 1, int stepFast = 100, int flags = 0,
+                  const std::string &semanticId = "");
+    bool InputUInt(const std::string &label, uint32_t *value, uint32_t step = 1, uint32_t stepFast = 100, int flags = 0,
+                   const std::string &semanticId = "");
+    bool InputFloat(const std::string &label, float *value, float step = 0.0f, float stepFast = 0.0f, int flags = 0,
+                    const std::string &semanticId = "");
 
-    void ColorEdit(const std::string &label, float color[4]);
+    void ColorEdit(const std::string &label, float color[4], bool hdr = false);
     bool ColorPicker(const std::string &label, float color[4], int flags = 0);
     void Vector2Control(const std::string &label, float value[2], float speed = 0.1f, float labelWidth = 0.0f,
                         const std::string &axisSemanticBase = "");
@@ -132,6 +168,8 @@ class InxGUIContext
     void SetScrollHereY(float centerYRatio = 0.5f);
     float GetScrollY();
     float GetScrollMaxY();
+    void SetScrollX(float scrollX);
+    void SetScrollY(float scrollY);
     void Separator();
     void Spacing();
     void Dummy(float width, float height);
@@ -144,6 +182,12 @@ class InxGUIContext
     void SetNextItemOpen(bool is_open, int cond = 0);
     void SetNextItemAllowOverlap();
     bool CollapsingHeader(const std::string &label);
+    bool RenderCompactSectionHeader(const std::string &label, uint64_t iconId, bool defaultOpen, int openCondition,
+                                    bool allowOverlap, float framePadX, float framePadY, float itemSpacingX,
+                                    float itemSpacingY, float borderSize, bool zeroIndent, float fontScale,
+                                    float rightMargin, float iconSize, const std::array<float, 4> &headerColor,
+                                    const std::array<float, 4> &hoverColor, const std::array<float, 4> &activeColor,
+                                    bool useTextColor, const std::array<float, 4> &textColor);
     bool IsItemClicked(int mouseButton = 0);
 
     /* tab bars */
@@ -155,13 +199,13 @@ class InxGUIContext
     /* main-menu / menus */
     bool BeginMainMenuBar();
     void EndMainMenuBar();
-    bool BeginMenu(const std::string &label, bool enabled = true);
+    bool BeginMenu(const std::string &label, bool enabled = true, const std::string &semanticId = "");
     void EndMenu();
     bool MenuItem(const std::string &label, const std::string &shortcut = "", bool selected = false,
                   bool enabled = true);
 
     /* child regions & windows */
-    bool BeginChild(const std::string &id, float width = 0.0f, float height = 0.0f, bool border = false);
+    bool BeginChild(const std::string &id, float width = 0.0f, float height = 0.0f, bool border = false, int flags = 0);
     void EndChild();
 
     /* pop-ups & tooltips */
@@ -209,6 +253,9 @@ class InxGUIContext
     float GetContentRegionAvailHeight();
     float GetCursorPosX();
     float GetCursorPosY();
+    /// Return whether the vertical region at the current cursor intersects
+    /// the current window clip rectangle.
+    bool IsVirtualizedRegionVisible(float height);
     void SetCursorPosX(float x);
     void SetCursorPosY(float y);
     float GetWindowPosX();
@@ -266,6 +313,7 @@ class InxGUIContext
     bool SetDragDropPayload(const std::string &type, const std::string &data);
     void EndDragDropSource();
     bool BeginDragDropTarget();
+    bool BeginDragDropTargetRect(float minX, float minY, float maxX, float maxY, const std::string &targetId);
     bool AcceptDragDropPayload(const std::string &type, uint64_t *outData);
     bool AcceptDragDropPayload(const std::string &type, std::string *outData);
     /// Accept whichever payload is being dragged (uses current ImGui payload ``DataType``).
@@ -314,8 +362,9 @@ class InxGUIContext
     void SetClipboardText(const std::string &text);
     std::string GetClipboardText();
 
-    /* multiline text input (read-only) */
-    void InputTextMultiline(const std::string &label, const std::string &text, float width, float height, int flags);
+    /* editable multiline text input */
+    std::string InputTextMultiline(const std::string &label, const std::string &text, size_t bufferSize, float width,
+                                   float height, int flags);
 
     /* font scale (affects all subsequent ImGui text in the current window) */
     void SetWindowFontScale(float scale);
@@ -363,6 +412,20 @@ class InxGUIContext
     uint32_t RenderObjectFieldChrome(const std::string &fieldId, const std::string &displayText,
                                      const std::string &typeHint, bool selected, bool clickable, bool hasPicker,
                                      uint64_t pickerTextureId, const std::string &semanticId = "");
+    std::vector<ObjectFieldInteraction> RenderMeshRendererInspectorFields(const std::string &meshFieldId,
+                                                                          const std::string &meshLabel,
+                                                                          const std::string &meshDisplay,
+                                                                          const std::vector<std::string> &slotLabels,
+                                                                          const std::vector<std::string> &slotDisplays,
+                                                                          uint64_t pickerTextureId, float labelWidth);
+    MaterialTopInteraction RenderMaterialTop(const std::string &shaderSectionLabel, const std::string &vertexLabel,
+                                             const std::string &vertexDisplay, const std::string &fragmentLabel,
+                                             const std::string &fragmentDisplay, float shaderLabelWidth,
+                                             const std::string &surfaceSectionLabel,
+                                             const PropertyBatchPlan *surfacePlan, float surfaceLabelWidth,
+                                             uint64_t pickerTextureId, uint64_t previewTextureId,
+                                             const std::string &previewUnavailableLabel, bool defaultOpen,
+                                             bool readOnly);
 
   private:
     struct SearchableComboState

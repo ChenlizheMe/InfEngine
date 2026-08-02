@@ -95,7 +95,7 @@ class TestPrefabRef:
     def test_name_uses_prefab_root_object_name(self, monkeypatch, tmp_path):
         prefab_path = tmp_path / "enemy.prefab"
         prefab_path.write_text(
-            json.dumps({"prefab_version": 1, "root_object": {"name": "EnemyRoot"}}),
+            json.dumps({"root_object": {"name": "EnemyRoot"}}),
             encoding="utf-8",
         )
         fake_db = _FakeAssetDatabase(str(prefab_path))
@@ -112,7 +112,7 @@ class TestPrefabRef:
     def test_name_tracks_prefab_rename_and_root_name_change(self, monkeypatch, tmp_path):
         old_path = tmp_path / "enemy.prefab"
         old_path.write_text(
-            json.dumps({"prefab_version": 1, "root_object": {"name": "EnemyRoot"}}),
+            json.dumps({"root_object": {"name": "EnemyRoot"}}),
             encoding="utf-8",
         )
         fake_db = _FakeAssetDatabase(str(old_path))
@@ -127,7 +127,7 @@ class TestPrefabRef:
         new_path = tmp_path / "boss.prefab"
         old_path.rename(new_path)
         new_path.write_text(
-            json.dumps({"prefab_version": 1, "root_object": {"name": "BossRoot"}}),
+            json.dumps({"root_object": {"name": "BossRoot"}}),
             encoding="utf-8",
         )
         fake_db.path = str(new_path)
@@ -183,7 +183,6 @@ class TestComponentRef:
         ref = ComponentRef(go_id=42, component_type="Rigidbody")
         data = ref._serialize()
         assert data["$type"] == "component_ref"
-        assert data["$version"] == 1
 
         restored = ComponentRef._from_dict(data)
         assert restored.go_id == 42

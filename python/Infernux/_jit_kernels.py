@@ -16,6 +16,7 @@ import inspect
 import os
 import sys as _sys
 import textwrap
+from Infernux.engine.path_utils import path_key
 import types
 from time import perf_counter
 
@@ -298,7 +299,7 @@ def _auto_parallel_sidecar_candidates(fn):
     for path in raw_paths:
         if not path:
             continue
-        norm = os.path.normcase(os.path.normpath(path))
+        norm = path_key(path)
         # Strip .pyc/.py so the same base path doesn't yield duplicate sidecars
         if norm.endswith(".pyc"):
             base_norm = norm[:-4]

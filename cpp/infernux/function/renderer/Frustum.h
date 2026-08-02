@@ -2,6 +2,7 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <limits>
 
 namespace infernux
 {
@@ -188,11 +189,11 @@ class Frustum
         m_planes[Top].normal.z = viewProj[2][3] - viewProj[2][1];
         m_planes[Top].distance = viewProj[3][3] - viewProj[3][1];
 
-        // Near plane: row3 + row2
-        m_planes[Near].normal.x = viewProj[0][3] + viewProj[0][2];
-        m_planes[Near].normal.y = viewProj[1][3] + viewProj[1][2];
-        m_planes[Near].normal.z = viewProj[2][3] + viewProj[2][2];
-        m_planes[Near].distance = viewProj[3][3] + viewProj[3][2];
+        // Zero-to-one clip depth: near is row2 (z >= 0), not row3 + row2.
+        m_planes[Near].normal.x = viewProj[0][2];
+        m_planes[Near].normal.y = viewProj[1][2];
+        m_planes[Near].normal.z = viewProj[2][2];
+        m_planes[Near].distance = viewProj[3][2];
 
         // Far plane: row3 - row2
         m_planes[Far].normal.x = viewProj[0][3] - viewProj[0][2];
@@ -230,9 +231,16 @@ class Frustum
 
     /// @brief Test if an AABB intersects or is inside the frustum
     /// Uses the "positive vertex" optimization
-    [[nodiscard]] bool IntersectsAABB(const AABB &aabb) const
+    /// @param ignoreNearPlane Skip the near-plane test. Directional shadow
+    /// cascades pancake casters between the light and the cascade volume in
+    /// the vertex shader, so casters beyond the near plane must survive
+    /// CPU culling to still stamp their shadow into the map.
+    [[nodiscard]] bool IntersectsAABB(const AABB &aabb, bool ignoreNearPlane = false) const
     {
-        for (const auto &plane : m_planes) {
+        for (int index = 0; index < PlaneIndex::Count; ++index) {
+            if (ignoreNearPlane && index == Near)
+                continue;
+            const Plane &plane = m_planes[index];
             // Find the "positive vertex" - the corner farthest along the plane normal
             glm::vec3 pVertex;
             pVertex.x = (plane.normal.x >= 0.0f) ? aabb.max.x : aabb.min.x;

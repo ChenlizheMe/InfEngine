@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Optional
 
 from Infernux.engine.i18n import t
-from .theme import Theme
+from .editor_modal import (
+    EditorModalAction,
+    begin_editor_modal,
+    end_editor_modal,
+    render_editor_modal_actions,
+)
 
 
 def render_unsaved_changes_dialog(
@@ -19,32 +24,22 @@ def render_unsaved_changes_dialog(
     request_open: bool = False,
 ) -> Optional[str]:
     """Render the standard unsaved-document modal and return a chosen action."""
-    if request_open:
-        ctx.open_popup(popup_id)
-
-    viewport_x, viewport_y, viewport_w, viewport_h = ctx.get_main_viewport_bounds()
-    ctx.set_next_window_pos(
-        viewport_x + viewport_w * 0.5,
-        viewport_y + viewport_h * 0.5,
-        Theme.COND_ALWAYS,
-        0.5,
-        0.5,
-    )
-    if not ctx.begin_popup_modal(popup_id, 64):
+    dialog_title = t("editor.unsaved.title")
+    if not begin_editor_modal(
+        ctx,
+        popup_id=popup_id,
+        title=dialog_title,
+        semantic_id=f"{semantic_prefix}.dialog",
+        request_open=request_open,
+    ):
         return None
 
-    dialog_title = t("editor.unsaved.title")
-    ctx.record_semantic_window("modal", dialog_title, f"{semantic_prefix}.dialog")
-    ctx.label(t("editor.unsaved.message").format(document=document_title))
+    ctx.text_wrapped(t("editor.unsaved.message").format(document=document_title))
     question_key = "editor.unsaved.before_exit" if action == "exit" else "editor.unsaved.before_close"
-    ctx.label(t(question_key))
+    ctx.text_wrapped(t(question_key))
     if error:
         ctx.spacing()
         ctx.text_wrapped(error)
-    ctx.spacing()
-    ctx.separator()
-    ctx.spacing()
-
     selected: Optional[str] = None
 
     def _choose(value: str) -> None:
@@ -55,14 +50,14 @@ def render_unsaved_changes_dialog(
     save_label = t("editor.unsaved.save")
     discard_label = t("editor.unsaved.dont_save")
     cancel_label = t("editor.unsaved.cancel")
-    suffix = semantic_prefix.replace(".", "_")
-    ctx.button(f"{save_label}##{suffix}_save", lambda: _choose("save"))
-    ctx.record_semantic_item("button", save_label, True, f"{semantic_prefix}.save")
-    ctx.same_line()
-    ctx.button(f"{discard_label}##{suffix}_discard", lambda: _choose("discard"))
-    ctx.record_semantic_item("button", discard_label, True, f"{semantic_prefix}.discard")
-    ctx.same_line()
-    ctx.button(f"{cancel_label}##{suffix}_cancel", lambda: _choose("cancel"))
-    ctx.record_semantic_item("button", cancel_label, True, f"{semantic_prefix}.cancel")
-    ctx.end_popup()
+    render_editor_modal_actions(
+        ctx,
+        [
+            EditorModalAction(save_label, "save", lambda: _choose("save")),
+            EditorModalAction(discard_label, "discard", lambda: _choose("discard")),
+            EditorModalAction(cancel_label, "cancel", lambda: _choose("cancel")),
+        ],
+        semantic_prefix=semantic_prefix,
+    )
+    end_editor_modal(ctx)
     return selected

@@ -5,19 +5,19 @@ transform over time.  This is the 0.2.1 "most basic" timeline: ONE track of
 transform keyframes (position / euler-rotation / scale), each keyframe carrying
 the transition curve used to interpolate *into* it from the previous keyframe.
 
-The asset mirrors :class:`AnimationClip3D` conventions: plain JSON on disk,
-``schema_version`` for migrations, identity by the ``.animtimeline`` extension.
+The asset mirrors :class:`AnimationClip3D` conventions: strict plain JSON on
+disk using the ``.animtimeline`` extension.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 Vec3 = List[float]
-
 # Interpolation modes describing the transition from the PREVIOUS keyframe INTO
 # this keyframe.
 INTERP_CONSTANT = "constant"
@@ -95,13 +95,15 @@ def sample_sorted_keys(keys: List["TimelineKeyframe"], t: float) -> Optional[Tup
     return (list(k.position), list(k.rotation), list(k.scale))
 
 
-def _vec3(v, default: Vec3) -> Vec3:
-    try:
-        if isinstance(v, (list, tuple)) and len(v) >= 3:
-            return [float(v[0]), float(v[1]), float(v[2])]
-    except (TypeError, ValueError):
-        pass
-    return list(default)
+def _vec3(v, location: str) -> Vec3:
+    if type(v) is not list or len(v) != 3:
+        raise TypeError(f"{location} must be an array of three finite numbers")
+    if any(not isinstance(item, (int, float)) or isinstance(item, bool) for item in v):
+        raise TypeError(f"{location} must be an array of three finite numbers")
+    result = [float(item) for item in v]
+    if not all(math.isfinite(item) for item in result):
+        raise ValueError(f"{location} must contain finite numbers")
+    return result
 
 
 @dataclass
@@ -126,14 +128,26 @@ class TimelineKeyframe:
 
     @classmethod
     def from_dict(cls, d: dict) -> "TimelineKeyframe":
-        interp = str(d.get("interp", INTERP_LINEAR))
+        expected = {"time", "position", "rotation", "scale", "interp"}
+        if type(d) is not dict or set(d) != expected:
+            actual = set(d) if type(d) is dict else set()
+            raise ValueError(
+                f"timeline keyframe fields mismatch; "
+                f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
+            )
+        if not isinstance(d["time"], (int, float)) or isinstance(d["time"], bool):
+            raise TypeError("timeline keyframe time must be numeric")
+        time = float(d["time"])
+        if not math.isfinite(time):
+            raise ValueError("timeline keyframe time must be finite")
+        interp = d["interp"]
         if interp not in INTERP_MODES:
-            interp = INTERP_LINEAR
+            raise ValueError(f"unsupported timeline interpolation mode: {interp!r}")
         return cls(
-            time=float(d.get("time", 0.0)),
-            position=_vec3(d.get("position"), [0.0, 0.0, 0.0]),
-            rotation=_vec3(d.get("rotation"), [0.0, 0.0, 0.0]),
-            scale=_vec3(d.get("scale"), [1.0, 1.0, 1.0]),
+            time=time,
+            position=_vec3(d["position"], "timeline keyframe position"),
+            rotation=_vec3(d["rotation"], "timeline keyframe rotation"),
+            scale=_vec3(d["scale"], "timeline keyframe scale"),
             interp=interp,
         )
 
@@ -147,7 +161,6 @@ class AnimationTimeline:
     absolute application of the sampled transform.
     """
 
-    schema_version: int = 1
     name: str = ""
     duration: float = 2.0
     apply_mode: str = APPLY_ADDITIVE
@@ -172,7 +185,6 @@ class AnimationTimeline:
     # ── Serialization ──────────────────────────────────────────────────
     def to_dict(self) -> dict:
         return {
-            "schema_version": int(self.schema_version),
             "name": self.name,
             "duration": float(self.duration),
             "apply_mode": self.apply_mode,
@@ -181,14 +193,29 @@ class AnimationTimeline:
 
     @classmethod
     def from_dict(cls, d: dict) -> "AnimationTimeline":
-        keys = [TimelineKeyframe.from_dict(k) for k in d.get("keyframes", []) if isinstance(k, dict)]
-        mode = str(d.get("apply_mode", APPLY_ADDITIVE))
+        expected = {"name", "duration", "apply_mode", "keyframes"}
+        if type(d) is not dict or set(d) != expected:
+            actual = set(d) if type(d) is dict else set()
+            raise ValueError(
+                f"animation timeline fields mismatch; "
+                f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
+            )
+        if type(d["name"]) is not str:
+            raise TypeError("animation timeline name must be a string")
+        if not isinstance(d["duration"], (int, float)) or isinstance(d["duration"], bool):
+            raise TypeError("animation timeline duration must be numeric")
+        duration = float(d["duration"])
+        if not math.isfinite(duration) or duration < 0.0:
+            raise ValueError("animation timeline duration must be finite and non-negative")
+        mode = d["apply_mode"]
         if mode not in APPLY_MODES:
-            mode = APPLY_ADDITIVE
+            raise ValueError(f"unsupported animation timeline apply_mode: {mode!r}")
+        if type(d["keyframes"]) is not list:
+            raise TypeError("animation timeline keyframes must be an array")
+        keys = [TimelineKeyframe.from_dict(k) for k in d["keyframes"]]
         return cls(
-            schema_version=int(d.get("schema_version", 1)),
-            name=str(d.get("name", "")),
-            duration=float(d.get("duration", 2.0)),
+            name=d["name"],
+            duration=duration,
             apply_mode=mode,
             keyframes=keys,
         )

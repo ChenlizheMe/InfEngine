@@ -17,6 +17,8 @@ import re
 import subprocess
 import sys
 
+from Infernux.engine.path_utils import resolved_path
+
 _log = logging.getLogger("Infernux.project_requirements")
 _CHECK_ENV = "_INFERNUX_PROJECT_REQS_CHECKED"
 
@@ -34,7 +36,7 @@ def _bundled_requirements_path() -> str:
     """Return the path to the default requirements.txt shipped inside the engine wheel."""
     # Resolve relative to this file's package location to avoid triggering
     # the full Infernux import chain (which needs the native C++ module).
-    _engine_dir = os.path.dirname(os.path.abspath(__file__))
+    _engine_dir = os.path.dirname(resolved_path(__file__))
     _infernux_dir = os.path.dirname(_engine_dir)
     return os.path.join(_infernux_dir, "resources", "supports", "requirements.txt")
 

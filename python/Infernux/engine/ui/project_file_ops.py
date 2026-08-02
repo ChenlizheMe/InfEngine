@@ -7,9 +7,17 @@ depend on ``ProjectPanel`` internals.
 
 import json
 import os
+import re
 import shutil
 
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import (
+    is_path_within,
+    path_key,
+    relative_path,
+    resolved_path,
+    same_path,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -18,6 +26,7 @@ from Infernux.debug import Debug
 
 SCRIPT_TEMPLATE = '''
 from Infernux import *
+from Infernux.components import *
 
 
 class {class_name}(InxComponent):
@@ -33,15 +42,23 @@ class {class_name}(InxComponent):
 
 VERTEX_SHADER_TEMPLATE = '''#version 450
 
-@shader_id: {shader_id}
+ShaderInfo {{
+    Name "{shader_id}"
+}}
 '''
 
 FRAGMENT_SHADER_TEMPLATE = '''#version 450
 
-@shader_id: {shader_id}
-@shading_model: unlit
-@property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
-@property: texSampler, Texture2D, white
+ShaderInfo {{
+    Name "{shader_id}"
+    ShadingModel "Unlit"
+    Surface Opaque
+    Queue 2000
+    Properties {{
+        Color baseColor = [1.0, 1.0, 1.0, 1.0]
+        Texture2D texSampler = white
+    }}
+}}
 
 void surface(out SurfaceData s) {{
     s = InitSurfaceData();
@@ -52,19 +69,25 @@ void surface(out SurfaceData s) {{
 '''
 
 SCENE_TEMPLATE = '''{{
-  "schema_version": 2,
   "name": "{scene_name}",
   "isPlaying": false,
   "objects": []
 }}
 '''
 MATERIAL_TEMPLATE = '''{{
-  "material_version": 3,
   "name": "{material_name}",
   "builtin": false,
   "shaders": {{
-    "vertex": "standard",
-    "fragment": "unlit"
+    "vertex": {{
+      "guid": "",
+      "shader_id": "Standard",
+      "path_hint": ""
+    }},
+    "fragment": {{
+      "guid": "",
+      "shader_id": "Unlit",
+      "path_hint": ""
+    }}
   }},
   "renderState": {{
     "cullMode": 1,
@@ -101,7 +124,6 @@ MATERIAL_TEMPLATE = '''{{
 '''
 
 PHYSIC_MATERIAL_TEMPLATE = '''{
-  "schema_version": 1,
   "friction": 0.4,
   "bounciness": 0.0,
   "friction_combine": 0,
@@ -119,14 +141,13 @@ ANIMCLIP_TEMPLATE = '''{
 '''
 
 ANIMCLIP3D_TEMPLATE = '''{
-  "schema_version": 1,
   "name": "{clip_name}",
   "source_model_guid": "",
   "source_model_path": "",
   "take_name": "",
   "bind_pose_bone_names": [],
-  "speed": 1.0,
-  "loop": true
+  "duration_hint": 0.0,
+  "events": []
 }
 '''
 
@@ -139,32 +160,7 @@ ANIMFSM_TEMPLATE = '''{
 }
 '''
 
-VFXSYSTEM_TEMPLATE = '''{
-  "$format": "infernux.vfx_system",
-  "$version": 1,
-  "name": "{system_name}",
-  "emitters": [
-    {
-      "name": "Emitter",
-      "capacity": 1000,
-      "graph": {
-        "nodes": [],
-        "links": []
-      },
-      "renderer": {
-        "mode": "billboard",
-        "material": "",
-        "blend": "alpha"
-      },
-      "attributes": []
-    }
-  ],
-  "parameters": []
-}
-'''
-
 ANIMTIMELINE_TEMPLATE = '''{
-  "schema_version": 1,
   "name": "{timeline_name}",
   "duration": 2.0,
   "apply_mode": "additive",
@@ -213,22 +209,10 @@ def get_unique_name(current_path: str, base_name: str, extension: str = "") -> s
     return f"{base_name}{counter}"
 
 
-def _normalize_path(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path))
-
-
-def _is_path_within(path: str, parent_path: str) -> bool:
-    try:
-        return os.path.commonpath([_normalize_path(path), _normalize_path(parent_path)]) == _normalize_path(parent_path)
-    except ValueError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return False
-
-
 def _iter_asset_move_pairs(old_path: str, new_path: str):
     if os.path.isdir(old_path):
         for dirpath, _dirnames, filenames in os.walk(old_path):
-            rel_dir = os.path.relpath(dirpath, old_path)
+            rel_dir = relative_path(dirpath, old_path, allow_root=True)
             mapped_dir = new_path if rel_dir == "." else os.path.join(new_path, rel_dir)
             for filename in filenames:
                 yield os.path.join(dirpath, filename), os.path.join(mapped_dir, filename)
@@ -242,11 +226,11 @@ def _update_build_settings_scene_path(old_path: str, new_path: str):
         from .build_settings_panel import load_build_settings, save_build_settings
         settings = load_build_settings()
         scenes = settings.get("scenes", [])
-        old_norm = os.path.normcase(os.path.abspath(old_path))
+        old_norm = path_key(old_path)
         changed = False
         for i, s in enumerate(scenes):
-            if os.path.normcase(os.path.abspath(s)) == old_norm:
-                scenes[i] = os.path.abspath(new_path)
+            if path_key(s) == old_norm:
+                scenes[i] = resolved_path(new_path)
                 changed = True
         if changed:
             settings["scenes"] = scenes
@@ -274,12 +258,12 @@ def move_path(old_path: str, new_path: str, asset_database=None):
     if not old_path or not new_path or not os.path.exists(old_path):
         return None
 
-    old_abs = os.path.abspath(old_path)
-    new_abs = os.path.abspath(new_path)
-    if _normalize_path(old_abs) == _normalize_path(new_abs):
+    old_abs = resolved_path(old_path)
+    new_abs = resolved_path(new_path)
+    if same_path(old_abs, new_abs):
         return new_abs
 
-    if os.path.isdir(old_abs) and _is_path_within(new_abs, old_abs):
+    if os.path.isdir(old_abs) and is_path_within(new_abs, old_abs):
         return None
 
     move_pairs = list(_iter_asset_move_pairs(old_abs, new_abs))
@@ -300,12 +284,12 @@ def move_item_to_directory(item_path: str, dest_dir: str, asset_database=None):
     if not item_path or not dest_dir or not os.path.exists(item_path) or not os.path.isdir(dest_dir):
         return None
 
-    item_abs = os.path.abspath(item_path)
-    dest_abs = os.path.abspath(dest_dir)
+    item_abs = resolved_path(item_path)
+    dest_abs = resolved_path(dest_dir)
 
     name = os.path.basename(item_abs)
     new_path = os.path.join(dest_abs, name)
-    if os.path.exists(new_path) and _normalize_path(new_path) != _normalize_path(item_abs):
+    if os.path.exists(new_path) and not same_path(new_path, item_abs):
         base, ext = os.path.splitext(name)
         if os.path.isdir(item_abs):
             base = name
@@ -314,6 +298,84 @@ def move_item_to_directory(item_path: str, dest_dir: str, asset_database=None):
         new_path = os.path.join(dest_abs, unique_name + ext)
 
     return move_path(item_abs, new_path, asset_database)
+
+
+def _copy_file_as_new_asset(source: str, destination: str) -> None:
+    """Copy one source file while regenerating asset-owned identities."""
+    if source.lower().endswith(".particlegraph"):
+        from dataclasses import replace
+        import uuid
+
+        from Infernux.particle.asset import ParticleGraphAsset
+
+        graph = ParticleGraphAsset.load(source)
+        replace(
+            graph,
+            stable_id=uuid.uuid4().hex,
+            name=os.path.splitext(os.path.basename(destination))[0],
+        ).save(destination)
+        return
+    shutil.copy2(source, destination)
+
+
+def copy_path_as_new_asset(source: str, destination: str, asset_database=None):
+    """Copy a file or directory as a distinct asset and import the result.
+
+    Sidecar metadata is never copied. ParticleGraph owns an additional AOT
+    identity beyond its AssetDatabase GUID, so that identity is regenerated
+    while emitter, parameter, event, and node stable IDs remain intact.
+    """
+    if not source or not destination or not os.path.exists(source):
+        return None
+
+    source_abs = resolved_path(source)
+    destination_abs = resolved_path(destination)
+    if same_path(source_abs, destination_abs) or os.path.exists(destination_abs):
+        return None
+    if os.path.isdir(source_abs) and is_path_within(destination_abs, source_abs):
+        return None
+
+    copied_files: list[str] = []
+    try:
+        if os.path.isdir(source_abs):
+            os.makedirs(destination_abs)
+            for directory, dirnames, filenames in os.walk(source_abs):
+                dirnames[:] = [
+                    name for name in dirnames if not name.lower().endswith(".meta")
+                ]
+                relative = relative_path(directory, source_abs, allow_root=True)
+                target_directory = (
+                    destination_abs
+                    if relative == "."
+                    else os.path.join(destination_abs, relative)
+                )
+                os.makedirs(target_directory, exist_ok=True)
+                for filename in filenames:
+                    if filename.lower().endswith(".meta"):
+                        continue
+                    target = os.path.join(target_directory, filename)
+                    _copy_file_as_new_asset(os.path.join(directory, filename), target)
+                    copied_files.append(target)
+        else:
+            if source_abs.lower().endswith(".meta"):
+                return None
+            os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
+            _copy_file_as_new_asset(source_abs, destination_abs)
+            copied_files.append(destination_abs)
+    except Exception:
+        if os.path.isdir(destination_abs):
+            shutil.rmtree(destination_abs, ignore_errors=True)
+        elif os.path.exists(destination_abs):
+            try:
+                os.remove(destination_abs)
+            except OSError:
+                pass
+        raise
+
+    if asset_database:
+        for copied_file in copied_files:
+            _import_new_asset(copied_file, asset_database)
+    return destination_abs
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +476,10 @@ def create_shader(current_path: str, shader_name: str, shader_type: str,
             shader_name = shader_name[:-len(ext)]
             break
 
-    shader_id = shader_name.lower().replace(' ', '_')
+    # Shader ids follow the "Title Case With Spaces" convention (e.g. "My
+    # Shader"), regardless of how the file name was typed.
+    words = re.split(r'[\s_\-]+', shader_name)
+    shader_id = ' '.join(w[:1].upper() + w[1:] for w in words if w)
     extension = f'.{shader_type}'
     file_name = shader_name + extension
     file_path = os.path.join(current_path, file_name)
@@ -663,29 +728,102 @@ def create_animfsm(current_path: str, fsm_name: str, asset_database=None):
     return True, ""
 
 
-def create_vfxsystem(current_path: str, system_name: str, asset_database=None):
-    """Create a strict ``.vfxsystem`` authoring asset."""
-    if not system_name or not current_path:
-        return False, "Invalid VFX system name"
+def create_particlegraph(current_path: str, graph_name: str, asset_database=None):
+    """Create and AOT-compile a strict ``.particlegraph`` authoring asset."""
+    if not graph_name or not current_path:
+        return False, "Invalid Particle Graph name"
 
-    system_name = system_name.strip()
-    if not system_name:
-        return False, "VFX system name cannot be empty"
-    if system_name.lower().endswith(".vfxsystem"):
-        system_name = system_name[:-10]
+    graph_name = graph_name.strip()
+    if not graph_name:
+        return False, "Particle Graph name cannot be empty"
+    if graph_name.lower().endswith(".particlegraph"):
+        graph_name = graph_name[: -len(".particlegraph")]
 
-    file_name = system_name + ".vfxsystem"
+    file_name = graph_name + ".particlegraph"
     file_path = os.path.join(current_path, file_name)
     if os.path.exists(file_path):
         return False, f"'{file_name}' already exists"
 
-    from Infernux.core.vfx_system import VfxSystem
+    from Infernux.particle.asset import ParticleGraphAsset
 
-    content = json.dumps(VfxSystem(name=system_name).to_dict(), indent=2, ensure_ascii=False) + "\n"
+    try:
+        ParticleGraphAsset(name=graph_name).save(file_path)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return False, str(exc)
+
+    if asset_database:
+        try:
+            _import_new_asset(file_path, asset_database)
+        except Exception as exc:
+            return False, str(exc)
+    return True, ""
+
+
+def create_render_effect(
+    current_path: str,
+    effect_name: str,
+    feature_type: str,
+    asset_database=None,
+):
+    """Create and import one strict reusable ``.effect`` source asset."""
+    if not current_path or not effect_name:
+        return False, "Invalid Render Effect name"
+    effect_name = effect_name.strip()
+    if not effect_name:
+        return False, "Render Effect name cannot be empty"
+    if effect_name.lower().endswith(".effect"):
+        effect_name = effect_name[:-len(".effect")]
+
+    from Infernux.renderstack.render_effect_asset import (
+        RenderEffectAsset,
+        dump_render_effect_document,
+    )
+    from Infernux.renderstack.render_effect_compiler import get_render_effect_feature
+
+    try:
+        get_render_effect_feature(feature_type)
+        content = dump_render_effect_document(RenderEffectAsset(feature_type=feature_type))
+    except (TypeError, ValueError) as exc:
+        return False, str(exc)
+
+    file_name = effect_name + ".effect"
+    file_path = os.path.join(current_path, file_name)
+    if os.path.exists(file_path):
+        return False, f"'{file_name}' already exists"
     written, error = _write_new_text_asset(file_path, content)
     if not written:
         return False, error
+    if asset_database:
+        try:
+            _import_new_asset(file_path, asset_database)
+        except Exception as exc:
+            return False, str(exc)
+    return True, ""
 
+
+def create_render_effect_group(current_path: str, group_name: str, asset_database=None):
+    """Create and import one empty strict ``.effectgroup`` source asset."""
+    if not current_path or not group_name:
+        return False, "Invalid Render Effect Group name"
+    group_name = group_name.strip()
+    if not group_name:
+        return False, "Render Effect Group name cannot be empty"
+    if group_name.lower().endswith(".effectgroup"):
+        group_name = group_name[:-len(".effectgroup")]
+
+    from Infernux.renderstack.render_effect_asset import (
+        RenderEffectGroupAsset,
+        dump_render_effect_document,
+    )
+
+    file_name = group_name + ".effectgroup"
+    file_path = os.path.join(current_path, file_name)
+    if os.path.exists(file_path):
+        return False, f"'{file_name}' already exists"
+    content = dump_render_effect_document(RenderEffectGroupAsset())
+    written, error = _write_new_text_asset(file_path, content)
+    if not written:
+        return False, error
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
@@ -816,9 +954,16 @@ def delete_item(item_path: str, asset_database=None):
         return False
 
     is_dir = os.path.isdir(item_path)
+    deleted_script_guid = ""
     if is_dir or item_path.lower().endswith('.py'):
         from Infernux.components.script_loader import clear_deleted_script_errors
         clear_deleted_script_errors(item_path)
+    if not is_dir and item_path.lower().endswith('.py'):
+        if asset_database is not None:
+            deleted_script_guid = str(asset_database.get_guid_from_path(item_path) or "").strip()
+        if not deleted_script_guid:
+            from Infernux.core.asset_types import read_meta_guid
+            deleted_script_guid = read_meta_guid(item_path)
 
     # For .prefab files, detach all scene instances BEFORE deleting the asset.
     # This turns prefab instances into regular scene objects instead of leaving
@@ -829,7 +974,11 @@ def delete_item(item_path: str, asset_database=None):
     # Notify BEFORE removing the file — GUID is still resolvable at this point
     if not is_dir:
         from Infernux.core.assets import AssetManager
-        if not AssetManager.delete_asset(item_path, database=asset_database):
+        if not AssetManager.delete_asset(
+            item_path,
+            database=asset_database,
+            guid_hint=deleted_script_guid,
+        ):
             raise RuntimeError(f"AssetDatabase failed to delete '{item_path}'")
 
     try:
@@ -880,7 +1029,7 @@ def do_rename(old_path: str, new_name: str, asset_database=None):
 
     if os.path.isfile(old_path):
         _, ext = os.path.splitext(old_path)
-        if ext:
+        if ext and not safe_name.lower().endswith(ext.lower()):
             safe_name += ext
 
     new_path = os.path.join(os.path.dirname(old_path), safe_name)
@@ -922,15 +1071,30 @@ def _sync_python_script_class_name_on_rename(old_path: str, new_path: str) -> No
     with open(old_path, "r", encoding="utf-8") as handle:
         content = handle.read()
 
-    pattern = re.compile(
-        rf"^class\s+{re.escape(old_stem)}\b",
-        re.MULTILINE,
-    )
-    matches = list(pattern.finditer(content))
-    if len(matches) != 1:
+    def _pascal_case(stem: str) -> str:
+        return "".join(
+            part[:1].upper() + part[1:]
+            for part in stem.split("_")
+            if part
+        )
+
+    rename_pairs = {
+        old_stem: new_stem,
+        _pascal_case(old_stem): _pascal_case(new_stem),
+    }
+    candidates = []
+    for old_class_name, new_class_name in rename_pairs.items():
+        pattern = re.compile(
+            rf"^class\s+{re.escape(old_class_name)}\b",
+            re.MULTILINE,
+        )
+        matches = list(pattern.finditer(content))
+        candidates.extend((pattern, new_class_name) for _match in matches)
+    if len(candidates) != 1:
         return
 
-    updated = pattern.sub(f"class {new_stem}", content, count=1)
+    pattern, new_class_name = candidates[0]
+    updated = pattern.sub(f"class {new_class_name}", content, count=1)
     if updated == content:
         return
 

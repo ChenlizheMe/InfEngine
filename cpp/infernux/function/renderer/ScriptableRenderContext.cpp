@@ -4,13 +4,13 @@
 #include "EditorTools.h"
 #include "GizmosDrawCallBuffer.h"
 #include "InxVkCoreModular.h"
-#include "ParticleDrawCallBuffer.h"
 #include "SceneRenderGraph.h"
 #include "TransientResourcePool.h"
 #include "vk/RhiVulkanTypes.h"
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
-#include <function/scene/SceneRenderer.h>
+#include <function/scene/Scene.h>
+#include <function/scene/SceneRenderBridge.h>
 
 #include <core/log/InxLog.h>
 
@@ -107,7 +107,7 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
     // (each DrawCall contains a shared_ptr<InxMaterial> whose atomic refcount
     // would be bumped N times on copy).
     const std::vector<DrawCall> *drawCallsPtr = nullptr;
-    const bool needsShadowDrawCalls = (m_vkCore->GetLightCollector().GetShadowCascadeCount() > 0);
+    const bool needsShadowDrawCalls = m_graph && m_graph->HasCameraShadows();
     CameraDrawCallResult ownedResult; // Only used for game camera path
 
     if (camera && camera != editorCam) {
@@ -127,27 +127,35 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
 
     CullingResults results;
     if (camera && camera != editorCam) {
-        results.drawCalls = std::move(ownedResult.visibleDrawCalls); // game camera: move visible forward list
+        results.visibleRenderers =
+            RendererList::Own(std::move(ownedResult.visibleDrawCalls), RendererListPurpose::CameraVisible,
+                              RenderDomainBit(RenderDomain::SceneGeometry));
         if (needsShadowDrawCalls) {
             if (ownedResult.shadowDrawCallsRef) {
                 // All-layers game camera: zero-copy reference to cached draw calls.
-                results.shadowDrawCallsRef = ownedResult.shadowDrawCallsRef;
+                results.shadowCasters =
+                    RendererList::Borrow(*ownedResult.shadowDrawCallsRef, RendererListPurpose::ShadowCasters,
+                                         RenderDomainBit(RenderDomain::SceneGeometry));
             } else {
-                results.shadowDrawCalls = std::move(ownedResult.shadowDrawCalls);
+                results.shadowCasters =
+                    RendererList::Own(std::move(ownedResult.shadowDrawCalls), RendererListPurpose::ShadowCasters,
+                                      RenderDomainBit(RenderDomain::SceneGeometry));
             }
         }
     } else {
         // Editor camera: store a non-owning pointer instead of copying
         // 14,400+ DrawCalls with shared_ptr atomic refcount bumps.
-        results.sceneDrawCallsRef = drawCallsPtr;
+        results.visibleRenderers = RendererList::Borrow(*drawCallsPtr, RendererListPurpose::CameraVisible,
+                                                        RenderDomainBit(RenderDomain::SceneGeometry));
         if (needsShadowDrawCalls) {
-            results.shadowDrawCallsRef = drawCallsPtr;
+            results.shadowCasters = RendererList::Borrow(*drawCallsPtr, RendererListPurpose::ShadowCasters,
+                                                         RenderDomainBit(RenderDomain::SceneGeometry));
         }
     }
     // Populate visible light count from the scene light collector.
     // CollectLights() runs earlier in the frame (InxRenderer::UpdateSceneLighting),
     // so the count is already available.
-    results.lightCount = m_vkCore->GetLightCollector().GetTotalLightCount();
+    results.lightCount = m_graph ? m_graph->GetCameraLightCount() : 0;
     m_cachedCullingResults = std::move(results);
 #if INFERNUX_FRAME_PROFILE
     const double elapsedMs = std::chrono::duration<double, std::milli>(Clock::now() - cullStart).count();
@@ -185,30 +193,39 @@ void ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
 #endif
 }
 
+void ScriptableRenderContext::UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates)
+{
+    if (m_graph && !updates.empty())
+        m_graph->UpdateParameterBlocks(updates);
+}
+
 void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 {
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
     const auto submitStart = Clock::now();
-    const size_t baseDrawCount =
-        culling.sceneDrawCallsRef ? culling.sceneDrawCallsRef->size() : culling.drawCalls.size();
+    const size_t baseDrawCount = culling.visibleRenderers.Size();
+    const bool baseRendererListBorrowed = culling.visibleRenderers.IsBorrowed();
 #endif
     if (m_submitted) {
         INXLOG_WARN("ScriptableRenderContext::SubmitCulling() called after already submitted");
         return;
     }
+#if INFERNUX_FRAME_PROFILE
+    if (baseRendererListBorrowed) {
+        g_srcProfileSnapshot.borrowedRendererListSubmits += 1.0;
+        g_srcProfileSnapshot.materializedDrawCalls += static_cast<double>(baseDrawCount);
+    } else {
+        g_srcProfileSnapshot.ownedRendererListSubmits += 1.0;
+    }
+#endif
 
     // Move or reference draw calls — avoids 1000+ shared_ptr atomic refcount ops.
 #if INFERNUX_FRAME_PROFILE
     auto t0 = Clock::now();
 #endif
-    if (culling.sceneDrawCallsRef) {
-        // Editor camera fast path: reference scene draw calls directly,
-        // then move them into the ordered list (one move, zero shared_ptr copies).
-        m_orderedDrawCalls = *culling.sceneDrawCallsRef;
-    } else {
-        m_orderedDrawCalls = std::move(culling.drawCalls);
-    }
+    RenderDomainMask submittedDomains = culling.visibleRenderers.Domains();
+    m_orderedDrawCalls = culling.visibleRenderers.Consume();
     const size_t baseOrderedDrawCallCount = m_orderedDrawCalls.size();
     m_orderedDrawCalls.reserve(m_orderedDrawCalls.size() + 16);
 #if INFERNUX_FRAME_PROFILE
@@ -226,7 +243,13 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 #if INFERNUX_FRAME_PROFILE
         t0 = Clock::now();
 #endif
-        auto skyboxMat = AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
+        // Scene environment picks the skybox material (falls back to the
+        // builtin procedural sky when unset or unloadable).
+        std::shared_ptr<InxMaterial> skyboxMat;
+        if (m_gizmoCtx.activeScene)
+            skyboxMat = m_gizmoCtx.activeScene->ResolveSkyboxMaterial();
+        if (!skyboxMat)
+            skyboxMat = AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
         if (skyboxMat) {
             static constexpr uint64_t SKYBOX_OBJECT_ID = 0xFFFFFFFFFFFFFF00ULL;
             DrawCall dc;
@@ -235,27 +258,16 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
             dc.worldMatrix = glm::mat4(1.0f);
             dc.material = skyboxMat;
             dc.objectId = SKYBOX_OBJECT_ID;
+            dc.identity = RenderProxyHandle::Synthetic(RenderDomain::Skybox, dc.objectId).MakeDrawIdentity();
             dc.meshVertices = &PrimitiveMeshes::GetSkyboxCubeVertices();
             dc.meshIndices = &PrimitiveMeshes::GetSkyboxCubeIndices();
             m_orderedDrawCalls.push_back(dc);
+            submittedDomains |= RenderDomainBit(RenderDomain::Skybox);
         }
 #if INFERNUX_FRAME_PROFILE
         g_srcProfileSnapshot.submitEditorAppendMs +=
             std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
-    }
-
-    if (m_gizmoCtx.particles && m_gizmoCtx.particles->GetParticleCount() > 0) {
-        glm::vec3 cameraRight(1.0f, 0.0f, 0.0f);
-        glm::vec3 cameraUp(0.0f, 1.0f, 0.0f);
-        if (m_activeCamera && m_activeCamera->GetGameObject() && m_activeCamera->GetGameObject()->GetTransform()) {
-            Transform *cameraTransform = m_activeCamera->GetGameObject()->GetTransform();
-            cameraRight = cameraTransform->GetWorldRight();
-            cameraUp = cameraTransform->GetWorldUp();
-        }
-        DrawCallResult particleResult = m_gizmoCtx.particles->GetDrawCalls(cameraRight, cameraUp);
-        for (auto &drawCall : particleResult.drawCalls)
-            m_orderedDrawCalls.push_back(drawCall);
     }
 
     // Auto-append editor gizmos
@@ -266,6 +278,8 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         DrawCallResult gizmoResult =
             m_gizmoCtx.gizmos->GetDrawCalls(m_gizmoCtx.gizmoMaterial, m_gizmoCtx.gridMaterial,
                                             m_gizmoCtx.selectedObjectId, m_gizmoCtx.activeScene, m_gizmoCtx.cameraPos);
+        if (!gizmoResult.drawCalls.empty())
+            submittedDomains |= RenderDomainBit(RenderDomain::EditorGizmo);
         for (auto &dc : gizmoResult.drawCalls) {
             m_orderedDrawCalls.push_back(dc);
         }
@@ -281,6 +295,8 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         t0 = Clock::now();
 #endif
         DrawCallResult compGizmoResult = m_gizmoCtx.componentGizmos->GetDrawCalls(m_gizmoCtx.componentGizmosMaterial);
+        if (!compGizmoResult.drawCalls.empty())
+            submittedDomains |= RenderDomainBit(RenderDomain::ComponentGizmo);
         for (auto &dc : compGizmoResult.drawCalls) {
             m_orderedDrawCalls.push_back(dc);
         }
@@ -302,9 +318,13 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
             cameraRight = cameraTransform->GetWorldRight();
             cameraUp = cameraTransform->GetWorldUp();
         }
-        DrawCallResult iconResult = m_gizmoCtx.componentGizmos->GetIconDrawCalls(
+        const GizmosDrawCallBuffer::IconMaterials iconMaterials{
             m_gizmoCtx.componentGizmoIconMaterial, m_gizmoCtx.cameraGizmoIconMaterial,
-            m_gizmoCtx.lightGizmoIconMaterial, m_gizmoCtx.cameraPos, cameraRight, cameraUp);
+            m_gizmoCtx.lightGizmoIconMaterial, m_gizmoCtx.particleGizmoIconMaterial};
+        DrawCallResult iconResult =
+            m_gizmoCtx.componentGizmos->GetIconDrawCalls(iconMaterials, m_gizmoCtx.cameraPos, cameraRight, cameraUp);
+        if (!iconResult.drawCalls.empty())
+            submittedDomains |= RenderDomainBit(RenderDomain::ComponentGizmo);
         static size_t s_lastSubmittedIconDrawCalls = static_cast<size_t>(-1);
         if (s_lastSubmittedIconDrawCalls != iconResult.drawCalls.size()) {
             s_lastSubmittedIconDrawCalls = iconResult.drawCalls.size();
@@ -325,6 +345,8 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 #endif
         DrawCallResult toolsResult = m_gizmoCtx.editorTools->GetDrawCalls(
             m_gizmoCtx.editorToolsMaterial, m_gizmoCtx.selectedObjectId, m_gizmoCtx.activeScene, m_gizmoCtx.cameraPos);
+        if (!toolsResult.drawCalls.empty())
+            submittedDomains |= RenderDomainBit(RenderDomain::EditorTool);
         for (auto &dc : toolsResult.drawCalls) {
             m_orderedDrawCalls.push_back(dc);
         }
@@ -334,10 +356,8 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 #endif
     }
 
-    const std::vector<DrawCall> *shadowSource = culling.shadowDrawCallsRef;
-    if (!shadowSource && !culling.shadowDrawCalls.empty()) {
-        shadowSource = &culling.shadowDrawCalls;
-    }
+    const std::vector<DrawCall> *shadowSource =
+        culling.shadowCasters.Empty() ? nullptr : &culling.shadowCasters.DrawCalls();
 
     // Compute a lightweight resource-identity fingerprint. World matrices and
     // visibility intentionally do not participate: neither changes mesh GPU
@@ -422,12 +442,6 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
     if (!reuseObjectBuffers)
         m_vkCore->PrimeObjectBufferBindingCache(bufferIdentity, bufferIdentityDrawCallCount);
 
-    // Mesh dirtiness is a one-shot upload request. SceneRenderer caches draw
-    // calls across frames, so leaving the bit set would re-hash every mesh on
-    // every frame. The first context has now consumed the request; later
-    // cameras share the same VkCore object buffers.
-    SceneRenderBridge::Instance().GetSceneRenderer().AcknowledgeMeshBufferUpdates();
-
     DrawCallResult result;
     result.drawCalls = std::move(forwardDrawCalls);
 #if INFERNUX_FRAME_PROFILE
@@ -442,20 +456,15 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 #if INFERNUX_FRAME_PROFILE
         t0 = Clock::now();
 #endif
-        m_graph->SetCachedDrawCalls(std::move(result.drawCalls));
+        m_graph->SetCachedRendererList(
+            RendererList::Own(std::move(result.drawCalls), RendererListPurpose::CameraVisible, submittedDomains));
         if (shadowSource) {
-            if (culling.shadowDrawCallsRef) {
-                // Editor camera: shadow source is the scene's cached draw calls.
-                // Use a zero-copy reference instead of copying 10k+ DrawCalls.
-                m_graph->SetCachedShadowDrawCallsRef(culling.shadowDrawCallsRef);
-            } else {
-                m_graph->SetCachedShadowDrawCalls(std::move(culling.shadowDrawCalls));
-            }
+            m_graph->SetCachedShadowRendererList(std::move(culling.shadowCasters));
         } else {
             m_graph->ClearCachedShadowDrawCalls();
         }
         if (m_activeCamera) {
-            m_graph->SetCachedCameraVP(m_cachedView, m_cachedProj);
+            m_graph->SetCachedCameraVP(m_activeCamera, m_cachedView, m_cachedProj);
         }
         // Point VkCore at the graph's cached copy (survives this scope).
         m_vkCore->SetDrawCalls(&m_graph->GetCachedDrawCalls());
@@ -488,6 +497,21 @@ void ScriptableRenderContext::RenderWithGraph(Camera *camera, const RenderGraphD
     CullingResults &culling = Cull(camera);
     ApplyGraph(desc);
     SubmitCulling(culling);
+}
+
+bool ScriptableRenderContext::IsGraphRevisionCurrent(uint64_t sourceRevision) const
+{
+    return m_graph && m_graph->IsPythonGraphCurrent(sourceRevision);
+}
+
+bool ScriptableRenderContext::RenderCompiled(Camera *camera, uint64_t sourceRevision)
+{
+    if (!IsGraphRevisionCurrent(sourceRevision))
+        return false;
+    SetupCameraProperties(camera);
+    CullingResults &culling = Cull(camera);
+    SubmitCulling(culling);
+    return true;
 }
 
 // ============================================================================

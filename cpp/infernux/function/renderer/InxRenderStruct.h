@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <function/renderer/Frustum.h>
+#include <function/renderer/RenderIdentity.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -36,13 +37,13 @@ class InxMaterial;
  */
 struct Vertex
 {
-    glm::vec3 pos;                      ///< Position in local space
-    glm::vec3 normal;                   ///< Normal vector (normalized)
-    glm::vec4 tangent;                  ///< Tangent vector (xyz) + handedness (w = ±1)
-    glm::vec3 color{1.0f, 1.0f, 1.0f};  ///< Vertex color (default white)
-    glm::vec2 texCoord;                 ///< Primary UV coordinates
-    glm::uvec4 boneIndices{0, 0, 0, 0}; ///< GPU skinning bone indices
-    glm::vec4 boneWeights{0.0f};        ///< GPU skinning weights
+    glm::vec3 pos{0.0f};                       ///< Position in local space
+    glm::vec3 normal{0.0f, 1.0f, 0.0f};        ///< Missing source normals deterministically face +Y
+    glm::vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f}; ///< Missing tangent direction + handedness
+    glm::vec3 color{1.0f, 1.0f, 1.0f};         ///< Vertex color (default white)
+    glm::vec2 texCoord{0.0f};                  ///< Missing UVs deterministically use the origin
+    glm::uvec4 boneIndices{0, 0, 0, 0};        ///< GPU skinning bone indices
+    glm::vec4 boneWeights{0.0f};               ///< GPU skinning weights
 
     static VkVertexInputBindingDescription getBindingDescription()
     {
@@ -135,8 +136,14 @@ struct GPUSkinInstanceData
     uint32_t boneOffset = 0;
     uint32_t boneCount = 0;
     uint32_t flags = 0;
-    uint32_t _pad = 0;
+    // Motion variants address the previous palette through the same buffer.
+    // Non-motion passes alias this to boneOffset and upload no duplicate data.
+    uint32_t previousBoneOffset = 0;
 };
+
+static_assert(sizeof(GPUSkinInstanceData) == 16, "GPU skin instance data must remain std430-compatible");
+static_assert(offsetof(GPUSkinInstanceData, previousBoneOffset) == 12,
+              "Previous skin palette offset must remain the fourth std430 word");
 
 static constexpr uint32_t kGPUSkinFlagEnabled = 1u;
 
@@ -145,6 +152,8 @@ struct UniformBufferObject
     alignas(16) glm::mat4 model;
     alignas(16) glm::mat4 view;
     alignas(16) glm::mat4 proj;
+    alignas(16) glm::mat4 previousViewProj;
+    alignas(16) glm::mat4 inverseViewProj;
 };
 
 /**
@@ -165,7 +174,10 @@ struct DrawCall
     int32_t vertexStart = 0;               // Base vertex offset (for submesh rendering)
     glm::mat4 worldMatrix{1.0f};           // Object's world transform matrix
     std::shared_ptr<InxMaterial> material; // Owns the material for the lifetime of cached/render-thread draw calls
-    uint64_t objectId = 0;                 // GameObject ID for buffer lookup
+    uint64_t objectId = 0;                 // Compatibility key for buffer lookup and picking
+    uint64_t pickingObjectId = 0;          // Optional scene owner exposed by picking passes
+    uint32_t layerMask = 1u;               // Owning GameObject layer bit for per-light culling masks
+    RenderDrawIdentity identity;           // Stable source identity across scene/component lifetimes
     bool frustumVisible = true;            // Whether object passed main-camera frustum culling
     bool castsShadows = true;              // Whether the source renderer participates in shadow passes
     AABB worldBounds;                      // World-space bounding box for shadow cascade culling
@@ -175,6 +187,10 @@ struct DrawCall
     // Used by the renderer to create/update per-object GPU buffers.
     const std::vector<Vertex> *meshVertices = nullptr;
     const std::vector<uint32_t> *meshIndices = nullptr;
+    // Keeps the storage behind meshVertices/meshIndices alive for immutable
+    // RenderWorld snapshots. Asset meshes retain their asset generation;
+    // inline meshes retain an extraction-owned snapshot.
+    std::shared_ptr<const void> meshDataOwner;
     std::string meshAssetGuid;
     uint64_t meshRuntimeVersion = 0;
 
@@ -182,6 +198,10 @@ struct DrawCall
     // skinned mesh stream and the vertex shader applies these matrices.
     std::shared_ptr<const std::vector<glm::mat4>> skinBoneMatricesOwner;
     const std::vector<glm::mat4> *skinBoneMatrices = nullptr;
+    // Previous submitted pose for GPU motion evaluation and dynamic Mesh
+    // sampling. On first publication this aliases the current palette.
+    std::shared_ptr<const std::vector<glm::mat4>> previousSkinBoneMatricesOwner;
+    const std::vector<glm::mat4> *previousSkinBoneMatrices = nullptr;
 
     // When true, forces GPU buffer re-upload even if vertex/index count hasn't
     // changed (e.g. vertex colour change for gizmo highlight).

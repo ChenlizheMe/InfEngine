@@ -85,7 +85,11 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
     asset->shaderId = shaderId;
     asset->shaderType = (ext == ".vert") ? "vertex" : "fragment";
     asset->filePath = filePath;
-    asset->spirvForward = std::move(*compiledPtr);
+    asset->descriptor = compiler.ParseShaderSource(std::string(content.data(), content.size() - 1), filePath);
+    if (!asset->SetVariant(ShaderCompileTarget::Forward, std::move(*compiledPtr))) {
+        INXLOG_ERROR("ShaderLoader: compiler returned invalid Forward SPIR-V for '", filePath, "'");
+        return nullptr;
+    }
 
     // Extract variant SPIR-V from InxShaderLoader's static caches
     // Use the meta's file_path as cache key (matches InxShaderLoader::CompileVariant)
@@ -94,27 +98,11 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         cacheKey = meta->GetDataAs<std::string>("file_path");
     }
 
-    if (ext == ".vert") {
-        auto it = InxShaderLoader::s_shadowVertexVariantCache.find(cacheKey);
-        if (it != InxShaderLoader::s_shadowVertexVariantCache.end() && !it->second.empty()) {
-            asset->spirvShadowVertex = std::move(it->second);
-            InxShaderLoader::s_shadowVertexVariantCache.erase(it);
-        }
-    }
+    auto variants = InxShaderLoader::TakeCompiledVariants(cacheKey);
+    for (auto &[target, spirv] : variants)
+        asset->SetVariant(target, std::move(spirv));
 
     if (ext == ".frag") {
-        auto sit = InxShaderLoader::s_shadowVariantCache.find(cacheKey);
-        if (sit != InxShaderLoader::s_shadowVariantCache.end() && !sit->second.empty()) {
-            asset->spirvShadow = std::move(sit->second);
-            InxShaderLoader::s_shadowVariantCache.erase(sit);
-        }
-
-        auto git = InxShaderLoader::s_gbufferVariantCache.find(cacheKey);
-        if (git != InxShaderLoader::s_gbufferVariantCache.end() && !git->second.empty()) {
-            asset->spirvGBuffer = std::move(git->second);
-            InxShaderLoader::s_gbufferVariantCache.erase(git);
-        }
-
         // Extract render-state annotations from meta
         if (meta) {
             if (meta->HasKey("shader_cull_mode"))

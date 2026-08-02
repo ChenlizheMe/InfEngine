@@ -28,7 +28,7 @@
 #include <function/renderer/GizmosDrawCallBuffer.h>
 #include <function/renderer/InxRenderer.h>
 #include <function/scene/MeshRenderer.h>
-#include <function/scene/SceneRenderer.h>
+#include <function/scene/SceneRenderBridge.h>
 #include <function/scene/physics/PhysicsWorld.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -208,6 +208,18 @@ static uint64_t TestGizmoAxes(const glm::vec3 &rayOrigin, const glm::vec3 &rayDi
             }
         }
     } else {
+        // Scale: the uniform cube at the origin takes priority when the ray
+        // hits its AABB — it sits where the three plane quads meet.
+        if (toolMode == EditorTools::ToolMode::Scale) {
+            const float half = EditorTools::CENTER_CUBE_HALF * scale;
+            const glm::vec3 boundsMin = objPos - glm::vec3(half);
+            const glm::vec3 boundsMax = objPos + glm::vec3(half);
+            float centerHitT = 0.0f;
+            if (IntersectRayAabb(rayOrigin, rayDirection, boundsMin, boundsMax, centerHitT)) {
+                return EditorTools::CENTER_ID;
+            }
+        }
+
         // Translate / Scale: ray-to-line-segment proximity
         for (int ai = 0; ai < 3; ++ai) {
             glm::vec3 axisDir = axisDirs[ai];
@@ -245,50 +257,53 @@ static uint64_t TestGizmoAxes(const glm::vec3 &rayOrigin, const glm::vec3 &rayDi
             }
         }
 
-        struct PlaneCandidate
-        {
-            glm::vec3 axisU;
-            glm::vec3 axisV;
-            uint64_t id;
-        };
+        // Plane handles are Translate-only; Scale uses axes + center cube.
+        if (toolMode == EditorTools::ToolMode::Translate) {
+            struct PlaneCandidate
+            {
+                glm::vec3 axisU;
+                glm::vec3 axisV;
+                uint64_t id;
+            };
 
-        const PlaneCandidate planes[3] = {
-            {axisDirs[0], axisDirs[1], EditorTools::XY_PLANE_ID},
-            {axisDirs[0], axisDirs[2], EditorTools::XZ_PLANE_ID},
-            {axisDirs[1], axisDirs[2], EditorTools::YZ_PLANE_ID},
-        };
+            const PlaneCandidate planes[3] = {
+                {axisDirs[0], axisDirs[1], EditorTools::XY_PLANE_ID},
+                {axisDirs[0], axisDirs[2], EditorTools::XZ_PLANE_ID},
+                {axisDirs[1], axisDirs[2], EditorTools::YZ_PLANE_ID},
+            };
 
-        float bestPlaneT = std::numeric_limits<float>::max();
-        uint64_t bestPlaneId = 0;
-        for (const PlaneCandidate &plane : planes) {
-            glm::vec3 normal = glm::normalize(glm::cross(plane.axisU, plane.axisV));
-            float denom = glm::dot(rayDirection, normal);
-            if (std::abs(denom) < kEpsilon) {
-                continue;
-            }
+            float bestPlaneT = std::numeric_limits<float>::max();
+            uint64_t bestPlaneId = 0;
+            for (const PlaneCandidate &plane : planes) {
+                glm::vec3 normal = glm::normalize(glm::cross(plane.axisU, plane.axisV));
+                float denom = glm::dot(rayDirection, normal);
+                if (std::abs(denom) < kEpsilon) {
+                    continue;
+                }
 
-            float tPlane = glm::dot(objPos - rayOrigin, normal) / denom;
-            if (tPlane < 0.0f) {
-                continue;
-            }
+                float tPlane = glm::dot(objPos - rayOrigin, normal) / denom;
+                if (tPlane < 0.0f) {
+                    continue;
+                }
 
-            glm::vec3 point = rayOrigin + rayDirection * tPlane;
-            glm::vec3 rel = point - objPos;
-            float u = glm::dot(rel, plane.axisU);
-            float v = glm::dot(rel, plane.axisV);
-            const float minCoord = EditorTools::PLANE_OFFSET * scale;
-            const float maxCoord = (EditorTools::PLANE_OFFSET + EditorTools::PLANE_SIZE) * scale;
+                glm::vec3 point = rayOrigin + rayDirection * tPlane;
+                glm::vec3 rel = point - objPos;
+                float u = glm::dot(rel, plane.axisU);
+                float v = glm::dot(rel, plane.axisV);
+                const float minCoord = EditorTools::PLANE_OFFSET * scale;
+                const float maxCoord = (EditorTools::PLANE_OFFSET + EditorTools::PLANE_SIZE) * scale;
 
-            if (u >= minCoord && u <= maxCoord && v >= minCoord && v <= maxCoord) {
-                if (tPlane < bestPlaneT) {
-                    bestPlaneT = tPlane;
-                    bestPlaneId = plane.id;
+                if (u >= minCoord && u <= maxCoord && v >= minCoord && v <= maxCoord) {
+                    if (tPlane < bestPlaneT) {
+                        bestPlaneT = tPlane;
+                        bestPlaneId = plane.id;
+                    }
                 }
             }
-        }
 
-        if (bestPlaneId != 0) {
-            gizmoPickedId = bestPlaneId;
+            if (bestPlaneId != 0) {
+                gizmoPickedId = bestPlaneId;
+            }
         }
     }
 
@@ -512,6 +527,9 @@ void Infernux::SetEditorToolHighlight(int axis)
         break;
     case 6:
         ha = EditorTools::HandleAxis::YZ;
+        break;
+    case 7:
+        ha = EditorTools::HandleAxis::Center;
         break;
     default:
         ha = EditorTools::HandleAxis::None;

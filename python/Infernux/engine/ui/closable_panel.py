@@ -294,11 +294,11 @@ class ClosablePanel(InxGUIRenderable):
                 self._is_open = True
                 if not self.request_close():
                     self._is_open = True
-                    # ImGui has already selected a neighbouring dock tab by the
-                    # time p_open becomes false. Restore this editor immediately;
-                    # the confirmation modal owns focus when it is rendered.
-                    ctx.set_window_focus()
-                    self._activate_panel(ctx)
+                    # Keep the document alive while the confirmation is open,
+                    # but do not focus it here. The shared modal is submitted at
+                    # the end of the frame and must be the sole focus owner.
+                    # Cancel restores this panel through
+                    # _restore_after_cancelled_close().
                 else:
                     self._is_open = False
                 if not self._is_open and self._window_manager:

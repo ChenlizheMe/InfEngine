@@ -62,9 +62,17 @@ class TestAssetRefBase:
         assert ref.guid == "xyz"
         assert ref.path_hint == "bar.mat"
 
-    def test_from_dict_none(self):
-        ref = AssetRefBase.from_dict(None)
-        assert ref.guid == ""
+    @pytest.mark.parametrize(
+        "document",
+        [None, {}, {"guid": "xyz"}, {"guid": "xyz", "path_hint": "", "path": "old"}],
+    )
+    def test_from_dict_rejects_noncanonical_documents(self, document):
+        with pytest.raises(ValueError, match="complete current field set"):
+            AssetRefBase.from_dict(document)
+
+    def test_from_dict_rejects_non_string_values(self):
+        with pytest.raises(TypeError, match="must be strings"):
+            AssetRefBase.from_dict({"guid": 7, "path_hint": "bar.mat"})
 
     def test_display_name_with_path_hint(self):
         ref = AssetRefBase(guid="abc", path_hint="textures/foo.png")

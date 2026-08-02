@@ -111,7 +111,7 @@ class Camera(BuiltinComponent):
         "depth",
         FieldType.FLOAT,
         default=0.0,
-        tooltip="Rendering depth (lower renders first, like Unity Camera.depth)",
+        tooltip="Camera priority; lower values are selected first when no main camera is assigned",
     )
 
     # ---- Clear flags & background ----

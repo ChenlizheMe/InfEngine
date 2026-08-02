@@ -3,6 +3,7 @@
 #include "Camera.h"
 #include "GameObject.h"
 #include "ObjectHandle.h"
+#include "SceneEnvironment.h"
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -14,6 +15,7 @@ namespace infernux
 {
 
 class SceneCommitToken;
+class InxMaterial;
 
 /**
  * @brief Scene container that holds all GameObjects.
@@ -49,6 +51,35 @@ class Scene
         m_name = name;
     }
 
+    /// Per-scene environment (skybox material + ambient) settings.
+    [[nodiscard]] const SceneEnvironmentSettings &GetEnvironment() const
+    {
+        return m_environment;
+    }
+    [[nodiscard]] SceneEnvironmentSettings &GetEnvironment()
+    {
+        return m_environment;
+    }
+    void SetEnvironment(const SceneEnvironmentSettings &environment)
+    {
+        m_environment = environment;
+    }
+
+    /// Mark an explicit jump in the rendered world's time domain. Continuous
+    /// Update/FixedUpdate playback must not touch this revision.
+    void MarkTemporalDiscontinuity() noexcept
+    {
+        ++m_temporalDiscontinuityRevision;
+    }
+    [[nodiscard]] uint64_t GetTemporalDiscontinuityRevision() const noexcept
+    {
+        return m_temporalDiscontinuityRevision;
+    }
+
+    /// Resolve the active skybox material: the environment's material asset
+    /// when set and loadable, otherwise the builtin procedural sky.
+    [[nodiscard]] std::shared_ptr<InxMaterial> ResolveSkyboxMaterial() const;
+
     // ========================================================================
     // GameObject management
     // ========================================================================
@@ -73,8 +104,10 @@ class Scene
     /// Python components are stored as pending for Python-side reconstruction.
     /// @param source The GameObject to clone
     /// @param parent Optional parent for the clone (nullptr = root level)
+    /// @param instantiateInWorldSpace Preserve the source root's world transform after parenting
     /// @return The cloned GameObject, or nullptr on failure
-    GameObject *InstantiateGameObject(GameObject *source, GameObject *parent = nullptr);
+    GameObject *InstantiateGameObject(GameObject *source, GameObject *parent = nullptr,
+                                      bool instantiateInWorldSpace = false);
 
     /// @brief Instantiate a GameObject hierarchy from a JSON string (e.g. prefab file).
     /// Creates fresh IDs for all objects. Python components are stored as pending.
@@ -156,19 +189,26 @@ class Scene
         return m_mainCamera;
     }
 
-    /// @brief Set the main camera for this scene
-    void SetMainCamera(Camera *camera)
-    {
-        m_mainCamera = camera;
-    }
+    /// @brief Set the explicitly preferred game camera for this scene.
+    ///
+    /// A disabled preferred camera remains assigned and becomes effective
+    /// again when re-enabled. While it is unavailable, FindGameCamera()
+    /// selects a deterministic active fallback without overwriting this
+    /// authored choice.
+    void SetMainCamera(Camera *camera);
 
-    /// @brief Find the best game camera based on depth ordering and active state.
+    /// @brief Find the effective game camera based on authored preference,
+    /// active state, depth, and stable component identity.
     /// Skips the editor camera. If m_mainCamera is valid and active, returns it.
-    /// Otherwise auto-discovers the highest-priority (lowest depth) active Camera
-    /// in the scene and caches it as m_mainCamera.
+    /// Otherwise returns the lowest-depth active Camera without mutating the
+    /// explicitly authored main-camera reference.
     /// @param editorCam Editor camera to exclude from search
     /// @return The best game camera, or nullptr if none found
     Camera *FindGameCamera(Camera *editorCam);
+
+    /// @brief Collect all active game cameras in deterministic render order.
+    /// Lower depth sorts first; component identity breaks equal-depth ties.
+    [[nodiscard]] std::vector<Camera *> GetActiveGameCameras(Camera *editorCam) const;
 
     // ========================================================================
     // Update loop
@@ -394,8 +434,15 @@ class Scene
     bool m_isPlaying = false;
     bool m_hasStarted = false;
 
+    // Per-scene environment (skybox material + ambient) settings
+    SceneEnvironmentSettings m_environment;
+
     // Structure version counter (bumped on add/remove/reparent)
     uint64_t m_structureVersion = 0;
+
+    // Explicit seeks/cuts only. The renderer consumes this monotonic revision
+    // once before view extraction and invalidates temporal histories together.
+    uint64_t m_temporalDiscontinuityRevision = 0;
 };
 
 class SceneCommitToken final

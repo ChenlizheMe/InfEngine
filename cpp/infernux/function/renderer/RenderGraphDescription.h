@@ -16,7 +16,9 @@
 #pragma once
 
 #include "rhi/RhiTypes.h"
+#include <core/types/ShaderTypes.h>
 
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,22 +26,107 @@
 namespace infernux
 {
 
-// ============================================================================
-// Pass Action Types
-// ============================================================================
+/**
+ * @brief Backend-neutral command recorded by a graph pass.
+ *
+ * Commands describe engine rendering operations
+ * rather than Vulkan calls so
+ * the same graph artifact can be compiled by another RHI backend later.
+ * Compute work
+ * is intentionally engine-owned and enters the native RHI
+ * RenderGraph directly; Python pipelines do not expose raw
+ * compute programs.
+ */
+enum class GraphCommandType
+{
+    DrawRenderers,
+    DrawSkybox,
+    DrawShadowCasters,
+    DrawScreenUI,
+    FullscreenQuad,
+    CopyTexture,
+    CopyBuffer,
+    Present
+};
+
+enum class GraphPassType
+{
+    Raster,
+    Copy,
+    Present
+};
+
+enum class GraphMaterialFilter : uint8_t
+{
+    All,
+    DeferredCompatible,
+    DeferredUnsupported,
+};
+
+enum class GraphBufferUsage : uint32_t
+{
+    None = 0,
+    Storage = 1 << 0,
+    Indirect = 1 << 1,
+    TransferSource = 1 << 2,
+    TransferDestination = 1 << 3
+};
+
+enum class GraphBufferAccessType
+{
+    StorageRead,
+    StorageWrite,
+    IndirectRead,
+    TransferRead,
+    TransferWrite
+};
+
+enum class GraphTextureRole : uint8_t
+{
+    Transient,
+    TemporalRead,
+    TemporalWrite
+};
+
+struct GraphCommandDesc
+{
+    GraphCommandType type = GraphCommandType::DrawRenderers;
+    ShaderCompileTarget shaderTarget = ShaderCompileTarget::Forward;
+    GraphMaterialFilter materialFilter = GraphMaterialFilter::All;
+
+    int queueMin = 0;
+    int queueMax = 5000;
+    std::string sortMode;
+    std::string passTag;
+    std::string overrideMaterial;
+
+    int32_t lightIndex = 0;
+    int screenUIList = 0;
+
+    std::string shaderName;
+    /// Stable runtime parameter block. When non-empty, pushConstants define
+    /// the block layout and initial values rather than immutable topology.
+    std::string parameterBlock;
+    std::vector<std::pair<std::string, float>> pushConstants;
+    std::vector<std::pair<std::string, std::string>> inputBindings;
+
+    std::string sourceResource;
+    std::string destinationResource;
+    uint64_t copyBytes = 0;
+};
 
 /**
- * @brief The rendering action a graph pass should perform
+ * @brief Revisioned values for one graph-owned runtime parameter block.
+ *
+ * Parameter updates are intentionally
+ * separate from RenderGraphDescription so
+ * ordinary effect edits do not rebuild or recompile graph topology.
  */
-enum class GraphPassActionType
+struct GraphParameterBlockUpdate
 {
-    None,              ///< No rendering (resource-only pass)
-    DrawRenderers,     ///< Draw scene renderers filtered by queue range
-    DrawSkybox,        ///< Draw the procedural skybox
-    Custom,            ///< Reserved for future Python callback support
-    DrawShadowCasters, ///< Draw shadow casters into a depth-only shadow map
-    DrawScreenUI,      ///< Draw screen-space UI (Camera or Overlay list)
-    FullscreenQuad     ///< Draw a fullscreen triangle with a named shader (post-process)
+    std::string id;
+    uint64_t revision = 0;
+    std::vector<std::pair<std::string, float>> values;
 };
 
 // ============================================================================
@@ -58,6 +145,22 @@ struct GraphTextureDesc
     uint32_t width = 0;                                     ///< Custom width (0 = use scene target size)
     uint32_t height = 0;                                    ///< Custom height (0 = use scene target size)
     uint32_t sizeDivisor = 0;                               ///< >0: actual = scene_size / divisor
+    uint32_t samples = 1;                                   ///< 0 = inherit frame MSAA, otherwise 1/2/4/8
+    GraphTextureRole role = GraphTextureRole::Transient;    ///< Frame-local or one side of a temporal history pair
+    std::string temporalKey;                                ///< Stable per-view history identity for temporal resources
+};
+
+struct GraphBufferDesc
+{
+    std::string name;
+    uint64_t byteSize = 0;
+    uint32_t usage = static_cast<uint32_t>(GraphBufferUsage::None);
+};
+
+struct GraphBufferAccessDesc
+{
+    std::string resource;
+    GraphBufferAccessType type = GraphBufferAccessType::StorageRead;
 };
 
 // ============================================================================
@@ -70,13 +173,17 @@ struct GraphTextureDesc
 struct GraphPassDesc
 {
     std::string name; ///< Pass name (must be unique within the graph)
+    GraphPassType type = GraphPassType::Raster;
 
     // === Resource connections ===
     std::vector<std::string> readTextures; ///< Names of textures this pass reads
     /// MRT color outputs: list of (slot, texture_name) pairs.
     /// Slot 0 is the primary color output; higher slots enable deferred / GBuffer.
     std::vector<std::pair<int, std::string>> writeColors;
-    std::string writeDepth; ///< Name of depth output texture
+    std::string writeDepth;   ///< Name of depth output texture
+    std::string resolveColor; ///< Optional 1x resolve target for color slot 0
+    std::vector<GraphBufferAccessDesc> bufferAccesses;
+    bool sideEffect = false;
 
     // === Clear settings ===
     bool clearColor = false;
@@ -87,31 +194,11 @@ struct GraphPassDesc
     float clearColorA = 1.0f;
     float clearDepthValue = 1.0f;
 
-    // === Render action ===
-    GraphPassActionType action = GraphPassActionType::None;
-
-    // DrawRenderers parameters
-    int queueMin = 0;             ///< Minimum render queue (inclusive)
-    int queueMax = 5000;          ///< Maximum render queue (inclusive)
-    std::string sortMode;         ///< "front_to_back", "back_to_front", "none"
-    std::string passTag;          ///< Filter draw calls by shader pass tag (empty = no filter)
-    std::string overrideMaterial; ///< Force all objects to use this material name (empty = per-object)
-
-    // DrawShadowCasters parameters
-    int32_t lightIndex = 0; ///< Index of the shadow-casting light (0 = first directional)
-
-    // DrawScreenUI parameters
-    int screenUIList = 0; ///< 0 = Camera list (before post-process), 1 = Overlay list (after post-process)
-
-    // FullscreenQuad parameters
-    std::string shaderName; ///< Shader id for FullscreenQuad action (e.g. "bloom_prefilter")
-    /// Named push-constant values (name → float) passed to the fragment shader
-    std::vector<std::pair<std::string, float>> pushConstants;
-
-    // === Input bindings (sampled texture inputs) ===
-    /// Maps sampler name → texture name for textures sampled by this pass
-    /// (e.g. shadow map bound as a sampled texture in a lighting pass).
-    std::vector<std::pair<std::string, std::string>> inputBindings;
+    // === Typed command IR ===
+    // Empty is valid for a resource-only pass. The current executor accepts
+    // one command while the IR is intentionally a list for the upcoming
+    // raster/compute/copy command-list executor.
+    std::vector<GraphCommandDesc> commands;
 };
 
 // ============================================================================
@@ -129,7 +216,12 @@ struct RenderGraphDescription
 {
     std::string name; ///< Graph name for debugging
 
+    /// Monotonic source artifact revision assigned when Python records the graph.
+    /// Steady-state frames send only this value to reuse an already-applied graph.
+    uint64_t sourceRevision = 0;
+
     std::vector<GraphTextureDesc> textures; ///< All texture resources
+    std::vector<GraphBufferDesc> buffers;   ///< All buffer resources
     std::vector<GraphPassDesc> passes;      ///< All passes in declaration order
     std::string outputTexture;              ///< Name of the final output texture
 

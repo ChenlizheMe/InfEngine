@@ -1,0 +1,1137 @@
+"""Portable particle-kernel opcode and runtime semantics."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+import math
+from typing import Any, Mapping, Sequence
+
+from Infernux.graph.types import (
+    AssetReference,
+    CoordinateSpace,
+    PORTABLE_TYPE_SYSTEM,
+    TypeRef,
+    ValueType,
+)
+from Infernux.graph.ramp import Curve, Gradient
+
+
+class KernelSemanticError(ValueError):
+    pass
+
+
+class KernelCapability(str, Enum):
+    PORTABLE = "portable"
+    TARGET_LIMITED = "target_limited"
+    APPROXIMATE = "approximate"
+
+
+class KernelStage(str, Enum):
+    INIT = "init"
+    UPDATE = "update"
+    CONTACT = "contact"
+    RENDERING = "rendering"
+
+
+def _matches_numeric_result(operand: TypeRef, result: TypeRef) -> bool:
+    if operand.value_type != result.value_type:
+        return False
+    return operand.space in {CoordinateSpace.NONE, result.space}
+
+
+@dataclass(frozen=True)
+class KernelOpcodeSpec:
+    result_required: bool
+    operand_count: int
+    immediate_names: frozenset[str] = frozenset()
+    stages: frozenset[KernelStage] = frozenset(KernelStage)
+    capability: KernelCapability = KernelCapability.PORTABLE
+
+
+_ALL_STAGES = frozenset(KernelStage)
+_UPDATE_ONLY = frozenset({KernelStage.UPDATE})
+_RENDER_ONLY = frozenset({KernelStage.RENDERING})
+_SUSPEND_STAGES = frozenset(
+    {
+        KernelStage.INIT,
+        KernelStage.UPDATE,
+        KernelStage.CONTACT,
+        KernelStage.RENDERING,
+    }
+)
+_SHAPE_IMMEDIATES = frozenset(
+    {
+        "shape",
+        "shape_space",
+        "radius",
+        "angle_degrees",
+        "dimensions",
+        "mesh",
+        "mesh_mode",
+        "sdf_interface",
+        "sdf_mode",
+        "random_slots",
+    }
+)
+
+KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
+    "constant": KernelOpcodeSpec(True, 0, frozenset({"value"})),
+    "load_attribute": KernelOpcodeSpec(True, 0, frozenset({"attribute"})),
+    "load_parameter": KernelOpcodeSpec(True, 0, frozenset({"parameter"})),
+    "store_parameter": KernelOpcodeSpec(False, 1, frozenset({"parameter"})),
+    "store_attribute": KernelOpcodeSpec(False, 1, frozenset({"attribute"})),
+    "load_uniform": KernelOpcodeSpec(True, 0, frozenset({"name"})),
+    "event_payload": KernelOpcodeSpec(
+        True,
+        0,
+        frozenset({"event_type_index", "field_stable_id", "word_offset", "word_count", "default"}),
+        _UPDATE_ONLY,
+    ),
+    "numeric_resize": KernelOpcodeSpec(True, 1),
+    "compose_vec2": KernelOpcodeSpec(True, 2),
+    "compose_vec3": KernelOpcodeSpec(True, 3),
+    "compose_vec4": KernelOpcodeSpec(True, 4),
+    "split_component": KernelOpcodeSpec(True, 1, frozenset({"component"})),
+    "add": KernelOpcodeSpec(True, 2),
+    "subtract": KernelOpcodeSpec(True, 2),
+    "multiply": KernelOpcodeSpec(True, 2),
+    "divide": KernelOpcodeSpec(True, 2),
+    "normalized_age": KernelOpcodeSpec(True, 2),
+    "lerp": KernelOpcodeSpec(True, 3),
+    "normalize": KernelOpcodeSpec(True, 1),
+    "minimum": KernelOpcodeSpec(True, 2),
+    "maximum": KernelOpcodeSpec(True, 2),
+    "power": KernelOpcodeSpec(True, 2),
+    "clamp": KernelOpcodeSpec(True, 3),
+    "saturate": KernelOpcodeSpec(True, 1),
+    "absolute": KernelOpcodeSpec(True, 1),
+    "floor": KernelOpcodeSpec(True, 1),
+    "ceil": KernelOpcodeSpec(True, 1),
+    "fraction": KernelOpcodeSpec(True, 1),
+    "square_root": KernelOpcodeSpec(True, 1),
+    "sine": KernelOpcodeSpec(True, 1),
+    "cosine": KernelOpcodeSpec(True, 1),
+    "length": KernelOpcodeSpec(True, 1),
+    "dot": KernelOpcodeSpec(True, 2),
+    "cross": KernelOpcodeSpec(True, 2),
+    "target_position_velocity": KernelOpcodeSpec(True, 7),
+    "random_f32": KernelOpcodeSpec(True, 3, frozenset({"random_slot"})),
+    "sample_curve": KernelOpcodeSpec(True, 1, frozenset({"curve"})),
+    "sample_curve_parameter": KernelOpcodeSpec(True, 2),
+    "sample_gradient": KernelOpcodeSpec(True, 1, frozenset({"gradient"})),
+    "sample_gradient_parameter": KernelOpcodeSpec(True, 2),
+    "sample_texture2d": KernelOpcodeSpec(True, 2),
+    "value_noise_3d": KernelOpcodeSpec(True, 3),
+    "vector_noise_3d": KernelOpcodeSpec(True, 3),
+    "sample_shape_position": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES),
+    "sample_shape_direction": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES),
+    "sample_vector_field": KernelOpcodeSpec(
+        True,
+        1,
+        frozenset({"interface"}),
+        _ALL_STAGES,
+    ),
+    "sample_sdf_distance": KernelOpcodeSpec(
+        True,
+        1,
+        frozenset({"interface"}),
+        _ALL_STAGES,
+    ),
+    "sample_sdf_gradient": KernelOpcodeSpec(
+        True,
+        1,
+        frozenset({"interface"}),
+        _ALL_STAGES,
+    ),
+    "sample_mesh": KernelOpcodeSpec(
+        True,
+        -1,
+        frozenset({"interface", "mode", "output", "seed"}),
+        _ALL_STAGES,
+    ),
+    "less_than": KernelOpcodeSpec(True, 2),
+    "less_equal": KernelOpcodeSpec(True, 2),
+    "greater_than": KernelOpcodeSpec(True, 2),
+    "greater_equal": KernelOpcodeSpec(True, 2),
+    "equal": KernelOpcodeSpec(True, 2),
+    "not_equal": KernelOpcodeSpec(True, 2),
+    "logical_and": KernelOpcodeSpec(True, 2),
+    "logical_or": KernelOpcodeSpec(True, 2),
+    "logical_not": KernelOpcodeSpec(True, 1),
+    "begin_if": KernelOpcodeSpec(False, 1),
+    "end_if": KernelOpcodeSpec(False, 0),
+    "suspend_frames": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset(
+            {
+                "lifecycle_stage",
+                "flow_id",
+                "lane_index",
+                "lane_stable_id",
+                "resume_program_counter",
+            }
+        ),
+        _SUSPEND_STAGES,
+    ),
+    "suspend_seconds": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset(
+            {
+                "lifecycle_stage",
+                "flow_id",
+                "lane_index",
+                "lane_stable_id",
+                "resume_program_counter",
+            }
+        ),
+        _SUSPEND_STAGES,
+    ),
+    "until_frames": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset(
+            {
+                "lifecycle_stage",
+                "flow_id",
+                "lane_index",
+                "lane_stable_id",
+                "resume_program_counter",
+            }
+        ),
+        _SUSPEND_STAGES,
+    ),
+    "until_seconds": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset(
+            {
+                "lifecycle_stage",
+                "flow_id",
+                "lane_index",
+                "lane_stable_id",
+                "resume_program_counter",
+            }
+        ),
+        _SUSPEND_STAGES,
+    ),
+    "kill_if": KernelOpcodeSpec(False, 1),
+    "event_begin": KernelOpcodeSpec(
+        True, 0, frozenset({"event_type_index", "queue_capacity"}), _UPDATE_ONLY
+    ),
+    "event_enqueue": KernelOpcodeSpec(
+        False,
+        -1,
+        frozenset({"event_type_index", "queue_capacity", "payload_layout"}),
+        _ALL_STAGES,
+    ),
+    "burst_enqueue": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset({"target_emitter_index", "target_capacity"}),
+        _ALL_STAGES,
+    ),
+    "emitter_set_playing": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset({"target_emitter_index"}),
+        _ALL_STAGES,
+    ),
+    "event_complete": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset({"event_type_index", "queue_capacity", "flow_id"}),
+        _UPDATE_ONLY,
+    ),
+    "collide_plane_position": KernelOpcodeSpec(True, 7),
+    "collide_plane_velocity": KernelOpcodeSpec(True, 7),
+    "collide_sphere_position": KernelOpcodeSpec(True, 7),
+    "collide_sphere_velocity": KernelOpcodeSpec(True, 7),
+    "collide_sdf_position": KernelOpcodeSpec(
+        True,
+        5,
+        frozenset({"interface", "inverted"}),
+        _ALL_STAGES,
+    ),
+    "collide_sdf_velocity": KernelOpcodeSpec(
+        True,
+        5,
+        frozenset({"interface", "inverted"}),
+        _ALL_STAGES,
+    ),
+    "collide_scene": KernelOpcodeSpec(
+        False,
+        7,
+        frozenset(
+            {
+                "position_attribute",
+                "velocity_attribute",
+                "hit_attribute",
+                "normal_attribute",
+                "point_attribute",
+                "relative_velocity_attribute",
+                "penetration_attribute",
+                "trigger_attribute",
+                "material_attribute",
+                "collider_id_low_attribute",
+                "collider_id_high_attribute",
+            }
+        ),
+        _UPDATE_ONLY,
+    ),
+    "export_attribute": KernelOpcodeSpec(
+        False, 1, frozenset({"attribute"}), _RENDER_ONLY
+    ),
+    "convert_space": KernelOpcodeSpec(
+        True, 1, frozenset({"from", "to", "semantic"}), _ALL_STAGES
+    ),
+}
+
+KERNEL_RUNTIME_UNIFORMS: Mapping[str, TypeRef] = {
+    "delta_time": TypeRef(ValueType.F32),
+}
+
+RANDOM_ALGORITHM = "inx_hash32"
+RANDOM_FLOAT_MAPPING = "high24_div_2pow24"
+RANDOM_KEY_FIELDS = (
+    "system_seed",
+    "emitter_seed",
+    "node_seed",
+    "particle_id",
+    "spawn_generation",
+    "simulation_step",
+    "random_slot",
+)
+
+
+@dataclass(frozen=True)
+class KernelRuntimeContract:
+    float_mode: str = "ieee754_f32"
+    non_finite_policy: str = "kill_particle"
+    normalize_zero_policy: str = "return_zero"
+    lifecycle_order: tuple[str, ...] = (
+        "spawn",
+        "init",
+        "update",
+        "contact",
+        "kill",
+        "rendering",
+    )
+    delta_time_policy: str = "finite_non_negative_f32"
+    pause_policy: str = "no_spawn_no_update_no_step_increment"
+    capacity_policy: str = "drop_newest"
+    unwritten_attribute_policy: str = "schema_default"
+    shape_sampling: str = "infernux_shape"
+    random_algorithm: str = RANDOM_ALGORITHM
+    random_float_mapping: str = RANDOM_FLOAT_MAPPING
+    random_key_fields: tuple[str, ...] = RANDOM_KEY_FIELDS
+
+    def __post_init__(self) -> None:
+        if self.float_mode != "ieee754_f32":
+            raise KernelSemanticError("unsupported particle kernel float mode")
+        if self.non_finite_policy != "kill_particle":
+            raise KernelSemanticError("unsupported particle non-finite policy")
+        if self.normalize_zero_policy != "return_zero":
+            raise KernelSemanticError("unsupported particle normalize-zero policy")
+        if tuple(self.lifecycle_order) != (
+            "spawn",
+            "init",
+            "update",
+            "contact",
+            "kill",
+            "rendering",
+        ):
+            raise KernelSemanticError("particle lifecycle order is part of the ABI")
+        if self.delta_time_policy != "finite_non_negative_f32":
+            raise KernelSemanticError("unsupported particle delta-time policy")
+        if self.pause_policy != "no_spawn_no_update_no_step_increment":
+            raise KernelSemanticError("unsupported particle pause policy")
+        if self.capacity_policy != "drop_newest":
+            raise KernelSemanticError("unsupported particle capacity policy")
+        if self.unwritten_attribute_policy != "schema_default":
+            raise KernelSemanticError("unsupported particle unwritten-attribute policy")
+        if self.shape_sampling != "infernux_shape":
+            raise KernelSemanticError("unsupported particle shape-sampling contract")
+        if self.random_algorithm != RANDOM_ALGORITHM:
+            raise KernelSemanticError("unsupported particle random algorithm")
+        if self.random_float_mapping != RANDOM_FLOAT_MAPPING:
+            raise KernelSemanticError("unsupported particle random float mapping")
+        if tuple(self.random_key_fields) != RANDOM_KEY_FIELDS:
+            raise KernelSemanticError("particle random key fields are part of the ABI")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "float_mode": self.float_mode,
+            "non_finite_policy": self.non_finite_policy,
+            "normalize_zero_policy": self.normalize_zero_policy,
+            "lifecycle_order": list(self.lifecycle_order),
+            "delta_time_policy": self.delta_time_policy,
+            "pause_policy": self.pause_policy,
+            "capacity_policy": self.capacity_policy,
+            "unwritten_attribute_policy": self.unwritten_attribute_policy,
+            "shape_sampling": self.shape_sampling,
+            "random_algorithm": self.random_algorithm,
+            "random_float_mapping": self.random_float_mapping,
+            "random_key_fields": list(self.random_key_fields),
+            "uniforms": {
+                name: value_type.to_dict()
+                for name, value_type in sorted(KERNEL_RUNTIME_UNIFORMS.items())
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "KernelRuntimeContract":
+        expected = {
+            "float_mode",
+            "non_finite_policy",
+            "normalize_zero_policy",
+            "lifecycle_order",
+            "delta_time_policy",
+            "pause_policy",
+            "capacity_policy",
+            "unwritten_attribute_policy",
+            "shape_sampling",
+            "random_algorithm",
+            "random_float_mapping",
+            "random_key_fields",
+            "uniforms",
+        }
+        if type(value) is not dict or set(value) != expected:
+            raise KernelSemanticError("particle kernel runtime contract shape is invalid")
+        if value["uniforms"] != {
+            name: value_type.to_dict()
+            for name, value_type in sorted(KERNEL_RUNTIME_UNIFORMS.items())
+        }:
+            raise KernelSemanticError("particle kernel uniform ABI does not match this runtime")
+        if (
+            type(value["random_key_fields"]) is not list
+            or type(value["lifecycle_order"]) is not list
+        ):
+            raise KernelSemanticError("particle lifecycle and random key fields must be arrays")
+        return cls(
+            value["float_mode"],
+            value["non_finite_policy"],
+            value["normalize_zero_policy"],
+            tuple(value["lifecycle_order"]),
+            value["delta_time_policy"],
+            value["pause_policy"],
+            value["capacity_policy"],
+            value["unwritten_attribute_policy"],
+            value["shape_sampling"],
+            value["random_algorithm"],
+            value["random_float_mapping"],
+            tuple(value["random_key_fields"]),
+        )
+
+
+def validate_instruction_semantics(
+    opcode: str,
+    result_type: TypeRef | None,
+    operand_types: Sequence[TypeRef],
+    immediates: Mapping[str, Any],
+    capability: KernelCapability,
+    *,
+    stage: KernelStage | None = None,
+) -> None:
+    spec = KERNEL_OPCODE_SPECS.get(opcode)
+    if spec is None:
+        raise KernelSemanticError(f"unknown particle kernel opcode {opcode!r}")
+    if (result_type is not None) != spec.result_required:
+        mode = "requires" if spec.result_required else "must not have"
+        raise KernelSemanticError(f"kernel opcode {opcode!r} {mode} a result")
+    if spec.operand_count >= 0 and len(operand_types) != spec.operand_count:
+        raise KernelSemanticError(
+            f"kernel opcode {opcode!r} requires {spec.operand_count} operands"
+        )
+    if opcode == "event_enqueue" and not operand_types:
+        raise KernelSemanticError("kernel event_enqueue requires a condition operand")
+    if set(immediates) != set(spec.immediate_names):
+        raise KernelSemanticError(
+            f"kernel opcode {opcode!r} immediates must be {sorted(spec.immediate_names)}"
+        )
+    if KernelCapability(capability) is not spec.capability:
+        raise KernelSemanticError(
+            f"kernel opcode {opcode!r} capability must be {spec.capability.value}"
+        )
+    if stage is not None and KernelStage(stage) not in spec.stages:
+        raise KernelSemanticError(
+            f"kernel opcode {opcode!r} is not valid in the {KernelStage(stage).value} stage"
+        )
+    _validate_opcode_types(opcode, result_type, tuple(operand_types), immediates)
+
+
+def _validate_opcode_types(
+    opcode: str,
+    result_type: TypeRef | None,
+    operands: tuple[TypeRef, ...],
+    immediates: Mapping[str, Any],
+) -> None:
+    f32 = TypeRef(ValueType.F32)
+    bool_type = TypeRef(ValueType.BOOL)
+    if opcode == "constant":
+        _validate_literal(result_type, immediates["value"])
+    elif opcode == "load_parameter":
+        if type(immediates["parameter"]) is not str or not immediates["parameter"]:
+            raise KernelSemanticError("kernel parameter id cannot be empty")
+    elif opcode == "store_parameter":
+        if type(immediates["parameter"]) is not str or not immediates["parameter"]:
+            raise KernelSemanticError("kernel parameter id cannot be empty")
+    elif opcode == "load_uniform":
+        expected = KERNEL_RUNTIME_UNIFORMS.get(immediates["name"])
+        if expected is None or result_type != expected:
+            raise KernelSemanticError("kernel uniform name or result type is invalid")
+    elif opcode == "event_payload":
+        _validate_u32(immediates["event_type_index"], "event type index")
+        if type(immediates["field_stable_id"]) is not str or not immediates["field_stable_id"]:
+            raise KernelSemanticError("kernel event payload field identity is invalid")
+        _validate_u32(immediates["word_offset"], "event payload word offset")
+        _validate_u32(immediates["word_count"], "event payload word count")
+        expected_words = {
+            ValueType.BOOL: 1,
+            ValueType.I32: 1,
+            ValueType.U32: 1,
+            ValueType.F32: 1,
+            ValueType.VEC2: 2,
+            ValueType.VEC3: 3,
+            ValueType.VEC4: 4,
+            ValueType.COLOR: 4,
+            ValueType.MAT3: 12,
+            ValueType.MAT4: 16,
+        }.get(result_type.value_type if result_type is not None else None)
+        if expected_words is None or immediates["word_count"] != expected_words:
+            raise KernelSemanticError("kernel event payload result layout is invalid")
+        _validate_literal(result_type, immediates["default"])
+    elif opcode == "numeric_resize":
+        if (
+            result_type is None
+            or len(operands) != 1
+            or not PORTABLE_TYPE_SYSTEM.can_resize_numeric(operands[0], result_type)
+        ):
+            raise KernelSemanticError(
+                "kernel numeric_resize requires one compatible numeric operand"
+            )
+    elif opcode in {"compose_vec2", "compose_vec3", "compose_vec4"}:
+        dimension = int(opcode[-1])
+        expected_type = TypeRef(getattr(ValueType, f"VEC{dimension}"))
+        if result_type != expected_type or operands != (f32,) * dimension:
+            raise KernelSemanticError(
+                f"kernel {opcode} requires {dimension} f32 inputs and a vec{dimension} result"
+            )
+    elif opcode == "split_component":
+        component = immediates["component"]
+        dimensions = {
+            ValueType.VEC2: 2,
+            ValueType.VEC3: 3,
+            ValueType.VEC4: 4,
+            ValueType.COLOR: 4,
+        }
+        dimension = dimensions.get(operands[0].value_type) if len(operands) == 1 else None
+        if (
+            result_type != f32
+            or type(component) is not int
+            or dimension is None
+            or not 0 <= component < dimension
+        ):
+            raise KernelSemanticError(
+                "kernel split_component requires one vector and an in-range component"
+            )
+    elif opcode in {"add", "subtract", "divide"}:
+        if result_type is None or not all(
+            _matches_numeric_result(operand, result_type) for operand in operands
+        ):
+            raise KernelSemanticError(
+                f"kernel {opcode} requires two operands matching its result"
+            )
+    elif opcode == "multiply":
+        if result_type is None or not (
+            all(_matches_numeric_result(operand, result_type) for operand in operands)
+            or (
+                len(operands) == 2
+                and operands[1] == f32
+                and _matches_numeric_result(operands[0], result_type)
+            )
+            or (
+                len(operands) == 2
+                and operands[0] == f32
+                and _matches_numeric_result(operands[1], result_type)
+            )
+        ):
+            raise KernelSemanticError(
+                "kernel multiply requires matching operands or one f32 scalar"
+            )
+    elif opcode == "lerp":
+        if result_type is None or not (
+            len(operands) == 3
+            and _matches_numeric_result(operands[0], result_type)
+            and _matches_numeric_result(operands[1], result_type)
+            and operands[2] == f32
+        ):
+            raise KernelSemanticError(
+                "kernel lerp requires two operands matching its result and one f32 factor"
+            )
+    elif opcode == "normalize":
+        if result_type is None or operands != (result_type,) or result_type.value_type not in {
+            ValueType.VEC2,
+            ValueType.VEC3,
+            ValueType.VEC4,
+        }:
+            raise KernelSemanticError("kernel normalize requires one matching vector operand")
+    elif opcode in {
+        "saturate",
+        "absolute",
+        "floor",
+        "ceil",
+        "fraction",
+        "square_root",
+        "sine",
+        "cosine",
+    }:
+        if result_type is None or operands != (result_type,) or result_type.value_type not in {
+            ValueType.F32,
+            ValueType.VEC2,
+            ValueType.VEC3,
+            ValueType.VEC4,
+            ValueType.COLOR,
+        }:
+            raise KernelSemanticError(
+                f"kernel {opcode} requires one matching f32 scalar or vector operand"
+            )
+    elif opcode in {"minimum", "maximum", "power"}:
+        if result_type is None or not all(
+            _matches_numeric_result(operand, result_type) for operand in operands
+        ):
+            raise KernelSemanticError(
+                f"kernel {opcode} requires two operands matching its result"
+            )
+    elif opcode == "clamp":
+        if result_type is None or not all(
+            _matches_numeric_result(operand, result_type) for operand in operands
+        ):
+            raise KernelSemanticError(
+                "kernel clamp requires value, minimum and maximum matching its result"
+            )
+    elif opcode == "length":
+        if result_type != f32 or len(operands) != 1 or operands[0].value_type not in {
+            ValueType.VEC2,
+            ValueType.VEC3,
+            ValueType.VEC4,
+        }:
+            raise KernelSemanticError("kernel length requires one vector and an f32 result")
+    elif opcode == "dot":
+        if (
+            result_type != f32
+            or len(operands) != 2
+            or operands[0] != operands[1]
+            or operands[0].value_type not in {ValueType.VEC2, ValueType.VEC3, ValueType.VEC4}
+        ):
+            raise KernelSemanticError("kernel dot requires two matching vectors and an f32 result")
+    elif opcode == "cross":
+        if (
+            result_type is None
+            or result_type.value_type is not ValueType.VEC3
+            or operands != (result_type, result_type)
+        ):
+            raise KernelSemanticError("kernel cross requires two matching vec3 operands")
+    elif opcode == "target_position_velocity":
+        simulation_vector = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        if result_type != simulation_vector or operands != (
+            simulation_vector,
+            simulation_vector,
+            simulation_vector,
+            f32,
+            f32,
+            f32,
+            f32,
+        ):
+            raise KernelSemanticError(
+                "kernel target_position_velocity requires simulation-space position, "
+                "velocity and target vectors followed by speed, responsiveness, "
+                "arrival radius and delta time"
+            )
+    elif opcode == "random_f32":
+        if result_type != f32 or operands != (f32, f32, TypeRef(ValueType.U32)):
+            raise KernelSemanticError(
+                "kernel random_f32 requires f32 bounds, a u32 node seed, and an f32 result"
+            )
+        _validate_u32(immediates["random_slot"], "random_slot")
+    elif opcode == "sample_curve":
+        if result_type != f32 or operands != (f32,):
+            raise KernelSemanticError("curve sampling requires one f32 input and an f32 result")
+        try:
+            Curve.from_dict(immediates["curve"])
+        except (TypeError, ValueError) as exc:
+            raise KernelSemanticError(f"invalid curve literal: {exc}") from exc
+    elif opcode == "sample_curve_parameter":
+        if result_type != f32 or operands != (
+            TypeRef(ValueType.CURVE),
+            f32,
+        ):
+            raise KernelSemanticError(
+                "dynamic curve sampling requires a curve, one f32 input and an f32 result"
+            )
+    elif opcode == "sample_gradient":
+        if result_type != TypeRef(ValueType.COLOR) or operands != (f32,):
+            raise KernelSemanticError(
+                "gradient sampling requires one f32 input and a color result"
+            )
+        try:
+            Gradient.from_dict(immediates["gradient"])
+        except (TypeError, ValueError) as exc:
+            raise KernelSemanticError(f"invalid gradient literal: {exc}") from exc
+    elif opcode == "sample_gradient_parameter":
+        if result_type != TypeRef(ValueType.COLOR) or operands != (
+            TypeRef(ValueType.GRADIENT),
+            f32,
+        ):
+            raise KernelSemanticError(
+                "dynamic gradient sampling requires a gradient, one f32 input and a color result"
+            )
+    elif opcode == "sample_texture2d":
+        if result_type != TypeRef(ValueType.COLOR) or operands != (
+            TypeRef(ValueType.TEXTURE2D),
+            TypeRef(ValueType.VEC2),
+        ):
+            raise KernelSemanticError(
+                "Texture2D sampling requires a Texture2D, vec2 UV and color result"
+            )
+    elif opcode in {"value_noise_3d", "vector_noise_3d"}:
+        if (
+            len(operands) != 3
+            or operands[0].value_type is not ValueType.VEC3
+            or operands[1:] != (f32, TypeRef(ValueType.U32))
+        ):
+            raise KernelSemanticError(
+                f"kernel {opcode} requires vec3 position, f32 frequency and u32 seed"
+            )
+        expected = f32 if opcode == "value_noise_3d" else operands[0]
+        if result_type != expected:
+            raise KernelSemanticError(
+                f"kernel {opcode} has an invalid result type"
+            )
+    elif opcode.startswith("sample_shape_"):
+        if result_type is None or result_type.value_type is not ValueType.VEC3:
+            raise KernelSemanticError("kernel shape sampling requires a vec3 result")
+        try:
+            shape_space = CoordinateSpace(immediates["shape_space"])
+        except ValueError as exc:
+            raise KernelSemanticError("kernel shape space is invalid") from exc
+        if shape_space not in {CoordinateSpace.EMITTER_LOCAL, CoordinateSpace.WORLD}:
+            raise KernelSemanticError("kernel shape space must be emitter_local or world")
+        if immediates["shape"] not in {"point", "sphere", "box", "cone", "mesh", "sdf"}:
+            raise KernelSemanticError("kernel shape kind is invalid")
+        expected_space = (
+            CoordinateSpace.SIMULATION
+            if immediates["shape"] == "sdf"
+            else shape_space
+        )
+        if result_type.space is not expected_space:
+            raise KernelSemanticError("kernel shape result has an invalid coordinate space")
+        _validate_non_negative(immediates["radius"], "shape radius")
+        angle = _finite_number(immediates["angle_degrees"], "shape angle")
+        if not 0.0 <= angle <= 180.0:
+            raise KernelSemanticError("kernel shape angle must be between 0 and 180")
+        dimensions = immediates["dimensions"]
+        if not isinstance(dimensions, (list, tuple)) or len(dimensions) != 3:
+            raise KernelSemanticError("kernel shape dimensions require three values")
+        for value in dimensions:
+            _validate_non_negative(value, "shape dimension")
+        try:
+            mesh = AssetReference.from_dict(immediates["mesh"])
+        except (TypeError, ValueError) as exc:
+            raise KernelSemanticError("kernel shape mesh reference is invalid") from exc
+        if immediates["mesh_mode"] not in {"vertex", "edge", "surface"}:
+            raise KernelSemanticError("kernel mesh shape mode is invalid")
+        if immediates["shape"] == "mesh" and not (mesh.guid or mesh.path_hint):
+            raise KernelSemanticError("kernel mesh shape requires a mesh asset")
+        if type(immediates["sdf_interface"]) is not str:
+            raise KernelSemanticError("kernel SDF shape interface must be a string")
+        if immediates["sdf_mode"] not in {"surface", "volume"}:
+            raise KernelSemanticError("kernel SDF shape mode is invalid")
+        if immediates["shape"] == "sdf" and not immediates["sdf_interface"].strip():
+            raise KernelSemanticError("kernel SDF shape requires a Data Interface")
+        random_slots = immediates["random_slots"]
+        if not isinstance(random_slots, (list, tuple)) or len(random_slots) != 3:
+            raise KernelSemanticError("kernel shape sampling requires three random slots")
+        for random_slot in random_slots:
+            _validate_u32(random_slot, "random_slot")
+        if len(set(random_slots)) != len(random_slots):
+            raise KernelSemanticError("kernel shape sampling random slots must be unique")
+    elif opcode == "sample_vector_field":
+        simulation_vector = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        if operands != (simulation_vector,) or result_type != simulation_vector:
+            raise KernelSemanticError(
+                "vector field sampling requires and produces a simulation-space vec3"
+            )
+        if type(immediates["interface"]) is not str or not immediates["interface"].strip():
+            raise KernelSemanticError("vector field interface cannot be empty")
+    elif opcode in {"sample_sdf_distance", "sample_sdf_gradient"}:
+        simulation_vector = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        expected_result = (
+            TypeRef(ValueType.F32)
+            if opcode == "sample_sdf_distance"
+            else simulation_vector
+        )
+        if operands != (simulation_vector,) or result_type != expected_result:
+            raise KernelSemanticError(
+                "SDF sampling requires a simulation-space vec3 position and a typed distance or gradient result"
+            )
+        if type(immediates["interface"]) is not str or not immediates["interface"].strip():
+            raise KernelSemanticError("SDF interface cannot be empty")
+    elif opcode == "sample_mesh":
+        if operands not in {(), (TypeRef(ValueType.VEC3),)}:
+            raise KernelSemanticError(
+                "mesh sampling accepts zero or one unit vec3 sample coordinate"
+            )
+        output_types = {
+            "position": TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+            "normal": TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+            "tangent": TypeRef(ValueType.VEC4, CoordinateSpace.SIMULATION),
+            "uv": TypeRef(ValueType.VEC2),
+            "barycentric": TypeRef(ValueType.VEC3),
+        }
+        if result_type != output_types.get(immediates["output"]):
+            raise KernelSemanticError("mesh sample output type does not match its selected attribute")
+        if type(immediates["interface"]) is not str or not immediates["interface"].strip():
+            raise KernelSemanticError("mesh resource binding cannot be empty")
+        if immediates["mode"] not in {"vertex", "edge", "surface"}:
+            raise KernelSemanticError("mesh sampling mode is invalid")
+        _validate_u32(immediates["seed"], "mesh sampling seed")
+    elif opcode in {"less_than", "less_equal", "greater_than", "greater_equal", "equal", "not_equal"}:
+        if result_type != bool_type or operands[0] != operands[1] or operands[0].value_type not in {
+            ValueType.I32,
+            ValueType.U32,
+            ValueType.F32,
+        }:
+            raise KernelSemanticError(f"kernel {opcode} requires matching scalar operands")
+    elif opcode in {"logical_and", "logical_or"}:
+        if result_type != bool_type or operands != (bool_type, bool_type):
+            raise KernelSemanticError(f"kernel {opcode} requires and produces bool values")
+    elif opcode == "logical_not":
+        if result_type != bool_type or operands != (bool_type,):
+            raise KernelSemanticError("kernel logical_not requires and produces one bool")
+    elif opcode == "begin_if":
+        if operands != (bool_type,):
+            raise KernelSemanticError("kernel begin_if requires one bool operand")
+    elif opcode == "end_if":
+        if operands:
+            raise KernelSemanticError("kernel end_if cannot have operands")
+    elif opcode in {
+        "suspend_frames",
+        "suspend_seconds",
+        "until_frames",
+        "until_seconds",
+    }:
+        expected = TypeRef(
+            ValueType.I32 if opcode.endswith("frames") else ValueType.F32
+        )
+        if operands != (expected,):
+            raise KernelSemanticError(
+                f"kernel {opcode} requires one {expected.value_type.value} operand"
+            )
+        if (
+            type(immediates["lifecycle_stage"]) is not str
+            or immediates["lifecycle_stage"] not in {
+                "init",
+                "update",
+                "collision_enter",
+                "collision_stay",
+                "collision_exit",
+                "event",
+                "rendering",
+            }
+            or type(immediates["flow_id"]) is not str
+            or (
+                immediates["lifecycle_stage"] == "event"
+                and not immediates["flow_id"]
+            )
+            or type(immediates["lane_index"]) is not int
+            or immediates["lane_index"] < 0
+            or type(immediates["lane_stable_id"]) is not str
+            or not immediates["lane_stable_id"]
+            or type(immediates["resume_program_counter"]) is not int
+            or immediates["resume_program_counter"] <= 0
+        ):
+            raise KernelSemanticError(f"kernel {opcode} resume descriptor is invalid")
+    elif opcode == "kill_if":
+        if operands != (bool_type,):
+            raise KernelSemanticError("kernel kill_if requires one bool operand")
+    elif opcode == "event_begin":
+        if result_type != bool_type or operands:
+            raise KernelSemanticError("kernel event_begin requires a bool result")
+        _validate_u32(immediates["event_type_index"], "event type index")
+        capacity = immediates["queue_capacity"]
+        if type(capacity) is not int or not 1 <= capacity <= 64:
+            raise KernelSemanticError("kernel event queue capacity is invalid")
+    elif opcode == "event_enqueue":
+        if operands[0] != bool_type:
+            raise KernelSemanticError("kernel event_enqueue condition must be bool")
+        _validate_u32(immediates["event_type_index"], "event type index")
+        capacity = immediates["queue_capacity"]
+        if type(capacity) is not int or not 1 <= capacity <= 64:
+            raise KernelSemanticError("kernel event queue capacity is invalid")
+        layout = immediates["payload_layout"]
+        if type(layout) is not list or len(layout) != len(operands) - 1:
+            raise KernelSemanticError(
+                "kernel event_enqueue payload layout must match its operands"
+            )
+        next_word = 0
+        for index, (field, operand) in enumerate(zip(layout, operands[1:])):
+            if type(field) is not dict or set(field) != {
+                "stable_id",
+                "type",
+                "word_offset",
+                "word_count",
+            }:
+                raise KernelSemanticError("kernel event_enqueue field layout is invalid")
+            if type(field["stable_id"]) is not str or not field["stable_id"]:
+                raise KernelSemanticError("kernel event_enqueue field identity is invalid")
+            try:
+                field_type = TypeRef.from_dict(field["type"])
+            except (TypeError, ValueError) as exc:
+                raise KernelSemanticError(
+                    "kernel event_enqueue field type is invalid"
+                ) from exc
+            if field_type != operand:
+                raise KernelSemanticError(
+                    f"kernel event_enqueue field {index} type does not match its operand"
+                )
+            expected_words = {
+                ValueType.BOOL: 1,
+                ValueType.I32: 1,
+                ValueType.U32: 1,
+                ValueType.F32: 1,
+                ValueType.VEC2: 2,
+                ValueType.VEC3: 3,
+                ValueType.VEC4: 4,
+                ValueType.COLOR: 4,
+                ValueType.MAT3: 12,
+                ValueType.MAT4: 16,
+            }.get(field_type.value_type)
+            if (
+                type(field["word_offset"]) is not int
+                or field["word_offset"] != next_word
+                or type(field["word_count"]) is not int
+                or field["word_count"] != expected_words
+            ):
+                raise KernelSemanticError(
+                    "kernel event_enqueue field word layout is invalid"
+                )
+            next_word += expected_words
+    elif opcode == "event_complete":
+        if operands != (bool_type,):
+            raise KernelSemanticError("kernel event_complete requires one bool operand")
+        _validate_u32(immediates["event_type_index"], "event type index")
+        capacity = immediates["queue_capacity"]
+        if type(capacity) is not int or not 1 <= capacity <= 64:
+            raise KernelSemanticError("kernel event queue capacity is invalid")
+        if type(immediates["flow_id"]) is not str or not immediates["flow_id"]:
+            raise KernelSemanticError("kernel event flow identity is invalid")
+    elif opcode == "burst_enqueue":
+        if operands != (TypeRef(ValueType.U32),):
+            raise KernelSemanticError("kernel burst_enqueue requires one u32 count operand")
+        _validate_u32(immediates["target_emitter_index"], "target emitter index")
+        capacity = immediates["target_capacity"]
+        if type(capacity) is not int or capacity <= 0:
+            raise KernelSemanticError("kernel burst_enqueue target capacity is invalid")
+    elif opcode == "emitter_set_playing":
+        if operands != (TypeRef(ValueType.BOOL),):
+            raise KernelSemanticError(
+                "kernel emitter_set_playing requires one bool operand"
+            )
+        _validate_u32(immediates["target_emitter_index"], "target emitter index")
+    elif opcode in {"collide_plane_position", "collide_plane_velocity"}:
+        simulation_vec3 = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        if result_type != simulation_vec3 or operands != (
+            simulation_vec3,
+            simulation_vec3,
+            simulation_vec3,
+            simulation_vec3,
+            f32,
+            f32,
+            f32,
+        ):
+            raise KernelSemanticError(
+                f"kernel {opcode} requires simulation-space position, velocity, plane point, "
+                "plane normal, radius, restitution and friction"
+            )
+    elif opcode in {"collide_sphere_position", "collide_sphere_velocity"}:
+        simulation_vec3 = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        if result_type != simulation_vec3 or operands != (
+            simulation_vec3,
+            simulation_vec3,
+            simulation_vec3,
+            f32,
+            f32,
+            f32,
+            f32,
+        ):
+            raise KernelSemanticError(
+                f"kernel {opcode} requires simulation-space position, velocity and sphere "
+                "center followed by sphere radius, particle radius, restitution and friction"
+            )
+    elif opcode in {"collide_sdf_position", "collide_sdf_velocity"}:
+        simulation_vec3 = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        if result_type != simulation_vec3 or operands != (
+            simulation_vec3,
+            simulation_vec3,
+            f32,
+            f32,
+            f32,
+        ):
+            raise KernelSemanticError(
+                f"kernel {opcode} requires simulation-space position and velocity followed by "
+                "particle radius, restitution and friction"
+            )
+        if type(immediates["interface"]) is not str or not immediates["interface"].strip():
+            raise KernelSemanticError("SDF collision interface cannot be empty")
+        if type(immediates["inverted"]) is not bool:
+            raise KernelSemanticError("SDF collision inverted must be a boolean")
+    elif opcode == "collide_scene":
+        simulation_vec3 = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        if operands != (
+            simulation_vec3,
+            simulation_vec3,
+            f32,
+            TypeRef(ValueType.U32),
+            bool_type,
+            f32,
+            f32,
+        ):
+            raise KernelSemanticError(
+                "kernel collide_scene requires simulation-space position and velocity, "
+                "particle radius, layer mask, trigger flag, restitution scale and friction scale"
+            )
+        for name in (
+            "position_attribute",
+            "velocity_attribute",
+            "hit_attribute",
+            "normal_attribute",
+            "point_attribute",
+            "relative_velocity_attribute",
+            "penetration_attribute",
+            "trigger_attribute",
+            "material_attribute",
+            "collider_id_low_attribute",
+            "collider_id_high_attribute",
+        ):
+            if type(immediates[name]) is not str:
+                raise KernelSemanticError(
+                    f"kernel collide_scene {name} must be an attribute ID string"
+                )
+    elif opcode == "convert_space":
+        if result_type is None or operands[0].value_type != result_type.value_type:
+            raise KernelSemanticError("kernel space conversion must preserve value type")
+        if operands[0].space.value != immediates["from"] or result_type.space.value != immediates["to"]:
+            raise KernelSemanticError("kernel space conversion metadata does not match its types")
+        if immediates["semantic"] not in {"position", "direction", "vector"}:
+            raise KernelSemanticError("kernel space conversion semantic is invalid")
+
+
+def _validate_literal(value_type: TypeRef | None, value: Any) -> None:
+    if value_type is None:
+        raise KernelSemanticError("kernel constant requires a result type")
+    kind = value_type.value_type
+    if kind is ValueType.BOOL:
+        valid = type(value) is bool
+    elif kind in {ValueType.I32, ValueType.U32}:
+        valid = type(value) is int and (kind is not ValueType.U32 or value >= 0)
+    elif kind is ValueType.F32:
+        valid = not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(float(value))
+    elif kind is ValueType.TEXTURE2D:
+        try:
+            AssetReference.from_dict(value)
+            valid = True
+        except (TypeError, ValueError):
+            valid = False
+    else:
+        count = {
+            ValueType.VEC2: 2,
+            ValueType.VEC3: 3,
+            ValueType.VEC4: 4,
+            ValueType.COLOR: 4,
+            ValueType.MAT3: 9,
+            ValueType.MAT4: 16,
+        }.get(kind)
+        valid = count is not None and isinstance(value, (list, tuple)) and len(value) == count and all(
+            not isinstance(item, bool)
+            and isinstance(item, (int, float))
+            and math.isfinite(float(item))
+            for item in value
+        )
+    if not valid:
+        raise KernelSemanticError(f"kernel constant does not match {value_type}")
+
+
+def _finite_number(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise KernelSemanticError(f"kernel {label} must be finite")
+    return float(value)
+
+
+def _validate_non_negative(value: Any, label: str) -> None:
+    if _finite_number(value, label) < 0.0:
+        raise KernelSemanticError(f"kernel {label} must be non-negative")
+
+
+def _validate_u32(value: Any, label: str) -> None:
+    if type(value) is not int or not 0 <= value <= 0xFFFFFFFF:
+        raise KernelSemanticError(f"kernel {label} must be an unsigned 32-bit integer")
+
+
+def particle_random_u32(
+    system_seed: int,
+    emitter_seed: int,
+    node_seed: int,
+    particle_id: int,
+    spawn_generation: int,
+    simulation_step: int,
+    random_slot: int,
+) -> int:
+    """Reference implementation of the exact integer RNG shared by all backends."""
+
+    values = (
+        system_seed,
+        emitter_seed,
+        node_seed,
+        particle_id,
+        spawn_generation,
+        simulation_step,
+        random_slot,
+    )
+    state = 0x811C9DC5
+    for value in values:
+        _validate_u32(value, "random key field")
+        state ^= value
+        state = (state * 0x01000193) & 0xFFFFFFFF
+        state ^= state >> 16
+    state ^= state >> 16
+    state = (state * 0x7FEB352D) & 0xFFFFFFFF
+    state ^= state >> 15
+    state = (state * 0x846CA68B) & 0xFFFFFFFF
+    state ^= state >> 16
+    return state & 0xFFFFFFFF
+
+
+def particle_random_f32(*key: int) -> float:
+    """Map the high 24 random bits to the portable half-open range [0, 1)."""
+
+    return float(particle_random_u32(*key) >> 8) * (1.0 / 16777216.0)
+
+
+__all__ = [
+    "KERNEL_OPCODE_SPECS",
+    "KERNEL_RUNTIME_UNIFORMS",
+    "KernelCapability",
+    "KernelOpcodeSpec",
+    "KernelRuntimeContract",
+    "KernelSemanticError",
+    "KernelStage",
+    "RANDOM_ALGORITHM",
+    "RANDOM_FLOAT_MAPPING",
+    "RANDOM_KEY_FIELDS",
+    "particle_random_f32",
+    "particle_random_u32",
+    "validate_instruction_semantics",
+]

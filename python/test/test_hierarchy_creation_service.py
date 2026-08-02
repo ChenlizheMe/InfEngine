@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from Infernux.engine.hierarchy_creation_service import _unique_scene_object_name
+from Infernux.engine.hierarchy_creation_service import (
+    _component_names,
+    _unique_scene_object_name,
+)
 
 
 @dataclass
@@ -27,7 +30,17 @@ def test_unique_scene_object_name_uses_first_available_unity_style_suffix():
     assert _unique_scene_object_name(scene, "Cube", exclude_id=1) == "Cube"
 
 
-def test_hierarchy_creation_wiring_exposes_canvas_text_and_button(monkeypatch):
+def test_component_names_deduplicates_python_components_in_combined_component_view():
+    component = SimpleNamespace(component_id=17, type_name="ParticleSystem")
+    obj = SimpleNamespace(
+        get_components=lambda: [component],
+        get_py_components=lambda: [component],
+    )
+
+    assert _component_names(obj) == ["ParticleSystem"]
+
+
+def test_hierarchy_creation_wiring_exposes_canvas_only_ui_and_particle_effect(monkeypatch):
     from Infernux.engine.bootstrap_hierarchy import _creation
 
     class _Service:
@@ -55,11 +68,43 @@ def test_hierarchy_creation_wiring_exposes_canvas_text_and_button(monkeypatch):
     )
 
     ui_entries = [(category, locale_key) for category, locale_key, _callback in hierarchy.entries if category == "UI"]
-    assert ui_entries == [
-        ("UI", "hierarchy.ui_canvas"),
-        ("UI", "hierarchy.ui_text"),
-        ("UI", "hierarchy.ui_button"),
+    effect_entries = [
+        (category, locale_key)
+        for category, locale_key, _callback in hierarchy.entries
+        if category == "Effect"
     ]
+    assert ui_entries == [("UI", "hierarchy.ui_canvas")]
+    assert effect_entries == [("Effect", "hierarchy.particle_system")]
+
+
+def test_hierarchy_creation_catalog_includes_image():
+    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+
+    service = HierarchyCreationService()
+    kinds = {entry["kind"] for entry in service.list_create_kinds()}
+
+    assert "ui.image" in kinds
+    assert service._description_for("ui.image") == "Create Image"
+
+
+def test_creation_explicitly_asks_hierarchy_to_reveal_selected_object():
+    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+
+    selected = []
+    revealed = []
+    service = HierarchyCreationService()
+    service.configure(
+        selection_manager=SimpleNamespace(select=lambda object_id: selected.append(object_id)),
+        undo_tracker=None,
+        hierarchy_panel=SimpleNamespace(
+            set_selected_object_by_id=lambda object_id: revealed.append(object_id)
+        ),
+    )
+
+    service._finalize(_Object(42, "Created"), 0, "Create", select=True, record_undo=False)
+
+    assert selected == [42]
+    assert revealed == [42]
 
 
 def test_ui_element_creation_uses_the_only_existing_canvas_when_context_parent_is_lost():

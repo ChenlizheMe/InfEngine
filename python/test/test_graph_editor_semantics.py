@@ -7,7 +7,10 @@ import pytest
 from Infernux.core.anim_state_machine import AnimParameter, AnimStateMachine
 from Infernux.engine.ui import animfsm_editor_panel as animfsm_module
 from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
-from Infernux.engine.ui.node_graph_view import NodeGraphView
+from Infernux.engine.ui.node_graph_view import NodeCreationEntry, NodeGraphView
+from Infernux.engine.ui.graph_document_authoring import _canvas_definition
+from Infernux.graph.registry import COMMON_NODE_REGISTRY
+import Infernux.particle.nodes  # noqa: F401 - registers particle node definitions
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +34,50 @@ class _ToolbarContext:
 
     @staticmethod
     def same_line(*_args) -> None:
+        pass
+
+    @staticmethod
+    def get_content_region_avail_width() -> float:
+        return 320.0
+
+    @staticmethod
+    def get_cursor_pos_x() -> float:
+        return 0.0
+
+    @staticmethod
+    def set_cursor_pos_x(_value: float) -> None:
+        pass
+
+    @staticmethod
+    def push_style_var_vec2(*_args) -> None:
+        pass
+
+    @staticmethod
+    def pop_style_var(*_args) -> None:
+        pass
+
+    @staticmethod
+    def get_item_rect_min_x() -> float:
+        return 0.0
+
+    @staticmethod
+    def get_item_rect_min_y() -> float:
+        return 0.0
+
+    @staticmethod
+    def get_item_rect_max_x() -> float:
+        return 22.0
+
+    @staticmethod
+    def get_item_rect_max_y() -> float:
+        return 22.0
+
+    @staticmethod
+    def draw_image_rect(*_args) -> None:
+        pass
+
+    @staticmethod
+    def draw_text_aligned(*_args) -> None:
         pass
 
     @staticmethod
@@ -110,6 +157,10 @@ class _ConfirmationContext:
         pass
 
     @staticmethod
+    def text_wrapped(_text: str) -> None:
+        pass
+
+    @staticmethod
     def spacing() -> None:
         pass
 
@@ -117,7 +168,7 @@ class _ConfirmationContext:
     def separator() -> None:
         pass
 
-    def button(self, label: str, callback) -> bool:
+    def button(self, label: str, callback, **_kwargs) -> bool:
         if label.startswith(self.clicked):
             callback()
             return True
@@ -177,6 +228,38 @@ class _TransitionDetailContext:
 
     @staticmethod
     def pop_style_color(*_args) -> None:
+        pass
+
+    @staticmethod
+    def push_style_var_vec2(*_args) -> None:
+        pass
+
+    @staticmethod
+    def pop_style_var(*_args) -> None:
+        pass
+
+    @staticmethod
+    def get_item_rect_min_x() -> float:
+        return 0.0
+
+    @staticmethod
+    def get_item_rect_min_y() -> float:
+        return 0.0
+
+    @staticmethod
+    def get_item_rect_max_x() -> float:
+        return 22.0
+
+    @staticmethod
+    def get_item_rect_max_y() -> float:
+        return 22.0
+
+    @staticmethod
+    def draw_image_rect(*_args) -> None:
+        pass
+
+    @staticmethod
+    def draw_text_aligned(*_args) -> None:
         pass
 
     @staticmethod
@@ -263,6 +346,7 @@ def test_animfsm_parameter_add_exposes_stable_semantic_id():
     panel._fsm = AnimStateMachine(name="Locomotion")
     panel._graph = SimpleNamespace(find_node=lambda _uid: None)
     panel._selected_uid = ""
+    panel._selected_parameter_index = -1
     ctx = _ToolbarContext()
     ctx.push_style_color = lambda *_args: None
     ctx.pop_style_color = lambda *_args: None
@@ -272,6 +356,320 @@ def test_animfsm_parameter_add_exposes_stable_semantic_id():
     panel._render_variables_panel(ctx)
 
     assert "animfsm.parameters.add" in {item[3] for item in ctx.semantic_items}
+
+
+def test_node_graph_inline_overlay_submits_layout_item_after_cursor_restore():
+    class _InlineOverlayContext:
+        def __init__(self) -> None:
+            self.cursor_x = 17.0
+            self.cursor_y = 29.0
+            self.dummy_calls: list[tuple[float, float]] = []
+
+        def get_cursor_pos_x(self) -> float:
+            return self.cursor_x
+
+        def get_cursor_pos_y(self) -> float:
+            return self.cursor_y
+
+        def set_cursor_pos_x(self, value: float) -> None:
+            self.cursor_x = value
+
+        def set_cursor_pos_y(self, value: float) -> None:
+            self.cursor_y = value
+
+        @staticmethod
+        def set_window_font_scale(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def push_style_var_vec2(_style, _x: float, _y: float) -> None:
+            pass
+
+        @staticmethod
+        def push_style_var_float(_style, _value: float) -> None:
+            pass
+
+        @staticmethod
+        def pop_style_var(_count: int = 1) -> None:
+            pass
+
+        def dummy(self, width: float, height: float) -> None:
+            self.dummy_calls.append((width, height))
+
+    view = NodeGraphView()
+    view.graph = SimpleNamespace(nodes=[])
+    view.zoom = 1.0
+    view._layouts = {}
+    ctx = _InlineOverlayContext()
+
+    view._draw_inline_fields(ctx)
+
+    assert (ctx.cursor_x, ctx.cursor_y) == (17.0, 29.0)
+    assert ctx.dummy_calls == [(0.0, 0.0)]
+
+
+def test_node_graph_canvas_unwinds_clip_and_child_when_inline_render_raises():
+    events: list[str] = []
+    ctx = SimpleNamespace(
+        get_content_region_avail_width=lambda: 640.0,
+        get_content_region_avail_height=lambda: 360.0,
+        begin_child=lambda *_args: True,
+        end_child=lambda: events.append("end_child"),
+        set_scroll_x=lambda _value: None,
+        set_scroll_y=lambda _value: None,
+        is_window_hovered=lambda: True,
+        get_window_pos_x=lambda: 12.0,
+        get_window_pos_y=lambda: 24.0,
+        semantic_capture_enabled=False,
+        push_draw_list_clip_rect=lambda *_args: events.append("push_clip"),
+        pop_draw_list_clip_rect=lambda: events.append("pop_clip"),
+        draw_filled_rect=lambda *_args: None,
+        get_mouse_pos_x=lambda: 20.0,
+        get_mouse_pos_y=lambda: 30.0,
+    )
+    view = NodeGraphView()
+    view.graph = SimpleNamespace(nodes=[], links=[])
+    view._submit_canvas_background_region = lambda *_args: True
+    view._draw_grid = lambda *_args: None
+    view._compute_layouts = lambda: None
+    view._hit_test_pin = lambda *_args: (None, None, None)
+    view._draw_links = lambda *_args: None
+    view._draw_nodes = lambda *_args: None
+
+    def _raise_inline(_ctx):
+        raise RuntimeError("inline render failed")
+
+    view._draw_inline_fields = _raise_inline
+
+    with pytest.raises(RuntimeError, match="inline render failed"):
+        view.render(ctx)
+
+    assert events == ["push_clip", "pop_clip", "end_child"]
+
+
+def test_node_graph_inline_enum_records_combo_semantics():
+    class _InlineEnumContext:
+        def __init__(self) -> None:
+            self.semantic_items: list[tuple] = []
+
+        @staticmethod
+        def set_cursor_pos_x(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def set_cursor_pos_y(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def push_id_str(_value: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_id() -> None:
+            pass
+
+        @staticmethod
+        def set_next_item_width(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def combo(_label: str, index: int, _items: list[str], _count: int) -> int:
+            return index
+
+        @staticmethod
+        def is_item_hovered() -> bool:
+            return False
+
+        @staticmethod
+        def is_item_active() -> bool:
+            return False
+
+        def record_semantic_item(self, *args, **kwargs) -> None:
+            self.semantic_items.append((args, kwargs))
+
+    node = SimpleNamespace(uid="sprite", data={"alignment": "camera_plane"})
+    layout = SimpleNamespace(node=node, sx=0.0, w=200.0)
+    field = SimpleNamespace(
+        id="alignment",
+        default="camera_plane",
+        label="Alignment",
+        data_type="string",
+        enum_values=("camera_plane", "camera_position", "axis", "velocity"),
+    )
+    view = NodeGraphView()
+    view._origin_x = 0.0
+    view._origin_y = 0.0
+    view.zoom = 1.0
+    view._semantic_capture_active = True
+    ctx = _InlineEnumContext()
+
+    view._draw_inline_field(ctx, layout, field, 40.0)
+
+    assert ctx.semantic_items == [
+        (
+            (
+                "combo",
+                "Alignment",
+                True,
+                "node_graph.inline.sprite.alignment",
+            ),
+            {"string_value": "camera_plane"},
+        )
+    ]
+
+
+def test_node_graph_inline_scalar_tolerates_stale_vector_without_mutating_document():
+    class _InlineFloatContext:
+        def __init__(self) -> None:
+            self.received = None
+            self.semantic_items: list[tuple] = []
+
+        @staticmethod
+        def set_cursor_pos_x(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def set_cursor_pos_y(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def push_id_str(_value: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_id() -> None:
+            pass
+
+        @staticmethod
+        def set_next_item_width(_value: float) -> None:
+            pass
+
+        def drag_float(self, _label: str, value: float, *_args) -> float:
+            self.received = value
+            return value
+
+        @staticmethod
+        def is_item_hovered() -> bool:
+            return False
+
+        @staticmethod
+        def is_item_active() -> bool:
+            return False
+
+        def record_semantic_item(self, *args, **kwargs) -> None:
+            self.semantic_items.append((args, kwargs))
+
+    original = [2.5, 4.0, 8.0]
+    node = SimpleNamespace(uid="dynamic", data={"value": list(original)})
+    layout = SimpleNamespace(node=node, sx=0.0, w=200.0)
+    field = SimpleNamespace(
+        id="value",
+        default=0.0,
+        label="Value",
+        data_type="f32",
+        enum_values=(),
+    )
+    view = NodeGraphView()
+    view._origin_x = 0.0
+    view._origin_y = 0.0
+    view.zoom = 1.0
+    view._semantic_capture_active = True
+    ctx = _InlineFloatContext()
+
+    view._draw_inline_field(ctx, layout, field, 40.0)
+
+    assert ctx.received == 2.5
+    assert node.data["value"] == original
+    assert ctx.semantic_items == [
+        (
+            (
+                "drag_float",
+                "Value",
+                True,
+                "node_graph.inline.dynamic.value",
+            ),
+            {"numeric_value": 2.5},
+        )
+    ]
+
+
+def test_node_graph_inline_u32_accepts_full_unsigned_range():
+    class _InlineUIntContext:
+        def __init__(self) -> None:
+            self.received = None
+
+        @staticmethod
+        def set_cursor_pos_x(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def set_cursor_pos_y(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def push_id_str(_value: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_id() -> None:
+            pass
+
+        @staticmethod
+        def set_next_item_width(_value: float) -> None:
+            pass
+
+        def input_uint(self, _label: str, value: int) -> int:
+            self.received = value
+            return value
+
+        @staticmethod
+        def is_item_hovered() -> bool:
+            return False
+
+        @staticmethod
+        def is_item_active() -> bool:
+            return False
+
+        @staticmethod
+        def record_semantic_item(*_args, **_kwargs) -> None:
+            pass
+
+    node = SimpleNamespace(uid="collision", data={"layer_mask": 0xFFFFFFFF})
+    layout = SimpleNamespace(node=node, sx=0.0, w=200.0)
+    field = SimpleNamespace(
+        id="layer_mask",
+        default=0xFFFFFFFF,
+        label="Layer Mask",
+        data_type="u32",
+        enum_values=(),
+    )
+    view = NodeGraphView()
+    view._origin_x = 0.0
+    view._origin_y = 0.0
+    view.zoom = 1.0
+    view._semantic_capture_active = True
+    ctx = _InlineUIntContext()
+
+    view._draw_inline_field(ctx, layout, field, 40.0)
+
+    assert ctx.received == 0xFFFFFFFF
+    assert node.data["layer_mask"] == 0xFFFFFFFF
+
+
+def test_particle_sprite_canvas_preserves_enum_and_conditional_field_metadata():
+    definition = COMMON_NODE_REGISTRY.get("particle.output.sprite")
+    assert definition is not None
+    canvas = _canvas_definition(definition)
+    fields = {field.id: field for field in canvas.inline_fields}
+
+    assert fields["alignment"].enum_values == (
+        "camera_plane",
+        "camera_position",
+        "axis",
+        "velocity",
+    )
+    assert fields["alignment_axis"].visible_when_field == "alignment"
+    assert fields["alignment_axis"].visible_when_value == "axis"
 
 
 def test_animfsm_dirty_mode_switch_defers_to_editor_owned_confirmation():
@@ -293,7 +691,7 @@ def test_animfsm_mode_switch_confirmation_is_semantic_and_cancelable():
     panel._pending_mode_switch = "3d"
     panel._mode_switch_confirm_requested = True
     panel._mode_switch_waiting_for_save = False
-    ctx = _ConfirmationContext(clicked="Cancel")
+    ctx = _ConfirmationContext(clicked=animfsm_module.t("editor.unsaved.cancel"))
 
     panel._render_mode_switch_confirmation(ctx)
 
@@ -306,7 +704,11 @@ def test_animfsm_mode_switch_confirmation_is_semantic_and_cancelable():
         "animfsm.mode_switch.cancel",
     }
     assert ctx.semantic_windows == [
-        ("modal", "Unsaved State Machine", "animfsm.mode_switch.dialog")
+        (
+            "modal",
+            animfsm_module.t("animfsm.mode_switch.title"),
+            "animfsm.mode_switch.dialog",
+        )
     ]
 
 
@@ -440,6 +842,101 @@ def test_node_graph_context_menu_uses_the_host_namespace():
     } <= semantic_ids
 
 
+def test_node_graph_canvas_background_does_not_submit_an_interactive_item():
+    view = NodeGraphView()
+    view.semantic_namespace = "particle_graph.canvas"
+    view._semantic_capture_active = True
+    view._canvas_window_hovered = True
+    view._origin_x = 12.0
+    view._origin_y = 34.0
+    calls = []
+    ctx = SimpleNamespace(
+        set_cursor_pos_x=lambda value: calls.append(("cursor_x", value)),
+        set_cursor_pos_y=lambda value: calls.append(("cursor_y", value)),
+        dummy=lambda width, height: calls.append(("dummy", width, height)),
+        record_semantic_rect=lambda *args: calls.append(("semantic", *args)),
+    )
+
+    hovered = view._submit_canvas_background_region(ctx, 640.0, 360.0)
+
+    assert hovered is True
+    assert all(call[0] not in {"dummy", "invisible_button"} for call in calls)
+    assert (
+        "semantic",
+        "node_graph_canvas",
+        "Node Graph",
+        12.0,
+        34.0,
+        640.0,
+        360.0,
+        True,
+        "particle_graph.canvas.canvas",
+    ) in calls
+
+
+def test_node_graph_inline_float32_round_trip_does_not_emit_a_change():
+    import struct
+
+    node = SimpleNamespace(uid="node", data={"gravity": [0.0, -9.81, 0.0]})
+    view = NodeGraphView()
+    changes = []
+    view.on_node_data_changed = lambda *args: changes.append(args)
+    float32 = lambda value: struct.unpack("f", struct.pack("f", value))[0]
+
+    view._commit_inline_value(
+        node,
+        "gravity",
+        [float32(value) for value in node.data["gravity"]],
+    )
+
+    assert changes == []
+
+    view._commit_inline_value(node, "gravity", [0.0, -8.5, 0.0])
+    assert changes == [("node", "gravity", [0.0, -9.81, 0.0], [0.0, -8.5, 0.0])]
+
+
+def test_node_graph_drop_on_occupied_input_requests_atomic_replacement():
+    from Infernux.core.node_graph import (
+        NodeGraph,
+        NodeTypeDef,
+        PinDef,
+        PinKind,
+    )
+
+    graph = NodeGraph()
+    graph.register_type(
+        NodeTypeDef(
+            "source",
+            "Source",
+            pins=[PinDef("out", "Out", PinKind.OUTPUT, data_type="float")],
+        )
+    )
+    graph.register_type(
+        NodeTypeDef(
+            "target",
+            "Target",
+            pins=[PinDef("in", "In", PinKind.INPUT, data_type="float")],
+        )
+    )
+    first = graph.add_node("source", uid="first")
+    second = graph.add_node("source", uid="second")
+    target = graph.add_node("target", uid="target")
+    original = graph.add_link(first.uid, "out", target.uid, "in")
+
+    replaced = []
+    view = NodeGraphView()
+    view.graph = graph
+    view.on_link_replaced = lambda *args: replaced.append(args)
+    view._drag_src_node = second.uid
+    view._drag_src_pin = "out"
+    view._drag_src_kind = PinKind.OUTPUT
+    view._hit_test_pin = lambda _x, _y: (target.uid, "in", PinKind.INPUT)
+
+    view._try_complete_link(100.0, 100.0)
+
+    assert replaced == [(original.uid, second.uid, "out", target.uid, "in")]
+
+
 def test_node_graph_open_add_menu_preserves_open_state_on_domain_semantic():
     view = NodeGraphView()
     view.semantic_namespace = "vfx.graph"
@@ -450,6 +947,18 @@ def test_node_graph_open_add_menu_preserves_open_state_on_domain_semantic():
 
     by_id = {item[3]: item for item in ctx.semantic_items}
     assert by_id["vfx.graph.context.add_node"][4] == {"bool_value": True}
+
+
+def test_animfsm_uses_shared_node_creation_palette_for_domain_variants():
+    panel = AnimFSMEditorPanel()
+
+    assert panel._view.on_link_dropped_empty is None
+    entries = panel._view._creation_entries(
+        {"source_node": panel._entry_uid, "source_kind": animfsm_module.PinKind.OUTPUT}
+    )
+
+    assert [entry.key for entry in entries] == ["clip", "blend"]
+    assert all(isinstance(entry, NodeCreationEntry) for entry in entries)
 
 
 def test_node_graph_center_view_fits_full_node_bounds_inside_canvas():
@@ -577,8 +1086,8 @@ def test_node_graph_exports_input_and_output_ports_as_semantic_rects():
         "animfsm.graph.port.state-uid.input.in",
         "animfsm.graph.port.state-uid.output.out",
     ]
-    assert recorded[0][2:6] == (9.0, 19.0, 22.0, 22.0)
-    assert recorded[1][2:6] == (109.0, 19.0, 22.0, 22.0)
+    assert recorded[0][2:6] == (8.0, 18.0, 24.0, 24.0)
+    assert recorded[1][2:6] == (108.0, 18.0, 24.0, 24.0)
 
 
 def test_node_graph_exports_link_hit_point_as_semantic_rect():
@@ -676,3 +1185,15 @@ def test_animfsm_new_document_and_dirty_draft_round_trip():
     assert restored._dirty is True
     assert restored._fsm.name == "Recovered FSM"
     assert [parameter.name for parameter in restored._fsm.parameters] == ["speed"]
+
+
+def test_animfsm_entering_play_does_not_implicitly_save_dirty_draft(monkeypatch):
+    panel = AnimFSMEditorPanel()
+    panel._dirty = True
+    save_calls = []
+    monkeypatch.setattr(panel, "_do_save", lambda: save_calls.append(True))
+
+    panel._on_play_mode_changed(SimpleNamespace(new_state="playing"))
+
+    assert save_calls == []
+    assert panel._dirty is True

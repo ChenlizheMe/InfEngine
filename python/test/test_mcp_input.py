@@ -92,6 +92,37 @@ def test_validation_input_tool_waits_for_native_delivery(tmp_path, monkeypatch):
     assert (tmp_path / "Logs" / "mcp_session.jsonl").is_file()
 
 
+def test_coordinate_click_tool_uses_render_frame_barriers(tmp_path, monkeypatch):
+    session.configure(
+        str(tmp_path),
+        {"profile": "global_validation", "session": {"build_profile": "debug_feedback"}},
+    )
+    calls = []
+    monkeypatch.setattr(
+        input_tools,
+        "perform_pointer_click",
+        lambda x, y, **kwargs: calls.append((x, y, kwargs))
+        or {"ok": True, "data": {"delivered": True}},
+    )
+
+    fake_mcp = _FakeMcp()
+    input_tools.register_input_tools(fake_mcp)
+    result = fake_mcp.tools["input_pointer_click"](240.5, 360.25, button=0)
+
+    assert result["ok"] is True
+    assert calls == [
+        (
+            240.5,
+            360.25,
+            {
+                "button": 0,
+                "timeout_seconds": 3.0,
+                "trace_name": "input_pointer_click",
+            },
+        )
+    ]
+
+
 def test_semantic_click_helper_delivers_move_press_release(tmp_path, monkeypatch):
     session.configure(
         str(tmp_path),
@@ -381,3 +412,16 @@ def test_window_close_request_uses_the_native_close_event_path(tmp_path, monkeyp
         "delivered": True,
     }
     assert native.calls == [("full_speed",), ("close",)]
+
+
+def test_combo_press_is_accepted_when_popup_activation_clears_item_active_state():
+    assert input_tools._press_target_accepted(
+        {
+            "matched_target_kind": "combo",
+            "target_found": True,
+            "target_visible": True,
+            "target_enabled": True,
+            "target_under_pointer": True,
+            "target_active": False,
+        }
+    )

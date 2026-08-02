@@ -35,6 +35,24 @@ bool IsBuiltinTextureToken(const std::string &value)
     return value == "white" || value == "black" || value == "normal";
 }
 
+json SerializeShaderReference(const ShaderAssetReference &reference)
+{
+    return {
+        {"guid", reference.guid},
+        {"shader_id", reference.shaderId},
+        {"path_hint", reference.pathHint},
+    };
+}
+
+ShaderAssetReference DeserializeShaderReference(const json &document)
+{
+    return ShaderAssetReference{
+        document["guid"].get<std::string>(),
+        document["shader_id"].get<std::string>(),
+        document["path_hint"].get<std::string>(),
+    };
+}
+
 std::string ResolveEngineTextureGuid(const std::string &textureRef)
 {
     if (IsBuiltinTextureToken(textureRef))
@@ -51,7 +69,7 @@ std::string ResolveEngineTextureGuid(const std::string &textureRef)
         for (int depth = 0; depth < 8 && !current.empty(); ++depth) {
             const fs::path candidate = current / relative;
             if (fs::exists(candidate, error) && !error) {
-                const std::string resolved = FromFsPath(fs::weakly_canonical(candidate, error));
+                const std::string resolved = ResolveFilesystemPath(FromFsPath(candidate));
                 std::string guid = database->GetGuidFromPath(resolved);
                 if (guid.empty())
                     guid = database->ImportAsset(resolved).guid;
@@ -64,11 +82,11 @@ std::string ResolveEngineTextureGuid(const std::string &textureRef)
     throw std::invalid_argument("engine texture cannot be resolved: " + textureRef);
 }
 
-std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std::string &name,
-                                                                      const std::string &textureRef)
+std::shared_ptr<InxMaterial>
+CreateTexturedComponentGizmoIconMaterial(const std::string &name, const std::string &textureRef, bool hardAlpha = false)
 {
     auto material = std::make_shared<InxMaterial>(name);
-    material->SetShader("gizmo_icon");
+    material->SetShader("Gizmo Icon");
 
     RenderState state;
     state.cullMode = VK_CULL_MODE_NONE;
@@ -84,8 +102,11 @@ std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std:
     state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     state.alphaBlendOp = VK_BLEND_OP_ADD;
-    state.alphaClipEnabled = false;
-    state.alphaClipThreshold = 0.0f;
+    // Camera and particle icons keep their soft source edges.  The light
+    // icon is authored as a binary white mask, so use a cutout there to
+    // prevent bilinear sampling from creating a gray translucent fringe.
+    state.alphaClipEnabled = hardAlpha;
+    state.alphaClipThreshold = hardAlpha ? 0.5f : 0.0f;
     state.renderQueue = 24950;
     material->SetRenderState(state);
     material->SyncAlphaClipProperty();
@@ -171,6 +192,16 @@ bool ApplyBlendMeta(RenderState &renderState, const std::string &blend, bool can
         renderState.colorBlendOp = VK_BLEND_OP_ADD;
         renderState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
         renderState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        renderState.alphaBlendOp = VK_BLEND_OP_ADD;
+        return true;
+    }
+    if (blend == "premultiply" || blend == "premultiplied" || blend == "premultiplied_alpha") {
+        renderState.blendEnable = true;
+        renderState.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        renderState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        renderState.colorBlendOp = VK_BLEND_OP_ADD;
+        renderState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        renderState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         renderState.alphaBlendOp = VK_BLEND_OP_ADD;
         return true;
     }
@@ -340,7 +371,9 @@ uint64_t InxMaterial::AllocateRuntimeId() noexcept
 size_t InxMaterial::GetRuntimeMemoryBytes() const noexcept
 {
     size_t bytes = sizeof(*this) + m_name.capacity() + m_guid.capacity() + m_filePath.capacity() +
-                   m_vertShaderName.capacity() + m_fragShaderName.capacity() + m_passTag.capacity();
+                   m_vertexShader.guid.capacity() + m_vertexShader.shaderId.capacity() +
+                   m_vertexShader.pathHint.capacity() + m_fragmentShader.guid.capacity() +
+                   m_fragmentShader.shaderId.capacity() + m_fragmentShader.pathHint.capacity() + m_passTag.capacity();
     bytes += m_properties.bucket_count() * sizeof(void *);
     bytes += m_properties.size() * sizeof(std::pair<const std::string, MaterialProperty>);
     for (const auto &[key, property] : m_properties) {
@@ -359,13 +392,13 @@ InxMaterial::InxMaterial(const std::string &name) : m_name(name)
 }
 
 InxMaterial::InxMaterial(const std::string &name, const std::string &shaderName)
-    : m_name(name), m_vertShaderName(shaderName), m_fragShaderName(shaderName)
+    : m_name(name), m_vertexShader{"", shaderName, ""}, m_fragmentShader{"", shaderName, ""}
 {
 }
 
 InxMaterial::InxMaterial(const InxMaterial &other)
     : m_name(other.m_name), m_guid(other.m_guid), m_filePath(other.m_filePath), m_builtin(other.m_builtin),
-      m_vertShaderName(other.m_vertShaderName), m_fragShaderName(other.m_fragShaderName), m_passTag(other.m_passTag),
+      m_vertexShader(other.m_vertexShader), m_fragmentShader(other.m_fragmentShader), m_passTag(other.m_passTag),
       m_renderState(other.m_renderState), m_renderStateOverrides(other.m_renderStateOverrides),
       m_properties(other.m_properties), m_shaderPropertyOrder(other.m_shaderPropertyOrder), m_pipelineDirty(true),
       m_propertiesDirty(true), m_version(0), m_isDeleted(other.m_isDeleted)
@@ -383,8 +416,8 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
     m_guid = other.m_guid;
     m_filePath = other.m_filePath;
     m_builtin = other.m_builtin;
-    m_vertShaderName = other.m_vertShaderName;
-    m_fragShaderName = other.m_fragShaderName;
+    m_vertexShader = other.m_vertexShader;
+    m_fragmentShader = other.m_fragmentShader;
     m_passTag = other.m_passTag;
     m_renderState = other.m_renderState;
     m_renderStateOverrides = other.m_renderStateOverrides;
@@ -409,7 +442,8 @@ void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType
 {
     const auto existing = m_properties.find(name);
     const bool hdr = existing != m_properties.end() && existing->second.hdr;
-    m_properties[name] = MaterialProperty{name, type, std::move(value), hdr};
+    const auto range = existing != m_properties.end() ? existing->second.range : std::nullopt;
+    m_properties[name] = MaterialProperty{name, type, std::move(value), hdr, range};
     m_propertiesDirty = true;
     ++m_version;
 }
@@ -473,8 +507,10 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
     auto it = m_properties.find(name);
     std::string previousGuid;
     bool hdr = false;
+    std::optional<std::array<double, 2>> range;
     if (it != m_properties.end() && it->second.type == MaterialPropertyType::Texture2D) {
         hdr = it->second.hdr;
+        range = it->second.range;
         const auto *existing = std::get_if<std::string>(&it->second.value);
         if (existing) {
             if (*existing == validatedGuid)
@@ -486,7 +522,7 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
     if (!m_guid.empty() && !previousGuid.empty() && !IsBuiltinTextureToken(previousGuid))
         AssetDependencyGraph::Instance().RemoveAssetDependency(m_guid, previousGuid);
 
-    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Texture2D, validatedGuid, hdr};
+    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Texture2D, validatedGuid, hdr, range};
     m_propertiesDirty = true;
     ++m_version;
 
@@ -512,6 +548,24 @@ void InxMaterial::ClearTexture(const std::string &name)
     }
 }
 
+bool InxMaterial::RemoveProperty(const std::string &name)
+{
+    auto it = m_properties.find(name);
+    if (it == m_properties.end())
+        return false;
+
+    if (it->second.type == MaterialPropertyType::Texture2D) {
+        const auto *oldGuid = std::get_if<std::string>(&it->second.value);
+        if (!m_guid.empty() && oldGuid && !oldGuid->empty() && !IsBuiltinTextureToken(*oldGuid))
+            AssetDependencyGraph::Instance().RemoveAssetDependency(m_guid, *oldGuid);
+    }
+
+    m_properties.erase(it);
+    m_propertiesDirty = true;
+    ++m_version;
+    return true;
+}
+
 bool InxMaterial::HasProperty(const std::string &name) const
 {
     return m_properties.find(name) != m_properties.end();
@@ -531,9 +585,9 @@ size_t InxMaterial::GetPipelineHash() const
     size_t hash = 0;
     auto hashCombine = [&hash](size_t value) { hash ^= value + 0x9e3779b9 + (hash << 6) + (hash >> 2); };
 
-    // Hash shader names
-    hashCombine(std::hash<std::string>{}(m_vertShaderName));
-    hashCombine(std::hash<std::string>{}(m_fragShaderName));
+    // Path hints are recovery metadata and do not create distinct pipelines.
+    hashCombine(std::hash<std::string>{}(m_vertexShader.StableKey()));
+    hashCombine(std::hash<std::string>{}(m_fragmentShader.StableKey()));
 
     // Hash render state
     hashCombine(m_renderState.Hash());
@@ -548,7 +602,57 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
 {
     bool changed = false;
 
-    // @cull: none / front / back — skip if user has overridden CullMode
+    // Shader metadata describes the complete default state, not a patch over
+    // the previously selected shader. Restore omitted fields before applying
+    // annotations so switching away from a transparent/particle shader cannot
+    // leak its culling, depth, blend, queue, stencil, or pass-tag state into a
+    // regular mesh shader. Explicit per-material overrides remain authoritative.
+    if (!m_builtin) {
+        const RenderState defaults;
+        const auto assign = [&changed](auto &target, const auto &value) {
+            if (target != value) {
+                target = value;
+                changed = true;
+            }
+        };
+
+        if (!HasOverride(RenderStateOverride::CullMode))
+            assign(m_renderState.cullMode, defaults.cullMode);
+        if (!HasOverride(RenderStateOverride::DepthWrite))
+            assign(m_renderState.depthWriteEnable, defaults.depthWriteEnable);
+        if (!HasOverride(RenderStateOverride::DepthTest))
+            assign(m_renderState.depthTestEnable, defaults.depthTestEnable);
+        if (!HasOverride(RenderStateOverride::DepthCompareOp))
+            assign(m_renderState.depthCompareOp, defaults.depthCompareOp);
+        if (!HasOverride(RenderStateOverride::BlendEnable))
+            assign(m_renderState.blendEnable, defaults.blendEnable);
+        if (!HasOverride(RenderStateOverride::BlendMode)) {
+            assign(m_renderState.srcColorBlendFactor, defaults.srcColorBlendFactor);
+            assign(m_renderState.dstColorBlendFactor, defaults.dstColorBlendFactor);
+            assign(m_renderState.colorBlendOp, defaults.colorBlendOp);
+            assign(m_renderState.srcAlphaBlendFactor, defaults.srcAlphaBlendFactor);
+            assign(m_renderState.dstAlphaBlendFactor, defaults.dstAlphaBlendFactor);
+            assign(m_renderState.alphaBlendOp, defaults.alphaBlendOp);
+        }
+        if (!HasOverride(RenderStateOverride::RenderQueue))
+            assign(m_renderState.renderQueue, defaults.renderQueue);
+
+        assign(m_renderState.stencilTestEnable, defaults.stencilTestEnable);
+        if (std::memcmp(&m_renderState.stencilFront, &defaults.stencilFront, sizeof(VkStencilOpState)) != 0) {
+            m_renderState.stencilFront = defaults.stencilFront;
+            changed = true;
+        }
+        if (std::memcmp(&m_renderState.stencilBack, &defaults.stencilBack, sizeof(VkStencilOpState)) != 0) {
+            m_renderState.stencilBack = defaults.stencilBack;
+            changed = true;
+        }
+        if (m_passTag != passTag) {
+            m_passTag = passTag;
+            changed = true;
+        }
+    }
+
+    // Cull: none / front / back. Skip when the material overrides CullMode.
     if (!cullMode.empty() && !HasOverride(RenderStateOverride::CullMode)) {
         VkCullModeFlags newCull = m_renderState.cullMode;
         if (cullMode == "none" || cullMode == "off")
@@ -563,7 +667,7 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
         }
     }
 
-    // @depth_write: on / off — skip if user has overridden DepthWrite
+    // DepthWrite: on / off. Skip when the material overrides DepthWrite.
     if (!depthWrite.empty() && !HasOverride(RenderStateOverride::DepthWrite)) {
         bool newDW = m_renderState.depthWriteEnable;
         if (depthWrite == "on" || depthWrite == "true")
@@ -576,50 +680,51 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
         }
     }
 
-    // @depth_test: on / off / less / less_equal / always / never
+    // DepthTest: on / off / less / less_equal / always / never.
     // Skip if user has overridden DepthTest or DepthCompareOp
     changed |= ApplyDepthTestMeta(m_renderState, depthTest, !HasOverride(RenderStateOverride::DepthTest),
                                   !HasOverride(RenderStateOverride::DepthCompareOp));
 
-    // @blend: off / alpha / additive — skip if user has overridden BlendEnable or BlendMode
+    // Blend: off / alpha / additive. Skip when the material overrides blending.
     changed |= ApplyBlendMeta(m_renderState, blend, !HasOverride(RenderStateOverride::BlendEnable),
                               !HasOverride(RenderStateOverride::BlendMode));
 
-    // @queue: integer render queue — skip if overridden or builtin
+    // Queue: integer render queue, skipped when overridden or built in.
     if (!m_builtin && !HasOverride(RenderStateOverride::RenderQueue) && queue >= 0 &&
         queue != m_renderState.renderQueue) {
         m_renderState.renderQueue = queue;
         changed = true;
     }
 
-    // @pass_tag: set material pass tag for draw call filtering
-    // Skip for builtin materials — same reason as renderQueue above.
-    if (!m_builtin && !passTag.empty() && passTag != m_passTag) {
-        m_passTag = passTag;
-    }
-
-    // @stencil: compare_op, ref, pass_op, fail_op, depth_fail_op
+    // Stencil: compare_op, ref, pass_op, fail_op, depth_fail_op.
     changed |= ApplyStencilMeta(m_renderState, stencil);
 
-    if (changed) {
-        m_pipelineDirty = true;
-    }
-
-    // @alpha_clip: <threshold> — skip if user has overridden AlphaClip
+    // AlphaClip threshold. Skip when the material overrides alpha clipping.
     if (!alphaClip.empty() && alphaClip != "off" && !HasOverride(RenderStateOverride::AlphaClip)) {
-        m_renderState.alphaClipEnabled = true;
+        if (!m_renderState.alphaClipEnabled) {
+            m_renderState.alphaClipEnabled = true;
+            changed = true;
+        }
+        float threshold = 0.5f;
         try {
-            m_renderState.alphaClipThreshold = std::stof(alphaClip);
+            threshold = std::stof(alphaClip);
         } catch (...) {
-            m_renderState.alphaClipThreshold = 0.5f;
+        }
+        if (m_renderState.alphaClipThreshold != threshold) {
+            m_renderState.alphaClipThreshold = threshold;
+            changed = true;
         }
         SyncAlphaClipProperty();
     } else if ((alphaClip.empty() || alphaClip == "off") && !HasOverride(RenderStateOverride::AlphaClip)) {
         if (m_renderState.alphaClipEnabled) {
             m_renderState.alphaClipEnabled = false;
+            changed = true;
             SyncAlphaClipProperty();
         }
     }
+
+    if (changed)
+        m_pipelineDirty = true;
 }
 
 void InxMaterial::SyncAlphaClipProperty()
@@ -631,13 +736,13 @@ void InxMaterial::SyncAlphaClipProperty()
 nlohmann::json InxMaterial::SerializeDocument() const
 {
     json j;
-    j["material_version"] = 3;
     j["name"] = m_name;
     j["builtin"] = m_builtin;
 
-    // Shader identity — separate vertex/fragment keys.
-    j["shaders"]["vertex"] = m_vertShaderName;
-    j["shaders"]["fragment"] = m_fragShaderName;
+    // GUID is authoritative, shader_id is the stable compiler identity, and
+    // path_hint recovers assets whose database has not been rebuilt yet.
+    j["shaders"]["vertex"] = SerializeShaderReference(m_vertexShader);
+    j["shaders"]["fragment"] = SerializeShaderReference(m_fragmentShader);
 
     // Render state
     json rs;
@@ -701,6 +806,8 @@ nlohmann::json InxMaterial::SerializeDocument() const
         propJson["type"] = static_cast<int>(prop.type);
         if (prop.hdr)
             propJson["hdr"] = true;
+        if (prop.range)
+            propJson["range"] = {(*prop.range)[0], (*prop.range)[1]};
 
         switch (prop.type) {
         case MaterialPropertyType::Float:
@@ -816,8 +923,8 @@ bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
 
     m_name = std::move(staged.m_name);
     m_builtin = staged.m_builtin;
-    m_vertShaderName = std::move(staged.m_vertShaderName);
-    m_fragShaderName = std::move(staged.m_fragShaderName);
+    m_vertexShader = std::move(staged.m_vertexShader);
+    m_fragmentShader = std::move(staged.m_fragmentShader);
     m_passTag = std::move(staged.m_passTag);
     m_renderState = staged.m_renderState;
     m_renderStateOverrides = staged.m_renderStateOverrides;
@@ -829,16 +936,17 @@ bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
     return true;
 }
 
-bool InxMaterial::ApplyDocument(const nlohmann::json &j)
+bool InxMaterial::ApplyDocument(const nlohmann::json &document)
 {
     try {
-        material_document_validation::ValidateMaterialDocument(j);
+        material_document_validation::ValidateMaterialDocument(document);
+        const json &j = document;
         m_name = j["name"].get<std::string>();
         m_builtin = j["builtin"].get<bool>();
 
         const auto &shaders = j["shaders"];
-        m_vertShaderName = shaders["vertex"].get<std::string>();
-        m_fragShaderName = shaders["fragment"].get<std::string>();
+        m_vertexShader = DeserializeShaderReference(shaders["vertex"]);
+        m_fragmentShader = DeserializeShaderReference(shaders["fragment"]);
 
         const auto &rs = j["renderState"];
         m_renderState.cullMode = static_cast<VkCullModeFlags>(rs["cullMode"].get<int>());
@@ -893,6 +1001,10 @@ bool InxMaterial::ApplyDocument(const nlohmann::json &j)
             prop.name = propName;
             prop.type = static_cast<MaterialPropertyType>(typeValue);
             prop.hdr = propJson.value("hdr", false);
+            if (propJson.contains("range")) {
+                const auto &range = propJson["range"];
+                prop.range = std::array<double, 2>{range[0].get<double>(), range[1].get<double>()};
+            }
 
             switch (prop.type) {
             case MaterialPropertyType::Float:
@@ -952,8 +1064,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLit()
     auto material = std::make_shared<InxMaterial>("DefaultLit");
 
     // Use the shared standard vertex shader with the lit fragment shader.
-    material->SetVertShader("standard");
-    material->SetFragShader("lit");
+    material->SetVertShader("Standard");
+    material->SetFragShader("Lit");
 
     // Default lit opaque render state
     RenderState state;
@@ -985,8 +1097,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultUnlit()
     auto material = std::make_shared<InxMaterial>("DefaultUnlit");
 
     // Use the shared standard vertex shader with the unlit fragment shader.
-    material->SetVertShader("standard");
-    material->SetFragShader("unlit");
+    material->SetVertShader("Standard");
+    material->SetFragShader("Unlit");
 
     // Default unlit opaque render state
     RenderState state;
@@ -1004,10 +1116,11 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultUnlit()
     return material;
 }
 
-std::shared_ptr<InxMaterial> InxMaterial::CreateParticleBillboardMaterial()
+std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
 {
-    auto material = std::make_shared<InxMaterial>("ParticleBillboardMaterial");
-    material->SetShader("particle_billboard");
+    auto material = std::make_shared<InxMaterial>("ParticleSpriteMaterial");
+    material->SetVertShader("Particle Sprite");
+    material->SetFragShader("Particle Unlit");
 
     RenderState state;
     state.cullMode = VK_CULL_MODE_NONE;
@@ -1023,6 +1136,51 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleBillboardMaterial()
     state.alphaBlendOp = VK_BLEND_OP_ADD;
     state.renderQueue = 3000;
     material->SetRenderState(state);
+    material->SetColor("baseColor", glm::vec4(1.0f));
+    material->SetTextureGuid("texSampler", "white");
+    material->SetFloat("softness", 0.18f);
+    material->SetBuiltin(true);
+    return material;
+}
+
+std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSixWaySmokeMaterial()
+{
+    auto material = std::make_shared<InxMaterial>("ParticleSixWaySmokeMaterial");
+    material->SetVertShader("Particle Sprite");
+    material->SetFragShader("Particle Six-Way Smoke");
+
+    RenderState state;
+    state.cullMode = VK_CULL_MODE_NONE;
+    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.depthTestEnable = true;
+    state.depthWriteEnable = false;
+    state.blendEnable = true;
+    state.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    state.colorBlendOp = VK_BLEND_OP_ADD;
+    state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    state.alphaBlendOp = VK_BLEND_OP_ADD;
+    state.renderQueue = 3000;
+    material->SetRenderState(state);
+
+    material->SetColor("baseColor", glm::vec4(0.66f, 0.66f, 0.66f, 1.0f));
+    material->SetColor("emissionColor", glm::vec4(1.0f, 0.28f, 0.04f, 1.0f));
+    material->SetFloat("lightingIntensity", 1.0f);
+    material->SetFloat("ambientIntensity", 0.0f);
+    material->SetFloat("ambientSaturation", 0.0f);
+    material->SetFloat("emissionIntensity", 0.0f);
+    material->SetFloat("absorption", 0.5f);
+    material->SetFloat("alphaScale", 1.0f);
+    material->SetFloat("flipbookColumns", 1.0f);
+    material->SetFloat("flipbookRows", 1.0f);
+    material->SetFloat("flipbookFrameJitter", 0.0f);
+    material->SetFloat("flipbookFrameOffset", 0.0f);
+    material->SetFloat("fadeInFraction", 0.08f);
+    material->SetFloat("fadeOutStart", 0.68f);
+    material->SetFloat("densityClipThreshold", 0.025f);
+    material->SetTextureGuid("positiveAxesMap", "white");
+    material->SetTextureGuid("negativeAxesMap", "black");
     material->SetBuiltin(true);
     return material;
 }
@@ -1032,7 +1190,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGizmoMaterial()
     auto material = std::make_shared<InxMaterial>("GizmoMaterial");
 
     // Use gizmo shader (simple unlit with vertex color)
-    material->SetShader("gizmo");
+    material->SetShader("Gizmo");
 
     // Gizmo render state: no culling (double-sided), depth test, depth write
     RenderState state;
@@ -1051,7 +1209,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGridMaterial()
 {
     auto material = std::make_shared<InxMaterial>("GridMaterial");
 
-    material->SetShader("Infernux/Grid");
+    material->SetShader("Grid");
 
     // Grid render state: double-sided, alpha-blended, depth test but no depth write
     RenderState state;
@@ -1093,7 +1251,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateEditorToolsMaterial()
     auto material = std::make_shared<InxMaterial>("EditorToolsMaterial");
 
     // Same gizmo shader: simple unlit with vertex color
-    material->SetShader("gizmo");
+    material->SetShader("Gizmo");
 
     // Editor tools render state: always on top (no depth test), double-sided
     RenderState state;
@@ -1115,7 +1273,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmosMaterial()
     auto material = std::make_shared<InxMaterial>("ComponentGizmosMaterial");
 
     // Same gizmo shader: simple unlit with vertex color
-    material->SetShader("gizmo");
+    material->SetShader("Gizmo");
 
     // Component gizmos: depth-tested (occluded by scene geometry), double-sided, LINE topology
     RenderState state;
@@ -1145,15 +1303,20 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoCameraIconMaterial
 
 std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoLightIconMaterial()
 {
-    return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoLightIconMaterial", "icons/gizmo_light.png");
+    return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoLightIconMaterial", "icons/gizmo_light.png", true);
+}
+
+std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoParticleIconMaterial()
+{
+    return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoParticleIconMaterial", "icons/gizmo_particle.png");
 }
 
 std::shared_ptr<InxMaterial> InxMaterial::CreateSkyboxProceduralMaterial()
 {
     auto material = std::make_shared<InxMaterial>("SkyboxProcedural");
 
-    // Use procedural skybox shader (registered by @shader_id in .vert/.frag)
-    material->SetShader("Infernux/Skybox-Procedural");
+    // Use the procedural skybox shader registered by ShaderInfo Name.
+    material->SetShader("Skybox Procedural");
 
     // Skybox render state:
     // - Cull back faces (the outside of the cube). In the LH coordinate system,
@@ -1173,11 +1336,12 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateSkyboxProceduralMaterial()
     state.renderQueue = EngineConfig::Get().skyboxQueue; // After all opaque/transparent, outside shadow caster range
     material->SetRenderState(state);
 
-    // Default sky properties (matching shader @property annotations)
-    material->SetColor("skyTopColor", glm::vec4(0.20f, 0.28f, 0.46f, 1.0f));
-    material->SetColor("skyHorizonColor", glm::vec4(0.50f, 0.58f, 0.70f, 1.0f));
-    material->SetColor("groundColor", glm::vec4(0.24f, 0.22f, 0.22f, 1.0f));
-    material->SetFloat("exposure", 1.35f);
+    // Default sky properties matching the ShaderInfo property declaration.
+    // sRGB: zenith #6E7E9C, horizon #A6B9D0, ground #585858
+    material->SetColor("skyTopColor", glm::vec4(0.431f, 0.494f, 0.612f, 1.0f));
+    material->SetColor("skyHorizonColor", glm::vec4(0.651f, 0.725f, 0.816f, 1.0f));
+    material->SetColor("groundColor", glm::vec4(0.345f, 0.345f, 0.345f, 1.0f));
+    material->SetFloat("exposure", 1.0f);
 
     material->SetBuiltin(true);
 
@@ -1191,7 +1355,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateErrorMaterial()
     // Use dedicated error shaders: unlit magenta-black checkerboard pattern.
     // These shaders are self-contained (no material UBO, no textures) and
     // output a procedural checkerboard using world-position + UV.
-    material->SetShader("error");
+    material->SetShader("Error");
 
     // Double-sided so the error pattern is visible from all angles
     RenderState state;
@@ -1226,8 +1390,8 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
     clone->m_builtin = false; // Clones are never builtin
 
     // Deep copy shader identity
-    clone->m_vertShaderName = m_vertShaderName;
-    clone->m_fragShaderName = m_fragShaderName;
+    clone->m_vertexShader = m_vertexShader;
+    clone->m_fragmentShader = m_fragmentShader;
     clone->m_passTag = m_passTag;
 
     // Deep copy render state & overrides

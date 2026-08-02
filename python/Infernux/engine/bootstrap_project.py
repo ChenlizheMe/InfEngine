@@ -82,8 +82,12 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         file_ops.create_animclip3d, cur, name, adb)
     pp.create_animfsm = lambda cur, name: _safe_project_create(
         file_ops.create_animfsm, cur, name, adb)
-    pp.create_vfxsystem = lambda cur, name: _safe_project_create(
-        file_ops.create_vfxsystem, cur, name, adb)
+    pp.create_particlegraph = lambda cur, name: _safe_project_create(
+        file_ops.create_particlegraph, cur, name, adb)
+    pp.create_render_effect = lambda cur, name, feature_type: _safe_project_create(
+        file_ops.create_render_effect, cur, name, feature_type, adb)
+    pp.create_render_effect_group = lambda cur, name: _safe_project_create(
+        file_ops.create_render_effect_group, cur, name, adb)
     pp.create_animtimeline = lambda cur, name: _safe_project_create(
         file_ops.create_animtimeline, cur, name, adb)
     pp.create_timelinefsm = lambda cur, name: _safe_project_create(
@@ -95,6 +99,8 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     )
     pp.move_item_to_directory = lambda item, dest: _safe_project_path(
         file_ops.move_item_to_directory, item, dest, adb)
+    pp.copy_item_to_path = lambda item, dest: _safe_project_path(
+        file_ops.copy_path_as_new_asset, item, dest, adb)
 
     # -- Delete (through an Editor-owned semantic modal) --
     def _delete_items(paths):
@@ -271,22 +277,22 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
 
     pp.open_anim_fsm = _open_anim_fsm
 
-    def _open_vfx_system(file_path):
+    def _open_particle_graph(file_path):
         from Infernux.engine.ui.window_manager import WindowManager
         from Infernux.engine.ui.closable_panel import ClosablePanel
         wm = WindowManager.instance()
         if wm is None:
             return
-        panel = wm.open_window("vfx_graph_editor")
-        if panel is not None and hasattr(panel, "_open_vfxsystem"):
-            panel._open_vfxsystem(file_path)
-            ClosablePanel.focus_panel_by_id("vfx_graph_editor")
+        panel = wm.open_window("particle_graph_editor")
+        if panel is not None and hasattr(panel, "_open_particlegraph"):
+            panel._open_particlegraph(file_path)
+            ClosablePanel.focus_panel_by_id("particle_graph_editor")
             try:
-                wm._engine.select_docked_window("vfx_graph_editor")
+                wm._engine.select_docked_window("particle_graph_editor")
             except Exception:
                 pass
 
-    pp.open_vfx_system = _open_vfx_system
+    pp.open_particle_graph = _open_particle_graph
 
     def _open_anim_timeline(file_path):
         from Infernux.engine.ui.window_manager import WindowManager

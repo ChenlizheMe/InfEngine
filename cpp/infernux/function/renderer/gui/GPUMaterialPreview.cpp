@@ -10,11 +10,14 @@
 #include <function/renderer/InxRenderStruct.h>
 #include <function/renderer/InxVkCoreModular.h>
 #include <function/renderer/MaterialPipelineManager.h>
+#include <function/renderer/RenderInstanceHistory.h>
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/renderer/vk/DescriptorBindTrace.h>
+#include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/scene/Light.h>
 #include <function/scene/LightingData.h>
 #include <function/scene/PrimitiveMeshes.h>
 
@@ -127,6 +130,11 @@ void DownsampleRGBABox(const std::vector<unsigned char> &srcPixels, int srcSize,
 
 GPUMaterialPreview::GPUMaterialPreview(InxVkCoreModular *vkCore) : m_vkCore(vkCore)
 {
+    m_renderView.id = rhi::AllocateRenderViewId();
+    m_renderView.device = vkCore ? vkCore->GetDeviceContext().GetDeviceId() : rhi::InvalidDeviceId;
+    m_renderView.kind = rhi::RenderViewKind::Preview;
+    m_renderView.output = rhi::RenderOutputKind::OffscreenTexture;
+    m_renderView.revision = 1;
 }
 
 GPUMaterialPreview::~GPUMaterialPreview()
@@ -175,9 +183,8 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     if (!EnsureResources(renderSize))
         return nullptr;
     if (!m_vkCore->RefreshPreviewMaterialPipeline(basePreviewMaterial, basePreviewMaterial->GetVertShaderName(),
-                                                  basePreviewMaterial->GetFragShaderName(),
-                                                  m_previewSceneUbo->GetBuffer(), m_previewLightingUbo->GetBuffer())) {
-        INXLOG_WARN("GPUMaterialPreview: preview base pipeline not ready");
+                                                  basePreviewMaterial->GetFragShaderName(), false)) {
+        INXLOG_DEBUG("GPUMaterialPreview: material domain has no sphere preview pipeline");
         return nullptr;
     }
     ownedPreviewMaterials.push_back(basePreviewMaterial);
@@ -206,9 +213,8 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
                 passMaterial->MarkOverride(RenderStateOverride::CullMode);
             passMaterial->ClearAllPassPipelines();
 
-            if (!m_vkCore->RefreshPreviewMaterialPipeline(
-                    passMaterial, passMaterial->GetVertShaderName(), passMaterial->GetFragShaderName(),
-                    m_previewSceneUbo->GetBuffer(), m_previewLightingUbo->GetBuffer())) {
+            if (!m_vkCore->RefreshPreviewMaterialPipeline(passMaterial, passMaterial->GetVertShaderName(),
+                                                          passMaterial->GetFragShaderName(), false)) {
                 return nullptr;
             }
             return passMaterial;
@@ -245,7 +251,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
         VkDescriptorSet materialDescSet = VK_NULL_HANDLE;
-        ShaderProgram *program = nullptr;
+        const ShaderProgram *program = nullptr;
     };
 
     auto refreshPassBinding = [&](PreviewPassBinding &binding) -> bool {
@@ -257,8 +263,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
         MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(passMat->GetMaterialKey());
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE) {
             if (!m_vkCore->RefreshPreviewMaterialPipeline(binding.material, passMat->GetVertShaderName(),
-                                                          passMat->GetFragShaderName(), m_previewSceneUbo->GetBuffer(),
-                                                          m_previewLightingUbo->GetBuffer())) {
+                                                          passMat->GetFragShaderName(), false)) {
                 return false;
             }
             rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(passMat->GetMaterialKey());
@@ -285,16 +290,18 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     for (const auto &passMat : previewPassMaterials) {
         PreviewPassBinding binding{};
         binding.material = passMat;
+
+        // Material property synchronization may publish a replacement set 0
+        // (for example after resolving a texture). Do it before capturing the
+        // immutable preview binding, otherwise this command buffer can retain
+        // the descriptor generation that was just retired.
+        m_vkCore->UpdateMaterialUBO(*binding.material);
         if (!refreshPassBinding(binding)) {
             INXLOG_WARN("GPUMaterialPreview: preview pass pipeline not ready");
             return nullptr;
         }
         passBindings.push_back(binding);
     }
-
-    // Update material UBO so GPU-side data is current
-    for (auto &binding : passBindings)
-        m_vkCore->UpdateMaterialUBO(*binding.material);
 
     // ------------------------------------------------------------------
     // Prepare preview scene UBO (camera looking at sphere)
@@ -309,16 +316,18 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     sceneUBO.model = previewModel;
     sceneUBO.view = view;
     sceneUBO.proj = proj;
+    sceneUBO.previousViewProj = proj * view;
+    sceneUBO.inverseViewProj = glm::inverse(proj * view);
 
     // ------------------------------------------------------------------
     // Prepare preview lighting UBO.
-    // Use a soft two-light rig plus ambient probe so aggressive normal-map
-    // values still read as a sphere instead of collapsing into a tiny bright
-    // patch under a single hard key light.
+    // Single key light from above plus the ambient probe — the probe already
+    // keeps unlit regions readable, and a lower fill light made previews
+    // look lit from below.
     // ------------------------------------------------------------------
     ShaderLightingUBO lightingUBO{};
     memset(&lightingUBO, 0, sizeof(lightingUBO));
-    lightingUBO.lightCounts = glm::ivec4(2, 0, 0, 0);
+    lightingUBO.lightCounts = glm::ivec4(1, 0, 0, 0);
     lightingUBO.ambientColor = glm::vec4(0.06f, 0.06f, 0.07f, 1.0f);
     lightingUBO.ambientSkyColor = glm::vec4(0.18f, 0.19f, 0.22f, 0.55f);
     lightingUBO.ambientEquatorColor = glm::vec4(0.09f, 0.10f, 0.12f, 1.0f);
@@ -329,10 +338,8 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     lightingUBO.directionalLights[0].direction = glm::vec4(glm::normalize(glm::vec3(-0.8f, -1.0f, -0.6f)), 0.0f);
     // color.rgb = color * intensity, color.a = intensity
     lightingUBO.directionalLights[0].color = glm::vec4(2.0f * 1.0f, 2.0f * 0.95f, 2.0f * 0.9f, 2.0f);
-
-    // Fill light — back-left to keep the sphere readable under harsh normals.
-    lightingUBO.directionalLights[1].direction = glm::vec4(glm::normalize(glm::vec3(0.6f, 0.3f, -0.8f)), 0.0f);
-    lightingUBO.directionalLights[1].color = glm::vec4(0.6f * 0.6f, 0.6f * 0.7f, 0.6f * 0.85f, 0.6f);
+    lightingUBO.directionalLights[0].metadata =
+        glm::uvec4(~0u, static_cast<uint32_t>(LightInfluenceDomain::Geometry), 0u, 0u);
 
     // ------------------------------------------------------------------
     // Prepare engine globals UBO (minimal)
@@ -350,11 +357,23 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     VkDescriptorSet shadowDesc = VK_NULL_HANDLE;
     VkDescriptorSet globalsDesc = VK_NULL_HANDLE;
 
-    ShaderProgram *primaryProgram = passBindings.front().program;
+    const bool requiresPerViewSet = std::any_of(passBindings.begin(), passBindings.end(), [](const auto &binding) {
+        return binding.program && binding.program->HasDeclaredDescriptorSet(1);
+    });
+    const bool requiresGlobalsSet = std::any_of(passBindings.begin(), passBindings.end(), [](const auto &binding) {
+        return binding.program && binding.program->HasDeclaredDescriptorSet(2);
+    });
 
-    if (primaryProgram->HasDeclaredDescriptorSet(1)) {
-        if (m_fallbackShadowDescSet == VK_NULL_HANDLE)
-            m_fallbackShadowDescSet = m_vkCore->AllocatePerViewDescriptorSet();
+    if (requiresPerViewSet) {
+        if (!m_fallbackShadowDescLease.IsValid()) {
+            m_fallbackShadowDescLease = m_vkCore->AllocatePerViewDescriptorLease();
+            m_fallbackShadowDescSet = m_fallbackShadowDescLease.set;
+            if (m_fallbackShadowDescLease.IsValid()) {
+                m_vkCore->UpdatePerViewLightingBuffer(m_fallbackShadowDescSet, lightingUBOBuf,
+                                                      sizeof(ShaderLightingUBO));
+                m_vkCore->UpdatePerViewCameraBuffer(m_fallbackShadowDescSet, sceneUBOBuf, sizeof(UniformBufferObject));
+            }
+        }
         shadowDesc = m_fallbackShadowDescSet;
         if (shadowDesc == VK_NULL_HANDLE) {
             INXLOG_WARN("GPUMaterialPreview: shader requires set 1 but no shadow descriptor is available");
@@ -362,7 +381,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
         }
     }
 
-    if (primaryProgram->HasDeclaredDescriptorSet(2))
+    if (requiresGlobalsSet)
         globalsDesc = m_previewGlobalsSet;
 
     auto &resourceManager = m_vkCore->GetResourceManager();
@@ -379,6 +398,10 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     vkCmdUpdateBuffer(cmd, m_previewSkinInstanceBuffer->GetBuffer(), 0, sizeof(emptySkinInstance),
                       emptySkinInstance.data());
     vkCmdUpdateBuffer(cmd, m_previewSkinPaletteBuffer->GetBuffer(), 0, sizeof(identityBone), &identityBone);
+    GPUInstanceAuxData instanceAux{};
+    instanceAux.previousModel = previewModel;
+    instanceAux.layerMask = ~0u;
+    vkCmdUpdateBuffer(cmd, m_previewInstanceAuxBuffer->GetBuffer(), 0, sizeof(instanceAux), &instanceAux);
 
     // Memory barrier: make UBO writes visible to shaders
     VkMemoryBarrier uboBarrier{};
@@ -696,42 +719,29 @@ bool GPUMaterialPreview::EnsureViewResources()
     m_previewInstanceBuffer = rm.CreateStorageBuffer(sizeof(glm::mat4), false);
     m_previewSkinInstanceBuffer = rm.CreateStorageBuffer(64, false);
     m_previewSkinPaletteBuffer = rm.CreateStorageBuffer(sizeof(glm::mat4), false);
+    m_previewInstanceAuxBuffer = rm.CreateStorageBuffer(sizeof(GPUInstanceAuxData), false);
     if (!m_previewSceneUbo || !m_previewLightingUbo || !m_previewGlobalsUbo || !m_previewInstanceBuffer ||
-        !m_previewSkinInstanceBuffer || !m_previewSkinPaletteBuffer)
+        !m_previewSkinInstanceBuffer || !m_previewSkinPaletteBuffer || !m_previewInstanceAuxBuffer)
         throw std::runtime_error("Failed to allocate isolated material-preview view buffers");
 
-    VkDescriptorPoolSize poolSizes[2]{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = 1;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[1].descriptorCount = 3;
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = 1;
-    poolInfo.poolSizeCount = 2;
-    poolInfo.pPoolSizes = poolSizes;
     const VkDevice device = m_vkCore->GetDevice();
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_previewGlobalsPool) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create isolated material-preview globals descriptor pool");
-
     const VkDescriptorSetLayout layout = m_vkCore->GetGlobalsDescSetLayout();
     if (layout == VK_NULL_HANDLE)
         throw std::logic_error("Material preview requires the renderer globals descriptor layout");
-    VkDescriptorSetAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocateInfo.descriptorPool = m_previewGlobalsPool;
-    allocateInfo.descriptorSetCount = 1;
-    allocateInfo.pSetLayouts = &layout;
-    if (vkAllocateDescriptorSets(device, &allocateInfo, &m_previewGlobalsSet) != VK_SUCCESS)
+    m_previewGlobalsLease = m_vkCore->GetDeviceContext().GetRhiDevice().GetDescriptorManager().Allocate(
+        layout, vk::DescriptorArena::ViewPersistent);
+    if (!m_previewGlobalsLease.IsValid())
         throw std::runtime_error("Failed to allocate isolated material-preview globals descriptor set");
+    m_previewGlobalsSet = m_previewGlobalsLease.set;
 
-    VkDescriptorBufferInfo buffers[4]{};
+    VkDescriptorBufferInfo buffers[5]{};
     buffers[0] = {m_previewGlobalsUbo->GetBuffer(), 0, sizeof(EngineGlobalsUBO)};
     buffers[1] = {m_previewInstanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     buffers[2] = {m_previewSkinInstanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     buffers[3] = {m_previewSkinPaletteBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet writes[4]{};
-    for (uint32_t binding = 0; binding < 4; ++binding) {
+    buffers[4] = {m_previewInstanceAuxBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet writes[5]{};
+    for (uint32_t binding = 0; binding < 5; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[binding].dstSet = m_previewGlobalsSet;
         writes[binding].dstBinding = binding;
@@ -740,20 +750,25 @@ bool GPUMaterialPreview::EnsureViewResources()
             binding == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[binding].pBufferInfo = &buffers[binding];
     }
-    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
     return true;
 }
 
 void GPUMaterialPreview::DestroyViewResources()
 {
     m_activeReadback.reset();
-    m_previewGlobalsSet = VK_NULL_HANDLE;
-    if (m_previewGlobalsPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(m_vkCore->GetDevice(), m_previewGlobalsPool, nullptr);
-        m_previewGlobalsPool = VK_NULL_HANDLE;
+    if (m_vkCore) {
+        auto &descriptorManager = m_vkCore->GetDeviceContext().GetRhiDevice().GetDescriptorManager();
+        descriptorManager.Retire(m_fallbackShadowDescLease);
+        descriptorManager.Retire(m_previewGlobalsLease);
     }
+    m_fallbackShadowDescLease = {};
+    m_fallbackShadowDescSet = VK_NULL_HANDLE;
+    m_previewGlobalsLease = {};
+    m_previewGlobalsSet = VK_NULL_HANDLE;
     m_previewSkinPaletteBuffer.reset();
     m_previewSkinInstanceBuffer.reset();
+    m_previewInstanceAuxBuffer.reset();
     m_previewInstanceBuffer.reset();
     m_previewGlobalsUbo.reset();
     m_previewLightingUbo.reset();
@@ -798,6 +813,8 @@ bool GPUMaterialPreview::EnsureResources(int size)
         DestroyFramebuffer();
         CreateFramebuffer(size);
         m_currentSize = size;
+        if (m_framebuffer != VK_NULL_HANDLE)
+            PublishRenderView();
     }
 
     return m_framebuffer != VK_NULL_HANDLE && EnsureViewResources();
@@ -924,6 +941,7 @@ void GPUMaterialPreview::CreateFramebuffer(int size)
 
 void GPUMaterialPreview::DestroyFramebuffer()
 {
+    UnpublishRenderView();
     VkDevice device = m_vkCore->GetDevice();
     if (m_framebuffer != VK_NULL_HANDLE) {
         vkDestroyFramebuffer(device, m_framebuffer, nullptr);
@@ -933,6 +951,45 @@ void GPUMaterialPreview::DestroyFramebuffer()
     m_resolveColor.Destroy();
     m_depth.Destroy();
     m_currentSize = 0;
+}
+
+void GPUMaterialPreview::PublishRenderView()
+{
+    if (!m_vkCore || m_framebuffer == VK_NULL_HANDLE)
+        return;
+    auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+    if (m_renderView.color.IsValid())
+        device.Release(m_renderView.color);
+    if (m_renderView.depth.IsValid())
+        device.Release(m_renderView.depth);
+
+    m_renderView.device = m_vkCore->GetDeviceContext().GetDeviceId();
+    m_renderView.width = static_cast<uint32_t>(m_currentSize);
+    m_renderView.height = static_cast<uint32_t>(m_currentSize);
+    m_renderView.colorFormat = rhi::FromVkFormat(m_colorFormat);
+    m_renderView.depthFormat = rhi::FromVkFormat(m_depthFormat);
+    m_renderView.samples = rhi::FromVkSampleCount(m_sampleCount);
+    m_renderView.color = device.RegisterTextureView(m_msaaColor.GetView());
+    m_renderView.depth = m_depth.HasView() ? device.RegisterTextureView(m_depth.GetView()) : rhi::TextureViewHandle{};
+    ++m_renderView.revision;
+}
+
+void GPUMaterialPreview::UnpublishRenderView()
+{
+    if (!m_vkCore)
+        return;
+    auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+    if (m_renderView.color.IsValid())
+        device.Release(m_renderView.color);
+    if (m_renderView.depth.IsValid())
+        device.Release(m_renderView.depth);
+    const bool wasPublished = m_renderView.color.IsValid() || m_renderView.depth.IsValid() || m_renderView.width != 0;
+    m_renderView.color = {};
+    m_renderView.depth = {};
+    m_renderView.width = 0;
+    m_renderView.height = 0;
+    if (wasPublished)
+        ++m_renderView.revision;
 }
 
 void GPUMaterialPreview::CreateSphereBuffers()

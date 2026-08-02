@@ -339,7 +339,7 @@ VkDeviceSize GrowBufferSize(VkDeviceSize requiredSize)
     return requiredSize + (requiredSize >> 1);
 }
 
-void DestroyBufferWithQueue(VmaAllocator allocator, FrameDeletionQueue *deletionQueue, VkBuffer &buffer,
+void DestroyBufferWithQueue(VmaAllocator allocator, GpuRetirementQueue *deletionQueue, VkBuffer &buffer,
                             VmaAllocation &allocation, VkDeviceSize &bufferSize)
 {
     if (buffer == VK_NULL_HANDLE) {
@@ -351,7 +351,7 @@ void DestroyBufferWithQueue(VmaAllocator allocator, FrameDeletionQueue *deletion
     if (deletionQueue != nullptr) {
         const VkBuffer oldBuffer = buffer;
         const VmaAllocation oldAllocation = allocation;
-        deletionQueue->Push(
+        deletionQueue->Retire(
             [allocator, oldBuffer, oldAllocation]() { vmaDestroyBuffer(allocator, oldBuffer, oldAllocation); });
     } else {
         vmaDestroyBuffer(allocator, buffer, allocation);
@@ -362,7 +362,7 @@ void DestroyBufferWithQueue(VmaAllocator allocator, FrameDeletionQueue *deletion
     bufferSize = 0;
 }
 
-bool EnsureHostVisibleBuffer(VmaAllocator allocator, FrameDeletionQueue *deletionQueue, VkBufferUsageFlags usage,
+bool EnsureHostVisibleBuffer(VmaAllocator allocator, GpuRetirementQueue *deletionQueue, VkBufferUsageFlags usage,
                              VkBuffer &buffer, VmaAllocation &allocation, VkDeviceSize &bufferSize,
                              VkDeviceSize requiredSize)
 {
@@ -823,6 +823,18 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
 
         // Per-command texture (usually font atlas)
         VkDescriptorSet texDescSet = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(cmd.GetTexID()));
+        if (texDescSet == VK_NULL_HANDLE) {
+            m_commandCacheValid = false;
+            continue;
+        }
+        if (texDescSet != m_fontDescriptorSet && m_textureUsageValidator &&
+            !m_textureUsageValidator(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(texDescSet)))) {
+            // Cached ImDrawLists retain raw descriptor handles. A texture replacement or
+            // residency eviction invalidates that handle, so reject this command and force
+            // Python to rebuild the list with the currently published texture next UI tick.
+            m_commandCacheValid = false;
+            continue;
+        }
         {
             const uint64_t texDescRaw = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(texDescSet));
             const uint32_t lo = static_cast<uint32_t>(texDescRaw & 0xffffffffull);

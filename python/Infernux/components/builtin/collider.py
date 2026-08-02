@@ -47,6 +47,8 @@ def _unwrap_physic_material(value):
     if value is None:
         return None
     if isinstance(value, PhysicMaterialRef):
+        if not value.guid and not value.path_hint:
+            return None
         resolved = value.resolve()
         if resolved is None:
             raise ValueError(f"PhysicMaterial reference cannot be resolved: {value.guid}")

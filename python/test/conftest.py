@@ -92,9 +92,11 @@ def cpp_rigidbody(scene):
 def _reset_input_state():
     """Reset Input focus state between every test."""
     Input._game_focused = True
+    Input._automation_game_input_depth = 0
     Input._game_viewport_origin = (0.0, 0.0)
     yield
     Input._game_focused = True
+    Input._automation_game_input_depth = 0
     Input._game_viewport_origin = (0.0, 0.0)
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -110,6 +111,13 @@ class TestNativeConsolePanel:
         assert panel.get_info_count() == 0
         assert panel.get_warning_count() == 0
         assert panel.get_error_count() == 0
+
+    def test_console_toolbar_exposes_cached_text_search(self):
+        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
+
+        assert 'InputTextWithHint("##ConsoleSearch"' in source
+        assert "MatchesCurrentFilters" in source
+        assert "if (!m_cacheDirty && !m_filterDirty)" in source
 
 
 # ═══════════════════════════════════════════════════════════════════════════

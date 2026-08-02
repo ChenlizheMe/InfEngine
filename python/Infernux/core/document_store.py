@@ -39,11 +39,24 @@ def write_document_text(path: str, content: str, *, create_backup: bool = False)
     return NativeDocumentStore.instance().write_and_wait(path, content, options)
 
 
+def submit_document_text(path: str, content: str, *, create_backup: bool = False) -> DocumentWriteTicket:
+    """Queue one UTF-8 document write without blocking the caller.
+
+    The native store coalesces newer generations for the same path and writes
+    them atomically on its IO workers.  Callers that need durability before
+    shutdown should use :meth:`DocumentStore.flush`.
+    """
+    options = DocumentWriteOptions()
+    options.create_backup = create_backup
+    return NativeDocumentStore.instance().submit(path, content, options)
+
+
 __all__ = [
     "DocumentStore",
     "DocumentWriteCancelled",
     "DocumentWriteOptions",
     "DocumentWriteSuperseded",
     "DocumentWriteTicket",
+    "submit_document_text",
     "write_document_text",
 ]

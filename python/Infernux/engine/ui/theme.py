@@ -363,8 +363,8 @@ class Theme:
     INSPECTOR_LABEL_PAD        = 18.0  # Label padding
     INSPECTOR_MIN_LABEL_WIDTH  = 156.0  # Min label width
     INSPECTOR_FRAME_PAD        = (4.0, 2.0)  # Frame padding
-    # Extra left inset for object/reference fields (~3 monospace chars) so label text
-    # lines up with scalar fields; added to FramePadding.x inside ``IGUI.object_field``.
+    # Left text inset for object/reference fields so the label vertically and
+    # horizontally aligns with neighbouring scalar widgets (Unity ObjectField).
     OBJECT_FIELD_TEXT_INSET_X  : float = 12.0
     INSPECTOR_ITEM_SPC         = (4.0, 2.0)  # Item spacing
     INSPECTOR_SUBITEM_SPC      = (4.0, 2.0)  # Sub-item spacing
@@ -374,9 +374,11 @@ class Theme:
     # -- Component Header
     INSPECTOR_HEADER_PRIMARY_FRAME_PAD = (4.0, 2.0)  # Primary header frame padding
     INSPECTOR_HEADER_SECONDARY_FRAME_PAD = (4.0, 2.0)  # Secondary header frame padding
+    INSPECTOR_HEADER_TERTIARY_FRAME_PAD = (4.0, 1.0)  # Nested item header frame padding
     INSPECTOR_HEADER_LIST_FRAME_PAD  = (4.0, 2.0)  # List header frame padding
     INSPECTOR_HEADER_PRIMARY_FONT_SCALE= 1.0  # Primary header font scale
     INSPECTOR_HEADER_SECONDARY_FONT_SCALE= 1.0  # Secondary header font scale
+    INSPECTOR_HEADER_TERTIARY_FONT_SCALE= 0.96  # Nested item visual hierarchy
     INSPECTOR_HEADER_LIST_FONT_SCALE = 1.0  # List header font scale
     INSPECTOR_HEADER_ITEM_SPC   = (4.0, 2.0)  # Header item spacing
     INSPECTOR_HEADER_BORDER_SIZE = 0.0  # Header border size
@@ -385,12 +387,12 @@ class Theme:
     INSPECTOR_HEADER_CONTENT_INDENT = 28.0  # Header content indent (px)
     ADD_COMP_SEARCH_W          = 240  # "Search components" input width
     COMPONENT_ICON_SIZE        = 16  # Component icon size (px)
-    COMP_ENABLED_CB_OFFSET     = 40  # Enabled checkbox right offset
+    COMP_ENABLED_CB_OFFSET     = 34  # Enabled checkbox right offset (matches 75% checkbox)
 
-    # -- Checkbox Style
-    INSPECTOR_CHECKBOX_FONT_SCALE= 1.0  # Checkbox font scale
-    INSPECTOR_CHECKBOX_FRAME_PAD = (4.0, 2.0)  # Checkbox frame padding
-    INSPECTOR_CHECKBOX_SLOT_W    = 22.0  # Checkbox slot width
+    # -- Checkbox Style (square at 75%; label text stays ambient size)
+    INSPECTOR_CHECKBOX_BOX_SCALE = 0.75  # Scales only the checkbox square
+    INSPECTOR_CHECKBOX_FRAME_PAD = (3.0, 1.5)  # Checkbox frame padding
+    INSPECTOR_CHECKBOX_SLOT_W    = 16.5  # Checkbox slot width
 
     # -- Inspector Header Colors
     INSPECTOR_HEADER_PRIMARY    : RGBA = (0.235, 0.235, 0.235, 1.0)  # Primary (Unity gray)
@@ -399,6 +401,9 @@ class Theme:
     INSPECTOR_HEADER_SECONDARY  : RGBA = (0.18,  0.18,  0.18,  1.0)  # Secondary (same scale, darker tone)
     INSPECTOR_HEADER_SECONDARY_HOVERED : RGBA = (0.22,  0.20,  0.20,  1.0)
     INSPECTOR_HEADER_SECONDARY_ACTIVE  : RGBA = (0.26,  0.22,  0.22,  1.0)
+    INSPECTOR_HEADER_TERTIARY  : RGBA = (0.125, 0.125, 0.125, 1.0)
+    INSPECTOR_HEADER_TERTIARY_HOVERED : RGBA = (0.18, 0.16, 0.16, 1.0)
+    INSPECTOR_HEADER_TERTIARY_ACTIVE  : RGBA = (0.22, 0.18, 0.18, 1.0)
     INSPECTOR_HEADER_LIST       : RGBA = (0.16,  0.16,  0.16,  1.0)  # List header (distinct from component header)
     INSPECTOR_HEADER_LIST_HOVERED : RGBA = (0.20,  0.18,  0.18,  1.0)
     INSPECTOR_HEADER_LIST_ACTIVE  : RGBA = (0.24,  0.20,  0.20,  1.0)
@@ -602,7 +607,7 @@ class Theme:
 
     UI_DEFAULT_BUTTON_BG      : RGBA = (0.22, 0.56, 0.92, 1.0)  # Default button bg
     UI_DEFAULT_LABEL_COLOR    : RGBA = (1.0, 1.0, 1.0, 1.0)  # Default label color
-    UI_DEFAULT_FONT_SIZE      : float = 20.0  # Default font size
+    UI_DEFAULT_FONT_SIZE      : float = 18.0  # Default font size
     UI_DEFAULT_LINE_HEIGHT    : float = 1.2  # Default line height
     UI_DEFAULT_LETTER_SPACING : float = 0.0  # Default letter spacing
 

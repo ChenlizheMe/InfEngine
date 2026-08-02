@@ -23,14 +23,10 @@ class MissingScript(InxComponent):
         preserved = getattr(self, "_preserved_fields", None)
         if isinstance(preserved, dict):
             document = dict(preserved)
-            document["__schema_version__"] = document.get(
-                "__schema_version__", getattr(self, "__schema_version__", 1)
-            )
             document["__type_name__"] = self._component_name
             document["__component_id__"] = self._component_id
             return document
         return {
-            "__schema_version__": getattr(self, "__schema_version__", 1),
             "__type_name__": self._component_name,
             "__component_id__": self._component_id,
         }
@@ -89,5 +85,4 @@ def create_missing_script_component(
     instance._script_guid = script_guid
     instance._component_name = type_name
     instance._preserved_fields = dict(fields)
-    instance.__schema_version__ = fields.get("__schema_version__", 1)
     return instance

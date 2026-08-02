@@ -4,6 +4,7 @@ Unity-style Scene View panel with 3D viewport and camera controls.
 
 import math
 import os
+import time
 from Infernux.lib import InxGUIContext, TextureLoader, InputManager
 from Infernux.engine.i18n import t
 from .editor_panel import EditorPanel
@@ -16,6 +17,8 @@ import Infernux.resources as _resources
 
 # Gizmo handle IDs — must match C++ EditorTools constants
 from Infernux.debug import Debug
+
+_SCENE_VIEWPORT_SEMANTIC_ID = "scene_view.viewport"
 from Infernux.lib._Infernux import (
     GIZMO_X_AXIS_ID,
     GIZMO_Y_AXIS_ID,
@@ -23,6 +26,7 @@ from Infernux.lib._Infernux import (
     GIZMO_XY_PLANE_ID,
     GIZMO_XZ_PLANE_ID,
     GIZMO_YZ_PLANE_ID,
+    GIZMO_CENTER_ID,
 )
 
 _GIZMO_IDS = {
@@ -32,9 +36,11 @@ _GIZMO_IDS = {
     GIZMO_XY_PLANE_ID: 4,
     GIZMO_XZ_PLANE_ID: 5,
     GIZMO_YZ_PLANE_ID: 6,
+    GIZMO_CENTER_ID: 7,
 }
 _AXIS_DIRS = {1: (1.0, 0.0, 0.0), 2: (0.0, 1.0, 0.0), 3: (0.0, 0.0, 1.0)}
 _PLANE_AXIS_PAIRS = {4: (1, 2), 5: (1, 3), 6: (2, 3)}
+GIZMO_CENTER_HANDLE = 7
 
 # Tool mode constants — must match C++ EditorTools::ToolMode
 TOOL_NONE = 0
@@ -173,6 +179,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         "_gizmo_drag_restore_dynamic",
         "_gizmo_snap_active",
         "_was_focused",
+        "_pending_scene_pick",
     }
 
     # Key codes imported from shared imgui_keys module
@@ -186,6 +193,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
     KEY_C = _keys.KEY_C
     KEY_V = _keys.KEY_V
     KEY_X = _keys.KEY_X
+    KEY_DELETE = _keys.KEY_DELETE
     KEY_LEFT_CTRL = _keys.KEY_LEFT_CTRL
     KEY_RIGHT_CTRL = _keys.KEY_RIGHT_CTRL
     KEY_LEFT_SHIFT = _keys.KEY_LEFT_SHIFT
@@ -201,6 +209,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._copy_selected_callback = None
         self._paste_clipboard_callback = None
         self._has_clipboard_data_callback = None
+        self._delete_selected_callback = None
         
         # Scene render target size tracking
         self._last_scene_width = 0
@@ -249,6 +258,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._pick_cycle_index = -1
         self._pick_cycle_last_mouse = (-1.0, -1.0)
         self._pick_cycle_last_viewport = (0, 0)
+        self._pending_scene_pick = None
 
         # Box-select state
         self._box_select_active = False
@@ -285,6 +295,21 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         # every frame when the mouse hasn't moved.
         self._hover_pick_cache_pos: tuple[float, float] = (-1.0, -1.0)
         self._hover_pick_cache_result: int = 0
+
+        # Edit-mode ParticleSystem preview follows the primary scene selection.
+        self._particle_preview_component = None
+        self._particle_preview_object = None
+        self._particle_preview_speed = 1.0
+        self._particle_preview_seek_time = 0.0
+        self._particle_preview_seek_editing = False
+        self._particle_preview_playing = False
+        self._particle_preview_prepared = False
+        self._particle_preview_restore_pending = False
+        self._particle_preview_height = 150.0
+        self._particle_preview_resize_drag = False
+        self._particle_preview_resize_start_y = 0.0
+        self._particle_preview_resize_start_height = 0.0
+        self._particle_preview_last_tick = 0.0
     
     def set_engine(self, engine):
         """Set the engine reference for camera control."""
@@ -295,7 +320,18 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
     def set_play_mode_manager(self, manager):
         """Set the PlayModeManager so the panel can show play-mode border."""
+        previous = self._play_mode_manager
+        if previous is manager:
+            return
+        if previous is not None:
+            previous.remove_state_change_listener(
+                self._on_particle_preview_play_mode_changed
+            )
         self._play_mode_manager = manager
+        if manager is not None and self._enable_called:
+            manager.add_state_change_listener(
+                self._on_particle_preview_play_mode_changed
+            )
 
     def set_on_object_picked(self, callback):
         """Set callback for scene object picking (receives object ID or 0)."""
@@ -310,6 +346,10 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._copy_selected_callback = copy_selected
         self._paste_clipboard_callback = paste_clipboard
         self._has_clipboard_data_callback = has_clipboard_data
+
+    def set_object_delete_handler(self, delete_selected):
+        """Use the hierarchy's structural delete transaction in Scene View."""
+        self._delete_selected_callback = delete_selected
 
     # ------------------------------------------------------------------
     # EditorPanel hooks
@@ -339,16 +379,41 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         # Intentionally ignore persisted data for Scene View.
         return
 
+    def _pre_render(self, ctx) -> None:
+        """Keep edit-mode particle simulation independent of Scene tab visibility."""
+        now = time.monotonic()
+        previous = self._particle_preview_last_tick
+        self._particle_preview_last_tick = now
+        delta_time = 0.0 if previous <= 0.0 else min(max(now - previous, 0.0), 0.1)
+        self._tick_particle_preview(delta_time)
+
     def on_enable(self):
         # Reset transient per-session viewport/input caches.
         self._last_scene_width = 0
         self._last_scene_height = 0
         self._last_frame_time = 0.0
+        self._particle_preview_last_tick = 0.0
         self._hover_pick_cache_pos = (-1.0, -1.0)
         self._hover_pick_cache_result = 0
+        from .event_bus import EditorEvent
+
+        self.events.subscribe(EditorEvent.SELECTION_CHANGED, self._on_particle_preview_selection)
+        if self._play_mode_manager is not None:
+            self._play_mode_manager.add_state_change_listener(
+                self._on_particle_preview_play_mode_changed
+            )
+        self._restore_particle_preview_selection()
 
     def on_disable(self):
         """Panel closed — shrink render target to save GPU memory."""
+        from .event_bus import EditorEvent
+
+        self.events.unsubscribe(EditorEvent.SELECTION_CHANGED, self._on_particle_preview_selection)
+        if self._play_mode_manager is not None:
+            self._play_mode_manager.remove_state_change_listener(
+                self._on_particle_preview_play_mode_changed
+            )
+        self._release_particle_preview_selection()
         self._end_camera_capture(restore_cursor=False)
         self._force_camera_input_release()
         if self._engine:
@@ -360,6 +425,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
     def _on_not_visible(self, ctx):
         """Window collapsed/tabbed out — mark invisible for C++ side."""
+        self._particle_preview_resize_drag = False
         if self._engine:
             self._engine.set_scene_view_visible(False)
 
@@ -435,11 +501,33 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         if scene_texture_id != 0:
             ctx.image(scene_texture_id, float(scene_width), float(scene_height), 0.0, 0.0, 1.0, 1.0)
 
+            # Give the rendered image a real interaction item. This keeps
+            # human clicks and MCP synthetic SDL input on the same surface.
+            ctx.set_cursor_pos_x(cursor_start_x)
+            ctx.set_cursor_pos_y(cursor_start_y)
+            # The Scene View draws toolbar, Prefab Mode, and particle-preview
+            # controls over this full-viewport item. Let those later items own
+            # input inside their rectangles instead of being blocked by the
+            # viewport hit target underneath.
+            ctx.set_next_item_allow_overlap()
+            ctx.invisible_button("##SceneViewportInput", float(scene_width), float(scene_height))
+            ctx.record_semantic_item(
+                "viewport", "Scene Viewport", True, _SCENE_VIEWPORT_SEMANTIC_ID
+            )
+
             vp = capture_viewport_info(ctx)
             is_scene_hovered = vp.is_hovered
+            self._handle_object_clipboard_shortcuts(ctx, is_scene_hovered)
 
             overlay_hovered = self._render_overlays_and_shortcuts(
-                ctx, vp, cursor_start_x, cursor_start_y, scene_width, delta_time)
+                ctx,
+                vp,
+                cursor_start_x,
+                cursor_start_y,
+                scene_width,
+                scene_height,
+                delta_time,
+            )
 
             gizmo_consumed = self._process_gizmo_and_camera(
                 ctx, vp, delta_time, is_scene_hovered, overlay_hovered)
@@ -460,6 +548,11 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
         panel_active = (ClosablePanel.get_active_panel_id() == self.window_id) or self._is_window_or_child_focused(ctx)
         if not (panel_active or is_scene_hovered):
+            return
+
+        if ctx.is_key_pressed(self.KEY_DELETE):
+            if self._delete_selected_callback:
+                self._delete_selected_callback()
             return
 
         ctrl = ctx.is_key_down(self.KEY_LEFT_CTRL) or ctx.is_key_down(self.KEY_RIGHT_CTRL)

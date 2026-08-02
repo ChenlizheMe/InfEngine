@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 
 
@@ -70,7 +71,7 @@ class UITextureCache:
         project_root = get_project_root()
         if not project_root:
             return 0
-        abs_path = os.path.normpath(tex_path if os.path.isabs(tex_path) else os.path.join(project_root, tex_path))
+        abs_path = resolved_path(tex_path if os.path.isabs(tex_path) else os.path.join(project_root, tex_path))
         if not os.path.isfile(abs_path):
             if self._cache.get(key, 0) != 0:
                 self._generation += 1
@@ -88,10 +89,18 @@ class UITextureCache:
             self._pending_keys.discard(key)
             return 0
 
-        if cached is not None and cached != 0 and self._stamp.get(key) == stamp:
-            return cached
-
         resource_key = f"ui_img|{key}"
+        if cached is not None and cached != 0 and self._stamp.get(key) == stamp:
+            live = int(native.get_texture_preview_texture_id(resource_key))
+            if live == cached:
+                return cached
+            if live != 0:
+                self._generation += 1
+                self._cache[key] = live
+                return live
+            self._cache.pop(key, None)
+            self._stamp.pop(key, None)
+
         tid, _, _ = query_or_schedule_texture(
             native,
             resource_key,

@@ -149,11 +149,13 @@ class BootstrapWiringMixin:
         from Infernux.engine.ui.build_settings_panel import BuildSettingsPanel
         from Infernux.engine.ui.preferences_panel import PreferencesPanel
         from Infernux.engine.ui.tag_layer_settings import PhysicsLayerMatrixPanel
+        from Infernux.engine.ui.environment_settings_panel import EnvironmentSettingsPanel
         from Infernux.engine.project_context import get_project_root
         self._build_settings = BuildSettingsPanel()
         self._preferences = PreferencesPanel()
         self._physics_layer_matrix = PhysicsLayerMatrixPanel()
         self._physics_layer_matrix.set_project_path(get_project_root() or "")
+        self._environment_settings = EnvironmentSettingsPanel()
 
         mb.toggle_build_settings = lambda: (
             self._build_settings.close() if self._build_settings.is_open
@@ -167,16 +169,23 @@ class BootstrapWiringMixin:
             self._physics_layer_matrix.close() if self._physics_layer_matrix.is_open
             else self._physics_layer_matrix.open()
         )
+        mb.toggle_environment_settings = lambda: (
+            self._environment_settings.close() if self._environment_settings.is_open
+            else self._environment_settings.open()
+        )
         mb.is_build_settings_open = lambda: self._build_settings.is_open
         mb.is_preferences_open = lambda: self._preferences.is_open
         mb.is_physics_layer_matrix_open = lambda: self._physics_layer_matrix.is_open
+        mb.is_environment_settings_open = lambda: self._environment_settings.is_open
 
-        # Register a secondary renderable that draws the floating sub-panels
-        # and save-confirmation popup after the menu bar.
+        # Floating utility windows participate in the normal panel layer.
+        # Global confirmations are registered separately at overlay priority
+        # so dynamically-created or undocked editors can never cover them.
         from Infernux.lib import InxGUIRenderable, InxGUIContext
         _bs = self._build_settings
         _pref = self._preferences
         _plm = self._physics_layer_matrix
+        _env = self._environment_settings
         _sfm = sfm
         from Infernux.engine.ui.dirty_panel_confirmation import (
             DirtyPanelConfirmationCoordinator,
@@ -192,6 +201,10 @@ class BootstrapWiringMixin:
                 _bs.render(ctx)
                 _pref.render(ctx)
                 _plm.render(ctx)
+                _env.render(ctx)
+
+        class _EditorGlobalOverlays(InxGUIRenderable):
+            def on_render(self, ctx: InxGUIContext):
                 _dirty_panels.render(ctx)
                 _project_delete.render(ctx)
                 if _sfm:
@@ -200,6 +213,12 @@ class BootstrapWiringMixin:
 
         self._menu_bar_floats = _MenuBarFloatingPanels()
         engine.register_gui("menu_bar_floats", self._menu_bar_floats)
+        self._editor_global_overlays = _EditorGlobalOverlays()
+        engine.register_gui(
+            "editor_global_overlays",
+            self._editor_global_overlays,
+            priority=1000,
+        )
 
     def _wire_toolbar_callbacks(self, engine):
         """Wire C++ ToolbarPanel callbacks to Python PlayModeManager."""

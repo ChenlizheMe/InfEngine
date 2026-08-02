@@ -66,7 +66,7 @@ class AssetManager:
         """Move or rename an asset, updating all references."""
         ...
     @classmethod
-    def delete_asset(cls, path: str, *, database: Any = ..., suppress_watcher_echo: bool = ...) -> AssetMutationResult:
+    def delete_asset(cls, path: str, *, database: Any = ..., suppress_watcher_echo: bool = ..., guid_hint: str = ...) -> AssetMutationResult:
         """Delete an asset after evicting loaded state."""
         ...
     @classmethod

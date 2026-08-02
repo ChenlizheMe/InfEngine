@@ -8,6 +8,8 @@
 #include "TransformECSStore.h"
 #include "core/threading/JobSystem.h"
 #include "function/resources/AssetDependencyGraph.h"
+#include "function/resources/AssetRegistry/AssetRegistry.h"
+#include "function/resources/InxMaterial/InxMaterial.h"
 #include "platform/filesystem/DocumentStore.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -80,9 +82,8 @@ std::string DumpSceneDocument(const nlohmann::json &document, size_t objectCount
 /// Full graph validation still happens inside DeserializeDocument.
 bool ValidateSceneDocumentHeader(const nlohmann::json &document)
 {
-    if (!document.is_object() || !document.contains("schema_version") ||
-        !document["schema_version"].is_number_integer() || document["schema_version"].get<int>() != 2) {
-        INXLOG_ERROR("Scene::Deserialize: expected schema_version 2");
+    if (!document.is_object()) {
+        INXLOG_ERROR("Scene::Deserialize: expected an object document");
         return false;
     }
     if (!document.contains("name") || !document["name"].is_string() || !document.contains("isPlaying") ||
@@ -91,7 +92,7 @@ bool ValidateSceneDocumentHeader(const nlohmann::json &document)
         return false;
     }
     static const std::unordered_set<std::string> allowedSceneFields = {
-        "schema_version", "name", "isPlaying", "objects", "mainCameraComponentId",
+        "name", "isPlaying", "objects", "mainCameraComponentId", "environment",
     };
     for (const auto &[key, value] : document.items()) {
         (void)value;
@@ -125,6 +126,7 @@ struct SceneCommitToken::Impl
     bool isPlaying = false;
     bool hasStarted = false;
     uint64_t structureVersion = 0;
+    SceneEnvironmentSettings environment;
 };
 
 namespace
@@ -158,6 +160,7 @@ SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>
     state.isPlaying = scene.m_isPlaying;
     state.hasStarted = scene.m_hasStarted;
     state.structureVersion = scene.m_structureVersion;
+    state.environment = scene.m_environment;
 
     const std::vector<GameObject *> objects = scene.GetAllObjects();
     std::vector<Component *> components;
@@ -248,6 +251,7 @@ bool SceneCommitToken::Rollback()
         scene.m_isPlaying = state.isPlaying;
         scene.m_hasStarted = state.hasStarted;
         scene.m_structureVersion = state.structureVersion;
+        scene.m_environment = state.environment;
         for (auto &root : scene.m_rootObjects)
             root->SetScene(&scene);
         RestoreSceneComponentRegistries(scene);
@@ -715,15 +719,14 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
         return nullptr;
     };
 
-    if (!objJson.is_object() || !objJson.contains("schema_version") || !objJson["schema_version"].is_number_integer() ||
-        objJson["schema_version"].get<int>() != 2) {
-        INXLOG_ERROR("Scene object must use schema_version 2");
+    if (!objJson.is_object()) {
+        INXLOG_ERROR("Scene object must be an object document");
         return fail();
     }
 
     static const std::unordered_set<std::string> allowedObjectFields = {
-        "schema_version", "name",        "id",          "active",    "is_static",  "tag",
-        "layer",          "prefab_guid", "prefab_root", "transform", "components", "children",
+        "name",        "id",          "active",    "is_static",  "tag",      "layer",
+        "prefab_guid", "prefab_root", "transform", "components", "children",
     };
     for (const auto &[key, value] : objJson.items()) {
         (void)value;
@@ -845,7 +848,6 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
             const auto mixHash = [&](size_t value) {
                 prototypeHash ^= value + 0x9e3779b97f4a7c15ULL + (prototypeHash << 6u) + (prototypeHash >> 2u);
             };
-            mixHash(std::hash<int>{}(record.typeVersion));
             mixHash(std::hash<bool>{}(record.enabled));
             mixHash(std::hash<int>{}(record.executionOrder));
             mixHash(std::hash<json>{}(record.data));
@@ -854,7 +856,6 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
                 for (const ComponentPrototype &candidate : cacheIt->second) {
                     const json &candidateRecord = *candidate.record;
                     if (candidateRecord.at("type_id") == componentRecordDocument.at("type_id") &&
-                        candidateRecord.at("type_version") == componentRecordDocument.at("type_version") &&
                         candidateRecord.at("enabled") == componentRecordDocument.at("enabled") &&
                         candidateRecord.at("execution_order") == componentRecordDocument.at("execution_order") &&
                         candidateRecord.at("data") == componentRecordDocument.at("data")) {
@@ -1041,10 +1042,14 @@ Component *Scene::FindComponentByID(uint64_t componentId) const
 // Instantiate (deep clone) — Unity: Object.Instantiate()
 // ============================================================================
 
-GameObject *Scene::InstantiateGameObject(GameObject *source, GameObject *parent)
+GameObject *Scene::InstantiateGameObject(GameObject *source, GameObject *parent, bool instantiateInWorldSpace)
 {
     if (!source)
         return nullptr;
+
+    const glm::vec3 sourceWorldPosition = source->GetTransform()->GetWorldPosition();
+    const glm::quat sourceWorldRotation = source->GetTransform()->GetWorldRotation();
+    const glm::vec3 sourceWorldScale = source->GetTransform()->GetWorldScale();
 
     // Native deep clone — no JSON serialization round-trip.
     auto clone = source->Clone(this);
@@ -1071,6 +1076,12 @@ GameObject *Scene::InstantiateGameObject(GameObject *source, GameObject *parent)
         parent->AttachChild(std::move(clone));
     } else {
         m_rootObjects.push_back(std::move(clone));
+    }
+
+    if (instantiateInWorldSpace) {
+        ptr->GetTransform()->SetWorldPosition(sourceWorldPosition);
+        ptr->GetTransform()->SetWorldRotation(sourceWorldRotation);
+        ptr->GetTransform()->SetWorldScale(sourceWorldScale);
     }
 
     // Awake C++ components so they register with subsystems
@@ -1126,9 +1137,9 @@ GameObject *Scene::InstantiateFromDocument(const nlohmann::json &document, GameO
 nlohmann::json Scene::SerializeDocument() const
 {
     json j;
-    j["schema_version"] = 2;
     j["name"] = m_name;
     j["isPlaying"] = m_isPlaying;
+    j["environment"] = m_environment.ToJson();
 
     // Serialize main camera reference via component_id (survives deserialization)
     if (m_mainCamera) {
@@ -1188,6 +1199,19 @@ std::string Scene::Serialize() const
     return DumpSceneDocument(SerializeDocument(), m_objectsById.size());
 }
 
+std::shared_ptr<InxMaterial> Scene::ResolveSkyboxMaterial() const
+{
+    if (!m_environment.skyboxMaterialGuid.empty()) {
+        auto &registry = AssetRegistry::Instance();
+        auto material = registry.GetAsset<InxMaterial>(m_environment.skyboxMaterialGuid);
+        if (!material)
+            material = registry.LoadAsset<InxMaterial>(m_environment.skyboxMaterialGuid, ResourceType::Material);
+        if (material && !material->IsDeleted())
+            return material;
+    }
+    return AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
+}
+
 bool Scene::DeserializeDocument(const nlohmann::json &j)
 {
     try {
@@ -1204,6 +1228,8 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
         // IDs avoid publishing over live registry entries before validation succeeds.
         Scene staging(j["name"].get<std::string>());
         staging.m_isPlaying = j["isPlaying"].get<bool>();
+        if (j.contains("environment"))
+            staging.m_environment = SceneEnvironmentSettings::FromJson(j["environment"]);
         staging.m_rootObjects.reserve(j["objects"].size());
         ComponentPrototypeCache prototypeCache;
         prototypeCache.reserve(16);
@@ -1413,6 +1439,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
 
         m_name = std::move(staging.m_name);
         m_isPlaying = staging.m_isPlaying;
+        m_environment = staging.m_environment;
         m_pendingPyComponents = std::move(staging.m_pendingPyComponents);
         for (size_t i = 0; i < componentIdAssignments.size(); ++i) {
             auto &[component, componentId] = componentIdAssignments[i];
@@ -1495,45 +1522,50 @@ bool Scene::SaveToFile(const std::string &path) const
     }
 }
 
+void Scene::SetMainCamera(Camera *camera)
+{
+    if (camera) {
+        GameObject *owner = camera->GetGameObject();
+        if (!owner || owner->GetScene() != this)
+            throw std::invalid_argument("Scene.main_camera must reference a Camera owned by this Scene");
+    }
+    m_mainCamera = camera;
+}
+
 Camera *Scene::FindGameCamera(Camera *editorCam)
 {
-    // Fast path: cached main camera is still valid and active
+    // The authored preference is persistent. Disabling it temporarily falls
+    // back to another active camera without destroying the user's selection.
     if (m_mainCamera && m_mainCamera != editorCam) {
-        // Verify the camera's GameObject is still active and the component is enabled
         GameObject *go = m_mainCamera->GetGameObject();
-        if (go && go->IsActiveInHierarchy() && m_mainCamera->IsEnabled()) {
+        if (go && go->GetScene() == this && go->IsActiveInHierarchy() && m_mainCamera->IsEnabled()) {
             return m_mainCamera;
         }
-        // Cached main camera is no longer valid — clear and re-discover
-        m_mainCamera = nullptr;
     }
 
-    // Auto-discover: find highest-priority (lowest depth) active Camera component
-    auto objects = FindObjectsWithComponent<Camera>();
-    Camera *bestCam = nullptr;
-    float bestDepth = std::numeric_limits<float>::max();
+    const auto cameras = GetActiveGameCameras(editorCam);
+    return cameras.empty() ? nullptr : cameras.front();
+}
 
-    for (auto *obj : objects) {
-        if (!obj->IsActiveInHierarchy())
+std::vector<Camera *> Scene::GetActiveGameCameras(Camera *editorCam) const
+{
+    std::vector<Camera *> cameras;
+    const auto objects = FindObjectsWithComponent<Camera>();
+    cameras.reserve(objects.size());
+    for (GameObject *object : objects) {
+        if (!object || !object->IsActiveInHierarchy())
             continue;
-
-        Camera *c = obj->GetComponent<Camera>();
-        if (!c || !c->IsEnabled() || c == editorCam)
+        Camera *camera = object->GetComponent<Camera>();
+        if (!camera || !camera->IsEnabled() || camera == editorCam)
             continue;
-
-        if (c->GetDepth() < bestDepth) {
-            bestDepth = c->GetDepth();
-            bestCam = c;
-        }
+        cameras.push_back(camera);
     }
-
-    if (bestCam) {
-        m_mainCamera = bestCam;
-        INXLOG_DEBUG("Game camera auto-assigned from GameObject '", bestCam->GetGameObject()->GetName(),
-                     "' (depth=", bestDepth, ")");
-    }
-
-    return bestCam;
+    std::sort(cameras.begin(), cameras.end(), [](const Camera *lhs, const Camera *rhs) {
+        if (lhs->GetDepth() != rhs->GetDepth())
+            return lhs->GetDepth() < rhs->GetDepth();
+        return lhs->GetComponentID() < rhs->GetComponentID();
+    });
+    return cameras;
 }
 
 } // namespace infernux

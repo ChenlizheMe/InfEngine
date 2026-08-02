@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en" data-title-i18n="pageTitle.learn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Learn Infernux shaders from vertex and fragment materials to shading models and fully custom GPU stages.">
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <link rel="canonical" href="https://infernux-engine.com/learn/shaders.html">
+    <title>Writing shaders in Infernux</title>
+    <link rel="icon" type="image/png" href="../assets/logo.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=1">
+    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/docs-search.css?v=3">
+    <link rel="stylesheet" href="../css/mission.css?v=2">
+    <link rel="stylesheet" href="../css/learn.css?v=3">
+    <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header" role="banner">
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.2.9 live</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+        </div></nav>
+    </header>
+
+    <main class="page-shell learn-page" id="main-content"><div class="container"><article class="learn-article">
+        <nav class="learn-article-nav" aria-label="Learning chapter navigation"><a href="../learn.html"><span data-page-language="en">All chapters</span><span data-page-language="zh" lang="zh-CN" hidden>全部章节</span></a><a href="shaders.md">Markdown source</a></nav>
+
+        <div data-page-language="en" class="learn-article-body">
+            <span class="mini-tag">Basics · Rendering · Shader</span>
+            <h1>Writing shaders in Infernux</h1>
+            <p class="learn-article-lead">Keep ordinary GLSL for shader logic while Infernux generates bindings and stage interfaces. Start with materials, move into reusable lighting, and take full control only when the effect needs it.</p>
+            <div class="learn-article-toc"><strong>In this chapter</strong><a href="#en-beginner">Beginner: Vert / Frag</a><a href="#en-intermediate">Intermediate: ShadingModel</a><a href="#en-advanced">Advanced: custom stages</a><a href="#en-errors">Common errors</a></div>
+
+            <h2 id="en-beginner"><span class="learn-level">Beginner</span>Vertex and fragment shaders</h2>
+            <h3>Start with the standard vertex path</h3>
+            <p>The smallest mesh vertex shader only names the stage. With no <code>vertex()</code> hook, the engine applies its standard object-to-world-to-view-to-clip transform.</p>
+            <pre><code class="language-glsl">#version 450
+
+ShaderInfo {
+    Name "Standard"
+}</code></pre>
+            <p>Add the fixed hook when the mesh needs object-space deformation. <code>VertexInput</code> and <code>_Globals</code> are injected automatically.</p>
+            <pre><code class="language-glsl">ShaderInfo {
+    Name "Wave"
+}
+
+void vertex(inout VertexInput v) {
+    float wave = sin(v.position.x * 4.0 + _Globals._Time.x * 2.0) * 0.1;
+    v.position.y += wave;
+}</code></pre>
+
+            <h3>Describe a surface in the fragment stage</h3>
+            <p>A regular material fragment shader fills <code>SurfaceData</code>. Its <code>ShadingModel</code> decides how that data becomes a final color.</p>
+            <pre><code class="language-glsl">#version 450
+
+ShaderInfo {
+    Name "Tinted Unlit"
+    ShadingModel Unlit
+    Queue 2000
+    Properties {
+        Color baseColor = [1.0, 1.0, 1.0, 1.0]
+        Texture2D mainTexture = white
+    }
+}
+
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+    vec4 texel = texture(mainTexture, v_TexCoord);
+    s.albedo = texel.rgb * v_Color * material.baseColor.rgb;
+    s.alpha = texel.a * material.baseColor.a;
+}</code></pre>
+            <p>Common property types are <code>Float</code>, <code>Float2</code>, <code>Float3</code>, <code>Float4</code>, <code>Color</code>, <code>Int</code>, <code>Mat4</code>, and <code>Texture2D</code>. Add <code>Range(min, max)</code> for an Inspector range or <code>HDR</code> for an HDR color.</p>
+            <pre><code class="language-glsl">Properties {
+    Float roughness = 0.5 Range(0.0, 1.0)
+    Color emission = [0.0, 0.0, 0.0, 1.0] HDR
+}</code></pre>
+            <p><code>SurfaceData</code> carries <code>albedo</code>, <code>normalWS</code>, <code>metallic</code>, <code>smoothness</code>, <code>occlusion</code>, <code>emission</code>, <code>alpha</code>, and <code>specularHighlights</code>.</p>
+
+            <h3>Material state belongs in ShaderInfo</h3>
+            <pre><code class="language-glsl">ShaderInfo {
+    Name "Transparent Unlit"
+    ShadingModel Unlit
+    Queue 3000
+    Cull Back
+    DepthWrite Off
+    DepthTest LessEqual
+    Blend SrcAlpha OneMinusSrcAlpha
+    CastShadows Off
+    ReceiveShadows Off
+}</code></pre>
+            <div class="learn-note"><strong>Exact IDs matter.</strong><p>A material selects a shader by its exact, case-sensitive <code>Name</code>. <code>Queue</code> also decides which RenderPipeline route consumes the material.</p></div>
+
+            <h2 id="en-intermediate"><span class="learn-level">Intermediate</span>Reusable shading models</h2>
+            <p>A surface shader answers “what is this surface?” A shading model answers “how does it interact with light?” This lets many materials share PBR, unlit, toon, halftone, or project-specific lighting.</p>
+            <pre><code class="language-glsl">ShadingModelInfo {
+    Name "FlatTint"
+    Entry Forward evaluateForward
+}
+
+void evaluateForward(in SurfaceData s, out vec4 color) {
+    vec3 base = clamp(s.albedo, 0.0, 1.0);
+    color = vec4(base + s.emission, s.alpha);
+}</code></pre>
+            <p>Reference it with <code>ShadingModel FlatTint</code>. A custom deferred encoding may also declare <code>Entry GBuffer evaluateGBuffer</code>. If a conventional surface model omits that entry, Infernux can use its standard PBR-oriented GBuffer encoding, keeping material code portable between Forward, Forward+, and Deferred routes.</p>
+
+            <h2 id="en-advanced"><span class="learn-level">Advanced</span>Fully custom stages</h2>
+            <p>Use a custom stage for procedural geometry, editor utilities, fullscreen effects, or specialized domain renderers that cannot be expressed through <code>surface()</code> and the standard vertex hook.</p>
+            <pre><code class="language-glsl">#version 450
+
+ShaderInfo {
+    Name "Color Invert"
+    Capabilities [Fullscreen]
+    Resources { Texture2D _SourceTex }
+    Inputs { Float2 inUV }
+    Outputs { Float4 outColor }
+}
+
+void main() {
+    vec4 source = texture(_SourceTex, inUV);
+    outColor = vec4(vec3(1.0) - source.rgb, source.a);
+}</code></pre>
+            <p>Use <code>Capabilities [Standalone]</code> when a geometry stage owns an explicit <code>main()</code>. Describe inter-stage values through <code>Inputs</code> and <code>Outputs</code>, textures through <code>Resources</code>, and small per-draw data through <code>PushConstants</code>.</p>
+            <div class="learn-warning"><strong>Do not write manual layouts.</strong><p>Authored <code>layout(location=...)</code>, descriptor set/binding layouts, uniform blocks, and push-constant layouts conflict with the generated RHI interface. Describe them in <code>ShaderInfo</code> instead.</p></div>
+
+            <h3>Choose the lowest useful level</h3>
+            <table><thead><tr><th>Goal</th><th>Start here</th></tr></thead><tbody><tr><td>Deform or animate a mesh</td><td>Standard vertex shader with <code>vertex()</code></td></tr><tr><td>Define material appearance</td><td>Fragment shader with <code>surface()</code></td></tr><tr><td>Reuse a lighting style</td><td><code>.shadingmodel</code></td></tr><tr><td>Build a fullscreen pass</td><td><code>Capabilities [Fullscreen]</code></td></tr><tr><td>Own specialized geometry</td><td><code>Capabilities [Standalone]</code></td></tr></tbody></table>
+
+            <h2 id="en-errors">Common errors</h2>
+            <ul><li><strong>Missing fixed entry point:</strong> structured material stages need the expected <code>vertex()</code> or <code>surface()</code> hook.</li><li><strong>Object disappears after a shader change:</strong> confirm that both stages belong to the material geometry domain and their IDs match exactly.</li><li><strong>Transparent object renders opaque:</strong> inspect <code>Queue</code>, <code>DepthWrite</code>, and <code>Blend</code> together.</li><li><strong>Duplicate layout diagnostics:</strong> remove authored layouts and describe the interface in <code>ShaderInfo</code>.</li></ul>
+        </div>
+
+        <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden>
+            <span class="mini-tag">基础 · 渲染 · Shader</span>
+            <h1>在 Infernux 中编写 Shader</h1>
+            <p class="learn-article-lead">Shader 逻辑继续使用普通 GLSL，绑定与阶段接口则由 Infernux 生成。先从普通材质入手，再进入可复用光照，只有确实需要时才完整接管 GPU 阶段。</p>
+            <div class="learn-article-toc"><strong>本章内容</strong><a href="#zh-beginner">入门：Vert / Frag</a><a href="#zh-intermediate">进阶：ShadingModel</a><a href="#zh-advanced">高级：完全自定义</a><a href="#zh-errors">常见错误</a></div>
+
+            <h2 id="zh-beginner"><span class="learn-level">入门</span>普通 Vert 与 Frag</h2>
+            <h3>从标准顶点路径开始</h3>
+            <p>最小的网格 Vert 只需要命名阶段。不提供 <code>vertex()</code> 时，引擎自动完成物体空间到世界、观察和裁剪空间的标准变换。</p>
+            <pre><code class="language-glsl">#version 450
+
+ShaderInfo {
+    Name "Standard"
+}</code></pre>
+            <p>需要在物体空间做顶点变形时，加入固定 Hook。<code>VertexInput</code> 与 <code>_Globals</code> 会自动注入。</p>
+            <pre><code class="language-glsl">ShaderInfo {
+    Name "Wave"
+}
+
+void vertex(inout VertexInput v) {
+    float wave = sin(v.position.x * 4.0 + _Globals._Time.x * 2.0) * 0.1;
+    v.position.y += wave;
+}</code></pre>
+
+            <h3>在片元阶段描述表面</h3>
+            <p>普通材质的 Frag 负责填写 <code>SurfaceData</code>，最终如何结算颜色由 <code>ShadingModel</code> 决定。</p>
+            <pre><code class="language-glsl">#version 450
+
+ShaderInfo {
+    Name "Tinted Unlit"
+    ShadingModel Unlit
+    Queue 2000
+    Properties {
+        Color baseColor = [1.0, 1.0, 1.0, 1.0]
+        Texture2D mainTexture = white
+    }
+}
+
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+    vec4 texel = texture(mainTexture, v_TexCoord);
+    s.albedo = texel.rgb * v_Color * material.baseColor.rgb;
+    s.alpha = texel.a * material.baseColor.a;
+}</code></pre>
+            <p>常用属性类型包括 <code>Float</code>、<code>Float2</code>、<code>Float3</code>、<code>Float4</code>、<code>Color</code>、<code>Int</code>、<code>Mat4</code> 和 <code>Texture2D</code>。用 <code>Range(min, max)</code> 声明 Inspector 范围，用 <code>HDR</code> 声明 HDR 颜色。</p>
+            <pre><code class="language-glsl">Properties {
+    Float roughness = 0.5 Range(0.0, 1.0)
+    Color emission = [0.0, 0.0, 0.0, 1.0] HDR
+}</code></pre>
+            <p><code>SurfaceData</code> 提供 <code>albedo</code>、<code>normalWS</code>、<code>metallic</code>、<code>smoothness</code>、<code>occlusion</code>、<code>emission</code>、<code>alpha</code> 与 <code>specularHighlights</code>。</p>
+
+            <h3>把材质状态写进 ShaderInfo</h3>
+            <pre><code class="language-glsl">ShaderInfo {
+    Name "Transparent Unlit"
+    ShadingModel Unlit
+    Queue 3000
+    Cull Back
+    DepthWrite Off
+    DepthTest LessEqual
+    Blend SrcAlpha OneMinusSrcAlpha
+    CastShadows Off
+    ReceiveShadows Off
+}</code></pre>
+            <div class="learn-note"><strong>ID 必须精确匹配。</strong><p>材质通过区分大小写的 <code>Name</code> 选择 Shader。<code>Queue</code> 还会决定该材质由 RenderPipeline 的哪条 Route 消费。</p></div>
+
+            <h2 id="zh-intermediate"><span class="learn-level">进阶</span>可复用的着色模型</h2>
+            <p>Surface Shader 回答“表面是什么”，着色模型回答“表面如何与光照交互”。多个材质因此可以共享 PBR、Unlit、卡通、半调或项目自己的光照模型。</p>
+            <pre><code class="language-glsl">ShadingModelInfo {
+    Name "FlatTint"
+    Entry Forward evaluateForward
+}
+
+void evaluateForward(in SurfaceData s, out vec4 color) {
+    vec3 base = clamp(s.albedo, 0.0, 1.0);
+    color = vec4(base + s.emission, s.alpha);
+}</code></pre>
+            <p>Frag 通过 <code>ShadingModel FlatTint</code> 引用它。自定义 Deferred 编码时，还可声明 <code>Entry GBuffer evaluateGBuffer</code>。常规表面模型省略该入口时，引擎可以使用标准 PBR 型 GBuffer 编码，让材质代码在 Forward、Forward+ 与 Deferred Route 之间复用。</p>
+
+            <h2 id="zh-advanced"><span class="learn-level">高级</span>完全自定义流程</h2>
+            <p>程序化几何、编辑器工具、全屏效果或专用域渲染器无法通过 <code>surface()</code> 与标准顶点 Hook 表达时，再使用自定义阶段。</p>
+            <pre><code class="language-glsl">#version 450
+
+ShaderInfo {
+    Name "Color Invert"
+    Capabilities [Fullscreen]
+    Resources { Texture2D _SourceTex }
+    Inputs { Float2 inUV }
+    Outputs { Float4 outColor }
+}
+
+void main() {
+    vec4 source = texture(_SourceTex, inUV);
+    outColor = vec4(vec3(1.0) - source.rgb, source.a);
+}</code></pre>
+            <p>几何阶段需要自己提供显式 <code>main()</code> 时，使用 <code>Capabilities [Standalone]</code>。跨阶段数据写入 <code>Inputs</code> 和 <code>Outputs</code>，纹理写入 <code>Resources</code>，少量逐 Draw 数据写入 <code>PushConstants</code>。</p>
+            <div class="learn-warning"><strong>不要手写 Layout。</strong><p>手写 <code>layout(location=...)</code>、描述符 set/binding、Uniform Block 或 Push Constant 布局会与生成的 RHI 接口冲突，应统一通过 <code>ShaderInfo</code> 描述。</p></div>
+
+            <h3>选择足够完成目标的最低层级</h3>
+            <table><thead><tr><th>目标</th><th>使用方式</th></tr></thead><tbody><tr><td>网格变形或顶点动画</td><td>带 <code>vertex()</code> 的标准 Vert</td></tr><tr><td>定义材质外观</td><td>带 <code>surface()</code> 的 Frag</td></tr><tr><td>复用一种光照风格</td><td><code>.shadingmodel</code></td></tr><tr><td>编写全屏 Pass</td><td><code>Capabilities [Fullscreen]</code></td></tr><tr><td>接管专用几何</td><td><code>Capabilities [Standalone]</code></td></tr></tbody></table>
+
+            <h2 id="zh-errors">常见错误</h2>
+            <ul><li><strong>缺少固定入口：</strong>结构化材质阶段需要对应的 <code>vertex()</code> 或 <code>surface()</code> Hook。</li><li><strong>切换 Shader 后物体消失：</strong>确认 Vert/Frag 都属于材质几何域，且 ID 大小写完全一致。</li><li><strong>透明物体仍按不透明渲染：</strong>一起检查 <code>Queue</code>、<code>DepthWrite</code> 与 <code>Blend</code>。</li><li><strong>布局重复：</strong>移除手写 Layout，改由 <code>ShaderInfo</code> 描述接口。</li></ul>
+        </div>
+    </article></div></main>
+
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <script src="../js/i18n-learn.js?v=1"></script><script src="../js/i18n.js?v=19"></script><script src="../js/main.js?v=14"></script><script src="../js/docs-search.js?v=5"></script><script src="../js/bilingual-page.js?v=1"></script>
+</body>
+</html>

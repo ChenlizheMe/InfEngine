@@ -1,25 +1,37 @@
 """Integration tests — Scene management and GameObject hierarchy (real engine)."""
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from Infernux.lib import AssetRegistry, InxMaterial, SceneManager, Vector3, PrimitiveType, quatf
-from Infernux.components import InxComponent, FieldType, serialized_field
+from Infernux.lib import AssetRegistry, GameObject, InxMaterial, SceneManager, Vector3, PrimitiveType, quatf
+from Infernux.components import (
+    FieldType,
+    InxComponent,
+    SerializableObject,
+    list_field,
+    serialized_field,
+)
 from Infernux.components._cds_bridge import get_class_info
 from Infernux.components.decorators import disallow_multiple, require_component
 from Infernux.components.ref_wrappers import ComponentRef, GameObjectRef
 from Infernux.engine.component_restore import (
     PythonComponentRestoreError,
+    clone_game_object_transactionally,
     deserialize_scene_document_transactionally,
     deserialize_game_object_document_transactionally,
     instantiate_game_object_document_transactionally,
+    instantiate_prepared_game_object_document,
+    preflight_game_object_python_components,
+    preflight_scene_python_components,
 )
 from Infernux.engine.scene_document_transaction import (
     SceneDocumentTransaction,
@@ -27,6 +39,7 @@ from Infernux.engine.scene_document_transaction import (
 )
 from Infernux.engine.scene_manager import SceneFileManager
 from Infernux.engine.prefab_manager import PrefabDocumentError, _strip_prefab_runtime_fields
+from Infernux.instantiate import Instantiate
 
 
 class _ExplodingSerializationComponent(InxComponent):
@@ -36,6 +49,18 @@ class _ExplodingSerializationComponent(InxComponent):
 
 class _StrictSceneComponent(InxComponent):
     value: int = 7
+
+
+class _ReplacementLifecycleSource(InxComponent):
+    value: int = 13
+    destroy_calls = 0
+
+    def on_destroy(self):
+        type(self).destroy_calls += 1
+
+
+class _ReplacementLifecycleTarget(InxComponent):
+    value: int = 0
 
 
 class _AdditiveSceneComponent(InxComponent):
@@ -117,6 +142,20 @@ class _ObjectRefSceneComponent(InxComponent):
 
 
 class _ObjectGraphRefsComponent(InxComponent):
+    target_object = serialized_field(default=None, field_type=FieldType.GAME_OBJECT)
+    target_component = serialized_field(default=None, field_type=FieldType.COMPONENT)
+
+
+class _CloneSettings(SerializableObject):
+    gain: float = 1.0
+    label: str = "default"
+
+
+class _RichCloneComponent(InxComponent):
+    count: int = 1
+    title: str = "source"
+    values: list = list_field(element_type=FieldType.INT, default=[])
+    settings: _CloneSettings = serialized_field(default=_CloneSettings())
     target_object = serialized_field(default=None, field_type=FieldType.GAME_OBJECT)
     target_component = serialized_field(default=None, field_type=FieldType.COMPONENT)
 
@@ -489,6 +528,492 @@ class TestInstantiate:
         assert clone_rb is not None
         assert clone_rb.mass == pytest.approx(7.5)
 
+    def test_transactional_clone_preserves_live_python_fields(self, scene):
+        original = scene.create_game_object("PythonCloneSource")
+        component = original.add_py_component(_StrictSceneComponent())
+        component.value = 31
+
+        clone = clone_game_object_transactionally(scene, original)
+
+        assert clone is not None
+        clone_component = clone.get_py_component(_StrictSceneComponent)
+        assert clone_component is not None
+        assert clone_component.value == 31
+
+    def test_string_lookup_resolves_the_component_attached_to_each_object(self, scene):
+        first_type = type("AttachedLookupTwin", (InxComponent,), {
+            "__module__": "attached_lookup_first",
+        })
+        second_type = type("AttachedLookupTwin", (InxComponent,), {
+            "__module__": "attached_lookup_second",
+        })
+        first_object = scene.create_game_object("FirstLookupOwner")
+        second_object = scene.create_game_object("SecondLookupOwner")
+        first_component = first_object.add_py_component(first_type())
+        second_component = second_object.add_py_component(second_type())
+
+        assert first_object.get_component("AttachedLookupTwin") is first_component
+        assert second_object.get_component("AttachedLookupTwin") is second_component
+        assert first_object.get_components("AttachedLookupTwin") == [first_component]
+        assert second_object.get_components("AttachedLookupTwin") == [second_component]
+
+    def test_transactional_clone_preserves_rich_fields_and_remaps_references(self, scene):
+        original = scene.create_game_object("RichCloneSource")
+        child = scene.create_game_object("RichCloneChild")
+        child.set_parent(original)
+        child.add_py_component(_StrictSceneComponent())
+        component = original.add_py_component(_RichCloneComponent())
+        component.count = 17
+        component.title = "edited"
+        component.values = [2, 3, 5, 8]
+        component.settings = _CloneSettings(gain=2.5, label="nested")
+        component.target_object = GameObjectRef(child)
+        component.target_component = ComponentRef(
+            go_id=child.id,
+            component_type="_StrictSceneComponent",
+        )
+
+        clone = clone_game_object_transactionally(scene, original)
+
+        clone_child = clone.get_child(0)
+        restored = clone.get_py_component(_RichCloneComponent)
+        assert restored.count == 17
+        assert restored.title == "edited"
+        assert restored.values == [2, 3, 5, 8]
+        assert restored.settings.gain == pytest.approx(2.5)
+        assert restored.settings.label == "nested"
+        assert restored.target_object is clone_child
+        assert restored.target_component is clone_child.get_py_component(_StrictSceneComponent)
+
+    def test_transactional_clone_preserves_references_outside_the_cloned_subtree(self, scene):
+        external = scene.create_game_object("ExternalCloneTarget")
+        external_component = external.add_py_component(_StrictSceneComponent())
+        original = scene.create_game_object("ExternalReferenceSource")
+        component = original.add_py_component(_RichCloneComponent())
+        component.target_object = GameObjectRef(external)
+        component.target_component = ComponentRef(
+            go_id=external.id,
+            component_type="_StrictSceneComponent",
+        )
+
+        clone = clone_game_object_transactionally(scene, original)
+
+        restored = clone.get_py_component(_RichCloneComponent)
+        assert restored.target_object is external
+        assert restored.target_component is external_component
+
+    def test_unified_instantiate_for_game_object_ref_preserves_fields_and_parent(self, scene):
+        parent = scene.create_game_object("InstantiateReferenceParent")
+        original = scene.create_game_object("InstantiateReferenceSource")
+        component = original.add_py_component(_RichCloneComponent())
+        component.count = 610
+        component.values = [3, 5, 8]
+        component.settings = _CloneSettings(gain=1.25, label="reference")
+
+        clone = Instantiate(GameObjectRef(original), parent=parent)
+
+        assert clone is not None
+        assert clone.get_parent() is parent
+        restored = clone.get_py_component(_RichCloneComponent)
+        assert restored.count == 610
+        assert restored.values == [3, 5, 8]
+        assert restored.settings.gain == pytest.approx(1.25)
+        assert restored.settings.label == "reference"
+
+    def test_game_object_instantiate_parent_overloads_follow_unity_transform_space(self, scene):
+        source_parent = scene.create_game_object("InstantiateSourceParent")
+        source_parent.transform.position = Vector3(10.0, 0.0, 0.0)
+        source = scene.create_game_object("InstantiateTransformSource")
+        source.set_parent(source_parent, False)
+        source.transform.local_position = Vector3(2.0, 3.0, 4.0)
+
+        target_parent = scene.create_game_object("InstantiateTargetParent")
+        target_parent.transform.position = Vector3(20.0, 0.0, 0.0)
+
+        detached = GameObject.instantiate(source)
+        assert detached.get_parent() is None
+        assert detached.transform.position.to_tuple() == pytest.approx((12.0, 3.0, 4.0))
+
+        explicit_root = GameObject.instantiate(source, parent=None)
+        assert explicit_root.get_parent() is None
+        assert explicit_root.transform.position.to_tuple() == pytest.approx((2.0, 3.0, 4.0))
+
+        unified_detached = Instantiate(source)
+        assert unified_detached.get_parent() is None
+        assert unified_detached.transform.position.to_tuple() == pytest.approx((12.0, 3.0, 4.0))
+
+        local_clone = GameObject.instantiate(source, target_parent)
+        assert local_clone.get_parent() is target_parent
+        assert local_clone.transform.local_position.to_tuple() == pytest.approx((2.0, 3.0, 4.0))
+        assert local_clone.transform.position.to_tuple() == pytest.approx((22.0, 3.0, 4.0))
+
+        keyword_clone = GameObject.instantiate(source, parent=target_parent)
+        assert keyword_clone.transform.local_position.to_tuple() == pytest.approx((2.0, 3.0, 4.0))
+
+        world_clone = GameObject.instantiate(source, target_parent, True)
+        assert world_clone.get_parent() is target_parent
+        assert world_clone.transform.position.to_tuple() == pytest.approx((12.0, 3.0, 4.0))
+
+        positioned = GameObject.instantiate(
+            source,
+            Vector3(30.0, 5.0, 6.0),
+            quatf(),
+            target_parent,
+        )
+        assert positioned.get_parent() is target_parent
+        assert positioned.transform.position.to_tuple() == pytest.approx((30.0, 5.0, 6.0))
+
+    def test_clipboard_document_pipeline_preserves_rich_python_fields(self, scene):
+        original = scene.create_game_object("ClipboardSource")
+        component = original.add_py_component(_RichCloneComponent())
+        component.count = 23
+        component.title = "clipboard"
+        component.values = [13, 21]
+        component.settings = _CloneSettings(gain=4.0, label="copied")
+        document = copy.deepcopy(original.serialize_document())
+        _strip_prefab_runtime_fields(document)
+        prepared = preflight_game_object_python_components(
+            document,
+            preserve_document_ids=False,
+        )
+
+        pasted = instantiate_prepared_game_object_document(
+            scene,
+            document,
+            prepared,
+        )
+
+        restored = pasted.get_py_component(_RichCloneComponent)
+        assert restored.count == 23
+        assert restored.title == "clipboard"
+        assert restored.values == [13, 21]
+        assert restored.settings.gain == pytest.approx(4.0)
+        assert restored.settings.label == "copied"
+
+    def test_hierarchy_copy_paste_preserves_rich_fields_and_references(self, scene):
+        original = scene.create_game_object("HierarchyClipboardSource")
+        child = scene.create_game_object("HierarchyClipboardChild")
+        child.set_parent(original)
+        child.add_py_component(_StrictSceneComponent())
+        component = original.add_py_component(_RichCloneComponent())
+        component.count = 29
+        component.title = "ctrl-cv"
+        component.values = [34, 55]
+        component.settings = _CloneSettings(gain=6.5, label="hierarchy")
+        component.target_object = GameObjectRef(child)
+        component.target_component = ComponentRef(
+            go_id=child.id,
+            component_type="_StrictSceneComponent",
+        )
+
+        class Selection:
+            def __init__(self):
+                self.ids = [original.id]
+
+            def get_ids(self):
+                return list(self.ids)
+
+            def get_primary(self):
+                return self.ids[-1] if self.ids else 0
+
+            def count(self):
+                return len(self.ids)
+
+            def set_ids(self, ids):
+                self.ids = list(ids)
+
+            def clear(self):
+                self.ids.clear()
+
+        selection = Selection()
+        hierarchy = SimpleNamespace(on_selection_changed=None)
+        bootstrap = SimpleNamespace(
+            scene_file_manager=None,
+            scene_view=None,
+            engine=None,
+        )
+        from Infernux.engine.bootstrap_hierarchy._prefab_clipboard import wire_clipboard
+
+        wire_clipboard(SimpleNamespace(hp=hierarchy, bs=bootstrap, sel=selection))
+        assert hierarchy.copy_selected(False) is True
+        assert hierarchy.paste_clipboard() is True
+
+        pasted = scene.find_by_id(selection.get_primary())
+        pasted_child = pasted.get_child(0)
+        restored = pasted.get_py_component(_RichCloneComponent)
+        assert restored.count == 29
+        assert restored.title == "ctrl-cv"
+        assert restored.values == [34, 55]
+        assert restored.settings.gain == pytest.approx(6.5)
+        assert restored.settings.label == "hierarchy"
+        assert restored.target_object is pasted_child
+        assert restored.target_component is pasted_child.get_py_component(_StrictSceneComponent)
+
+    def test_hierarchy_copy_paste_preserves_external_python_references(self, scene):
+        external = scene.create_game_object("ClipboardExternalTarget")
+        external_component = external.add_py_component(_StrictSceneComponent())
+        original = scene.create_game_object("ClipboardExternalSource")
+        component = original.add_py_component(_RichCloneComponent())
+        component.target_object = GameObjectRef(external)
+        component.target_component = ComponentRef(
+            go_id=external.id,
+            component_type="_StrictSceneComponent",
+        )
+
+        class Selection:
+            def __init__(self):
+                self.ids = [original.id]
+
+            def get_ids(self): return list(self.ids)
+            def get_primary(self): return self.ids[-1] if self.ids else 0
+            def count(self): return len(self.ids)
+            def set_ids(self, ids): self.ids = list(ids)
+            def clear(self): self.ids.clear()
+
+        selection = Selection()
+        hierarchy = SimpleNamespace(on_selection_changed=None)
+        bootstrap = SimpleNamespace(scene_file_manager=None, scene_view=None, engine=None)
+        from Infernux.engine.bootstrap_hierarchy._prefab_clipboard import wire_clipboard
+
+        wire_clipboard(SimpleNamespace(hp=hierarchy, bs=bootstrap, sel=selection))
+        assert hierarchy.copy_selected(False) is True
+        assert hierarchy.paste_clipboard() is True
+
+        pasted = scene.find_by_id(selection.get_primary())
+        restored = pasted.get_py_component(_RichCloneComponent)
+        assert restored.target_object is external
+        assert restored.target_component is external_component
+
+    def test_multi_root_clipboard_remaps_cross_root_python_references(self, scene):
+        first = scene.create_game_object("ClipboardGroupFirst")
+        first_refs = first.add_py_component(_RichCloneComponent())
+        second = scene.create_game_object("ClipboardGroupSecond")
+        second_component = second.add_py_component(_StrictSceneComponent())
+        first_refs.target_object = GameObjectRef(second)
+        first_refs.target_component = ComponentRef(
+            go_id=second.id,
+            component_type="_StrictSceneComponent",
+        )
+
+        class Selection:
+            def __init__(self): self.ids = [first.id, second.id]
+            def get_ids(self): return list(self.ids)
+            def get_primary(self): return self.ids[-1] if self.ids else 0
+            def count(self): return len(self.ids)
+            def set_ids(self, ids): self.ids = list(ids)
+            def clear(self): self.ids.clear()
+
+        selection = Selection()
+        hierarchy = SimpleNamespace(on_selection_changed=None)
+        bootstrap = SimpleNamespace(scene_file_manager=None, scene_view=None, engine=None)
+        from Infernux.engine.bootstrap_hierarchy._prefab_clipboard import wire_clipboard
+
+        wire_clipboard(SimpleNamespace(hp=hierarchy, bs=bootstrap, sel=selection))
+        assert hierarchy.copy_selected(False) is True
+        assert hierarchy.paste_clipboard() is True
+
+        copied_first = scene.find_by_id(selection.ids[0])
+        copied_second = scene.find_by_id(selection.ids[1])
+        copied_refs = copied_first.get_py_component(_RichCloneComponent)
+        assert copied_refs.target_object is copied_second
+        assert copied_refs.target_object is not second
+        assert copied_refs.target_component is copied_second.get_py_component(
+            _StrictSceneComponent
+        )
+        assert copied_refs.target_component is not second_component
+
+    def test_component_clipboard_preserves_fields_without_copying_component_id(self, scene):
+        source_object = scene.create_game_object("ComponentClipboardSource")
+        source = source_object.add_py_component(_RichCloneComponent())
+        source.count = 144
+        source.values = [8, 13, 21]
+        source.settings = _CloneSettings(gain=9.5, label="component-copy")
+        target_object = scene.create_game_object("ComponentClipboardTarget")
+        target = target_object.add_py_component(_RichCloneComponent())
+        target_component_id = target.component_id
+
+        from Infernux.engine.bootstrap_inspector._wire import (
+            _apply_python_component_clipboard_document,
+            _python_component_clipboard_document,
+        )
+
+        payload = _python_component_clipboard_document(source)
+        assert "__component_id__" not in payload
+        _apply_python_component_clipboard_document(target, payload)
+
+        assert target.component_id == target_component_id
+        assert target.count == 144
+        assert target.values == [8, 13, 21]
+        assert target.settings.gain == pytest.approx(9.5)
+        assert target.settings.label == "component-copy"
+        assert target.settings is not source.settings
+
+    def test_component_clipboard_undo_targets_exact_duplicate_component(self, scene):
+        owner = scene.create_game_object("DuplicateComponentClipboardTarget")
+        first = owner.add_py_component(_RichCloneComponent())
+        second = owner.add_py_component(_RichCloneComponent())
+        first.count = 1
+        second.count = 2
+        source_owner = scene.create_game_object("DuplicateComponentClipboardSource")
+        source = source_owner.add_py_component(_RichCloneComponent())
+        source.count = 233
+
+        from Infernux.engine.bootstrap_inspector._wire import (
+            _python_component_clipboard_document,
+        )
+        from Infernux.engine.undo import PythonComponentDocumentCommand
+
+        command = PythonComponentDocumentCommand(
+            second,
+            _python_component_clipboard_document(second),
+            _python_component_clipboard_document(source),
+            "Paste duplicate component properties",
+        )
+        command.execute()
+        assert first.count == 1
+        assert second.count == 233
+
+        command.undo()
+        assert first.count == 1
+        assert second.count == 2
+
+        command.redo()
+        assert first.count == 1
+        assert second.count == 233
+
+    def test_property_undo_targets_exact_duplicate_python_component(self, scene):
+        owner = scene.create_game_object("DuplicatePropertyTarget")
+        first = owner.add_py_component(_RichCloneComponent())
+        second = owner.add_py_component(_RichCloneComponent())
+        first.count = 3
+        second.count = 5
+
+        from Infernux.engine.undo import SetPropertyCommand
+
+        command = SetPropertyCommand(second, "count", 5, 8, "Set second count")
+        command.execute()
+        assert first.count == 3
+        assert second.count == 8
+        command.undo()
+        assert first.count == 3
+        assert second.count == 5
+
+    def test_python_component_add_undo_redo_preserves_loaded_type_and_fields(self, scene):
+        owner = scene.create_game_object("PythonComponentUndoOwner")
+        component = owner.add_py_component(_RichCloneComponent())
+        component.count = 377
+        component.values = [34, 55, 89]
+        component.settings = _CloneSettings(gain=12.5, label="redo")
+
+        from Infernux.engine.undo import AddPyComponentCommand
+
+        command = AddPyComponentCommand(owner.id, component, "Add rich component")
+        command.undo()
+        assert owner.get_py_component(_RichCloneComponent) is None
+
+        command.redo()
+        restored = owner.get_py_component(_RichCloneComponent)
+        assert type(restored) is type(component)
+        assert restored.count == 377
+        assert restored.values == [34, 55, 89]
+        assert restored.settings.gain == pytest.approx(12.5)
+        assert restored.settings.label == "redo"
+
+    def test_repeated_asset_script_clone_preserves_fields_across_module_reload(
+        self, scene, tmp_path
+    ):
+        script_path = tmp_path / "pipe_probe.py"
+        script_path.write_text(
+            "from Infernux.components import InxComponent\n\n"
+            "class PipeProbe(InxComponent):\n"
+            "    speed: float = 2.8\n"
+            "    wrap_distance: float = 18.0\n",
+            encoding="utf-8",
+        )
+
+        class AssetDatabase:
+            @staticmethod
+            def get_guid_from_path(path):
+                return "pipe-probe-guid" if str(path) == str(script_path) else ""
+
+            @staticmethod
+            def get_path_from_guid(guid):
+                return str(script_path) if guid == "pipe-probe-guid" else ""
+
+        from Infernux.components.script_loader import load_and_create_component
+
+        original = scene.create_game_object("AssetScriptCloneSource")
+        source_component = load_and_create_component(
+            str(script_path),
+            asset_database=AssetDatabase(),
+            type_name="PipeProbe",
+            script_guid="pipe-probe-guid",
+        )
+        original.add_py_component(source_component)
+        source_component.speed = 6.25
+        source_component.wrap_distance = 42.0
+
+        for _ in range(4):
+            clone = GameObject.instantiate(original)
+            restored_components = list(clone.get_py_components() or ())
+            assert len(restored_components) == 1, [
+                (type(item).__name__, getattr(item, "_broken_error", ""))
+                for item in restored_components
+            ]
+            restored = restored_components[0]
+            assert type(restored) is type(source_component)
+            assert clone.get_component("PipeProbe") is restored, (
+                type(restored).__name__,
+                getattr(restored, "type_name", ""),
+            )
+            assert restored.speed == pytest.approx(6.25)
+            assert restored.wrap_distance == pytest.approx(42.0)
+
+        from Infernux.engine.prefab_manager import (
+            _PREFAB_TEMPLATE_CACHE,
+            instantiate_prefab,
+            save_prefab,
+        )
+
+        prefab_path = tmp_path / "pipe_probe.prefab"
+        _PREFAB_TEMPLATE_CACHE.clear()
+        assert save_prefab(original, str(prefab_path)) is True
+        for _ in range(3):
+            instance = instantiate_prefab(
+                file_path=str(prefab_path),
+                scene=scene,
+                asset_database=AssetDatabase(),
+            )
+            restored = list(instance.get_py_components() or ())[0]
+            assert restored.speed == pytest.approx(6.25)
+            assert restored.wrap_distance == pytest.approx(42.0)
+
+    def test_structural_undo_restores_rich_python_fields(self, scene):
+        original = scene.create_game_object("UndoRichSource")
+        original_id = original.id
+        component = original.add_py_component(_RichCloneComponent())
+        component.count = 89
+        component.title = "undo"
+        component.values = [1, 1, 2, 3, 5]
+        component.settings = _CloneSettings(gain=7.5, label="restored")
+
+        from Infernux.engine.undo import DeleteGameObjectCommand
+
+        command = DeleteGameObjectCommand(original_id, "Delete rich source")
+        command.execute()
+        scene.process_pending_destroys()
+        assert scene.find_by_id(original_id) is None
+
+        command.undo()
+
+        restored_object = scene.find_by_id(original_id)
+        restored = restored_object.get_py_component(_RichCloneComponent)
+        assert restored.count == 89
+        assert restored.title == "undo"
+        assert restored.values == [1, 1, 2, 3, 5]
+        assert restored.settings.gain == pytest.approx(7.5)
+        assert restored.settings.label == "restored"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Scene serialization
@@ -674,7 +1199,6 @@ class TestSceneSerialization:
             ("Light", "light_type"),
             ("AudioSource", "audio_tracks"),
             ("MeshRenderer", "mesh_material"),
-            ("SkinnedMeshRenderer", "skinned_legacy"),
             ("SpriteRenderer", "sprite_color"),
         ],
     )
@@ -699,8 +1223,6 @@ class TestSceneSerialization:
             component_document["track_count"] = 2
         elif corruption == "mesh_material":
             component_document["materials"] = [{"material": "not-a-document"}]
-        elif corruption == "skinned_legacy":
-            component_document["sourceModelGuid"] = "removed"
         else:
             component_document["spriteColor"] = [1.0, 1.0, 1.0]
 
@@ -716,6 +1238,23 @@ class TestSceneSerialization:
         assert scene.serialize_document() == original_document
         assert scene.find("WorkerRenderAudioExisting") is existing
         assert existing.get_component(component_type) is component
+
+    def test_worker_type_validator_rejects_removed_ordinary_field(self, scene, tmp_path):
+        existing = scene.create_game_object("WorkerRemovedField")
+        existing.add_component("SkinnedMeshRenderer")
+        candidate = json.loads(json.dumps(scene.serialize_document()))
+        component_document = candidate["objects"][0]["components"][0]["data"]
+        component_document["sourceModelGuid"] = "removed"
+        path = tmp_path / "removed-skinned-field.scene"
+        path.write_text(json.dumps(candidate), encoding="utf-8")
+        transaction = SceneDocumentTransaction(scene, path=path)
+
+        assert transaction.run_to_completion(raise_on_failure=False) is False
+        assert transaction.ran_on_worker is True
+        assert transaction.state is SceneDocumentTransactionState.FAILED
+        loaded = scene.find("WorkerRemovedField").get_component("SkinnedMeshRenderer")
+        assert loaded is not None
+        assert "sourceModelGuid" not in loaded.serialize_document()
 
     @pytest.mark.parametrize("failure", ["missing_guid", "wrong_type", "embedded_material"])
     def test_resource_preflight_failure_preserves_live_scene(self, scene, tmp_path, failure):
@@ -733,7 +1272,6 @@ class TestSceneSerialization:
             asset_path.write_text(
                 json.dumps(
                     {
-                        "schema_version": 1,
                         "friction": 0.5,
                         "bounciness": 0.0,
                         "friction_combine": 0,
@@ -770,7 +1308,6 @@ class TestSceneSerialization:
         asset_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
                     "friction": 0.65,
                     "bounciness": 0.1,
                     "friction_combine": 2,
@@ -987,7 +1524,6 @@ class TestSceneSerialization:
         assert scene.save_to_file(str(scene_path)) is True
 
         document = json.loads(scene_path.read_text(encoding="utf-8"))
-        assert document["schema_version"] == 2
         assert document["objects"][0]["name"] == "AtomicSceneObject"
         assert list(tmp_path.glob("atomic.scene.tmp.*")) == []
 
@@ -1090,29 +1626,19 @@ class TestSceneSerialization:
         assert created_after_load.id > persisted_id
         assert scene.find_by_id(created_after_load.id) is created_after_load
 
-    @pytest.mark.parametrize("schema_version", [0, 1, 3, "2"])
-    def test_deserialize_rejects_non_current_schema(self, scene, schema_version):
-        original_name = scene.name
-        document = json.loads(scene.serialize())
-        document["schema_version"] = schema_version
-
-        assert scene._commit_document(document) is False
-        assert scene.name == original_name
-
-    def test_empty_scene_document_schema_v2_commits(self, scene):
-        """Editor new-scene path must use schema_version 2 (Codex left it at 1)."""
+    def test_empty_scene_document_uses_current_format(self, scene):
         from Infernux.engine.scene_manager import _empty_scene_document
 
         document = _empty_scene_document("BlankEditorScene")
-        assert document["schema_version"] == 2
+        assert set(document) == {"name", "isPlaying", "objects"}
         assert scene._commit_document(document) is True
         assert scene.name == "BlankEditorScene"
         assert scene.get_root_objects() == []
 
-    def test_retained_world_rejects_bad_schema_without_destroying_live_graph(self, scene):
+    def test_retained_world_rejects_unknown_field_without_destroying_live_graph(self, scene):
         existing = scene.create_game_object("KeepAliveOnBadSchema")
         transform = existing.transform
-        document = {"schema_version": 1, "name": "Bad", "isPlaying": False, "objects": []}
+        document = {"unknown": 1, "name": "Bad", "isPlaying": False, "objects": []}
 
         assert scene._commit_document_retaining_world(document) is None
         assert scene.find("KeepAliveOnBadSchema") is existing
@@ -1124,7 +1650,7 @@ class TestSceneSerialization:
         collider = existing.add_component("BoxCollider")
         transform = existing.transform
         document = scene.serialize_document()
-        document["schema_version"] = 99
+        document["unknown"] = 1
 
         assert scene._commit_document_retaining_world(document) is None
         assert scene.find("RetainedNativeFailure") is existing
@@ -1143,7 +1669,6 @@ class TestSceneSerialization:
             {
                 "component_id": 999999,
                 "type_id": "native:infernux.MissingNativeComponent",
-                "type_version": 1,
                 "enabled": True,
                 "execution_order": 0,
                 "data": {},
@@ -1168,7 +1693,6 @@ class TestSceneSerialization:
             "unknown_object_field",
             "invalid_layer",
             "invalid_python_descriptor",
-            "old_python_field_schema",
             "empty_python_script_guid",
         ],
     )
@@ -1203,8 +1727,6 @@ class TestSceneSerialization:
         elif corruption == "empty_python_script_guid":
             descriptor = _python_records(first_doc)[0]
             descriptor["type_id"] = descriptor["type_id"].replace("python:", "python::", 1)
-        else:
-            _python_records(first_doc)[0]["type_version"] = 0
 
         assert scene._commit_document(candidate) is False
         assert scene.serialize_document() == original_document
@@ -1244,7 +1766,6 @@ class TestSceneSerialization:
         exploding._component_id = original_component_id
         fields = exploding._serialize_fields_document()
         descriptor["type_id"] = _python_type_id(exploding)
-        descriptor["type_version"] = fields.pop("__schema_version__")
         fields.pop("__type_name__")
         fields.pop("__component_id__")
         descriptor["data"] = fields
@@ -1333,6 +1854,17 @@ class TestSceneSerialization:
         assert scene.serialize_document() == original_document
         assert scene.find("StrictRequiredComponent") is owner
 
+    def test_play_snapshot_preserves_native_required_component_type_names(self, scene):
+        owner = scene.create_game_object("PlaySnapshotRequiredComponent")
+        owner.add_component("Rigidbody")
+        owner.add_py_component(_RequiresRigidbodyComponent())
+
+        prepared = preflight_scene_python_components(scene._capture_play_mode_snapshot())
+
+        assert len(prepared.components) == 1
+        assert prepared.components[0].type_name == "_RequiresRigidbodyComponent"
+        prepared.discard()
+
     def test_python_preflight_rejects_duplicate_disallow_multiple_component(self, scene):
         owner = scene.create_game_object("StrictDisallowMultiple")
         owner.add_py_component(_SingleInstanceSceneComponent())
@@ -1368,7 +1900,7 @@ class TestSceneSerialization:
         assert restored_component.value == 19
         assert scene.has_pending_py_components() is False
 
-    def test_scene_restore_backfills_missing_additive_python_field(self, scene):
+    def test_scene_restore_uses_default_for_new_python_field(self, scene):
         root = scene.create_game_object("AdditivePythonField")
         component = _AdditiveSceneComponent()
         component.value = 19
@@ -1378,10 +1910,20 @@ class TestSceneSerialization:
         _python_records(document["objects"][0])[0]["data"].pop("label")
 
         assert deserialize_scene_document_transactionally(scene, document) is True
-
-        restored = scene.find("AdditivePythonField").get_py_component(_AdditiveSceneComponent)
+        restored = scene.find("AdditivePythonField").get_py_component(
+            _AdditiveSceneComponent
+        )
         assert restored.value == 19
         assert restored.label == "default"
+
+    def test_scene_restore_rejects_removed_python_field(self, scene):
+        root = scene.create_game_object("RemovedPythonField")
+        root.add_py_component(_StrictSceneComponent())
+        document = json.loads(json.dumps(scene.serialize_document()))
+        _python_records(document["objects"][0])[0]["data"]["removed_field"] = 1
+
+        with pytest.raises(PythonComponentRestoreError, match="serialized fields mismatch"):
+            deserialize_scene_document_transactionally(scene, document)
 
     def test_python_component_document_uses_stable_script_and_type_guids(self, scene):
         root = scene.create_game_object("StablePythonIdentity")
@@ -1397,6 +1939,30 @@ class TestSceneSerialization:
         assert qualified_name == component.__class__.__qualname__
         assert len(script_guid) == 32
         assert len(type_guid) == 32
+
+    def test_python_component_replacement_preserves_native_identity_without_destroy(self, scene):
+        root = scene.create_game_object("IdentityPreservingReplacement")
+        source = root.add_py_component(_ReplacementLifecycleSource())
+        source.execution_order = 42
+        source.enabled = False
+        original_id = source.component_id
+        original_handle = source._cpp_component.handle
+        _ReplacementLifecycleSource.destroy_calls = 0
+
+        target = _ReplacementLifecycleTarget()
+        target.value = source.value
+        published = root.replace_py_component(source, target)
+
+        assert published is target
+        assert root.get_py_components() == [target]
+        assert source._cpp_component is None
+        assert source._is_destroyed is True
+        assert _ReplacementLifecycleSource.destroy_calls == 0
+        assert target.component_id == original_id
+        assert target._cpp_component.handle == original_handle
+        assert target.execution_order == 42
+        assert target.enabled is False
+        assert target.value == 13
 
     def test_unified_component_records_preserve_order_and_python_execution_order(self, scene):
         root = scene.create_game_object("UnifiedComponentOrder")
@@ -1450,7 +2016,6 @@ class TestSceneSerialization:
         assert len(pending) == 1
         descriptor = _python_records(document["objects"][0])[0]
         expected_fields = {
-            "__schema_version__": descriptor["type_version"],
             "__type_name__": "_StrictSceneComponent",
             "__component_id__": descriptor["component_id"],
             **descriptor["data"],
@@ -1605,7 +2170,6 @@ class TestSceneSerialization:
                 {
                     "component_id": 999998,
                     "type_id": "native:infernux.RemovedNativeComponent",
-                    "type_version": 1,
                     "enabled": True,
                     "execution_order": 0,
                     "data": {},
@@ -1692,3 +2256,77 @@ class TestSceneSerialization:
 
         assert root._commit_document(candidate) is True
         assert scene.main_camera is None
+
+    def test_main_camera_preference_survives_temporary_disable(self, scene):
+        preferred_owner = scene.create_game_object("PreferredCamera")
+        preferred = preferred_owner.add_component("Camera")
+        preferred.depth = 20.0
+        fallback_owner = scene.create_game_object("FallbackCamera")
+        fallback = fallback_owner.add_component("Camera")
+        fallback.depth = -10.0
+
+        scene.main_camera = preferred
+        assert scene.effective_game_camera.component_id == preferred.component_id
+
+        preferred.enabled = False
+        assert scene.main_camera.component_id == preferred.component_id
+        assert scene.effective_game_camera.component_id == fallback.component_id
+
+        preferred.enabled = True
+        assert scene.effective_game_camera.component_id == preferred.component_id
+
+    def test_automatic_camera_selection_reacts_to_depth_without_becoming_authored(self, scene):
+        first_owner = scene.create_game_object("FirstCamera")
+        first = first_owner.add_component("Camera")
+        first.depth = 5.0
+        second_owner = scene.create_game_object("SecondCamera")
+        second = second_owner.add_component("Camera")
+        second.depth = 10.0
+
+        assert scene.main_camera is None
+        assert scene.effective_game_camera.component_id == first.component_id
+        second.depth = 0.0
+        assert scene.effective_game_camera.component_id == second.component_id
+        assert scene.main_camera is None
+
+        first.enabled = False
+        second.enabled = False
+        assert scene.effective_game_camera is None
+
+    def test_active_game_camera_stack_is_depth_ordered_and_filters_disabled(self, scene):
+        high_owner = scene.create_game_object("HighCamera")
+        high = high_owner.add_component("Camera")
+        high.depth = 20.0
+        low_owner = scene.create_game_object("LowCamera")
+        low = low_owner.add_component("Camera")
+        low.depth = -5.0
+        middle_owner = scene.create_game_object("MiddleCamera")
+        middle = middle_owner.add_component("Camera")
+        middle.depth = 3.0
+
+        assert [camera.component_id for camera in scene.active_game_cameras] == [
+            low.component_id,
+            middle.component_id,
+            high.component_id,
+        ]
+
+        middle.enabled = False
+        assert [camera.component_id for camera in scene.active_game_cameras] == [
+            low.component_id,
+            high.component_id,
+        ]
+
+        middle.enabled = True
+        middle_owner.active = False
+        assert [camera.component_id for camera in scene.active_game_cameras] == [
+            low.component_id,
+            high.component_id,
+        ]
+
+    def test_main_camera_rejects_cross_scene_reference(self, scene):
+        other = SceneManager.instance().create_scene("OtherCameraScene")
+        owner = other.create_game_object("ForeignCamera")
+        foreign = owner.add_component("Camera")
+
+        with pytest.raises(ValueError, match="owned by this Scene"):
+            scene.main_camera = foreign

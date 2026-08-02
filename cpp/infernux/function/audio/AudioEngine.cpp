@@ -99,6 +99,7 @@ void AudioEngine::Shutdown()
     }
 
     INXLOG_DEBUG("AudioEngine shutting down...");
+    StopPreview();
 
     std::vector<AudioSource *> sources;
     {
@@ -261,6 +262,15 @@ void AudioEngine::Update(float /*deltaTime*/)
     if (!m_initialized) {
         return;
     }
+
+    SDL_AudioStream *finishedPreview = nullptr;
+    {
+        std::lock_guard<std::mutex> previewLock(m_previewMutex);
+        if (m_previewStream && HasVoiceFinished(m_previewStream))
+            finishedPreview = m_previewStream;
+    }
+    if (finishedPreview)
+        StopPreview();
 
     glm::vec3 listenerPos(0.0f);
     glm::vec3 listenerRight(1.0f, 0.0f, 0.0f);
@@ -446,6 +456,59 @@ bool AudioEngine::HasVoiceFinished(SDL_AudioStream *stream) const
 
     std::lock_guard<std::mutex> lock(state->mutex);
     return state->finished;
+}
+
+bool AudioEngine::PlayPreview(const std::string &filePath)
+{
+    if (!m_initialized || filePath.empty())
+        return false;
+
+    StopPreview();
+    auto clip = std::make_shared<AudioClip>();
+    if (!clip->LoadFromFile(filePath))
+        return false;
+    SDL_AudioStream *stream = CreateVoice(nullptr, clip.get());
+    if (!stream)
+        return false;
+    UpdateVoiceMix(stream, 1.0f, 0.0f, 1.0f, false);
+
+    std::lock_guard<std::mutex> lock(m_previewMutex);
+    m_previewClip = std::move(clip);
+    m_previewStream = stream;
+    m_previewPath = filePath;
+    return true;
+}
+
+void AudioEngine::StopPreview()
+{
+    SDL_AudioStream *stream = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_previewMutex);
+        stream = m_previewStream;
+        m_previewStream = nullptr;
+        m_previewClip.reset();
+        m_previewPath.clear();
+    }
+    if (stream)
+        DestroyVoice(stream);
+}
+
+bool AudioEngine::IsPreviewPlaying(const std::string &filePath) const
+{
+    SDL_AudioStream *stream = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_previewMutex);
+        if (!filePath.empty() && filePath != m_previewPath)
+            return false;
+        stream = m_previewStream;
+    }
+    return stream && !HasVoiceFinished(stream);
+}
+
+std::string AudioEngine::GetPreviewPath() const
+{
+    std::lock_guard<std::mutex> lock(m_previewMutex);
+    return m_previewPath;
 }
 
 void AudioEngine::RegisterSource(AudioSource *source)

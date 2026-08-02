@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 import zipfile
@@ -141,6 +142,73 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     assert Path(result) == (tmp_path / "SafeProject").resolve()
     assert runtime_locations == [Path(result)]
     assert (Path(result) / "Assets").is_dir()
+    gitignore = (Path(result) / ".gitignore").read_text(encoding="utf-8")
+    assert "/Library/" in gitignore
+    assert "/.venv/" in gitignore
+    assert "/.runtime/" in gitignore
+    assert "*.meta\n" not in gitignore
+    assert not (Path(result) / "Assets" / "README.md").exists()
+    assert (Path(result) / "Assets" / "Scenes" / "Start.scene").is_file()
+    assert (Path(result) / "Assets" / "Rendering" / "Bloom.effect").is_file()
+    assert (Path(result) / "Assets" / "Rendering" / "ACES Tone Mapping.effect").is_file()
+    assert (Path(result) / "Assets" / "Rendering" / "Default Post Processing.effectgroup").is_file()
+    build_settings = json.loads(
+        (Path(result) / "ProjectSettings" / "BuildSettings.json").read_text(encoding="utf-8")
+    )
+    assert build_settings["scenes"] == [
+        str(Path(result) / "Assets" / "Scenes" / "Start.scene")
+    ]
+    editor_settings = json.loads(
+        (Path(result) / "ProjectSettings" / "EditorSettings.json").read_text(encoding="utf-8")
+    )
+    assert editor_settings == {
+        "lastOpenedScene": str(Path(result) / "Assets" / "Scenes" / "Start.scene")
+    }
+    scene = json.loads(
+        (Path(result) / "Assets" / "Scenes" / "Start.scene").read_text(encoding="utf-8")
+    )
+    assert scene["mainCameraComponentId"] == 2
+    assert [item["name"] for item in scene["objects"]] == [
+        "Main Camera",
+        "Directional Light",
+        "RenderStack",
+    ]
+    camera_data = scene["objects"][0]["components"][0]["data"]
+    assert camera_data["projectionMode"] == 0
+    assert set(camera_data) == {
+        "aspectRatio",
+        "backgroundColor",
+        "clearFlags",
+        "cullingMask",
+        "depth",
+        "farClip",
+        "fov",
+        "nearClip",
+        "orthoSize",
+        "projectionMode",
+    }
+    light_data = scene["objects"][1]["components"][0]["data"]
+    assert set(light_data) == {
+        "areaSize",
+        "areaTwoSided",
+        "baked",
+        "color",
+        "cullingMask",
+        "influenceDomains",
+        "intensity",
+        "lightType",
+        "outerSpotAngle",
+        "range",
+        "renderMode",
+        "shadowBias",
+        "shadowNormalBias",
+        "shadowSoftness",
+        "shadowStrength",
+        "shadows",
+        "spotAngle",
+    }
+    assert light_data["shadowBias"] == 1.0
+    assert light_data["shadowNormalBias"] == 1.0
     assert (Path(result) / ".vscode").is_dir()
     assert not list(tmp_path.glob(".infernux-create-*"))
 

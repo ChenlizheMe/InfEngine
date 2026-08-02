@@ -1,8 +1,9 @@
 #pragma once
 
-#include "FrameDeletionQueue.h"
 #include "GpuResidency.h"
 #include "MaterialDescriptor.h"
+#include "MaterialPassPipeline.h"
+#include "rhi/GpuRetirementQueue.h"
 #include "shader/ShaderProgram.h"
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <memory>
@@ -31,8 +32,43 @@ struct MaterialRenderData
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkShaderModule vertModule = VK_NULL_HANDLE;
     VkShaderModule fragModule = VK_NULL_HANDLE;
-    ShaderProgram *shaderProgram = nullptr;           // Reference to cached shader program
+    ShaderProgramPublication shaderProgram;
+    ShaderProgramKey programKey;
     MaterialDescriptorSet *materialDescSet = nullptr; // Per-material descriptor set
+    size_t pipelineHash = 0;
+    bool isValid = false;
+};
+
+struct MaterialPassRenderDataKey
+{
+    std::string materialKey;
+    ShaderProgramVariantKey programKey;
+    MaterialPassPipelineDescriptor pipeline;
+    size_t renderStateHash = 0;
+
+    friend bool operator==(const MaterialPassRenderDataKey &lhs, const MaterialPassRenderDataKey &rhs) noexcept
+    {
+        return lhs.materialKey == rhs.materialKey && lhs.programKey == rhs.programKey && lhs.pipeline == rhs.pipeline &&
+               lhs.renderStateHash == rhs.renderStateHash;
+    }
+};
+
+struct MaterialPassRenderDataKeyHash
+{
+    [[nodiscard]] size_t operator()(const MaterialPassRenderDataKey &key) const noexcept;
+};
+
+/// Pipeline state for a semantic material pass. Descriptor ownership remains
+/// with the material's Forward render data; linked variants must preserve the
+/// same set-0 ABI and can therefore reuse it without replacing the cache entry.
+struct MaterialPassRenderData
+{
+    MaterialPassRenderDataKey key;
+    std::shared_ptr<InxMaterial> material;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    ShaderProgramPublication shaderProgram;
     size_t pipelineHash = 0;
     bool isValid = false;
 };
@@ -67,13 +103,28 @@ class MaterialPipelineManager
      */
     void Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice, VkFormat colorFormat,
                     VkFormat depthFormat, VkSampleCountFlagBits sampleCount, ShaderProgramCache &shaderProgramCache,
-                    FrameDeletionQueue *deletionQueue = nullptr, bool descriptorIndexingEnabled = false);
+                    GpuRetirementQueue *deletionQueue, bool descriptorIndexingEnabled,
+                    vk::VkDescriptorManager *descriptorManager);
 
     /**
      * @brief Cleanup all resources
      * @param skipWaitIdle If true, skip vkDeviceWaitIdle (caller already drained GPU)
      */
     void Shutdown(bool skipWaitIdle = false);
+
+    /**
+     * @brief Transactionally switch the manager to a new MSAA sample count.
+     *
+     * All live Forward and
+     * semantic-pass pipelines are prepared first. The
+     * published generation changes only after every replacement
+     * is valid;
+     * shader programs, material descriptors, and material objects remain
+     * resident. Replaced
+     * Vulkan objects are retired through the GPU completion
+     * epoch rather than forcing a device/queue idle.
+     */
+    [[nodiscard]] bool ReconfigureSampleCount(VkSampleCountFlagBits sampleCount);
 
     /**
      * @brief Get or create render data for a material (new API with shader reflection)
@@ -84,18 +135,14 @@ class MaterialPipelineManager
      * @param material The material to get render data for
      * @param vertShaderCode SPIR-V code for vertex shader
      * @param fragShaderCode SPIR-V code for fragment shader
-     * @param shaderId Unique shader program identifier
-     * @param sceneUBO Scene uniform buffer for binding (binding=0)
-     * @param sceneUBOSize Size of scene UBO
-     * @param lightingUBO Lighting uniform buffer for binding (binding=1)
-     * @param lightingUBOSize Size of lighting UBO
-     * @return Pointer to render data, or nullptr on failure
+     * @param programKey Typed vertex/fragment pair and immutable artifact revision
+     * @return Pointer to render
+     * data, or nullptr on failure
      */
-    MaterialRenderData *
-    GetOrCreateRenderDataWithReflection(std::shared_ptr<InxMaterial> material, const std::vector<char> &vertShaderCode,
-                                        const std::vector<char> &fragShaderCode, const std::string &shaderId,
-                                        VkBuffer sceneUBO, VkDeviceSize sceneUBOSize,
-                                        VkBuffer lightingUBO = VK_NULL_HANDLE, VkDeviceSize lightingUBOSize = 0);
+    MaterialRenderData *GetOrCreateRenderDataWithReflection(std::shared_ptr<InxMaterial> material,
+                                                            const std::vector<char> &vertShaderCode,
+                                                            const std::vector<char> &fragShaderCode,
+                                                            const ShaderProgramKey &programKey);
 
     /**
      * @brief Get existing render data for a material (doesn't create new)
@@ -112,6 +159,15 @@ class MaterialPipelineManager
      */
     MaterialRenderData *GetDefaultRenderData();
 
+    /// Get or create a semantic pass pipeline without replacing the material's
+    /// Forward pipeline or descriptor set.
+    MaterialPassRenderData *GetOrCreatePassRenderData(std::shared_ptr<InxMaterial> material,
+                                                      ShaderProgramPublication program,
+                                                      const MaterialPassPipelineDescriptor &pipeline);
+
+    [[nodiscard]] MaterialPassPipelineDescriptor
+    GetDefaultPassPipelineDescriptor(ShaderCompileTarget target = ShaderCompileTarget::Forward) const;
+
     /**
      * @brief Get pipeline by hash (for caching)
      */
@@ -122,6 +178,11 @@ class MaterialPipelineManager
      */
     void UpdateMaterialProperties(const std::string &materialName, const InxMaterial &material);
 
+    [[nodiscard]] bool HasPendingTextureProperties(const std::string &materialName) const
+    {
+        return m_descriptorManager.HasPendingTextureProperties(materialName);
+    }
+
     /**
      * @brief Bind a texture to a material
      */
@@ -131,12 +192,14 @@ class MaterialPipelineManager
     /**
      * @brief Set default texture for fallback
      */
-    void SetDefaultTexture(VkImageView imageView, VkSampler sampler);
+    void SetDefaultTexture(VkImageView imageView, VkSampler sampler,
+                           std::shared_ptr<const rhi::TextureGpuView> gpuView);
 
     /**
      * @brief Set default flat normal map texture for fallback
      */
-    void SetDefaultNormalTexture(VkImageView imageView, VkSampler sampler);
+    void SetDefaultNormalTexture(VkImageView imageView, VkSampler sampler,
+                                 std::shared_ptr<const rhi::TextureGpuView> gpuView);
 
     /**
      * @brief Set texture resolver for material Texture2D properties
@@ -173,20 +236,22 @@ class MaterialPipelineManager
      */
     void InvalidateMaterialsUsingShader(const std::string &shaderId);
 
+    void InvalidateMaterialsUsingProgramPair(const ShaderStagePair &stages);
+
     /**
-     * @brief Remove render data for materials that reference a specific texture.
+     * @brief Refresh descriptor publications for materials referencing a texture.
      *
-     * This is used when a texture is reimported and its cached VkImageView /
-     * VkSampler handles are about to be destroyed. It also covers runtime-only
-     * material instances that are not tracked by the asset dependency graph.
+     * Texture reimport preserves the previous complete GPU publication until a
+     * newer revision is resident. This updates only descriptor generations and
+     * also covers runtime-only material instances outside the dependency graph.
      *
      * GUID-only contract: material Texture2D values are normalized to GUIDs
      * at the setter boundary, so matching is plain GUID equality.
      *
      * @param textureGuid The texture asset GUID
-     * @return Number of materials invalidated
+     * @return Number of matching materials refreshed
      */
-    uint32_t InvalidateMaterialsUsingTexture(const std::string &textureGuid);
+    uint32_t RefreshMaterialsUsingTexture(const std::string &textureGuid);
 
     /**
      * @brief Mark ALL cached material pipelines as dirty.
@@ -203,18 +268,6 @@ class MaterialPipelineManager
     void RemoveRenderData(const std::string &materialName);
     [[nodiscard]] size_t CollectUnusedRenderData();
     [[nodiscard]] MaterialGpuResidencySnapshot GetResidencySnapshot() const;
-
-    // ---- MRT (Multiple Render Targets) support ----
-
-    /// @brief Set the active MRT configuration for subsequent pipeline creation.
-    /// When colorAttachmentCount > 1, material pipelines will be created with
-    /// N blend attachment states and a compatible MRT render pass.
-    /// @param colorAttachmentCount Number of color attachments (1 = default forward, >1 = MRT)
-    /// @param colorFormats VkFormat for each color attachment
-    void SetMRTConfig(uint32_t colorAttachmentCount, const std::vector<VkFormat> &colorFormats);
-
-    /// @brief Reset to default single-attachment mode.
-    void ResetMRTConfig();
 
     /// @brief Get the color attachment format used for pipeline creation.
     [[nodiscard]] VkFormat GetColorFormat() const
@@ -243,18 +296,23 @@ class MaterialPipelineManager
     VkFormat m_depthFormat = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits m_sampleCount = VK_SAMPLE_COUNT_1_BIT;
 
-    // MRT override state
-    uint32_t m_activeColorAttachmentCount = 1;
-    std::vector<VkFormat> m_activeColorFormats;
-    std::unordered_map<size_t, VkRenderPass> m_mrtRenderPassCache;
-
-    VkRenderPass GetActiveMRTRenderPass();
+    std::unordered_map<MaterialPassPipelineDescriptor, VkRenderPass, MaterialPassPipelineDescriptorHash>
+        m_passRenderPassCache;
 
     // Injected dependency — owned externally by InxVkCoreModular
     ShaderProgramCache *m_shaderProgramCache = nullptr;
 
     // Material name -> render data
     std::unordered_map<std::string, std::unique_ptr<MaterialRenderData>> m_renderDataMap;
+
+    // Last Forward configuration that failed while a valid generation was
+    // still available. Keep drawing that generation without retrying the same
+    // invalid shader pairing every frame.
+    std::unordered_map<std::string, size_t> m_failedForwardPipelineHashes;
+
+    std::unordered_map<MaterialPassRenderDataKey, std::unique_ptr<MaterialPassRenderData>,
+                       MaterialPassRenderDataKeyHash>
+        m_passRenderDataMap;
 
     // Pipeline hash -> pipeline (for sharing pipelines across materials with same config)
     std::unordered_map<size_t, VkPipeline> m_pipelineCache;
@@ -274,7 +332,7 @@ class MaterialPipelineManager
 
     // Material descriptor manager for per-material descriptor sets
     MaterialDescriptorManager m_descriptorManager;
-    FrameDeletionQueue *m_deletionQueue = nullptr;
+    GpuRetirementQueue *m_deletionQueue = nullptr;
 
     void RetireMaterialUBO(InxMaterial::DetachedUBO resource);
 
@@ -286,12 +344,24 @@ class MaterialPipelineManager
     /**
      * @brief Create pipeline using shader program (new method)
      */
-    VkPipeline CreatePipelineWithProgram(ShaderProgram *program, const RenderState &renderState);
+    VkPipeline CreatePipelineWithProgram(const ShaderProgram *program, const RenderState &renderState);
+    VkPipeline CreatePipelineWithProgram(const ShaderProgram *program, const RenderState &renderState,
+                                         const MaterialPassPipelineDescriptor &pipeline);
+    VkPipeline CreatePipelineWithProgram(const ShaderProgram *program, const RenderState &renderState,
+                                         const MaterialPassPipelineDescriptor &pipeline,
+                                         VkRenderPass compatibleRenderPass);
 
-    /**
-     * @brief Fold MRT attachment count into a pipeline hash so forward vs. deferred pipelines differ.
-     */
-    size_t FoldMRTAttachmentHash(size_t baseHash) const;
+    [[nodiscard]] VkRenderPass GetCompatibleRenderPass(const MaterialPassPipelineDescriptor &pipeline);
+    [[nodiscard]] MaterialPassPipelineDescriptor GetDefaultPassPipelineDescriptorFor(VkSampleCountFlagBits sampleCount,
+                                                                                     ShaderCompileTarget target) const;
+    [[nodiscard]] static bool IsMaterialDescriptorSetCompatible(const ShaderProgram &forward,
+                                                                const ShaderProgram &pass);
+    [[nodiscard]] static size_t FoldPassPipelineHash(size_t baseHash, const MaterialPassPipelineDescriptor &pipeline,
+                                                     const ShaderProgramVariantKey &programKey);
+    void RemovePassRenderData(const std::string &materialKey);
+    void RemoveAllPassRenderData();
+    void RetirePipelineIfUnreferenced(VkPipeline pipeline);
+    void RefreshPublishedDescriptorHandle(const std::string &materialName);
 
     /**
      * @brief Create internal compatible render pass from stored formats
@@ -300,18 +370,19 @@ class MaterialPipelineManager
 
     /**
      * @brief Build a Vulkan render pass with N color + optional depth attachment.
-     * Shared by CreateInternalRenderPass() and GetActiveMRTRenderPass().
+     * Shared by the default and semantic pass pipeline caches.
      */
     VkRenderPass BuildCompatibleRenderPass(uint32_t colorAttachmentCount, const VkFormat *colorFormats);
+    VkRenderPass BuildCompatibleRenderPass(const MaterialPassPipelineDescriptor &pipeline);
 
     /**
      * @brief Write forward-pass Vulkan handles to a material and clear its dirty flag.
      */
     static void SyncMaterialForwardPass(InxMaterial *material, VkPipeline pipeline, VkPipelineLayout layout,
-                                        VkDescriptorSet descSet, ShaderProgram *program);
+                                        VkDescriptorSet descSet, ShaderProgramPublication program);
 
     /**
-     * @brief Check whether any OTHER render data entry references the same VkPipeline.
+     * @brief Check whether another Forward or semantic pass entry references the same VkPipeline.
      */
     bool IsPipelineSharedByOthers(const std::string &excludeName, VkPipeline pipeline) const;
 

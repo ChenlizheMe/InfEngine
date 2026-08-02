@@ -5,10 +5,14 @@
 //           and VertexInput struct for void vertex(inout VertexInput v).
 // ============================================================================
 
-layout(std140, binding = 0) uniform UniformBufferObject {
+// Camera state belongs to a RenderView, not to a material. Set 1 is the
+// canonical per-view domain shared by geometry, lighting and shadows.
+layout(std140, set = 1, binding = 5) uniform UniformBufferObject {
     mat4 model;
     mat4 view;
     mat4 proj;
+    mat4 previousViewProj;
+    mat4 inverseViewProj;
 } ubo;
 
 layout(push_constant) uniform PushConstants {
@@ -25,7 +29,7 @@ struct SkinInstanceData {
     uint boneOffset;
     uint boneCount;
     uint flags;
-    uint _pad;
+    uint previousBoneOffset;
 };
 
 // Skin metadata and bone palettes share the engine globals set so every

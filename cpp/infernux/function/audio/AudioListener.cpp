@@ -44,7 +44,7 @@ nlohmann::json AudioListener::SerializeDocument() const
 
 void AudioListener::ValidateSerializedDocument(const nlohmann::json &document)
 {
-    component_document_validation::ValidateComponentDocument(document, "AudioListener", 1, {});
+    component_document_validation::ValidateComponentDocument(document, "AudioListener", {});
 }
 
 bool AudioListener::DeserializeDocument(const nlohmann::json &document)

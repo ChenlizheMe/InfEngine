@@ -1,20 +1,26 @@
 #version 450
 
-@shader_id: Infernux/Grid
-@cull: none
-@hidden
-@property: fadeStart, Float, 15.0
-@property: fadeEnd, Float, 80.0
-
-layout(std140, binding = 0) uniform UniformBufferObject {
-    mat4 model;
-    mat4 view;
-    mat4 proj;
-} ubo;
-
-layout(location = 0) in vec3 nearPoint;
-layout(location = 1) in vec3 farPoint;
-layout(location = 0) out vec4 outColor;
+ShaderInfo {
+    Name "Grid"
+    Hidden On
+    Surface Transparent
+    Cull None
+    DepthWrite Off
+    Blend Alpha
+    CastShadows Off
+    Capabilities [Standalone, ForwardOnly, NoDepthPass, NoPicking, NoMotionVectors, CameraMatrices]
+    Properties {
+        Float fadeStart = 15.0
+        Float fadeEnd = 80.0
+    }
+    Inputs {
+        Float3 nearPoint
+        Float3 farPoint
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 float computeDepth(vec3 pos) {
     vec4 clipSpacePos = ubo.proj * ubo.view * vec4(pos, 1.0);
@@ -78,7 +84,9 @@ void main() {
     float farGridAlpha = major * 0.4;
     float lineAlpha = mix(nearGridAlpha, farGridAlpha, lodFactor);
 
-    vec3 lineColor = vec3(0.8);
+    // 0.8 sRGB expressed in linear space — the scene buffer is linear and is
+    // sRGB-encoded by the display encode pass, keeping the familiar gray.
+    vec3 lineColor = vec3(0.6038);
 
     // ---- Distance fade (XZ plane) ----
     float dist = length(coord - cameraPos.xz);

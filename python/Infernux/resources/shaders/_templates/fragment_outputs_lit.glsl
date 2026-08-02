@@ -2,8 +2,8 @@
 // fragment_outputs_lit.glsl — Lit fragment shader output declarations
 //
 // Forward rendering: single color output + GetMainLight convenience macro.
-// When deferred rendering is implemented, GBuffer MRT outputs will be
-// emitted via a separate compile target — not added to this file.
+// Deferred rendering uses the separate GBuffer compile target and its
+// canonical five-target output contract.
 // ============================================================================
 
 layout(location = 0) out vec4 outColor;

@@ -192,8 +192,9 @@ VkRenderPass VkPipelineManager::CreateRenderPass(const RenderPassConfig &config)
             colorAttachment.format = fmt;
             colorAttachment.samples = config.samples;
             colorAttachment.loadOp = config.clearColor ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
-            colorAttachment.storeOp =
-                (config.hasResolve && i == 0) ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
+            colorAttachment.storeOp = (config.hasResolve && i == 0 && !config.storeColor)
+                                          ? VK_ATTACHMENT_STORE_OP_DONT_CARE
+                                          : VK_ATTACHMENT_STORE_OP_STORE;
             colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
             colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
             // RenderGraph inserts explicit barriers before each pass and keeps
@@ -319,6 +320,21 @@ void VkPipelineManager::DestroyRenderPass(VkRenderPass renderPass)
     }
 
     vkDestroyRenderPass(m_device, renderPass, nullptr);
+}
+
+bool VkPipelineManager::DetachRenderPass(VkRenderPass renderPass) noexcept
+{
+    if (renderPass == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    const auto it = std::find(m_renderPasses.begin(), m_renderPasses.end(), renderPass);
+    if (it == m_renderPasses.end()) {
+        return false;
+    }
+
+    m_renderPasses.erase(it);
+    return true;
 }
 
 // ============================================================================

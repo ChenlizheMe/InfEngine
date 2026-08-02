@@ -72,9 +72,11 @@ class MenuBarPanel : public InxGUIRenderable
     std::function<void()> toggleBuildSettings;
     std::function<void()> togglePreferences;
     std::function<void()> togglePhysicsLayerMatrix;
+    std::function<void()> toggleEnvironmentSettings;
     std::function<bool()> isBuildSettingsOpen;
     std::function<bool()> isPreferencesOpen;
     std::function<bool()> isPhysicsLayerMatrixOpen;
+    std::function<bool()> isEnvironmentSettingsOpen;
 
     // i18n
     std::function<std::string(const std::string &)> translate;
@@ -85,6 +87,7 @@ class MenuBarPanel : public InxGUIRenderable
   private:
     void HandleShortcuts(InxGUIContext *ctx);
     void RenderProjectMenu(InxGUIContext *ctx);
+    void RenderSceneMenu(InxGUIContext *ctx);
     void RenderDynamicMenus(InxGUIContext *ctx);
     void RefreshWindowTypeCache();
     void RenderWindowMenu(InxGUIContext *ctx);

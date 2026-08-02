@@ -3,6 +3,7 @@
 #include "../GpuResidency.h"
 
 #include "InxVkCoreModular.h"
+#include "gui/EditorGuiFrameScheduler.h"
 #include "gui/InxGUIContext.h"
 #include "gui/InxGUIRenderable.h"
 #include "gui/InxResourcePreviewer.h"
@@ -21,7 +22,6 @@ namespace infernux
 namespace vk
 {
 class TextureUploadTicket;
-class VkTexture;
 } // namespace vk
 
 class InxGUI
@@ -38,6 +38,8 @@ class InxGUI
         return m_dpiScale;
     }
     void BuildFrame();
+    [[nodiscard]] bool BuildFrameIfDue(bool force = false);
+    void RequestFrame() noexcept;
 
     void RecordCommand(VkCommandBuffer cmdBuf);
     void Shutdown();
@@ -63,7 +65,7 @@ class InxGUI
         return m_lastPanelSubTimesMs;
     }
 
-    void Register(const std::string &name, std::shared_ptr<InxGUIRenderable> renderable);
+    void Register(const std::string &name, std::shared_ptr<InxGUIRenderable> renderable, int priority = 0);
     void Unregister(const std::string &name);
     void QueueDockTabSelection(const std::string &windowId);
 
@@ -90,6 +92,9 @@ class InxGUI
     /// @param name Texture identifier
     /// @return Texture ID or 0 if not found
     uint64_t GetImGuiTextureId(const std::string &name);
+    /// @brief Validate and mark a descriptor-backed ImGui texture as used by cached native UI commands.
+    /// @return false when the descriptor is no longer owned by the live texture registry.
+    bool TouchImGuiTextureId(uint64_t textureId);
     [[nodiscard]] uint64_t GetImGuiTextureVersion(const std::string &name) const;
     [[nodiscard]] uint64_t GetFailedImGuiTextureVersion(const std::string &name) const;
 
@@ -144,7 +149,7 @@ class InxGUI
   private:
     struct ImGuiTextureResource
     {
-        std::shared_ptr<vk::VkTexture> texture;
+        std::shared_ptr<rhi::TextureResource> texture;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
         uint64_t residentBytes = 0;
         uint64_t lastUsedFrame = 0;
@@ -175,10 +180,12 @@ class InxGUI
 
     std::unordered_map<std::string, std::shared_ptr<InxGUIRenderable>> m_renderables_umap;
     std::vector<std::string> m_renderableOrder;
+    std::unordered_map<std::string, int> m_renderablePriorities;
     std::vector<std::string> m_pendingDockTabSelections;
     std::unordered_map<std::string, double> m_lastPanelTimesMs;
     std::unordered_map<std::string, std::unordered_map<std::string, double>> m_lastPanelSubTimesMs;
     std::unordered_map<std::string, ImGuiTextureResource> m_textures_umap;
+    std::unordered_map<VkDescriptorSet, std::string> m_textureNamesByDescriptor;
     std::unordered_map<std::string, uint64_t> m_textureUploadGenerations;
     std::unordered_map<std::string, uint64_t> m_failedTextureUploadVersions;
     std::vector<PendingTextureUpload> m_pendingTextureUploads;
@@ -194,8 +201,12 @@ class InxGUI
     uint64_t m_textureEvictionCount = 0;
     ResourcePreviewManager m_resourcePreviewManager;
     bool m_playerMode = false;
+    bool m_hasDrawData = false;
+    EditorGuiFrameScheduler m_editorFrameScheduler;
 
+    void BuildFrameInternal();
     void ApplyPendingDockTabSelections();
+    void PromoteActiveModal();
     void PumpTextureUploads();
     void DeferTextureRelease(ImGuiTextureResource resource);
     void ReleaseTextureResource(ImGuiTextureResource &resource);

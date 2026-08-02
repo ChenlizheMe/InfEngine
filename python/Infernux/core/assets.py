@@ -35,12 +35,15 @@ from Infernux.core.asset_types import (
     ANIMCLIP_EXTENSIONS,
     ANIMCLIP3D_EXTENSIONS,
     ANIMFSM_EXTENSIONS,
+    RENDER_EFFECT_EXTENSIONS,
+    PARTICLE_GRAPH_EXTENSIONS,
     asset_category_from_extension,
 )
 from Infernux.core.animation_clip import AnimationClip
 from Infernux.core.animation_clip3d import AnimationClip3D
 from Infernux.core.anim_state_machine import AnimStateMachine
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import path_key, portable_path, resolved_path
 
 # ── Constants ──
 _META_SUPPRESSION_TIMEOUT: float = 2.0  # seconds
@@ -84,6 +87,11 @@ class AssetManager:
     # Pre-captured material JSON snapshots for async save.
     # Key = normalized file path, value = serialized JSON string.
     _material_save_snapshots: Dict[str, str] = {}
+
+    # JSON snapshots are captured on the main thread, while DocumentStore owns
+    # coalescing and atomic IO on native worker threads.
+    _render_effect_save_snapshots: Dict[str, str] = {}
+    _pending_document_writes: Dict[str, Any] = {}
 
     # Cached reference to C++ AssetRegistry singleton
     _registry = None
@@ -257,6 +265,7 @@ class AssetManager:
         cls.register_import_strategy("audio", write_audio_import_settings)
         cls.register_import_strategy("mesh", write_mesh_import_settings)
         cls.register_save_strategy("material", cls._save_material_resource)
+        cls.register_save_strategy("render_effect", cls._save_render_effect_resource)
         cls.register_save_strategy("animclip", cls._save_animclip_resource)
         cls.register_save_strategy("animclip3d", cls._save_animclip3d_resource)
         cls.register_save_strategy("animfsm", cls._save_animfsm_resource)
@@ -325,8 +334,25 @@ class AssetManager:
         if not result:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
+        effect_error = cls._compile_render_effect_runtime(path, result.guid)
+        if effect_error:
+            from Infernux.lib import AssetMutationErrorCode
+
+            result.succeeded = False
+            result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+            result.error = effect_error
+            return result
+        particle_error = cls._compile_particle_runtime(path, result.guid)
+        if particle_error:
+            from Infernux.lib import AssetMutationErrorCode
+
+            result.succeeded = False
+            result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+            result.error = particle_error
+            return result
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("created", path)
+        cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._prime_material_preview(path)
         cls._emit_editor_asset_changed(path, "created")
@@ -363,6 +389,23 @@ class AssetManager:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
 
+        effect_error = cls._compile_render_effect_runtime(path, guid)
+        if effect_error:
+            from Infernux.lib import AssetMutationErrorCode
+
+            result.succeeded = False
+            result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+            result.error = effect_error
+            return result
+        particle_error = cls._compile_particle_runtime(path, guid)
+        if particle_error:
+            from Infernux.lib import AssetMutationErrorCode
+
+            result.succeeded = False
+            result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+            result.error = particle_error
+            return result
+
         if has_shader_runtime:
             error = native.reload_shader_runtime(path, previous_shader_id)
             if error:
@@ -372,12 +415,7 @@ class AssetManager:
                 result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
                 result.error = error
                 return result
-            try:
-                from Infernux.engine.ui import inspector_shader_utils
-                inspector_shader_utils.bump_shader_property_generation()
-            except ImportError:
-                pass
-        else:
+        elif not cls._is_compiled_authoring_source(path):
             registry = cls._get_registry()
             if registry and registry.is_loaded(guid) and not registry.reload_asset(guid):
                 from Infernux.lib import AssetMutationErrorCode
@@ -386,7 +424,9 @@ class AssetManager:
                 result.error = "loaded asset registry rejected reload"
                 return result
 
-        cls.invalidate(guid)
+        cls._invalidate_shader_authoring_cache(path)
+        if os.path.splitext(path)[1].lower() not in RENDER_EFFECT_EXTENSIONS:
+            cls.invalidate(guid)
         if ext in IMAGE_EXTENSIONS:
             cls._invalidate_texture_ui_cache(path)
             cls._schedule_gpu_texture_reload(path)
@@ -399,6 +439,59 @@ class AssetManager:
         return result
 
     @classmethod
+    def _compile_render_effect_runtime(cls, path: str, guid: str) -> str:
+        """Compile and publish an effect artifact before notifying live users."""
+        if os.path.splitext(path)[1].lower() not in RENDER_EFFECT_EXTENSIONS:
+            return ""
+        try:
+            from Infernux.renderstack.render_effect import RenderEffect
+            from Infernux.renderstack.render_effect_asset import RenderEffectAsset
+            from Infernux.renderstack.render_effect_compiler import (
+                RenderEffectArtifactRegistry,
+            )
+
+            artifact, document = RenderEffectArtifactRegistry.compile_and_publish(
+                path,
+                guid=guid,
+            )
+            loaded = cls._get_cached(guid)
+            if isinstance(loaded, RenderEffect) and isinstance(document, RenderEffectAsset):
+                loaded._publish_compiled_source(
+                    document,
+                    artifact_revision=artifact.revision,
+                    file_path=path,
+                    guid=guid,
+                )
+            return ""
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return f"render effect compile failed; keeping last-known-good: {exc}"
+
+    @staticmethod
+    def _is_particle_source(path: str) -> bool:
+        lower = str(path or "").lower()
+        return lower.endswith(".particlegraph") or lower.endswith(".particle.py")
+
+    @classmethod
+    def _is_compiled_authoring_source(cls, path: str) -> bool:
+        return (
+            os.path.splitext(path)[1].lower() in RENDER_EFFECT_EXTENSIONS
+            or cls._is_particle_source(path)
+        )
+
+    @classmethod
+    def _compile_particle_runtime(cls, path: str, guid: str) -> str:
+        """Compile ParticleGraph/ParticleScript before publishing file changes."""
+        if not cls._is_particle_source(path):
+            return ""
+        try:
+            from Infernux.particle.artifact import ParticleArtifactRegistry
+
+            ParticleArtifactRegistry.compile_path(path, guid=guid)
+            return ""
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return f"particle compile failed; keeping last-known-good: {exc}"
+
+    @classmethod
     def _emit_editor_asset_changed(cls, path: str, event_type: str = "modified") -> None:
         if not path:
             return
@@ -409,6 +502,18 @@ class AssetManager:
             bus.emit(EditorEvent.ASSET_CHANGED, path, event_type)
         except Exception as exc:
             Debug.log_suppressed("AssetManager._emit_editor_asset_changed", exc)
+
+    @staticmethod
+    def _invalidate_shader_authoring_cache(path: str) -> None:
+        """Publish shader catalog changes independently of runtime renderer state."""
+        if os.path.splitext(path)[1].lower() not in SHADER_EXTENSIONS:
+            return
+        try:
+            from Infernux.engine.ui import inspector_shader_utils
+
+            inspector_shader_utils.bump_shader_property_generation()
+        except ImportError:
+            pass
 
     @classmethod
     def move_asset(
@@ -435,17 +540,33 @@ class AssetManager:
             cls._invalidate_texture_ui_cache(old_path)
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("moved", old_path, new_path)
+        cls._invalidate_shader_authoring_cache(old_path)
+        if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
+            cls._invalidate_shader_authoring_cache(new_path)
         cls._invalidate_project_panel_cache()
         cls._emit_editor_asset_changed(new_path, "moved")
+        if suppress_watcher_echo and new_path.lower().endswith(".py"):
+            from Infernux.engine.resources_manager import ResourcesManager
+
+            resources = ResourcesManager.instance()
+            if resources is not None:
+                resources.reload_moved_script(old_path, new_path)
         return result
 
     @classmethod
-    def delete_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True):
+    def delete_asset(
+        cls,
+        path: str,
+        *,
+        database=None,
+        suppress_watcher_echo: bool = True,
+        guid_hint: str = "",
+    ):
         """Evict loaded state before deleting the database record and metadata."""
         from Infernux.core.asset_types import MATERIAL_EXTENSIONS
 
         asset_database = cls._mutation_database(database)
-        guid = asset_database.get_guid_from_path(path)
+        guid = asset_database.get_guid_from_path(path) or str(guid_hint or "").strip()
         registry = cls._get_registry()
         if registry and guid:
             registry.remove_asset(guid)
@@ -466,9 +587,16 @@ class AssetManager:
         result = asset_database.delete_asset(path)
         if not result:
             return result
+        if ext == ".py" and guid:
+            from Infernux.engine.play_mode import PlayModeManager
+
+            play_mode = PlayModeManager.instance()
+            if play_mode is not None:
+                play_mode.mark_components_missing_for_script(guid, path)
         cls._clear_deleted_live_references(guid, path)
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("deleted", path)
+        cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._emit_editor_asset_changed(path, "deleted")
         return result
@@ -538,7 +666,54 @@ class AssetManager:
         if file_path and "::submat:" in file_path:
             return
         if file_path and json_str:
-            cls._material_save_snapshots[os.path.normpath(file_path)] = json_str
+            cls._material_save_snapshots[path_key(file_path)] = json_str
+
+    @classmethod
+    def set_render_effect_save_snapshot(cls, file_path: str, json_str: str) -> None:
+        """Replace the pending immutable snapshot for one RenderEffect asset."""
+        if file_path and json_str:
+            cls._render_effect_save_snapshots[path_key(file_path)] = json_str
+
+    @classmethod
+    def _save_render_effect_resource(cls, resource_obj):
+        """Submit a coalesced RenderEffect source write to DocumentStore."""
+        file_path = str(getattr(resource_obj, "file_path", "") or "")
+        if not file_path:
+            return False
+        norm_path = path_key(file_path)
+        snapshot = cls._render_effect_save_snapshots.pop(norm_path, "")
+        if not snapshot:
+            from Infernux.renderstack.render_effect_asset import dump_render_effect_document
+
+            snapshot = dump_render_effect_document(resource_obj.to_asset())
+
+        from Infernux.core.document_store import submit_document_text
+
+        # The live shared instance already contains this generation.  Do not
+        # re-read our own atomic replace through the file watcher.
+        cls._suppress_watcher_echo("modified", file_path, match_any=True)
+        try:
+            ticket = submit_document_text(file_path, snapshot)
+        except (OSError, RuntimeError, ValueError) as exc:
+            Debug.log_error(f"RenderEffect save submission failed for '{file_path}': {exc}")
+            return False
+        cls._pending_document_writes[norm_path] = ticket
+        callback = getattr(resource_obj, "_on_save_submitted", None)
+        if callable(callback):
+            callback()
+        return True
+
+    @classmethod
+    def poll_pending_asset_writes(cls) -> None:
+        """Retire completed asynchronous asset writes and surface failures."""
+        for path, ticket in list(cls._pending_document_writes.items()):
+            if not bool(getattr(ticket, "is_complete", False)):
+                continue
+            status = str(getattr(ticket, "status", "") or "")
+            if status not in {"succeeded", "superseded"}:
+                Debug.log_error(f"Asset document write failed for '{path}' ({status or 'unknown'})")
+            if cls._pending_document_writes.get(path) is ticket:
+                cls._pending_document_writes.pop(path, None)
 
     @classmethod
     def _save_material_resource(cls, resource_obj):
@@ -546,7 +721,7 @@ class AssetManager:
         file_path = getattr(resource_obj, "file_path", "") or ""
 
         # Use pre-captured snapshot if available (avoids main-thread serialize).
-        norm_path = os.path.normpath(file_path) if file_path else ""
+        norm_path = path_key(file_path) if file_path else ""
         snapshot = cls._material_save_snapshots.pop(norm_path, "")
 
         # Prefer C++ async save path when available to avoid main-thread stalls.
@@ -636,7 +811,7 @@ class AssetManager:
         return save()
 
     @classmethod
-    def flush_scheduled_saves(cls, key: Optional[str] = None):
+    def flush_scheduled_saves(cls, key: Optional[str] = None, *, force: bool = False):
         """Execute due scheduled saves. If key is given, only flush that key."""
         now = time.perf_counter()
 
@@ -644,10 +819,10 @@ class AssetManager:
             record = cls._scheduled_saves.get(key)
             if not record:
                 return
-            if bool(record.get("wait_one_flush", False)):
+            if not force and bool(record.get("wait_one_flush", False)):
                 record["wait_one_flush"] = False
                 return
-            if now < float(record.get("deadline", 0.0)):
+            if not force and now < float(record.get("deadline", 0.0)):
                 return
             try:
                 save_fn = record.get("save_fn")
@@ -659,10 +834,10 @@ class AssetManager:
 
         due_keys = []
         for k, v in cls._scheduled_saves.items():
-            if bool(v.get("wait_one_flush", False)):
+            if not force and bool(v.get("wait_one_flush", False)):
                 v["wait_one_flush"] = False
                 continue
-            if now >= float(v.get("deadline", 0.0)):
+            if force or now >= float(v.get("deadline", 0.0)):
                 due_keys.append(k)
         for k in due_keys:
             record = cls._scheduled_saves.get(k)
@@ -673,6 +848,15 @@ class AssetManager:
                         save_fn()
             finally:
                 cls._scheduled_saves.pop(k, None)
+
+    @classmethod
+    def flush_all_asset_writes(cls) -> None:
+        """Force pending snapshots into DocumentStore and wait for durability."""
+        cls.flush_scheduled_saves(force=True)
+        from Infernux.core.document_store import DocumentStore
+
+        DocumentStore.flush()
+        cls.poll_pending_asset_writes()
 
     # ==========================================================================
     # Internal helpers
@@ -772,6 +956,12 @@ class AssetManager:
             return AnimationClip3D
         if ext in ANIMFSM_EXTENSIONS:
             return AnimStateMachine
+        if ext == ".effect":
+            from Infernux.renderstack.render_effect import RenderEffect
+            return RenderEffect
+        if ext in PARTICLE_GRAPH_EXTENSIONS:
+            from Infernux.particle.asset import ParticleGraphAsset
+            return ParticleGraphAsset
         return None
 
     @classmethod
@@ -794,12 +984,44 @@ class AssetManager:
             return AnimationClip3D.load(path)
         if asset_type is AnimStateMachine:
             return AnimStateMachine.load(path)
+        from Infernux.renderstack.render_effect import RenderEffect
+        if asset_type is RenderEffect or (asset_type is None and path.endswith(".effect")):
+            try:
+                from Infernux.renderstack.render_effect_asset import RenderEffectAsset
+                from Infernux.renderstack.render_effect_compiler import (
+                    RenderEffectArtifactRegistry,
+                )
+
+                guid = cls._get_guid_from_path(path) or ""
+                artifact, document = RenderEffectArtifactRegistry.compile_and_publish(
+                    path,
+                    guid=guid,
+                )
+                if isinstance(document, RenderEffectAsset):
+                    effect = RenderEffect(document, file_path=path, guid=guid)
+                    effect._artifact_revision = artifact.revision
+                    return effect
+                return None
+            except (OSError, RuntimeError, TypeError, ValueError):
+                return None
+        from Infernux.particle.asset import ParticleGraphAsset
+        if asset_type is ParticleGraphAsset or (
+            asset_type is None and path.lower().endswith(".particlegraph")
+        ):
+            try:
+                from Infernux.particle.artifact import ParticleArtifactRegistry
+
+                guid = cls._get_guid_from_path(path) or ""
+                ParticleArtifactRegistry.compile_path(path, guid=guid)
+                return ParticleGraphAsset.load(path)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                return None
         return None
 
     @classmethod
     def _schedule_gpu_texture_reload(cls, path: str) -> None:
         """Queue native GPU texture invalidation for the next post-draw tick."""
-        key = cls._normalize_asset_path(path) or os.path.abspath(path)
+        key = cls._normalize_asset_path(path) or path_key(path)
         cls._pending_gpu_texture_reloads[key] = path
 
         guid = cls._get_guid_from_path(path)
@@ -943,12 +1165,12 @@ class AssetManager:
         if native is None or not hasattr(native, "query_or_schedule_material_preview"):
             return
         try:
-            normalized = os.path.normpath(path)
+            normalized = resolved_path(path)
             live_document = str(material_json or "")
             stamp = 0 if live_document else int(os.stat(normalized).st_mtime_ns)
-            resource_key = f"matedit|{normalized}" if live_document else f"mat|{normalized}"
+            resource_key = f"mat|{normalized}"
             native.query_or_schedule_material_preview(
-                resource_key, normalized, live_document, stamp,
+                resource_key, normalized, live_document, stamp, False,
             )
             if hasattr(native, "request_full_speed_frame"):
                 native.request_full_speed_frame()
@@ -957,12 +1179,7 @@ class AssetManager:
 
     @staticmethod
     def _normalize_asset_path(path: str) -> str:
-        if not path:
-            return ""
-        result = os.path.normpath(path).replace("\\", "/")
-        if os.name == "nt":
-            result = result.lower()
-        return result
+        return portable_path(path_key(path)) if path else ""
 
     @classmethod
     def _invalidate_texture_ui_cache(cls, path: str) -> None:

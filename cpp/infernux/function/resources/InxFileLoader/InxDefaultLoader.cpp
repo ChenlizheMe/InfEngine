@@ -11,15 +11,18 @@
 
 namespace infernux
 {
-InxDefaultTextLoader::InxDefaultTextLoader()
+InxDefaultTextLoader::InxDefaultTextLoader(ResourceType resourceType) : m_resourceType(resourceType)
 {
+    if (resourceType != ResourceType::DefaultText && resourceType != ResourceType::RenderEffect &&
+        resourceType != ResourceType::ParticleGraph)
+        throw std::invalid_argument("InxDefaultTextLoader requires a text resource type");
 }
 
 void InxDefaultTextLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
                                       InxResourceMeta &metaData) const
 {
     INXLOG_DEBUG("Creating metadata for text file: ", filePath);
-    metaData.Init(content, contentSize, filePath, ResourceType::DefaultText);
+    metaData.Init(content, contentSize, filePath, m_resourceType);
 
     std::filesystem::path path = ToFsPath(filePath);
     std::string extension = FromFsPath(path.extension());

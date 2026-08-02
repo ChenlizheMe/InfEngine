@@ -34,13 +34,11 @@ AssetIndexEntry MakeEntry(size_t index)
     entry.resourceType = ResourceType::DefaultText;
     entry.source = {100 + index, static_cast<int64_t>(1000 + index)};
     entry.meta = {200 + index, static_cast<int64_t>(2000 + index)};
-    entry.importerVersion = 1;
     entry.contentHash = "hash-" + std::to_string(index);
     if (index > 1)
         entry.dependencies = {"guid-0", "guid-1"};
     entry.metadata.AddMetadata("guid", entry.guid);
     entry.metadata.AddMetadata("resource_type", entry.resourceType);
-    entry.metadata.AddMetadata("importer_version", entry.importerVersion);
     entry.metadata.AddMetadata("content_hash", entry.contentHash);
     return entry;
 }
@@ -52,7 +50,7 @@ double Milliseconds(Clock::time_point start)
 
 void TestResourceTypeMetadataRoundTrip()
 {
-    const std::array<std::pair<ResourceType, const char *>, 10> cases = {{
+    const std::array<std::pair<ResourceType, const char *>, 12> cases = {{
         {ResourceType::Meta, "Meta"},
         {ResourceType::Shader, "Shader"},
         {ResourceType::Texture, "Texture"},
@@ -63,6 +61,8 @@ void TestResourceTypeMetadataRoundTrip()
         {ResourceType::DefaultText, "DefaultText"},
         {ResourceType::DefaultBinary, "DefaultBinary"},
         {ResourceType::PhysicMaterial, "PhysicMaterial"},
+        {ResourceType::RenderEffect, "RenderEffect"},
+        {ResourceType::ParticleGraph, "ParticleGraph"},
     }};
 
     for (const auto &[type, name] : cases) {
@@ -76,6 +76,31 @@ void TestResourceTypeMetadataRoundTrip()
         restored.DeserializeDocument(document);
         Require(restored.GetResourceType() == type, "ResourceType metadata failed strict round-trip");
     }
+}
+
+void TestSpriteFramesRequireStructuredMetadata()
+{
+    nlohmann::json legacy = {
+        {"metadata", {{"sprite_frames", {{"type", "string"}, {"value", "[]"}}}}},
+    };
+    infernux::InxResourceMeta metadata;
+    bool rejected = false;
+    try {
+        metadata.DeserializeDocument(legacy);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    Require(rejected, "Resource metadata accepted string-encoded sprite_frames");
+
+    nlohmann::json current = {
+        {"metadata", {{"sprite_frames", {{"type", "json_array"}, {"value", nlohmann::json::array()}}}}},
+    };
+    metadata.DeserializeDocument(current);
+    Require(metadata.SerializeDocument() == current, "Structured sprite_frames failed strict round-trip");
+
+    infernux::InxResourceMeta rebuilt;
+    rebuilt.CopyMetadataIfMissing(metadata, "sprite_frames");
+    Require(rebuilt.SerializeDocument() == current, "Metadata rebuild changed the structured sprite_frames type tag");
 }
 
 void TestMetadataFilePathCanonicalization()
@@ -175,6 +200,7 @@ int main()
 {
     try {
         TestResourceTypeMetadataRoundTrip();
+        TestSpriteFramesRequireStructuredMetadata();
         TestMetadataFilePathCanonicalization();
         TestScaleAndStrictRoundTrip();
         return 0;

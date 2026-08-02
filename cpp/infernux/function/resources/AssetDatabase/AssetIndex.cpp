@@ -30,7 +30,7 @@ ResourceType ParseResourceType(const nlohmann::json &value, const std::string &l
     if (!value.is_number_integer())
         throw std::invalid_argument(location + " must be an integer");
     const int raw = value.get<int>();
-    if (raw < static_cast<int>(ResourceType::Shader) || raw > static_cast<int>(ResourceType::PhysicMaterial))
+    if (raw < static_cast<int>(ResourceType::Shader) || raw > static_cast<int>(ResourceType::ParticleGraph))
         throw std::invalid_argument(location + " is not a current ResourceType");
     return static_cast<ResourceType>(raw);
 }
@@ -118,7 +118,6 @@ nlohmann::json AssetIndex::SerializeDocument() const
                            {"resource_type", static_cast<int>(entry->resourceType)},
                            {"source", SerializeFingerprint(entry->source)},
                            {"meta", SerializeFingerprint(entry->meta)},
-                           {"importer_version", entry->importerVersion},
                            {"content_hash", entry->contentHash},
                            {"dependencies", std::move(dependencies)},
                            {"read_only", entry->readOnly},
@@ -128,14 +127,12 @@ nlohmann::json AssetIndex::SerializeDocument() const
                            {"metadata", entry->metadata.SerializeDocument()}});
     }
 
-    return {{"schema_version", SchemaVersion}, {"project_root", m_projectRoot}, {"entries", std::move(entries)}};
+    return {{"project_root", m_projectRoot}, {"entries", std::move(entries)}};
 }
 
 void AssetIndex::DeserializeDocument(const nlohmann::json &document, const std::string &normalizedProjectRoot)
 {
-    RequireExactFields(document, {"schema_version", "project_root", "entries"}, "AssetIndex");
-    if (!document["schema_version"].is_number_integer() || document["schema_version"].get<int>() != SchemaVersion)
-        throw std::invalid_argument("AssetIndex requires schema_version 1");
+    RequireExactFields(document, {"project_root", "entries"}, "AssetIndex");
     if (!document["project_root"].is_string() || document["project_root"].get<std::string>() != normalizedProjectRoot)
         throw std::invalid_argument("AssetIndex project_root does not match");
     if (!document["entries"].is_array())
@@ -148,16 +145,15 @@ void AssetIndex::DeserializeDocument(const nlohmann::json &document, const std::
     for (const auto &item : document["entries"]) {
         const std::string location = "AssetIndex.entries[" + std::to_string(index++) + "]";
         RequireExactFields(item,
-                           {"normalized_path", "guid", "resource_type", "source", "meta", "importer_version",
-                            "content_hash", "dependencies", "read_only", "import_succeeded", "import_error",
-                            "artifact_path", "metadata"},
+                           {"normalized_path", "guid", "resource_type", "source", "meta", "content_hash",
+                            "dependencies", "read_only", "import_succeeded", "import_error", "artifact_path",
+                            "metadata"},
                            location);
         for (const char *field : {"normalized_path", "guid", "content_hash", "import_error", "artifact_path"}) {
             if (!item[field].is_string())
                 throw std::invalid_argument(location + "." + field + " must be a string");
         }
-        if (!item["importer_version"].is_number_integer() || item["importer_version"].get<int>() < 0 ||
-            !item["read_only"].is_boolean() || !item["import_succeeded"].is_boolean() ||
+        if (!item["read_only"].is_boolean() || !item["import_succeeded"].is_boolean() ||
             !item["dependencies"].is_array())
             throw std::invalid_argument(location + " has invalid typed fields");
 
@@ -169,7 +165,6 @@ void AssetIndex::DeserializeDocument(const nlohmann::json &document, const std::
         entry.resourceType = ParseResourceType(item["resource_type"], location + ".resource_type");
         entry.source = ParseFingerprint(item["source"], location + ".source");
         entry.meta = ParseFingerprint(item["meta"], location + ".meta");
-        entry.importerVersion = item["importer_version"].get<int>();
         entry.contentHash = item["content_hash"].get<std::string>();
         entry.readOnly = item["read_only"].get<bool>();
         entry.importSucceeded = item["import_succeeded"].get<bool>();

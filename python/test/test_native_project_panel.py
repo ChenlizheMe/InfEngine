@@ -6,14 +6,21 @@ from pathlib import Path
 import pytest
 from Infernux.lib import AssetMutationResult, ProjectPanel
 from Infernux.engine.ui.project_file_ops import (
+    SCRIPT_TEMPLATE,
     create_material,
     create_physic_material,
     create_prefab_from_gameobject,
-    create_vfxsystem,
+    create_particlegraph,
+    create_render_effect,
+    create_render_effect_group,
 )
 
 
 class TestProjectPanelCreation:
+
+    def test_script_template_imports_component_surface(self):
+        assert "from Infernux import *" in SCRIPT_TEMPLATE
+        assert "from Infernux.components import *" in SCRIPT_TEMPLATE
 
     def test_creation(self):
         pp = ProjectPanel()
@@ -53,24 +60,60 @@ class TestProjectPanelCreation:
         path = tmp_path / "Ice.physicMaterial"
         assert database.paths == [str(path)]
         assert json.loads(path.read_text(encoding="utf-8")) == {
-            "schema_version": 1,
             "friction": 0.4,
             "bounciness": 0.0,
             "friction_combine": 0,
             "bounce_combine": 0,
         }
 
-    def test_create_vfxsystem_writes_loadable_strict_document(self, tmp_path):
-        from Infernux.core.vfx_system import VfxSystem
+    def test_create_particlegraph_callback(self):
+        pp = ProjectPanel()
+        pp.create_particlegraph = lambda cur, name: (True, "")
+        opened = []
+        pp.open_particle_graph = lambda path: opened.append(path)
 
-        ok, error = create_vfxsystem(str(tmp_path), "Fire")
+        assert pp.create_particlegraph("/path", "Smoke") == (True, "")
+        pp.open_particle_graph("/path/Smoke.particlegraph")
+        assert opened == ["/path/Smoke.particlegraph"]
 
+    def test_create_render_effect_assets_write_current_documents(self, tmp_path):
+        from Infernux.renderstack.render_effect_asset import (
+            RenderEffectAsset,
+            RenderEffectGroupAsset,
+            parse_render_effect_document,
+        )
+
+        ok, error = create_render_effect(
+            str(tmp_path), "Pixels", "infernux.route.pixelation"
+        )
         assert ok is True, error
-        system = VfxSystem.load(str(tmp_path / "Fire.vfxsystem"))
-        assert system.name == "Fire"
-        assert system.emitters[0].graph.graph_kind == "vfx"
+        effect = parse_render_effect_document(
+            (tmp_path / "Pixels.effect").read_text(encoding="utf-8")
+        )
+        assert isinstance(effect, RenderEffectAsset)
+        assert effect.feature_type == "infernux.route.pixelation"
+        assert effect.parameters == {}
 
-    def test_create_material_writes_schema_v3_document(self, tmp_path, engine):
+        ok, error = create_render_effect_group(str(tmp_path), "Post")
+        assert ok is True, error
+        group = parse_render_effect_document(
+            (tmp_path / "Post.effectgroup").read_text(encoding="utf-8")
+        )
+        assert isinstance(group, RenderEffectGroupAsset)
+        assert group.entries == ()
+
+    def test_create_render_effect_callbacks(self):
+        pp = ProjectPanel()
+        pp.create_render_effect = lambda cur, name, feature: (True, feature)
+        pp.create_render_effect_group = lambda cur, name: (True, name)
+
+        assert pp.create_render_effect("/path", "Pixels", "infernux.route.pixelation") == (
+            True,
+            "infernux.route.pixelation",
+        )
+        assert pp.create_render_effect_group("/path", "Post") == (True, "Post")
+
+    def test_create_material_writes_current_document(self, tmp_path, engine):
         from Infernux.lib import InxMaterial
 
         class RecordingAssetDatabase:
@@ -93,7 +136,9 @@ class TestProjectPanelCreation:
         path = tmp_path / "NewMaterial.mat"
         assert database.paths == [str(path)]
         document = json.loads(path.read_text(encoding="utf-8"))
-        assert document["material_version"] == 3
+        assert "material_version" not in document
+        assert document["shaders"]["vertex"]["shader_id"] == "Standard"
+        assert document["shaders"]["fragment"]["shader_id"] == "Unlit"
         assert document["name"] == "NewMaterial"
         assert document["builtin"] is False
         material = InxMaterial()
@@ -104,7 +149,7 @@ class TestProjectPanelCreation:
         from Infernux.core.assets import AssetManager
 
         path = tmp_path / "Fresh.mat"
-        path.write_text('{"material_version":3}', encoding="utf-8")
+        path.write_text('{"name":"Fresh"}', encoding="utf-8")
 
         class Native:
             def __init__(self):
@@ -124,13 +169,13 @@ class TestProjectPanelCreation:
         AssetManager._prime_material_preview(str(path))
 
         normalized = os.path.normpath(str(path))
-        assert native.queries == [(f"mat|{normalized}", normalized, "", path.stat().st_mtime_ns)]
+        assert native.queries == [(f"mat|{normalized}", normalized, "", path.stat().st_mtime_ns, False)]
         assert native.full_speed_requests == 1
 
         native.queries.clear()
-        AssetManager._prime_material_preview(str(path), '{"material_version":3}')
+        AssetManager._prime_material_preview(str(path), '{"name":"Fresh"}')
         assert native.queries == [(
-            f"matedit|{normalized}", normalized, '{"material_version":3}', 0,
+            f"mat|{normalized}", normalized, '{"name":"Fresh"}', 0, False,
         )]
 
     def test_create_prefab_links_the_saved_source(self, tmp_path, monkeypatch):
@@ -244,16 +289,6 @@ class TestProjectPanelCallbacks:
         ok, err = pp.create_scene("/path", "Main")
         assert ok is True
 
-    def test_vfx_system_callbacks(self):
-        pp = ProjectPanel()
-        pp.create_vfxsystem = lambda cur, name: (True, "")
-        opened = []
-        pp.open_vfx_system = lambda path: opened.append(path)
-
-        assert pp.create_vfxsystem("/path", "Fire") == (True, "")
-        pp.open_vfx_system("/path/Fire.vfxsystem")
-        assert opened == ["/path/Fire.vfxsystem"]
-
     def test_delete_items_callback(self):
         pp = ProjectPanel()
         deleted = []
@@ -267,6 +302,37 @@ class TestProjectPanelCallbacks:
         result = pp.do_rename("/dir/old.txt", "new.txt")
         assert result == "/dir/new.txt"
 
+    def test_folder_rename_maps_nested_asset_paths(self, tmp_path, monkeypatch):
+        from Infernux.engine.ui import project_file_ops
+
+        source = tmp_path / "OldFolder"
+        nested = source / "Nested"
+        nested.mkdir(parents=True)
+        (source / "root.mat").write_text("{}", encoding="utf-8")
+        (nested / "child.png").write_bytes(b"png")
+
+        moved = []
+        monkeypatch.setattr(
+            project_file_ops,
+            "_notify_asset_moved",
+            lambda old, new, _database=None: moved.append((Path(old), Path(new))),
+        )
+
+        destination = project_file_ops.do_rename(str(source), "RenamedFolder")
+
+        expected = tmp_path / "RenamedFolder"
+        assert Path(destination) == expected.resolve()
+        assert not source.exists()
+        assert (expected / "root.mat").is_file()
+        assert (expected / "Nested" / "child.png").is_file()
+        assert set(moved) == {
+            (source.resolve() / "root.mat", expected.resolve() / "root.mat"),
+            (
+                source.resolve() / "Nested" / "child.png",
+                expected.resolve() / "Nested" / "child.png",
+            ),
+        }
+
     def test_project_asset_operations_publish_stable_semantics(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
         assert '"project.context.rename"' in source
@@ -274,6 +340,17 @@ class TestProjectPanelCallbacks:
         assert '"project.rename.input"' in source
         assert 'itemSemanticId + ".expand"' in source
         assert '"project_model_expand"' in source
+
+    def test_particle_runtime_artifacts_are_hidden_from_the_project_panel(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        hidden_extensions = source[
+            source.index("sHiddenExtensions") : source.index("sHiddenFiles")
+        ]
+
+        assert '".inxparticle"' in hidden_extensions
+        assert '".inxtex"' in hidden_extensions
+        assert '".inxvfield"' in hidden_extensions
+        assert '".inxsdf"' in hidden_extensions
 
     def test_project_asset_selection_waits_for_non_drag_release(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
@@ -315,6 +392,38 @@ class TestProjectPanelCallbacks:
         assert "GetModelThumbnail(item.path, item.mtimeNs)" in grid_preview
         assert "IsUiPrefabFile(item.path, item.mtimeNs)" in grid_preview
         assert grid_preview.count("IsUiPrefabFile(") == 1
+
+    def test_project_search_filters_a_generation_cached_memory_index(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        search = source[source.index("void ProjectPanel::RebuildSearchIndex"):
+                        source.index("void ProjectPanel::RenderSearchResults")]
+
+        assert "m_searchIndexGeneration" in search
+        assert "m_searchIndex.push_back" in search
+        assert "indexed.searchKey.find(queryLower)" in search
+        assert "CollectMatchingFolders" not in source
+        assert "directory_iterator" not in search
+
+    def test_search_activation_does_not_clear_the_container_being_iterated(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        search = source[source.index("void ProjectPanel::RenderSearchResults"):
+                        source.index("// Folder tree")]
+        iteration = search[search.index("for (const auto &item : m_searchResults)"):
+                           search.index("if (!hasActivatedItem)")]
+
+        assert "activatedItem = item" in iteration
+        assert "m_searchResults.clear()" not in iteration
+        assert search.index("m_searchResults.clear()") < search.index("SetCurrentPath(activatedItem.path)")
+
+    def test_parent_navigation_stops_using_the_previous_grid_snapshot(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        grid = source[source.index("void ProjectPanel::RenderFileGrid"):
+                      source.index("// Context menu")]
+        parent_navigation = grid[grid.index('ctx->Selectable("[..]", false)'):
+                                 grid.index("// Grid config")]
+
+        assert "AssignCurrentPath(parent);" in parent_navigation
+        assert "return;" in parent_navigation
 
     def test_get_unique_name_callback(self):
         pp = ProjectPanel()

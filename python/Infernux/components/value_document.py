@@ -3,8 +3,6 @@ from __future__ import annotations
 
 
 TYPE_KEY = "$type"
-VERSION_KEY = "$version"
-SCHEMA_VERSION = 1
 
 ENUM = "enum"
 GAME_OBJECT_REF = "game_object_ref"
@@ -14,7 +12,7 @@ SERIALIZABLE_OBJECT = "serializable_object"
 
 
 def make_document(document_type: str, **payload) -> dict:
-    return {TYPE_KEY: document_type, VERSION_KEY: SCHEMA_VERSION, **payload}
+    return {TYPE_KEY: document_type, **payload}
 
 
 def make_enum(enum_type: str, name: str) -> dict:
@@ -30,6 +28,22 @@ def make_component_ref(game_object_id: int, component_type: str) -> dict:
         COMPONENT_REF,
         game_object_id=game_object_id,
         component_type=component_type,
+    )
+
+
+def is_component_ref_document(value, component_type: str = "") -> bool:
+    """Return whether *value* is one complete current component reference."""
+    return (
+        type(value) is dict
+        and set(value) == {TYPE_KEY, "game_object_id", "component_type"}
+        and value.get(TYPE_KEY) == COMPONENT_REF
+        and type(value.get("game_object_id")) is int
+        and value["game_object_id"] >= 0
+        and type(value.get("component_type")) is str
+        and (
+            not component_type
+            or value["component_type"] == component_type
+        )
     )
 
 

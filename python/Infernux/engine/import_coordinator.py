@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import os
 import re
 import threading
 import time
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Callable
+
+from Infernux.engine.path_utils import path_key, portable_path, resolved_path
 
 
 class AssetFsEventKind(str, Enum):
@@ -38,11 +39,11 @@ class _PendingEvent:
 def _absolute_path(path: str) -> str:
     if not path:
         raise ValueError("asset event path cannot be empty")
-    return os.path.abspath(os.path.normpath(path))
+    return resolved_path(path)
 
 
 def _path_key(path: str) -> str:
-    return os.path.normcase(path)
+    return path_key(path)
 
 
 _DOCUMENT_STORE_TEMP_PATTERN = re.compile(r"\.tmp\.\d+\.\d+$")
@@ -52,7 +53,7 @@ def is_document_store_temporary_path(path: str) -> bool:
     """Return whether *path* uses AtomicFile's exact temporary-file suffix."""
     if not path:
         return False
-    normalized = path.replace("\\", "/")
+    normalized = portable_path(path)
     return _DOCUMENT_STORE_TEMP_PATTERN.search(normalized) is not None
 
 

@@ -23,7 +23,7 @@ from Infernux.components import (
 )
 from .inx_ui_component import InxUIComponent
 from .enums import RenderMode, UIScaleMode, ScreenMatchMode
-from .ui_render_revision import mark_runtime_ui_dirty
+from .ui_render_revision import is_unchanged_ui_scalar, mark_runtime_ui_dirty
 
 
 def _log2(x: float) -> float:
@@ -83,8 +83,9 @@ class UICanvas(InxUIComponent):
     )
 
     def __setattr__(self, name, value):
+        unchanged = is_unchanged_ui_scalar(self, name, value)
         super().__setattr__(name, value)
-        if not name.startswith("_"):
+        if not name.startswith("_") and not unchanged:
             mark_runtime_ui_dirty()
 
     # ------------------------------------------------------------------

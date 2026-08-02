@@ -8,6 +8,7 @@ import secrets
 import time
 from typing import Any, Callable
 
+from Infernux.engine.path_utils import is_path_within, relative_path, resolved_path, same_path
 from Infernux.mcp.threading import MainThreadCommandQueue
 
 MCP_PROTOCOL_VERSION = "2025-11-25"
@@ -541,10 +542,9 @@ def _requires_saved_scene_file(name: str) -> bool:
         "lighting_ensure_default",
         "renderstack_find_or_create",
         "renderstack_set_pipeline",
-        "renderstack_add_pass",
-        "renderstack_remove_pass",
-        "renderstack_set_pass_enabled",
-        "renderstack_set_pass_params",
+        "renderstack_add_effect",
+        "renderstack_remove_effect",
+        "renderstack_set_effect_enabled",
     }
     if name in exact:
         return True
@@ -597,7 +597,7 @@ def scene_status() -> dict[str, Any]:
 
 def ensure_not_active_scene_file(project_path: str, file_path: str, operation: str) -> None:
     """Prevent generic asset tools from editing scene files outside scene APIs."""
-    target = os.path.abspath(file_path)
+    target = resolved_path(file_path)
     if _path_is_or_contains_scene_file(target):
         raise ValueError(
             f"Refusing to {operation} .scene files through generic asset tools. "
@@ -606,13 +606,13 @@ def ensure_not_active_scene_file(project_path: str, file_path: str, operation: s
     try:
         from Infernux.engine.scene_manager import SceneFileManager
         sfm = SceneFileManager.instance()
-        active = os.path.abspath(str(getattr(sfm, "current_scene_path", "") or "")) if sfm else ""
+        active = resolved_path(str(getattr(sfm, "current_scene_path", "") or "")) if sfm else ""
     except Exception:
         active = ""
     if not active:
         return
-    is_active_scene = target == active
-    contains_active_scene = os.path.isdir(target) and os.path.commonpath([target, active]) == target
+    is_active_scene = same_path(target, active)
+    contains_active_scene = os.path.isdir(target) and is_path_within(active, target)
     if is_active_scene or contains_active_scene:
         raise ValueError(
             f"Refusing to {operation} the active scene file through generic asset tools. "
@@ -641,7 +641,7 @@ def _project_rel(path: str | None) -> str:
         from Infernux.engine.project_context import get_project_root
         root = get_project_root()
         if root:
-            return os.path.relpath(os.path.abspath(path), os.path.abspath(root)).replace("\\", "/")
+            return relative_path(path, root, allow_root=True)
     except Exception:
         pass
     return str(path)
@@ -665,17 +665,17 @@ def get_asset_database():
 
 
 def project_assets_dir(project_path: str) -> str:
-    assets = os.path.join(os.path.abspath(project_path), "Assets")
+    assets = os.path.join(resolved_path(project_path), "Assets")
     os.makedirs(assets, exist_ok=True)
     return assets
 
 
 def resolve_project_dir(project_path: str, directory: str | None) -> str:
-    root = os.path.abspath(project_path)
+    root = resolved_path(project_path)
     if not directory:
         return project_assets_dir(root)
-    raw = os.path.abspath(directory if os.path.isabs(directory) else os.path.join(root, directory))
-    if os.path.commonpath([root, raw]) != root:
+    raw = resolved_path(directory if os.path.isabs(directory) else os.path.join(root, directory))
+    if not is_path_within(raw, root):
         raise ValueError("Target directory must stay inside the project.")
     os.makedirs(raw, exist_ok=True)
     return raw
@@ -683,25 +683,25 @@ def resolve_project_dir(project_path: str, directory: str | None) -> str:
 
 def resolve_project_path(project_path: str, path: str | None, *, default: str = "") -> str:
     """Resolve a project-relative or absolute path and keep it inside the project."""
-    root = os.path.abspath(project_path)
+    root = resolved_path(project_path)
     candidate = path or default
     if not candidate:
         candidate = root
-    raw = os.path.abspath(candidate if os.path.isabs(candidate) else os.path.join(root, candidate))
-    if os.path.commonpath([root, raw]) != root:
+    raw = resolved_path(candidate if os.path.isabs(candidate) else os.path.join(root, candidate))
+    if not is_path_within(raw, root):
         raise ValueError("Path must stay inside the project.")
     return raw
 
 
 def resolve_asset_path(project_path: str, path: str | None, *, default_name: str = "") -> str:
     """Resolve a path under the project Assets directory."""
-    root = os.path.abspath(project_path)
+    root = resolved_path(project_path)
     assets = project_assets_dir(root)
     candidate = path or default_name
     if not candidate:
         return assets
-    raw = os.path.abspath(candidate if os.path.isabs(candidate) else os.path.join(root, candidate))
-    if os.path.commonpath([assets, raw]) != assets:
+    raw = resolved_path(candidate if os.path.isabs(candidate) else os.path.join(root, candidate))
+    if not is_path_within(raw, assets):
         raise ValueError("Asset path must stay inside Assets/.")
     return raw
 
@@ -742,6 +742,8 @@ def track_project_path_before_change(project_path: str, path: str, operation: st
 def serialize_vector(value) -> Any:
     if value is None:
         return None
+    if all(hasattr(value, attr) for attr in ("x", "y", "z", "w")):
+        return [float(value.x), float(value.y), float(value.z), float(value.w)]
     if all(hasattr(value, attr) for attr in ("x", "y", "z")):
         return [float(value.x), float(value.y), float(value.z)]
     if all(hasattr(value, attr) for attr in ("x", "y")):
@@ -784,16 +786,23 @@ def serialize_value(value: Any) -> Any:
 
 def serialize_component(comp) -> dict[str, Any]:
     type_name = str(getattr(comp, "type_name", type(comp).__name__))
+    is_python_component = (
+        hasattr(comp, "_script_guid")
+        and not bool(getattr(comp, "_is_builtin_component_wrapper", False))
+    )
     data: dict[str, Any] = {
         "type": type_name,
-        "python": bool(hasattr(comp, "_script_guid")),
+        "python": bool(is_python_component),
     }
     component_id = getattr(comp, "component_id", None)
     if component_id:
         data["component_id"] = int(component_id)
-    script_guid = getattr(comp, "_script_guid", "")
+    script_guid = getattr(comp, "_script_guid", "") if is_python_component else ""
     if script_guid:
         data["script_guid"] = script_guid
+    if bool(getattr(comp, "_is_broken", False)):
+        data["broken_script"] = True
+        data["broken_error"] = str(getattr(comp, "_broken_error", "") or "Script failed to load")
     return data
 
 

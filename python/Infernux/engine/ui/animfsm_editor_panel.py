@@ -17,6 +17,7 @@ import re
 import threading
 from typing import Dict, List, Optional, Tuple
 
+from Infernux.engine.path_utils import path_key, relative_path, resolved_path, same_path
 from Infernux.core.anim_state_machine import (
     AnimStateMachine,
     AnimState,
@@ -40,11 +41,22 @@ from Infernux.lib import InxGUIContext
 
 from .asset_save_dialog import AssetSaveAsDialog
 from .editor_panel import EditorPanel
-from .node_graph_view import NodeGraphView
+from .floating_workspace_panel import (
+    FloatingOverlayState,
+    begin_workspace_entry,
+    finish_workspace_entry,
+    paint_workspace_entry,
+    render_floating_overlay,
+    render_workspace_add_header,
+    update_overlay_resize_drag,
+)
+from .imgui_keys import KEY_DELETE
+from .node_graph_view import NodeCreationEntry, NodeGraphView
 from ._inspector_references import render_object_field, _picker_assets
 from .inspector_utils import field_label, max_label_w
 from .panel_registry import editor_panel
 from .theme import ImGuiCol, Theme
+from .igui import IGUI
 
 
 # Legacy single-compare fallback when ast parse fails
@@ -141,7 +153,7 @@ def _encode_condition_model(terms: List[dict]) -> str:
     return expr
 
 
-def _legacy_condition_to_terms(cond: str) -> List[dict]:
+def _simple_condition_to_terms(cond: str) -> List[dict]:
     c = (cond or "").strip()
     if not c:
         return []
@@ -174,17 +186,17 @@ def parse_condition_string_to_model(cond: str) -> List[dict]:
         body = tree.body
         terms_ast = _flatten_and_only(body)
         if not terms_ast:
-            return _legacy_condition_to_terms(c)
+            return _simple_condition_to_terms(c)
         out: List[dict] = []
         for t in terms_ast:
             d = _compare_to_term(t)
             if not d:
-                return _legacy_condition_to_terms(c)
+                return _simple_condition_to_terms(c)
             out.append(d)
         return out
     except (SyntaxError, ValueError, TypeError):
         pass
-    return _legacy_condition_to_terms(c)
+    return _simple_condition_to_terms(c)
 
 
 def _replace_identifier_in_expr(expr: str, old: str, new: str) -> str:
@@ -232,6 +244,12 @@ _ENTRY_TYPE = NodeTypeDef(
 _DETAIL_PANEL_W = 300.0
 _VARS_PANEL_W = 236.0
 
+_FSM_PARAM_COLORS = {
+    "bool": (0.78, 0.25, 0.31, 1.0),
+    "float": (0.34, 0.72, 0.42, 1.0),
+    "int": (0.30, 0.68, 0.52, 1.0),
+}
+
 node_catalog.register("anim_fsm", [_STATE_TYPE, _ENTRY_TYPE])
 
 
@@ -270,7 +288,8 @@ class AnimFSMEditorPanel(EditorPanel):
         self._view.on_link_deleted = self._on_link_deleted
         self._view.on_nodes_deleted = self._on_nodes_deleted
         self._view.on_node_add_request = self._on_node_add_request
-        self._view.on_link_dropped_empty = self._on_link_dropped_empty
+        self._view.on_node_creation_entries = self._node_creation_entries
+        self._view.on_node_creation_selected = self._on_node_creation_selected
         self._view.on_node_selected = self._on_node_selected
         self._view.on_canvas_drop = self._on_canvas_drop
         self._view.on_node_drag_start = self._on_node_drag_start
@@ -279,6 +298,9 @@ class AnimFSMEditorPanel(EditorPanel):
 
         # Currently selected node uid
         self._selected_uid: str = ""
+        self._selected_parameter_index = -1
+        self._left_overlay = FloatingOverlayState()
+        self._right_overlay = FloatingOverlayState()
 
         # Maps: state name ↔ node uid
         self._name_to_uid: Dict[str, str] = {}
@@ -289,11 +311,6 @@ class AnimFSMEditorPanel(EditorPanel):
 
         # Guard to avoid re-entrant selection clearing
         self._clearing_selection: bool = False
-
-        # Drag-to-create: pending context + popup search filter
-        self._link_create_ctx: Optional[dict] = None
-        self._open_link_create_popup: bool = False
-        self._link_create_search: str = ""
 
         # Panel persistence: ``load_state`` may run from bootstrap or first render
         self._panel_state_restored_once: bool = False
@@ -315,9 +332,8 @@ class AnimFSMEditorPanel(EditorPanel):
         p = (path or "").strip()
         if not p:
             return ""
-        p = os.path.normpath(p)
         if os.path.isabs(p):
-            return p
+            return resolved_path(p)
         try:
             from Infernux.engine.project_context import get_project_root
 
@@ -325,8 +341,8 @@ class AnimFSMEditorPanel(EditorPanel):
         except Exception:
             root = None
         if root:
-            return os.path.normpath(os.path.join(root, p))
-        return os.path.abspath(p)
+            return resolved_path(os.path.join(root, p))
+        return resolved_path(p)
 
     def _open_animfsm(self, file_path: str):
         """Load an .animfsm file into the editor."""
@@ -339,6 +355,7 @@ class AnimFSMEditorPanel(EditorPanel):
         self._fsm = fsm
         self._file_path = target_path
         self._selected_uid = ""
+        self._selected_parameter_index = -1
         self._dirty = False
         for state in fsm.states:
             if not state.clip_guid and state.clip_path:
@@ -352,6 +369,7 @@ class AnimFSMEditorPanel(EditorPanel):
         self._fsm = AnimStateMachine(name="New State Machine")
         self._file_path = ""
         self._selected_uid = ""
+        self._selected_parameter_index = -1
         self._dirty = True
         self._sync_graph_from_fsm()
 
@@ -382,22 +400,27 @@ class AnimFSMEditorPanel(EditorPanel):
         if not target_mode or self._mode_switch_waiting_for_save:
             return
 
-        popup_id = "Unsaved State Machine###animfsm_mode_switch_confirm"
-        if self._mode_switch_confirm_requested:
-            ctx.open_popup(popup_id)
-            self._mode_switch_confirm_requested = False
+        from .editor_modal import (
+            EditorModalAction,
+            begin_editor_modal,
+            end_editor_modal,
+            render_editor_modal_actions,
+        )
 
-        if not ctx.begin_popup_modal(popup_id, 64):
+        popup_id = f"{t('animfsm.mode_switch.title')}###animfsm_mode_switch_confirm"
+        request_open = self._mode_switch_confirm_requested
+        self._mode_switch_confirm_requested = False
+        if not begin_editor_modal(
+            ctx,
+            popup_id=popup_id,
+            title=t("animfsm.mode_switch.title"),
+            semantic_id="animfsm.mode_switch.dialog",
+            request_open=request_open,
+        ):
             return
 
-        ctx.record_semantic_window(
-            "modal", "Unsaved State Machine", "animfsm.mode_switch.dialog"
-        )
-        ctx.label("The current state machine has unsaved changes.")
-        ctx.label("Save before switching to a new resource?")
-        ctx.spacing()
-        ctx.separator()
-        ctx.spacing()
+        ctx.text_wrapped(t("animfsm.mode_switch.message"))
+        ctx.text_wrapped(t("animfsm.mode_switch.question"))
 
         def _save() -> None:
             self._mode_switch_waiting_for_save = True
@@ -414,15 +437,16 @@ class AnimFSMEditorPanel(EditorPanel):
             self._cancel_pending_mode_switch()
             ctx.close_current_popup()
 
-        ctx.button("Save##animfsm_mode_switch_save", _save)
-        ctx.record_semantic_item("button", "Save", True, "animfsm.mode_switch.save")
-        ctx.same_line()
-        ctx.button("Discard##animfsm_mode_switch_discard", _discard)
-        ctx.record_semantic_item("button", "Discard", True, "animfsm.mode_switch.discard")
-        ctx.same_line()
-        ctx.button("Cancel##animfsm_mode_switch_cancel", _cancel)
-        ctx.record_semantic_item("button", "Cancel", True, "animfsm.mode_switch.cancel")
-        ctx.end_popup()
+        render_editor_modal_actions(
+            ctx,
+            [
+                EditorModalAction(t("editor.unsaved.save"), "save", _save),
+                EditorModalAction(t("editor.unsaved.dont_save"), "discard", _discard),
+                EditorModalAction(t("editor.unsaved.cancel"), "cancel", _cancel),
+            ],
+            semantic_prefix="animfsm.mode_switch",
+        )
+        end_editor_modal(ctx)
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -503,11 +527,7 @@ class AnimFSMEditorPanel(EditorPanel):
 
                 root = get_project_root()
                 if root:
-                    abs_p = os.path.abspath(fp)
-                    abs_r = os.path.abspath(root)
-                    rel = os.path.relpath(abs_p, abs_r)
-                    if not rel.startswith(".."):
-                        data["file_path_rel"] = rel
+                    data["file_path_rel"] = relative_path(fp, root)
             except (ValueError, OSError):
                 pass
         elif rel_fallback:
@@ -533,7 +553,7 @@ class AnimFSMEditorPanel(EditorPanel):
 
                 root = get_project_root()
                 if root:
-                    cand = os.path.normpath(os.path.join(root, rel.replace("/", os.sep)))
+                    cand = resolved_path(os.path.join(root, rel))
                     if os.path.isfile(cand):
                         return cand
             except (OSError, ValueError):
@@ -719,32 +739,54 @@ class AnimFSMEditorPanel(EditorPanel):
 
         avail_w = ctx.get_content_region_avail_width()
         avail_h = ctx.get_content_region_avail_height()
+        sidebar_w = min(_VARS_PANEL_W, max(180.0, avail_w * 0.18))
+        detail_w = min(_DETAIL_PANEL_W, max(280.0, avail_w * 0.28))
+        margin = 8.0
+        default_h = min(
+            max(160.0, avail_h * 0.52),
+            max(160.0, avail_h - margin * 2.0),
+        )
+        if self._left_overlay.height <= 0.0:
+            self._left_overlay.height = default_h
+        if self._right_overlay.height <= 0.0:
+            self._right_overlay.height = default_h
+        update_overlay_resize_drag(
+            ctx,
+            self._left_overlay,
+            avail_h=avail_h,
+            margin=margin,
+        )
+        update_overlay_resize_drag(
+            ctx,
+            self._right_overlay,
+            avail_h=avail_h,
+            margin=margin,
+        )
 
-        vars_w = min(_VARS_PANEL_W, max(140.0, avail_w * 0.22))
-        detail_w = min(_DETAIL_PANEL_W, max(200.0, avail_w * 0.28))
-        graph_w = max(120.0, avail_w - vars_w - detail_w - 8.0)
-
-        # Left: declared parameters (for transition conditions)
-        if ctx.begin_child("##fsm_vars_region", vars_w, avail_h, True):
-            self._render_variables_panel(ctx)
-        ctx.end_child()
-
-        ctx.same_line()
-
-        # Center: graph canvas
-        if ctx.begin_child("##fsm_graph_region", graph_w, avail_h, False):
-            self._view.render(ctx)
-        ctx.end_child()
-
-        ctx.same_line()
-
-        # Right: state detail
-        if ctx.begin_child("##fsm_detail_region", detail_w, avail_h, True):
-            self._render_detail_panel(ctx)
-        ctx.end_child()
-
-        # Drag-to-create: searchable "create node and connect" menu
-        self._draw_link_create_popup(ctx)
+        graph_visible = ctx.begin_child("##fsm_graph_region", avail_w, avail_h, False)
+        try:
+            if graph_visible:
+                self._view.render(ctx)
+                render_floating_overlay(
+                    ctx,
+                    self._left_overlay,
+                    child_id="##fsm_parameters",
+                    x=margin,
+                    y=margin,
+                    width=sidebar_w,
+                    render_fn=lambda: self._render_variables_panel(ctx),
+                )
+                render_floating_overlay(
+                    ctx,
+                    self._right_overlay,
+                    child_id="##fsm_detail",
+                    x=max(margin, avail_w - detail_w - margin),
+                    y=margin,
+                    width=detail_w,
+                    render_fn=lambda: self._render_detail_panel(ctx),
+                )
+        finally:
+            ctx.end_child()
 
         # Accept .animfsm / .timelinefsm file drops
         payload = ctx.accept_drag_drop_payload("ANIMFSM_FILE")
@@ -1043,7 +1085,7 @@ class AnimFSMEditorPanel(EditorPanel):
 
         ctx.dummy(0, 4)
         ctx.begin_group()
-        add_clicked = ctx.button("+##addrow", None, 28, 20)
+        add_clicked = IGUI._mini_icon_button(ctx, "##addrow", Theme.ICON_IMG_PLUS, Theme.ICON_PLUS)
         if semantic_prefix:
             ctx.record_semantic_item(
                 "button", "Add Condition", True, f"{semantic_prefix}.condition.add",
@@ -1054,7 +1096,9 @@ class AnimFSMEditorPanel(EditorPanel):
             self._apply_condition_model(lk, nt)
         ctx.same_line(0, 6)
         can_remove = len(terms) > 1
-        remove_clicked = can_remove and ctx.button("−##rmrow", None, 28, 20)
+        remove_clicked = can_remove and IGUI._mini_icon_button(
+            ctx, "##rmrow", Theme.ICON_IMG_MINUS, Theme.ICON_MINUS
+        )
         if semantic_prefix:
             ctx.record_semantic_item(
                 "button",
@@ -1091,27 +1135,30 @@ class AnimFSMEditorPanel(EditorPanel):
                 self._sync_transition_condition(lk)
 
     def _render_variables_panel(self, ctx: InxGUIContext):
-        """Left rail: parameters usable in transition condition expressions."""
+        """Left overlay: parameter list (selection only)."""
         fsm = self._fsm
         if fsm is None:
             return
 
-        ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
-        ctx.label(t("animfsm_editor.section_parameters"))
-        ctx.pop_style_color(1)
-        ctx.separator()
-        ctx.dummy(0, 4)
-
-        add_parameter_label = t("animfsm_editor.add_parameter")
-        add_parameter_pressed = ctx.button(add_parameter_label)
-        ctx.record_semantic_item("button", add_parameter_label, True, "animfsm.parameters.add")
-        if add_parameter_pressed:
+        def _add_parameter() -> None:
             before = self._undo_snapshot()
-            fsm.parameters.append(AnimParameter(name=f"var_{len(fsm.parameters)}", kind="float"))
+            fsm.parameters.append(
+                AnimParameter(name=f"var_{len(fsm.parameters)}", kind="float")
+            )
+            self._selected_parameter_index = len(fsm.parameters) - 1
+            self._selected_uid = ""
+            self._view.selected_nodes = []
             self._dirty = True
             self._try_record_undo("Add parameter", before, self._undo_snapshot())
 
-        ctx.dummy(0, 4)
+        render_workspace_add_header(
+            ctx,
+            t("animfsm_editor.section_parameters"),
+            "##animfsm_parameter_add",
+            on_add=_add_parameter,
+            semantic_id="animfsm.parameters.add",
+        )
+
         remove_idx = -1
         kinds = ["bool", "float", "int"]
         for i, p in enumerate(fsm.parameters):
@@ -1120,89 +1167,119 @@ class AnimFSMEditorPanel(EditorPanel):
                 p.kind = "float"
                 self._dirty = True
                 self._try_record_undo("Fix parameter type", before, self._undo_snapshot())
-            ctx.push_id(i)
-            row_w = ctx.get_content_region_avail_width()
-            COMBO_W = 72.0
-            GAP = 8.0
-            DEL_W = 22.0
-            name_w = max(48.0, row_w - COMBO_W - GAP - DEL_W - GAP)
-
-            ctx.set_next_item_width(COMBO_W)
-            ki = kinds.index(p.kind) if p.kind in kinds else 1
-            new_ki = ctx.combo("##pk", ki, [k.capitalize() for k in kinds], len(kinds))
-            if new_ki != ki:
-                before = self._undo_snapshot()
-                p.kind = kinds[new_ki]
-                self._dirty = True
-                self._try_record_undo("Change parameter type", before, self._undo_snapshot())
-
-            ctx.same_line(0, GAP)
-            ctx.set_next_item_width(name_w)
-            raw_name = ctx.text_input("##pname", p.name, 64)
-            san = self._sanitize_param_identifier(raw_name)
-            if san and san != p.name:
-                before = self._undo_snapshot()
-                self._rename_parameter_in_fsm(p.name, san)
-                p.name = san
-                self._dirty = True
-                self._try_record_undo("Rename parameter", before, self._undo_snapshot())
-
-            ctx.same_line(0, GAP)
-            if ctx.button("−##prm_del", width=DEL_W, height=20):
-                remove_idx = i
-
-            ctx.set_next_item_width(-1)
-            if p.kind == "bool":
-                nb = ctx.checkbox("##pdef_bool", p.default_bool)
-                if nb != p.default_bool:
-                    before = self._undo_snapshot()
-                    p.default_bool = nb
-                    self._dirty = True
-                    self._try_record_undo("Parameter default", before, self._undo_snapshot())
-            elif p.kind == "float":
-                nf = ctx.drag_float("##pdef_float", p.default_float, 0.01, -1.0e9, 1.0e9)
-                if nf != p.default_float:
-                    before = self._undo_snapshot()
-                    p.default_float = nf
-                    self._dirty = True
-                    self._try_record_undo("Parameter default", before, self._undo_snapshot())
-            else:
-                ni = ctx.input_int("##pdef_int", p.default_int)
-                if ni != p.default_int:
-                    before = self._undo_snapshot()
-                    p.default_int = ni
-                    self._dirty = True
-                    self._try_record_undo("Parameter default", before, self._undo_snapshot())
-
-            ctx.dummy(0, 6)
-            ctx.pop_id()
+            selected = i == self._selected_parameter_index
+            clicked, rect = begin_workspace_entry(ctx, f"animfsm_param_{i}", selected)
+            paint_workspace_entry(
+                ctx,
+                rect,
+                primary=p.name,
+                secondary=p.kind.capitalize(),
+                dot_color=_FSM_PARAM_COLORS.get(p.kind, _FSM_PARAM_COLORS["float"]),
+                selected=selected,
+            )
+            if clicked:
+                self._selected_parameter_index = i
+                self._selected_uid = ""
+                self._view.selected_nodes = []
+                self._view.selected_link = ""
+            if ctx.begin_popup_context_item(f"##animfsm_param_ctx_{i}"):
+                if ctx.menu_item(t("particle_graph_editor.remove_parameter")):
+                    remove_idx = i
+                ctx.end_popup()
+            finish_workspace_entry(ctx)
+            ctx.record_semantic_item(
+                "animfsm_parameter",
+                p.name,
+                True,
+                f"animfsm.parameter.{i}",
+                string_value=p.kind,
+                bool_value=selected,
+            )
 
         if 0 <= remove_idx < len(fsm.parameters):
             before = self._undo_snapshot()
             fsm.parameters.pop(remove_idx)
+            if self._selected_parameter_index == remove_idx:
+                self._selected_parameter_index = -1
+            elif self._selected_parameter_index > remove_idx:
+                self._selected_parameter_index -= 1
+            self._dirty = True
+            self._try_record_undo("Remove parameter", before, self._undo_snapshot())
+            return
+
+        if (
+            self._selected_parameter_index >= 0
+            and ctx.is_window_focused(3)
+            and not ctx.is_any_item_active()
+            and ctx.is_key_pressed(KEY_DELETE)
+        ):
+            before = self._undo_snapshot()
+            fsm.parameters.pop(self._selected_parameter_index)
+            self._selected_parameter_index = -1
             self._dirty = True
             self._try_record_undo("Remove parameter", before, self._undo_snapshot())
 
-        # When a blend node is selected, surface its Lerp here too (mirrors the
-        # detail panel) so the blend factor sits alongside the parameter list.
-        node = self._graph.find_node(self._selected_uid)
-        sel_state = None
-        if node is not None and node.type_id == "anim_state":
-            sel_state = fsm.get_state(self._uid_to_name.get(node.uid, ""))
-        if sel_state is not None and getattr(sel_state, "kind", "clip") == "blend":
-            ctx.dummy(0, 8)
-            ctx.separator()
-            ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
-            ctx.label(f"{sel_state.name} · {t('animfsm_editor.blend_lerp')}")
-            ctx.pop_style_color(1)
-            ctx.set_next_item_width(-1)
-            cur = float(getattr(sel_state, "blend_value", 0.5) or 0.0)
-            nv = max(0.0, min(1.0, ctx.drag_float("##sel_blend_lerp", cur, 0.005, 0.0, 1.0)))
-            if nv != cur:
+    def _render_parameter_detail_panel(self, ctx: InxGUIContext) -> bool:
+        fsm = self._fsm
+        if fsm is None or self._selected_parameter_index < 0:
+            return False
+        if self._selected_parameter_index >= len(fsm.parameters):
+            self._selected_parameter_index = -1
+            return False
+
+        p = fsm.parameters[self._selected_parameter_index]
+        kinds = ["bool", "float", "int"]
+        if p.kind not in kinds:
+            p.kind = "float"
+
+        ctx.label(t("animfsm_editor.section_parameters"))
+        ctx.separator()
+
+        ctx.label(t("animfsm_editor.state_name"))
+        ctx.set_next_item_width(-1)
+        raw_name = ctx.text_input("##animfsm_param_name", p.name, 64)
+        san = self._sanitize_param_identifier(raw_name)
+        if san and san != p.name:
+            before = self._undo_snapshot()
+            self._rename_parameter_in_fsm(p.name, san)
+            p.name = san
+            self._dirty = True
+            self._try_record_undo("Rename parameter", before, self._undo_snapshot())
+
+        ctx.label(t("particle_graph_editor.parameter_type"))
+        ctx.set_next_item_width(-1)
+        ki = kinds.index(p.kind) if p.kind in kinds else 1
+        new_ki = ctx.combo("##animfsm_param_kind", ki, [k.capitalize() for k in kinds], len(kinds))
+        if new_ki != ki:
+            before = self._undo_snapshot()
+            p.kind = kinds[new_ki]
+            self._dirty = True
+            self._try_record_undo("Change parameter type", before, self._undo_snapshot())
+
+        ctx.label(t("particle_graph_editor.parameter_default"))
+        ctx.set_next_item_width(-1)
+        if p.kind == "bool":
+            nb = ctx.checkbox("##animfsm_param_def_bool", p.default_bool)
+            if nb != p.default_bool:
                 before = self._undo_snapshot()
-                sel_state.blend_value = nv
+                p.default_bool = nb
                 self._dirty = True
-                self._try_record_undo("Blend lerp", before, self._undo_snapshot())
+                self._try_record_undo("Parameter default", before, self._undo_snapshot())
+        elif p.kind == "float":
+            nf = ctx.drag_float("##animfsm_param_def_float", p.default_float, 0.01, -1.0e9, 1.0e9)
+            if nf != p.default_float:
+                before = self._undo_snapshot()
+                p.default_float = nf
+                self._dirty = True
+                self._try_record_undo("Parameter default", before, self._undo_snapshot())
+        else:
+            ni = ctx.input_int("##animfsm_param_def_int", p.default_int)
+            if ni != p.default_int:
+                before = self._undo_snapshot()
+                p.default_int = ni
+                self._dirty = True
+                self._try_record_undo("Parameter default", before, self._undo_snapshot())
+        return True
 
     # ── Detail panel (right side) ─────────────────────────────────────
 
@@ -1244,7 +1321,7 @@ class AnimFSMEditorPanel(EditorPanel):
         seen: set[str] = set()
         for ext in sorted(MESH_EXTENSIONS):
             for model_path in AssetManager.find_assets(f"*{ext}"):
-                normalized = os.path.normpath(model_path)
+                normalized = path_key(model_path)
                 if normalized in seen:
                     continue
                 seen.add(normalized)
@@ -1385,6 +1462,16 @@ class AnimFSMEditorPanel(EditorPanel):
             return self._clip_picker_items(filt, extensions)
 
         field_label(ctx, t("animfsm_editor.clip_b"), lw)
+        clip_b_ping = str(getattr(ref, "path_hint", "") or getattr(state, "clip_b_path", "") or "").strip()
+        if not clip_b_ping:
+            try:
+                from Infernux.core.assets import AssetManager
+                adb = getattr(AssetManager, "_asset_database", None)
+                guid_b = str(getattr(state, "clip_b_guid", "") or "")
+                if adb and guid_b:
+                    clip_b_ping = adb.get_path_from_guid(guid_b) or ""
+            except Exception:
+                pass
         render_object_field(
             ctx,
             f"{prefix}_fsm_clipb_{node.uid}",
@@ -1395,6 +1482,7 @@ class AnimFSMEditorPanel(EditorPanel):
             picker_asset_items=_picker,
             on_pick=lambda path, _st=state, _nd=node: self._assign_clip_b_to_state(_st, path, _nd),
             on_clear=lambda _st=state, _nd=node: self._clear_clip_b_from_state(_st, _nd),
+            ping_path=clip_b_ping or None,
             semantic_id="animfsm.state.clip_b",
         )
 
@@ -1474,6 +1562,7 @@ class AnimFSMEditorPanel(EditorPanel):
             self._clear_clip_from_state(_st, _nd)
 
         field_label(ctx, label or t("animfsm_editor.clip_ref"), lw)
+        clip_ping = self._resolved_clip_path_for_state(state)
         render_object_field(
             ctx,
             f"{prefix}_fsm_clip_{node.uid}",
@@ -1486,6 +1575,7 @@ class AnimFSMEditorPanel(EditorPanel):
             picker_asset_items=_picker,
             on_pick=_on_pick,
             on_clear=_on_clear,
+            ping_path=clip_ping or None,
             semantic_id=semantic_id,
         )
 
@@ -1495,6 +1585,9 @@ class AnimFSMEditorPanel(EditorPanel):
             return
 
         if self._render_selected_transition_detail(ctx):
+            return
+
+        if self._render_parameter_detail_panel(ctx):
             return
 
         node = self._graph.find_node(self._selected_uid)
@@ -1681,7 +1774,7 @@ class AnimFSMEditorPanel(EditorPanel):
             ctx.begin_group()
             ctx.label(f"→ {target_name}")
             ctx.same_line()
-            if ctx.button("×##del", None, 24, 20):
+            if IGUI._mini_icon_button(ctx, "##del", Theme.ICON_IMG_REMOVE, Theme.ICON_REMOVE):
                 remove_link_uid = lk.uid
 
             self._render_transition_condition_block(ctx, lk)
@@ -1781,7 +1874,7 @@ class AnimFSMEditorPanel(EditorPanel):
             return
 
         # Create entry node
-        entry = self._graph.add_node("anim_entry", x=-100, y=50)
+        entry = self._graph.add_node("anim_entry", canvas_x=-100, canvas_y=50)
         entry.data["label"] = "Entry"
         self._entry_uid = entry.uid
 
@@ -1793,7 +1886,7 @@ class AnimFSMEditorPanel(EditorPanel):
                 px = 100.0
                 py = y_offset
                 y_offset += 80.0
-            node = self._graph.add_node("anim_state", x=px, y=py)
+            node = self._graph.add_node("anim_state", canvas_x=px, canvas_y=py)
             node.data["label"] = state.name
             node.data["loop"] = state.loop
             node.data["restart_same_clip"] = state.restart_same_clip
@@ -2112,7 +2205,7 @@ class AnimFSMEditorPanel(EditorPanel):
         state.position = [x, y]
         if self._is_timeline_mode():
             state.kind = "timeline"
-        node = self._graph.add_node("anim_state", x=x, y=y)
+        node = self._graph.add_node("anim_state", canvas_x=x, canvas_y=y)
         node.data["label"] = state.name
         node.data["loop"] = state.loop
         node.data["restart_same_clip"] = state.restart_same_clip
@@ -2124,62 +2217,27 @@ class AnimFSMEditorPanel(EditorPanel):
         self._dirty = True
         self._try_record_undo("Add state", before, self._undo_snapshot())
 
-    # ── Drag-to-create ────────────────────────────────────────────────
-    def _on_link_dropped_empty(self, src_node: str, src_pin: str, src_kind, gx: float, gy: float):
-        """Pin drag released over empty canvas → open a create-and-connect menu."""
-        if self._fsm is None:
-            return
-        # Only outgoing pins start a forward transition into a new node.
-        if src_kind != PinKind.OUTPUT:
-            return
-        self._link_create_ctx = {"src_node": src_node, "gx": float(gx), "gy": float(gy)}
-        self._link_create_search = ""
-        self._link_create_focus = True
-        self._open_link_create_popup = True
-
-    def _draw_link_create_popup(self, ctx: InxGUIContext):
-        popup_id = "##fsm_link_create"
-        if self._open_link_create_popup:
-            ctx.open_popup(popup_id)
-            self._open_link_create_popup = False
-        if self._link_create_ctx is None:
-            return
-        created = None
-        if ctx.begin_popup(popup_id):
-            ctx.label(t("animfsm_editor.create_node_title"))
-            ctx.separator()
-            if getattr(self, "_link_create_focus", False):
-                ctx.set_keyboard_focus_here()
-                self._link_create_focus = False
-            self._link_create_search = ctx.input_text_with_hint(
-                "##fsm_link_create_search", t("animfsm_editor.create_search"),
-                self._link_create_search, 128)
-            flt = (self._link_create_search or "").strip().lower()
-            if self._is_timeline_mode():
-                options = (
-                    (t("animfsm_editor.node_kind_timeline"), "timeline"),
-                )
-            else:
-                options = (
-                    (t("animfsm_editor.node_kind_clip"), "clip"),
-                    (t("animfsm_editor.node_kind_blend"), "blend"),
-                )
-            for idx, (label, kind) in enumerate(options):
-                if flt and flt not in label.lower() and flt not in kind:
-                    continue
-                ctx.push_id(idx)
-                if ctx.selectable(label, False):
-                    created = (kind, self._link_create_ctx)
-                    self._link_create_ctx = None
-                    ctx.close_current_popup()
-                ctx.pop_id()
-            ctx.end_popup()
+    # ── Shared create palette domain adapter ──────────────────────────
+    def _node_creation_entries(self, request: dict) -> list[NodeCreationEntry]:
+        if request.get("source_node") and request.get("source_kind") != PinKind.OUTPUT:
+            return []
+        if self._is_timeline_mode():
+            options = ((t("animfsm_editor.node_kind_timeline"), "timeline"),)
         else:
-            self._link_create_ctx = None
-        # Defer the model mutation + graph rebuild until after the popup is fully
-        # ended, so we never touch the graph while inside ImGui popup scope.
-        if created is not None:
-            self._create_state_from_link(created[0], created[1])
+            options = (
+                (t("animfsm_editor.node_kind_clip"), "clip"),
+                (t("animfsm_editor.node_kind_blend"), "blend"),
+            )
+        category = t("animfsm_editor.create_node_title")
+        return [
+            NodeCreationEntry(key=kind, label=label, category=category)
+            for label, kind in options
+        ]
+
+    def _on_node_creation_selected(
+        self, entry: NodeCreationEntry, request: dict
+    ) -> None:
+        self._create_state_from_link(entry.key, request)
 
     def _create_state_from_link(self, kind: str, ctx_data: dict):
         """Create a new state at the drop point and connect it from the drag source."""
@@ -2188,7 +2246,7 @@ class AnimFSMEditorPanel(EditorPanel):
             return
         gx = float(ctx_data.get("gx", 0.0))
         gy = float(ctx_data.get("gy", 0.0))
-        src_node = str(ctx_data.get("src_node", ""))
+        src_node = str(ctx_data.get("source_node", ctx_data.get("src_node", "")))
         # Resolve the source state name *before* rebuilding (uids change on rebuild).
         from_entry = (src_node == self._entry_uid)
         src_name = "" if from_entry else self._uid_to_name.get(src_node, "")
@@ -2223,6 +2281,7 @@ class AnimFSMEditorPanel(EditorPanel):
 
     def _on_node_selected(self, uid: str):
         self._selected_uid = uid
+        self._selected_parameter_index = -1
         self._clear_external_selection()
 
     def _clear_external_selection(self):
@@ -2255,10 +2314,13 @@ class AnimFSMEditorPanel(EditorPanel):
             self._selected_uid = ""
 
     def _on_play_mode_changed(self, event):
-        """PlayModeEvent — auto-save dirty FSM before play."""
-        from Infernux.engine.play_mode import PlayModeState
-        if event.new_state == PlayModeState.PLAYING and self._dirty:
-            self._do_save()
+        """Keep editor drafts in memory when Play Mode changes.
+
+        Entering Play must not turn a stale restored draft into an implicit
+        disk write.  The runtime consumes the last explicitly saved asset;
+        Ctrl+S and the panel save controls remain the only persistence paths.
+        """
+        del event
 
     def _on_canvas_drop(self, payload_type: str, payload, gx: float, gy: float):
         """Handle items dropped onto the node graph canvas (clip / timeline file paths)."""
@@ -2292,7 +2354,7 @@ class AnimFSMEditorPanel(EditorPanel):
             before = self._undo_snapshot()
             state = self._fsm.add_state()
             state.position = [gx, gy]
-            node = self._graph.add_node("anim_state", x=gx, y=gy)
+            node = self._graph.add_node("anim_state", canvas_x=gx, canvas_y=gy)
             node.data["label"] = state.name
             self._name_to_uid[state.name] = node.uid
             self._uid_to_name[node.uid] = state.name
@@ -2325,7 +2387,7 @@ class AnimFSMEditorPanel(EditorPanel):
             state = self._fsm.add_state(self._unique_state_name("Timeline"))
             state.position = [gx, gy]
             state.kind = "timeline"
-            node = self._graph.add_node("anim_state", x=gx, y=gy)
+            node = self._graph.add_node("anim_state", canvas_x=gx, canvas_y=gy)
             node.data["label"] = state.name
             self._name_to_uid[state.name] = node.uid
             self._uid_to_name[node.uid] = state.name
@@ -2384,6 +2446,16 @@ class AnimFSMEditorPanel(EditorPanel):
             return _picker_assets(filt, "*.animtimeline", assets_only=False)
 
         field_label(ctx, t("animfsm_editor.timeline_ref"), lw)
+        tl_ping = str(getattr(state, "timeline_path", "") or "").strip()
+        if not tl_ping:
+            try:
+                from Infernux.core.assets import AssetManager
+                adb = getattr(AssetManager, "_asset_database", None)
+                tl_guid = str(getattr(state, "timeline_guid", "") or "")
+                if adb and tl_guid:
+                    tl_ping = adb.get_path_from_guid(tl_guid) or ""
+            except Exception:
+                pass
         render_object_field(
             ctx,
             f"atl_fsm_tl_{node.uid}",
@@ -2394,6 +2466,7 @@ class AnimFSMEditorPanel(EditorPanel):
             picker_asset_items=_picker,
             on_pick=lambda path, _st=state, _nd=node: self._assign_timeline_to_state(_st, path, _nd),
             on_clear=lambda _st=state, _nd=node: self._clear_timeline_from_state(_st, _nd),
+            ping_path=tl_ping or None,
             semantic_id="animfsm.state.timeline",
         )
 
@@ -2579,22 +2652,21 @@ class AnimFSMEditorPanel(EditorPanel):
             from Infernux.components.spirit_animator import SpiritAnimator
             from Infernux.components.skeletal_animator import SkeletalAnimator
             from Infernux.components.timeline_action import TimelineAction
-            norm = os.path.normpath(fsm_path)
             for go in scene.get_all_objects():
                 animator = go.get_component(SpiritAnimator)
-                if animator and animator._fsm and os.path.normpath(
-                        animator._fsm.file_path or "") == norm:
+                if animator and animator._fsm and same_path(
+                        animator._fsm.file_path or "", fsm_path):
                     animator.reload_controller()
                 skel = go.get_component(SkeletalAnimator)
-                if skel and skel._fsm and os.path.normpath(
-                        skel._fsm.file_path or "") == norm:
+                if skel and skel._fsm and same_path(
+                        skel._fsm.file_path or "", fsm_path):
                     skel.reload_controller()
                 ta = go.get_component(TimelineAction)
                 if ta is not None:
                     rt = getattr(ta, "_runtime", None)
                     fsm_obj = getattr(rt, "_fsm", None) if rt is not None else None
-                    if fsm_obj is not None and os.path.normpath(
-                            getattr(fsm_obj, "file_path", "") or "") == norm:
+                    if fsm_obj is not None and same_path(
+                            getattr(fsm_obj, "file_path", "") or "", fsm_path):
                         ta.reload_controller()
         except Exception:
             pass

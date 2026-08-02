@@ -14,6 +14,59 @@
 namespace infernux
 {
 
+namespace
+{
+
+ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, const char *stage, AssetDatabase *database)
+{
+    if (!database)
+        return reference;
+
+    std::string resolvedPath;
+    if (!reference.guid.empty())
+        resolvedPath = database->GetPathFromGuid(reference.guid);
+    if (resolvedPath.empty() && !reference.pathHint.empty()) {
+        const std::string hintGuid = database->GetGuidFromPath(reference.pathHint);
+        std::error_code error;
+        const bool hintExists = !hintGuid.empty() || std::filesystem::exists(ToFsPath(reference.pathHint), error);
+        if (hintExists && (reference.guid.empty() || hintGuid.empty() || hintGuid == reference.guid))
+            resolvedPath = reference.pathHint;
+    }
+    if (resolvedPath.empty() && !reference.shaderId.empty())
+        resolvedPath = database->FindShaderPathById(reference.shaderId, stage);
+
+    if (!resolvedPath.empty()) {
+        if (reference.guid.empty())
+            reference.guid = database->GetGuidFromPath(resolvedPath);
+        reference.pathHint = resolvedPath;
+
+        // Canonicalize legacy shader ids (pre "Title Case" migration spellings
+        // like "unlit" or "Infernux/Skybox-Procedural"). Runtime shader
+        // registries index programs by the authored id from the shader meta,
+        // so a stale id in the material would fail every pipeline lookup even
+        // though the file itself resolved.
+        if (const auto meta = database->GetMetaByPath(resolvedPath)) {
+            if (meta->HasKey("shader_id")) {
+                std::string canonicalId = meta->GetDataAs<std::string>("shader_id");
+                if (!canonicalId.empty() && canonicalId != reference.shaderId) {
+                    INXLOG_INFO("MaterialLoader: migrated legacy shader id '", reference.shaderId, "' -> '",
+                                canonicalId, "' (", resolvedPath, ")");
+                    reference.shaderId = canonicalId;
+                }
+            }
+        }
+    }
+    return reference;
+}
+
+void EnrichShaderReferences(InxMaterial &material, AssetDatabase *database)
+{
+    material.SetVertShaderReference(EnrichShaderReference(material.GetVertShaderReference(), "vertex", database));
+    material.SetFragShaderReference(EnrichShaderReference(material.GetFragShaderReference(), "fragment", database));
+}
+
+} // namespace
+
 // =============================================================================
 // Load — create a brand-new InxMaterial from a .mat file
 // =============================================================================
@@ -45,6 +98,7 @@ RuntimeAssetPayload MaterialLoader::Load(const std::string &filePath, const std:
     material->SetFilePath(filePath);
     material->SetName(FromFsPath(ToFsPath(filePath).stem()));
     material->SetGuid(guid);
+    EnrichShaderReferences(*material, adb);
 
     // Dependency graph edges (textures, shaders)
     RegisterDependencies(guid, *material, adb);
@@ -88,6 +142,7 @@ bool MaterialLoader::Reload(const RuntimeAssetPayload &existing, const std::stri
     // Restore authoritative identity
     mat->SetName(savedName);
     mat->SetGuid(savedGuid);
+    EnrichShaderReferences(*mat, adb);
 
     // Re-wire dependency graph (texture/shader deps may have changed)
     RegisterDependencies(savedGuid, *mat, adb);
@@ -133,17 +188,23 @@ std::set<std::string> MaterialLoader::ScanDependencies(const std::string &filePa
             deps.insert(*val);
     }
 
-    // Shader GUIDs (resolved via AssetDatabase)
+    // Shader GUIDs are authoritative. Path hints and shader IDs recover current
+    // assets while the database is being rebuilt.
     if (adb) {
-        auto addShaderDep = [&](const std::string &shaderPath) {
-            if (shaderPath.empty())
-                return;
-            std::string depGuid = adb->GetGuidFromPath(shaderPath);
+        auto addShaderDep = [&](const ShaderAssetReference &reference, const char *stage) {
+            std::string depGuid = reference.guid;
+            if (depGuid.empty() && !reference.pathHint.empty())
+                depGuid = adb->GetGuidFromPath(reference.pathHint);
+            if (depGuid.empty() && !reference.shaderId.empty()) {
+                const std::string path = adb->FindShaderPathById(reference.shaderId, stage);
+                if (!path.empty())
+                    depGuid = adb->GetGuidFromPath(path);
+            }
             if (!depGuid.empty())
                 deps.insert(depGuid);
         };
-        addShaderDep(tmp.GetVertShaderName());
-        addShaderDep(tmp.GetFragShaderName());
+        addShaderDep(tmp.GetVertShaderReference(), "vertex");
+        addShaderDep(tmp.GetFragShaderReference(), "fragment");
     }
 
     return deps;
@@ -191,15 +252,20 @@ void MaterialLoader::RegisterDependencies(const std::string &materialGuid, const
 
     // Shader GUIDs (shader files have .meta with GUID)
     if (adb) {
-        auto addShaderDep = [&](const std::string &shaderPath) {
-            if (shaderPath.empty())
-                return;
-            std::string depGuid = adb->GetGuidFromPath(shaderPath);
+        auto addShaderDep = [&](const ShaderAssetReference &reference, const char *stage) {
+            std::string depGuid = reference.guid;
+            if (depGuid.empty() && !reference.pathHint.empty())
+                depGuid = adb->GetGuidFromPath(reference.pathHint);
+            if (depGuid.empty() && !reference.shaderId.empty()) {
+                const std::string path = adb->FindShaderPathById(reference.shaderId, stage);
+                if (!path.empty())
+                    depGuid = adb->GetGuidFromPath(path);
+            }
             if (!depGuid.empty())
                 dependencies.insert(std::move(depGuid));
         };
-        addShaderDep(mat.GetVertShaderName());
-        addShaderDep(mat.GetFragShaderName());
+        addShaderDep(mat.GetVertShaderReference(), "vertex");
+        addShaderDep(mat.GetFragShaderReference(), "fragment");
     }
     AssetDependencyGraph::Instance().SetAssetDependencies(materialGuid, dependencies);
 }

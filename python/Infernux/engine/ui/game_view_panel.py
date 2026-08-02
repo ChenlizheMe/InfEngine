@@ -29,12 +29,13 @@ from .game_input_policy import should_process_game_ui_events, should_route_game_
 from .editor_panel import EditorPanel
 from .closable_panel import ClosablePanel
 from .panel_registry import editor_panel
-from .theme import Theme, ImGuiCol
+from .theme import Theme, ImGuiStyleVar
 from .viewport_utils import capture_viewport_info
 from Infernux.debug import Debug
 
 _sort_by_sort_order = attrgetter('sort_order')
 _GAME_VIEWPORT_SEMANTIC_ID = "game_view.viewport"
+_GAME_VIEW_FPS_SEMANTIC_ID = "game_view.fps"
 _GAME_UI_BUTTON_SEMANTIC_PREFIX = "game_view.ui_button."
 
 
@@ -56,12 +57,10 @@ class GameViewPanel(EditorPanel):
         "_last_game_width",
         "_last_game_height",
         "_game_camera_was_enabled",
-        "_fps_accum_time",
-        "_fps_accum_frames",
+        "_fps_sample_time",
+        "_fps_sample_frame",
         "_display_fps",
         "_display_frame_ms",
-        "_game_fps_accum_time",
-        "_game_fps_accum_frames",
         "_display_game_fps",
         "_display_game_frame_ms",
         "_cached_fps_text",
@@ -107,14 +106,13 @@ class GameViewPanel(EditorPanel):
         self._fit_mode = True            # When True, scale auto-adjusts to fill area
         self._settings_loaded = False
 
-        # FPS display uses a 1-second rolling update to avoid noisy per-frame jitter.
-        self._fps_accum_time = 0.0
-        self._fps_accum_frames = 0
+        # Sample the renderer's real frame serial once per second. UI rendering
+        # has its own 60 Hz cadence and must not be counted as engine frames.
+        self._fps_sample_time = None
+        self._fps_sample_frame = None
         self._display_fps = 0.0
         self._display_frame_ms = 0.0
         # Game-only FPS (excludes editor panel overhead)
-        self._game_fps_accum_time = 0.0
-        self._game_fps_accum_frames = 0
         self._display_game_fps = 0.0
         self._display_game_frame_ms = 0.0
 
@@ -284,6 +282,13 @@ class GameViewPanel(EditorPanel):
         self._was_focused = False
         Input.set_game_focused(False)
         self._ui_event_processor.reset()
+        from Infernux.acceptance import RuntimeAcceptance
+
+        if RuntimeAcceptance.is_active():
+            # RuntimeAcceptance owns the Game render path even while automated
+            # scene loads transiently hide or move focus away from this dock.
+            self._set_game_render_active(True)
+            return
         # Disable game rendering when the panel is invisible (e.g. another
         # tab like UI Editor covers this dock).  Without this, C++ keeps
         # submitting draw commands against a stale game render target, which
@@ -362,45 +367,62 @@ class GameViewPanel(EditorPanel):
         scale_label_w, _ = ctx.calc_text_size("200%")
         ctx.label(f"{pct}%")
         ctx.same_line(scale_label_x + scale_label_w + 4.0)
-        ctx.set_next_item_width(100)
+        ctx.set_next_item_width(230)
         old_scale = self._display_scale
         self._display_scale = ctx.float_slider("##Scale", self._display_scale, 0.10, 2.0)
         self._display_scale = round(self._display_scale, 3)
         if abs(old_scale - self._display_scale) > 0.001:
             self._fit_mode = False
             self._save_resolution_settings()
-        ctx.same_line(0, 4)
-        pushed_fit_style = self._fit_mode
-        if pushed_fit_style:
-            ctx.push_style_color(ImGuiCol.Button, *Theme.PLAY_ACTIVE)
-        ctx.button(t("game_view.fit"), self._fit_scale, width=32, height=0)
-        if pushed_fit_style:
-            ctx.pop_style_color(1)
+        ctx.same_line(0, 6)
+        ctx.align_text_to_frame_padding()
+        fit_label = t("game_view.fit")
+        fit_w = max(44.0, ctx.calc_text_width(fit_label) + 12.0)
+        color_count = Theme.push_inline_button_style(ctx, active=self._fit_mode)
+        ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, 0.0)
+        ctx.button(f"{fit_label}##game_view_fit", self._fit_scale, width=fit_w, height=0)
+        ctx.pop_style_var(1)
+        ctx.pop_style_color(color_count)
 
         return target_w, target_h, fit_scale
 
     def _render_fps_counter(self, ctx):
         """FPS counter (right-aligned, Unity-style)."""
-        dt = Time.unscaled_delta_time
-        game_dt = Time.game_delta_time
-        if dt > 0.0:
-            self._fps_accum_time += dt
-            self._fps_accum_frames += 1
-            if game_dt > 0.0:
-                self._game_fps_accum_time += game_dt
-                self._game_fps_accum_frames += 1
-            if self._fps_accum_time >= 1.0:
-                self._display_fps = self._fps_accum_frames / self._fps_accum_time
-                self._display_frame_ms = (self._fps_accum_time / self._fps_accum_frames) * 1000.0
-                self._fps_accum_time = 0.0
-                self._fps_accum_frames = 0
-                if self._game_fps_accum_frames > 0 and self._game_fps_accum_time > 0.0:
-                    self._display_game_frame_ms = (self._game_fps_accum_time / self._game_fps_accum_frames) * 1000.0
-                    self._display_game_fps = 1000.0 / self._display_game_frame_ms
-                self._game_fps_accum_time = 0.0
-                self._game_fps_accum_frames = 0
+        is_playing = self._is_playing()
+        native_engine = getattr(self._engine, '_engine', None)
+        snapshot = getattr(native_engine, 'renderer_frame_snapshot', None) if is_playing else None
+        now = _pc()
+        if snapshot is not None:
+            frame = int(snapshot.get('frame', 0))
+            if self._fps_sample_time is None or frame < self._fps_sample_frame:
+                self._fps_sample_time = now
+                self._fps_sample_frame = frame
+            else:
+                elapsed = now - self._fps_sample_time
+                if elapsed >= 1.0:
+                    completed_frames = frame - self._fps_sample_frame
+                    self._display_fps = completed_frames / elapsed
+                    self._display_frame_ms = (
+                        elapsed * 1000.0 / completed_frames if completed_frames > 0 else 0.0
+                    )
+                    game_frame_ms = float(snapshot.get('game_only_frame_ms', 0.0))
+                    self._display_game_frame_ms = max(game_frame_ms, 0.0)
+                    self._display_game_fps = (
+                        1000.0 / game_frame_ms if game_frame_ms > 0.0 else 0.0
+                    )
+                    self._fps_sample_time = now
+                    self._fps_sample_frame = frame
+        elif not is_playing:
+            self._fps_sample_time = None
+            self._fps_sample_frame = None
+            self._display_fps = 0.0
+            self._display_frame_ms = 0.0
 
-        fps_text = f"FPS: {self._display_fps:.0f} ({self._display_frame_ms:.1f} ms)"
+        fps_text = (
+            f"FPS: {self._display_fps:.0f} ({self._display_frame_ms:.1f} ms)"
+            if is_playing and self._fps_sample_time is not None
+            else "FPS: --"
+        )
         if fps_text != getattr(self, '_cached_fps_text', None):
             self._cached_fps_text = fps_text
             self._cached_fps_text_w, _ = ctx.calc_text_size(fps_text)
@@ -409,6 +431,13 @@ class GameViewPanel(EditorPanel):
         if fps_x + text_w <= ctx.get_window_width() - 12.0:
             ctx.same_line(fps_x)
             ctx.label(fps_text)
+            if bool(getattr(ctx, "semantic_capture_enabled", False)):
+                ctx.record_semantic_item(
+                    "performance",
+                    fps_text,
+                    False,
+                    _GAME_VIEW_FPS_SEMANTIC_ID,
+                )
 
     def _route_game_input(self, ctx, target_w, target_h,
                           viewport_hovered, viewport_clicked, canvases):

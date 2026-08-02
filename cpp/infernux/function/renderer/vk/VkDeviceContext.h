@@ -23,7 +23,10 @@
 
 #include "VkTypes.h"
 #include <array>
+#include <function/renderer/rhi/RhiCapabilities.h>
+#include <function/renderer/rhi/RhiHandles.h>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -35,6 +38,8 @@ namespace infernux
 {
 namespace vk
 {
+
+class VulkanRhiDevice;
 
 /**
  * @brief Manages Vulkan instance, physical device, logical device, and queues
@@ -209,6 +214,38 @@ class VkDeviceContext
         return m_deviceFeatures;
     }
 
+    [[nodiscard]] const rhi::DeviceCaps &GetCapabilities() const noexcept
+    {
+        return m_capabilities;
+    }
+
+    [[nodiscard]] VkQueue GetComputeQueue() const
+    {
+        return m_computeQueue;
+    }
+
+    [[nodiscard]] bool HasIndependentComputeQueue() const
+    {
+        return m_hasIndependentComputeQueue;
+    }
+
+    [[nodiscard]] rhi::DeviceId GetDeviceId() const noexcept;
+
+    /// Query sample support for one concrete image descriptor usage. Format
+    /// capabilities expose the generic attachment baseline; render targets
+    /// with transfer/resolve usage must validate the exact usage combination.
+    [[nodiscard]] rhi::SampleCountMask GetImageSampleCountMask(VkFormat format, VkImageUsageFlags usage) const noexcept;
+
+    [[nodiscard]] VulkanRhiDevice &GetRhiDevice() noexcept
+    {
+        return *m_rhiDevice;
+    }
+
+    [[nodiscard]] const VulkanRhiDevice &GetRhiDevice() const noexcept
+    {
+        return *m_rhiDevice;
+    }
+
     /// @brief Whether descriptor-indexing UPDATE_AFTER_BIND was enabled at
     /// device creation time. Callers should branch on this before opting in
     /// to non-stalling descriptor updates so headless/legacy GPUs continue
@@ -259,7 +296,16 @@ class VkDeviceContext
     [[nodiscard]] VkFormat FindDepthFormat() const;
 
     /**
+     * @brief Find a depth format suitable for a render target that is also sampled.
+     * @return Best
+     * available depth format with attachment and sampled-image support,
+     *         or VK_FORMAT_UNDEFINED
+     */
+    [[nodiscard]] VkFormat FindSampledDepthFormat() const;
+
+    /**
      * @brief Find a depth format suitable for shadow maps (must support both attachment and sampling).
+     *
      * @return Best available depth format with sampled image support, or VK_FORMAT_UNDEFINED
      */
     [[nodiscard]] VkFormat FindShadowMapDepthFormat() const;
@@ -290,6 +336,10 @@ class VkDeviceContext
 
     /// @brief Create logical device and retrieve queues
     bool CreateLogicalDevice(const DeviceConfig &config);
+
+    /// Build the backend-neutral capability snapshot after device features
+    /// and queue selection have been finalized.
+    void BuildCapabilities();
 
     /// @brief Find queue families for a physical device
     QueueFamilyIndices FindQueueFamilies(VkPhysicalDevice device) const;
@@ -325,9 +375,11 @@ class VkDeviceContext
 
     // Queue handles (not destroyed - owned by device)
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
+    VkQueue m_computeQueue = VK_NULL_HANDLE;
     VkQueue m_presentQueue = VK_NULL_HANDLE;
     VkQueue m_transferQueue = VK_NULL_HANDLE; ///< Either dedicated DMA queue or alias for m_graphicsQueue
     bool m_hasDedicatedTransferQueue = false; ///< True iff transferFamily != graphicsFamily
+    bool m_hasIndependentComputeQueue = false;
 
     // ========================================================================
     // Device Information Cache
@@ -336,6 +388,8 @@ class VkDeviceContext
     QueueFamilyIndices m_queueIndices{};
     VkPhysicalDeviceProperties m_deviceProperties{};
     VkPhysicalDeviceFeatures m_deviceFeatures{};
+    rhi::DeviceCaps m_capabilities{};
+    std::unique_ptr<VulkanRhiDevice> m_rhiDevice;
 
     // Vulkan 1.2 capability flags resolved at device creation. Callers gate
     // optional fast paths on these so the engine still runs correctly on

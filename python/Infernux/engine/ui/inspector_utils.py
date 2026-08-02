@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import math
 import os
+from dataclasses import fields as dataclass_fields, is_dataclass, replace
+from functools import lru_cache
 from typing import Any
 
 from Infernux.lib import InxGUIContext
@@ -61,10 +63,61 @@ def float_close(a: float, b: float, rel_tol: float = 1e-5,
     return math.isclose(a, b, rel_tol=rel_tol, abs_tol=abs_tol)
 
 
+def preserve_ui_float_precision(candidate, original):
+    """Restore Python values when a UI widget only introduced float32 noise."""
+    if type(candidate) is float and type(original) is float:
+        if math.isclose(candidate, original, rel_tol=6.0e-8, abs_tol=1.0e-8):
+            return original
+        return candidate
+    if (
+        type(candidate) is tuple
+        and type(original) is tuple
+        and len(candidate) == len(original)
+    ):
+        return tuple(
+            preserve_ui_float_precision(value, previous)
+            for value, previous in zip(candidate, original)
+        )
+    if (
+        type(candidate) is list
+        and type(original) is list
+        and len(candidate) == len(original)
+    ):
+        return [
+            preserve_ui_float_precision(value, previous)
+            for value, previous in zip(candidate, original)
+        ]
+    if (
+        type(candidate) is dict
+        and type(original) is dict
+        and set(candidate) == set(original)
+    ):
+        return {
+            key: preserve_ui_float_precision(value, original[key])
+            for key, value in candidate.items()
+        }
+    if (
+        type(candidate) is type(original)
+        and is_dataclass(candidate)
+        and not isinstance(candidate, type)
+    ):
+        return replace(
+            candidate,
+            **{
+                field.name: preserve_ui_float_precision(
+                    getattr(candidate, field.name), getattr(original, field.name)
+                )
+                for field in dataclass_fields(candidate)
+            },
+        )
+    return candidate
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Naming / formatting
 # ═══════════════════════════════════════════════════════════════════════════
 
+@lru_cache(maxsize=512)
 def format_display_name(name: str, *, title_case: bool = False) -> str:
     """Format identifiers for UI display.
 
@@ -212,6 +265,16 @@ def get_enum_member_name(member) -> str:
     return str(name) if name else str(member)
 
 
+def resolve_enum_display_labels(metadata, members) -> list[str]:
+    """Return localized enum labels for Inspector combo widgets."""
+    from Infernux.engine.i18n import t
+
+    labels = getattr(metadata, "enum_labels", None)
+    if labels and len(labels) == len(members):
+        return [t(label) for label in labels]
+    return [get_enum_member_name(member) for member in members]
+
+
 def get_enum_member_value(member):
     """Raw value of an enum member."""
     return member.value if hasattr(member, "value") else member
@@ -283,30 +346,37 @@ def _render_vec_sf(ctx, wid, current_value, lw, has_visible_label, vector_label,
     """Render a VEC2, VEC3, or VEC4 inspector field."""
     from Infernux.components.serialized_field import FieldType
     vec_lw = lw if has_visible_label else 1.0
-    if ft == FieldType.VEC2:
-        x, y = (float(current_value.x), float(current_value.y)) if current_value is not None else (0.0, 0.0)
-        nx, ny = ctx.vector2(vector_label, x, y, DRAG_SPEED_DEFAULT, vec_lw)
-        if any(not float_close(a, b) for a, b in [(nx, x), (ny, y)]):
-            from Infernux.lib import Vector2
-            return Vector2(nx, ny)
-    elif ft == FieldType.VEC3:
-        if current_value is not None:
-            x, y, z = float(current_value.x), float(current_value.y), float(current_value.z)
-        else:
-            x, y, z = 0.0, 0.0, 0.0
-        nx, ny, nz = ctx.vector3(vector_label, x, y, z, DRAG_SPEED_DEFAULT, vec_lw)
-        if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z)]):
-            from Infernux.lib import Vector3
-            return Vector3(nx, ny, nz)
-    elif ft == FieldType.VEC4:
-        if current_value is not None:
-            x, y, z, w = float(current_value.x), float(current_value.y), float(current_value.z), float(current_value.w)
-        else:
-            x, y, z, w = 0.0, 0.0, 0.0, 0.0
-        nx, ny, nz, nw = ctx.vector4(vector_label, x, y, z, w, DRAG_SPEED_DEFAULT, vec_lw)
-        if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z), (nw, w)]):
-            from Infernux.lib import vec4f
-            return vec4f(nx, ny, nz, nw)
+    # The native VectorN helpers use their visible label as the aggregate
+    # widget ID. Scope them with the serialized field ID so repeated/localized
+    # display names never alias another visible field in the same Inspector.
+    ctx.push_id_str(str(wid))
+    try:
+        if ft == FieldType.VEC2:
+            x, y = (float(current_value.x), float(current_value.y)) if current_value is not None else (0.0, 0.0)
+            nx, ny = ctx.vector2(vector_label, x, y, DRAG_SPEED_DEFAULT, vec_lw)
+            if any(not float_close(a, b) for a, b in [(nx, x), (ny, y)]):
+                from Infernux.lib import Vector2
+                return Vector2(nx, ny)
+        elif ft == FieldType.VEC3:
+            if current_value is not None:
+                x, y, z = float(current_value.x), float(current_value.y), float(current_value.z)
+            else:
+                x, y, z = 0.0, 0.0, 0.0
+            nx, ny, nz = ctx.vector3(vector_label, x, y, z, DRAG_SPEED_DEFAULT, vec_lw)
+            if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z)]):
+                from Infernux.lib import Vector3
+                return Vector3(nx, ny, nz)
+        elif ft == FieldType.VEC4:
+            if current_value is not None:
+                x, y, z, w = float(current_value.x), float(current_value.y), float(current_value.z), float(current_value.w)
+            else:
+                x, y, z, w = 0.0, 0.0, 0.0, 0.0
+            nx, ny, nz, nw = ctx.vector4(vector_label, x, y, z, w, DRAG_SPEED_DEFAULT, vec_lw)
+            if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z), (nw, w)]):
+                from Infernux.lib import vec4f
+                return vec4f(nx, ny, nz, nw)
+    finally:
+        ctx.pop_id()
     return current_value
 
 
@@ -324,7 +394,7 @@ def _render_enum_sf(ctx, wid, display_name, metadata, current_value, lw, has_vis
         if (hasattr(metadata, "enum_labels")
                 and metadata.enum_labels
                 and len(metadata.enum_labels) == len(members)):
-            member_names = metadata.enum_labels
+            member_names = resolve_enum_display_labels(metadata, members)
         else:
             member_names = [get_enum_member_name(m) for m in members]
         current_idx = find_enum_index(members, current_value)
@@ -376,7 +446,12 @@ def render_serialized_field(
     if ft == FieldType.INT:
         return _render_numeric_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label, False)
     if ft == FieldType.BOOL:
-        return render_inspector_checkbox(ctx, display_name if has_visible_label else wid, bool(current_value))
+        ctx.push_id_str(str(wid))
+        try:
+            checkbox_label = display_name if has_visible_label else "##value"
+            return render_inspector_checkbox(ctx, checkbox_label, bool(current_value))
+        finally:
+            ctx.pop_id()
     if ft == FieldType.STRING:
         _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
         multiline = getattr(metadata, "multiline", False)
@@ -536,6 +611,8 @@ def _render_color_bar(
     min_y = ctx.get_item_rect_min_y()
     max_x = ctx.get_item_rect_max_x()
     max_y = ctx.get_item_rect_max_y()
+    hovered = bool(ctx.is_item_hovered())
+    active = hovered and bool(ctx.is_mouse_button_down(0))
 
     split_y = min_y + (max_y - min_y) * 0.75
 
@@ -543,8 +620,16 @@ def _render_color_bar(
     ctx.draw_filled_rect(min_x, min_y, max_x, split_y, r, g, b, 1.0)
     # Bottom 1/4: alpha as grey
     ctx.draw_filled_rect(min_x, split_y, max_x, max_y, a, a, a, 1.0)
-    # Thin border
-    ctx.draw_rect(min_x, min_y, max_x, max_y, *Theme.COLOR_SWATCH_BORDER, 1.0)
+    # Hover / press feedback over the swatch (Unity-like lighten).
+    if active:
+        ctx.draw_filled_rect(min_x, min_y, max_x, max_y, 1.0, 1.0, 1.0, 0.14)
+        border = Theme.INSPECTOR_INLINE_BTN_ACTIVE
+    elif hovered:
+        ctx.draw_filled_rect(min_x, min_y, max_x, max_y, 1.0, 1.0, 1.0, 0.08)
+        border = Theme.INSPECTOR_INLINE_BTN_HOVER
+    else:
+        border = Theme.COLOR_SWATCH_BORDER
+    ctx.draw_rect(min_x, min_y, max_x, max_y, *border, 1.0)
 
     popup_id = f"{wid}_cpop"
     if clicked:
@@ -647,7 +732,23 @@ def render_component_header(
         ctx.same_line(0, Theme.INSPECTOR_HEADER_ITEM_SPC[0])
 
     if show_enabled:
-        new_enabled = render_inspector_checkbox(ctx, "##hdr_en", is_enabled)
+        # Compact enabled box: center against the header bar (taller than a
+        # normal text/frame row). Prefer a direct checkbox so we control Y
+        # without fighting CheckboxInspector's ambient-row metric.
+        row_y = ctx.get_cursor_pos_y()
+        ctx.push_style_var_vec2(
+            ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_CHECKBOX_FRAME_PAD
+        )
+        ctx.set_window_font_scale(Theme.INSPECTOR_CHECKBOX_BOX_SCALE)
+        box_h = (
+            float(Theme.COMPONENT_ICON_SIZE) * Theme.INSPECTOR_CHECKBOX_BOX_SCALE
+            + Theme.INSPECTOR_CHECKBOX_FRAME_PAD[1] * 2.0
+        )
+        if box_h < header_height:
+            ctx.set_cursor_pos_y(row_y + (header_height - box_h) * 0.5)
+        new_enabled = bool(ctx.checkbox("##hdr_en", is_enabled))
+        ctx.set_window_font_scale(Theme.INSPECTOR_HEADER_PRIMARY_FONT_SCALE)
+        ctx.pop_style_var(1)
         ctx.same_line(0, Theme.INSPECTOR_HEADER_ITEM_SPC[0])
 
     ctx.align_text_to_frame_padding()
@@ -662,12 +763,42 @@ def render_component_header(
 
 
 def render_inspector_checkbox(ctx: InxGUIContext, label: str, value: bool) -> bool:
-    """Render a compact checkbox with the shared inspector sizing."""
+    """Render a compact checkbox: square at 75%, label at normal font size."""
+    checkbox_inspector = getattr(ctx, "checkbox_inspector", None)
+    if callable(checkbox_inspector):
+        return bool(checkbox_inspector(label, value))
+
+    # Fallback before the native binding is rebuilt: scale only a ##id square.
+    text = str(label or "")
+    hash_pos = text.find("##")
+    if hash_pos >= 0:
+        visible, ident = text[:hash_pos], text[hash_pos:] or "##cb"
+    else:
+        visible, ident = text, f"##inx_cb_{text or 'cb'}"
+    # Match native CheckboxInspector: center against the taller of ambient
+    # frame height and the previous item (header / icon dummy).
+    row_y = ctx.get_cursor_pos_y()
+    prev_h = max(0.0, ctx.get_item_rect_max_y() - ctx.get_item_rect_min_y())
+    pad_y = float(Theme.INSPECTOR_FRAME_PAD[1])
+    try:
+        font_size = float(ctx.get_font_size())
+    except AttributeError:
+        font_size = 13.0
+    row_h = max(font_size + pad_y * 2.0, prev_h)
     ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_CHECKBOX_FRAME_PAD)
-    ctx.set_window_font_scale(Theme.INSPECTOR_CHECKBOX_FONT_SCALE)
-    new_value = ctx.checkbox(label, value)
+    ctx.set_window_font_scale(Theme.INSPECTOR_CHECKBOX_BOX_SCALE)
+    box_h = font_size * Theme.INSPECTOR_CHECKBOX_BOX_SCALE + (
+        Theme.INSPECTOR_CHECKBOX_FRAME_PAD[1] * 2.0
+    )
+    if box_h < row_h:
+        ctx.set_cursor_pos_y(row_y + (row_h - box_h) * 0.5)
+    new_value = ctx.checkbox(ident, value)
     ctx.set_window_font_scale(1.0)
     ctx.pop_style_var(1)
+    if visible:
+        ctx.same_line(0.0, 4.0)
+        ctx.align_text_to_frame_padding()
+        ctx.label(visible)
     return new_value
 
 
@@ -699,6 +830,12 @@ def render_compact_section_header(
         base_color = Theme.INSPECTOR_HEADER_LIST
         hover_color = Theme.INSPECTOR_HEADER_LIST_HOVERED
         active_color = Theme.INSPECTOR_HEADER_LIST_ACTIVE
+    elif level == "tertiary":
+        frame_pad = Theme.INSPECTOR_HEADER_TERTIARY_FRAME_PAD
+        font_scale = Theme.INSPECTOR_HEADER_TERTIARY_FONT_SCALE
+        base_color = Theme.INSPECTOR_HEADER_TERTIARY
+        hover_color = Theme.INSPECTOR_HEADER_TERTIARY_HOVERED
+        active_color = Theme.INSPECTOR_HEADER_TERTIARY_ACTIVE
     else:
         frame_pad = Theme.INSPECTOR_HEADER_SECONDARY_FRAME_PAD
         font_scale = Theme.INSPECTOR_HEADER_SECONDARY_FONT_SCALE
@@ -706,13 +843,38 @@ def render_compact_section_header(
         hover_color = Theme.INSPECTOR_HEADER_SECONDARY_HOVERED
         active_color = Theme.INSPECTOR_HEADER_SECONDARY_ACTIVE
 
+    native_header = getattr(ctx, "render_compact_section_header", None)
+    if callable(native_header):
+        effective_text_color = text_color if text_color is not None else Theme.TEXT
+        return bool(native_header(
+            label,
+            int(icon_id or 0),
+            bool(default_open),
+            Theme.COND_FIRST_USE_EVER,
+            bool(allow_overlap),
+            frame_pad[0],
+            frame_pad[1],
+            Theme.INSPECTOR_HEADER_ITEM_SPC[0],
+            Theme.INSPECTOR_HEADER_ITEM_SPC[1],
+            Theme.INSPECTOR_HEADER_BORDER_SIZE,
+            level in ("secondary", "list", "tertiary"),
+            font_scale,
+            Theme.INSPECTOR_HEADER_RIGHT_MARGIN,
+            Theme.COMPONENT_ICON_SIZE,
+            base_color,
+            hover_color,
+            active_color,
+            text_color is not None,
+            effective_text_color,
+        ))
+
     ctx.push_style_color(ImGuiCol.Header, *base_color)
     ctx.push_style_color(ImGuiCol.HeaderHovered, *hover_color)
     ctx.push_style_color(ImGuiCol.HeaderActive, *active_color)
     ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *frame_pad)
     ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_HEADER_ITEM_SPC)
     ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, Theme.INSPECTOR_HEADER_BORDER_SIZE)
-    if level in ("secondary", "list"):
+    if level in ("secondary", "list", "tertiary"):
         ctx.push_style_var_float(ImGuiStyleVar.IndentSpacing, 0.0)
     ctx.set_window_font_scale(font_scale)
     if text_color is not None:
@@ -734,7 +896,7 @@ def render_compact_section_header(
         ctx.pop_style_color(1)
     ctx.set_window_font_scale(1.0)
     ctx.pop_style_color(3)
-    ctx.pop_style_var(4 if level in ("secondary", "list") else 3)
+    ctx.pop_style_var(4 if level in ("secondary", "list", "tertiary") else 3)
     return header_open
 
 
@@ -912,7 +1074,7 @@ def build_scalar_desc(
         if enum_cls is not None:
             members = get_enum_members(enum_cls)
             if hasattr(metadata, "enum_labels") and metadata.enum_labels and len(metadata.enum_labels) == len(members):
-                desc["en"] = metadata.enum_labels
+                desc["en"] = resolve_enum_display_labels(metadata, members)
             else:
                 desc["en"] = [get_enum_member_name(m) for m in members]
             desc["ei"] = find_enum_index(members, current_value)
@@ -922,8 +1084,12 @@ def build_scalar_desc(
 
     # --- Metadata ---
     if metadata.range:
-        desc["mn"] = float(metadata.range[0])
-        desc["mx"] = float(metadata.range[1])
+        if prop_type == PROP_INT:
+            desc["mn"] = int(metadata.range[0])
+            desc["mx"] = int(metadata.range[1])
+        else:
+            desc["mn"] = float(metadata.range[0])
+            desc["mx"] = float(metadata.range[1])
     speed = getattr(metadata, "drag_speed", None)
     if speed is not None:
         desc["sp"] = float(speed)

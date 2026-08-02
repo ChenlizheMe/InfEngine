@@ -59,7 +59,8 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
     //         set 2, binding 1 = storage buffer (instance models), vertex only
     //         set 2, binding 2 = storage buffer (skin instance metadata), vertex only
     //         set 2, binding 3 = storage buffer (bone palettes), vertex only
-    VkDescriptorSetLayoutBinding bindings[4]{};
+    //         set 2, binding 4 = optional previous transform + object ID stream, vertex only
+    VkDescriptorSetLayoutBinding bindings[5]{};
 
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -85,9 +86,15 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
     bindings[3].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     bindings[3].pImmutableSamplers = nullptr;
 
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    bindings[4].pImmutableSamplers = nullptr;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 4;
+    layoutInfo.bindingCount = 5;
     layoutInfo.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_globalsDescSetLayout) != VK_SUCCESS) {
@@ -98,46 +105,25 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
     // Publish to ShaderProgram so all pipelines pick up the shared layout at set 2
     ShaderProgram::SetGlobalsDescSetLayout(m_globalsDescSetLayout);
 
-    // Pool: one UBO + three SSBOs per frame-in-flight
-    VkDescriptorPoolSize poolSizes[2]{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(m_maxFramesInFlight);
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[1].descriptorCount = static_cast<uint32_t>(m_maxFramesInFlight * 3);
-
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = 0;
-    poolInfo.maxSets = static_cast<uint32_t>(m_maxFramesInFlight);
-    poolInfo.poolSizeCount = 2;
-    poolInfo.pPoolSizes = poolSizes;
-
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_globalsDescPool) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to create globals descriptor pool");
-        vkDestroyDescriptorSetLayout(device, m_globalsDescSetLayout, nullptr);
-        m_globalsDescSetLayout = VK_NULL_HANDLE;
-        ShaderProgram::SetGlobalsDescSetLayout(VK_NULL_HANDLE);
-        return false;
-    }
-
-    // Allocate descriptor sets
-    std::vector<VkDescriptorSetLayout> layouts(m_maxFramesInFlight, m_globalsDescSetLayout);
-
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = m_globalsDescPool;
-    allocInfo.descriptorSetCount = static_cast<uint32_t>(m_maxFramesInFlight);
-    allocInfo.pSetLayouts = layouts.data();
-
+    auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
+    m_globalsDescriptorLeases.clear();
+    m_globalsDescriptorLeases.reserve(m_maxFramesInFlight);
     m_globalsDescSets.resize(m_maxFramesInFlight);
-    if (vkAllocateDescriptorSets(device, &allocInfo, m_globalsDescSets.data()) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to allocate globals descriptor sets");
-        vkDestroyDescriptorPool(device, m_globalsDescPool, nullptr);
-        m_globalsDescPool = VK_NULL_HANDLE;
-        vkDestroyDescriptorSetLayout(device, m_globalsDescSetLayout, nullptr);
-        m_globalsDescSetLayout = VK_NULL_HANDLE;
-        ShaderProgram::SetGlobalsDescSetLayout(VK_NULL_HANDLE);
-        return false;
+    for (size_t index = 0; index < m_maxFramesInFlight; ++index) {
+        auto lease = descriptorManager.Allocate(m_globalsDescSetLayout, vk::DescriptorArena::Persistent);
+        if (!lease.IsValid()) {
+            INXLOG_ERROR("Failed to allocate globals descriptor set ", index);
+            for (const auto &allocated : m_globalsDescriptorLeases)
+                descriptorManager.Retire(allocated);
+            m_globalsDescriptorLeases.clear();
+            m_globalsDescSets.clear();
+            vkDestroyDescriptorSetLayout(device, m_globalsDescSetLayout, nullptr);
+            m_globalsDescSetLayout = VK_NULL_HANDLE;
+            ShaderProgram::SetGlobalsDescSetLayout(VK_NULL_HANDLE);
+            return false;
+        }
+        m_globalsDescSets[index] = lease.set;
+        m_globalsDescriptorLeases.push_back(lease);
     }
 
     // Write each descriptor set to point at the corresponding globals buffer
@@ -145,6 +131,7 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
     m_instanceBuffers.resize(m_maxFramesInFlight);
     m_skinInstanceBuffers.resize(m_maxFramesInFlight);
     m_skinPaletteBuffers.resize(m_maxFramesInFlight);
+    m_instanceAuxBuffers.resize(m_maxFramesInFlight);
     for (size_t i = 0; i < m_maxFramesInFlight; ++i) {
         // Create initial instance buffer for this frame
         const VkDeviceSize initialBytes = INSTANCE_BUFFER_INITIAL_CAPACITY * sizeof(glm::mat4);
@@ -160,7 +147,12 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
         m_skinPaletteBuffers[i].buffer = m_resourceManager.CreateStorageBuffer(skinPaletteBytes, /*deviceLocal=*/false);
         m_skinPaletteBuffers[i].capacity = SKIN_PALETTE_BUFFER_INITIAL_CAPACITY;
 
-        if (!m_instanceBuffers[i].buffer || !m_skinInstanceBuffers[i].buffer || !m_skinPaletteBuffers[i].buffer) {
+        const VkDeviceSize instanceAuxBytes = INSTANCE_AUX_BUFFER_INITIAL_CAPACITY * sizeof(GPUInstanceAuxData);
+        m_instanceAuxBuffers[i].buffer = m_resourceManager.CreateStorageBuffer(instanceAuxBytes, /*deviceLocal=*/false);
+        m_instanceAuxBuffers[i].capacity = INSTANCE_AUX_BUFFER_INITIAL_CAPACITY;
+
+        if (!m_instanceBuffers[i].buffer || !m_skinInstanceBuffers[i].buffer || !m_skinPaletteBuffers[i].buffer ||
+            !m_instanceAuxBuffers[i].buffer) {
             INXLOG_ERROR("Failed to create globals SSBOs for frame ", i);
             continue;
         }
@@ -168,8 +160,9 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
         m_instanceBuffers[i].mapped = m_instanceBuffers[i].buffer->Map();
         m_skinInstanceBuffers[i].mapped = m_skinInstanceBuffers[i].buffer->Map();
         m_skinPaletteBuffers[i].mapped = m_skinPaletteBuffers[i].buffer->Map();
+        m_instanceAuxBuffers[i].mapped = m_instanceAuxBuffers[i].buffer->Map();
 
-        VkWriteDescriptorSet writes[4]{};
+        VkWriteDescriptorSet writes[5]{};
 
         // Binding 0: Globals UBO
         VkDescriptorBufferInfo uboBufInfo{};
@@ -227,11 +220,24 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
         writes[3].descriptorCount = 1;
         writes[3].pBufferInfo = &skinPaletteInfo;
 
-        vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+        VkDescriptorBufferInfo instanceAuxInfo{};
+        instanceAuxInfo.buffer = m_instanceAuxBuffers[i].buffer->GetBuffer();
+        instanceAuxInfo.offset = 0;
+        instanceAuxInfo.range = VK_WHOLE_SIZE;
+
+        writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[4].dstSet = m_globalsDescSets[i];
+        writes[4].dstBinding = 4;
+        writes[4].dstArrayElement = 0;
+        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[4].descriptorCount = 1;
+        writes[4].pBufferInfo = &instanceAuxInfo;
+
+        vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
     }
 
     INXLOG_INFO("Created globals descriptor set layout, pool, and ", m_maxFramesInFlight,
-                " sets (set 2) with instance + skinning SSBOs");
+                " sets (set 2) with instance, skinning, and optional auxiliary SSBOs");
     return true;
 }
 
@@ -244,12 +250,13 @@ void InxVkCoreModular::DestroyGlobalsDescriptorResources()
     m_instanceBuffers.clear();
     m_skinInstanceBuffers.clear();
     m_skinPaletteBuffers.clear();
+    m_instanceAuxBuffers.clear();
+    m_instanceHistory.Clear();
     m_globalsDescSets.clear();
-
-    if (m_globalsDescPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, m_globalsDescPool, nullptr);
-        m_globalsDescPool = VK_NULL_HANDLE;
-    }
+    auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
+    for (const auto &lease : m_globalsDescriptorLeases)
+        descriptorManager.Retire(lease);
+    m_globalsDescriptorLeases.clear();
     if (m_globalsDescSetLayout != VK_NULL_HANDLE) {
         ShaderProgram::SetGlobalsDescSetLayout(VK_NULL_HANDLE);
         vkDestroyDescriptorSetLayout(device, m_globalsDescSetLayout, nullptr);
@@ -306,14 +313,15 @@ void InxVkCoreModular::EnsureInstanceBufferCapacity(uint32_t frameIndex, size_t 
     // NOTE: Do NOT call UpdateInstanceBufferDescriptor() here.
     // This function can be called mid-recording, and updating a descriptor set
     // that is already bound in the command buffer invalidates it.
-    // The descriptor is updated once before any draws in PreallocateInstances().
+    // PreallocateInstances() publishes a descriptor revision only when the
+    // backing buffer actually changes.
 
     // Old instance buffers may still be referenced by commands already
     // recorded earlier in this same command buffer. Defer final destruction
-    // until the frame deletion queue says all in-flight use is complete.
+    // until the submission retirement queue says all in-flight use is complete.
     if (oldBuffer) {
         auto retiredBuffer = std::shared_ptr<vk::VkBufferHandle>(oldBuffer.release());
-        m_deletionQueue.Push([retiredBuffer]() mutable { retiredBuffer.reset(); });
+        m_deletionQueue.Retire([retiredBuffer]() mutable { retiredBuffer.reset(); });
     }
 }
 
@@ -360,7 +368,7 @@ void InxVkCoreModular::EnsureSkinBuffersCapacity(uint32_t frameIndex, size_t ski
 
         if (oldBuffer) {
             auto retiredBuffer = std::shared_ptr<vk::VkBufferHandle>(oldBuffer.release());
-            m_deletionQueue.Push([retiredBuffer]() mutable { retiredBuffer.reset(); });
+            m_deletionQueue.Retire([retiredBuffer]() mutable { retiredBuffer.reset(); });
         }
     };
 
@@ -368,6 +376,49 @@ void InxVkCoreModular::EnsureSkinBuffersCapacity(uint32_t frameIndex, size_t ski
                sizeof(GPUSkinInstanceData), "skin instance");
     growBuffer(m_skinPaletteBuffers[frameIndex], boneMatrixCount, SKIN_PALETTE_BUFFER_INITIAL_CAPACITY,
                sizeof(glm::mat4), "skin palette");
+}
+
+void InxVkCoreModular::EnsureInstanceAuxBufferCapacity(uint32_t frameIndex, size_t instanceCount)
+{
+    if (frameIndex >= m_instanceAuxBuffers.size())
+        return;
+
+    auto &frame = m_instanceAuxBuffers[frameIndex];
+    if (frame.capacity >= instanceCount && frame.buffer) {
+        if (!frame.mapped)
+            frame.mapped = frame.buffer->Map();
+        return;
+    }
+
+    std::unique_ptr<vk::VkBufferHandle> oldBuffer = std::move(frame.buffer);
+    void *oldMapped = frame.mapped;
+    frame.mapped = nullptr;
+    size_t newCapacity =
+        frame.capacity > 0 ? static_cast<size_t>(frame.capacity) : INSTANCE_AUX_BUFFER_INITIAL_CAPACITY;
+    while (newCapacity < instanceCount)
+        newCapacity *= 2;
+
+    auto newBuffer =
+        m_resourceManager.CreateStorageBuffer(newCapacity * sizeof(GPUInstanceAuxData), /*deviceLocal=*/false);
+    if (!newBuffer) {
+        INXLOG_ERROR("Failed to grow instance auxiliary buffer to ", newCapacity, " instances");
+        frame.buffer = std::move(oldBuffer);
+        frame.mapped = oldMapped;
+        return;
+    }
+
+    void *newMapped = newBuffer->Map();
+    if (oldMapped && newMapped && frame.capacity > 0)
+        std::memcpy(newMapped, oldMapped, static_cast<size_t>(frame.capacity) * sizeof(GPUInstanceAuxData));
+
+    frame.buffer = std::move(newBuffer);
+    frame.capacity = static_cast<VkDeviceSize>(newCapacity);
+    frame.mapped = newMapped;
+
+    if (oldBuffer) {
+        auto retiredBuffer = std::shared_ptr<vk::VkBufferHandle>(oldBuffer.release());
+        m_deletionQueue.Retire([retiredBuffer]() mutable { retiredBuffer.reset(); });
+    }
 }
 
 void InxVkCoreModular::ResetPerFrameGpuStreamOffsets()
@@ -380,25 +431,43 @@ void InxVkCoreModular::ResetPerFrameGpuStreamOffsets()
     }
 }
 
-void InxVkCoreModular::PreallocateInstances(size_t totalDrawCalls)
+void InxVkCoreModular::PreallocateInstances(size_t requiredInstances)
 {
-    if (totalDrawCalls == 0)
-        return;
-
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
 
     ResetPerFrameGpuStreamOffsets();
 
-    // Upper bound: every draw call can appear once in an opaque pass and
-    // once per shadow cascade.  Pre-allocating here guarantees the buffer
-    // never grows mid-recording, avoiding descriptor-set-update-while-bound.
-    const size_t maxInstances = totalDrawCalls * (1 + NUM_SHADOW_CASCADES);
-    EnsureInstanceBufferCapacity(frameIndex, maxInstances);
-    EnsureSkinBuffersCapacity(frameIndex, maxInstances, SKIN_PALETTE_BUFFER_INITIAL_CAPACITY);
+    if (requiredInstances == 0)
+        return;
 
-    // Safe to update the descriptor now — no draws have been recorded yet.
-    UpdateInstanceBufferDescriptor(frameIndex);
-    UpdateSkinBufferDescriptors(frameIndex);
+    const VkBuffer previousInstanceBuffer =
+        m_instanceBuffers[frameIndex].buffer ? m_instanceBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
+    const VkBuffer previousSkinInstanceBuffer = m_skinInstanceBuffers[frameIndex].buffer
+                                                    ? m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()
+                                                    : VK_NULL_HANDLE;
+    const VkBuffer previousSkinPaletteBuffer =
+        m_skinPaletteBuffers[frameIndex].buffer ? m_skinPaletteBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
+    const VkBuffer previousInstanceAuxBuffer =
+        m_instanceAuxBuffers[frameIndex].buffer ? m_instanceAuxBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
+
+    EnsureInstanceBufferCapacity(frameIndex, requiredInstances);
+    EnsureSkinBuffersCapacity(frameIndex, requiredInstances, SKIN_PALETTE_BUFFER_INITIAL_CAPACITY);
+    EnsureInstanceAuxBufferCapacity(frameIndex, requiredInstances);
+
+    // Descriptor sets may also be referenced by asynchronous preview command
+    // buffers. Even rewriting an identical binding invalidates those recorded
+    // commands, so only publish a descriptor revision when storage changed.
+    if (m_instanceBuffers[frameIndex].buffer &&
+        previousInstanceBuffer != m_instanceBuffers[frameIndex].buffer->GetBuffer())
+        UpdateInstanceBufferDescriptor(frameIndex);
+    if ((m_skinInstanceBuffers[frameIndex].buffer &&
+         previousSkinInstanceBuffer != m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()) ||
+        (m_skinPaletteBuffers[frameIndex].buffer &&
+         previousSkinPaletteBuffer != m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()))
+        UpdateSkinBufferDescriptors(frameIndex);
+    if (m_instanceAuxBuffers[frameIndex].buffer &&
+        previousInstanceAuxBuffer != m_instanceAuxBuffers[frameIndex].buffer->GetBuffer())
+        UpdateInstanceAuxBufferDescriptor(frameIndex);
 }
 
 bool InxVkCoreModular::WriteInstanceMatrix(uint32_t frameIndex, uint32_t instanceIndex, const glm::mat4 &matrix)
@@ -499,6 +568,69 @@ void InxVkCoreModular::UpdateSkinBufferDescriptors(uint32_t frameIndex)
     writes[1].pBufferInfo = &skinPaletteInfo;
 
     vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+}
+
+void InxVkCoreModular::UpdateInstanceAuxBufferDescriptor(uint32_t frameIndex)
+{
+    VkDevice device = GetDevice();
+    if (device == VK_NULL_HANDLE || frameIndex >= m_globalsDescSets.size() || frameIndex >= m_instanceAuxBuffers.size())
+        return;
+
+    const auto &frame = m_instanceAuxBuffers[frameIndex];
+    if (!frame.buffer)
+        return;
+
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = frame.buffer->GetBuffer();
+    bufferInfo.offset = 0;
+    bufferInfo.range = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = m_globalsDescSets[frameIndex];
+    write.dstBinding = 4;
+    write.dstArrayElement = 0;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.descriptorCount = 1;
+    write.pBufferInfo = &bufferInfo;
+    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+}
+
+void InxVkCoreModular::PrepareInstanceAuxiliary(uint64_t frameSerial, size_t totalInstances)
+{
+    if (totalInstances == 0)
+        return;
+
+    const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
+    m_instanceHistory.BeginFrame(frameSerial);
+
+    const VkBuffer previousBuffer = frameIndex < m_instanceAuxBuffers.size() && m_instanceAuxBuffers[frameIndex].buffer
+                                        ? m_instanceAuxBuffers[frameIndex].buffer->GetBuffer()
+                                        : VK_NULL_HANDLE;
+    EnsureInstanceAuxBufferCapacity(frameIndex, totalInstances);
+    if (frameIndex < m_instanceAuxBuffers.size() && m_instanceAuxBuffers[frameIndex].buffer &&
+        previousBuffer != m_instanceAuxBuffers[frameIndex].buffer->GetBuffer())
+        UpdateInstanceAuxBufferDescriptor(frameIndex);
+}
+
+bool InxVkCoreModular::WriteInstanceAuxiliary(uint32_t frameIndex, uint32_t instanceIndex,
+                                              const RenderDrawIdentity &identity, const glm::mat4 &currentModel,
+                                              uint64_t objectId, uint32_t layerMask)
+{
+    if (frameIndex >= m_instanceAuxBuffers.size())
+        return false;
+
+    auto &frame = m_instanceAuxBuffers[frameIndex];
+    if (!frame.buffer || frame.capacity <= instanceIndex)
+        return false;
+    if (!frame.mapped)
+        frame.mapped = frame.buffer->Map();
+    if (!frame.mapped)
+        return false;
+
+    static_cast<GPUInstanceAuxData *>(frame.mapped)[instanceIndex] =
+        m_instanceHistory.Resolve(identity, currentModel, objectId, layerMask);
+    return true;
 }
 
 // ============================================================================

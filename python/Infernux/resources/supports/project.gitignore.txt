@@ -1,0 +1,60 @@
+# Infernux generated asset cache and imported artifacts
+/Library/
+
+# Temporary editor/runtime data
+/Temp/
+/Logs/
+/Cache/
+
+# Project-local Python runtimes
+/.runtime/
+/.venv/
+
+# Game build outputs
+/Build/
+/Builds/
+/Dist/
+/Export/
+/Exports/
+
+# Per-machine engine state and process locks
+/ProjectSettings/.infernux-engine-lock.json
+
+# Python caches and compiled scripts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Temporary asset sidecars (asset .meta files must remain tracked)
+*.meta.tmp
+*.tmp
+*.bak
+*.orig
+
+# IDE state
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.code-workspace
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Runtime diagnostics
+*.log
+*.dmp
+*.stackdump
+
+# Legacy project-local ImGui state
+imgui.ini

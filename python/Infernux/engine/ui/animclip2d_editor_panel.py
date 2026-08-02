@@ -16,6 +16,7 @@ import json
 import threading
 import time
 import zlib
+from Infernux.engine.path_utils import path_key, resolved_path, same_path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -130,9 +131,20 @@ class AnimClip2DEditorPanel(EditorPanel):
         return (1080, 760)
 
     def on_enable(self):
-        pass
+        from .event_bus import EditorEvent, EditorEventBus
+
+        EditorEventBus.instance().subscribe(
+            EditorEvent.ASSET_CHANGED,
+            self._on_asset_changed,
+        )
 
     def on_disable(self):
+        from .event_bus import EditorEvent, EditorEventBus
+
+        EditorEventBus.instance().unsubscribe(
+            EditorEvent.ASSET_CHANGED,
+            self._on_asset_changed,
+        )
         self._cleanup_texture()
         try:
             from Infernux.engine.project_context import set_panel_dirty
@@ -140,6 +152,46 @@ class AnimClip2DEditorPanel(EditorPanel):
             set_panel_dirty(self.window_id, False)
         except Exception:
             pass
+
+    def _on_asset_changed(self, file_path: str, event_type: str = "modified") -> None:
+        """Publish texture import changes into the open editor immediately."""
+        tex = self._tex
+        if tex is None or not same_path(file_path, tex.file_path):
+            return
+        if event_type == "deleted":
+            self._cleanup_texture()
+            self._tex = None
+            return
+
+        filter_tag, srgb_tag, _, _ = self._read_texture_sampling(tex.file_path)
+        frames = self._read_sprite_frames(tex.file_path)
+        source_w, source_h = self._read_source_dimensions(tex.file_path, frames)
+        if not frames and source_w > 0 and source_h > 0:
+            from Infernux.core.asset_types import SpriteFrame
+
+            frames = [SpriteFrame(
+                name="frame_0",
+                x=0,
+                y=0,
+                w=source_w,
+                h=source_h,
+            )]
+
+        tex.frames = frames
+        if source_w > 0:
+            tex.tex_w = source_w
+        if source_h > 0:
+            tex.tex_h = source_h
+        tex.filter_tag = filter_tag
+        tex.srgb_tag = srgb_tag
+        tex.resource_key = (
+            f"animclip_editor|{srgb_tag}_{filter_tag}|{resolved_path(tex.file_path)}"
+        )
+        tex.stamp = self._build_texture_stamp(
+            tex.file_path,
+            filter_tag,
+            srgb_tag,
+        )
 
     def _window_title_suffix(self) -> str:
         self._recompute_dirty()
@@ -389,7 +441,7 @@ class AnimClip2DEditorPanel(EditorPanel):
                 ctx.pop_style_color(1)
 
         ctx.same_line(0, 8)
-        add_clicked = ctx.button(f"+##add_clip")
+        add_clicked = IGUI._mini_icon_button(ctx, "##add_clip", Theme.ICON_IMG_PLUS, Theme.ICON_PLUS)
         ctx.record_semantic_item("button", "Add Clip", True, "animclip2d.clip.add")
         if add_clicked:
             self._clips.append(_ClipState(name=f"Clip_{len(self._clips)}"))
@@ -915,7 +967,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             return
 
         filter_tag, srgb_tag, use_nearest, use_srgb = self._read_texture_sampling(file_path)
-        norm_path = os.path.normpath(file_path)
+        norm_path = resolved_path(file_path)
         resource_key = f"animclip_editor|{srgb_tag}_{filter_tag}|{norm_path}"
         stamp = self._build_texture_stamp(norm_path, filter_tag, srgb_tag)
         if stamp == 0:
@@ -923,7 +975,8 @@ class AnimClip2DEditorPanel(EditorPanel):
 
         native.pump_preview_tasks()
         texture_id, tex_w, tex_h = native.query_or_schedule_texture_preview(
-            resource_key, norm_path, int(stamp), bool(use_nearest), bool(use_srgb), False)
+            resource_key, norm_path, int(stamp), nearest=bool(use_nearest),
+            srgb=bool(use_srgb), pump=False)
         texture_id = int(texture_id)
         tex_w = int(tex_w)
         tex_h = int(tex_h)
@@ -995,7 +1048,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             return False
 
         filter_tag, srgb_tag, use_nearest, use_srgb = self._read_texture_sampling(tex.file_path)
-        norm_path = os.path.normpath(tex.file_path)
+        norm_path = resolved_path(tex.file_path)
         resource_key = f"animclip_editor|{srgb_tag}_{filter_tag}|{norm_path}"
         stamp = self._build_texture_stamp(norm_path, filter_tag, srgb_tag)
         if stamp == 0:
@@ -1010,13 +1063,16 @@ class AnimClip2DEditorPanel(EditorPanel):
 
         native.pump_preview_tasks()
         texture_id, tex_w, tex_h = native.query_or_schedule_texture_preview(
-            resource_key, norm_path, int(stamp), bool(use_nearest), bool(use_srgb), False)
+            resource_key, norm_path, int(stamp), nearest=bool(use_nearest),
+            srgb=bool(use_srgb), pump=False)
         texture_id = int(texture_id)
         tex_w = int(tex_w)
         tex_h = int(tex_h)
 
-        if texture_id != 0:
-            tex.texture_id = texture_id
+        # Never keep a stale handle: a zero result means the native texture is
+        # not currently published (evicted or re-rendering), and the previous
+        # descriptor may already be freed — binding it crashes the driver.
+        tex.texture_id = texture_id
 
         if tex_w > 0 and tex_h > 0:
             tex.tex_w = tex_w
@@ -1128,7 +1184,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             return f"guid:{guid}"
         path = (path or "").strip()
         if path:
-            return "path:" + os.path.normcase(os.path.normpath(path))
+            return "path:" + path_key(path)
         return ""
 
     def _current_texture_identity(self) -> str:

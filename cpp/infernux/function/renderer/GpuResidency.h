@@ -19,7 +19,6 @@ struct GpuResidencySnapshot
     size_t allocatorAllocationCount = 0;
 
     uint64_t meshBytes = 0;
-    uint64_t particleBytes = 0;
     uint64_t textureBytes = 0;
     uint64_t imguiTextureBytes = 0;
     uint64_t pendingImguiTextureBytes = 0;
@@ -44,9 +43,15 @@ struct GpuResidencySnapshot
     size_t runtimeMaterialCount = 0;
     size_t assetMaterialCount = 0;
     size_t materialDescriptorSetCount = 0;
+    size_t pendingMaterialTextureDescriptorSetCount = 0;
     size_t retiredMaterialDescriptorSetCount = 0;
     size_t materialDescriptorPoolCount = 0;
     size_t materialPipelineCount = 0;
+    size_t shadowMaterialDescriptorSetCount = 0;
+    size_t shadowMaterialDescriptorPoolCount = 0;
+    uint64_t shadowMaterialBindingCacheHits = 0;
+    uint64_t shadowMaterialBindingCacheMisses = 0;
+    uint64_t shadowMaterialBindingRetirements = 0;
     size_t runtimeMeshEntryCount = 0;
     uint64_t runtimeMeshBytes = 0;
 
@@ -63,9 +68,15 @@ struct MaterialGpuResidencySnapshot
     size_t runtimeMaterialCount = 0;
     size_t assetMaterialCount = 0;
     size_t descriptorSetCount = 0;
+    size_t pendingTextureDescriptorSetCount = 0;
     size_t retiredDescriptorSetCount = 0;
     size_t descriptorPoolCount = 0;
     size_t pipelineCount = 0;
+    size_t shadowDescriptorSetCount = 0;
+    size_t shadowDescriptorPoolCount = 0;
+    uint64_t shadowBindingCacheHits = 0;
+    uint64_t shadowBindingCacheMisses = 0;
+    uint64_t shadowBindingRetirements = 0;
 };
 
 struct GpuEvictionCandidate

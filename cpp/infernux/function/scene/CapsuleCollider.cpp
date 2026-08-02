@@ -150,7 +150,7 @@ nlohmann::json CapsuleCollider::SerializeDocument() const
 void CapsuleCollider::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
-    ValidateComponentDocument(j, "CapsuleCollider", 1,
+    ValidateComponentDocument(j, "CapsuleCollider",
                               {"is_trigger", "center", "physic_material_guid", "radius", "height", "direction"});
     RequireBoolean(j, "is_trigger", "CapsuleCollider");
     RequireFiniteVector(j, "center", 3, "CapsuleCollider");

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from Infernux.engine.ui.game_view_panel import (
     GameViewPanel,
     _GAME_UI_BUTTON_SEMANTIC_PREFIX,
+    _GAME_VIEW_FPS_SEMANTIC_ID,
     _GAME_VIEWPORT_SEMANTIC_ID,
 )
 
@@ -23,6 +24,15 @@ class _Engine:
     @staticmethod
     def get_game_texture_id() -> int:
         return 1
+
+
+class _RenderActivationEngine(_Engine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.game_camera_enabled: list[bool] = []
+
+    def set_game_camera_enabled(self, enabled: bool) -> None:
+        self.game_camera_enabled.append(bool(enabled))
 
 
 class _Context:
@@ -198,3 +208,74 @@ def test_game_viewport_activates_on_mouse_down_before_imgui_button_release(monke
 
     assert route_calls[0][3] is True
     assert route_calls[0][4] is True
+
+
+def test_visible_fps_counter_has_stable_semantic_target(monkeypatch):
+    import Infernux.engine.ui.game_view_panel as module
+
+    monkeypatch.setattr(
+        module,
+        "Time",
+        SimpleNamespace(unscaled_delta_time=0.0, game_delta_time=0.0),
+    )
+    panel = GameViewPanel(engine=_Engine())
+
+    class _FpsContext:
+        semantic_capture_enabled = True
+
+        def __init__(self):
+            self.labels = []
+            self.semantic_items = []
+
+        @staticmethod
+        def calc_text_size(_text):
+            return (140.0, 16.0)
+
+        @staticmethod
+        def get_window_width():
+            return 720.0
+
+        @staticmethod
+        def same_line(_x):
+            pass
+
+        def label(self, text):
+            self.labels.append(text)
+
+        def record_semantic_item(self, *args):
+            self.semantic_items.append(args)
+
+    ctx = _FpsContext()
+    panel._render_fps_counter(ctx)
+
+    assert ctx.labels == ["FPS: --"]
+    assert ctx.semantic_items == [
+        ("performance", "FPS: --", False, _GAME_VIEW_FPS_SEMANTIC_ID),
+    ]
+
+
+def test_hidden_game_view_keeps_rendering_during_runtime_acceptance(monkeypatch):
+    from Infernux.acceptance import RuntimeAcceptance
+
+    engine = _RenderActivationEngine()
+    panel = GameViewPanel(engine=engine)
+    monkeypatch.setattr(RuntimeAcceptance, "is_active", classmethod(lambda _cls: True))
+
+    panel._on_not_visible(None)
+
+    assert engine.game_camera_enabled == [True]
+    assert panel._game_camera_was_enabled is True
+
+
+def test_hidden_game_view_disables_rendering_without_runtime_acceptance(monkeypatch):
+    from Infernux.acceptance import RuntimeAcceptance
+
+    engine = _RenderActivationEngine()
+    panel = GameViewPanel(engine=engine)
+    panel._game_camera_was_enabled = True
+    monkeypatch.setattr(RuntimeAcceptance, "is_active", classmethod(lambda _cls: False))
+
+    panel._on_not_visible(None)
+
+    assert engine.game_camera_enabled == [False]
+    assert panel._game_camera_was_enabled is False

@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import wave
 import zlib
 from dataclasses import dataclass, field
 from enum import Enum
@@ -27,8 +28,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
 from Infernux.core.asset_types import (
+    AudioCompressionFormat,
     FilterMode,
     SpriteFrame,
+    TextureCompression,
+    TextureCompressionQuality,
+    TextureFormat,
     TextureType,
     TextureImportSettings,
     WrapMode,
@@ -45,6 +50,7 @@ from .asset_execution_layer import AssetAccessMode, get_asset_execution_layer
 from .asset_resource_preview import render_resource_preview_rect
 from .imgui_keys import KEY_LEFT_CTRL, KEY_RIGHT_CTRL
 from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
+from Infernux.engine.path_utils import resolved_path, same_path
 from Infernux.debug import Debug
 
 
@@ -162,7 +168,16 @@ class _State:
             if cat_def.refresh_fn:
                 cat_def.refresh_fn(self)
             return True
-        # Fresh load
+        # Fresh load. Return live preview ownership before replacing state.
+        if self.file_path and self.category in {"texture", "material"}:
+            from .asset_resource_preview import (
+                invalidate_live_material_preview,
+                invalidate_live_texture_preview,
+            )
+            if self.category == "texture":
+                invalidate_live_texture_preview(self.file_path)
+            else:
+                invalidate_live_material_preview(self.file_path)
         self.reset()
         self.file_path = file_path
         self.category = category
@@ -213,7 +228,8 @@ def _ensure_categories():
                      [("asset.tex_default", TextureType.DEFAULT),
                       ("asset.tex_normalmap", TextureType.NORMAL_MAP),
                       ("asset.tex_ui", TextureType.UI),
-                      ("asset.tex_sprite", TextureType.SPRITE)]),
+                      ("asset.tex_sprite", TextureType.SPRITE),
+                      ("asset.tex_data", TextureType.DATA)]),
             FieldDef("srgb", "asset.srgb", WidgetType.CHECKBOX),
             FieldDef("filter_mode", "asset.filter_mode", WidgetType.COMBO,
                      [("asset.filter_point", FilterMode.POINT),
@@ -223,6 +239,25 @@ def _ensure_categories():
                      [("asset.wrap_repeat", WrapMode.REPEAT),
                       ("asset.wrap_clamp", WrapMode.CLAMP),
                       ("asset.wrap_mirror", WrapMode.MIRROR)]),
+            FieldDef("generate_mipmaps", "asset.generate_mipmaps", WidgetType.CHECKBOX),
+            FieldDef("format", "asset.texture_format", WidgetType.COMBO,
+                     [("asset.format_auto", TextureFormat.AUTO),
+                      ("RGBA8 (32-bit)", TextureFormat.RGBA8),
+                      ("RGBA4444 (16-bit)", TextureFormat.RGBA4444),
+                      ("RGBA16 UNorm (64-bit)", TextureFormat.RGBA16_UNORM),
+                      ("RGBA16 Float (64-bit)", TextureFormat.RGBA16_FLOAT),
+                      ("RGBA32 Float (128-bit)", TextureFormat.RGBA32_FLOAT)]),
+            FieldDef("compression", "asset.texture_compression", WidgetType.COMBO,
+                     [("asset.compression_auto", TextureCompression.AUTO),
+                      ("asset.compression_none", TextureCompression.NONE),
+                      ("BC1", TextureCompression.BC1),
+                      ("BC3", TextureCompression.BC3),
+                      ("BC4", TextureCompression.BC4),
+                      ("BC5", TextureCompression.BC5)]),
+            FieldDef("compression_quality", "asset.texture_compression_quality", WidgetType.COMBO,
+                     [("asset.quality_fast", TextureCompressionQuality.FAST),
+                      ("asset.quality_normal", TextureCompressionQuality.NORMAL),
+                      ("asset.quality_high", TextureCompressionQuality.HIGH)]),
             FieldDef("max_size", "asset.max_size", WidgetType.COMBO,
                      [(str(s), s) for s in
                       (32, 64, 128, 256, 512, 1024, 2048, 4096, 8192)]),
@@ -238,8 +273,20 @@ def _ensure_categories():
         load_fn=_load_audio,
         editable_fields=[
             FieldDef("force_mono", "asset.force_mono", WidgetType.CHECKBOX),
+            FieldDef("load_in_background", "asset.audio_load_in_background", WidgetType.CHECKBOX),
+            FieldDef(
+                "compression_format", "asset.audio_compression_format", WidgetType.COMBO,
+                [("asset.audio_compression_pcm", AudioCompressionFormat.PCM),
+                 ("asset.audio_compression_vorbis", AudioCompressionFormat.VORBIS),
+                 ("asset.audio_compression_adpcm", AudioCompressionFormat.ADPCM)],
+            ),
+            FieldDef(
+                "quality", "asset.audio_quality", WidgetType.FLOAT,
+                float_speed=0.01, float_range=(0.0, 1.0),
+            ),
         ],
         extra_meta_keys=["file_size", "extension"],
+        custom_header_fn=_render_audio_header,
     )
 
     # ── Shader ─────────────────────────────────────────────────────────
@@ -295,6 +342,14 @@ def _ensure_categories():
         autosave_debounce=0.35,
     )
 
+    _categories["render_effect"] = AssetCategoryDef(
+        display_name="asset.display_render_effect",
+        access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
+        load_fn=_load_render_effect,
+        custom_body_fn=_render_render_effect_body,
+        autosave_debounce=0.5,
+    )
+
     _categories["physic_material"] = AssetCategoryDef(
         display_name="asset.display_physic_material",
         access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
@@ -340,22 +395,24 @@ def _ensure_categories():
         autosave_debounce=0.5,
     )
 
+    _categories["animtimeline"] = AssetCategoryDef(
+        display_name="asset.display_animtimeline",
+        access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
+        load_fn=_load_identity_asset,
+    )
+
     # ── Timeline State Machine (.timelinefsm) ──────────────────────────
     _categories["timelinefsm"] = AssetCategoryDef(
         display_name="asset.display_timelinefsm",
-        access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
-        load_fn=_load_animfsm,
-        custom_body_fn=_render_animfsm_body,
-        autosave_debounce=0.5,
+        access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
+        load_fn=_load_identity_asset,
     )
 
-    # ── VFX System (.vfxsystem) ────────────────────────────────────────
-    _categories["vfxsystem"] = AssetCategoryDef(
-        display_name="asset.display_vfxsystem",
-        access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
-        load_fn=_load_vfxsystem,
-        custom_body_fn=_render_vfxsystem_body,
-        autosave_debounce=0.35,
+    _categories["particle_graph"] = AssetCategoryDef(
+        display_name="asset.display_particlegraph",
+        access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
+        load_fn=_load_particlegraph,
+        custom_body_fn=_render_particlegraph_body,
     )
 
 
@@ -369,7 +426,24 @@ def _load_texture(path: str):
 
 
 def _load_audio(path: str):
-    return read_audio_import_settings(path), {}
+    extra = {"duration": 0.0, "sample_rate": 0, "channels": 0, "sample_count": 0}
+    try:
+        with wave.open(path, "rb") as stream:
+            sample_rate = int(stream.getframerate())
+            sample_count = int(stream.getnframes())
+            extra.update(
+                duration=(float(sample_count) / float(sample_rate)) if sample_rate > 0 else 0.0,
+                sample_rate=sample_rate,
+                channels=int(stream.getnchannels()),
+                sample_count=sample_count,
+            )
+    except (OSError, EOFError, wave.Error):
+        pass
+    return read_audio_import_settings(path), extra
+
+
+def _load_identity_asset(path: str):
+    return {"path": path}, {}
 
 
 def _load_shader(path: str):
@@ -417,6 +491,30 @@ def _load_material(path: str):
         "shader_sync_key": "",
         "_applied_version": native.get_version(),
     }
+
+
+def _load_render_effect(path: str):
+    from Infernux.renderstack.render_effect import RenderEffect
+
+    if path.lower().endswith(".effect"):
+        from Infernux.core.assets import AssetManager
+
+        effect = AssetManager.load(path, asset_type=RenderEffect)
+        return (effect, {"document_kind": "effect"}) if effect is not None else None
+
+    try:
+        from pathlib import Path
+        from Infernux.renderstack.render_effect_asset import (
+            RenderEffectGroupAsset,
+            parse_render_effect_document,
+        )
+
+        document = parse_render_effect_document(Path(path).read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(document, RenderEffectGroupAsset):
+        return None
+    return document, {"document_kind": "group"}
 
 
 def _load_physic_material(path: str):
@@ -519,7 +617,6 @@ def _load_prefab(path: str):
 
     root_copy = copy.deepcopy(root_json)
     return root_copy, {
-        "prefab_version": data.get("prefab_version", 0),
         "prefab_path": path,
         "prefab_envelope": data,
         "root_name": root_copy.get("name", "GameObject"),
@@ -1013,7 +1110,7 @@ def _ensure_animclip_preview_texture(state: _State, tex_file: str) -> bool:
         if stamp == 0:
             return False
 
-        norm_path = os.path.normpath(tex_file)
+        norm_path = resolved_path(tex_file)
         resource_key = f"animclip_insp|{norm_path}|{int(use_nearest)}|{int(use_srgb)}"
 
         pv = state.extra.get("_animclip_pv")
@@ -1023,11 +1120,22 @@ def _ensure_animclip_preview_texture(state: _State, tex_file: str) -> bool:
             and int(pv.get("stamp", 0)) == int(stamp)
             and int(pv.get("tex_id", 0)) != 0
         ):
-            return True
+            # Re-resolve the descriptor every frame: C++ replaces/evicts the
+            # underlying ImGui texture, so a handle cached across frames may
+            # point at a freed VkDescriptorSet (validation errors + crashes).
+            live_id = 0
+            if hasattr(native, "get_texture_preview_texture_id"):
+                live_id = int(native.get_texture_preview_texture_id(resource_key) or 0)
+            if live_id:
+                pv["tex_id"] = live_id
+                return True
+            # Texture gone (replaced mid-flight or evicted) — fall through to
+            # a full re-query so a fresh render gets scheduled.
 
         native.pump_preview_tasks()
         tex_id, tex_w, tex_h = native.query_or_schedule_texture_preview(
-            resource_key, norm_path, int(stamp), bool(use_nearest), bool(use_srgb), False)
+            resource_key, norm_path, int(stamp), nearest=bool(use_nearest),
+            srgb=bool(use_srgb), pump=False)
         tex_id = int(tex_id)
         tex_w = int(tex_w)
         tex_h = int(tex_h)
@@ -1225,55 +1333,55 @@ def _load_animfsm(path: str):
     return fsm, {"fsm_path": path}
 
 
-def _load_vfxsystem(path: str):
-    from Infernux.core.vfx_system import VfxSchemaError, VfxSystem
+def _load_particlegraph(path: str):
+    from Infernux.particle.asset import ParticleGraphAsset, ParticleGraphSchemaError
 
     try:
-        system = VfxSystem.load(path)
-    except (OSError, VfxSchemaError, ValueError, TypeError):
+        graph = ParticleGraphAsset.load(path)
+    except (OSError, ParticleGraphSchemaError, ValueError, TypeError):
         return None
-    return system, {"vfx_path": path}
+    return graph, {"particle_graph_path": path}
 
 
-def _render_vfxsystem_body(ctx: InxGUIContext, panel, state: _State):
-    from Infernux.core.vfx_system import VfxSystem
+def _render_particlegraph_body(ctx: InxGUIContext, panel, state: _State):
+    from Infernux.particle.asset import ParticleGraphAsset
     from .inspector_utils import field_label
 
-    system = state.settings
-    if not isinstance(system, VfxSystem):
-        ctx.label(t("asset.failed_load").format(name=t("asset.display_vfxsystem")))
+    graph = state.settings
+    if not isinstance(graph, ParticleGraphAsset):
+        ctx.label(t("asset.failed_load").format(name=t("asset.display_particlegraph")))
         return
 
-    lw = 120.0
-    field_label(ctx, t("asset.display_vfxsystem"), lw)
+    label_width = 120.0
+    field_label(ctx, t("asset.display_particlegraph"), label_width)
     ctx.same_line()
-    ctx.label(getattr(system, "name", "") or os.path.basename(state.file_path))
-    field_label(ctx, t("asset.vfx_emitters"), lw)
+    ctx.label(graph.name or os.path.basename(state.file_path))
+    field_label(ctx, t("asset.particle_emitters"), label_width)
     ctx.same_line()
-    emitters = getattr(system, "emitters", None) or []
-    ctx.label(str(len(emitters)))
+    ctx.label(str(len(graph.emitters)))
 
     ctx.dummy(0, 8)
-    if ctx.button(t("asset.vfx_open_editor")):
-        open_fn = getattr(panel, "open_vfx_system", None) if panel is not None else None
-        if callable(open_fn):
-            open_fn(state.file_path)
-        else:
-            try:
-                from Infernux.engine.ui.closable_panel import ClosablePanel
-                from Infernux.engine.ui.window_manager import WindowManager
+    if not ctx.button(t("asset.particle_open_editor")):
+        return
+    open_fn = getattr(panel, "open_particle_graph", None) if panel is not None else None
+    if callable(open_fn):
+        open_fn(state.file_path)
+        return
+    try:
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.ui.window_manager import WindowManager
 
-                wm = WindowManager.instance()
-                editor = wm.open_window("vfx_graph_editor") if wm is not None else None
-                if editor is not None and hasattr(editor, "_open_vfxsystem"):
-                    editor._open_vfxsystem(state.file_path)
-                    ClosablePanel.focus_panel_by_id("vfx_graph_editor")
-                    try:
-                        wm._engine.select_docked_window("vfx_graph_editor")
-                    except Exception:
-                        pass
-            except Exception as exc:
-                Debug.log_suppressed("asset_details_renderer.open_vfxsystem", exc)
+        wm = WindowManager.instance()
+        editor = wm.open_window("particle_graph_editor") if wm is not None else None
+        if editor is not None and hasattr(editor, "_open_particlegraph"):
+            editor._open_particlegraph(state.file_path)
+            ClosablePanel.focus_panel_by_id("particle_graph_editor")
+            try:
+                wm._engine.select_docked_window("particle_graph_editor")
+            except Exception:
+                pass
+    except Exception as exc:
+        Debug.log_suppressed("asset_details_renderer.open_particlegraph", exc)
 
 
 def _render_animfsm_body(ctx: InxGUIContext, panel, state: _State):
@@ -1356,11 +1464,11 @@ def _refresh_material(state: _State):
 
 def _sync_material_shader_metadata(mat_data: dict):
     shaders = mat_data.get("shaders") if isinstance(mat_data.get("shaders"), dict) else {}
-    vert_shader_id = shaders.get("vertex", "")
-    frag_shader_id = shaders.get("fragment", "")
-    if vert_shader_id or frag_shader_id:
-        from . import inspector_shader_utils as shader_utils
+    from . import inspector_shader_utils as shader_utils
 
+    vert_shader_id = shader_utils.shader_ref_id(shaders.get("vertex", ""))
+    frag_shader_id = shader_utils.shader_ref_id(shaders.get("fragment", ""))
+    if vert_shader_id or frag_shader_id:
         shader_utils.sync_all_shader_properties(mat_data, vert_shader_id, frag_shader_id, remove_unknown=True)
 
 
@@ -1375,8 +1483,15 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
     _ensure_categories()
     cat_def = _categories.get(category)
     if cat_def is None:
-        ctx.label(t("asset.unknown_asset_type").format(cat=category))
-        return
+        display_name = str(category or "asset").replace("_", " ").strip().title()
+        if not display_name:
+            display_name = os.path.splitext(os.path.basename(file_path))[1].lstrip(".").upper() or "Asset"
+        cat_def = AssetCategoryDef(
+            display_name=display_name,
+            access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
+            load_fn=_load_identity_asset,
+        )
+        _categories[category] = cat_def
 
     if not _state.load(file_path, category, cat_def):
         ctx.label(t("asset.failed_load").format(name=t(cat_def.display_name)))
@@ -1418,6 +1533,14 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
 
 def invalidate():
     """Reset all inspector state (called on selection change)."""
+    if _state.category == "texture" and _state.file_path:
+        from .asset_resource_preview import invalidate_live_texture_preview
+        invalidate_live_texture_preview(_state.file_path)
+    if _state.category == "material" and _state.file_path:
+        from .asset_resource_preview import invalidate_live_material_preview
+        invalidate_live_material_preview(_state.file_path)
+    if _state.category == "audio":
+        _stop_audio_preview()
     _state.reset()
     _sprite_state.reset()
 
@@ -1430,7 +1553,16 @@ def invalidate_asset(path: str):
     """
     if not _state.file_path or not path:
         return
-    if os.path.normpath(_state.file_path) == os.path.normpath(path):
+    if same_path(_state.file_path, path):
+        if _state.category in {"texture", "material"}:
+            from .asset_resource_preview import (
+                invalidate_live_material_preview,
+                invalidate_live_texture_preview,
+            )
+            if _state.category == "texture":
+                invalidate_live_texture_preview(_state.file_path)
+            else:
+                invalidate_live_material_preview(_state.file_path)
         _state.reset()
 
 
@@ -1490,6 +1622,62 @@ def _render_file_size(ctx: InxGUIContext, val):
         ctx.label(t("asset.size_bytes").format(size=val))
 
 
+def _audio_engine():
+    try:
+        from Infernux.lib import AudioEngine
+
+        engine = AudioEngine.instance()
+        return engine if engine is not None and engine.is_initialized else None
+    except (ImportError, RuntimeError, AttributeError):
+        return None
+
+
+def _stop_audio_preview() -> None:
+    engine = _audio_engine()
+    if engine is not None and hasattr(engine, "stop_preview"):
+        engine.stop_preview()
+
+
+def _render_audio_header(ctx: InxGUIContext, panel, state: _State) -> None:
+    """Render shared-device playback controls and source metadata."""
+    del panel
+    engine = _audio_engine()
+    can_preview = engine is not None and hasattr(engine, "play_preview")
+    playing = bool(
+        can_preview
+        and hasattr(engine, "is_preview_playing")
+        and engine.is_preview_playing(state.file_path)
+    )
+
+    if playing:
+        label = t("asset.audio_stop_preview")
+        callback = engine.stop_preview
+    else:
+        label = t("asset.audio_play_preview")
+        callback = (lambda: engine.play_preview(state.file_path)) if can_preview else (lambda: None)
+    if not can_preview:
+        ctx.begin_disabled(True)
+    ctx.button(f"{label}##audio_asset_preview", callback, width=132.0, height=32.0)
+    ctx.record_semantic_item("button", label, can_preview, "asset.audio.preview")
+    if not can_preview:
+        ctx.end_disabled()
+
+    duration = float(state.extra.get("duration", 0.0) or 0.0)
+    sample_rate = int(state.extra.get("sample_rate", 0) or 0)
+    channels = int(state.extra.get("channels", 0) or 0)
+    sample_count = int(state.extra.get("sample_count", 0) or 0)
+    if sample_rate > 0:
+        ctx.text_wrapped(
+            t("asset.audio_summary").format(
+                duration=f"{duration:.2f}",
+                sample_rate=sample_rate,
+                channels=channels,
+                samples=sample_count,
+            )
+        )
+    ctx.separator()
+
+
 def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                           state: _State):
     """Auto-render editable import-settings fields from descriptors."""
@@ -1508,7 +1696,9 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                 # Disable sRGB when texture_type is NORMAL_MAP
                 disabled = (fdef.key == "srgb"
                             and hasattr(state.settings, "texture_type")
-                            and state.settings.texture_type == TextureType.NORMAL_MAP)
+                            and state.settings.texture_type in {
+                                TextureType.NORMAL_MAP, TextureType.DATA, TextureType.VECTOR_FIELD, TextureType.SDF,
+                            })
                 if disabled:
                     ctx.begin_disabled(True)
                 new_val = render_inspector_checkbox(ctx, t(fdef.label), cur)
@@ -1538,6 +1728,10 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                     # Only sync derived fields when texture_type itself changes
                     if fdef.key == "texture_type" and hasattr(state.settings, '_sync_derived_fields'):
                         state.settings._sync_derived_fields()
+                    elif fdef.key == "format" and new_idx >= 0 and values[new_idx] != TextureFormat.AUTO:
+                        state.settings.compression = TextureCompression.NONE
+                    elif fdef.key == "compression" and new_idx >= 0 and values[new_idx] != TextureCompression.NONE:
+                        state.settings.format = TextureFormat.AUTO
 
             elif fdef.field_type == WidgetType.FLOAT:
                 field_label(ctx, t(fdef.label), lw)
@@ -1564,6 +1758,9 @@ def _on_apply():
 
 
 def _on_revert():
+    if _state.category == "texture" and _state.file_path:
+        from .asset_resource_preview import invalidate_live_texture_preview
+        invalidate_live_texture_preview(_state.file_path)
     _state.file_path = ""  # force full reload next frame
 
 
@@ -1703,6 +1900,24 @@ class _SpriteEditorState:
 _sprite_state = _SpriteEditorState()
 
 
+def _live_sprite_texture_id(ss: "_SpriteEditorState", cur_srgb, cur_filter) -> int:
+    """Cheap per-frame lookup of the currently-published sprite preview descriptor."""
+    try:
+        from Infernux.engine.ui.editor_services import EditorServices
+        svc = EditorServices.instance()
+        native = svc.native_engine if svc else None
+        if not native or not hasattr(native, "get_texture_preview_texture_id"):
+            return 0
+        filter_tag = cur_filter.name if cur_filter else "default"
+        srgb_tag = "srgb" if cur_srgb else "linear"
+        norm_path = resolved_path(ss.file_path)
+        resource_key = f"spriteedit|sprite_preview|{srgb_tag}_{filter_tag}|{norm_path}"
+        return int(native.get_texture_preview_texture_id(resource_key) or 0)
+    except Exception as exc:
+        Debug.log_warning(f"[SpriteEditor] live texture lookup failed: {exc}")
+        return 0
+
+
 def _ensure_sprite_texture(state: _State) -> bool:
     """Load the texture dimensions + ImGui texture ID for the sprite editor."""
     ss = _sprite_state
@@ -1718,7 +1933,14 @@ def _ensure_sprite_texture(state: _State) -> bool:
             and getattr(ss, '_srgb', None) == cur_srgb
             and getattr(ss, '_filter', None) == cur_filter
             and dims_match):
-        return True
+        # Re-resolve the descriptor every frame — the C++ side may replace or
+        # evict the ImGui texture, and binding a cached freed VkDescriptorSet
+        # triggers validation errors and intermittent crashes.
+        live_id = _live_sprite_texture_id(ss, cur_srgb, cur_filter)
+        if live_id:
+            ss.texture_id = live_id
+            return True
+        # Texture gone — fall through to a full re-query/reschedule.
     # Preserve slice grid when only sRGB/filter changed for the same file
     same_file = (ss.file_path == state.file_path)
     saved_rows = ss.slice_rows if same_file else 1
@@ -1750,7 +1972,7 @@ def _ensure_sprite_texture(state: _State) -> bool:
 
         filter_tag = cur_filter.name if cur_filter else "default"
         srgb_tag = "srgb" if cur_srgb else "linear"
-        norm_path = os.path.normpath(state.file_path)
+        norm_path = resolved_path(state.file_path)
         stamp = texture_stamp(norm_path, "sprite_edit_preview", filter_tag, srgb_tag)
         if stamp == 0:
             return False
@@ -1846,7 +2068,7 @@ def _render_sprite_body(ctx: InxGUIContext, panel, state: _State):
         "asset.texture.sprite.columns",
     )
 
-    ctx.button(t("sprite.auto_slice"), lambda: _auto_slice(settings, ss))
+    ctx.button(t("sprite.auto_slice"), lambda: _auto_slice_and_save(state, ss))
     ctx.record_semantic_item(
         "button", t("sprite.auto_slice"), True, "asset.texture.sprite.auto_slice",
     )
@@ -1875,6 +2097,14 @@ def _auto_slice(settings: TextureImportSettings, ss: _SpriteEditorState):
             idx += 1
     settings.sprite_frames = frames
     ss.selected_frame = -1
+
+
+def _auto_slice_and_save(state: _State, ss: _SpriteEditorState):
+    settings = state.settings
+    if not isinstance(settings, TextureImportSettings):
+        return
+    _auto_slice(settings, ss)
+    _auto_save_sprite(state)
 
 
 def _auto_save_sprite(state: _State):
@@ -2198,6 +2428,7 @@ def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
                     _commit_frame_edge_drag(ss, frame, ss.tex_w, ss.tex_h)
                     ss.drag_frame_idx = -1
                     ss.drag_edge = ""
+                    _auto_save_sprite(state)
 
             for idx, frame in enumerate(settings.sprite_frames):
                 if idx == ss.drag_frame_idx and ss.drag_edge:
@@ -2370,3 +2601,50 @@ def _render_shader_source(ctx: InxGUIContext, file_path: str):
 def _render_material_body(ctx: InxGUIContext, panel, state: _State):
     from . import inspector_material as mat_ui
     mat_ui.render_material_body(ctx, panel, state)
+
+
+def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
+    del panel
+    from .inspector_utils import render_compact_section_header
+    from .render_effect_inspector import render_render_effect_parameters
+    from Infernux.renderstack.render_effect import RenderEffect
+
+    resource = state.settings
+    if isinstance(resource, RenderEffect):
+        field_label(ctx, "Feature", max_label_w(ctx, ["Feature"]))
+        ctx.label(resource.feature_type)
+        ctx.separator()
+        render_render_effect_parameters(ctx, resource, widget_prefix="asset_effect")
+        return
+
+    # Effect groups remain structural assets, but expose their referenced
+    # shared effects so editing from the group Inspector updates every stack.
+    from Infernux.core.asset_ref import RenderEffectRef
+
+    for index, entry in enumerate(resource.entries):
+        label = entry.entry_id or f"Effect {index + 1}"
+        if not render_compact_section_header(
+            ctx,
+            f"{label}##effect_group_{index}",
+            level="secondary",
+        ):
+            continue
+        reference = RenderEffectRef(
+            guid=entry.asset.guid,
+            path_hint=entry.asset.path_hint,
+        )
+        effect = reference.resolve()
+        if effect is None:
+            ctx.label(entry.asset.path_hint or entry.asset.guid)
+            continue
+        if not entry.enabled:
+            ctx.begin_disabled(True)
+        try:
+            render_render_effect_parameters(
+                ctx,
+                effect,
+                widget_prefix=f"asset_effect_group_{index}",
+            )
+        finally:
+            if not entry.enabled:
+                ctx.end_disabled()

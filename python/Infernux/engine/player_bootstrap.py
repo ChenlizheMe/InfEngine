@@ -25,7 +25,7 @@ from Infernux.engine.engine import Engine, LogLevel
 from Infernux.engine.scene_manager import SceneFileManager
 from Infernux.engine.play_mode import PlayModeManager
 from Infernux.engine.player_gui import PlayerGUI
-from Infernux.engine.path_utils import safe_path as _safe_path
+from Infernux.engine.path_utils import is_path_within, resolved_path, safe_path as _safe_path
 from Infernux.debug import Debug
 
 _log = logging.getLogger("Infernux.player")
@@ -38,7 +38,7 @@ def _plog(msg):
         # Fallback: write into Data/Logs/ next to the executable
         import sys as _sys
         _exe = getattr(_sys, 'executable', '') or ''
-        _d = os.path.dirname(os.path.abspath(_exe))
+        _d = os.path.dirname(resolved_path(_exe))
         _logs_dir = os.path.join(_d, "Data", "Logs")
         os.makedirs(_logs_dir, exist_ok=True)
         path = os.path.join(_logs_dir, "player.log")
@@ -96,6 +96,7 @@ class PlayerBootstrap:
 
     def _init_engine(self):
         self.engine = Engine(self.engine_log_level)
+        self.engine._set_application_role("player")
 
         # For windowed mode, use the requested size;
         # for fullscreen borderless, start at a default size — the
@@ -118,7 +119,7 @@ class PlayerBootstrap:
         # single full-screen renderable, so the editor docking system is waste.
         self.engine.set_gui_player_mode(True)
 
-        self.engine.set_gui_font(_resources.engine_font_path, 15)
+        self.engine.set_gui_font(_resources.engine_font_path, 18)
 
 
 
@@ -165,13 +166,11 @@ class PlayerBootstrap:
         first_scene = scenes[0]
         requested_scene = os.environ.get("_INFERNUX_PLAYER_START_SCENE", "").strip()
         if requested_scene:
-            candidate = os.path.abspath(
+            candidate = resolved_path(
                 requested_scene if os.path.isabs(requested_scene) else os.path.join(self.project_path, requested_scene)
             )
             try:
-                is_inside_project = os.path.commonpath([os.path.abspath(self.project_path), candidate]) == os.path.abspath(
-                    self.project_path
-                )
+                is_inside_project = is_path_within(candidate, self.project_path)
             except ValueError:
                 is_inside_project = False
             if is_inside_project and os.path.splitext(candidate)[1].lower() == ".scene" and os.path.isfile(candidate):
@@ -201,7 +200,19 @@ class PlayerBootstrap:
             )
 
     def _enter_play_mode(self):
-        """Enter play mode immediately (no deferred task, no save guard)."""
+        """Activate the initial scene on the first safe main-loop frame."""
+        from Infernux.engine.deferred_task import DeferredTaskRunner
+
+        runner = DeferredTaskRunner.instance()
+        queued = runner.submit(
+            "Player Startup",
+            [("Starting game...", 1.0, self._activate_initial_scene_for_play)],
+        )
+        if not queued:
+            raise RuntimeError("Cannot start Player while another deferred task is active")
+
+    def _activate_initial_scene_for_play(self):
+        """Start the freshly loaded scene without rebuilding it a second time."""
         from Infernux.lib import SceneManager as _NativeSM
         from Infernux.renderstack.render_stack import RenderStack
         from Infernux.timing import Time
@@ -221,50 +232,28 @@ class PlayerBootstrap:
         # Capture a typed document (player never restores it, but PM needs it).
         snapshot = scene.serialize_document()
         if not snapshot:
-            Debug.log_error("Scene serialization failed — play mode skipped")
-            return
+            Debug.log_error("Scene serialization failed - play mode skipped")
+            return False
         pm._scene_backup = snapshot
 
-        # Reset timing
         Time._reset()
+        old_state = pm._state
+        pm._state = PlayModeState.PLAYING
+        pm._last_frame_time = __import__("time").time()
+        pm._notify_state_change(old_state, PlayModeState.PLAYING)
 
-        def after_publish():
-            RenderStack._active_instance = None
-            scene.set_playing(True)
-            try:
-                from Infernux.components.builtin.sprite_renderer import SpriteRenderer
-                SpriteRenderer.init_all_in_scene(scene)
-            except Exception as exc:
-                Debug.log_internal(f"Player SpriteRenderer init before py restore: {exc}")
-            pm._state = PlayModeState.PLAYING
-            pm._last_frame_time = __import__("time").time()
-
-        from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
-        transaction = SceneDocumentTransaction(
-            scene,
-            document=snapshot,
-            asset_database=pm._asset_database,
-            clear_registries=True,
-            after_publish=after_publish,
-        )
-        if not transaction.run_to_completion(raise_on_failure=False):
-            Debug.log_error(f"Scene document transaction failed - play mode skipped: {transaction.error}")
-            return
-
-        # Run once more after Python restore so any lazily-created or
-        # animator-driven SpriteRenderers also have bound materials before
-        # the first rendered frame.
+        RenderStack._active_instance = None
+        scene.set_playing(True)
         try:
             from Infernux.components.builtin.sprite_renderer import SpriteRenderer
 
             SpriteRenderer.init_all_in_scene(scene)
         except Exception as exc:
-            Debug.log_internal(f"Player SpriteRenderer init after py restore: {exc}")
+            Debug.log_internal(f"Player SpriteRenderer init: {exc}")
 
-        # Tell C++ SceneManager to enter play mode (drives lifecycle updates)
+        # This is the same lifecycle boundary used after a runtime scene load.
+        # The initial load already published fresh Python components, so a
+        # second Scene transaction here only creates competing object graphs.
         sm.play()
-
-        # Transition state
-        pm._notify_state_change(PlayModeState.EDIT, PlayModeState.PLAYING)
-
         Debug.log_internal("Player: Play mode activated")
+        return True

@@ -355,11 +355,6 @@ class Component
 
     [[nodiscard]] virtual nlohmann::json SerializeDocument() const;
     virtual bool DeserializeDocument(const nlohmann::json &document);
-    [[nodiscard]] virtual int GetSerializationSchemaVersion() const
-    {
-        return 1;
-    }
-
     /// @brief Create a deep copy of this component (native clone, no JSON round-trip).
     /// The clone gets a fresh component ID and instance GUID.
     /// Base implementation copies enabled state and execution order.

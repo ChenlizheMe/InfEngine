@@ -331,6 +331,15 @@ class WindowManager:
         if window_id in self._window_instances:
             return self._sync_instance_open_state(window_id)
         return self._window_states.get(window_id, WindowState.CLOSED) in _VISIBLE_STATES
+
+    def focus_window(self, window_id: str) -> None:
+        """Request focus for an already-open editor panel."""
+        target_id = str(window_id).strip()
+        if target_id not in self._window_states:
+            raise KeyError(f"Unknown window id: {target_id}")
+        if not self.is_window_open(target_id):
+            raise RuntimeError(f"Editor window is not open: {target_id}")
+        self._request_focus(target_id)
     
     def set_window_open(self, window_id: str, is_open: bool):
         """Set window open state (called by window when close button is clicked)."""

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Any, Callable, Dict, Optional, Tuple, Type, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TYPE_CHECKING, Union
 from dataclasses import dataclass
 
 if TYPE_CHECKING:
@@ -32,6 +32,56 @@ class FieldType(Enum):
     UNKNOWN = auto()
 
 
+@dataclass(frozen=True)
+class Range:
+    lo: float
+    hi: float
+    slider: bool = ...
+
+@dataclass(frozen=True)
+class Tooltip:
+    text: str
+
+@dataclass(frozen=True)
+class Header:
+    text: str
+
+@dataclass(frozen=True)
+class Space:
+    height: float = ...
+
+@dataclass(frozen=True)
+class Group:
+    name: str
+
+@dataclass(frozen=True)
+class InfoText:
+    text: str
+
+@dataclass(frozen=True)
+class DragSpeed:
+    speed: float
+
+@dataclass(frozen=True)
+class RequiredComponent:
+    type_name: str
+
+class Multiline: ...
+class ReadOnly: ...
+class HideInInspector: ...
+class NonSerialized: ...
+class HDR: ...
+
+class Color:
+    def __new__(
+        cls,
+        r: float = ...,
+        g: float = ...,
+        b: float = ...,
+        a: float = ...,
+    ) -> list[float]: ...
+
+
 @dataclass
 class FieldMetadata:
     """Metadata for a serialized field."""
@@ -40,6 +90,7 @@ class FieldMetadata:
     default: Any
     range: Optional[Tuple[float, float]] = ...
     tooltip: str = ...
+    display_name_key: str = ...
     readonly: bool = ...
     header: str = ...
     space: float = ...
@@ -57,9 +108,11 @@ class FieldMetadata:
     serializable_class: Optional[Type] = ...
     component_type: Optional[str] = ...
     hdr: bool = ...
+    asset_type: Optional[str] = ...
     python_type: Optional[Type] = ...
     getter: Optional[Callable] = ...
     setter: Optional[Callable] = ...
+    hidden: bool = ...
 
 
 class SerializedFieldDescriptor:
@@ -113,8 +166,10 @@ def serialized_field(
     element_class: Optional[Type] = ...,
     serializable_class: Optional[Type] = ...,
     component_type: Optional[str] = ...,
+    asset_type: Optional[str] = ...,
     range: Optional[Tuple[float, float]] = ...,
     tooltip: str = ...,
+    display_name_key: str = ...,
     readonly: bool = ...,
     header: str = ...,
     space: float = ...,
@@ -126,6 +181,7 @@ def serialized_field(
     required_component: Optional[str] = ...,
     visible_when: Optional[Callable] = ...,
     hdr: bool = ...,
+    hidden: bool = ...,
 ) -> Any:
     """Mark a field as serialized and inspector-visible.
 
@@ -136,8 +192,10 @@ def serialized_field(
         element_class: For LIST fields, the SerializableObject subclass for elements.
         serializable_class: For SERIALIZABLE_OBJECT fields, the concrete class.
         component_type: For COMPONENT fields, the target component type name.
+        asset_type: For ASSET fields, the registered asset type name.
         range: ``(min, max)`` tuple for numeric sliders / bounded drag.
         tooltip: Hover text shown in inspector.
+        display_name_key: Optional i18n key used for the Inspector label.
         readonly: If ``True``, field is read-only in inspector.
         header: Group header text shown above this field.
         space: Vertical spacing before this field in inspector.
@@ -149,6 +207,7 @@ def serialized_field(
         required_component: For GAME_OBJECT fields only.
         visible_when: ``fn(component) -> bool``; hides field when False.
         hdr: For COLOR fields only.  Allow HDR values (> 1.0).
+        hidden: Serialize without showing the field in the Inspector.
 
     Example::
 
@@ -156,6 +215,15 @@ def serialized_field(
             speed: float = serialized_field(default=5.0, range=(0, 100))
     """
     ...
+
+def validate_serialized_field_document(
+    document: Dict[str, Any],
+    fields: Dict[str, FieldMetadata],
+    *,
+    owner_name: str,
+    metadata_keys: set[str] | frozenset[str] = ...,
+    allow_missing: bool = False,
+) -> None: ...
 
 
 def hide_field(default: Any = ...) -> Any:
@@ -176,6 +244,12 @@ def resolve_runtime_field_value(value: Any, field_meta_or_type: Any) -> Any:
 
 def normalize_runtime_field_value(value: Any, field_meta_or_type: Any) -> Any:
     """Normalize a runtime field value for serialization."""
+    ...
+
+def coerce_serialized_field_input(
+    value: Any, field_meta_or_type: Any, path: str = ...
+) -> Any:
+    """Convert JSON-friendly editor input into a valid runtime field value."""
     ...
 
 def get_annotation_default(annotation: Any) -> Any:

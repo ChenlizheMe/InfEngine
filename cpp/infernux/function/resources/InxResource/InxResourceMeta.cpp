@@ -74,38 +74,7 @@ std::string GenerateGuid()
 
 std::string NormalizeMetadataFilePath(const std::string &filePath)
 {
-    if (filePath.empty())
-        return {};
-
-    std::error_code error;
-    std::filesystem::path normalized = ToFsPath(filePath);
-    if (normalized.is_relative()) {
-        auto absolute = std::filesystem::absolute(normalized, error);
-        if (!error)
-            normalized = std::move(absolute);
-        error.clear();
-    }
-    if (std::filesystem::exists(normalized, error)) {
-        auto canonical = std::filesystem::weakly_canonical(normalized, error);
-        if (!error)
-            normalized = std::move(canonical);
-        error.clear();
-    }
-
-#ifdef INX_PLATFORM_WINDOWS
-    const std::wstring native = normalized.native();
-    const DWORD required = GetLongPathNameW(native.c_str(), nullptr, 0);
-    if (required > 0) {
-        std::wstring expanded(static_cast<size_t>(required), L'\0');
-        const DWORD written = GetLongPathNameW(native.c_str(), expanded.data(), required);
-        if (written > 0 && written < required) {
-            expanded.resize(static_cast<size_t>(written));
-            normalized = std::filesystem::path(std::move(expanded));
-        }
-    }
-#endif
-
-    return FromFsPath(normalized.lexically_normal());
+    return ResolveFilesystemPath(filePath);
 }
 } // namespace
 
@@ -125,8 +94,6 @@ void InxResourceMeta::Init(const char *content, size_t contentSize, const std::s
     // Generate a random GUID (stable once stored in .meta)
     // This remains unchanged across moves/renames because the meta is preserved.
     AddMetadata("guid", GenerateGuid());
-
-    AddMetadata("importer_version", ImporterVersion);
 
     // Get file modification time
     std::string modTimeStr;
@@ -154,6 +121,17 @@ void InxResourceMeta::Init(const char *content, size_t contentSize, const std::s
 void InxResourceMeta::AddMetadata(const std::string &key, const std::any &value)
 {
     m_metadata[key] = std::make_pair(InxTypeRegistry::GetInstance().GetTypeName(value.type()), value);
+}
+
+bool InxResourceMeta::CopyMetadataIfMissing(const InxResourceMeta &source, const std::string &key)
+{
+    if (HasKey(key))
+        return false;
+    const auto sourceEntry = source.m_metadata.find(key);
+    if (sourceEntry == source.m_metadata.end())
+        return false;
+    m_metadata.emplace(key, sourceEntry->second);
+    return true;
 }
 
 const std::string &InxResourceMeta::GetResourceName() const
@@ -239,8 +217,6 @@ std::string InxResourceMeta::NormalizeFilePath(const std::string &filePath)
 nlohmann::json InxResourceMeta::SerializeDocument() const
 {
     nlohmann::json root;
-    root["meta_version"] = 2;
-
     nlohmann::json entries = nlohmann::json::object();
     for (const auto &[key, metaPair] : m_metadata) {
         const std::string &typeName = metaPair.first;
@@ -277,11 +253,8 @@ nlohmann::json InxResourceMeta::SerializeDocument() const
 
 void InxResourceMeta::DeserializeDocument(const nlohmann::json &document)
 {
-    if (!document.is_object() || document.size() != 2 || !document.contains("meta_version") ||
-        !document.contains("metadata"))
-        throw std::invalid_argument("metadata document must contain exactly meta_version and metadata");
-    if (!document["meta_version"].is_number_integer() || document["meta_version"].get<int>() != 2)
-        throw std::invalid_argument("metadata document requires meta_version 2");
+    if (!document.is_object() || document.size() != 1 || !document.contains("metadata"))
+        throw std::invalid_argument("metadata document must contain exactly metadata");
     if (!document["metadata"].is_object())
         throw std::invalid_argument("metadata must be an object");
 
@@ -293,6 +266,8 @@ void InxResourceMeta::DeserializeDocument(const nlohmann::json &document)
 
         const std::string typeName = entry["type"].get<std::string>();
         const auto &value = entry["value"];
+        if (key == "sprite_frames" && typeName != "json_array")
+            throw std::invalid_argument("metadata sprite_frames must use json_array");
         if (typeName == "string") {
             if (!value.is_string())
                 throw std::invalid_argument("metadata string value expected: " + key);

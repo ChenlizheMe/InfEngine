@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from Infernux.engine.project_context import clear_panel_tracking, set_panel_dirty
 from Infernux.engine.ui.dirty_panel_confirmation import (
     DirtyPanelConfirmationCoordinator,
@@ -49,7 +51,7 @@ class _SemanticContext:
     def text_wrapped(_value: str) -> None:
         pass
 
-    def button(self, label: str, callback) -> None:
+    def button(self, label: str, callback, width: float = 0.0, height: float = 0.0) -> None:
         self.buttons[label] = callback
 
     def record_semantic_item(self, _kind, _label, _enabled, semantic_id) -> None:
@@ -232,7 +234,50 @@ def test_direct_panel_close_routes_through_shared_confirmation():
         clear_panel_tracking(panel_id)
 
 
-def test_titlebar_close_restores_dirty_dock_tab_before_confirmation():
+def test_panel_confirmation_renders_only_from_its_source_panel():
+    panel_id = "dirty_test_hosted_modal"
+    set_panel_dirty(panel_id, True, title="Hosted Modal")
+    coordinator = DirtyPanelConfirmationCoordinator()
+    try:
+        assert coordinator.request_panel_close(panel_id, lambda: None)
+
+        global_ctx = _SemanticContext()
+        coordinator.render(global_ctx)
+        assert global_ctx.opened == []
+
+        other_ctx = _SemanticContext()
+        coordinator.render(other_ctx, panel_host_id="another_panel")
+        assert other_ctx.opened == []
+
+        source_ctx = _SemanticContext()
+        coordinator.render(source_ctx, panel_host_id=panel_id)
+        assert source_ctx.opened == ["Unsaved Changes###editor_dirty_panel_confirm"]
+        assert "editor.dirty_panel.dialog" in source_ctx.semantics
+    finally:
+        coordinator.choose_cancel()
+        clear_panel_tracking(panel_id)
+
+
+def test_exit_confirmation_renders_only_from_global_overlay():
+    panel_id = "dirty_test_global_modal"
+    set_panel_dirty(panel_id, True, title="Global Modal")
+    coordinator = DirtyPanelConfirmationCoordinator()
+    try:
+        assert coordinator.request_exit(lambda: None, lambda: None)
+
+        panel_ctx = _SemanticContext()
+        coordinator.render(panel_ctx, panel_host_id=panel_id)
+        assert panel_ctx.opened == []
+
+        global_ctx = _SemanticContext()
+        coordinator.render(global_ctx)
+        assert global_ctx.opened == ["Unsaved Changes###editor_dirty_panel_confirm"]
+    finally:
+        coordinator.choose_cancel()
+        clear_panel_tracking(panel_id)
+
+
+def test_titlebar_close_keeps_panel_open_without_stealing_modal_focus():
     panel_id = "dirty_test_titlebar_close"
     panel = ClosablePanel("Titlebar Close", panel_id)
     panel._dirty = True
@@ -272,7 +317,7 @@ def test_titlebar_close_restores_dirty_dock_tab_before_confirmation():
     try:
         assert panel._begin_closable_window(ctx) is True
         assert panel.is_open is True
-        assert ctx.focus_calls == 1
+        assert ctx.focus_calls == 0
         assert ClosablePanel.get_active_panel_id() == panel_id
         assert coordinator.active_panel_id == panel_id
     finally:
@@ -282,7 +327,67 @@ def test_titlebar_close_restores_dirty_dock_tab_before_confirmation():
         clear_panel_tracking(panel_id)
 
 
-from pathlib import Path
+def test_native_modals_use_a_dedicated_main_window_child_viewport():
+    source = Path(
+        "cpp/infernux/function/renderer/gui/InxGUIContext.cpp"
+    ).read_text(encoding="utf-8")
+
+    begin = source.index("bool InxGUIContext::BeginPopupModal")
+    end = source.index("bool InxGUIContext::BeginPopupContextItem", begin)
+    implementation = source[begin:end]
+
+    assert "ImGui::SetNextWindowClass(&modalClass)" in implementation
+    assert "modalClass.ParentViewportId = ImGui::GetMainViewport()->ID" in implementation
+    assert "ImGuiViewportFlags_NoAutoMerge" in implementation
+    assert "ImGuiViewportFlags_NoTaskBarIcon" in implementation
+    assert "ImGuiViewportFlags_TopMost" in implementation
+    assert "viewport->PlatformWindowCreated" in implementation
+    assert "window->StateStorage.SetBool(nativeRaiseState, false)" in implementation
+
+
+def test_native_modal_is_promoted_after_late_dock_focus_processing():
+    source = Path("cpp/infernux/function/renderer/gui/InxGUI.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    apply_index = source.index("    ApplyPendingDockTabSelections();")
+    promote_index = source.index("    PromoteActiveModal();", apply_index)
+    render_index = source.index("    ImGui::Render();", promote_index)
+    assert apply_index < promote_index < render_index
+
+    apply_begin = source.index("void InxGUI::ApplyPendingDockTabSelections()")
+    promote_begin = source.index("void InxGUI::PromoteActiveModal()", apply_begin)
+    apply_implementation = source[apply_begin:promote_begin]
+    assert "ImGui::GetTopMostPopupModal() != nullptr" in apply_implementation
+    assert "RequestFrame();" in apply_implementation
+
+    promote_end = source.index("void InxGUI::RecordCommand", promote_begin)
+    promote_implementation = source[promote_begin:promote_end]
+    assert "ImGui::FocusWindow(modal)" in promote_implementation
+    assert "ImGui::BringWindowToFocusFront(modal->RootWindow)" in promote_implementation
+    assert "ImGui::BringWindowToDisplayFront(modal)" in promote_implementation
+
+
+def test_imgui_renders_modals_in_the_overlay_layer():
+    source = Path("cpp/infernux/function/renderer/gui/InxGUI.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    begin = source.index("    ApplyPendingDockTabSelections();")
+    end = source.index("    const ImDrawData *drawData", begin)
+    implementation = source[begin:end]
+
+    promote_index = implementation.index("    PromoteActiveModal();")
+    overlay_index = implementation.index(
+        "activeModal->Flags |= ImGuiWindowFlags_Tooltip;"
+    )
+    render_index = implementation.index("    ImGui::Render();")
+    restore_index = implementation.index("activeModal->Flags = activeModalFlags;")
+    assert promote_index < overlay_index < render_index < restore_index
+
+    publication = source[end : source.index("void InxGUI::QueueDockTabSelection", end)]
+    assert "drawData != nullptr && drawData->Valid" in publication
+
 
 import Infernux.lib as native
 from Infernux.engine.ui import project_file_ops
@@ -337,7 +442,7 @@ class _ProjectDeleteSemanticContext:
     def end_popup() -> None:
         pass
 
-    def button(self, label: str, callback) -> None:
+    def button(self, label: str, callback, width: float = 0.0, height: float = 0.0) -> None:
         self.buttons[label] = callback
 
     def close_current_popup(self) -> None:
@@ -354,13 +459,14 @@ def test_project_delete_modal_publishes_semantics_and_cancel_preserves_asset(tmp
     ctx = _ProjectDeleteSemanticContext()
     coordinator.render(ctx)
 
-    assert ctx.opened == ["Delete Assets###project_delete_confirm"]
+    assert len(ctx.opened) == 1
+    assert ctx.opened[0].endswith("###project_delete_confirm")
     assert {
         "project.delete.dialog",
         "project.delete.confirm",
         "project.delete.cancel",
     }.issubset(ctx.semantics)
-    ctx.buttons["Cancel##project_delete_cancel"]()
+    next(callback for label, callback in ctx.buttons.items() if label.endswith("##cancel"))()
     assert coordinator.is_active is False
     assert asset.exists()
     assert deleted == []
@@ -380,7 +486,7 @@ def test_project_delete_modal_confirms_deduplicated_existing_paths(tmp_path):
     )
     ctx = _ProjectDeleteSemanticContext()
     coordinator.render(ctx)
-    ctx.buttons["Delete##project_delete_confirm"]()
+    next(callback for label, callback in ctx.buttons.items() if label.endswith("##confirm"))()
 
     assert received == [[str(first.resolve()), str(second.resolve())]]
     assert coordinator.is_active is False
@@ -447,3 +553,57 @@ def test_project_delete_uses_editor_modal_not_platform_message_box():
     assert "ProjectDeleteConfirmationCoordinator" in source
     assert "MessageBoxW" not in source
     assert "ctypes.windll" not in source
+
+
+def test_project_script_delete_uses_meta_guid_when_database_path_lookup_misses(monkeypatch, tmp_path):
+    script = tmp_path / "Attached.py"
+    script.write_text("class Attached:\n    pass\n", encoding="utf-8")
+    script.with_suffix(".py.meta").write_text(
+        '{"metadata":{"guid":{"type":"string","value":"attached-guid"}}}',
+        encoding="utf-8",
+    )
+
+    class _Database:
+        @staticmethod
+        def get_guid_from_path(_path):
+            return ""
+
+    from Infernux.core.assets import AssetManager
+
+    delete_calls = []
+
+    monkeypatch.setattr(
+        AssetManager,
+        "delete_asset",
+        classmethod(
+            lambda _cls, path, **kwargs: delete_calls.append((path, kwargs)) or True
+        ),
+    )
+
+    assert project_file_ops.delete_item(str(script), _Database()) is True
+    assert not script.exists()
+    assert len(delete_calls) == 1
+    deleted_path, delete_kwargs = delete_calls[0]
+    assert deleted_path == str(script)
+    assert isinstance(delete_kwargs["database"], _Database)
+    assert delete_kwargs["guid_hint"] == "attached-guid"
+
+
+def test_project_script_rename_maps_snake_case_stem_to_pascal_class(tmp_path):
+    old_path = tmp_path / "regression_probe.py"
+    new_path = tmp_path / "regression_probe_renamed.py"
+    old_path.write_text(
+        "from Infernux.components import InxComponent\n"
+        "class RegressionProbe(InxComponent):\n"
+        "    report_after_seconds: float = 2.0\n",
+        encoding="utf-8",
+    )
+
+    project_file_ops._sync_python_script_class_name_on_rename(
+        str(old_path),
+        str(new_path),
+    )
+
+    content = old_path.read_text(encoding="utf-8")
+    assert "class RegressionProbeRenamed(InxComponent):" in content
+    assert "class RegressionProbe(InxComponent):" not in content

@@ -1,18 +1,34 @@
-"""Type stubs for Infernux.components.registry.
-
-Uses ``InxComponent.__subclasses__()`` recursively — no manual registration needed.
-"""
+"""Type stubs for the authoritative Python component registry."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Dict, Optional, Type, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .component import InxComponent
 
 
+@dataclass(frozen=True)
+class ComponentRegistration:
+    type_name: str
+    category: str
+    menu_path: str
+    script_path: str
+    component_type: Optional[Type[InxComponent]]
+    project_script: bool
+
+
+def register_component_type(component_type: Type[InxComponent], *, script_path: str = "") -> None: ...
+def ensure_engine_component_catalog_loaded() -> None: ...
+def register_component_script(file_path: str) -> bool: ...
+def unregister_component_script(file_path: str) -> None: ...
+def get_component_registrations(*, project_root: str = "") -> tuple[ComponentRegistration, ...]: ...
+def get_component_registration_revision() -> int: ...
+
+
 def get_type(name: str) -> Optional[Type[InxComponent]]:
-    """Get a component class by its name (recursive ``__subclasses__()`` scan).
+    """Get the latest registered component class by name.
 
     Example::
 

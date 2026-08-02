@@ -167,6 +167,21 @@ class TestBuiltinComponent:
             InxComponent._active_instances.clear()
             InxComponent._active_instances.update(previous)
 
+    def test_mcp_serialization_reports_wrapper_as_native(self):
+        from Infernux.mcp.tools.common import serialize_component
+
+        cpp = DemoCpp()
+        cpp.enabled = True
+        cpp.execution_order = 0
+        wrapper = DemoBuiltin()
+        wrapper._bind_cpp(cpp, type("FakeGO", (), {"id": 1})())
+
+        assert serialize_component(wrapper) == {
+            "type": "DemoBuiltin",
+            "python": False,
+            "component_id": 42,
+        }
+
     def test_clear_cache(self):
         BuiltinComponent._wrapper_cache.clear()
         BuiltinComponent._clear_cache()

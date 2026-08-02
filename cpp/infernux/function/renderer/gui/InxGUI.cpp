@@ -4,6 +4,7 @@
 #include "InxGUISemantics.h"
 #include <function/editor/EditorTheme.h>
 #include <function/editor/EditorThemeRegistry.h>
+#include <function/renderer/TextureUploadBuilder.h>
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/InxTexture/TextureDecoder.h>
@@ -24,6 +25,38 @@
 
 namespace infernux
 {
+namespace
+{
+
+class ImGuiBuildFrameGuard
+{
+  public:
+    ImGuiBuildFrameGuard() = default;
+    ImGuiBuildFrameGuard(const ImGuiBuildFrameGuard &) = delete;
+    ImGuiBuildFrameGuard &operator=(const ImGuiBuildFrameGuard &) = delete;
+
+    ~ImGuiBuildFrameGuard()
+    {
+        if (!m_active)
+            return;
+
+        InxGUISemantics::AbortFrame();
+        ImGuiContext *context = ImGui::GetCurrentContext();
+        if (context != nullptr && context->WithinFrameScope)
+            ImGui::EndFrame();
+    }
+
+    void Complete()
+    {
+        InxGUISemantics::EndFrame();
+        m_active = false;
+    }
+
+  private:
+    bool m_active = true;
+};
+
+} // namespace
 
 InxGUI::InxGUI(InxVkCoreModular *vkCore) : m_vkCore_ptr(vkCore)
 {
@@ -51,8 +84,15 @@ void InxGUI::Init(SDL_Window *window)
     IMGUI_CHECKVERSION();
     m_imguiContext_ptr = ImGui::CreateContext();
     ImGui::SetCurrentContext(m_imguiContext_ptr);
-    m_imguiContext_ptr->ErrorCallback = [](ImGuiContext *, void *, const char *message) {
-        INXLOG_ERROR("[ImGui] ", message ? message : "unknown recoverable error");
+    m_imguiContext_ptr->ErrorCallback = [](ImGuiContext *context, void *, const char *message) {
+        static thread_local bool handlingError = false;
+        if (handlingError)
+            return;
+        handlingError = true;
+        const char *windowName =
+            context != nullptr && context->CurrentWindow != nullptr ? context->CurrentWindow->Name : "<no window>";
+        INXLOG_ERROR("[ImGui] [Window: ", windowName, "] ", message ? message : "unknown recoverable error");
+        handlingError = false;
     };
     ImGui::StyleColorsDark();
 
@@ -114,6 +154,13 @@ void InxGUI::Init(SDL_Window *window)
     }
 
     ImGuiIO &io = ImGui::GetIO();
+    // Python panel callbacks may throw through an unfinished ImGui window.
+    // Recover the stack and report through the engine console without opening
+    // ImGui's own error tooltip, which can recursively fail on the same stack.
+    io.ConfigErrorRecovery = true;
+    io.ConfigErrorRecoveryEnableAssert = false;
+    io.ConfigErrorRecoveryEnableDebugLog = false;
+    io.ConfigErrorRecoveryEnableTooltip = false;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // Enable Docking
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Enable Multi-Viewport (optional, can cause issues)
@@ -122,30 +169,17 @@ void InxGUI::Init(SDL_Window *window)
     io.ConfigDockingWithShift = false;    // Dock without holding shift
     io.ConfigDockingAlwaysTabBar = true;  // Always show tab bar for docked windows
     io.ConfigDragClickToInputText = true; // Single click-release on DragFloat → text input
+    // Graph nodes and other canvas tools use draw-list hit testing rather than
+    // native ImGui items. Restrict floating-window movement to the title bar
+    // so those content gestures cannot also move their parent window.
+    io.ConfigWindowsMoveFromTitleBarOnly = true;
 
     ImGui_ImplSDL3_InitForVulkan(window);
 
     VkDevice device = m_vkCore_ptr->GetDevice();
-    VkDescriptorPoolSize poolSizes[] = {{VK_DESCRIPTOR_TYPE_SAMPLER, 1000},
-                                        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000},
-                                        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000},
-                                        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000},
-                                        {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000},
-                                        {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000},
-                                        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000},
-                                        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000},
-                                        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000},
-                                        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000},
-                                        {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000}};
-
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = 1000 * IM_ARRAYSIZE(poolSizes);
-    poolInfo.poolSizeCount = static_cast<uint32_t>(IM_ARRAYSIZE(poolSizes));
-    poolInfo.pPoolSizes = poolSizes;
-
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_descriptorPool_vk) != VK_SUCCESS) {
+    m_descriptorPool_vk = m_vkCore_ptr->GetDeviceContext().GetRhiDevice().GetDescriptorManager().AcquireExternalPool(
+        vk::DescriptorArena::ImGuiExternal);
+    if (m_descriptorPool_vk == VK_NULL_HANDLE) {
         INXLOG_FATAL("Failed to create descriptor pool for ImGui.");
         return;
     }
@@ -301,8 +335,11 @@ void InxGUI::PumpTextureUploads()
             m_failedTextureUploadVersions[pending.name] = pending.generation;
             continue;
         }
-        const VkDescriptorSet descriptor = ImGui_ImplVulkan_AddTexture(texture->GetSampler(), texture->GetView(),
-                                                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        auto &rhiDevice = m_vkCore_ptr->GetDeviceContext().GetRhiDevice();
+        const VkSampler sampler = rhiDevice.Resolve(texture->GetSampler());
+        const VkImageView view = rhiDevice.Resolve(texture->GetView());
+        const VkDescriptorSet descriptor =
+            ImGui_ImplVulkan_AddTexture(sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         if (descriptor == VK_NULL_HANDLE) {
             INXLOG_ERROR("Failed to allocate ImGui texture descriptor for '", pending.name, "'");
             m_failedTextureUploadVersions[pending.name] = pending.generation;
@@ -311,6 +348,7 @@ void InxGUI::PumpTextureUploads()
 
         auto existing = m_textures_umap.find(pending.name);
         if (existing != m_textures_umap.end()) {
+            m_textureNamesByDescriptor.erase(existing->second.descriptorSet);
             DeferTextureRelease(std::move(existing->second));
             m_textures_umap.erase(existing);
         }
@@ -324,14 +362,40 @@ void InxGUI::PumpTextureUploads()
         m_textures_umap.emplace(pending.name,
                                 ImGuiTextureResource{std::move(texture), descriptor, residentBytes, m_guiFrameCounter,
                                                      pending.generation, pending.pinned});
+        m_textureNamesByDescriptor[descriptor] = pending.name;
     }
     m_pendingTextureUploads.resize(writeIndex);
 }
 
 void InxGUI::BuildFrame()
 {
+    (void)m_editorFrameScheduler.Consume(EditorGuiFrameScheduler::Clock::now(), true);
+    BuildFrameInternal();
+}
+
+bool InxGUI::BuildFrameIfDue(bool force)
+{
+    if (!m_editorFrameScheduler.Consume(EditorGuiFrameScheduler::Clock::now(), force || m_playerMode))
+        return false;
+
+    BuildFrameInternal();
+    return true;
+}
+
+void InxGUI::RequestFrame() noexcept
+{
+    m_editorFrameScheduler.Request();
+}
+
+void InxGUI::BuildFrameInternal()
+{
     static auto ctx = std::make_unique<InxGUIContext>();
     ++m_guiFrameCounter;
+
+    // ImGui invalidates the previous ImDrawData as soon as NewFrame() starts.
+    // Do not let a render-graph submission reuse the stale publication while
+    // this frame is being rebuilt (notably after a throttled editor refresh).
+    m_hasDrawData = false;
 
     PumpTextureUploads();
 
@@ -344,6 +408,7 @@ void InxGUI::BuildFrame()
             if (it == m_textures_umap.end())
                 continue;
 
+            m_textureNamesByDescriptor.erase(it->second.descriptorSet);
             DeferTextureRelease(std::move(it->second));
             m_textures_umap.erase(it);
         }
@@ -380,6 +445,7 @@ void InxGUI::BuildFrame()
     }
     ImGui::NewFrame();
     InxGUISemantics::BeginFrame(m_guiFrameCounter);
+    ImGuiBuildFrameGuard frameGuard;
 
     // When the cursor is locked (game mode), suppress all mouse input from
     // reaching ImGui so editor panels (Inspector, Hierarchy, etc.) don't
@@ -521,7 +587,46 @@ void InxGUI::BuildFrame()
     }
 
     ApplyPendingDockTabSelections();
-    InxGUISemantics::EndFrame();
+    PromoteActiveModal();
+
+#ifndef IMGUI_DISABLE_DEBUG_TOOLS
+    // Dear ImGui only shows duplicate-ID diagnostics in an on-screen tooltip.
+    // Mirror the hovered conflict into the engine log so UI regressions remain
+    // actionable in automated Editor validation runs.
+    {
+        static ImGuiID lastConflictId = 0;
+        static std::string lastConflictWindow;
+        ImGuiContext &imgui = *m_imguiContext_ptr;
+        const ImGuiID conflictId = imgui.HoveredIdPreviousFrameItemCount > 1 ? imgui.HoveredIdPreviousFrame : 0;
+        const char *windowName = imgui.HoveredWindow != nullptr ? imgui.HoveredWindow->Name : "<no window>";
+        if (conflictId != 0 && (conflictId != lastConflictId || lastConflictWindow != windowName)) {
+            INXLOG_ERROR("[ImGui] duplicate visible item ID=", conflictId,
+                         " count=", imgui.HoveredIdPreviousFrameItemCount, " window='", windowName, "'");
+            lastConflictId = conflictId;
+            lastConflictWindow = windowName;
+        } else if (conflictId == 0) {
+            lastConflictId = 0;
+            lastConflictWindow.clear();
+        }
+    }
+#endif
+
+    // ImGui normally renders modals in the regular window layer and relies on
+    // root-window ordering alone. A floating dock host can still be emitted
+    // over a close confirmation in that model. Use ImGui's overlay layer only
+    // while draw data is assembled, then restore the semantic window flags so
+    // modal layout and input behavior remain unchanged on the next frame.
+    ImGuiWindow *activeModal = ImGui::GetTopMostPopupModal();
+    const ImGuiWindowFlags activeModalFlags = activeModal != nullptr ? activeModal->Flags : ImGuiWindowFlags_None;
+    if (activeModal != nullptr)
+        activeModal->Flags |= ImGuiWindowFlags_Tooltip;
+
+    frameGuard.Complete();
+    ImGui::Render();
+    if (activeModal != nullptr)
+        activeModal->Flags = activeModalFlags;
+    const ImDrawData *drawData = ImGui::GetDrawData();
+    m_hasDrawData = drawData != nullptr && drawData->Valid;
 }
 
 void InxGUI::QueueDockTabSelection(const std::string &windowId)
@@ -532,12 +637,23 @@ void InxGUI::QueueDockTabSelection(const std::string &windowId)
     if (std::find(m_pendingDockTabSelections.begin(), m_pendingDockTabSelections.end(), windowId) ==
         m_pendingDockTabSelections.end()) {
         m_pendingDockTabSelections.push_back(windowId);
+        RequestFrame();
     }
 }
 
 void InxGUI::ApplyPendingDockTabSelections()
 {
     if (m_pendingDockTabSelections.empty()) {
+        return;
+    }
+
+    // A late dock-tab focus request runs after all GUI renderables, including
+    // Editor-owned confirmation dialogs. Applying it while a modal is open
+    // can move an undocked authoring window back above the confirmation (and
+    // may also disturb the popup stack). Keep the request queued until the
+    // modal transaction has finished.
+    if (ImGui::GetTopMostPopupModal() != nullptr) {
+        RequestFrame();
         return;
     }
 
@@ -568,10 +684,25 @@ void InxGUI::ApplyPendingDockTabSelections()
     }
 }
 
+void InxGUI::PromoteActiveModal()
+{
+    ImGuiWindow *modal = ImGui::GetTopMostPopupModal();
+    if (modal == nullptr)
+        return;
+
+    // This is deliberately the final window-order operation before
+    // ImGui::Render(). It makes modal ordering independent of renderable
+    // registration order and of floating/docked panel focus transitions.
+    ImGui::FocusWindow(modal);
+    ImGui::BringWindowToFocusFront(modal->RootWindow);
+    ImGui::BringWindowToDisplayFront(modal);
+}
+
 void InxGUI::RecordCommand(VkCommandBuffer cmdBuf)
 {
-    ImGui::Render();
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdBuf);
+    ImDrawData *drawData = ImGui::GetDrawData();
+    if (m_hasDrawData && drawData != nullptr && drawData->Valid)
+        ImGui_ImplVulkan_RenderDrawData(drawData, cmdBuf);
 }
 
 void InxGUI::Shutdown()
@@ -594,6 +725,7 @@ void InxGUI::Shutdown()
         ReleaseTextureResource(tex);
     }
     m_textures_umap.clear();
+    m_textureNamesByDescriptor.clear();
 
     // Shut down ImGui backends BEFORE destroying the descriptor pool —
     // ImGui_ImplVulkan_Shutdown() internally frees descriptor sets and
@@ -601,11 +733,9 @@ void InxGUI::Shutdown()
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
 
-    // Now safe to destroy the descriptor pool (all sets already freed).
-    if (m_descriptorPool_vk != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(m_vkCore_ptr->GetDevice(), m_descriptorPool_vk, nullptr);
-        m_descriptorPool_vk = VK_NULL_HANDLE;
-    }
+    // The central descriptor manager owns the external pool. ImGui has
+    // released its sets above; the pool survives until backend shutdown.
+    m_descriptorPool_vk = VK_NULL_HANDLE;
 
     if (m_imguiRenderPass != VK_NULL_HANDLE) {
         vkDestroyRenderPass(m_vkCore_ptr->GetDevice(), m_imguiRenderPass, nullptr);
@@ -613,18 +743,31 @@ void InxGUI::Shutdown()
     }
 }
 
-void InxGUI::Register(const std::string &name, std::shared_ptr<InxGUIRenderable> renderable)
+void InxGUI::Register(const std::string &name, std::shared_ptr<InxGUIRenderable> renderable, int priority)
 {
     auto existing = m_renderables_umap.find(name);
     if (existing != m_renderables_umap.end()) {
         INXLOG_WARN("InxGUI::Register(): Renderable with name '", name, "' already exists. Overwriting.");
-    } else {
-        // Preserve deterministic submission order for ImGui windows.
-        // Dock/tab focus can become unstable when panels are submitted via
-        // unordered_map iteration.
-        m_renderableOrder.push_back(name);
+        const auto oldPriority = m_renderablePriorities.find(name);
+        if (oldPriority != m_renderablePriorities.end() && oldPriority->second == priority) {
+            existing->second = std::move(renderable);
+            RequestFrame();
+            return;
+        }
+        m_renderableOrder.erase(std::remove(m_renderableOrder.begin(), m_renderableOrder.end(), name),
+                                m_renderableOrder.end());
     }
-    m_renderables_umap[name] = renderable;
+
+    // Submit normal panels first and global overlays last. Insertion remains
+    // stable within one priority so dock/tab behavior is deterministic.
+    const auto insertion = std::find_if(m_renderableOrder.begin(), m_renderableOrder.end(), [&](const auto &entry) {
+        const auto found = m_renderablePriorities.find(entry);
+        return found != m_renderablePriorities.end() && found->second > priority;
+    });
+    m_renderableOrder.insert(insertion, name);
+    m_renderablePriorities[name] = priority;
+    m_renderables_umap[name] = std::move(renderable);
+    RequestFrame();
 }
 
 void InxGUI::Unregister(const std::string &name)
@@ -634,6 +777,8 @@ void InxGUI::Unregister(const std::string &name)
         m_renderables_umap.erase(it);
         m_renderableOrder.erase(std::remove(m_renderableOrder.begin(), m_renderableOrder.end(), name),
                                 m_renderableOrder.end());
+        m_renderablePriorities.erase(name);
+        RequestFrame();
     } else {
         INXLOG_WARN("InxGUI::Unregister(): Renderable with name '", name, "' does not exist.");
     }
@@ -656,8 +801,13 @@ uint64_t InxGUI::SubmitTextureForImGui(const std::string &name, const unsigned c
 
     const auto cpuData = TextureDecoder::CreateRgba8(pixels, byteCount, static_cast<uint32_t>(width),
                                                      static_cast<uint32_t>(height), filter != VK_FILTER_NEAREST);
-    auto ticket = m_vkCore_ptr->GetResourceManager().BeginTextureUpload(*cpuData, VK_FORMAT_R8G8B8A8_UNORM, filter,
-                                                                        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0);
+    rhi::SamplerDesc sampler;
+    sampler.minFilter = sampler.magFilter = sampler.mipFilter =
+        filter == VK_FILTER_NEAREST ? rhi::FilterMode::Nearest : rhi::FilterMode::Linear;
+    sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::ClampToEdge;
+    sampler.maxLod = static_cast<float>(cpuData->mipLevels.size() - 1);
+    TextureUploadBatch upload(*cpuData, sampler);
+    auto ticket = m_vkCore_ptr->GetResourceManager().BeginTextureUpload(upload.GetRequest());
     const uint64_t pendingBytes = ticket->GetResidentBytes();
     if (pendingBytes > std::numeric_limits<uint64_t>::max() - m_pendingTextureUploadBytes)
         throw std::overflow_error("pending ImGui texture byte counter overflow");
@@ -687,6 +837,7 @@ void InxGUI::RemoveImGuiTexture(const std::string &name)
         std::find(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), name) ==
             m_pendingTextureRemovals.end())
         m_pendingTextureRemovals.push_back(name);
+    RequestFrame();
 }
 
 bool InxGUI::HasImGuiTexture(const std::string &name) const
@@ -714,6 +865,26 @@ uint64_t InxGUI::GetImGuiTextureId(const std::string &name)
         return reinterpret_cast<uint64_t>(it->second.descriptorSet);
     }
     return 0;
+}
+
+bool InxGUI::TouchImGuiTextureId(uint64_t textureId)
+{
+    const auto descriptor = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(textureId));
+    if (descriptor == VK_NULL_HANDLE)
+        return false;
+
+    const auto owner = m_textureNamesByDescriptor.find(descriptor);
+    if (owner == m_textureNamesByDescriptor.end())
+        return false;
+    const auto resource = m_textures_umap.find(owner->second);
+    if (resource == m_textures_umap.end() || resource->second.descriptorSet != descriptor)
+        return false;
+    if (std::find(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), owner->second) !=
+        m_pendingTextureRemovals.end())
+        return false;
+
+    resource->second.lastUsedFrame = m_guiFrameCounter;
+    return true;
 }
 
 uint64_t InxGUI::GetImGuiTextureVersion(const std::string &name) const
@@ -754,6 +925,7 @@ size_t InxGUI::TrimImGuiTextureBudget()
         }
         if (candidate == m_textures_umap.end())
             break;
+        m_textureNamesByDescriptor.erase(candidate->second.descriptorSet);
         DeferTextureRelease(std::move(candidate->second));
         m_textures_umap.erase(candidate);
         ++evicted;
@@ -796,6 +968,7 @@ uint64_t InxGUI::EvictOldestImGuiTexture()
     if (candidate == m_textures_umap.end())
         return 0;
     const uint64_t bytes = candidate->second.residentBytes;
+    m_textureNamesByDescriptor.erase(candidate->second.descriptorSet);
     DeferTextureRelease(std::move(candidate->second));
     m_textures_umap.erase(candidate);
     ++m_textureEvictionCount;

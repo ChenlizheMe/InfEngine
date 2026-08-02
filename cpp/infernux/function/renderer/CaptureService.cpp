@@ -47,11 +47,11 @@ float HalfToFloat(uint16_t value)
     return sign ? -result : result;
 }
 
-unsigned char LinearHdrToSrgb8(float value)
+unsigned char DisplayFloatToUnorm8(float value)
 {
-    value = std::max(value, 0.0F);
-    value = value / (1.0F + value);
-    value = value <= 0.0031308F ? value * 12.92F : 1.055F * std::pow(value, 1.0F / 2.4F) - 0.055F;
+    // Scene/Game float targets are sampled by ImGui into the UNORM swapchain
+    // without an additional transfer function. Match that visible path exactly
+    // so engine captures and the editor viewport have identical color values.
     return static_cast<unsigned char>(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F);
 }
 
@@ -77,9 +77,9 @@ std::vector<unsigned char> ConvertToRgba8(const vk::ImageReadbackTicket &ticket)
             throw std::runtime_error("Capture readback byte size does not match RGBA16F dimensions");
         const auto *source = reinterpret_cast<const uint16_t *>(raw.data());
         for (size_t i = 0; i < pixelCount; ++i) {
-            pixels[i * 4U + 0U] = LinearHdrToSrgb8(HalfToFloat(source[i * 4U + 0U]));
-            pixels[i * 4U + 1U] = LinearHdrToSrgb8(HalfToFloat(source[i * 4U + 1U]));
-            pixels[i * 4U + 2U] = LinearHdrToSrgb8(HalfToFloat(source[i * 4U + 2U]));
+            pixels[i * 4U + 0U] = DisplayFloatToUnorm8(HalfToFloat(source[i * 4U + 0U]));
+            pixels[i * 4U + 1U] = DisplayFloatToUnorm8(HalfToFloat(source[i * 4U + 1U]));
+            pixels[i * 4U + 2U] = DisplayFloatToUnorm8(HalfToFloat(source[i * 4U + 2U]));
             pixels[i * 4U + 3U] =
                 static_cast<unsigned char>(std::clamp(HalfToFloat(source[i * 4U + 3U]), 0.0F, 1.0F) * 255.0F + 0.5F);
         }
@@ -91,9 +91,9 @@ std::vector<unsigned char> ConvertToRgba8(const vk::ImageReadbackTicket &ticket)
             throw std::runtime_error("Capture readback byte size does not match RGBA32F dimensions");
         const auto *source = reinterpret_cast<const float *>(raw.data());
         for (size_t i = 0; i < pixelCount; ++i) {
-            pixels[i * 4U + 0U] = LinearHdrToSrgb8(source[i * 4U + 0U]);
-            pixels[i * 4U + 1U] = LinearHdrToSrgb8(source[i * 4U + 1U]);
-            pixels[i * 4U + 2U] = LinearHdrToSrgb8(source[i * 4U + 2U]);
+            pixels[i * 4U + 0U] = DisplayFloatToUnorm8(source[i * 4U + 0U]);
+            pixels[i * 4U + 1U] = DisplayFloatToUnorm8(source[i * 4U + 1U]);
+            pixels[i * 4U + 2U] = DisplayFloatToUnorm8(source[i * 4U + 2U]);
             pixels[i * 4U + 3U] =
                 static_cast<unsigned char>(std::clamp(source[i * 4U + 3U], 0.0F, 1.0F) * 255.0F + 0.5F);
         }
@@ -188,11 +188,14 @@ CaptureService::CaptureService() : m_impl(std::make_unique<Impl>())
 
 CaptureService::~CaptureService() = default;
 
-uint64_t CaptureService::Request(CaptureSource source, uint64_t sourceGeneration, uint64_t engineFrame,
-                                 std::string outputPath)
+uint64_t CaptureService::Request(CaptureSource source, const rhi::RenderViewContext &view, uint64_t sourceGeneration,
+                                 uint64_t engineFrame, std::string outputPath)
 {
     if (outputPath.empty())
         throw std::invalid_argument("Capture output path cannot be empty");
+    if (!view.IsValid() || view.kind != rhi::RenderViewKind::Capture ||
+        view.output != rhi::RenderOutputKind::Readback || view.source == rhi::InvalidRenderViewId)
+        throw std::invalid_argument("Capture requires a valid readback view derived from a source render view");
 
     size_t inFlight = 0;
     for (const auto &[id, record] : m_impl->records) {
@@ -220,7 +223,10 @@ uint64_t CaptureService::Request(CaptureSource source, uint64_t sourceGeneration
     record.snapshot.source = source;
     record.snapshot.status = CaptureStatus::PendingGpu;
     record.snapshot.sourceGeneration = sourceGeneration;
+    record.snapshot.view = view;
     record.snapshot.engineFrame = engineFrame;
+    record.snapshot.width = view.width;
+    record.snapshot.height = view.height;
     record.snapshot.outputPath = std::move(outputPath);
     m_impl->records.emplace(id, std::move(record));
     return id;

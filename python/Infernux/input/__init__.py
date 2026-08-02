@@ -63,7 +63,7 @@ class _InputMeta(type):
     @property
     def mouse_scroll_delta(cls) -> Tuple[float, float]:
         """Scroll delta as ``(x, y)`` this frame (positive y = scroll up)."""
-        if not cls._game_focused:
+        if not cls._accepts_game_input():
             return (0.0, 0.0)
         mgr = _NativeInputManager.instance()
         return (mgr.mouse_scroll_delta_x, mgr.mouse_scroll_delta_y)
@@ -71,28 +71,28 @@ class _InputMeta(type):
     @property
     def input_string(cls) -> str:
         """Characters typed this frame (UTF-8)."""
-        if not cls._game_focused:
+        if not cls._accepts_game_input():
             return ""
         return _NativeInputManager.instance().input_string
 
     @property
     def any_key(cls) -> bool:
         """``True`` if any key or mouse button is currently held."""
-        if not cls._game_focused:
+        if not cls._accepts_game_input():
             return False
         return _NativeInputManager.instance().any_key()
 
     @property
     def any_key_down(cls) -> bool:
         """``True`` during the frame any key was first pressed."""
-        if not cls._game_focused:
+        if not cls._accepts_game_input():
             return False
         return _NativeInputManager.instance().any_key_down()
 
     @property
     def touch_count(cls) -> int:
         """Number of active touch contacts this frame."""
-        if not cls._game_focused:
+        if not cls._accepts_game_input():
             return 0
         return _NativeInputManager.instance().touch_count
 
@@ -216,6 +216,9 @@ class Input(metaclass=_InputMeta):
     _game_focused: bool = True
     """When False, all queries return idle / zero values."""
 
+    _automation_game_input_depth: int = 0
+    """Internal scoped bypass used by background gameplay validation."""
+
     _game_viewport_origin: Tuple[float, float] = (0.0, 0.0)
     """Top-left corner of the game image in absolute window pixels."""
 
@@ -256,6 +259,19 @@ class Input(metaclass=_InputMeta):
         """Return whether the Game View is currently focused."""
         return Input._game_focused
 
+    @staticmethod
+    def _accepts_game_input() -> bool:
+        return Input._game_focused or Input._automation_game_input_depth > 0
+
+    @staticmethod
+    def _begin_automation_game_input() -> None:
+        """Route gameplay automation without changing visible Editor focus."""
+        Input._automation_game_input_depth += 1
+
+    @staticmethod
+    def _end_automation_game_input() -> None:
+        Input._automation_game_input_depth = max(0, Input._automation_game_input_depth - 1)
+
     # ------------------------------------------------------------------
     # Internal helper
     # ------------------------------------------------------------------
@@ -282,7 +298,7 @@ class Input(metaclass=_InputMeta):
         *key* can be a ``KeyCode`` constant or a string name (``"w"``,
         ``"space"``, ``"left shift"`` …).
         """
-        if not Input._game_focused:
+        if not Input._accepts_game_input():
             return False
         sc = Input._resolve_key(key)
         return sc >= 0 and _NativeInputManager.instance().get_key(sc)
@@ -293,7 +309,7 @@ class Input(metaclass=_InputMeta):
 
         For "while held" semantics, use :meth:`get_key` (Unity ``GetKey``).
         """
-        if not Input._game_focused:
+        if not Input._accepts_game_input():
             return False
         sc = Input._resolve_key(key)
         return sc >= 0 and _NativeInputManager.instance().get_key_down(sc)
@@ -301,7 +317,7 @@ class Input(metaclass=_InputMeta):
     @staticmethod
     def get_key_up(key: Union[str, int]) -> bool:
         """``True`` during the frame *key* was released."""
-        if not Input._game_focused:
+        if not Input._accepts_game_input():
             return False
         sc = Input._resolve_key(key)
         return sc >= 0 and _NativeInputManager.instance().get_key_up(sc)
@@ -313,28 +329,28 @@ class Input(metaclass=_InputMeta):
     @staticmethod
     def get_mouse_button(button: int) -> bool:
         """``True`` while *button* is held (0=left, 1=right, 2=middle)."""
-        if not Input._game_focused:
+        if not Input._accepts_game_input():
             return False
         return _NativeInputManager.instance().get_mouse_button(button)
 
     @staticmethod
     def get_mouse_button_down(button: int) -> bool:
         """``True`` during the frame *button* was pressed."""
-        if not Input._game_focused:
+        if not Input._accepts_game_input():
             return False
         return _NativeInputManager.instance().get_mouse_button_down(button)
 
     @staticmethod
     def get_mouse_button_up(button: int) -> bool:
         """``True`` during the frame *button* was released."""
-        if not Input._game_focused:
+        if not Input._accepts_game_input():
             return False
         return _NativeInputManager.instance().get_mouse_button_up(button)
 
     @staticmethod
     def get_mouse_frame_state(button: int = 0):
         """Return ``(abs_x, abs_y, scroll_x, scroll_y, held, down, up)`` for one button."""
-        if not Input._game_focused:
+        if not Input._accepts_game_input():
             return (0.0, 0.0, 0.0, 0.0, False, False, False)
         return _NativeInputManager.instance().get_mouse_frame_state(button)
 
@@ -371,7 +387,7 @@ class Input(metaclass=_InputMeta):
 
         Returns ``0.0`` for unknown axis names.
         """
-        if not Input._game_focused:
+        if not Input._accepts_game_input():
             return 0.0
         mgr = _NativeInputManager.instance()
         name = axis_name.lower()

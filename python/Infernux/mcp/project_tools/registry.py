@@ -10,6 +10,7 @@ import traceback
 from functools import wraps
 from typing import Any, Callable
 
+from Infernux.engine.path_utils import is_path_within, relative_path, resolved_path
 from Infernux.mcp.project_tools.loadability import (
     ProjectToolDefinition,
     collect_tool_definitions,
@@ -29,13 +30,13 @@ def get_project_tool_registry(project_path: str | None = None) -> "ProjectToolRe
     if _REGISTRY is None:
         _REGISTRY = ProjectToolRegistry(project_path or "")
     elif project_path:
-        _REGISTRY.project_path = os.path.abspath(project_path)
+        _REGISTRY.project_path = resolved_path(project_path)
     return _REGISTRY
 
 
 class ProjectToolRegistry:
     def __init__(self, project_path: str) -> None:
-        self.project_path = os.path.abspath(project_path) if project_path else ""
+        self.project_path = resolved_path(project_path) if project_path else ""
         self.tools: dict[str, ProjectToolDefinition] = {}
         self.disabled_tools: set[str] = set()
         self.file_reports: dict[str, dict[str, Any]] = {}
@@ -44,7 +45,7 @@ class ProjectToolRegistry:
         self._mcp = None
 
     def configure(self, project_path: str) -> None:
-        self.project_path = os.path.abspath(project_path)
+        self.project_path = resolved_path(project_path)
 
     def discover(self) -> dict[str, Any]:
         from Infernux.mcp.capabilities import feature_enabled
@@ -262,14 +263,14 @@ class ProjectToolRegistry:
         return default
 
     def _resolve_project_path(self, path: str) -> str:
-        root = os.path.abspath(self.project_path)
-        raw = os.path.abspath(path if os.path.isabs(path) else os.path.join(root, path))
-        if os.path.commonpath([root, raw]) != root:
+        root = resolved_path(self.project_path)
+        raw = resolved_path(path if os.path.isabs(path) else os.path.join(root, path))
+        if not is_path_within(raw, root):
             raise ValueError("Project tool path must stay inside the project.")
         return raw
 
     def _rel(self, path: str) -> str:
-        return os.path.relpath(os.path.abspath(path), self.project_path).replace("\\", "/")
+        return relative_path(path, self.project_path, allow_root=True)
 
     def _audit(self, action: str, success: bool, message: str, **extra: Any) -> None:
         event = {

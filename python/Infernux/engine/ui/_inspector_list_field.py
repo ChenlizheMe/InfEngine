@@ -152,7 +152,8 @@ def _make_list_picker_providers(element_type, metadata):
     if element_type == FieldType.MATERIAL:
         return (None, lambda filt: _picker_assets(filt, "*.mat"))
     if element_type == FieldType.TEXTURE:
-        patterns = ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.gif", "*.psd", "*.hdr", "*.pic", "*.pnm", "*.pgm", "*.ppm")
+        from Infernux.core.asset_types import IMAGE_EXTENSIONS
+        patterns = tuple(f"*{extension}" for extension in sorted(IMAGE_EXTENSIONS))
         return (None, lambda filt, _patterns=patterns: sum(
             (_picker_assets(filt, pattern, assets_only=True) for pattern in _patterns), []))
     if element_type == FieldType.SHADER:
@@ -166,7 +167,10 @@ def _make_list_picker_providers(element_type, metadata):
                 exts = cfg["extensions"]
                 return (None, lambda filt, _exts=exts: sum(
                     (_picker_assets(filt, e) for e in _exts), []))
-        return (None, lambda filt: _picker_assets(filt, "*.wav") + _picker_assets(filt, "*.mp3") + _picker_assets(filt, "*.ogg"))
+        from Infernux.core.asset_types import AUDIO_EXTENSIONS
+        patterns = tuple(f"*{extension}" for extension in sorted(AUDIO_EXTENSIONS))
+        return (None, lambda filt, _patterns=patterns: sum(
+            (_picker_assets(filt, pattern) for pattern in _patterns), []))
     return (None, None)
 
 
@@ -224,10 +228,26 @@ def _render_reference_list_item(ctx, field_name, index, item, items, metadata, e
         items[_index] = _make_list_default_element(metadata, _et)
         changed = True
 
+    display = _get_reference_display_name(element_type, item)
+    asset_types = {
+        FieldType.MATERIAL,
+        FieldType.TEXTURE,
+        FieldType.SHADER,
+        FieldType.ASSET,
+    }
+
+    def _li_on_ping(_item=item, _et=element_type):
+        if _et not in asset_types:
+            return
+        from ._inspector_references import _resolve_asset_disk_path, ping_asset_in_project
+        path = _resolve_asset_disk_path(_item)
+        if path:
+            ping_asset_in_project(path)
+
     IGUI.object_field(
         ctx,
         f"list_{field_name}_{index}",
-        _get_reference_display_name(element_type, item),
+        display,
         _list_type_hint(element_type, metadata),
         accept=_list_drag_drop_type(element_type, metadata),
         on_drop=_replace_item,
@@ -235,18 +255,33 @@ def _render_reference_list_item(ctx, field_name, index, item, items, metadata, e
         picker_asset_items=_li_assets,
         on_pick=_li_on_pick,
         on_clear=_li_on_clear,
+        on_ping=_li_on_ping if element_type in asset_types and item is not None and display != "None" else None,
     )
     return changed
 
 
-def _render_serializable_list_item(ctx, field_name, index, item, items, metadata):
+def _render_serializable_list_item(
+    ctx,
+    field_name,
+    index,
+    item,
+    items,
+    metadata,
+    *,
+    item_label=None,
+    item_renderer=None,
+):
     """Render a single SERIALIZABLE_OBJECT list element with nested fields.
 
     Mutates *items[index]* in-place on change. Returns True if changed.
     """
     import copy as _copy
     so_class = type(item) if item is not None else metadata.element_class
-    so_label = f"[{index}]" + (f" ({so_class.__name__})" if so_class else "")
+    so_label = (
+        str(item_label(item, index))
+        if item_label is not None
+        else f"[{index}]" + (f" ({so_class.__name__})" if so_class else "")
+    )
     if not render_compact_section_header(ctx, so_label, level="tertiary"):
         return False
     from Infernux.components.serialized_field import get_serialized_fields as _gsf
@@ -256,24 +291,135 @@ def _render_serializable_list_item(ctx, field_name, index, item, items, metadata
     so_lw = max_label_w(ctx, list(so_fields.keys())) if so_fields else 0.0
     elem_changes = {}
     for so_fn, so_meta in so_fields.items():
-        so_val = getattr(item, so_fn, so_meta.default)
-        new_val = render_serialized_field(
-            ctx, f"##{field_name}_{index}_{so_fn}", so_fn,
-            so_meta, so_val, so_lw,
-        )
+        if getattr(so_meta, "hidden", False):
+            continue
+        from Infernux.components.serialized_field import FieldType, get_raw_field_value
+        reference_types = {
+            FieldType.MATERIAL,
+            FieldType.TEXTURE,
+            FieldType.SHADER,
+            FieldType.ASSET,
+        }
+        if so_meta.field_type in reference_types:
+            so_val = get_raw_field_value(item, so_fn)
+            new_val = _render_serializable_asset_reference(
+                ctx,
+                f"{field_name}_{index}_{so_fn}",
+                so_fn,
+                so_meta,
+                so_val,
+                so_lw,
+            )
+        else:
+            so_val = getattr(item, so_fn, so_meta.default)
+            new_val = render_serialized_field(
+                ctx, f"##{field_name}_{index}_{so_fn}", so_fn,
+                so_meta, so_val, so_lw,
+            )
         if has_field_changed(so_meta.field_type, so_val, new_val):
             elem_changes[so_fn] = new_val
-    if not elem_changes:
-        return False
-    edited = _copy.deepcopy(item)
-    for fn, fv in elem_changes.items():
-        setattr(edited, fn, fv)
-    items[index] = edited
-    return True
+    changed = bool(elem_changes)
+    if changed:
+        edited = _copy.deepcopy(item)
+        for fn, fv in elem_changes.items():
+            setattr(edited, fn, fv)
+        items[index] = edited
+        item = edited
+    if item_renderer is not None:
+        item_renderer(ctx, item, index, f"{field_name}_{index}")
+    return changed
 
 
-def _render_list_items_body(ctx, comp, field_name, metadata, items, element_type,
-                            reference_types, button_spacing, current_value):
+def _render_serializable_asset_reference(
+    ctx,
+    widget_id,
+    field_name,
+    metadata,
+    current_value,
+    label_width,
+):
+    """Render a resource ref nested inside a SerializableObject list item."""
+    from Infernux.components.serialized_field import FieldType
+    from Infernux.components._serialize_helpers import make_null_ref
+    from ._inspector_references import (
+        _create_asset_ref_from_payload,
+        _create_reference_value_from_payload,
+        _get_asset_ref_config,
+        _get_reference_display_name,
+        _picker_assets,
+        _resolve_asset_config,
+    )
+    from .inspector_utils import field_label, pretty_field_name
+
+    field_type = metadata.field_type
+    if field_type == FieldType.ASSET:
+        type_hint, drag_type, globs, prefix = _resolve_asset_config(metadata)
+    else:
+        type_hint, drag_type, globs, prefix = _get_asset_ref_config()[field_type]
+
+    selected = current_value
+
+    def _make_value(path):
+        if field_type == FieldType.ASSET:
+            return _create_asset_ref_from_payload(metadata, str(path))
+        return _create_reference_value_from_payload(field_type, path)
+
+    def _on_pick(path):
+        nonlocal selected
+        value = _make_value(path)
+        if value is not None:
+            selected = value
+
+    def _on_clear():
+        nonlocal selected
+        selected = make_null_ref(field_type, metadata)
+
+    assets_only = field_type == FieldType.TEXTURE
+
+    def _picker(filt):
+        values = []
+        for glob in globs:
+            values += _picker_assets(filt, glob, assets_only=assets_only)
+        return values
+
+    field_label(ctx, pretty_field_name(field_name), label_width)
+    display = _get_reference_display_name(field_type, current_value)
+
+    def _on_ping(_value=current_value):
+        from ._inspector_references import _resolve_asset_disk_path, ping_asset_in_project
+        path = _resolve_asset_disk_path(_value)
+        if path:
+            ping_asset_in_project(path)
+
+    render_object_field(
+        ctx,
+        f"{prefix}_nested_ref_{widget_id}",
+        display,
+        type_hint,
+        accept_drag_type=drag_type,
+        on_drop_callback=_on_pick,
+        picker_asset_items=_picker,
+        on_pick=_on_pick,
+        on_clear=_on_clear,
+        on_ping=_on_ping if current_value is not None and display != "None" else None,
+    )
+    return selected
+
+
+def _render_list_items_body(
+    ctx,
+    comp,
+    field_name,
+    metadata,
+    items,
+    element_type,
+    reference_types,
+    button_spacing,
+    current_value,
+    *,
+    item_label=None,
+    item_renderer=None,
+):
     """Render list item rows, reorder separators, and bottom drop zone. Returns True if changed."""
     from .igui import IGUI
     from .inspector_utils import render_serialized_field, has_field_changed
@@ -316,7 +462,16 @@ def _render_list_items_body(ctx, comp, field_name, metadata, items, element_type
             if _render_reference_list_item(ctx, field_name, index, item, items, metadata, element_type):
                 changed = True
         elif element_type == FieldType.SERIALIZABLE_OBJECT:
-            if _render_serializable_list_item(ctx, field_name, index, item, items, metadata):
+            if _render_serializable_list_item(
+                ctx,
+                field_name,
+                index,
+                item,
+                items,
+                metadata,
+                item_label=item_label,
+                item_renderer=item_renderer,
+            ):
                 changed = True
         else:
             new_item = render_serialized_field(
@@ -346,7 +501,20 @@ def _render_list_items_body(ctx, comp, field_name, metadata, items, element_type
     return changed
 
 
-def _render_list_field(ctx: InxGUIContext, comp, field_name: str, metadata, current_value, lw: float):
+def _render_list_field(
+    ctx: InxGUIContext,
+    comp,
+    field_name: str,
+    metadata,
+    current_value,
+    lw: float,
+    *,
+    display_name: str | None = None,
+    header_drop_type: str | None = None,
+    header_drop_factory=None,
+    item_label=None,
+    item_renderer=None,
+):
     from Infernux.components.serialized_field import FieldType
     from .igui import IGUI
 
@@ -377,20 +545,27 @@ def _render_list_field(ctx: InxGUIContext, comp, field_name: str, metadata, curr
             changed = True
 
     # Header drop callback (for reference types)
-    _hdr_drag_type = _list_drag_drop_type(element_type, metadata) if element_type in reference_types else None
+    _hdr_drag_type = header_drop_type
+    if _hdr_drag_type is None and element_type in reference_types:
+        _hdr_drag_type = _list_drag_drop_type(element_type, metadata)
     _hdr_req = (metadata.component_type if element_type == FieldType.COMPONENT
                 else metadata.required_component) if element_type in reference_types else None
 
     def _header_drop(payload):
         nonlocal changed
-        value = _create_reference_value_from_payload(element_type, payload, _hdr_req, metadata=metadata)
+        if header_drop_factory is not None:
+            value = header_drop_factory(payload)
+        else:
+            value = _create_reference_value_from_payload(
+                element_type, payload, _hdr_req, metadata=metadata,
+            )
         if value is not None:
             items.append(value)
             changed = True
 
     # ── Unified list header: [label [N] ........... [-][+]] ──
     header_open = IGUI.list_header(
-        ctx, pretty_field_name(field_name), len(items),
+        ctx, display_name or pretty_field_name(field_name), len(items),
         on_add=_on_add,
         on_remove=_on_remove_last if items else None,
         accept_drop=_hdr_drag_type,
@@ -404,9 +579,29 @@ def _render_list_field(ctx: InxGUIContext, comp, field_name: str, metadata, curr
                 comp._call_on_validate()
         return
 
+    # The header itself remains a complete add/remove/drop target. Avoid
+    # building an empty body and reorder separator until an item exists.
+    if not items:
+        if changed and not metadata.readonly:
+            _record_property(comp, field_name, current_value, items, f"Set {field_name}")
+            if hasattr(comp, '_call_on_validate'):
+                comp._call_on_validate()
+        return
+
     # ── Render items, reorder separators, bottom drop zone ──
-    if _render_list_items_body(ctx, comp, field_name, metadata, items, element_type,
-                               reference_types, button_spacing, current_value):
+    if _render_list_items_body(
+        ctx,
+        comp,
+        field_name,
+        metadata,
+        items,
+        element_type,
+        reference_types,
+        button_spacing,
+        current_value,
+        item_label=item_label,
+        item_renderer=item_renderer,
+    ):
         changed = True
 
     if changed and not metadata.readonly:

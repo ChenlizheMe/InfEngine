@@ -3,6 +3,7 @@
 #include "InxRenderStruct.h"
 #include "ProfileConfig.h"
 #include "RenderGraphDescription.h"
+#include "RendererList.h"
 #include <function/scene/Camera.h>
 #include <function/scene/PrimitiveMeshes.h>
 #include <function/scene/SceneSystem.h>
@@ -23,7 +24,6 @@ class SceneRenderGraph;
 class EditorGizmos;
 class EditorTools;
 class GizmosDrawCallBuffer;
-class ParticleDrawCallBuffer;
 class InxMaterial;
 class CommandBuffer;
 class TransientResourcePool;
@@ -42,17 +42,13 @@ enum class RenderCommandType : uint8_t;
  */
 struct CullingResults
 {
-    std::vector<DrawCall> drawCalls;                          ///< All visible draw calls (unfiltered)
-    std::vector<DrawCall> shadowDrawCalls;                    ///< Layer-filtered shadow candidates for game camera path
-    const std::vector<DrawCall> *sceneDrawCallsRef = nullptr; ///< Non-owning ref (editor camera fast path)
-    const std::vector<DrawCall> *shadowDrawCallsRef = nullptr; ///< Non-owning ref to shadow candidates
-    uint32_t lightCount = 0;                                   ///< Number of visible lights (populated by Cull)
+    RendererList visibleRenderers;
+    RendererList shadowCasters;
+    uint32_t lightCount = 0; ///< Number of visible lights (populated by Cull)
 
     [[nodiscard]] size_t visibleObjectCount() const
     {
-        if (sceneDrawCallsRef)
-            return sceneDrawCallsRef->size();
-        return drawCalls.size();
+        return visibleRenderers.Size();
     }
     [[nodiscard]] size_t visibleLightCount() const
     {
@@ -75,7 +71,6 @@ struct EditorGizmosContext
     EditorGizmos *gizmos = nullptr;
     EditorTools *editorTools = nullptr;
     GizmosDrawCallBuffer *componentGizmos = nullptr; ///< Component gizmos supplied by the scripting layer
-    ParticleDrawCallBuffer *particles = nullptr;     ///< Runtime particle billboard batches
     std::shared_ptr<InxMaterial> gizmoMaterial;
     std::shared_ptr<InxMaterial> gridMaterial;
     std::shared_ptr<InxMaterial> editorToolsMaterial;
@@ -83,7 +78,7 @@ struct EditorGizmosContext
     std::shared_ptr<InxMaterial> componentGizmoIconMaterial; ///< Fallback material for icon billboards
     std::shared_ptr<InxMaterial> cameraGizmoIconMaterial;    ///< Textured camera icon material
     std::shared_ptr<InxMaterial> lightGizmoIconMaterial;     ///< Textured light icon material
-    std::shared_ptr<InxMaterial> particleMaterial;           ///< Default particle billboard material
+    std::shared_ptr<InxMaterial> particleGizmoIconMaterial;  ///< Textured particle-system icon material
     uint64_t selectedObjectId = 0;
     Scene *activeScene = nullptr;
     glm::vec3 cameraPos{0.0f};
@@ -126,6 +121,9 @@ class ScriptableRenderContext
         double submitCalls = 0.0;
         double baseDrawCalls = 0.0;
         double finalDrawCalls = 0.0;
+        double borrowedRendererListSubmits = 0.0;
+        double ownedRendererListSubmits = 0.0;
+        double materializedDrawCalls = 0.0;
     };
 
     [[nodiscard]] static ProfileSnapshot GetProfileSnapshot();
@@ -150,6 +148,15 @@ class ScriptableRenderContext
     /// Must be called before Submit() or SubmitCulling().
     void ApplyGraph(const RenderGraphDescription &desc);
 
+    /// Upload only changed graph parameter blocks; does not rebuild topology.
+    void UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates);
+
+    /// Stable identity used by Python upload caches for this native graph.
+    [[nodiscard]] uintptr_t GetGraphInstanceId() const noexcept
+    {
+        return reinterpret_cast<uintptr_t>(m_graph);
+    }
+
     /// @brief Submit all culling results as full draw calls + execute graph.
     /// Replaces the DrawRenderers() + DrawSkybox() + Submit() combo.
     /// DrawCall filtering is done by RenderGraph pass callbacks.
@@ -160,6 +167,13 @@ class ScriptableRenderContext
     /// @brief Single-call render path: setup + cull + apply_graph + submit.
     /// Avoids 3 extra Python→C++ round-trips compared to calling each step separately.
     void RenderWithGraph(Camera *camera, const RenderGraphDescription &desc);
+
+    /// Check whether the active SceneRenderGraph already owns an artifact.
+    [[nodiscard]] bool IsGraphRevisionCurrent(uint64_t sourceRevision) const;
+
+    /// Single-call steady-state render path that does not upload graph topology.
+    /// Returns false when the caller must fall back to RenderWithGraph().
+    bool RenderCompiled(Camera *camera, uint64_t sourceRevision);
 
     // ====================================================================
     // CommandBuffer integration
@@ -278,16 +292,17 @@ class ScriptableRenderContext
  * @brief Abstract base for render pipelines.
  *
  * Python classes override Render() via pybind11 trampoline.
- * The engine calls Render() once per frame with a ScriptableRenderContext
- * and the list of active cameras.
+ * The engine calls Render() once for one camera with a dedicated
+ * ScriptableRenderContext. Multi-camera rendering is owned by the renderer:
+ * every camera receives a separate context and RenderView state.
  */
 class RenderPipelineCallback
 {
   public:
     virtual ~RenderPipelineCallback() = default;
 
-    /// @brief Called once per frame to define the rendering pass sequence.
-    virtual void Render(ScriptableRenderContext &context, const std::vector<Camera *> &cameras) = 0;
+    /// @brief Render one camera through its dedicated context and RenderView.
+    virtual void Render(ScriptableRenderContext &context, Camera *camera) = 0;
 
     /// @brief Called when the pipeline is being replaced or engine is shutting down.
     virtual void Dispose()

@@ -86,7 +86,7 @@ nlohmann::json SphereCollider::SerializeDocument() const
 void SphereCollider::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
-    ValidateComponentDocument(j, "SphereCollider", 1, {"is_trigger", "center", "physic_material_guid", "radius"});
+    ValidateComponentDocument(j, "SphereCollider", {"is_trigger", "center", "physic_material_guid", "radius"});
     RequireBoolean(j, "is_trigger", "SphereCollider");
     RequireFiniteVector(j, "center", 3, "SphereCollider");
     RequireString(j, "physic_material_guid", "SphereCollider");

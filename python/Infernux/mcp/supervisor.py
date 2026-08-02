@@ -21,6 +21,13 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
+from Infernux.engine.path_utils import (
+    is_path_within,
+    path_fingerprint,
+    relative_path,
+    resolved_path,
+    same_path,
+)
 from Infernux.mcp import capabilities
 from Infernux.mcp import checkpoints as checkpoint_store
 
@@ -57,12 +64,12 @@ class SupervisorSession:
     _player_log_handle: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.project_root = os.path.abspath(self.project_root)
+        self.project_root = resolved_path(self.project_root)
         self.mode = _require_choice("mode", self.mode, VALID_MODES)
         self.build_profile = _require_choice("build_profile", self.build_profile, VALID_BUILD_PROFILES)
         self.recording_enabled = bool(self.recording_enabled and self.build_profile == "debug_feedback")
         self.managed_checkpoints_required = bool(self.managed_checkpoints_required)
-        self.python_executable = os.path.abspath(self.python_executable)
+        self.python_executable = resolved_path(self.python_executable)
         self.mcp_host = _require_loopback_host(self.mcp_host)
         self.mcp_port = _require_port(self.mcp_port)
 
@@ -106,20 +113,22 @@ class SupervisorSession:
     def player_runtime_log_path(self) -> str:
         if not self._player_executable:
             return ""
-        return os.path.join(os.path.dirname(self._player_executable), "Data", "Logs", "player.log")
+        return os.path.join(_player_data_root(self._player_executable), "Logs", "player.log")
 
     @property
     def player_debug_log_path(self) -> str:
         if not self._player_executable:
             return ""
-        stem = os.path.splitext(os.path.basename(self._player_executable))[0]
-        return os.path.join(os.path.dirname(self._player_executable), f"{stem}_debug.log")
+        data_root = _player_data_root(self._player_executable)
+        data_name = os.path.basename(data_root)
+        game_name = data_name[:-5] if data_name.endswith("_Data") else data_name
+        return os.path.join(data_root, f"{game_name}_debug.log")
 
     @property
     def player_crash_log_path(self) -> str:
         if not self._player_executable:
             return ""
-        return os.path.join(os.path.dirname(self._player_executable), "Data", "Logs", "crash.log")
+        return os.path.join(_player_data_root(self._player_executable), "Logs", "crash.log")
 
     @classmethod
     def resume(
@@ -137,7 +146,7 @@ class SupervisorSession:
         only trusts a saved PID after the loopback endpoint, mode/profile,
         editor instance ID, lease fingerprint, and project lock all agree.
         """
-        root = os.path.abspath(project_root or "")
+        root = resolved_path(project_root or "")
         requested_session_id = str(session_id or "").strip()
         if not requested_session_id:
             raise ValueError("A non-empty session_id is required to resume a Supervisor session.")
@@ -145,8 +154,8 @@ class SupervisorSession:
         state = _read_json_object(state_path)
         if not state:
             raise FileNotFoundError(f"Supervisor session state was not found: {state_path}")
-        stored_root = os.path.abspath(str(state.get("project_root", "") or ""))
-        if not stored_root or os.path.normcase(stored_root) != os.path.normcase(root):
+        stored_root = resolved_path(str(state.get("project_root", "") or ""))
+        if not stored_root or not same_path(stored_root, root):
             raise ValueError("Persisted Supervisor session belongs to a different project root.")
         stored_session_id = str(state.get("session_id", "") or "").strip()
         if stored_session_id != requested_session_id:
@@ -173,7 +182,7 @@ class SupervisorSession:
         resumed._project_lock_token = str(state.get("project_lock_token", "") or "").strip()
         resumed._mcp_ready = bool(state.get("mcp_ready", False))
         resumed._player_control_token = str(state.get("player_control_token", "") or "").strip()
-        resumed._player_executable = os.path.abspath(str(state.get("player_executable", "") or "")) if state.get("player_executable") else ""
+        resumed._player_executable = resolved_path(str(state.get("player_executable", "") or "")) if state.get("player_executable") else ""
         resumed._player_start_scene = str(state.get("player_start_scene", "") or "").strip()
         resumed._player_ready = bool(state.get("player_ready", False))
         persisted_pid = int(state.get("editor_pid", 0) or 0)
@@ -338,6 +347,11 @@ class SupervisorSession:
         env["_INFERNUX_PLAYER_CONTROL_FILE"] = self.player_control_path
         env["_INFERNUX_PLAYER_RESPONSE_FILE"] = self.player_response_path
         env["_INFERNUX_PLAYER_CONTROL_TOKEN"] = self._player_control_token
+        env["_INFERNUX_PLAYER_ARTIFACT_ROOT"] = self.artifact_root
+        data_root = _player_data_root(self._player_executable)
+        env["_INFERNUX_PLAYER_RUNTIME_ROOT"] = os.path.dirname(self._player_executable)
+        env["_INFERNUX_PLAYER_DATA_ROOT"] = data_root
+        env["_INFERNUX_PLAYER_MODULE_ROOT"] = os.path.join(data_root, "RuntimeModules")
         if self._player_start_scene:
             env["_INFERNUX_PLAYER_START_SCENE"] = self._player_start_scene
         try:
@@ -403,6 +417,29 @@ class SupervisorSession:
                 timeout_seconds=timeout_seconds,
             )
 
+    def player_send_mouse_button(
+        self,
+        button: int,
+        pressed: bool,
+        x: float,
+        y: float,
+        *,
+        timeout_seconds: float = 3.0,
+    ) -> dict[str, Any]:
+        """Send one human-equivalent pointer transition to the managed Player."""
+        mouse_buttons = _normalize_player_hold_mouse_buttons([button])
+        with self._operation_lock():
+            return self._call_player_control(
+                "mouse_button",
+                {
+                    "button": mouse_buttons[0],
+                    "pressed": bool(pressed),
+                    "x": _bounded_finite_float(x, "x", minimum=0.0, maximum=100_000.0),
+                    "y": _bounded_finite_float(y, "y", minimum=0.0, maximum=100_000.0),
+                },
+                timeout_seconds=timeout_seconds,
+            )
+
     def player_press_key(
         self,
         key: str | int,
@@ -437,6 +474,26 @@ class SupervisorSession:
                 timeout_seconds=max(float(timeout_seconds), duration + 2.0),
             )
 
+    def player_capture_game(
+        self,
+        file_name: str,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        """Capture the managed Player's engine-owned Game render target."""
+        requested = os.path.basename(str(file_name or "").strip())
+        if not requested or os.path.splitext(requested)[1].lower() != ".png":
+            raise ValueError("file_name must be a plain .png basename.")
+        with self._operation_lock():
+            return self._call_player_control(
+                "capture",
+                {
+                    "file_name": requested,
+                    "timeout_seconds": min(max(float(timeout_seconds) - 0.25, 0.5), 60.0),
+                },
+                timeout_seconds=timeout_seconds,
+            )
+
     def player_motion_capture_arm(
         self,
         object_names: list[str],
@@ -447,6 +504,9 @@ class SupervisorSession:
         trigger_timeout: float = 60.0,
         hold_key: str | int | None = None,
         hold_keys: list[str | int] | None = None,
+        hold_mouse_buttons: list[int] | None = None,
+        mouse_x: float = -10_000.0,
+        mouse_y: float = -10_000.0,
         frame_count: int | None = None,
         hold_frame_count: int | None = None,
         wait_frame_count: int | None = None,
@@ -470,6 +530,7 @@ class SupervisorSession:
         settle_wait = _bounded_finite_float(wait_seconds, "wait_seconds", minimum=0.0, maximum=30.0)
         probes = _normalize_player_component_probes(component_probes, names)
         hold_scancodes = _normalize_player_hold_scancodes(hold_key, hold_keys)
+        mouse_buttons = _normalize_player_hold_mouse_buttons(hold_mouse_buttons)
         assertions = _normalize_player_stop_assertions(stop_assertions)
         normalized_stop_mode = str(stop_mode or "all").strip().lower()
         if normalized_stop_mode not in {"all", "any"}:
@@ -485,6 +546,13 @@ class SupervisorSession:
                     "trigger_scene_name": str(trigger_scene_name or "").strip(),
                     "trigger_timeout": trigger_wait,
                     "hold_scancodes": hold_scancodes,
+                    "hold_mouse_buttons": mouse_buttons,
+                    "mouse_x": _bounded_finite_float(
+                        mouse_x, "mouse_x", minimum=-100_000.0, maximum=100_000.0
+                    ),
+                    "mouse_y": _bounded_finite_float(
+                        mouse_y, "mouse_y", minimum=-100_000.0, maximum=100_000.0
+                    ),
                     "frame_count": frame_count,
                     "hold_frame_count": hold_frame_count,
                     "wait_frame_count": wait_frame_count,
@@ -605,7 +673,6 @@ class SupervisorSession:
             except FileNotFoundError:
                 pass
         _write_json(self.player_control_path, {
-            "schema_version": 1,
             "command_id": command_id,
             "token": self._player_control_token,
             "action": str(action),
@@ -727,7 +794,6 @@ class SupervisorSession:
     ) -> dict[str, Any]:
         previous = self.status()
         event = {
-            "schema_version": 1,
             "kind": "infernux.mcp.checkpoint_create_event",
             "operation_id": f"checkpoint-create-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
             "checkpoint_id": checkpoint_id,
@@ -814,7 +880,6 @@ class SupervisorSession:
     ) -> dict[str, Any]:
         previous = self.status()
         event = {
-            "schema_version": 1,
             "kind": "infernux.mcp.checkpoint_restore_event",
             "operation_id": f"checkpoint-restore-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
             "checkpoint_id": checkpoint_id,
@@ -987,7 +1052,6 @@ class SupervisorSession:
         next_recording_enabled = bool(requested_recording and next_build_profile == "debug_feedback")
         previous_status = self.status()
         event: dict[str, Any] = {
-            "schema_version": 1,
             "handoff_id": f"handoff-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
             "started_at": time.time(),
             "state": "started",
@@ -1141,9 +1205,9 @@ class SupervisorSession:
                 f"{readiness.get('ready_error', 'unknown error')}"
             )
         observed = self._read_mcp_session_status(timeout_seconds=timeout_seconds)
-        observed_root = os.path.abspath(str(observed.get("project_root", "") or ""))
+        observed_root = resolved_path(str(observed.get("project_root", "") or ""))
         observed_session_id = str(observed.get("session_id", "") or "")
-        if os.path.normcase(observed_root) != os.path.normcase(self.project_root):
+        if not same_path(observed_root, self.project_root):
             raise RuntimeError("MCP endpoint project root does not match the persisted Supervisor session.")
         if observed_session_id != self.session_id:
             raise RuntimeError("MCP endpoint session_id does not match the persisted Supervisor session.")
@@ -1202,7 +1266,6 @@ class SupervisorSession:
         if not editor["running"]:
             self._mcp_ready = False
         return {
-            "schema_version": 5,
             "session_id": self.session_id,
             "project_root": self.project_root,
             "mode": self.mode,
@@ -1248,7 +1311,6 @@ class SupervisorSession:
             self.mcp_endpoint,
         ]
         return {
-            "schema_version": 1,
             "project_root": self.project_root,
             "working_directory": self.project_root,
             "session_id": self.session_id,
@@ -1325,8 +1387,8 @@ class SupervisorSession:
             raise RuntimeError("Editor project lock token does not match the persisted Supervisor session.")
         if int(lock.get("pid", 0) or 0) != int(editor.get("pid", 0) or 0):
             raise RuntimeError("Editor project lock PID does not match the running Editor process.")
-        lock_project = os.path.abspath(str(lock.get("project_path", "") or ""))
-        if os.path.normcase(lock_project) != os.path.normcase(self.project_root):
+        lock_project = resolved_path(str(lock.get("project_path", "") or ""))
+        if not same_path(lock_project, self.project_root):
             raise RuntimeError("Editor project lock project path does not match the persisted Supervisor session.")
 
     def _wait_for_clean_editor_shutdown(self, editor_pid: int, *, timeout_seconds: float) -> bool:
@@ -1409,23 +1471,51 @@ class SupervisorSession:
 
 
 def _validate_player_executable(executable_path: str, project_root: str) -> tuple[str, dict[str, Any]]:
-    executable = os.path.abspath(str(executable_path or ""))
-    if not os.path.isfile(executable):
-        raise FileNotFoundError(f"Player executable was not found: {executable}")
-    output_root = os.path.dirname(executable)
-    marker = _read_json_object(os.path.join(output_root, ".infernux-build-output"))
+    launcher = resolved_path(str(executable_path or ""))
+    if not os.path.isfile(launcher):
+        raise FileNotFoundError(f"Player executable was not found: {launcher}")
+
+    output_root = os.path.dirname(launcher)
+    game_name = os.path.splitext(os.path.basename(launcher))[0]
+    data_root = resolved_path(os.path.join(output_root, f"{game_name}_Data"))
+    layout_path = os.path.join(data_root, "PlayerLayout.json")
+    layout = _read_json_object(layout_path)
+    if layout.get("layout") != "infernux-windows-player":
+        raise ValueError("Player executable is not the launcher of a current Infernux Player layout.")
+    if str(layout.get("launcher", "") or "") != os.path.basename(launcher):
+        raise ValueError("Player layout launcher does not match the selected executable.")
+    if str(layout.get("data_directory", "") or "") != os.path.basename(data_root):
+        raise ValueError("Player layout data directory does not match the selected executable.")
+    if str(layout.get("runtime_directory", "") or "") != "Runtime":
+        raise ValueError("Player layout runtime directory is invalid.")
+
+    runtime_executable = resolved_path(os.path.join(data_root, "Runtime", "InfernuxPlayer.exe"))
+    if not is_path_within(runtime_executable, data_root, allow_root=False) or not os.path.isfile(runtime_executable):
+        raise FileNotFoundError(f"Player runtime executable was not found: {runtime_executable}")
+
+    marker = _read_json_object(os.path.join(data_root, ".infernux-build-output"))
     if marker.get("tool") != "Infernux" or marker.get("kind") != "build-output":
         raise ValueError("Player executable is not inside a verified Infernux build output directory.")
-    marker_project = os.path.abspath(str(marker.get("project_path", "") or ""))
-    if os.path.normcase(marker_project) != os.path.normcase(os.path.abspath(project_root)):
+    if str(marker.get("project_identity", "") or "") != path_fingerprint(project_root):
         raise ValueError("Player build output belongs to a different project.")
-    manifest_path = os.path.join(output_root, "Data", "BuildManifest.json")
+    manifest_path = os.path.join(data_root, "BuildManifest.json")
     manifest = _read_json_object(manifest_path)
     if not manifest:
         raise FileNotFoundError(f"Player BuildManifest was not found: {manifest_path}")
     if not bool(manifest.get("debug_build", False)):
         raise RuntimeError("Supervisor validation control is available only in a Debug Player build.")
-    return executable, manifest
+    return runtime_executable, manifest
+
+
+def _player_data_root(runtime_executable: str) -> str:
+    runtime = resolved_path(str(runtime_executable or ""))
+    runtime_directory = os.path.dirname(runtime)
+    if os.path.basename(runtime_directory) != "Runtime":
+        raise ValueError("Player runtime executable is not inside the current organized Player layout.")
+    data_root = resolved_path(os.path.dirname(runtime_directory))
+    if not os.path.basename(data_root).endswith("_Data"):
+        raise ValueError("Player runtime data directory is invalid.")
+    return data_root
 
 
 def _resolve_player_start_scene(start_scene: str, project_root: str, manifest: dict[str, Any]) -> str:
@@ -1434,13 +1524,10 @@ def _resolve_player_start_scene(start_scene: str, project_root: str, manifest: d
     if not requested:
         return ""
 
-    root = os.path.abspath(project_root)
-    candidate = os.path.abspath(requested if os.path.isabs(requested) else os.path.join(root, requested))
-    try:
-        if os.path.commonpath([root, candidate]) != root:
-            raise ValueError("Player validation start_scene must stay inside the project root.")
-    except ValueError as exc:
-        raise ValueError("Player validation start_scene must stay inside the project root.") from exc
+    root = resolved_path(project_root)
+    candidate = resolved_path(requested if os.path.isabs(requested) else os.path.join(root, requested))
+    if not is_path_within(candidate, root):
+        raise ValueError("Player validation start_scene must stay inside the project root.")
     if os.path.splitext(candidate)[1].lower() != ".scene":
         raise ValueError("Player validation start_scene must name a .scene file.")
 
@@ -1448,9 +1535,9 @@ def _resolve_player_start_scene(start_scene: str, project_root: str, manifest: d
         scene = str(listed or "").strip()
         if not scene:
             continue
-        manifest_candidate = os.path.abspath(scene if os.path.isabs(scene) else os.path.join(root, scene))
-        if os.path.normcase(manifest_candidate) == os.path.normcase(candidate):
-            return os.path.relpath(manifest_candidate, root).replace("\\", "/")
+        manifest_candidate = resolved_path(scene if os.path.isabs(scene) else os.path.join(root, scene))
+        if same_path(manifest_candidate, candidate):
+            return relative_path(manifest_candidate, root)
     raise ValueError("Player validation start_scene must be declared by the current Debug Player BuildManifest.")
 
 
@@ -1468,12 +1555,12 @@ def _compact_checkpoint_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_project_root(path: str) -> None:
-    root = os.path.abspath(path)
+    root = resolved_path(path)
     if not os.path.isabs(root):
         raise ValueError("Project root must be an absolute path.")
-    home = os.path.abspath(os.path.expanduser("~"))
+    home = resolved_path(os.path.expanduser("~"))
     desktop = os.path.join(home, "Desktop")
-    if os.path.normcase(root) == os.path.normcase(desktop):
+    if same_path(root, desktop):
         raise ValueError("Project root must be a named folder under Desktop, not the entire Desktop.")
 
 
@@ -1652,6 +1739,20 @@ def _normalize_player_hold_scancodes(
     if len(set(scancodes)) != len(scancodes):
         raise ValueError("hold_keys must not contain duplicate keys.")
     return scancodes
+
+
+def _normalize_player_hold_mouse_buttons(value: list[int] | None) -> list[int]:
+    buttons = list(value or [])
+    if len(buttons) > 5:
+        raise ValueError("hold_mouse_buttons may contain at most 5 buttons.")
+    normalized: list[int] = []
+    for button in buttons:
+        if isinstance(button, bool) or int(button) not in range(5):
+            raise ValueError("hold_mouse_buttons must use Unity button indices 0 through 4.")
+        normalized.append(int(button))
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("hold_mouse_buttons must not contain duplicate buttons.")
+    return normalized
 
 
 def _normalize_player_stop_assertions(assertions: list[dict[str, Any]] | None) -> list[dict[str, Any]]:

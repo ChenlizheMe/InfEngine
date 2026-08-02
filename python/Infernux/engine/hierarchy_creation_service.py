@@ -102,7 +102,9 @@ class HierarchyCreationService:
             ("rendering.camera", "Camera", "Rendering"),
             ("rendering.render_stack", "RenderStack", "Rendering"),
             ("rendering.sprite_renderer", "Sprite Renderer", "Rendering"),
+            ("effect.particle_system", "Particle System", "Effect"),
             ("ui.canvas", "Canvas", "UI"),
+            ("ui.image", "Image", "UI"),
             ("ui.text", "Text", "UI"),
             ("ui.button", "Button", "UI"),
         ]
@@ -133,7 +135,7 @@ class HierarchyCreationService:
 
         parent_id = int(parent_id or 0)
         effective_parent_id = parent_id
-        if kind in {"ui.text", "ui.button"}:
+        if kind in {"ui.image", "ui.text", "ui.button"}:
             effective_parent_id = self._find_canvas_parent_id(scene, parent_id)
 
         if effective_parent_id:
@@ -152,6 +154,122 @@ class HierarchyCreationService:
 
         self._finalize(obj, effective_parent_id, self._description_for(kind), select=select, record_undo=record_undo)
         return self._serialize_created(obj, kind, selected=select)
+
+    def create_empty_parent(self, object_ids: list[int] | None = None) -> dict[str, Any]:
+        """Create an Empty that becomes the parent of the given selection.
+
+        Supports multi-select: only topmost selected objects are reparented
+        (descendants of other selected objects are left under those objects).
+        World transforms of children are preserved.
+        """
+        from Infernux.lib import SceneManager, Vector3
+        from Infernux.engine.undo import (
+            CompoundCommand,
+            CreateGameObjectCommand,
+            MoveGameObjectCommand,
+            UndoManager,
+        )
+
+        scene = SceneManager.instance().get_active_scene()
+        if not scene:
+            raise RuntimeError("No active scene.")
+
+        raw_ids = object_ids
+        if raw_ids is None and self._selection_manager is not None:
+            raw_ids = list(self._selection_manager.get_ids())
+        ids = [int(i) for i in (raw_ids or []) if int(i or 0)]
+        if not ids:
+            raise ValueError("No objects selected for Create Empty Parent.")
+
+        selected_set = set(ids)
+        objects = []
+        for oid in ids:
+            obj = scene.find_by_id(oid)
+            if obj is not None:
+                objects.append(obj)
+        if not objects:
+            raise ValueError("Selected GameObjects were not found.")
+
+        topmost = []
+        for obj in objects:
+            ancestor = obj.get_parent()
+            under_selected = False
+            while ancestor is not None:
+                if int(ancestor.id) in selected_set:
+                    under_selected = True
+                    break
+                ancestor = ancestor.get_parent()
+            if not under_selected:
+                topmost.append(obj)
+        if not topmost:
+            raise ValueError("No valid objects for Create Empty Parent.")
+
+        common_parent = _deepest_common_parent(topmost)
+        insert_index = _min_sibling_index_under_parent(topmost, common_parent)
+
+        parent_go = scene.create_game_object("GameObject")
+        if parent_go is None:
+            raise RuntimeError("Failed to create empty parent GameObject.")
+        parent_go.name = _unique_scene_object_name(
+            scene, str(parent_go.name), exclude_id=int(parent_go.id)
+        )
+        if common_parent is not None:
+            parent_go.set_parent(common_parent, True)
+        parent_tf = getattr(parent_go, "transform", None)
+        if parent_tf is not None:
+            parent_tf.set_sibling_index(max(0, int(insert_index)))
+
+        avg = _average_world_position(topmost)
+        if avg is not None and parent_tf is not None:
+            parent_tf.position = Vector3(avg[0], avg[1], avg[2])
+
+        move_cmds: list[MoveGameObjectCommand] = []
+        for child in topmost:
+            # Refuse parenting a selected ancestor onto the new empty if that
+            # would create a cycle — topmost filtering already prevents this.
+            if int(child.id) == int(parent_go.id):
+                continue
+            old_parent = child.get_parent()
+            old_parent_id = int(old_parent.id) if old_parent is not None else None
+            child_tf = getattr(child, "transform", None)
+            old_sibling = int(child_tf.get_sibling_index()) if child_tf is not None else 0
+            child.set_parent(parent_go, True)
+            new_sibling = int(child_tf.get_sibling_index()) if child_tf is not None else 0
+            move_cmds.append(
+                MoveGameObjectCommand(
+                    int(child.id),
+                    old_parent_id,
+                    int(parent_go.id),
+                    old_sibling,
+                    new_sibling,
+                    "Create Empty Parent",
+                )
+            )
+
+        if self._selection_manager:
+            self._selection_manager.select(parent_go.id)
+
+        mgr = UndoManager.instance()
+        if mgr is not None and mgr.enabled:
+            cmds = [CreateGameObjectCommand(int(parent_go.id), "Create Empty Parent")]
+            cmds.extend(move_cmds)
+            mgr.record(CompoundCommand(cmds, "Create Empty Parent"))
+        elif self._undo_tracker is not None:
+            self._undo_tracker.record_create(parent_go.id, "Create Empty Parent")
+
+        hp = self._hierarchy_panel
+        if hp is not None:
+            expand_created_parent = getattr(hp, "set_pending_expand_id", None)
+            if callable(expand_created_parent):
+                expand_created_parent(parent_go.id)
+            ensure_visible = getattr(hp, "set_selected_object_by_id", None)
+            if callable(ensure_visible):
+                ensure_visible(parent_go.id)
+            callback = getattr(hp, "on_selection_changed", None)
+            if callable(callback):
+                callback(parent_go.id)
+
+        return self._serialize_created(parent_go, "empty", selected=True)
 
     def _create_raw(self, scene, kind: str, parent_id: int):
         self._ensure_default_kinds()
@@ -187,10 +305,14 @@ class HierarchyCreationService:
             from Infernux.components.builtin.sprite_renderer import SpriteRenderer
             SpriteRenderer._get_or_create_wrapper(cpp_comp, obj)
             return obj
+        if kind == "effect.particle_system":
+            return self._create_particle_system(scene)
         if kind == "ui.canvas":
             return self._create_ui_canvas(scene)
         if kind == "ui.text":
             return self._create_ui_text(scene, parent_id)
+        if kind == "ui.image":
+            return self._create_ui_image(scene, parent_id)
         if kind == "ui.button":
             return self._create_ui_button(scene, parent_id)
         raise ValueError(f"Unknown hierarchy create kind: {kind}")
@@ -228,7 +350,6 @@ class HierarchyCreationService:
         if light_comp:
             light_comp.light_type = light_type
             light_comp.shadows = LightShadows.Hard
-            light_comp.shadow_bias = 0.0
             if light_type == LightType.Directional and obj.transform:
                 obj.transform.euler_angles = Vector3(50.0, -30.0, 0.0)
             elif light_type == LightType.Point:
@@ -237,6 +358,14 @@ class HierarchyCreationService:
                 light_comp.range = 10.0
                 light_comp.outer_spot_angle = 45.0
                 light_comp.spot_angle = 30.0
+        return obj
+
+    def _create_particle_system(self, scene):
+        from Infernux.components.particle_system import ParticleSystem
+        obj = scene.create_game_object("Particle System")
+        if obj and obj.add_py_component(ParticleSystem()) is None:
+            scene.destroy_game_object(obj)
+            return None
         return obj
 
     def _create_ui_canvas(self, scene):
@@ -254,6 +383,18 @@ class HierarchyCreationService:
         obj = scene.create_game_object("Text")
         if obj:
             obj.add_py_component(UITextCls())
+            invalidate_canvas_cache()
+        return obj
+
+    def _create_ui_image(self, scene, parent_id: int):
+        from Infernux.ui import UIImage as UIImageCls
+        from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
+        obj = scene.create_game_object("Image")
+        if obj:
+            image = UIImageCls()
+            image.width = 100.0
+            image.height = 100.0
+            obj.add_py_component(image)
             invalidate_canvas_cache()
         return obj
 
@@ -312,9 +453,18 @@ class HierarchyCreationService:
             self._undo_tracker.record_create(obj.id, description)
 
         hp = self._hierarchy_panel
-        callback = getattr(hp, "on_selection_changed", None) if hp is not None else None
-        if select and callback:
-            callback(obj.id)
+        if select and hp is not None:
+            ensure_visible = getattr(hp, "set_selected_object_by_id", None)
+            if callable(ensure_visible):
+                ensure_visible(obj.id)
+            # The native panel skips its selection notification when the
+            # selection manager already holds the new id (we selected it
+            # right above), so the Inspector would never hear about the new
+            # object. Always fire the Python-side selection callback — it is
+            # idempotent and syncs Inspector, outline and event bus.
+            callback = getattr(hp, "on_selection_changed", None)
+            if callable(callback):
+                callback(obj.id)
 
     def _description_for(self, kind: str) -> str:
         if kind.startswith("primitive."):
@@ -329,10 +479,14 @@ class HierarchyCreationService:
             return "Create RenderStack"
         if kind == "rendering.sprite_renderer":
             return "Create Sprite Renderer"
+        if kind == "effect.particle_system":
+            return "Create Particle System"
         if kind == "ui.canvas":
             return "Create Canvas"
         if kind == "ui.text":
             return "Create Text"
+        if kind == "ui.image":
+            return "Create Image"
         if kind == "ui.button":
             return "Create Button"
         return "Create GameObject"
@@ -355,14 +509,27 @@ class HierarchyCreationService:
 
 def _component_names(obj) -> list[str]:
     names: list[str] = []
+    seen: set[tuple[str, int]] = set()
+
+    def _append(comp) -> None:
+        component_id = int(getattr(comp, "component_id", 0) or 0)
+        key = (
+            "component_id" if component_id else "object_id",
+            component_id if component_id else id(comp),
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        names.append(str(getattr(comp, "type_name", type(comp).__name__)))
+
     try:
         for comp in obj.get_components() or []:
-            names.append(str(getattr(comp, "type_name", type(comp).__name__)))
+            _append(comp)
     except Exception as exc:
         Debug.log_suppressed("HierarchyCreationService.components.native", exc)
     try:
         for comp in obj.get_py_components() or []:
-            names.append(str(getattr(comp, "type_name", type(comp).__name__)))
+            _append(comp)
     except Exception as exc:
         Debug.log_suppressed("HierarchyCreationService.components.py", exc)
     return names
@@ -398,3 +565,65 @@ def _get_py_components_safe(obj) -> list[Any]:
     except Exception as exc:
         Debug.log_suppressed("HierarchyCreationService.get_py_components", exc)
         return []
+
+
+def _ancestor_parent_ids(obj) -> list[int]:
+    """Immediate parent first, then ancestors, ending with 0 (scene root)."""
+    ids: list[int] = []
+    parent = obj.get_parent() if obj is not None else None
+    while parent is not None:
+        ids.append(int(parent.id))
+        parent = parent.get_parent()
+    ids.append(0)
+    return ids
+
+
+def _deepest_common_parent(objects: list[Any]):
+    if not objects:
+        return None
+    candidates = _ancestor_parent_ids(objects[0])
+    for obj in objects[1:]:
+        allowed = set(_ancestor_parent_ids(obj))
+        candidates = [cid for cid in candidates if cid in allowed]
+    if not candidates:
+        return None
+    common_id = int(candidates[0])
+    if common_id == 0:
+        return None
+    from Infernux.lib import SceneManager
+    scene = SceneManager.instance().get_active_scene()
+    return scene.find_by_id(common_id) if scene else None
+
+
+def _min_sibling_index_under_parent(objects: list[Any], parent) -> int:
+    parent_id = int(parent.id) if parent is not None else 0
+    indices: list[int] = []
+    for obj in objects:
+        current = obj.get_parent() if obj is not None else None
+        current_id = int(current.id) if current is not None else 0
+        if current_id != parent_id:
+            continue
+        transform = getattr(obj, "transform", None)
+        if transform is not None:
+            indices.append(int(transform.get_sibling_index()))
+    return min(indices) if indices else 0
+
+
+def _average_world_position(objects: list[Any]) -> tuple[float, float, float] | None:
+    sx = sy = sz = 0.0
+    count = 0
+    for obj in objects:
+        transform = getattr(obj, "transform", None)
+        if transform is None:
+            continue
+        try:
+            pos = transform.position
+            sx += float(pos.x)
+            sy += float(pos.y)
+            sz += float(pos.z)
+            count += 1
+        except Exception as exc:
+            Debug.log_suppressed("HierarchyCreationService.avg_position", exc)
+    if count <= 0:
+        return None
+    return (sx / count, sy / count, sz / count)

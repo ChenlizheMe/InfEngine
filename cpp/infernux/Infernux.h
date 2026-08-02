@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <core/threading/JobSystem.h>
 #include <core/types/InxFwdType.h>
+#include <core/types/ShaderProgramArtifact.h>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -29,6 +30,8 @@
 
 namespace infernux
 {
+
+class AssetLoadTicket;
 
 enum class RuntimeMode
 {
@@ -217,7 +220,11 @@ class Infernux
     /// @param materialJson  If non-empty, render from this JSON (Inspector live edits).
     /// @param fileMtimeHint If != 0 and materialJson is empty, used to detect file changes (ProjectPanel).
     uint64_t QueryOrScheduleMaterialPreview(const std::string &resourceKey, const std::string &matFilePath,
-                                            const std::string &materialJson = "", uint64_t fileMtimeHint = 0);
+                                            const std::string &materialJson = "", uint64_t fileMtimeHint = 0,
+                                            bool authoring = false);
+
+    /// @brief Release Inspector ownership while preserving the shared preview texture.
+    void ReleasePreviewAuthoring(const std::string &resourceKey);
 
     struct PreviewTaskSnapshot
     {
@@ -252,6 +259,9 @@ class Infernux
     /// @brief Pump completed preview tasks on main thread and upload textures.
     void PumpPreviewTasks();
 
+    /// @brief Poll asynchronous GPU completion without waiting for the device.
+    void PollGpuCompletions();
+
     /// @brief Get uploaded texture id for a material preview key.
     /// @return Non-zero ImGui texture id when available (stale-return for anti-flicker).
     uint64_t GetMaterialPreviewTextureId(const std::string &resourceKey) const;
@@ -266,6 +276,11 @@ class Infernux
     /// @brief Get uploaded texture preview dimensions.
     /// @return (width,height); (0,0) when not ready.
     std::pair<int, int> GetTexturePreviewSize(const std::string &resourceKey) const;
+
+    /// @brief Get an already uploaded mesh preview without scheduling work.
+    /// Model thumbnails are imported asynchronously; this accessor is intentionally
+    /// a cache lookup so FileManager can stay responsive while an FBX is loading.
+    uint64_t GetMeshPreviewTextureId(const std::string &resourceKey) const;
 
     /// @brief Invalidate one material preview task/cache entry.
     void InvalidateMaterialPreviewTask(const std::string &resourceKey);
@@ -283,6 +298,8 @@ class Infernux
     std::tuple<uint64_t, int, int> QueryOrScheduleTexturePreview(const std::string &resourceKey,
                                                                  const std::string &textureFilePath,
                                                                  uint64_t contentStampHint, bool nearest, bool srgb,
+                                                                 int maxSize, const std::string &textureFormat,
+                                                                 const std::string &textureType, bool authoring,
                                                                  bool pump);
 
     /// @brief Schedule texture preview from in-memory data (JPEG/PNG/etc.).
@@ -369,6 +386,30 @@ class Infernux
     /// @brief Push a compiled ShaderAsset into the renderer (SPIR-V + variants + render meta).
     void RegisterShaderToRenderer(const struct ShaderAsset &asset);
 
+    struct LinkedShaderProgramPreparation
+    {
+        bool usesLinkedArtifact = false;
+        bool success = true;
+        std::string error;
+    };
+
+    struct LinkedShaderProgramCacheEntry
+    {
+        uint64_t sourceStamp = 0;
+        ShaderProgramKey programKey;
+        uint64_t failedSourceStamp = 0;
+        std::string lastError;
+    };
+
+    [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages);
+    [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages,
+                                                                                   const std::string &vertexPath,
+                                                                                   const std::string &fragmentPath);
+    [[nodiscard]] LinkedShaderProgramPreparation
+    EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material);
+
+    std::unordered_map<ShaderStagePair, LinkedShaderProgramCacheEntry, ShaderStagePairHash> m_linkedShaderProgramCache;
+
     struct TexturePreviewCompleted
     {
         std::string resourceKey;
@@ -395,6 +436,9 @@ class Infernux
         uint64_t generation = 0;
         bool nearest = false;
         bool srgb = false;
+        int maxSize = 256;
+        std::string textureFormat = "auto";
+        std::string textureType = "default";
     };
 
     struct MeshPreviewRequest
@@ -413,6 +457,7 @@ class Infernux
         uint64_t pendingUploadVersion = 0;
         uint64_t pendingPreviewGeneration = 0;
         bool inFlight = false;
+        bool authoring = false;
         uint64_t renderGeneration = 0;
         std::shared_ptr<vk::ImageReadbackTicket> renderTicket;
         std::shared_ptr<InxMaterial> renderMaterial;
@@ -435,6 +480,7 @@ class Infernux
         uint64_t pendingUploadVersion = 0;
         uint64_t pendingPreviewGeneration = 0;
         bool inFlight = false;
+        bool authoring = false;
         int pendingWidth = 0;
         int pendingHeight = 0;
         int readyWidth = 0;
@@ -443,6 +489,9 @@ class Infernux
         uint64_t textureId = 0;
         bool nearest = false;
         bool srgb = false;
+        int maxSize = 256;
+        std::string textureFormat = "auto";
+        std::string textureType = "default";
         uint64_t pixelGeneration = 0;
         uint64_t pixelHash = 0;
         uint32_t nonTransparentPixelCount = 0;
@@ -454,12 +503,16 @@ class Infernux
     {
         uint64_t generation = 0;
         uint64_t readyGeneration = 0;
+        uint64_t failedGeneration = 0;
         uint64_t lastFileMtime = 0;
         uint64_t pendingUploadVersion = 0;
         uint64_t pendingPreviewGeneration = 0;
         bool inFlight = false;
         uint64_t renderGeneration = 0;
         std::shared_ptr<vk::ImageReadbackTicket> renderTicket;
+        std::shared_ptr<AssetLoadTicket> loadTicket;
+        std::string loadGuid;
+        uint64_t loadGeneration = 0;
         int pendingSize = 0;
         int readySize = 0;
         std::string textureName;

@@ -12,9 +12,10 @@ Usage:
 """
 
 from enum import Enum, auto
-from typing import Any, Tuple, Optional, Type, Dict, Callable, TYPE_CHECKING
+from typing import Any, Tuple, Optional, Type, Dict, Callable, TYPE_CHECKING, List, Union
 from dataclasses import dataclass
 import copy
+import os
 import weakref
 import threading
 from Infernux.debug import Debug
@@ -94,7 +95,7 @@ def _call_field_did_change(instance: 'InxComponent', field_name: str, old_value:
 
 @dataclass(frozen=True)
 class Range:
-    """Numeric range constraint → slider (or bounded drag with slider=False)."""
+    """Numeric range constraint. Inspector shows a slider plus a separate input box."""
     lo: float
     hi: float
     slider: bool = True
@@ -199,13 +200,10 @@ def rgba_equal(a: Any, b: Any) -> bool:
 
 
 def is_rgba_storage(value: Any) -> bool:
-    """True when *value* is canonical or legacy RGBA component storage."""
+    """True when *value* uses canonical RGBA component storage."""
     if isinstance(value, (str, bytes)):
         return False
     if type(value) is list and len(value) == 4:
-        return all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in value)
-    # Legacy tuple-subclass Color instances from older engine builds.
-    if isinstance(value, tuple) and type(value) is not tuple and len(value) in (3, 4):
         return all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in value)
     return False
 
@@ -260,6 +258,7 @@ class FieldMetadata:
     default: Any
     range: Optional[Tuple[float, float]] = None  # (min, max) for numeric types
     tooltip: str = ""
+    display_name_key: str = ""  # Optional editor i18n key for the field label
     readonly: bool = False
     header: str = ""  # Group header shown above this field
     space: float = 0.0  # Vertical space before this field
@@ -313,7 +312,10 @@ class SerializedFieldDescriptor:
         self.metadata = metadata
         self._values: Dict[int, Any] = {}  # instance id -> value
         self._weak_refs: Dict[int, weakref.ref] = {}  # instance id -> weak ref
-        self._lock = threading.Lock()  # Thread-safe access
+        # Replacing a stale weakref can synchronously invoke its callback while
+        # this descriptor is being updated. The callback must be able to
+        # re-enter and then prove it still owns the slot before removing data.
+        self._lock = threading.RLock()
         self._set_count: int = 0  # Counter for periodic dead-ref cleanup
         # CDS backing (set by _cds_bridge.register_class; None = Python-only).
         self._cds_class_id: Optional[int] = None
@@ -324,6 +326,8 @@ class SerializedFieldDescriptor:
         """Create a weak-ref callback that auto-cleans on GC."""
         def _on_gc(_ref, _iid=inst_id, _self=self):
             with _self._lock:
+                if _self._weak_refs.get(_iid) is not _ref:
+                    return
                 _self._values.pop(_iid, None)
                 _self._weak_refs.pop(_iid, None)
         return _on_gc
@@ -425,10 +429,11 @@ class SerializedFieldDescriptor:
         # Normal set path
         with self._lock:
             old = self._values.get(inst_id, self.metadata.default)
-            self._values[inst_id] = value
             # Track instance with weak reference for cleanup
-            if inst_id not in self._weak_refs:
+            tracked = self._weak_refs.get(inst_id)
+            if tracked is None or tracked() is not instance:
                 self._weak_refs[inst_id] = weakref.ref(instance, self._make_ref_callback(inst_id))
+            self._values[inst_id] = value
 
         # Mark scene dirty via injectable callback
         if not getattr(instance, '_inf_deserializing', False):
@@ -558,8 +563,19 @@ def _guid_from_path(path: str) -> str:
     if not db:
         return ""
     try:
-        guid = db.get_guid_from_path(path)
-        return guid or ""
+        candidates = [path]
+        if not os.path.isabs(path):
+            from Infernux.engine.project_context import get_project_root
+            from Infernux.engine.path_utils import resolved_path
+
+            project_root = get_project_root()
+            if project_root:
+                candidates.append(resolved_path(os.path.join(project_root, path)))
+        for candidate in candidates:
+            guid = db.get_guid_from_path(candidate)
+            if guid:
+                return guid
+        return ""
     except Exception as exc:
         Debug.log_suppressed("serialized_field._guid_for_path", exc)
         return ""
@@ -729,10 +745,26 @@ def normalize_runtime_field_value(value: Any, field_meta_or_type) -> Any:
         field_type = field_meta_or_type.field_type
         element_type = getattr(field_meta_or_type, 'element_type', None)
         asset_type = getattr(field_meta_or_type, 'asset_type', None)
+        numeric_range = getattr(field_meta_or_type, 'range', None)
     else:
         field_type = field_meta_or_type
         element_type = None
         asset_type = None
+        numeric_range = None
+
+    # ``range`` is a data contract, not merely an Inspector presentation hint.
+    # Text entry, deserialization and scripting all pass through this function,
+    # so enforcing it here prevents transient invalid values from reaching
+    # native systems between two editor frames.
+    if numeric_range is not None and field_type in (FieldType.INT, FieldType.FLOAT):
+        lower, upper = numeric_range
+        if lower > upper:
+            raise ValueError(
+                f"serialized field range must be ordered, got ({lower}, {upper})"
+            )
+        if field_type == FieldType.INT:
+            return max(int(lower), min(int(upper), int(value)))
+        return max(float(lower), min(float(upper), float(value)))
 
     if field_type == FieldType.COMPONENT:
         return _ensure_component_ref(value)
@@ -762,6 +794,126 @@ def normalize_runtime_field_value(value: Any, field_meta_or_type) -> Any:
     if field_type == FieldType.COLOR:
         return normalize_rgba(value)
     return value
+
+
+def coerce_serialized_field_input(
+    value: Any,
+    field_meta_or_type,
+    path: str = "value",
+) -> Any:
+    """Convert JSON-friendly editor input into one valid runtime field value."""
+    metadata = field_meta_or_type if hasattr(field_meta_or_type, "field_type") else None
+    field_type = metadata.field_type if metadata is not None else field_meta_or_type
+
+    if field_type == FieldType.LIST:
+        if not isinstance(value, list):
+            raise TypeError(f"{path}: LIST field requires an array")
+        element_type = getattr(metadata, "element_type", None) or FieldType.UNKNOWN
+        element_meta = copy.copy(metadata) if metadata is not None else element_type
+        if metadata is not None:
+            element_meta.field_type = element_type
+            element_meta.element_type = None
+            if element_type == FieldType.SERIALIZABLE_OBJECT:
+                element_meta.serializable_class = metadata.element_class
+        return [
+            coerce_serialized_field_input(item, element_meta, f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+
+    if field_type == FieldType.SERIALIZABLE_OBJECT:
+        if value is None:
+            return None
+        from .serializable_object import SerializableObject, get_serializable_type_id
+        expected_class = getattr(metadata, "serializable_class", None)
+        if isinstance(value, SerializableObject):
+            if expected_class is not None and not isinstance(value, expected_class):
+                raise TypeError(
+                    f"{path}: expected {expected_class.__qualname__}, "
+                    f"got {type(value).__qualname__}"
+                )
+            return copy.deepcopy(value)
+        if not isinstance(value, dict):
+            raise TypeError(f"{path}: SERIALIZABLE_OBJECT field requires an object")
+
+        from .value_document import TYPE_KEY, make_serializable_object
+        if TYPE_KEY not in value:
+            if expected_class is None:
+                raise TypeError(
+                    f"{path}: plain object input requires a declared serializable class"
+                )
+            nested_fields = get_serialized_fields(expected_class)
+            validate_serialized_field_document(
+                value,
+                nested_fields,
+                owner_name=get_serializable_type_id(expected_class),
+            )
+            from .value_codec import VALUE_CODECS
+            encoded_fields = {}
+            for name, nested_meta in nested_fields.items():
+                runtime_value = coerce_serialized_field_input(
+                    value[name], nested_meta, f"{path}.{name}"
+                )
+                encoded_fields[name] = VALUE_CODECS.encode(
+                    runtime_value, f"{path}.{name}"
+                )
+            value = make_serializable_object(
+                get_serializable_type_id(expected_class), encoded_fields
+            )
+
+        from .value_codec import VALUE_CODECS
+        decoded = VALUE_CODECS.decode(value, field_meta_or_type, path)
+        if expected_class is not None and not isinstance(decoded, expected_class):
+            raise TypeError(
+                f"{path}: expected {expected_class.__qualname__}, "
+                f"got {type(decoded).__qualname__}"
+            )
+        return decoded
+
+    from .value_document import (
+        TYPE_KEY,
+        make_asset_ref,
+        make_component_ref,
+        make_game_object_ref,
+    )
+    reference_asset_types = {
+        FieldType.MATERIAL: "Material",
+        FieldType.TEXTURE: "Texture",
+        FieldType.SHADER: "Shader",
+        FieldType.ASSET: getattr(metadata, "asset_type", None) or "AudioClip",
+    }
+    if field_type in reference_asset_types and isinstance(value, dict) and TYPE_KEY not in value:
+        if set(value) != {"guid", "path_hint"}:
+            raise ValueError(f"{path}: asset reference requires guid and path_hint")
+        value = make_asset_ref(
+            reference_asset_types[field_type], value["guid"], value["path_hint"]
+        )
+    elif field_type == FieldType.GAME_OBJECT:
+        if type(value) is int:
+            value = make_game_object_ref(value)
+        elif isinstance(value, dict) and TYPE_KEY not in value:
+            if set(value) != {"object_id"}:
+                raise ValueError(f"{path}: GameObject reference requires object_id")
+            value = make_game_object_ref(value["object_id"])
+    elif field_type == FieldType.COMPONENT and isinstance(value, dict) and TYPE_KEY not in value:
+        if set(value) != {"game_object_id", "component_type"}:
+            raise ValueError(
+                f"{path}: component reference requires game_object_id and component_type"
+            )
+        value = make_component_ref(value["game_object_id"], value["component_type"])
+
+    from .value_codec import VALUE_CODECS
+    if isinstance(value, (dict, list, tuple)) or value is None or field_type in {
+        FieldType.BOOL,
+        FieldType.INT,
+        FieldType.FLOAT,
+        FieldType.STRING,
+    }:
+        return VALUE_CODECS.decode(value, field_meta_or_type, path)
+
+    normalized = normalize_runtime_field_value(value, field_meta_or_type)
+    encoded = VALUE_CODECS.encode(normalized, path)
+    VALUE_CODECS.validate(encoded, field_meta_or_type, path)
+    return normalized
 
 
 def get_raw_field_value(component: 'InxComponent', field_name: str) -> Any:
@@ -1086,7 +1238,7 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Annotation-driven field construction (v2)
+#  Annotation-driven field construction
 #
 #  Single entry point used by InxComponent.__init_subclass__ to turn a type
 #  annotation (+ optional class-level default value) into a serialized field.
@@ -1188,7 +1340,7 @@ def _coerce_default(meta: 'FieldMetadata', default: Any) -> Any:
 def build_field_from_annotation(annotation, default: Any = _UNSET) -> Optional['FieldMetadata']:
     """Build FieldMetadata from a type annotation plus optional default value.
 
-    This is the v2 entry point powering Unity-style declarations::
+    This entry point powers Unity-style declarations::
 
         health: int = 100
         speed: Annotated[float, Range(0, 20)] = 5.0
@@ -1290,6 +1442,8 @@ def serialized_field(
     asset_type: Optional[str] = None,
     range: Optional[Tuple[float, float]] = None,
     tooltip: str = "",
+    display_name_key: str = "",
+    enum_labels: Optional[list[str]] = None,
     readonly: bool = False,
     header: str = "",
     space: float = 0.0,
@@ -1301,6 +1455,7 @@ def serialized_field(
     required_component: Optional[str] = None,
     visible_when: Optional[Callable] = None,
     hdr: bool = False,
+    hidden: bool = False,
 ) -> Any:
     """
     Decorator/descriptor for marking a field as serialized and inspector-visible.
@@ -1310,6 +1465,8 @@ def serialized_field(
         field_type: Explicit field type (auto-detected if not provided)
         range: (min, max) tuple for numeric sliders / bounded drag
         tooltip: Hover text shown in inspector
+        display_name_key: Optional i18n key used for the Inspector label.
+        enum_labels: Optional display labels matching the enum declaration order.
         readonly: If True, field cannot be modified in inspector
         header: Group header text shown above this field
         space: Vertical spacing before this field in inspector
@@ -1321,7 +1478,8 @@ def serialized_field(
         multiline: If True and the field is STRING, render a multiline
             text input widget instead of a single-line one.
         slider: When ``range`` is set, controls the widget style.
-            ``True`` (default) = slider, ``False`` = bounded drag.
+            ``True`` (default) = Unity-style slider + numeric input.
+            ``False`` = bounded drag field only.
         drag_speed: Override the default drag speed for numeric fields.
             ``None`` means use the type default (0.1 for float, 1.0 for int).
         required_component: For GAME_OBJECT fields only.  If set, only
@@ -1330,7 +1488,7 @@ def serialized_field(
             the Hierarchy panel.
         hdr: For COLOR fields only.  If True, allow HDR values (> 1.0)
             in the colour picker.
-    
+        hidden: Serialize the field without showing it in the Inspector.
     Returns:
         A descriptor that manages the field value and metadata
     
@@ -1380,10 +1538,12 @@ def serialized_field(
         default=default,
         range=range,
         tooltip=tooltip,
+        display_name_key=display_name_key,
         readonly=readonly,
         header=header,
         space=space,
         enum_type=enum_type,
+        enum_labels=list(enum_labels) if enum_labels is not None else None,
         element_type=inferred_element_type,
         group=group,
         info_text=info_text,
@@ -1397,9 +1557,30 @@ def serialized_field(
         component_type=component_type,
         hdr=hdr,
         asset_type=asset_type,
+        hidden=hidden,
     )
     
     return SerializedFieldDescriptor(metadata)
+
+
+def validate_serialized_field_document(
+    document: Dict[str, Any],
+    fields: Dict[str, FieldMetadata],
+    *,
+    owner_name: str,
+    metadata_keys: set[str] | frozenset[str] = frozenset(),
+    allow_missing: bool = False,
+) -> None:
+    """Require a serialized document to match the current field declaration."""
+    expected = set(fields).union(metadata_keys)
+    actual = set(document)
+    missing = sorted(expected - actual)
+    unknown = sorted(actual - expected)
+    if unknown or (missing and not allow_missing):
+        raise ValueError(
+            f"{owner_name}: serialized fields mismatch; "
+            f"missing={missing}, unknown={unknown}"
+        )
 
 
 _SERIALIZED_FIELDS_CACHE: dict = {}  # component_class -> Dict[str, FieldMetadata]

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ShaderReflection.h"
+#include <core/types/ShaderProgramArtifact.h>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -82,7 +83,7 @@ class ShaderProgram
      * @return true if creation succeeded
      */
     bool Create(VkDevice device, const std::vector<char> &vertSpirv, const std::vector<char> &fragSpirv,
-                const std::string &shaderId);
+                const ShaderProgramVariantKey &variantKey);
 
     /**
      * @brief Destroy all Vulkan resources
@@ -93,6 +94,16 @@ class ShaderProgram
     [[nodiscard]] const std::string &GetShaderId() const
     {
         return m_shaderId;
+    }
+
+    [[nodiscard]] const ShaderProgramKey &GetProgramKey() const noexcept
+    {
+        return m_variantKey.program;
+    }
+
+    [[nodiscard]] ShaderCompileTarget GetCompileTarget() const noexcept
+    {
+        return m_variantKey.target;
     }
 
     [[nodiscard]] VkShaderModule GetVertexModule() const
@@ -172,14 +183,11 @@ class ShaderProgram
      * Called once at startup; all ShaderProgram instances will include this
      * layout in their pipeline layouts so that the globals UBO can be bound.
      */
-    static void SetGlobalsDescSetLayout(VkDescriptorSetLayout layout)
-    {
-        s_globalsDescSetLayout = layout;
-    }
-    static VkDescriptorSetLayout GetGlobalsDescSetLayout()
-    {
-        return s_globalsDescSetLayout;
-    }
+    static void SetGlobalsDescSetLayout(VkDescriptorSetLayout layout);
+    [[nodiscard]] static VkDescriptorSetLayout GetGlobalsDescSetLayout();
+
+    static void SetPerViewDescSetLayout(VkDescriptorSetLayout layout);
+    [[nodiscard]] static VkDescriptorSetLayout GetPerViewDescSetLayout();
 
     /**
      * @brief Globally enable VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND on
@@ -189,21 +197,17 @@ class ShaderProgram
      * UPDATE_AFTER_BIND_POOL bit so MaterialDescriptorManager can rewrite
      * bindings without a full GPU drain.
      */
-    static void SetUpdateAfterBindEnabled(bool enabled)
-    {
-        s_updateAfterBindEnabled = enabled;
-    }
-    static bool IsUpdateAfterBindEnabled()
-    {
-        return s_updateAfterBindEnabled;
-    }
+    static void SetUpdateAfterBindEnabled(bool enabled);
+    [[nodiscard]] static bool IsUpdateAfterBindEnabled();
 
   private:
     VkDevice m_device = VK_NULL_HANDLE;
     std::string m_shaderId;
+    ShaderProgramVariantKey m_variantKey;
 
-    static inline VkDescriptorSetLayout s_globalsDescSetLayout = VK_NULL_HANDLE;
-    static inline bool s_updateAfterBindEnabled = false;
+    static VkDescriptorSetLayout s_globalsDescSetLayout;
+    static VkDescriptorSetLayout s_perViewDescSetLayout;
+    static bool s_updateAfterBindEnabled;
 
     // Shader modules
     VkShaderModule m_vertModule = VK_NULL_HANDLE;
@@ -260,6 +264,11 @@ class ShaderProgram
     bool ValidateStageInterface() const;
 };
 
+/// Immutable, revision-carrying GPU shader publication. ShaderProgram is
+/// mutable only while Create() builds a complete candidate; every cache and
+/// renderer consumer receives this const shared owner after publication.
+using ShaderProgramPublication = std::shared_ptr<const ShaderProgram>;
+
 /**
  * @brief ShaderProgramCache - Cache for shader programs
  *
@@ -288,26 +297,35 @@ class ShaderProgramCache
     /**
      * @brief Get or create a shader program
      */
-    ShaderProgram *GetOrCreateProgram(const std::string &shaderId, const std::vector<char> &vertSpirv,
-                                      const std::vector<char> &fragSpirv);
+    ShaderProgramPublication GetOrCreateProgram(const ShaderProgramKey &programKey, const std::vector<char> &vertSpirv,
+                                                const std::vector<char> &fragSpirv);
+    ShaderProgramPublication GetOrCreateProgram(const ShaderProgramVariantKey &variantKey,
+                                                const std::vector<char> &vertSpirv, const std::vector<char> &fragSpirv);
 
     /**
      * @brief Get existing program
      */
-    ShaderProgram *GetProgram(const std::string &shaderId);
+    ShaderProgramPublication GetProgram(const ShaderProgramKey &programKey) const;
+    ShaderProgramPublication GetProgram(const ShaderProgramVariantKey &variantKey) const;
 
     /**
      * @brief Check if program exists
      */
-    bool HasProgram(const std::string &shaderId) const;
+    bool HasProgram(const ShaderProgramKey &programKey) const;
+    bool HasProgram(const ShaderProgramVariantKey &variantKey) const;
+
+    [[nodiscard]] ShaderProgramPublication TakeProgram(const ShaderProgramKey &programKey);
+    [[nodiscard]] ShaderProgramPublication TakeProgram(const ShaderProgramVariantKey &variantKey);
+
+    /// Transfer every semantic pass program belonging to one artifact revision.
+    [[nodiscard]] std::vector<ShaderProgramPublication> TakePrograms(const ShaderProgramKey &programKey);
 
     /**
      * @brief Transfer ownership of all programs using the specified shader.
      * @param shaderName Simple
      * shader name (e.g., "123", not full path)
      */
-    [[nodiscard]] std::vector<std::unique_ptr<ShaderProgram>>
-    TakeProgramsContainingShader(const std::string &shaderName);
+    [[nodiscard]] std::vector<ShaderProgramPublication> TakeProgramsContainingShader(const std::string &shaderName);
 
     /**
      * @brief Clear all cached programs
@@ -316,8 +334,8 @@ class ShaderProgramCache
 
   private:
     VkDevice m_device = VK_NULL_HANDLE;
-    std::unordered_map<std::string, std::unique_ptr<ShaderProgram>> m_programs;
-    std::unordered_set<std::string> m_failedPrograms; // Shader IDs that failed creation
+    std::unordered_map<ShaderProgramVariantKey, ShaderProgramPublication, ShaderProgramVariantKeyHash> m_programs;
+    std::unordered_set<ShaderProgramVariantKey, ShaderProgramVariantKeyHash> m_failedPrograms;
 };
 
 } // namespace infernux

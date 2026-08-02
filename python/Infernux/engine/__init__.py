@@ -20,6 +20,7 @@ from Infernux import resources as _resources
 from .engine import Engine, LogLevel
 from .play_mode import PlayModeManager, PlayModeState
 from .scene_manager import SceneFileManager
+from .path_utils import resolved_path
 
 from .headless import run_headless
 
@@ -153,7 +154,7 @@ def _acquire_project_lock(project_path: str, mode: str) -> tuple[str, str]:
         "token": token,
         "mode": mode,
         "state": "running",
-        "project_path": os.path.abspath(project_path),
+        "project_path": resolved_path(project_path),
     }
     with open(lock_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
@@ -180,6 +181,17 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
         bootstrap.run()
 
         bootstrap.engine.set_window_icon(_resources.icon_path)
+
+        # Window title: "Infernux{version} - {project name}", version taken
+        # from the installed package metadata (single source: pyproject.toml).
+        try:
+            from importlib.metadata import version as _pkg_version
+            _engine_version = _pkg_version("Infernux")
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            _engine_version = ""
+        _project_name = os.path.basename(resolved_path(project_path))
+        bootstrap.engine.set_window_title(f"Infernux{_engine_version} - {_project_name}")
 
         # Signal the launcher splash to begin its fade-out, then wait for it
         # to finish before revealing the engine window.
@@ -212,6 +224,7 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
     """
     import json
     import time
+    from Infernux.application import Application
     from .player_bootstrap import PlayerBootstrap
 
     # Packaged/standalone games skip the project lock entirely — they
@@ -247,6 +260,7 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
         window_height = manifest.get("window_height", 1080)
         window_resizable = manifest.get("window_resizable", True)
         splash_items = manifest.get("splash_items", [])
+        build_icon_path = manifest.get("icon_path", "")
         game_name = manifest.get("game_name", "")
 
         bootstrap = PlayerBootstrap(
@@ -259,7 +273,7 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
         bootstrap.run()
 
         # Set window title to game name (from manifest or folder name)
-        title = game_name or os.path.basename(os.path.normpath(project_path))
+        title = game_name or os.path.basename(resolved_path(project_path))
         bootstrap.engine.set_window_title(title)
 
         if display_mode == "fullscreen_borderless":
@@ -269,18 +283,24 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
             bootstrap.engine.set_maximized(False)
             bootstrap.engine.set_resizable(window_resizable)
 
-        bootstrap.engine.set_window_icon(_resources.icon_path)
+        window_icon = (
+            os.path.join(project_path, build_icon_path)
+            if isinstance(build_icon_path, str) and build_icon_path
+            else _resources.icon_path
+        )
+        bootstrap.engine.set_window_icon(window_icon)
 
         _signal_engine_loaded()
         time.sleep(0.3)
 
         bootstrap.engine.show()
         bootstrap.engine.run()
+        exit_code = Application._requested_exit_code()
     finally:
         if lock_path and lock_token:
             _remove_project_lock(lock_path, lock_token)
 
-    os._exit(0)
+    os._exit(exit_code)
 
 __all__ = [
     "Engine",

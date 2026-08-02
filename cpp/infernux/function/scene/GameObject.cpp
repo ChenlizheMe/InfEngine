@@ -8,6 +8,7 @@
 #include "Rigidbody.h"
 #include "Scene.h"
 #include "function/audio/AudioSource.h"
+#include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
 #include <InxLog.h>
 #include <algorithm>
@@ -76,6 +77,7 @@ void GameObject::SetLayer(int layer)
     }
 
     m_layer = layer;
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 
     auto &physics = PhysicsWorld::Instance();
     if (!physics.IsInitialized()) {
@@ -498,6 +500,46 @@ bool GameObject::RemoveComponent(Component *component)
     return false;
 }
 
+Component *GameObject::ReplacePythonComponent(Component *current, std::unique_ptr<Component> replacement)
+{
+    if (!current || !replacement || dynamic_cast<PyComponentProxy *>(current) == nullptr ||
+        dynamic_cast<PyComponentProxy *>(replacement.get()) == nullptr) {
+        return nullptr;
+    }
+
+    for (auto &slot : m_components) {
+        if (slot.get() != current) {
+            continue;
+        }
+
+        // Preserve every externally observable native identity and lifecycle
+        // bit. SetComponentID publishes the replacement in the registry before
+        // the old proxy is destroyed, so handle resolution never has a gap.
+        replacement->SetGameObject(this);
+        replacement->m_enabled = current->m_enabled;
+        replacement->m_wasEnabled = current->m_wasEnabled;
+        replacement->m_hasAwake = current->m_hasAwake;
+        replacement->m_hasStarted = current->m_hasStarted;
+        replacement->m_hasDestroyed = false;
+        replacement->m_isBeingDestroyed = false;
+        replacement->m_executionOrder = current->m_executionOrder;
+        replacement->m_lifetimeGeneration = current->m_lifetimeGeneration;
+        replacement->SetComponentID(current->GetComponentID());
+
+        Component *published = replacement.get();
+        slot = std::move(replacement);
+
+        if (m_scene) {
+            m_scene->BumpStructureVersion();
+        }
+        InvalidateComponentExecutionCache();
+        RefreshLifecycleDispatchFlags();
+        return published;
+    }
+
+    return nullptr;
+}
+
 bool GameObject::CanRemoveComponent(Component *component) const
 {
     return GetRemovalBlockingComponentTypes(component).empty();
@@ -694,7 +736,6 @@ void GameObject::EditorUpdate(float deltaTime)
 nlohmann::json GameObject::SerializeDocument() const
 {
     json j;
-    j["schema_version"] = 2;
     j["name"] = m_name;
     j["id"] = m_id;
     j["active"] = m_active;

@@ -6,17 +6,15 @@ Unity-style Scene View panel with 3D viewport and camera controls.
 """
 
 import math
-import os
 from Infernux.lib import InxGUIContext, InputManager
 from Infernux.engine.i18n import t
-from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 from .editor_panel import EditorPanel
 from .closable_panel import ClosablePanel
 from .panel_registry import editor_panel
-from .theme import Theme, ImGuiCol, ImGuiStyleVar
+from .theme import Theme, ImGuiCol, ImGuiMouseCursor, ImGuiStyleVar
 from .viewport_utils import ViewportInfo, capture_viewport_info
 from . import imgui_keys as _keys
-import Infernux.resources as _resources
+from .editor_icons import EditorIcons
 
 # Tool mode constants — imported from scene_view_panel
 from .scene_view_panel import TOOL_NONE, TOOL_TRANSLATE, TOOL_ROTATE, TOOL_SCALE
@@ -36,7 +34,16 @@ from Infernux.lib._Infernux import (
 class SceneViewOverlaysMixin:
     """SceneViewOverlaysMixin method group for SceneViewPanel."""
 
-    def _render_overlays_and_shortcuts(self, ctx, vp, cursor_start_x, cursor_start_y, scene_width, delta_time):
+    def _render_overlays_and_shortcuts(
+        self,
+        ctx,
+        vp,
+        cursor_start_x,
+        cursor_start_y,
+        scene_width,
+        scene_height,
+        delta_time,
+    ):
         """Draw gizmo/pos overlays, prefab banner, and handle tool/camera shortcuts.
 
         Returns True if an overlay element is hovered.
@@ -57,7 +64,17 @@ class SceneViewOverlaysMixin:
             ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.PREFAB_BTN_HOVERED)
             ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.PREFAB_BTN_ACTIVE)
 
-            if ctx.button(t("scene_view.exit_prefab_mode")):
+            exit_label = t("scene_view.exit_prefab_mode")
+            exit_clicked = ctx.button(exit_label)
+            record_item = getattr(ctx, "record_semantic_item", None)
+            if callable(record_item):
+                record_item(
+                    "button",
+                    exit_label,
+                    True,
+                    "scene_view.prefab.exit",
+                )
+            if exit_clicked:
                 scene_file_manager.exit_prefab_mode_with_undo()
             if ctx.is_item_hovered() and ctx.is_mouse_button_down(0):
                 overlay_hovered = True
@@ -65,6 +82,13 @@ class SceneViewOverlaysMixin:
             ctx.pop_style_color(3)
 
         self._draw_pos_overlay(ctx, vp)
+        overlay_hovered = self._draw_particle_preview_overlay(
+            ctx,
+            cursor_start_x,
+            cursor_start_y,
+            scene_width,
+            scene_height,
+        ) or overlay_hovered
 
         # Unity-style tool switching shortcuts (Q/W/E/R)
         if not ctx.want_text_input() and not ctx.is_mouse_button_down(1):
@@ -82,6 +106,482 @@ class SceneViewOverlaysMixin:
                 self._align_object_to_camera()
 
         return overlay_hovered
+
+    @staticmethod
+    def _particle_component_from_object(game_object):
+        if game_object is None or not hasattr(game_object, "get_py_components"):
+            return None
+        from Infernux.components import ParticleSystem
+
+        try:
+            return next(
+                (
+                    component
+                    for component in (game_object.get_py_components() or ())
+                    if isinstance(component, ParticleSystem)
+                ),
+                None,
+            )
+        except (ReferenceError, RuntimeError):
+            return None
+
+    def _is_particle_preview_edit_mode(self) -> bool:
+        manager = self._play_mode_manager
+        if manager is None:
+            from Infernux.engine.play_mode import PlayModeManager
+
+            manager = PlayModeManager.instance()
+        return manager is None or bool(manager.is_edit_mode)
+
+    @staticmethod
+    def _particle_preview_is_live(component, game_object) -> bool:
+        if component is None or game_object is None:
+            return False
+        try:
+            owner = component.game_object
+            return owner is not None and int(owner.id) == int(game_object.id)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def _can_control_particle_preview(self, component) -> bool:
+        return bool(
+            self._is_particle_preview_edit_mode()
+            and component is self._particle_preview_component
+            and self._particle_preview_is_live(
+                component, self._particle_preview_object
+            )
+        )
+
+    def _discard_invalid_particle_preview(self) -> None:
+        # A stale wrapper can share stable object/component IDs with the scene
+        # that just replaced it. Component teardown owns GPU lifetime; this
+        # panel only owns the wrapper references.
+        self._forget_particle_preview_selection()
+
+    def _forget_particle_preview_selection(self) -> None:
+        """Drop editor-only handles without touching a Play Mode component."""
+        self._particle_preview_component = None
+        self._particle_preview_object = None
+        self._particle_preview_playing = False
+        self._particle_preview_prepared = False
+        self._particle_preview_resize_drag = False
+
+    def _restore_particle_preview_selection(self) -> None:
+        if not self._engine:
+            return
+        try:
+            from Infernux.lib import SceneManager
+            from Infernux.engine.ui.selection_manager import SelectionManager
+
+            object_id = int(SelectionManager.instance().get_primary() or 0)
+            scene = SceneManager.instance().get_active_scene()
+            selected = scene.find_by_id(object_id) if scene and object_id else None
+        except (AttributeError, ReferenceError, RuntimeError):
+            selected = None
+        self._on_particle_preview_selection(selected)
+
+    def _restore_particle_preview_if_ready(self) -> None:
+        if not self._particle_preview_restore_pending:
+            return
+        if not self._is_particle_preview_edit_mode():
+            self._particle_preview_restore_pending = False
+            return
+        try:
+            from Infernux.engine.deferred_task import DeferredTaskRunner
+
+            runner = DeferredTaskRunner.instance()
+            if runner is not None and runner.is_busy:
+                return
+        except (AttributeError, RuntimeError):
+            return
+        self._particle_preview_restore_pending = False
+        self._restore_particle_preview_selection()
+
+    def _on_particle_preview_play_mode_changed(self, event) -> None:
+        """Rebind edit preview after Play Mode recreates the scene objects."""
+        from Infernux.engine.play_mode import PlayModeState
+
+        if event.new_state is PlayModeState.EDIT:
+            # The EDIT notification precedes the deferred scene restore. Delay
+            # rebinding until that task is idle so the outgoing runtime wrapper
+            # cannot alias the restored scene's stable GPU batch IDs.
+            self._forget_particle_preview_selection()
+            self._particle_preview_restore_pending = True
+            return
+        # Play Mode owns the runtime ParticleSystem. Never call editor preview
+        # controls while entering or running it; scene replacement retires the
+        # old edit-preview graph through normal ownership.
+        self._particle_preview_restore_pending = False
+        self._forget_particle_preview_selection()
+
+    def _on_particle_preview_selection(self, game_object) -> None:
+        if not self._is_particle_preview_edit_mode():
+            self._forget_particle_preview_selection()
+            return
+        self._particle_preview_restore_pending = False
+        component = self._particle_component_from_object(game_object)
+        if component is self._particle_preview_component and self._particle_preview_is_live(
+            component, game_object
+        ):
+            return
+        previous = self._particle_preview_component
+        if previous is not None:
+            try:
+                suspend = getattr(
+                    previous,
+                    "editor_preview_suspend",
+                    previous.editor_preview_pause,
+                )
+                suspend()
+            except (AttributeError, ReferenceError, RuntimeError):
+                pass
+        self._particle_preview_component = component
+        self._particle_preview_object = game_object if component is not None else None
+        self._particle_preview_playing = component is not None
+        self._particle_preview_prepared = False
+        if component is not None and self._is_particle_preview_edit_mode():
+            try:
+                self._particle_preview_prepared = bool(component.editor_preview_begin())
+                is_playing = getattr(component, "editor_preview_is_playing", None)
+                self._particle_preview_playing = (
+                    bool(is_playing())
+                    if callable(is_playing)
+                    else self._particle_preview_prepared
+                )
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+                Debug.log_suppressed("scene_view.particle_preview.select", exc)
+                self._particle_preview_playing = False
+
+    def _release_particle_preview_selection(self) -> None:
+        component = self._particle_preview_component
+        if component is not None and self._can_control_particle_preview(component):
+            try:
+                component.editor_preview_end()
+            except (AttributeError, ReferenceError, RuntimeError):
+                pass
+        self._particle_preview_restore_pending = False
+        self._forget_particle_preview_selection()
+
+    def _tick_particle_preview(self, delta_time: float) -> None:
+        self._restore_particle_preview_if_ready()
+        component = self._particle_preview_component
+        if component is None:
+            return
+        if not self._particle_preview_is_live(
+            component, self._particle_preview_object
+        ):
+            self._discard_invalid_particle_preview()
+            return
+        if not self._is_particle_preview_edit_mode():
+            self._forget_particle_preview_selection()
+            return
+        try:
+            # The component owns playback intent and GPU residency.  Tick it
+            # even while the panel's cached state is stale so it can recover
+            # after Play Mode replaces the native particle graph.
+            self._particle_preview_prepared = bool(
+                component.editor_preview_update(
+                    delta_time,
+                    self._particle_preview_speed,
+                )
+            )
+            is_playing = getattr(component, "editor_preview_is_playing", None)
+            self._particle_preview_playing = (
+                bool(is_playing())
+                if callable(is_playing)
+                else self._particle_preview_prepared
+            )
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            if not self._particle_preview_is_live(
+                component, self._particle_preview_object
+            ):
+                self._discard_invalid_particle_preview()
+                return
+            Debug.log_suppressed("scene_view.particle_preview.tick", exc)
+            self._particle_preview_prepared = False
+            self._particle_preview_playing = False
+
+    def _draw_particle_preview_overlay(
+        self,
+        ctx: InxGUIContext,
+        cursor_start_x: float,
+        cursor_start_y: float,
+        scene_width: float,
+        scene_height: float,
+    ) -> bool:
+        component = self._particle_preview_component
+        if component is None or not self._is_particle_preview_edit_mode():
+            return False
+
+        try:
+            emitter_states = component.editor_preview_emitter_states()
+            is_ready = getattr(component, "editor_preview_is_ready", None)
+            if callable(is_ready):
+                self._particle_preview_prepared = bool(is_ready())
+            is_playing = getattr(component, "editor_preview_is_playing", None)
+            if callable(is_playing):
+                self._particle_preview_playing = bool(is_playing())
+        except (AttributeError, ReferenceError, RuntimeError):
+            emitter_states = []
+
+        width = max(220.0, min(380.0, scene_width - 24.0))
+        min_height = min(126.0, max(64.0, scene_height - 24.0))
+        max_height = max(min_height, scene_height - 24.0)
+        height = min(max_height, max(min_height, self._particle_preview_height))
+        if self._particle_preview_resize_drag:
+            if ctx.is_mouse_button_down(0):
+                delta = (
+                    ctx.get_mouse_pos_y() - self._particle_preview_resize_start_y
+                )
+                height = min(
+                    max_height,
+                    max(
+                        min_height,
+                        self._particle_preview_resize_start_height - delta,
+                    ),
+                )
+                self._particle_preview_height = height
+                ctx.set_mouse_cursor(ImGuiMouseCursor.ResizeNS)
+            else:
+                self._particle_preview_resize_drag = False
+
+        ctx.set_cursor_pos_x(cursor_start_x + scene_width - width - 12.0)
+        ctx.set_cursor_pos_y(cursor_start_y + scene_height - height - 12.0)
+        ctx.push_style_color(
+            ImGuiCol.ChildBg,
+            Theme.WINDOW_BG[0],
+            Theme.WINDOW_BG[1],
+            Theme.WINDOW_BG[2],
+            0.97,
+        )
+        ctx.push_style_color(ImGuiCol.Border, *Theme.BORDER)
+        ctx.push_style_var_float(ImGuiStyleVar.ChildRounding, 5.0)
+        visible = ctx.begin_child("##particle_preview_controls", width, height, True)
+        try:
+            hovered = bool(ctx.is_window_hovered())
+            if not visible:
+                return hovered
+
+            ctx.set_cursor_pos_x(0.0)
+            ctx.set_cursor_pos_y(0.0)
+            ctx.invisible_button("##particle_preview_resize", width, 10.0)
+            if ctx.is_item_hovered() or ctx.is_item_active():
+                hovered = True
+                ctx.set_mouse_cursor(ImGuiMouseCursor.ResizeNS)
+            if ctx.is_item_active() and not self._particle_preview_resize_drag:
+                self._particle_preview_resize_drag = True
+                self._particle_preview_resize_start_y = ctx.get_mouse_pos_y()
+                self._particle_preview_resize_start_height = height
+            window_x = ctx.get_window_pos_x()
+            window_y = ctx.get_window_pos_y()
+            grip_color = Theme.TEXT_DIM
+            ctx.draw_line(
+                window_x + width * 0.42,
+                window_y + 5.0,
+                window_x + width * 0.58,
+                window_y + 5.0,
+                *grip_color,
+                1.5,
+            )
+
+            ctx.set_cursor_pos_x(10.0)
+            ctx.set_cursor_pos_y(12.0)
+            ctx.label(t("particle_preview.title"))
+            ctx.separator()
+            semantic_capture = bool(getattr(ctx, "semantic_capture_enabled", True))
+            record_item = getattr(ctx, "record_semantic_item", None)
+            ctx.align_text_to_frame_padding()
+            ctx.label(t("particle_preview.speed"))
+            ctx.same_line(96.0)
+            ctx.set_next_item_width(-1)
+            speed = float(
+                ctx.float_slider(
+                    "##particle_preview_speed",
+                    self._particle_preview_speed,
+                    0.05,
+                    4.0,
+                )
+            )
+            self._particle_preview_speed = min(4.0, max(0.05, speed))
+            if semantic_capture and callable(record_item):
+                record_item(
+                    "particle_preview_speed",
+                    t("particle_preview.speed"),
+                    True,
+                    "scene_view.particle_preview.speed",
+                    numeric_value=self._particle_preview_speed,
+                )
+            current_time = float(component.editor_preview_time_seconds())
+            duration = max(
+                0.001, float(component.editor_preview_duration_seconds())
+            )
+            if not self._particle_preview_seek_editing:
+                self._particle_preview_seek_time = min(duration, current_time)
+            ctx.align_text_to_frame_padding()
+            ctx.label(t("particle_preview.time"))
+            ctx.same_line(96.0)
+            ctx.set_next_item_width(-1)
+            self._particle_preview_seek_time = float(
+                ctx.drag_float(
+                    "##particle_preview_time",
+                    self._particle_preview_seek_time,
+                    0.01,
+                    0.0,
+                    duration,
+                )
+            )
+            self._particle_preview_seek_editing = bool(ctx.is_item_active())
+            seek_committed = bool(ctx.is_item_deactivated_after_edit())
+            if semantic_capture and callable(record_item):
+                record_item(
+                    "particle_preview_time",
+                    t("particle_preview.time"),
+                    True,
+                    "scene_view.particle_preview.time",
+                    numeric_value=self._particle_preview_seek_time,
+                )
+            if seek_committed and self._can_control_particle_preview(component):
+                try:
+                    self._particle_preview_prepared = bool(
+                        component.editor_preview_seek(
+                            self._particle_preview_seek_time
+                        )
+                    )
+                except (AttributeError, ReferenceError, RuntimeError, ValueError):
+                    self._particle_preview_prepared = False
+            if self._particle_preview_playing:
+                pause_label = t("particle_preview.pause")
+                ctx.push_style_color(ImGuiCol.Button, *Theme.PLAY_ACTIVE)
+                pause_clicked = ctx.button(pause_label, width=72.0)
+                ctx.pop_style_color(1)
+                if semantic_capture and callable(record_item):
+                    record_item(
+                        "button",
+                        pause_label,
+                        True,
+                        "scene_view.particle_preview.pause",
+                    )
+                if pause_clicked and self._can_control_particle_preview(component):
+                    try:
+                        component.editor_preview_pause()
+                    finally:
+                        self._particle_preview_playing = False
+            else:
+                play_label = t("particle_preview.play")
+                play_clicked = ctx.button(play_label, width=72.0)
+                if semantic_capture and callable(record_item):
+                    record_item(
+                        "button",
+                        play_label,
+                        True,
+                        "scene_view.particle_preview.play",
+                    )
+                if play_clicked and self._can_control_particle_preview(component):
+                    try:
+                        self._particle_preview_prepared = bool(
+                            component.editor_preview_play()
+                        )
+                        is_playing = getattr(
+                            component, "editor_preview_is_playing", None
+                        )
+                        self._particle_preview_playing = (
+                            bool(is_playing())
+                            if callable(is_playing)
+                            else self._particle_preview_prepared
+                        )
+                    except (AttributeError, ReferenceError, RuntimeError):
+                        self._particle_preview_prepared = False
+            ctx.same_line(0, 8.0)
+            stop_label = t("particle_preview.stop")
+            stop_clicked = ctx.button(stop_label, width=72.0)
+            if semantic_capture and callable(record_item):
+                record_item(
+                    "button",
+                    stop_label,
+                    True,
+                    "scene_view.particle_preview.stop",
+                )
+            if stop_clicked and self._can_control_particle_preview(component):
+                try:
+                    component.editor_preview_stop()
+                finally:
+                    self._particle_preview_playing = False
+                    self._particle_preview_prepared = False
+            for emitter in emitter_states:
+                index = int(emitter["index"])
+                ctx.separator()
+                if not bool(emitter["enabled"]):
+                    ctx.begin_disabled(True)
+                was_visible = bool(emitter["visible"])
+                preview_visible = bool(
+                    ctx.checkbox(
+                        f"{emitter['name']}##particle_preview_visible_{index}",
+                        was_visible,
+                    )
+                )
+                if semantic_capture and callable(record_item):
+                    record_item(
+                        "checkbox",
+                        str(emitter["name"]),
+                        bool(emitter["enabled"]),
+                        f"scene_view.particle_preview.emitter.{index}.visible",
+                        bool_value=preview_visible,
+                    )
+                if (
+                    preview_visible != was_visible
+                    and self._can_control_particle_preview(component)
+                ):
+                    component.editor_preview_set_emitter_muted(
+                        index, not preview_visible
+                    )
+                ctx.same_line(0, 8.0)
+                solo = bool(
+                    ctx.checkbox(
+                        f"{t('particle_preview.solo')}##particle_preview_solo_{index}",
+                        bool(emitter["solo"]),
+                    )
+                )
+                if semantic_capture and callable(record_item):
+                    record_item(
+                        "checkbox",
+                        t("particle_preview.solo"),
+                        bool(emitter["enabled"]),
+                        f"scene_view.particle_preview.emitter.{index}.solo",
+                        bool_value=solo,
+                    )
+                if (
+                    solo != bool(emitter["solo"])
+                    and self._can_control_particle_preview(component)
+                ):
+                    component.editor_preview_set_emitter_solo(index, solo)
+                ctx.same_line(0, 8.0)
+                restarted = ctx.button(
+                    f"{t('particle_preview.restart')}##particle_preview_restart_{index}"
+                )
+                if semantic_capture and callable(record_item):
+                    record_item(
+                        "button",
+                        t("particle_preview.restart"),
+                        bool(emitter["enabled"]),
+                        f"scene_view.particle_preview.emitter.{index}.restart",
+                    )
+                if restarted and self._can_control_particle_preview(component):
+                    try:
+                        restarted = bool(
+                            component.editor_preview_restart_emitter(index)
+                        )
+                        self._particle_preview_prepared = restarted
+                        self._particle_preview_playing = restarted
+                    except (AttributeError, ReferenceError, RuntimeError):
+                        self._particle_preview_prepared = False
+                        self._particle_preview_playing = False
+                if not bool(emitter["enabled"]):
+                    ctx.end_disabled()
+            return hovered or bool(ctx.is_item_hovered())
+        finally:
+            ctx.end_child()
+            ctx.pop_style_var()
+            ctx.pop_style_color(2)
 
     def _draw_gizmo_overlay(self, ctx: InxGUIContext) -> bool:
         """Draw the top-left gizmo controls and return whether they are hovered."""
@@ -116,39 +616,25 @@ class SceneViewOverlaysMixin:
         return hovered
 
     def _ensure_tool_icons(self):
-        """Lazily upload tool icon textures to GPU."""
+        """Lazily resolve pinned tool icon textures via EditorIcons."""
         if not self._engine:
             return
         native = self._engine.get_native_engine() if hasattr(self._engine, 'get_native_engine') else self._engine
         if native is None:
             return
         _ICON_MAP = {
-            TOOL_NONE:      "tool_none.png",
-            TOOL_TRANSLATE: "tool_move.png",
-            TOOL_ROTATE:    "tool_rotate.png",
-            TOOL_SCALE:     "tool_scale.png",
+            TOOL_NONE:      "tool_none",
+            TOOL_TRANSLATE: "tool_move",
+            TOOL_ROTATE:    "tool_rotate",
+            TOOL_SCALE:     "tool_scale",
         }
         all_ready = True
-        for mode, filename in _ICON_MAP.items():
-            icon_path = os.path.join(_resources.file_type_icons_dir, filename)
-            if not os.path.isfile(icon_path):
-                all_ready = False
-                continue
-            stamp = texture_stamp(icon_path, "scene_tool_icon")
-            if stamp == 0:
-                all_ready = False
-                continue
-            tid, _, _ = query_or_schedule_texture(
-                native,
-                f"toolicon|{filename}",
-                icon_path,
-                int(stamp),
-                nearest=False,
-                srgb=False,
-            )
-            if tid != 0:
-                self._tool_icon_ids[mode] = tid
-            else:
+        for mode, name in _ICON_MAP.items():
+            # Re-resolve every frame until upload completes; never keep a
+            # stale unpinned preview descriptor across frames.
+            tid = EditorIcons.get(native, name)
+            self._tool_icon_ids[mode] = tid
+            if tid == 0:
                 all_ready = False
         self._tool_icons_loaded = all_ready
 

@@ -42,7 +42,15 @@ def get_shader_file_path(shader_id: str, ext: str) -> str:
     """Resolve a shader ID and extension to an absolute file path."""
     ...
 
-def shader_display_from_value(value: str, items: object) -> str:
+def shader_ref_id(value: object) -> str:
+    """Return the shader ID from a legacy string or structured reference."""
+    ...
+
+def make_shader_reference(value: object, ext: str) -> Dict[str, str]:
+    """Create a canonical material shader asset reference."""
+    ...
+
+def shader_display_from_value(value: object, items: object) -> str:
     """Look up the human-readable display name for a shader value."""
     ...
 

@@ -45,7 +45,15 @@
 #pragma once
 
 #include "VkTypes.h"
+#include "VulkanRhiDevice.h"
+#include <array>
 #include <function/renderer/ProfileConfig.h>
+#include <function/renderer/RenderGraphIdentity.h>
+#include <function/renderer/RendererList.h>
+#include <function/renderer/rhi/GpuRetirementQueue.h>
+#include <function/renderer/rhi/RenderSubmissionPlan.h>
+#include <function/renderer/rhi/RenderViewContext.h>
+#include <function/renderer/rhi/RhiSubmission.h>
 #include <functional>
 #include <memory>
 #include <string>
@@ -61,6 +69,7 @@ namespace vk
 // Forward declarations
 class VkDeviceContext;
 class VkPipelineManager;
+class VulkanQueueManager;
 class RenderGraph;
 class RenderPass;
 class PassBuilder;
@@ -78,7 +87,8 @@ enum class ResourceType
     Buffer,
     Texture2D,
     TextureCube,
-    DepthStencil
+    DepthStencil,
+    RendererList,
 };
 
 /**
@@ -94,7 +104,12 @@ enum class ResourceUsage
     DepthOutput = 1 << 3,
     ShaderRead = 1 << 4,
     Transfer = 1 << 5,
-    DepthRead = 1 << 6 ///< Read-only depth attachment (depth testing without writing)
+    DepthRead = 1 << 6, ///< Read-only depth attachment (depth testing without writing)
+    IndirectArgument = 1 << 7,
+    VersionDependency = 1 << 8, ///< Graph ordering only; emits no backend access or barrier
+    Present = 1 << 9,           ///< Final presentation/export read
+    RendererListRead = 1 << 10, ///< Host-side renderer list consumed by a raster callback
+    Storage = 1 << 11,          ///< Storage image/buffer access in GENERAL layout
 };
 
 inline ResourceUsage operator|(ResourceUsage a, ResourceUsage b)
@@ -107,38 +122,8 @@ inline ResourceUsage operator&(ResourceUsage a, ResourceUsage b)
     return static_cast<ResourceUsage>(static_cast<int>(a) & static_cast<int>(b));
 }
 
-/**
- * @brief Handle to a virtual resource in the render graph
- */
-struct ResourceHandle
-{
-    uint32_t id = UINT32_MAX;
-    uint32_t version = 0; // Version for tracking resource writes
-
-    bool IsValid() const
-    {
-        return id != UINT32_MAX;
-    }
-    bool operator==(const ResourceHandle &other) const
-    {
-        return id == other.id && version == other.version;
-    }
-    bool operator!=(const ResourceHandle &other) const
-    {
-        return !(*this == other);
-    }
-};
-
-/**
- * @brief Hash function for ResourceHandle
- */
-struct ResourceHandleHash
-{
-    size_t operator()(const ResourceHandle &handle) const
-    {
-        return std::hash<uint64_t>()(static_cast<uint64_t>(handle.id) << 32 | handle.version);
-    }
-};
+using ResourceHandle = GraphResourceHandle;
+using ResourceHandleHash = GraphResourceHandleHash;
 
 /**
  * @brief Description of a virtual texture resource
@@ -171,17 +156,8 @@ struct BufferDesc
 // Pass Definitions
 // ============================================================================
 
-/**
- * @brief Pass handle for identifying render passes
- */
-struct PassHandle
-{
-    uint32_t id = UINT32_MAX;
-    bool IsValid() const
-    {
-        return id != UINT32_MAX;
-    }
-};
+using PassHandle = GraphPassHandle;
+using PassHandleHash = GraphPassHandleHash;
 
 /**
  * @brief Pass type enumeration
@@ -189,8 +165,30 @@ struct PassHandle
 enum class PassType
 {
     Graphics, ///< Regular graphics pass with render targets
+    Compute,  ///< Compute dispatch without a render pass
     Transfer, ///< Resource copy/transfer pass
     Present   ///< Final present pass
+};
+
+enum class PassCullReason
+{
+    Unreachable,
+    GraphOutput,
+    SideEffect,
+    ExternalWrite,
+    Dependency
+};
+
+struct PassCompileInfo
+{
+    std::string name;
+    PassType type = PassType::Graphics;
+    bool culled = true;
+    PassCullReason reason = PassCullReason::Unreachable;
+    rhi::DeviceId device = rhi::InvalidDeviceId;
+    rhi::QueueRole queue = rhi::QueueRole::Graphics;
+    rhi::SubmissionDomain submissionDomain = rhi::SubmissionDomain::Frame;
+    rhi::RenderViewId view = rhi::InvalidRenderViewId;
 };
 
 /**
@@ -200,7 +198,7 @@ struct PassConfig
 {
     std::string name;
     PassType type = PassType::Graphics;
-    VkPipelineStageFlags stageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+    rhi::PipelineStage stageMask = rhi::PipelineStage::AllGraphics;
 };
 
 /**
@@ -210,9 +208,9 @@ struct ResourceAccess
 {
     ResourceHandle handle;
     ResourceUsage usage = ResourceUsage::None;
-    VkPipelineStageFlags stages = 0;
-    VkAccessFlags access = 0;
-    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    rhi::PipelineStage stages = rhi::PipelineStage::None;
+    rhi::Access access = rhi::Access::None;
+    rhi::TextureLayout layout = rhi::TextureLayout::Undefined;
 };
 
 // ============================================================================
@@ -220,18 +218,52 @@ struct ResourceAccess
 // ============================================================================
 
 /**
- * @brief Tracks the current Vulkan state of a resource after each pass
+ * @brief Tracks the backend-neutral state of a resource after each pass
  *
  * Used for precise barrier insertion: knowing the old layout, access mask,
- * and pipeline stages allows generating exact VkImageMemoryBarrier instead
- * of pessimistic TOP_OF_PIPE → ALL_GRAPHICS barriers.
+ * and pipeline stages allow the active RHI backend to generate precise barriers.
  */
 struct ResourceState
 {
-    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkAccessFlags accessMask = 0;
-    VkPipelineStageFlags stages = 0;
+    rhi::TextureLayout layout = rhi::TextureLayout::Undefined;
+    rhi::Access accessMask = rhi::Access::None;
+    rhi::PipelineStage stages = rhi::PipelineStage::None;
     uint32_t writerPassId = UINT32_MAX; ///< Pass that last wrote/used this resource
+    rhi::QueueRole queue = rhi::QueueRole::Count;
+    uint32_t queueFamily = VK_QUEUE_FAMILY_IGNORED;
+    uint32_t nativeQueueLane = UINT32_MAX;
+};
+
+struct NativeQueueBinding
+{
+    uint32_t family = VK_QUEUE_FAMILY_IGNORED;
+    uint32_t lane = UINT32_MAX;
+
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return family != VK_QUEUE_FAMILY_IGNORED && lane != UINT32_MAX;
+    }
+
+    friend bool operator==(const NativeQueueBinding &left, const NativeQueueBinding &right) noexcept
+    {
+        return left.family == right.family && left.lane == right.lane;
+    }
+
+    friend bool operator!=(const NativeQueueBinding &left, const NativeQueueBinding &right) noexcept
+    {
+        return !(left == right);
+    }
+};
+
+struct QueueOwnershipTransferInfo
+{
+    uint32_t resourceId = UINT32_MAX;
+    uint32_t sourcePass = UINT32_MAX;
+    uint32_t targetPass = UINT32_MAX;
+    uint32_t sourceBatch = rhi::InvalidSubmissionBatchIndex;
+    uint32_t targetBatch = rhi::InvalidSubmissionBatchIndex;
+    uint32_t sourceFamily = VK_QUEUE_FAMILY_IGNORED;
+    uint32_t targetFamily = VK_QUEUE_FAMILY_IGNORED;
 };
 
 // ============================================================================
@@ -287,13 +319,39 @@ class RenderContext
 
     /// @brief Get resolved texture for a resource handle
     [[nodiscard]] VkImageView GetTexture(ResourceHandle handle) const;
+    /// Backend-neutral texture view used by RHI draw paths.
+    [[nodiscard]] rhi::TextureViewHandle GetTextureView(ResourceHandle handle) const;
+    [[nodiscard]] rhi::TextureHandle GetTextureHandle(ResourceHandle handle) const;
+
+    [[nodiscard]] rhi::GraphicsCommandEncoder &GetGraphicsCommandEncoder()
+    {
+        return m_graphicsEncoder;
+    }
+
+    [[nodiscard]] rhi::ComputeCommandEncoder &GetComputeCommandEncoder()
+    {
+        return m_computeEncoder;
+    }
+
+    [[nodiscard]] rhi::TransferCommandEncoder &GetTransferCommandEncoder()
+    {
+        return m_transferEncoder;
+    }
 
     /// @brief Get resolved buffer for a resource handle
     [[nodiscard]] VkBuffer GetBuffer(ResourceHandle handle) const;
+    [[nodiscard]] rhi::BufferHandle GetBufferHandle(ResourceHandle handle) const;
+    [[nodiscard]] const RendererList *GetRendererList(ResourceHandle handle) const;
 
   private:
     VkCommandBuffer m_cmdBuffer;
     RenderGraph *m_graph;
+    VulkanGraphicsCommandContext m_graphicsCommandContext;
+    rhi::GraphicsCommandEncoder m_graphicsEncoder;
+    VulkanComputeCommandContext m_computeCommandContext;
+    rhi::ComputeCommandEncoder m_computeEncoder;
+    VulkanTransferCommandContext m_transferCommandContext;
+    rhi::TransferCommandEncoder m_transferEncoder;
     VkViewport m_viewport{};
     VkRect2D m_scissor{};
 };
@@ -331,12 +389,17 @@ class PassBuilder
     /// @brief Import an external buffer
     [[nodiscard]] ResourceHandle ImportBuffer(const std::string &name, VkBuffer buffer, VkDeviceSize size);
 
+    /// Import a buffer owned by another RHI subsystem. The graph registers a
+    /// non-owning Vulkan alias for barriers and draw commands; the original
+    /// RHI handle remains owned by its caller.
+    [[nodiscard]] ResourceHandle ImportBuffer(const std::string &name, rhi::BufferHandle buffer, uint64_t size);
+
     /// @brief Read a texture in shader
-    ResourceHandle Read(ResourceHandle handle, VkPipelineStageFlags stages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    ResourceHandle Read(ResourceHandle handle, rhi::PipelineStage stages = rhi::PipelineStage::FragmentShader);
 
     /// @brief Read a depth texture in shader as sampler2D
     ResourceHandle ReadSampledDepth(ResourceHandle handle,
-                                    VkPipelineStageFlags stages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+                                    rhi::PipelineStage stages = rhi::PipelineStage::FragmentShader);
 
     /// @brief Write to a color attachment
     ResourceHandle WriteColor(ResourceHandle handle, uint32_t attachmentIndex = 0);
@@ -351,7 +414,30 @@ class PassBuilder
     ResourceHandle WriteResolve(ResourceHandle handle);
 
     /// @brief Read/Write a resource (UAV access)
-    ResourceHandle ReadWrite(ResourceHandle handle, VkPipelineStageFlags stages);
+    ResourceHandle ReadWrite(ResourceHandle handle, rhi::PipelineStage stages);
+
+    /// Read a storage buffer from a compute shader.
+    ResourceHandle ReadStorageBuffer(ResourceHandle handle,
+                                     rhi::PipelineStage stages = rhi::PipelineStage::ComputeShader);
+
+    /// Read a uniform buffer from a compute shader.
+    ResourceHandle ReadUniformBuffer(ResourceHandle handle);
+
+    /// Write a storage buffer from a compute shader.
+    ResourceHandle WriteStorageBuffer(ResourceHandle handle);
+
+    /// Write a storage texture from a compute shader.
+    ResourceHandle WriteStorageTexture(ResourceHandle handle);
+
+    /// Consume a buffer as graphics indirect draw arguments.
+    ResourceHandle ReadIndirectBuffer(ResourceHandle handle);
+
+    /// Consume a host-side renderer list without creating a GPU barrier.
+    ResourceHandle ReadRendererList(ResourceHandle handle);
+
+    /// Skip only this pass's callback when all declared renderer lists are empty.
+    /// Attachment clears and layout transitions still execute.
+    void SkipCallbackWhenRendererListsEmpty(bool enabled = true);
 
     /// @brief Read a resource as transfer source (for blit/copy operations)
     ResourceHandle TransferRead(ResourceHandle handle);
@@ -359,8 +445,29 @@ class PassBuilder
     /// @brief Write a resource as transfer destination (for blit/copy operations)
     ResourceHandle TransferWrite(ResourceHandle handle);
 
+    /// Preserve an image while transitioning it back to color-attachment state.
+    /// This is used by graph-owned export passes that prepare a persistent
+    /// multisampled target for the next execution without creating a new SSA version.
+    ResourceHandle PrepareColorAttachment(ResourceHandle handle);
+
+    /// Preserve an image while transitioning it back to writable depth state.
+    ResourceHandle PrepareDepthStencilAttachment(ResourceHandle handle);
+
+    /// Declare the final presentation read and retain this pass as an external side effect.
+    ResourceHandle PresentRead(ResourceHandle handle);
+
+    /// Keep this pass even when it has no path to a graph output. Use only for
+    /// externally observable work such as readback, events, or debug capture.
+    void SetSideEffect(bool enabled = true);
+
     /// @brief Set the pass render area
     void SetRenderArea(uint32_t width, uint32_t height);
+
+    /// Override the native queue role for commands whose Vulkan capability
+    /// requirements are stricter than their logical pass type. For example,
+    /// vkCmdResolveImage is transfer-like work but requires a Graphics-capable
+    /// command pool.
+    void SetQueueRole(rhi::QueueRole queue);
 
     /// @brief Enable/disable depth test
     void SetDepthTest(bool enable)
@@ -392,6 +499,11 @@ struct RenderPassData
     std::string name;
     uint32_t id = 0;
     PassType type = PassType::Graphics;
+    rhi::DeviceId device = rhi::InvalidDeviceId;
+    rhi::QueueRole queue = rhi::QueueRole::Graphics;
+    rhi::SubmissionDomain submissionDomain = rhi::SubmissionDomain::Frame;
+    rhi::RenderViewId view = rhi::InvalidRenderViewId;
+    bool forceSubmissionBoundary = false;
 
     // Resource accesses
     std::vector<ResourceAccess> reads;
@@ -412,9 +524,13 @@ struct RenderPassData
     bool clearColorEnabled = false;
     bool clearDepthEnabled = false;
     bool hasResolveAttachment = false; // True when MSAA resolve is used
+    bool hasSideEffect = false;
+    bool skipCallbackWhenRendererListsEmpty = false;
+    std::vector<ResourceHandle> rendererListInputs;
 
     // Vulkan objects (resolved during compile)
     VkRenderPass vulkanRenderPass = VK_NULL_HANDLE;
+    rhi::RenderTargetLayoutHandle renderTargetLayout;
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
 
     // Execute callback
@@ -424,6 +540,7 @@ struct RenderPassData
     std::vector<uint32_t> dependsOn;
     uint32_t refCount = 0;
     bool culled = false;
+    PassCullReason cullReason = PassCullReason::Unreachable;
 
     // Pre-computed execution data (populated at end of Compile, used in Execute).
     // Eliminates per-frame struct construction for beginInfo, clear values,
@@ -442,6 +559,7 @@ struct ResourceData
 {
     std::string name;
     ResourceType type = ResourceType::Texture2D;
+    rhi::DeviceId ownerDevice = rhi::InvalidDeviceId;
 
     // Texture info
     TextureDesc textureDesc;
@@ -451,9 +569,14 @@ struct ResourceData
 
     // External resource (imported)
     bool isExternal = false;
+    bool concurrentQueueSharing = false;
     VkImage externalImage = VK_NULL_HANDLE;
     VkImageView externalView = VK_NULL_HANDLE;
+    rhi::TextureViewHandle rhiView;
+    rhi::TextureHandle rhiTexture;
     VkBuffer externalBuffer = VK_NULL_HANDLE;
+    rhi::BufferHandle rhiBuffer;
+    const RendererList *externalRendererList = nullptr;
 
     // Allocated resources (for transient)
     VkImage allocatedImage = VK_NULL_HANDLE;
@@ -503,6 +626,7 @@ class RenderGraph
         uint64_t executeCalls = 0;
         uint64_t passCount = 0;
         uint64_t graphicsPassCount = 0;
+        uint64_t computePassCount = 0;
         uint64_t barrierCallCount = 0;
     };
 
@@ -533,7 +657,23 @@ class RenderGraph
      * @param context Device context for Vulkan access
      * @param pipelineManager Pipeline manager for render pass creation
      */
-    void Initialize(VkDeviceContext *context, VkPipelineManager *pipelineManager);
+    void Initialize(VkDeviceContext *context, VkPipelineManager *pipelineManager,
+                    GpuRetirementQueue *deletionQueue = nullptr, const VulkanQueueManager *queueManager = nullptr);
+
+    /// Native queue identity is copied into the graph and remains stable for a
+    /// compiled generation. Backends may replace it before Compile after a
+    /// device/queue topology change.
+    void SetQueueTopology(const std::array<NativeQueueBinding, static_cast<size_t>(rhi::QueueRole::Count)> &topology);
+
+    void SetRenderView(const rhi::RenderViewContext &view);
+    [[nodiscard]] rhi::DeviceId GetDeviceId() const noexcept
+    {
+        return m_deviceId;
+    }
+    [[nodiscard]] rhi::RenderViewId GetRenderViewId() const noexcept
+    {
+        return m_renderViewId;
+    }
 
     /**
      * @brief Reset the graph for a new frame
@@ -541,6 +681,21 @@ class RenderGraph
      * Clears all passes and transient resources.
      */
     void Reset();
+
+    /**
+     * @brief Detach every cached framebuffer and retire it after a caller-owned
+     *        submission
+     * epoch.
+     *
+     * Target replacement must call this before destroying any imported image
+     * view
+     * referenced by the current framebuffer generation. Pass framebuffer
+     * handles and the cache are cleared
+     * immediately; native destruction is
+     * deferred through the GPU retirement queue without waiting for the
+     * device.
+     */
+    void RetireFramebufferCacheAfter(rhi::SubmissionSerial retirementSerial);
 
     /**
      * @brief Cleanup all resources
@@ -560,34 +715,49 @@ class RenderGraph
      */
     PassHandle AddPass(const std::string &name, PassSetupCallback setup);
 
+    /// Add a compute pass. It records commands outside a Vulkan render pass.
+    PassHandle AddComputePass(const std::string &name, PassSetupCallback setup);
+
+    /// Start a new native submission before this pass even when its queue and
+    /// domain match the previous pass. Used for explicit async phase joins.
+    void SetSubmissionBoundaryBefore(PassHandle pass);
+
     /**
      * @brief Add a transfer pass to the graph (copy/blit operations, no render pass)
      */
     PassHandle AddTransferPass(const std::string &name, PassSetupCallback setup);
+
+    /// Add a final presentation/export pass outside a Vulkan render pass.
+    PassHandle AddPresentPass(const std::string &name, PassSetupCallback setup);
 
     /**
      * @brief Set the backbuffer (swapchain image) for this frame
      */
     ResourceHandle SetBackbuffer(VkImage image, VkImageView view, VkFormat format, uint32_t width, uint32_t height,
                                  VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
-                                 VkImageLayout initialLayout = VK_IMAGE_LAYOUT_MAX_ENUM);
-
-    /**
-     * @brief Set the desired final image layout for the backbuffer after all passes.
-     *
-     * For swapchain targets, use VK_IMAGE_LAYOUT_PRESENT_SRC_KHR.
-     * Default is VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL (offscreen scene targets).
-     */
-    void SetBackbufferFinalLayout(VkImageLayout layout)
-    {
-        m_backbufferFinalLayout = layout;
-    }
+                                 rhi::TextureLayout initialLayout = rhi::TextureLayout::Automatic);
 
     /**
      * @brief Import an external texture as an MSAA resolve target
      */
     ResourceHandle ImportResolveTarget(VkImage image, VkImageView view, VkFormat format, uint32_t width,
                                        uint32_t height);
+
+    /// Import a persistent texture owned outside the graph.
+    ResourceHandle ImportTexture(const std::string &name, VkImage image, VkImageView view, VkFormat format,
+                                 uint32_t width, uint32_t height,
+                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+
+    /// Import a persistent RHI texture while preserving its queue-sharing contract.
+    ResourceHandle ImportTexture(const std::string &name, rhi::TextureHandle texture, rhi::TextureViewHandle view,
+                                 VkFormat format, uint32_t width, uint32_t height,
+                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+
+    /// Rebind an imported texture to another image with the same description.
+    bool UpdateImportedTexture(ResourceHandle handle, VkImage image, VkImageView view);
+
+    /// Import a stable host-side renderer list object. Its contents may change every frame.
+    ResourceHandle ImportRendererList(const std::string &name, const RendererList *rendererList);
 
     /**
      * @brief Override the initial tracked state of an imported/external resource.
@@ -597,8 +767,8 @@ class RenderGraph
      * Call this before Execute() to keep the tracked oldLayout aligned with
      * the real Vulkan image layout at frame start.
      */
-    void SetResourceInitialState(ResourceHandle handle, VkImageLayout layout, VkAccessFlags accessMask,
-                                 VkPipelineStageFlags stages);
+    void SetResourceInitialState(ResourceHandle handle, rhi::TextureLayout layout, rhi::Access accessMask,
+                                 rhi::PipelineStage stages, rhi::QueueRole ownerQueue = rhi::QueueRole::Graphics);
 
     /**
      * @brief Mark a resource as the final output
@@ -630,6 +800,9 @@ class RenderGraph
                                             VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
                                             bool isTransient = true);
 
+    /// Pre-register a transient buffer before pass declarations reference it.
+    ResourceHandle RegisterTransientBuffer(const std::string &name, VkDeviceSize size, VkBufferUsageFlags usage);
+
     // ========================================================================
     // Compilation and Execution
     // ========================================================================
@@ -652,7 +825,18 @@ class RenderGraph
      *
      * @param commandBuffer Command buffer to record into
      */
-    void Execute(VkCommandBuffer commandBuffer);
+    void Execute(VkCommandBuffer commandBuffer, rhi::QueueRole recordingQueue = rhi::QueueRole::Graphics);
+
+    /// Reset tracked resource state once before recording the compiled
+    /// submission batches. A backend executor calls this once per graph frame.
+    void BeginExecution();
+
+    /// Record one compiler-produced submission batch into a command buffer.
+    /// Batches must be recorded in SubmissionPlan order.
+    [[nodiscard]] bool RecordSubmissionBatch(uint32_t batchIndex, VkCommandBuffer commandBuffer);
+
+    [[nodiscard]] bool HasExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue) const noexcept;
+    [[nodiscard]] bool RecordExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue, VkCommandBuffer commandBuffer);
 
     // ========================================================================
     // Per-Frame Clear Value Updates (no rebuild/recompile needed)
@@ -700,6 +884,21 @@ class RenderGraph
     /// Passes in the compiled execution order, excluding culled passes.
     [[nodiscard]] std::vector<std::string> GetExecutionPassNames() const;
 
+    /// Declaration-order culling report for Graph Viewer and diagnostics.
+    [[nodiscard]] std::vector<PassCompileInfo> GetPassCompileInfos() const;
+
+    /// Backend-neutral queue batches produced by the compiler. The plan is the
+    /// authoritative input for backend command-buffer recording and submission.
+    [[nodiscard]] const rhi::SubmissionPlan &GetSubmissionPlan() const noexcept
+    {
+        return m_submissionPlan;
+    }
+
+    [[nodiscard]] const std::vector<QueueOwnershipTransferInfo> &GetQueueOwnershipTransfers() const noexcept
+    {
+        return m_queueOwnershipTransferInfos;
+    }
+
     /**
      * @brief Get resource count
      */
@@ -708,12 +907,34 @@ class RenderGraph
         return m_resources.size();
     }
 
+    [[nodiscard]] RenderGraphScopeId GetIdentityScope() const noexcept
+    {
+        return m_identity.Current();
+    }
+
+    [[nodiscard]] bool Owns(ResourceHandle handle) const noexcept
+    {
+        return handle.IsValid() && handle.scope == m_identity.Current() && handle.id < m_resources.size() &&
+               handle.id < m_resourceVersions.size() && handle.version <= m_resourceVersions[handle.id];
+    }
+
+    [[nodiscard]] bool Owns(PassHandle handle) const noexcept
+    {
+        return handle.IsValid() && handle.scope == m_identity.Current();
+    }
+
     /**
      * @brief Get the Vulkan render pass for a specific pass
      * @param passName Name of the pass
      * @return VkRenderPass or VK_NULL_HANDLE if not found
      */
     [[nodiscard]] VkRenderPass GetPassRenderPass(const std::string &passName) const;
+
+    [[nodiscard]] VkRenderPass GetPassRenderPass(PassHandle pass) const;
+
+    [[nodiscard]] rhi::RenderTargetLayoutHandle GetPassRenderTargetLayout(const std::string &passName) const;
+
+    [[nodiscard]] rhi::RenderTargetLayoutHandle GetPassRenderTargetLayout(PassHandle pass) const;
 
     /**
      * @brief Get the first graphics pass render pass
@@ -726,8 +947,26 @@ class RenderGraph
     // ========================================================================
 
     [[nodiscard]] VkImageView ResolveTextureView(ResourceHandle handle) const;
+    [[nodiscard]] rhi::TextureViewHandle ResolveRhiTextureView(ResourceHandle handle) const;
+    [[nodiscard]] rhi::TextureHandle ResolveRhiTexture(ResourceHandle handle) const;
     [[nodiscard]] VkBuffer ResolveBuffer(ResourceHandle handle) const;
+    [[nodiscard]] rhi::BufferHandle ResolveRhiBuffer(ResourceHandle handle) const;
+    [[nodiscard]] const RendererList *ResolveRendererList(ResourceHandle handle) const;
     [[nodiscard]] uint64_t GetTransientResidentBytes() const;
+    [[nodiscard]] size_t GetTransientAllocationCount() const;
+
+    /// Number of rebuilds that reused dependency analysis from an identical
+    /// graph structure. Native resource handles and frame bindings are never
+    /// part of this cache.
+    [[nodiscard]] uint64_t GetStructuralCacheHitCount() const noexcept
+    {
+        return m_structuralCacheHits;
+    }
+
+    [[nodiscard]] uint64_t GetStructuralCacheMissCount() const noexcept
+    {
+        return m_structuralCacheMisses;
+    }
 
   private:
     // ========================================================================
@@ -736,9 +975,14 @@ class RenderGraph
 
     // PassBuilder needs access to internal methods and data
     friend class PassBuilder;
+    friend class RenderContext;
 
     /// @brief Create a new resource entry
     ResourceHandle CreateResource(const std::string &name, ResourceType type);
+
+    /// Produce the next SSA-style version for a resource write. Writes must
+    /// consume the latest version; reads may keep referencing older versions.
+    ResourceHandle AdvanceResourceVersion(ResourceHandle handle);
 
     /// @brief Cull unused passes (from output backwards)
     void CullPasses();
@@ -746,8 +990,14 @@ class RenderGraph
     /// @brief Compute resource lifetimes
     void ComputeResourceLifetimes();
 
-    /// @brief Topological sort via Kahn's algorithm
-    void TopologicalSort();
+    /// @brief Topological sort via Kahn's algorithm. Returns false for cycles.
+    bool TopologicalSort();
+
+    /// Reuse or retain the backend-neutral dependency analysis for a graph
+    /// structure. Per-frame values, callbacks, and native handles are excluded.
+    [[nodiscard]] std::vector<uint64_t> BuildStructuralSignature() const;
+    bool RestoreStructuralCompilation(const std::vector<uint64_t> &signature);
+    void StoreStructuralCompilation(std::vector<uint64_t> signature);
 
     /// @brief Allocate transient resources
     bool AllocateResources();
@@ -762,8 +1012,23 @@ class RenderGraph
     ///        viewport and scissor so Execute() can skip per-frame construction.
     void PrecomputeExecuteData();
 
+    /// Compile the topological pass order into device/queue/view batches.
+    [[nodiscard]] bool CompileSubmissionPlan();
+
+    /// Compile exclusive-sharing ownership transfers between native queue
+    /// families. Timeline waits alone do not transfer Vulkan ownership.
+    [[nodiscard]] bool CompileQueueOwnershipTransfers();
+
     /// @brief Insert barriers between passes using tracked resource layouts
     void InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex);
+
+    /// Emit the release half of every queue-family ownership transfer whose
+    /// source work completes in this submission batch.
+    void InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32_t batchIndex);
+
+    /// Record an ordered set of pass ids while preserving the graph's current
+    /// resource-state cursor. Used by both Execute() and batch execution.
+    void RecordPasses(VkCommandBuffer commandBuffer, const std::vector<uint32_t> &passIndices);
 
     /// @brief Free transient resources
     void FreeResources();
@@ -772,14 +1037,14 @@ class RenderGraph
     // Layout / barrier helpers
     // ========================================================================
 
-    /// @brief Convert ResourceUsage to appropriate VkImageLayout
-    static VkImageLayout UsageToLayout(ResourceUsage usage, ResourceType type);
+    /// @brief Convert ResourceUsage to an RHI texture layout intent
+    static rhi::TextureLayout UsageToLayout(ResourceUsage usage, ResourceType type);
 
-    /// @brief Convert ResourceUsage to VkAccessFlags
-    static VkAccessFlags UsageToAccessMask(ResourceUsage usage);
+    /// @brief Convert ResourceUsage to an RHI access intent
+    static rhi::Access UsageToAccessMask(ResourceUsage usage);
 
-    /// @brief Convert ResourceUsage to VkPipelineStageFlags
-    static VkPipelineStageFlags UsageToStageFlags(ResourceUsage usage);
+    /// @brief Convert ResourceUsage to an RHI pipeline stage intent
+    static rhi::PipelineStage UsageToStageFlags(ResourceUsage usage);
 
     /// @brief Get the effective depth handle for a pass (write takes priority over read)
     static ResourceHandle GetEffectiveDepth(const RenderPassData &pass);
@@ -793,7 +1058,7 @@ class RenderGraph
 
     /// @brief Compute hash for RenderPassConfig (for cache lookup)
     static size_t HashRenderPassConfig(VkFormat colorFmt, VkFormat depthFmt, VkSampleCountFlagBits samples,
-                                       bool clearColor, bool clearDepth, bool storeDepth,
+                                       bool clearColor, bool clearDepth, bool storeColor, bool storeDepth,
                                        VkImageLayout colorFinalLayout, bool hasResolve = false,
                                        VkFormat resolveFormat = VK_FORMAT_UNDEFINED, bool hasColorAttachments = true,
                                        bool readOnlyDepth = false);
@@ -806,21 +1071,69 @@ class RenderGraph
     void FlushUnusedCaches();
 
   private:
+    RenderGraphIdentitySource m_identity;
     VkDeviceContext *m_context = nullptr;
+    rhi::DeviceId m_deviceId = rhi::InvalidDeviceId;
+    rhi::RenderViewId m_renderViewId = rhi::InvalidRenderViewId;
+    VulkanRhiDevice *m_rhiDevice = nullptr;
     VkPipelineManager *m_pipelineManager = nullptr;
+    GpuRetirementQueue *m_deletionQueue = nullptr;
+    std::array<NativeQueueBinding, static_cast<size_t>(rhi::QueueRole::Count)> m_queueTopology{};
 
     // Graph data
     std::vector<RenderPassData> m_passes;
     std::vector<ResourceData> m_resources;
+    std::vector<uint32_t> m_resourceVersions;
     std::vector<uint32_t> m_executionOrder;
+    rhi::SubmissionPlan m_submissionPlan;
+
+    struct QueueOwnershipTransfer
+    {
+        QueueOwnershipTransferInfo info;
+        ResourceState sourceState;
+        ResourceAccess targetAccess;
+    };
+    std::vector<QueueOwnershipTransfer> m_queueOwnershipTransfers;
+    std::vector<QueueOwnershipTransferInfo> m_queueOwnershipTransferInfos;
+    std::vector<std::vector<uint32_t>> m_batchOutgoingOwnershipTransfers;
+    std::array<std::vector<uint32_t>, static_cast<size_t>(rhi::QueueRole::Count)> m_externalOutgoingOwnershipTransfers;
 
     // Output
     ResourceHandle m_backbuffer;
     ResourceHandle m_output;
-    VkImageLayout m_backbufferFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     // State
     bool m_compiled = false;
+    bool m_recordingSubmissionBatches = false;
+    rhi::QueueRole m_immediateRecordingQueue = rhi::QueueRole::Graphics;
+
+    struct CachedPassAnalysis
+    {
+        uint32_t refCount = 0;
+        bool culled = true;
+        PassCullReason cullReason = PassCullReason::Unreachable;
+        std::vector<uint32_t> dependencies;
+    };
+
+    struct CachedResourceLifetime
+    {
+        uint32_t firstPass = UINT32_MAX;
+        uint32_t lastPass = 0;
+        uint32_t refCount = 0;
+    };
+
+    struct StructuralCompileCacheEntry
+    {
+        std::vector<uint64_t> signature;
+        std::vector<CachedPassAnalysis> passes;
+        std::vector<CachedResourceLifetime> resources;
+        std::vector<uint32_t> executionOrder;
+    };
+
+    static constexpr size_t kStructuralCacheCapacity = 8;
+    std::vector<StructuralCompileCacheEntry> m_structuralCompileCache;
+    uint64_t m_structuralCacheHits = 0;
+    uint64_t m_structuralCacheMisses = 0;
 
     // Per-resource layout state (reset each Execute())
     // Flat vector indexed by resource id — O(1) lookup, memcpy reset.
@@ -832,10 +1145,12 @@ class RenderGraph
 
     // Pre-allocated scratch buffers reused every Execute() to avoid per-pass heap allocs.
     std::vector<VkImageMemoryBarrier> m_barrierScratch;
+    std::vector<VkBufferMemoryBarrier> m_bufferBarrierScratch;
     std::vector<VkClearValue> m_clearValueScratch;
 
     // RenderPass cache (long-lived across frames)
     std::unordered_map<size_t, VkRenderPass> m_renderPassCache;
+    std::unordered_map<size_t, rhi::RenderTargetLayoutHandle> m_renderTargetLayoutCache;
 
     // Framebuffer cache (long-lived across frames)
     struct FramebufferCacheEntry

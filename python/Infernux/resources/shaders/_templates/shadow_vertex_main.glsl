@@ -27,8 +27,12 @@ ${VERTEX_CALL}
     }
     mat4 instModel    = instanceModels[gl_InstanceIndex];
     vec4 worldPos     = instModel * vec4(v.position, 1.0);
-    mat3 normalMatrix = mat3(instModel);
+    mat3 normalMatrix = transpose(inverse(mat3(instModel)));
 
+    // The caster pass stays purely geometric: shadow acne is handled by the
+    // slope-scaled raster depth bias of the shadow pipeline plus the unified
+    // receiver-side bias in lighting.glsl. World-space caster offsets warped
+    // shadow shapes and detached contact shadows for local lights.
     v_WorldPos  = worldPos.xyz;
     v_Normal    = normalize(normalMatrix * v.normal);
     v_Tangent   = vec4(normalize(normalMatrix * v.tangent.xyz), v.tangent.w);
@@ -36,4 +40,9 @@ ${VERTEX_CALL}
     v_TexCoord  = v.texCoord;
     v_ViewDepth = 0.0;
     gl_Position = shadowUBO.proj * shadowUBO.view * worldPos;
+    if (shadowUBO.light_vector.w < 0.5) {
+        // Directional shadow pancaking preserves casters that cross the light
+        // near plane while maximizing the usable depth range of each cascade.
+        gl_Position.z = max(gl_Position.z, 0.0);
+    }
 }

@@ -19,6 +19,7 @@ from Infernux.engine.engine import Engine, LogLevel
 from Infernux.engine.resources_manager import ResourcesManager
 from Infernux.engine.play_mode import PlayModeManager, PlayModeState
 from Infernux.engine.scene_manager import SceneFileManager
+from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.ui import (
     SceneViewPanel,
     GameViewPanel,
@@ -38,7 +39,20 @@ from Infernux.engine.ui import panel_state as _panel_state
 _log = logging.getLogger("Infernux.bootstrap")
 
 _LAYOUT_VERSION = 5
-_TOTAL_STEPS = 12
+_TOTAL_STEPS = 13
+
+
+def _iter_project_material_paths(project_path: str):
+    """Yield user material assets without walking project runtimes or caches."""
+    assets_root = os.path.join(resolved_path(project_path), "Assets")
+    if not os.path.isdir(assets_root):
+        return
+
+    for dirpath, dirnames, filenames in os.walk(assets_root):
+        dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+        for name in filenames:
+            if name.lower().endswith(".mat"):
+                yield os.path.join(dirpath, name)
 
 
 def _signal_progress(current_step: int, total: int, message: str) -> None:
@@ -135,6 +149,9 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._report_progress("Loading scene\u2026")
         self._load_initial_scene()
 
+        self._report_progress("Compiling builtin shaders\u2026")
+        self._prewarm_builtin_pipelines()
+
         self._report_progress("Prewarming material previews\u2026")
         self._prewarm_material_previews()
 
@@ -177,7 +194,37 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.engine.init_renderer(
             width=1600, height=900, project_path=self.project_path
         )
-        self.engine.set_gui_font(_resources.engine_font_path, 15)
+        # Match Unity's default UI text density more closely. Player bootstrap
+        # uses the same base size; explicit project UIText sizes stay unchanged.
+        self.engine.set_gui_font(_resources.engine_font_path, 18)
+
+    def _prewarm_builtin_pipelines(self):
+        """Compile builtin material shader programs during startup.
+
+        Without this, the first mesh drawn with a builtin material (e.g. the
+        first primitive created in a fresh session) pays the full glslang
+        compilation of every pass variant (Forward / Forward+ / GBuffer /
+        Shadow / Depth / Picking / Motion) synchronously on the render
+        thread — a multi-second stall. Moving it here folds the cost into
+        the splash screen, where the launcher already shows progress.
+        """
+        if not self.engine:
+            return
+        native = self.engine.get_native_engine()
+        if native is None:
+            return
+        try:
+            from Infernux.lib import AssetRegistry
+        except Exception as exc:
+            Debug.log_suppressed("EditorBootstrap.builtin_pipeline_prewarm.import", exc)
+            return
+        for name in ("DefaultLit", "SkyboxProcedural"):
+            try:
+                material = AssetRegistry.instance().get_builtin_material(name)
+                if material is not None:
+                    native.refresh_material_pipeline(material)
+            except Exception as exc:
+                Debug.log_suppressed(f"EditorBootstrap.builtin_pipeline_prewarm[{name}]", exc)
 
     def _prewarm_material_previews(self):
         """Prewarm material preview textures once at startup.
@@ -192,19 +239,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         if native is None:
             return
 
-        root = os.path.abspath(self.project_path)
-        if not os.path.isdir(root):
-            return
-
-        material_paths = []
-        for dirpath, _dirnames, filenames in os.walk(root):
-            # Skip engine/library caches to avoid unnecessary startup work.
-            low = dirpath.lower().replace("\\", "/")
-            if "/library" in low or "/logs" in low or "/temp" in low:
-                continue
-            for name in filenames:
-                if name.lower().endswith(".mat"):
-                    material_paths.append(os.path.join(dirpath, name))
+        material_paths = list(_iter_project_material_paths(self.project_path))
 
         if not material_paths:
             return
@@ -266,6 +301,15 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.services._window_manager = self.window_manager
         self.services._asset_database = self.engine.get_asset_database()
         self.services._project_path = self.project_path
+
+        # Pin editor UI icons early so Inspector/object fields never bind
+        # descriptors from the unpinned texture-preview LRU cache.
+        try:
+            from Infernux.engine.ui.editor_icons import EditorIcons
+
+            EditorIcons.preload(self.engine.get_native_engine())
+        except Exception as exc:
+            Debug.log_warning(f"EditorIcons preload skipped: {exc}")
 
         self.event_bus = EditorEventBus()
 

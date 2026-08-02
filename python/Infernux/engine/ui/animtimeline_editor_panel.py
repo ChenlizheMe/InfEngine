@@ -18,6 +18,7 @@ import time
 from typing import Optional
 
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import relative_path, resolved_path
 from Infernux.engine.i18n import t
 from Infernux.lib import InxGUIContext
 
@@ -164,9 +165,8 @@ class AnimTimelineEditorPanel(EditorPanel):
         p = (path or "").strip()
         if not p:
             return ""
-        p = os.path.normpath(p)
         if os.path.isabs(p):
-            return p
+            return resolved_path(p)
         try:
             from Infernux.engine.project_context import get_project_root
 
@@ -174,8 +174,8 @@ class AnimTimelineEditorPanel(EditorPanel):
         except Exception:
             root = None
         if root:
-            return os.path.normpath(os.path.join(root, p))
-        return os.path.abspath(p)
+            return resolved_path(os.path.join(root, p))
+        return resolved_path(p)
 
     def save_state(self) -> dict:
         """Persist open .animtimeline path (saved on disk only) and view settings."""
@@ -208,11 +208,7 @@ class AnimTimelineEditorPanel(EditorPanel):
 
                 root = get_project_root()
                 if root:
-                    abs_p = os.path.abspath(fp)
-                    abs_r = os.path.abspath(root)
-                    rel = os.path.relpath(abs_p, abs_r)
-                    if not rel.startswith(".."):
-                        data["file_path_rel"] = rel
+                    data["file_path_rel"] = relative_path(fp, root)
             except (ValueError, OSError):
                 pass
         elif rel_fallback:
@@ -238,7 +234,7 @@ class AnimTimelineEditorPanel(EditorPanel):
 
                 root = get_project_root()
                 if root:
-                    cand = os.path.normpath(os.path.join(root, rel.replace("/", os.sep)))
+                    cand = resolved_path(os.path.join(root, rel))
                     if os.path.isfile(cand):
                         return cand
             except (OSError, ValueError):

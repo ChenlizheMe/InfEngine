@@ -20,6 +20,8 @@ from Infernux.core.assets import AssetManager
 from Infernux.core.material import Material
 from Infernux.renderstack.render_stack import RenderStack
 from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline
+from Infernux.renderstack.effect_slot import EffectSlot
+from Infernux.core.asset_ref import RenderEffectRef
 
 from Infernux.lib import (
     SceneManager,
@@ -34,6 +36,20 @@ from Infernux.lib import (
     AssetRegistry,
     ResourceType,
 )
+
+
+def test_explicit_skinned_animation_seek_marks_temporal_discontinuity(scene):
+    renderer = scene.create_game_object("AnimationSeekProbe").add_component(
+        "SkinnedMeshRenderer"
+    )
+    native_renderer = renderer._cpp_component
+    revision = scene.temporal_discontinuity_revision
+
+    native_renderer.runtime_animation_time = 1.25
+    assert scene.temporal_discontinuity_revision == revision + 1
+
+    native_renderer.runtime_animation_time = 1.25
+    assert scene.temporal_discontinuity_revision == revision + 1
 
 
 def test_mesh_cpu_payload_prepares_on_worker_and_rejects_stale_publish(engine):
@@ -252,8 +268,9 @@ def test_texture_cpu_artifact_prepares_on_worker_and_validates_cache(engine):
         assert texture.pixel_width == 4
         assert texture.pixel_height == 2
         assert texture.mip_count == 3
-        assert texture.cpu_byte_size == 44
-        assert texture.pixel_storage == "rgba8"
+        assert texture.cpu_byte_size == 24
+        assert texture.pixel_storage == "block_compressed"
+        assert texture.pixel_format == "bc1_rgba_srgb"
 
         registry.invalidate_asset(guid)
         source.write_bytes(source_bytes)
@@ -263,7 +280,7 @@ def test_texture_cpu_artifact_prepares_on_worker_and_validates_cache(engine):
         while time.monotonic() < deadline and not registry.try_commit_asset_load(fallback):
             time.sleep(0.001)
         assert fallback.committed is True
-        assert registry.get_texture_asset(guid).cpu_byte_size == 44
+        assert registry.get_texture_asset(guid).cpu_byte_size == 24
     finally:
         registry.invalidate_asset(guid)
         if asset_database.contains_path(str(source)):
@@ -298,7 +315,8 @@ def test_asset_registry_cpu_residency_budget_respects_live_and_explicit_pins(eng
     assert asset_database.reimport_asset(str(sources[0]))
     assert registry.reload_asset(guids[0]) is True
     updated_first_record = registry.get_asset_residency(guids[0])
-    assert first.cpu_byte_size == 44
+    assert first.cpu_byte_size == 24
+    assert first.pixel_format == "bc1_rgba_srgb"
     assert updated_first_record.runtime_version == first_record.runtime_version + 1
     assert updated_first_record.cpu_bytes > first_record.cpu_bytes
     first_record = updated_first_record
@@ -537,16 +555,15 @@ class TestComponentLifecycle:
             loaded_class = load_component_from_file(str(script_path))
             with temporary_script_import_paths(str(script_path)):
                 direct_module = importlib.import_module("a2")
-                legacy_module = importlib.import_module("Assets.a2")
+                with pytest.raises(ModuleNotFoundError):
+                    importlib.import_module("Assets.a2")
 
             go = scene.create_game_object("GO")
             go.add_component(loaded_class)
             components = go.get_components()
 
             assert loaded_class is direct_module.NewComponent1
-            assert loaded_class is legacy_module.NewComponent1
             assert any(isinstance(component, direct_module.NewComponent1) for component in components)
-            assert any(isinstance(component, legacy_module.NewComponent1) for component in components)
         finally:
             set_project_root(previous_root)
             for name in ("a2", "Assets.a2", "Assets"):
@@ -935,6 +952,83 @@ class TestComponentLifecycle:
         pipeline = RenderStackPipeline()
         assert pipeline._find_render_stack(ctx) is None
 
+    def test_renderstack_pipeline_restores_singleton_from_scene_cache(self, scene):
+        owner = scene.create_game_object("CachedRenderStackGO")
+        stack = owner.add_component(RenderStack)
+
+        class _Context:
+            pass
+
+        ctx = _Context()
+        ctx.scene = scene
+        pipeline = RenderStackPipeline()
+
+        RenderStack._active_instance = None
+        assert pipeline._find_render_stack(ctx) is stack
+        assert RenderStack.instance() is stack
+
+        RenderStack._active_instance = None
+        assert pipeline._find_render_stack(ctx) is stack
+        assert RenderStack.instance() is stack
+
+    def test_renderstack_active_instance_survives_play_mode_document_rebuild(self, scene):
+        from Infernux.engine.play_mode import PlayModeManager
+
+        owner = scene.create_game_object("PlayModeRenderStack")
+        original = owner.add_component(RenderStack)
+        snapshot = scene.serialize_document()
+
+        previous_manager = PlayModeManager.instance()
+        manager = PlayModeManager()
+        manager.set_asset_database(AssetRegistry.instance().get_asset_database())
+        try:
+            assert RenderStack.instance() is original
+            assert manager._rebuild_active_scene(snapshot, for_play=True)
+
+            rebuilt_owner = SceneManager.instance().get_active_scene().find("PlayModeRenderStack")
+            rebuilt = next(
+                component
+                for component in rebuilt_owner.get_py_components()
+                if isinstance(component, RenderStack)
+            )
+            assert rebuilt is not original
+            assert RenderStack.instance() is rebuilt
+        finally:
+            PlayModeManager._instance = previous_manager
+
+    def test_renderstack_effect_slots_survive_component_serialization_hooks(self, scene):
+        stack = scene.create_game_object("EffectBindingRenderStack").add_component(RenderStack)
+        slots = (
+            EffectSlot(slot_id="empty-slot", stage_id="final"),
+            EffectSlot(
+                slot_id="effect-slot",
+                stage_id="final",
+                effect=RenderEffectRef(
+                    guid="missing-effect-guid",
+                    path_hint="Assets/RenderEffects/Missing.effect",
+                ),
+            ),
+        )
+        stack.set_effect_stage_slots("final", slots)
+
+        persisted = stack._serialize_fields_document()
+        stack.effect_slots = []
+        stack._deserialize_fields_document(persisted)
+
+        restored = stack.get_effect_stage_slots("final")
+        assert len(restored) == 2
+        assert restored[0].slot_id == "empty-slot"
+        assert restored[1].slot_id == "effect-slot"
+        assert restored[1].effect_ref.guid == "missing-effect-guid"
+        assert not hasattr(stack, "effect_stage_bindings_json")
+
+    def test_renderstack_rejects_obsolete_binding_source(self, scene):
+        stack = scene.create_game_object("InvalidEffectBindingRenderStack").add_component(RenderStack)
+        with pytest.raises(ValueError, match="removed"):
+            stack._deserialize_fields_document(
+                {"effect_stage_bindings_json": '{"$schema":"broken"}'}
+            )
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Collider properties
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1033,6 +1127,19 @@ class TestColliders:
         assert resolved.friction_combine == PhysicsMaterialCombine.Multiply
         assert resolved.bounce_combine == PhysicsMaterialCombine.Maximum
 
+    def test_builtin_collider_accepts_empty_physic_material_reference(self, scene):
+        from Infernux.core.asset_ref import PhysicMaterialRef
+        from Infernux.core.physic_material import PhysicMaterial
+
+        collider = scene.create_game_object("ClearMaterial").add_component(
+            BoxColliderComponent
+        )
+        collider.physic_material = PhysicMaterial()
+        assert collider.physic_material.resolve() is not None
+
+        collider.physic_material = PhysicMaterialRef()
+        assert collider.physic_material.resolve() is None
+
     @pytest.mark.parametrize(
         "component_type,attribute,value",
         [
@@ -1069,7 +1176,7 @@ class TestColliders:
         assert collider.deserialize_document(invalid) is False
         assert collider.serialize_document() == original
 
-    def test_collider_document_rejects_unknown_field(self, scene):
+    def test_collider_document_rejects_removed_ordinary_field(self, scene):
         collider = scene.create_game_object("UnknownColliderField").add_component("BoxCollider")
         original = collider.serialize_document()
         invalid = dict(original)
@@ -1081,7 +1188,7 @@ class TestColliders:
     @pytest.mark.parametrize(
         "field,value",
         [
-            ("schema_version", 2),
+            ("unknown", 2),
             ("friction", 1.1),
             ("bounciness", float("nan")),
             ("friction_combine", 4),
@@ -1104,7 +1211,6 @@ class TestColliders:
         asset_path = Path(asset_database.assets_root) / "SharedSurface.physicMaterial"
         asset_path.parent.mkdir(parents=True, exist_ok=True)
         asset_path.write_text(json.dumps({
-            "schema_version": 1,
             "friction": 0.65,
             "bounciness": 0.25,
             "friction_combine": 2,
@@ -1138,7 +1244,6 @@ class TestColliders:
         assert restored.physic_material.resolve().native is material
 
         asset_path.write_text(json.dumps({
-            "schema_version": 1,
             "friction": 0.1,
             "bounciness": 0.9,
             "friction_combine": 1,
@@ -1193,7 +1298,10 @@ class TestLight:
         light = go.add_component("Light")
         assert light.light_type == LightType.Directional
         assert light.intensity == pytest.approx(1.0)
-        assert light.shadow_bias == pytest.approx(0.0)
+        assert light.shadow_bias == pytest.approx(1.0)
+        assert light.shadow_normal_bias == pytest.approx(1.0)
+        assert light.affect_geometry is True
+        assert light.affect_particles is True
 
     def test_light_type_point(self, scene):
         go = scene.create_game_object("PL")
@@ -1222,6 +1330,17 @@ class TestLight:
         light = go.add_component("Light")
         light.shadows = LightShadows.Hard
         assert light.shadows == LightShadows.Hard
+
+    def test_light_influence_domains_round_trip(self, scene):
+        go = scene.create_game_object("DomainLight")
+        light = go.add_component("Light")
+        light.affect_geometry = False
+        light.affect_particles = True
+
+        assert light.affect_geometry is False
+        assert light.affect_particles is True
+        data = json.loads(light.serialize())
+        assert data["influenceDomains"] == 2
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MeshRenderer
@@ -1312,22 +1431,33 @@ class TestMaterial:
         mat.set_float("testValue", 0.25)
         document = json.loads(mat.serialize())
 
-        assert document["material_version"] == 3
+        assert "material_version" not in document
+        assert document["shaders"]["vertex"]["shader_id"] == "Standard"
+        assert document["shaders"]["fragment"]["shader_id"] == "Lit"
 
         shader_metadata = json.loads(json.dumps(document))
         shader_metadata["_shader_property_order"] = ["baseColor", "testValue"]
         shader_metadata["properties"]["baseColor"]["hdr"] = True
+        shader_metadata["properties"]["testValue"]["range"] = [0.0, 1.0]
         assert mat.deserialize(json.dumps(shader_metadata)) is True
         metadata_round_trip = json.loads(mat.serialize())
         assert metadata_round_trip["_shader_property_order"] == ["baseColor", "testValue"]
         assert metadata_round_trip["properties"]["baseColor"]["hdr"] is True
+        assert metadata_round_trip["properties"]["testValue"]["range"] == [0.0, 1.0]
         mat.set_color("baseColor", (2.0, 1.0, 0.5, 1.0))
         assert json.loads(mat.serialize())["properties"]["baseColor"]["hdr"] is True
+        mat.set_float("testValue", 0.75)
+        assert json.loads(mat.serialize())["properties"]["testValue"]["range"] == [0.0, 1.0]
 
         invalid_shader_order = json.loads(json.dumps(shader_metadata))
         invalid_shader_order["_shader_property_order"].append("missingProperty")
         assert mat.deserialize(json.dumps(invalid_shader_order)) is False
         assert json.loads(mat.serialize())["_shader_property_order"] == ["baseColor", "testValue"]
+
+        invalid_range = json.loads(json.dumps(shader_metadata))
+        invalid_range["properties"]["testValue"]["range"] = [2.0, 1.0]
+        assert mat.deserialize(json.dumps(invalid_range)) is False
+        assert json.loads(mat.serialize())["properties"]["testValue"]["range"] == [0.0, 1.0]
 
         extended_state = json.loads(json.dumps(document))
         extended_state["renderState"].update(
@@ -1348,10 +1478,10 @@ class TestMaterial:
         for field, expected in extended_state["renderState"].items():
             assert round_tripped_state[field] == expected
 
-        wrong_version = json.loads(json.dumps(document))
-        wrong_version["material_version"] = 2
-        wrong_version["name"] = "PartialMutation"
-        assert mat.deserialize(json.dumps(wrong_version)) is False
+        removed_version = json.loads(json.dumps(document))
+        removed_version["material_version"] = 4
+        removed_version["name"] = "PartialMutation"
+        assert mat.deserialize(json.dumps(removed_version)) is False
         assert mat.name == "StableMaterial"
         assert mat.get_float("testValue", 0.0) == pytest.approx(0.25)
 
@@ -1383,7 +1513,7 @@ class TestMaterial:
         path = tmp_path / "atomic.mat"
 
         assert mat.save_to(str(path)) is True
-        assert json.loads(path.read_text(encoding="utf-8"))["material_version"] == 3
+        assert "material_version" not in json.loads(path.read_text(encoding="utf-8"))
         assert list(tmp_path.glob("atomic.mat.tmp.*")) == []
 
     def test_renderer_embeds_typed_material_document(self, scene):
@@ -1396,7 +1526,7 @@ class TestMaterial:
         document = json.loads(renderer.serialize())
         slot = document["materials"][0]
         assert isinstance(slot["material"], dict)
-        assert slot["material"]["material_version"] == 3
+        assert "material_version" not in slot["material"]
         assert "material_json" not in slot
 
         serialized_scene = scene.serialize()
@@ -1460,7 +1590,7 @@ class TestComponentSerialization:
             "SpriteRenderer",
         ],
     )
-    def test_registered_component_rejects_unknown_field_without_mutation(self, scene, component_type):
+    def test_registered_component_rejects_removed_ordinary_field(self, scene, component_type):
         owner = scene.create_game_object(f"Strict{component_type}")
         if component_type == "Transform":
             component = owner.transform
@@ -1473,28 +1603,21 @@ class TestComponentSerialization:
         assert component.deserialize_document(invalid) is False
         assert component.serialize_document() == original
 
-    def test_schema_version_is_strict_per_component_type(self, scene):
-        cube = scene.create_primitive(PrimitiveType.Cube, "SchemaCube")
+    def test_component_documents_are_strict(self, scene):
+        cube = scene.create_primitive(PrimitiveType.Cube, "CurrentFormatCube")
         renderer = cube.get_component("MeshRenderer")
         renderer_document = renderer.serialize_document()
-        assert renderer_document["schema_version"] == 5
-
-        renderer_document["schema_version"] = 1
+        renderer_document["unknown"] = 5
         assert renderer.deserialize_document(renderer_document) is False
 
         rigidbody = cube.add_component("Rigidbody")
         rigidbody_document = rigidbody.serialize_document()
-        assert rigidbody_document["schema_version"] == 1
         assert "instance_guid" not in rigidbody_document
 
         obsolete_document = dict(rigidbody_document)
         obsolete_document["instance_guid"] = str(rigidbody.component_id)
         assert rigidbody.deserialize_document(obsolete_document) is False
 
-        rigidbody_document["schema_version"] = 4
-        assert rigidbody.deserialize_document(rigidbody_document) is False
-
-        rigidbody_document["schema_version"] = 1
         rigidbody_document["type"] = "Camera"
         assert rigidbody.deserialize_document(rigidbody_document) is False
 

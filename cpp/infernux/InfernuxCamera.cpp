@@ -7,6 +7,7 @@
  */
 
 #include "Infernux.h"
+#include <platform/input/InputManager.h>
 
 namespace infernux
 {
@@ -42,6 +43,15 @@ void Infernux::ProcessSceneViewInput(float deltaTime, bool rightMouseDown, bool 
     }
 
     EditorCameraController &controller = SceneManager::Instance().GetEditorCameraController();
+
+    // Scene drag is consumed natively every engine frame while capture is
+    // active. Python still calls this entry point for wheel input and for the
+    // non-captured compatibility path, but must not apply a second 60 Hz drag.
+    if (InputManager::Instance().IsEditorMouseCaptureActive()) {
+        if (scrollDelta != 0.0f)
+            controller.OnMouseScroll(scrollDelta);
+        return;
+    }
 
     // Handle mouse button state changes
     if (rightMouseDown) {

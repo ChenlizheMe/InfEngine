@@ -61,7 +61,7 @@ class Material:
     _AUTOSAVE_MIN_INTERVAL: float = 0.5
 
     # Class-level set of Material instances with pending throttled saves.
-    _pending_saves: set["Material"] = set()
+    _pending_saves: dict[int, "Material"] = {}
 
     # When True, auto-save is suppressed (e.g. during Play mode).
     # Runtime material changes should be transient like Unity.
@@ -231,6 +231,8 @@ class Material:
     def dispose(self):
         """Release this material reference."""
         if not self._disposed and self._native is not None:
+            self._save_pending = False
+            Material._pending_saves.pop(id(self), None)
             self._disposed = True
             # Note: actual GPU resource cleanup happens in C++ destructor
             # when the last shared_ptr reference is released.
@@ -258,11 +260,14 @@ class Material:
 
     @property
     def render_queue(self) -> int:
-        return self._native.render_queue
+        return self._native.get_render_queue()
 
     @render_queue.setter
     def render_queue(self, value: int):
-        self._native.render_queue = value
+        from Infernux.lib import RenderStateOverride
+
+        self._native.set_render_queue(value)
+        self._native.mark_override(RenderStateOverride.RENDER_QUEUE)
 
     @property
     def shader_name(self) -> str:
@@ -388,6 +393,10 @@ class Material:
         self._native.mark_override(RenderStateOverride.BLEND_ENABLE)
         self._native.mark_override(RenderStateOverride.DEPTH_WRITE)
         self._native.mark_override(RenderStateOverride.RENDER_QUEUE)
+        # Older tooling could accidentally create shader properties with the
+        # same names as render-state fields. Keep a single source of truth.
+        self._native.remove_property("blend_enable")
+        self._native.remove_property("depth_write_enable")
 
     @property
     def alpha_clip_enabled(self) -> bool:
@@ -432,7 +441,7 @@ class Material:
         rapid-fire changes (e.g. every-frame set_texture) don't hammer
         the file system — pending writes are flushed via flush().
         """
-        if Material._suppress_auto_save:
+        if Material._suppress_auto_save or self._cannot_persist():
             return
 
         file_path = getattr(self._native, "file_path", None)
@@ -442,13 +451,17 @@ class Material:
         now = time.monotonic()
         if now - self._last_save_time < self._AUTOSAVE_MIN_INTERVAL:
             self._save_pending = True
-            Material._pending_saves.add(self)
+            Material._pending_saves[id(self)] = self
             return
 
         self._flush_save()
 
     def _flush_save(self):
         """Execute the actual disk write."""
+        if self._cannot_persist():
+            self._save_pending = False
+            Material._pending_saves.pop(id(self), None)
+            return
         file_path = getattr(self._native, "file_path", None)
         if not file_path:
             return
@@ -456,7 +469,7 @@ class Material:
             ok = self._native.save()
             self._last_save_time = time.monotonic()
             self._save_pending = False
-            Material._pending_saves.discard(self)
+            Material._pending_saves.pop(id(self), None)
             if not ok:
                 from Infernux.debug import Debug
                 Debug.log_warning(
@@ -466,6 +479,17 @@ class Material:
         except Exception as e:
             from Infernux.debug import Debug
             Debug.log_warning(f"Material._auto_save: exception for '{self.name}': {e}")
+
+    def _cannot_persist(self) -> bool:
+        """Return whether this wrapper no longer owns a writable material."""
+        if self._disposed or self._native is None:
+            return True
+        try:
+            return bool(self._native.is_deleted())
+        except AttributeError:
+            return False
+        except RuntimeError:
+            return True
 
     def flush(self):
         """Force-write any pending changes to disk."""
@@ -479,7 +503,7 @@ class Material:
         Called by the engine at end-of-frame to ensure changes persist
         without blocking every property setter with synchronous I/O.
         """
-        for mat in list(Material._pending_saves):
+        for mat in list(Material._pending_saves.values()):
             mat._flush_save()
 
     # ==========================================================================
@@ -547,6 +571,13 @@ class Material:
         """Clear a texture shader property (remove texture reference)."""
         self._native.clear_texture(name)
         self._auto_save()
+
+    def remove_property(self, name: str) -> bool:
+        """Remove a shader property and any asset dependency it owns."""
+        removed = bool(self._native.remove_property(name))
+        if removed:
+            self._auto_save()
+        return removed
 
     # ==========================================================================
     # Shader Property Getters

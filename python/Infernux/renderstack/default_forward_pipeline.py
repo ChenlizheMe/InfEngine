@@ -1,8 +1,8 @@
 """
-DefaultForwardPipeline — Standard 3-pass forward rendering pipeline.
+DefaultForwardPipeline — Standard 3-pass Forward rendering pipeline.
 
 This is the default pipeline used when no custom pipeline is selected.
-It defines a standard forward rendering topology:
+It defines a standard Forward rendering topology:
 
     OpaquePass → after_opaque → SkyboxPass → after_sky
     → TransparentPass → after_transparent
@@ -31,13 +31,17 @@ from Infernux.renderstack.render_pipeline import RenderPipeline
 from Infernux.components.serialized_field import serialized_field
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
+    POST_PROCESS_RESOURCES,
     SCENE_RESOURCES,
     add_forward_opaque_pass,
+    add_motion_vector_pass,
     add_shadow_caster_pass,
     add_skybox_pass,
     add_standard_post_process_section,
     add_transparent_pass,
     create_main_scene_targets,
+    opaque_queue_range,
+    transparent_queue_range,
 )
 
 if TYPE_CHECKING:
@@ -53,7 +57,7 @@ class MSAASamples(IntEnum):
 
 
 class DefaultForwardPipeline(RenderPipeline):
-    """Standard forward rendering pipeline.
+    """Standard Forward rendering pipeline.
 
     Defines 3 injection points:
 
@@ -71,6 +75,7 @@ class DefaultForwardPipeline(RenderPipeline):
     """
 
     name: str = "Default Forward"
+    material_pass = "forward"
 
     # ------------------------------------------------------------------
     # Exposed parameters (shown in RenderStack inspector)
@@ -85,7 +90,8 @@ class DefaultForwardPipeline(RenderPipeline):
 
     msaa_samples: MSAASamples = serialized_field(
         default=MSAASamples.X4,
-        tooltip="Anti-aliasing sample count (OFF=1x, X2=2x, X4=4x, X8=8x)",
+        enum_labels=["X1 (Off)", "X2", "X4", "X8"],
+        tooltip="Anti-aliasing sample count (X1 disables multisample anti-aliasing)",
         header="Anti-Aliasing",
     )
 
@@ -111,25 +117,80 @@ class DefaultForwardPipeline(RenderPipeline):
         graph.set_msaa_samples(int(self.msaa_samples))
 
         # ---- Shadow map configuration (from exposed parameters) ----
-        shadow_res = self.shadow_resolution
+        # The serialized range is enforced by the descriptor. Keep this
+        # boundary normalization as a final guard for pipeline values restored
+        # from external/custom state before descriptor assignment.
+        shadow_res = max(256, min(8192, int(self.shadow_resolution)))
 
         # ---- Create resources ----
-        create_main_scene_targets(graph, shadow_resolution=shadow_res)
+        msaa_samples = int(self.msaa_samples)
+        create_main_scene_targets(
+            graph,
+            shadow_resolution=shadow_res,
+            msaa_samples=msaa_samples,
+        )
 
         # Pass 0: Shadow caster pass (depth-only, custom resolution)
         add_shadow_caster_pass(graph)
 
         # Pass 1: Opaque objects (front-to-back for early-z)
-        add_forward_opaque_pass(graph)
+        add_forward_opaque_pass(graph, material_pass=self.material_pass)
+        add_motion_vector_pass(
+            graph,
+            name="OpaqueMotionPass",
+            queue_range=opaque_queue_range(),
+            clear=True,
+            msaa_samples=msaa_samples,
+        )
         graph.injection_point("after_opaque", resources=SCENE_RESOURCES)
+        graph.effects(
+            "after_opaque",
+            scope="stage",
+            display_name="After Opaque",
+            inputs=SCENE_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
 
         # Pass 2: Skybox (renders after opaque, depth-tested)
         add_skybox_pass(graph)
         graph.injection_point("after_sky", resources=SCENE_RESOURCES)
+        graph.effects(
+            "after_sky",
+            scope="composite",
+            display_name="After Sky",
+            inputs=SCENE_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
 
         # Pass 3: Transparent objects (back-to-front for blending)
-        add_transparent_pass(graph)
+        add_transparent_pass(graph, material_pass=self.material_pass)
+        add_motion_vector_pass(
+            graph,
+            name="TransparentMotionPass",
+            queue_range=transparent_queue_range(),
+            sort_mode="back_to_front",
+            msaa_samples=msaa_samples,
+        )
         graph.injection_point("after_transparent", resources=SCENE_RESOURCES)
+        graph.effects(
+            "after_transparent",
+            scope="composite",
+            display_name="After Transparent",
+            inputs=SCENE_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
+
+        graph.effects(
+            "final",
+            scope="composite",
+            display_name="Final Post Processing",
+            inputs=POST_PROCESS_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen", "hdr_to_display"},
+        )
 
         # Post-process + ScreenUI injection points
         add_standard_post_process_section(graph, enable_screen_ui=self.enable_screen_ui)

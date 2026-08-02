@@ -43,8 +43,8 @@ const std::vector<SubMesh> &EmptySubMeshes()
 
 bool SkinnedMeshRenderer::HasRuntimeSkinnedMesh() const
 {
-    return m_runtimeModel && m_runtimeModel->IsValid() && m_runtimeSkinBonePalette &&
-           !m_runtimeSkinBonePalette->empty();
+    const auto pose = m_skinPoseHistory.Acquire();
+    return m_runtimeModel && m_runtimeModel->IsValid() && pose && pose->IsValid();
 }
 
 const std::vector<Vertex> &SkinnedMeshRenderer::GetRuntimeSkinnedVertices() const
@@ -64,7 +64,8 @@ const std::vector<SubMesh> &SkinnedMeshRenderer::GetRuntimeSkinnedSubMeshes() co
 
 const std::vector<glm::mat4> &SkinnedMeshRenderer::GetRuntimeSkinBoneMatrices() const
 {
-    return m_runtimeSkinBonePalette ? *m_runtimeSkinBonePalette : EmptySkinPalette();
+    const auto palette = m_skinPoseHistory.Current();
+    return palette ? *palette : EmptySkinPalette();
 }
 
 void SkinnedMeshRenderer::SetSourceModelGuid(const std::string &guid)
@@ -96,8 +97,15 @@ void SkinnedMeshRenderer::SetActiveTakeName(const std::string &name)
 
 void SkinnedMeshRenderer::SetRuntimeAnimationTime(float t)
 {
+    if (std::abs(m_runtimeAnimationTime - t) <= kEpsilon)
+        return;
     m_runtimeAnimationTime = t;
     RefreshRuntimeSkinnedMesh();
+}
+
+void SkinnedMeshRenderer::SetRuntimeAnimationNormalizedTime(float n)
+{
+    m_runtimeAnimationNormalized = n;
 }
 
 void SkinnedMeshRenderer::SubmitAnimationPose(const std::string &takeName, float timeSeconds, float normalizedTime,
@@ -187,16 +195,17 @@ float SkinnedMeshRenderer::GetAnimationDurationSeconds(const std::string &takeNa
 void SkinnedMeshRenderer::ReloadSourceModel()
 {
     m_runtimeModel.reset();
-    m_runtimeSkinBonePalette.reset();
+    m_skinPoseHistory.Reset();
     RefreshRuntimeSkinnedMesh();
 }
 
 void SkinnedMeshRenderer::ClearRuntimeSkinnedMesh()
 {
-    if (!m_runtimeModel && !m_runtimeSkinBonePalette)
+    const auto pose = m_skinPoseHistory.Acquire();
+    if (!m_runtimeModel && (!pose || (!pose->current && !pose->previous)))
         return;
     m_runtimeModel.reset();
-    m_runtimeSkinBonePalette.reset();
+    m_skinPoseHistory.Reset();
     MarkMeshBufferDirty();
 }
 
@@ -239,10 +248,11 @@ void SkinnedMeshRenderer::RefreshRuntimeSkinnedMesh()
     for (const auto &animation : model->animations)
         m_animationTakeNames.push_back(animation.name);
 
+    std::shared_ptr<const std::vector<glm::mat4>> nextPalette;
     if (m_usePoseStack) {
         // AnimationTree path: N-way weighted + additive + masked blend.
         // Not cached (the stack changes most frames); built fresh each refresh.
-        m_runtimeSkinBonePalette =
+        nextPalette =
             std::make_shared<const std::vector<glm::mat4>>(model->BuildGpuBonePaletteFromPoseStack(m_poseStack));
     } else {
         SkinnedSampleRequest request;
@@ -252,8 +262,9 @@ void SkinnedMeshRenderer::RefreshRuntimeSkinnedMesh()
         request.blendTakeName = m_blendTakeName;
         request.blendTimeSeconds = m_blendAnimationTime;
         request.blendWeight = m_blendWeight;
-        m_runtimeSkinBonePalette = model->GetOrBuildGpuBonePalette(request);
+        nextPalette = model->GetOrBuildGpuBonePalette(request);
     }
+    m_skinPoseHistory.Publish(std::move(nextPalette), modelChanged);
     if (modelChanged)
         SceneManager::Instance().NotifyMeshRendererChanged(this);
 }

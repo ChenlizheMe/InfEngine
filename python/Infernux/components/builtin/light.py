@@ -96,6 +96,17 @@ def _rgba_to_vec3(v):
     return v
 
 
+def _vec2_to_list(v):
+    return [float(v[0]), float(v[1])]
+
+
+def _list_to_vec2(v):
+    if isinstance(v, (list, tuple)):
+        from Infernux.lib import Vector2
+        return Vector2(float(v[0]), float(v[1]))
+    return v
+
+
 class Light(BuiltinComponent):
     """Python wrapper for the C++ Light component.
 
@@ -145,8 +156,8 @@ class Light(BuiltinComponent):
         FieldType.FLOAT,
         default=10.0,
         range=(0.1, 100.0),
-        visible_when=lambda comp: int(comp.light_type) in (1, 2),
-        tooltip="Light range (Point / Spot lights)",
+        visible_when=lambda comp: int(comp.light_type) in (1, 2, 3),
+        tooltip="Light range (Point / Spot / Area lights)",
     )
 
     # ---- Spot angles ----
@@ -167,6 +178,23 @@ class Light(BuiltinComponent):
         tooltip="Outer spot angle in degrees",
     )
 
+    area_size = CppProperty(
+        "area_size",
+        FieldType.VEC2,
+        default=[1.6, 1.0],
+        visible_when=lambda comp: int(comp.light_type) == _AREA_LIGHT,
+        tooltip="Rectangle width and height",
+        get_converter=_vec2_to_list,
+        set_converter=_list_to_vec2,
+    )
+    area_two_sided = CppProperty(
+        "area_two_sided",
+        FieldType.BOOL,
+        default=False,
+        visible_when=lambda comp: int(comp.light_type) == _AREA_LIGHT,
+        tooltip="Emit light from both sides of the rectangle",
+    )
+
     # ---- Shadows ----
     shadows = CppProperty(
         "shadows",
@@ -185,46 +213,51 @@ class Light(BuiltinComponent):
         visible_when=lambda comp: int(comp.shadows) > 0,
         tooltip="Shadow strength (0-1)",
     )
-    shadow_bias = CppProperty(
-        "shadow_bias",
+
+    @property
+    def shadow_bias(self) -> float:
+        """Engine-managed depth bias, expressed in shadow-map texels."""
+        return float(self._require_cpp_component().shadow_bias)
+
+    @property
+    def shadow_normal_bias(self) -> float:
+        """Engine-managed normal bias, expressed in shadow-map texels."""
+        return float(self._require_cpp_component().shadow_normal_bias)
+
+    shadow_softness = CppProperty(
+        "shadow_softness",
         FieldType.FLOAT,
-        default=0.0,
-        range=(0.0, 1),
-        visible_when=lambda comp: int(comp.shadows) > 0,
-        tooltip="Shadow depth bias",
-    )
-    shadow_normal_bias = CppProperty(
-        "shadow_normal_bias",
-        FieldType.FLOAT,
-        default=0.01,
-        range=(0.0, 0.5),
-        visible_when=lambda comp: int(comp.shadows) > 0,
-        tooltip="Normal-offset bias in world units (pushes the sampling "
-                "position along the surface normal to fight shadow acne)",
+        default=1.5,
+        range=(0.25, 8.0),
+        visible_when=lambda comp: int(comp.shadows) == 2,
+        tooltip="Soft-shadow filter radius in shadow-map texels",
     )
 
-    # ------------------------------------------------------------------
-    # Methods (delegate to C++ Light)
-    # ------------------------------------------------------------------
+    affect_geometry = CppProperty(
+        "affect_geometry",
+        FieldType.BOOL,
+        default=True,
+        header="Influence",
+        tooltip="Allow this light to illuminate geometry renderers",
+    )
+    affect_particles = CppProperty(
+        "affect_particles",
+        FieldType.BOOL,
+        default=True,
+        tooltip="Allow this light to illuminate particle renderers",
+    )
 
-    def get_light_view_matrix(self):
-        """Get the light's view matrix for shadow mapping."""
-        cpp = self._cpp_component
-        if cpp is not None:
-            return cpp.get_light_view_matrix()
-        return None
+    @property
+    def culling_mask(self) -> int:
+        """Layer bitmask selecting which GameObjects this light affects."""
+        return int(self._require_cpp_component().culling_mask)
 
-    def get_light_projection_matrix(
-        self,
-        shadow_extent: float = 20.0,
-        near_plane: float = 0.1,
-        far_plane: float = 100.0,
-    ):
-        """Get the light's projection matrix for shadow mapping."""
-        cpp = self._cpp_component
-        if cpp is not None:
-            return cpp.get_light_projection_matrix(shadow_extent, near_plane, far_plane)
-        return None
+    @culling_mask.setter
+    def culling_mask(self, value: int) -> None:
+        mask = int(value)
+        if not 0 <= mask <= 0xFFFFFFFF:
+            raise ValueError("Light.culling_mask must be an unsigned 32-bit integer")
+        self._require_cpp_component().culling_mask = mask
 
     def serialize(self) -> str:
         """Serialize Light to JSON string (delegates to C++)."""
@@ -337,8 +370,9 @@ class Light(BuiltinComponent):
     def _draw_area_gizmo(self, position, forward, up, right):
         from Infernux.gizmos import Gizmos
 
-        half_width = 0.8
-        half_height = 0.5
+        size = self.area_size
+        half_width = max(float(size[0]) * 0.5, 0.001)
+        half_height = max(float(size[1]) * 0.5, 0.001)
 
         corners = [
             _v_add(position, _v_add(_v_mul(right, -half_width), _v_mul(up, -half_height))),

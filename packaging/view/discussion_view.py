@@ -1,4 +1,4 @@
-"""Early community entry page for the Infernux Hub."""
+"""Community entry page for the Infernux Hub."""
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter
@@ -31,9 +31,9 @@ class DiscussionGlyph(QWidget):
 
 
 class DiscussionView(QWidget):
-    """A quiet landing page before opening the external beta forum."""
+    """A quiet landing page before opening the official community."""
 
-    FORUM_URL = "https://www.infernux-engine.com"
+    FORUM_URL = "https://infernux-engine.discourse.group/"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -41,11 +41,11 @@ class DiscussionView(QWidget):
         layout.setContentsMargins(32, 30, 32, 30)
         layout.setSpacing(18)
 
-        title = QLabel(tr("Discussion"))
+        title = QLabel(tr("Community"))
         title.setObjectName("pageTitle")
         layout.addWidget(title)
 
-        subtitle = QLabel(tr("A place for early Infernux engine conversations and feedback."))
+        subtitle = QLabel(tr("The official Infernux community for support, ideas, and project sharing."))
         subtitle.setObjectName("pageSubtitle")
         layout.addWidget(subtitle)
 
@@ -58,23 +58,23 @@ class DiscussionView(QWidget):
 
         copy = QVBoxLayout()
         copy.setSpacing(8)
-        eyebrow = QLabel(tr("INFERNUX COMMUNITY // BETA"))
+        eyebrow = QLabel(tr("INFERNUX COMMUNITY"))
         eyebrow.setObjectName("discussionEyebrow")
         copy.addWidget(eyebrow)
-        heading = QLabel(tr("The discussion area is in beta."))
+        heading = QLabel(tr("Join the Infernux community."))
         heading.setObjectName("discussionHeading")
         copy.addWidget(heading)
         description = QLabel(tr(
-            "Share feedback, workflow ideas and early project experiments with other Infernux users."
+            "Ask questions, report bugs, discuss engine workflows, and share projects with other Infernux users."
         ))
         description.setObjectName("discussionDescription")
         description.setWordWrap(True)
         copy.addWidget(description)
-        address = QLabel("www.infernux-engine.com")
+        address = QLabel("infernux-engine.discourse.group")
         address.setObjectName("discussionAddress")
         copy.addWidget(address)
         copy.addSpacing(8)
-        enter = QPushButton(tr("Enter Discussion"))
+        enter = QPushButton(tr("Open Community"))
         enter.setObjectName("primaryBtn")
         enter.setCursor(Qt.CursorShape.PointingHandCursor)
         enter.setFixedHeight(38)

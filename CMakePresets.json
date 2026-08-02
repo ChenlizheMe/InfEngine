@@ -38,7 +38,18 @@
       "inherits": "debug",
       "binaryDir": "${sourceDir}/out/build-native-dev",
       "cacheVariables": {
-        "INFERNUX_BUILD_TESTS": "OFF"
+        "INFERNUX_BUILD_TESTS": "OFF",
+        "INFERNUX_PYTHON_SYNC_DIR": "${sourceDir}/out/build-native-dev/python-sync"
+      }
+    },
+    {
+      "name": "native-tests",
+      "displayName": "Native Test Preset (Windows, RelWithDebInfo)",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/out/build-native-tests",
+      "cacheVariables": {
+        "INFERNUX_BUILD_TESTS": "ON",
+        "INFERNUX_PYTHON_SYNC_DIR": "${sourceDir}/out/build-native-tests/python-sync"
       }
     },
     {
@@ -81,14 +92,25 @@
       "name": "release",
       "configurePreset": "release",
       "configuration": "Release",
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
+      },
       "targets": [
+        "ALL_BUILD",
         "package_and_install_python"
       ]
     },
     {
       "name": "debug",
       "configurePreset": "debug",
-      "configuration": "RelWithDebInfo"
+      "configuration": "RelWithDebInfo",
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
+      },
+      "targets": [
+        "ALL_BUILD",
+        "package_and_install_python"
+      ]
     },
     {
       "name": "debug-profile",
@@ -104,26 +126,44 @@
       ]
     },
     {
+      "name": "native-tests",
+      "configurePreset": "native-tests",
+      "configuration": "RelWithDebInfo",
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
+      }
+    },
+    {
       "name": "release-macos",
       "configurePreset": "release-macos",
       "targets": [
+        "all",
         "package_and_install_python"
       ]
     },
     {
       "name": "debug-macos",
-      "configurePreset": "debug-macos"
+      "configurePreset": "debug-macos",
+      "targets": [
+        "all",
+        "package_and_install_python"
+      ]
     },
     {
       "name": "release-linux",
       "configurePreset": "release-linux",
       "targets": [
+        "all",
         "package_and_install_python"
       ]
     },
     {
       "name": "debug-linux",
-      "configurePreset": "debug-linux"
+      "configurePreset": "debug-linux",
+      "targets": [
+        "all",
+        "package_and_install_python"
+      ]
     },
     {
       "name": "format",
@@ -170,6 +210,14 @@
     {
       "name": "debug",
       "configurePreset": "debug",
+      "configuration": "RelWithDebInfo",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "native-tests",
+      "configurePreset": "native-tests",
       "configuration": "RelWithDebInfo",
       "output": {
         "outputOnFailure": true

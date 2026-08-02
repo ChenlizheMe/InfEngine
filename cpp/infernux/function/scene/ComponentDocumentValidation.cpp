@@ -1,26 +1,15 @@
 #include "ComponentDocumentValidation.h"
 
-#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace infernux::component_document_validation
 {
 namespace
 {
-
-bool IsBaseField(std::string_view field)
-{
-    return field == "schema_version" || field == "type" || field == "enabled" || field == "execution_order" ||
-           field == "component_id";
-}
-
-template <typename Range> bool Contains(const Range &fields, std::string_view target)
-{
-    return std::find(fields.begin(), fields.end(), target) != fields.end();
-}
 
 std::string FieldPath(std::string_view componentType, std::string_view field)
 {
@@ -37,21 +26,23 @@ const nlohmann::json &RequireField(const nlohmann::json &document, std::string_v
 }
 
 template <typename RequiredFields, typename OptionalFields>
-void ValidateComponentDocumentImpl(const nlohmann::json &document, std::string_view expectedType, int schemaVersion,
+void ValidateComponentDocumentImpl(const nlohmann::json &document, std::string_view expectedType,
                                    const RequiredFields &requiredFields, const OptionalFields &optionalFields)
 {
     if (!document.is_object())
         throw std::invalid_argument(std::string(expectedType) + " document must be an object");
 
-    for (const auto &[key, value] : document.items()) {
+    std::unordered_set<std::string> allowed = {"type", "component_id", "enabled", "execution_order"};
+    for (const std::string_view field : requiredFields)
+        allowed.emplace(field);
+    for (const std::string_view field : optionalFields)
+        allowed.emplace(field);
+    for (const auto &[field, value] : document.items()) {
         (void)value;
-        if (!IsBaseField(key) && !Contains(requiredFields, key) && !Contains(optionalFields, key))
-            throw std::invalid_argument(std::string(expectedType) + " contains unknown field '" + key + "'");
+        if (allowed.find(field) == allowed.end())
+            throw std::invalid_argument(FieldPath(expectedType, field) + " is not part of the current format");
     }
 
-    const auto &version = RequireField(document, "schema_version", expectedType);
-    if (!version.is_number_integer() || version.get<int>() != schemaVersion)
-        throw std::invalid_argument(FieldPath(expectedType, "schema_version") + " is not the current version");
     const auto &type = RequireField(document, "type", expectedType);
     if (!type.is_string() || type.get_ref<const std::string &>() != expectedType)
         throw std::invalid_argument(FieldPath(expectedType, "type") + " does not match");
@@ -70,18 +61,18 @@ void ValidateComponentDocumentImpl(const nlohmann::json &document, std::string_v
 
 } // namespace
 
-void ValidateComponentDocument(const nlohmann::json &document, std::string_view expectedType, int schemaVersion,
+void ValidateComponentDocument(const nlohmann::json &document, std::string_view expectedType,
                                std::initializer_list<std::string_view> requiredFields,
                                std::initializer_list<std::string_view> optionalFields)
 {
-    ValidateComponentDocumentImpl(document, expectedType, schemaVersion, requiredFields, optionalFields);
+    ValidateComponentDocumentImpl(document, expectedType, requiredFields, optionalFields);
 }
 
-void ValidateComponentDocumentFields(const nlohmann::json &document, std::string_view expectedType, int schemaVersion,
+void ValidateComponentDocumentFields(const nlohmann::json &document, std::string_view expectedType,
                                      const std::vector<std::string_view> &requiredFields,
                                      const std::vector<std::string_view> &optionalFields)
 {
-    ValidateComponentDocumentImpl(document, expectedType, schemaVersion, requiredFields, optionalFields);
+    ValidateComponentDocumentImpl(document, expectedType, requiredFields, optionalFields);
 }
 
 float RequireFiniteFloat(const nlohmann::json &document, std::string_view field, std::string_view componentType)

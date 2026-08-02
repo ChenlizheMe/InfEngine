@@ -97,8 +97,7 @@ class SceneViewCameraMixin:
         
         if (right_down or middle_down) and not right_just_pressed and not middle_just_pressed:
             if self._camera_capture_active:
-                mouse_delta_x = mgr.mouse_delta_x
-                mouse_delta_y = mgr.mouse_delta_y
+                mouse_delta_x, mouse_delta_y = mgr.consume_editor_mouse_delta()
             else:
                 raw_dx = ctx.get_mouse_pos_x() - self._last_mouse_x
                 raw_dy = ctx.get_mouse_pos_y() - self._last_mouse_y
@@ -215,6 +214,10 @@ class SceneViewCameraMixin:
         (and children) and derives the camera distance using Unity's
         formula: distance = radius / sin(fov/2).
 
+        World-space rotation is never changed — only the focus point and
+        distance are animated so the object becomes visible from the
+        current viewing direction.
+
         Alternates between a *far* (framing) and *close* (detail) distance
         on repeated double-clicks of the same object, like Unity.
         """
@@ -257,18 +260,7 @@ class SceneViewCameraMixin:
                         cur_pos.y + fwd[1] * cur_dist,
                         cur_pos.z + fwd[2] * cur_dist)
 
-        # Target yaw/pitch: keep current viewing direction
-        # Keep the current viewing direction for volumetric objects, but for
-        # flat one-sided meshes (e.g. old quads) prefer the visible face so
-        # framing does not fly to the culled side.
-        target_orientation = self._preferred_focus_angles(game_object)
-        if target_orientation is not None:
-            target_yaw, target_pitch = target_orientation
-        else:
-            target_yaw = cur_yaw
-            target_pitch = cur_pitch
-
-        # Store animation state
+        # Store animation state — keep world rotation fixed throughout.
         self._fly_to_start_focus = actual_focus
         self._fly_to_start_dist = cur_dist
         self._fly_to_start_yaw = cur_yaw
@@ -276,8 +268,8 @@ class SceneViewCameraMixin:
 
         self._fly_to_target_focus = center
         self._fly_to_target_dist = target_dist
-        self._fly_to_target_yaw = target_yaw
-        self._fly_to_target_pitch = target_pitch
+        self._fly_to_target_yaw = cur_yaw
+        self._fly_to_target_pitch = cur_pitch
 
         self._fly_to_elapsed = 0.0
         self._fly_to_duration = 0.5

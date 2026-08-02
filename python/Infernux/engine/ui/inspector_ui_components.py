@@ -12,6 +12,7 @@ from Infernux.ui import UICanvas, UIText, UIImage, UIButton
 from Infernux.ui.enums import TextResizeMode
 from Infernux.ui.enums import RenderMode, TextAlignH, TextAlignV
 from Infernux.engine.project_context import get_project_root
+from Infernux.engine.path_utils import relative_path, resolved_path
 
 from .inspector_components import _record_property, register_py_component_renderer
 from Infernux.engine.i18n import t
@@ -96,7 +97,8 @@ def _render_texture_picker(ctx, comp, field_name: str, label: str, lw: float,
             _apply_if_changed(comp, field_name, tex_path, "")
 
     def _asset_items(filt):
-        patterns = ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.gif", "*.psd", "*.hdr", "*.pic", "*.pnm", "*.pgm", "*.ppm")
+        from Infernux.core.asset_types import IMAGE_EXTENSIONS
+        patterns = tuple(f"*{extension}" for extension in sorted(IMAGE_EXTENSIONS))
         items = []
         for pattern in patterns:
             items += _picker_assets(filt, pattern, assets_only=True)
@@ -108,6 +110,7 @@ def _render_texture_picker(ctx, comp, field_name: str, label: str, lw: float,
         clickable=False, accept="TEXTURE_FILE",
         on_drop=_on_drop, picker_asset_items=_asset_items,
         on_pick=_on_pick, on_clear=_on_clear,
+        ping_path=tex_path or None,
     )
     _record_field(ctx, comp, field_name, "object_field", label)
 
@@ -164,7 +167,7 @@ def _get_project_font_options():
                 continue
             seen_names.add(name_lower)
             abs_path = os.path.join(dirpath, filename)
-            rel_path = os.path.relpath(abs_path, root).replace("\\", "/")
+            rel_path = relative_path(abs_path, root)
             found.append((filename, rel_path))
 
     found.sort(key=lambda item: item[0].lower())
@@ -275,7 +278,7 @@ def _set_native_size(comp):
     project_root = get_project_root()
     if not project_root:
         return
-    abs_path = os.path.normpath(os.path.join(project_root, tex_path))
+    abs_path = resolved_path(os.path.join(project_root, tex_path))
     if not os.path.isfile(abs_path):
         return
 
@@ -294,7 +297,7 @@ def _set_native_size(comp):
 
     _, tex_w, tex_h = query_or_schedule_texture(
         native,
-        f"ui_native_size|{os.path.normpath(tex_path)}",
+        f"ui_native_size|{resolved_path(tex_path)}",
         abs_path,
         int(stamp),
         nearest=False,
@@ -438,7 +441,7 @@ def _render_common_position(ctx, comp):
 
 def _sync_text_layout_from_ctx(ctx, text_comp: UIText):
     text = getattr(text_comp, "text", "")
-    font_size = max(1.0, float(getattr(text_comp, "font_size", 24.0)))
+    font_size = max(1.0, float(getattr(text_comp, "font_size", Theme.UI_DEFAULT_FONT_SIZE)))
     wrap_width = float(text_comp.get_editor_wrap_width()) if hasattr(text_comp, "get_editor_wrap_width") else float(text_comp.get_wrap_width())
     font_path = str(getattr(text_comp, "font_path", "") or "")
     line_height = float(getattr(text_comp, "line_height", 1.2))
@@ -1383,11 +1386,8 @@ def _render_on_click_events(ctx, btn_comp):
         avail_w = ctx.get_content_region_avail_width()
         if avail_w >= _BTN_W:
             ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + avail_w - _BTN_W)
-        color_count = Theme.push_inline_button_style(ctx)
-        if ctx.button(f"{Theme.ICON_MINUS}##click_rm_{i}", None,
-                      width=_BTN_W, height=Theme.INSPECTOR_INLINE_BTN_H):
+        if _igui().list_item_remove_button(ctx, f"click_{i}"):
             remove_index = i
-        ctx.pop_style_color(color_count)
 
         if entry_open:
             entries, _changed = _render_onclick_entry(ctx, btn_comp, entries, i, entry, lw)

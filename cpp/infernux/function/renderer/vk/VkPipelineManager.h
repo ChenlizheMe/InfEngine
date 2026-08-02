@@ -80,6 +80,7 @@ struct RenderPassConfig
     bool hasDepth = true;
     bool clearColor = true;
     bool clearDepth = true;
+    bool storeColor = true;     ///< Preserve color for a later pass that loads the same attachment
     bool storeDepth = false;    ///< If true, depth storeOp = STORE (needed when subsequent passes read depth)
     bool readOnlyDepth = false; ///< True when depth is a read-only input (depthInput, not depthOutput). Uses
                                 ///< DEPTH_STENCIL_READ_ONLY_OPTIMAL layout for initial/final/subpass ref.
@@ -251,6 +252,14 @@ class VkPipelineManager
      * @brief Destroy a render pass
      */
     void DestroyRenderPass(VkRenderPass renderPass);
+
+    /**
+     * @brief Transfer a render pass out of this manager without destroying it
+     *
+     * The caller owns the detached Vulkan object and must retire it safely.
+     * RenderGraph uses this to coordinate cache lifetime with its deletion queue.
+     */
+    [[nodiscard]] bool DetachRenderPass(VkRenderPass renderPass) noexcept;
 
     // ========================================================================
     // Pipeline Layout Management

@@ -1,6 +1,8 @@
 #version 450
 
-@shader_id: standard
+ShaderInfo {
+    Name "Standard"
+}
 
 // Default mesh vertex shader.
 //

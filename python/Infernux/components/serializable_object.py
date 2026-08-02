@@ -35,6 +35,11 @@ _SERIALIZABLE_REGISTRY: Dict[str, Type["SerializableObject"]] = {}
 def get_serializable_type_id(value: type | "SerializableObject") -> str:
     """Return the stable current-format identity for a serializable type."""
     value_type = value if isinstance(value, type) else type(value)
+    explicit_id = value_type.__dict__.get("__serialized_type_id__", "")
+    if explicit_id:
+        if not isinstance(explicit_id, str):
+            raise TypeError("__serialized_type_id__ must be a string")
+        return explicit_id
     return f"{value_type.__module__}:{value_type.__qualname__}"
 
 
@@ -57,6 +62,7 @@ class SerializableObject:
     """
 
     _serialized_fields_: Dict[str, "FieldMetadata"] = {}
+    __serialized_type_id__ = ""
 
     # ------------------------------------------------------------------
     # Metaclass-style auto-registration
@@ -66,7 +72,11 @@ class SerializableObject:
         super().__init_subclass__(**kwargs)
 
         cls._serialized_fields_ = {}
-        _SERIALIZABLE_REGISTRY[get_serializable_type_id(cls)] = cls
+        current_type_id = get_serializable_type_id(cls)
+        if not isinstance(current_type_id, str) or not current_type_id:
+            raise ValueError("serialized type ID must be a non-empty string")
+        # Last definition wins so editor script hot-reload can replace a class.
+        _SERIALIZABLE_REGISTRY[current_type_id] = cls
 
         own_annotations = cls.__dict__.get('__annotations__', {})
 
@@ -190,12 +200,10 @@ class SerializableObject:
 
         if not isinstance(data, dict):
             raise TypeError(f"{path}: SerializableObject document must be an object")
-        from .value_document import TYPE_KEY, VERSION_KEY, SCHEMA_VERSION, SERIALIZABLE_OBJECT
-        expected_keys = {TYPE_KEY, VERSION_KEY, "type_id", "fields"}
+        from .value_document import TYPE_KEY, SERIALIZABLE_OBJECT
+        expected_keys = {TYPE_KEY, "type_id", "fields"}
         if set(data) != expected_keys or data.get(TYPE_KEY) != SERIALIZABLE_OBJECT:
             raise ValueError(f"{path}: invalid SerializableObject typed document")
-        if data.get(VERSION_KEY) != SCHEMA_VERSION:
-            raise ValueError(f"{path}: SerializableObject requires value schema {SCHEMA_VERSION}")
         type_id = data.get("type_id")
         if not isinstance(type_id, str) or not type_id:
             raise ValueError(f"{path}: SerializableObject document requires type_id")
@@ -207,18 +215,13 @@ class SerializableObject:
         fields_document = data.get("fields")
         if not isinstance(fields_document, dict):
             raise TypeError(f"{path}: SerializableObject fields must be an object")
-        document_fields = set(fields_document)
-        expected_fields = set(fields)
-        unknown = sorted(document_fields - expected_fields)
-        if unknown:
-            raise ValueError(
-                f"{path}: {type_id} field schema mismatch: unknown={unknown}"
-            )
+
+        from .serialized_field import validate_serialized_field_document
+        validate_serialized_field_document(fields_document, fields, owner_name=type_id)
 
         from .value_codec import VALUE_CODECS
         for name, meta in fields.items():
-            if name in fields_document:
-                VALUE_CODECS.validate(fields_document[name], meta, f"{path}.{name}")
+            VALUE_CODECS.validate(fields_document[name], meta, f"{path}.{name}")
         return actual_cls, fields
 
     @classmethod
@@ -226,16 +229,12 @@ class SerializableObject:
         """Validate, decode, and construct one current-schema object."""
         actual_cls, fields = cls._validate_document(data)
 
-        from .serialized_field import copy_serialized_field_default
-
         fields_document = data["fields"]
         decoded = {
-            name: (
-                _deserialize_so_value(
-                    fields_document[name], meta, f"{get_serializable_type_id(actual_cls)}.{name}"
-                )
-                if name in fields_document
-                else copy_serialized_field_default(meta)
+            name: _deserialize_so_value(
+                fields_document[name],
+                meta,
+                f"{get_serializable_type_id(actual_cls)}.{name}"
             )
             for name, meta in fields.items()
         }
@@ -267,14 +266,17 @@ class SerializableObject:
         return f"{self.__class__.__name__}({', '.join(parts)})"
 
     def __deepcopy__(self, memo):
-        from .serialized_field import get_serialized_fields
+        from .serialized_field import get_raw_field_value, get_serialized_fields
 
         cls = self.__class__
         result = cls.__new__(cls)
         memo[id(self)] = result
         fields = get_serialized_fields(cls)
         for name in fields:
-            value = getattr(self, name, None)
+            # Serialized asset/reference fields resolve through __getattribute__
+            # for runtime use. Copies used by Undo and list editing must retain
+            # their raw GUID/path wrapper instead of copying the resolved asset.
+            value = get_raw_field_value(self, name)
             setattr(result, name, copy.deepcopy(value, memo))
         return result
 

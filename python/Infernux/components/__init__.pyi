@@ -40,6 +40,20 @@ from .serialized_field import (
     get_serialized_fields as get_serialized_fields,
     get_field_value as get_field_value,
     set_field_value as set_field_value,
+    Range as Range,
+    Tooltip as Tooltip,
+    Header as Header,
+    Space as Space,
+    Group as Group,
+    InfoText as InfoText,
+    DragSpeed as DragSpeed,
+    RequiredComponent as RequiredComponent,
+    Multiline as Multiline,
+    ReadOnly as ReadOnly,
+    HideInInspector as HideInInspector,
+    NonSerialized as NonSerialized,
+    HDR as HDR,
+    Color as Color,
 )
 from .ref_wrappers import (
     GameObjectRef as GameObjectRef,
@@ -58,6 +72,8 @@ from .script_loader import (
 from .spirit_animator import SpiritAnimator as SpiritAnimator
 from .skeletal_animator import SkeletalAnimator as SkeletalAnimator
 from .timeline_action import TimelineAction as TimelineAction
+from .particle_system import ParticleBoundsMode as ParticleBoundsMode, ParticleOffscreenPolicy as ParticleOffscreenPolicy, ParticleSystem as ParticleSystem
+from .runtime_acceptance_runner import RuntimeAcceptanceRunner as RuntimeAcceptanceRunner
 from .registry import (
     get_type as get_type,
     get_all_types as get_all_types,
@@ -102,6 +118,20 @@ __all__ = [
     "int_field",
     "hide_field",
     "FieldType",
+    "Range",
+    "Tooltip",
+    "Header",
+    "Space",
+    "Group",
+    "InfoText",
+    "DragSpeed",
+    "RequiredComponent",
+    "Multiline",
+    "ReadOnly",
+    "HideInInspector",
+    "NonSerialized",
+    "HDR",
+    "Color",
     "GameObjectRef",
     "MaterialRef",
     "ComponentRef",
@@ -140,4 +170,8 @@ __all__ = [
     "SpiritAnimator",
     "SkeletalAnimator",
     "TimelineAction",
+    "ParticleSystem",
+    "ParticleBoundsMode",
+    "ParticleOffscreenPolicy",
+    "RuntimeAcceptanceRunner",
 ]

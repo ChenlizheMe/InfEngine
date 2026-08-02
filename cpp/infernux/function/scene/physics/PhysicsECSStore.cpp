@@ -148,6 +148,7 @@ PhysicsECSStore::ColliderHandle PhysicsECSStore::AllocateCollider(Collider *owne
     ColliderECSData &data = m_colliderPool.Get(handle);
     data = ColliderECSData{};
     data.owner = owner;
+    NotifyCollisionSceneChanged();
     return handle;
 }
 
@@ -157,6 +158,7 @@ void PhysicsECSStore::ReleaseCollider(ColliderHandle handle)
         return;
     m_colliderPool.Get(handle).owner = nullptr;
     m_colliderPool.Free(handle);
+    NotifyCollisionSceneChanged();
 }
 
 bool PhysicsECSStore::IsValid(ColliderHandle handle) const
@@ -241,6 +243,7 @@ void PhysicsECSStore::MarkColliderDirty(ColliderHandle handle)
 {
     if (!m_colliderPool.IsAlive(handle))
         return;
+    NotifyCollisionSceneChanged();
     const ActorHandle actorHandle = m_colliderPool.Get(handle).actorHandle;
     if (!m_actorPool.IsAlive(actorHandle))
         return;
@@ -258,6 +261,7 @@ void PhysicsECSStore::MarkGameObjectDirty(GameObject *owner)
     const auto found = m_actorByOwner.find(owner);
     if (found == m_actorByOwner.end() || !m_actorPool.IsAlive(found->second))
         return;
+    NotifyCollisionSceneChanged();
     auto &actor = m_actorPool.Get(found->second);
     if (actor.transformDirtyQueued)
         return;
@@ -282,8 +286,16 @@ const std::vector<PhysicsECSStore::ColliderHandle> &PhysicsECSStore::ConsumeDirt
     return m_dirtyColliderScratch;
 }
 
+void PhysicsECSStore::NotifyCollisionSceneChanged() noexcept
+{
+    ++m_collisionSceneRevision;
+    if (m_collisionSceneRevision == 0)
+        ++m_collisionSceneRevision;
+}
+
 void PhysicsECSStore::MarkAllCollidersDirty()
 {
+    NotifyCollisionSceneChanged();
     for (const ActorHandle actorHandle : m_dirtyActorList) {
         if (m_actorPool.IsAlive(actorHandle))
             m_actorPool.Get(actorHandle).transformDirtyQueued = false;
@@ -336,8 +348,44 @@ void PhysicsECSStore::QueueBroadphaseAdd(uint32_t bodyId, bool isStatic)
 std::vector<std::pair<uint32_t, bool>> PhysicsECSStore::ConsumePendingBroadphaseAdds()
 {
     std::vector<std::pair<uint32_t, bool>> result;
-    result.swap(m_pendingBroadphaseAdds);
+    result.reserve(m_pendingBroadphaseAdds.size());
+    for (const auto &entry : m_pendingBroadphaseAdds) {
+        if (m_pendingBroadphaseSet.find(entry.first) != m_pendingBroadphaseSet.end())
+            result.push_back(entry);
+    }
+    m_pendingBroadphaseAdds.clear();
     m_pendingBroadphaseSet.clear();
+    return result;
+}
+
+bool PhysicsECSStore::CancelBroadphaseAdd(uint32_t bodyId)
+{
+    return bodyId != 0xFFFFFFFF && m_pendingBroadphaseSet.erase(bodyId) != 0;
+}
+
+void PhysicsECSStore::QueueBroadphaseRemove(uint32_t bodyId)
+{
+    if (bodyId == 0xFFFFFFFF)
+        return;
+    if (m_pendingBroadphaseRemoveSet.insert(bodyId).second)
+        m_pendingBroadphaseRemoves.push_back(bodyId);
+}
+
+bool PhysicsECSStore::CancelBroadphaseRemove(uint32_t bodyId)
+{
+    return bodyId != 0xFFFFFFFF && m_pendingBroadphaseRemoveSet.erase(bodyId) != 0;
+}
+
+std::vector<uint32_t> PhysicsECSStore::ConsumePendingBroadphaseRemoves()
+{
+    std::vector<uint32_t> result;
+    result.reserve(m_pendingBroadphaseRemoves.size());
+    for (const uint32_t bodyId : m_pendingBroadphaseRemoves) {
+        if (m_pendingBroadphaseRemoveSet.find(bodyId) != m_pendingBroadphaseRemoveSet.end())
+            result.push_back(bodyId);
+    }
+    m_pendingBroadphaseRemoves.clear();
+    m_pendingBroadphaseRemoveSet.clear();
     return result;
 }
 
@@ -347,6 +395,8 @@ void PhysicsECSStore::ClearPendingQueues()
     m_pendingBodyCreationSet.clear();
     m_pendingBroadphaseAdds.clear();
     m_pendingBroadphaseSet.clear();
+    m_pendingBroadphaseRemoves.clear();
+    m_pendingBroadphaseRemoveSet.clear();
     for (const ActorHandle actorHandle : m_dirtyActorList) {
         if (m_actorPool.IsAlive(actorHandle))
             m_actorPool.Get(actorHandle).transformDirtyQueued = false;

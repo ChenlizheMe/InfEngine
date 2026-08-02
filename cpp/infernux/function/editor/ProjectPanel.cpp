@@ -5,6 +5,7 @@
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/gui/InxGUISemantics.h>
 #include <function/renderer/gui/InxResourcePreviewer.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
@@ -18,6 +19,7 @@
 #include <functional>
 #include <imgui_internal.h>
 #include <nlohmann/json.hpp>
+#include <string_view>
 #include <unordered_set>
 
 #ifdef INX_PLATFORM_WINDOWS
@@ -203,15 +205,24 @@ constexpr float kModelExpandIconSrcPx = 32.0f;
 // Static extension sets
 // ════════════════════════════════════════════════════════════════════
 
-static const std::unordered_set<std::string> sImageExtensions = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif",
-                                                                 ".psd", ".hdr", ".pic",  ".pnm", ".pgm", ".ppm"};
+static const std::unordered_set<std::string> sImageExtensions = [] {
+    std::unordered_set<std::string> result;
+    for (const auto extension : asset_formats::kTextureExtensions)
+        result.emplace(extension);
+    return result;
+}();
 
 static const std::unordered_set<std::string> sMaterialExtensions = {".mat"};
 
-static const std::unordered_set<std::string> sModelExtensions = {".fbx", ".obj", ".gltf", ".glb",
-                                                                 ".dae", ".3ds", ".ply",  ".stl"};
+static const std::unordered_set<std::string> sModelExtensions = [] {
+    std::unordered_set<std::string> result;
+    for (const auto extension : asset_formats::kMeshExtensions)
+        result.emplace(extension);
+    return result;
+}();
 
-static const std::unordered_set<std::string> sHiddenExtensions = {".meta", ".pyc", ".pyo", ".tmp"};
+static const std::unordered_set<std::string> sHiddenExtensions = {".meta",        ".pyc",    ".pyo",       ".tmp",
+                                                                  ".inxparticle", ".inxtex", ".inxvfield", ".inxsdf"};
 
 static const std::unordered_set<std::string> sHiddenFiles = {"imgui.ini"};
 
@@ -234,31 +245,43 @@ bool ProjectPanel::IsModelExt(const std::string &ext)
 
 const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
 {
-    static const std::unordered_map<std::string, std::string> map = {
-        {"__dir__", "folder"},
-        {".py", "script_py"},
-        {".vert", "shader_vert"},
-        {".frag", "shader_frag"},
-        {".hlsl", "shader_hlsl"},
-        {".fbx", "model_3d"},
-        {".obj", "model_3d"},
-        {".gltf", "model_3d"},
-        {".glb", "model_3d"},
-        {".wav", "audio"},
-        {".ttf", "font"},
-        {".otf", "font"},
-        {".txt", "text"},
-        {".md", "readme"},
-        {".mat", "file"},
-        {".physicmaterial", "file"},
-        {".scene", "scene"},
-        // .prefab intentionally omitted — scene prefabs use the mesh-preview pipeline
-        // (same as models); UI-only prefabs fall back to model_3d.png via explicit logic.
-        {".animclip2d", "animclip2d"},
-        {".animclip3d", "animclip3d"},
-        {".animfsm", "animfsm"},
-        {".vfxsystem", "file"},
-    };
+    static const std::unordered_map<std::string, std::string> map = [] {
+        std::unordered_map<std::string, std::string> result = {
+            {"__dir__", "folder"},
+            {".py", "script_py"},
+            {".vert", "shader_vert"},
+            {".frag", "shader_frag"},
+            {".hlsl", "shader_hlsl"},
+            {".glsl", "shader_glsl"},
+            {".shadingmodel", "shadingmodel"},
+            {".wav", "audio"},
+            {".ttf", "font"},
+            {".otf", "font"},
+            {".txt", "text"},
+            {".md", "readme"},
+            {".mat", "material"},
+            {".physicmaterial", "physic_material"},
+            {".scene", "scene"},
+            // Scene prefabs still use the mesh-preview pipeline when possible;
+            // this named icon is only the explicit fallback for missing previews.
+            {".animclip2d", "animclip2d"},
+            {".animclip3d", "animclip3d"},
+            {".animfsm", "animfsm"},
+            {".animtimeline", "timeline"},
+            {".timelinefsm", "timeline_fsm"},
+            {".particlegraph", "particle_graph"},
+            {".effect", "render_effect"},
+            {".effectgroup", "render_effect_group"},
+            {".prefab", "prefab"},
+        };
+        for (const auto extension : asset_formats::kTextureExtensions)
+            result.emplace(std::string(extension), "texture");
+        for (const auto extension : asset_formats::kMeshExtensions)
+            result.emplace(std::string(extension), "model_3d");
+        for (const auto extension : asset_formats::kAudioExtensions)
+            result.emplace(std::string(extension), "audio");
+        return result;
+    }();
     return map;
 }
 
@@ -268,49 +291,50 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
 
 const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel::GetDragDropMap()
 {
-    static const std::unordered_map<std::string, DragDropInfo> map = {
-        {".py", {"SCRIPT_FILE", "Script"}},
-        {".mat", {"MATERIAL_FILE", "Material"}},
-        {".physicmaterial", {"PHYSIC_MATERIAL_FILE", "PhysicMaterial"}},
-        {".vert", {"SHADER_FILE", "Shader"}},
-        {".frag", {"SHADER_FILE", "Shader"}},
-        {".glsl", {"SHADER_FILE", "Shader"}},
-        {".hlsl", {"SHADER_FILE", "Shader"}},
-        {".png", {"TEXTURE_FILE", "Texture"}},
-        {".jpg", {"TEXTURE_FILE", "Texture"}},
-        {".jpeg", {"TEXTURE_FILE", "Texture"}},
-        {".bmp", {"TEXTURE_FILE", "Texture"}},
-        {".tga", {"TEXTURE_FILE", "Texture"}},
-        {".gif", {"TEXTURE_FILE", "Texture"}},
-        {".psd", {"TEXTURE_FILE", "Texture"}},
-        {".hdr", {"TEXTURE_FILE", "Texture"}},
-        {".pic", {"TEXTURE_FILE", "Texture"}},
-        {".pnm", {"TEXTURE_FILE", "Texture"}},
-        {".pgm", {"TEXTURE_FILE", "Texture"}},
-        {".ppm", {"TEXTURE_FILE", "Texture"}},
-        {".wav", {"AUDIO_FILE", "Audio"}},
-        {".ttf", {"FONT_FILE", "Font"}},
-        {".otf", {"FONT_FILE", "Font"}},
-        {".scene", {"SCENE_FILE", "Scene"}},
-        {".animclip2d", {"ANIMCLIP_FILE", "2D AnimClip"}},
-        {".animclip3d", {"ANIMCLIP3D_FILE", "3D AnimClip"}},
-        {".animfsm", {"ANIMFSM_FILE", "AnimFSM"}},
-        {".vfxsystem", {"VFXSYSTEM_FILE", "VFX System"}},
-        {".animtimeline", {"ANIMTIMELINE_FILE", "Timeline"}},
-        {".timelinefsm", {"TIMELINEFSM_FILE", "TimelineFSM"}},
-    };
+    static const std::unordered_map<std::string, DragDropInfo> map = [] {
+        std::unordered_map<std::string, DragDropInfo> result = {
+            {".py", {"SCRIPT_FILE", "Script"}},
+            {".mat", {"MATERIAL_FILE", "Material"}},
+            {".physicmaterial", {"PHYSIC_MATERIAL_FILE", "PhysicMaterial"}},
+            {".vert", {"SHADER_FILE", "Shader"}},
+            {".frag", {"SHADER_FILE", "Shader"}},
+            {".glsl", {"SHADER_FILE", "Shader"}},
+            {".hlsl", {"SHADER_FILE", "Shader"}},
+            {".wav", {"AUDIO_FILE", "Audio"}},
+            {".ttf", {"FONT_FILE", "Font"}},
+            {".otf", {"FONT_FILE", "Font"}},
+            {".scene", {"SCENE_FILE", "Scene"}},
+            {".animclip2d", {"ANIMCLIP_FILE", "2D AnimClip"}},
+            {".animclip3d", {"ANIMCLIP3D_FILE", "3D AnimClip"}},
+            {".animfsm", {"ANIMFSM_FILE", "AnimFSM"}},
+            {".particlegraph", {"PARTICLE_GRAPH_FILE", "Particle Graph"}},
+            {".effect", {"RENDER_EFFECT_FILE", "Render Effect"}},
+            // Effect assets and groups occupy the same RenderStack slot type.
+            {".effectgroup", {"RENDER_EFFECT_FILE", "Render Effect Group"}},
+            {".animtimeline", {"ANIMTIMELINE_FILE", "Timeline"}},
+            {".timelinefsm", {"TIMELINEFSM_FILE", "TimelineFSM"}},
+        };
+        for (const auto extension : asset_formats::kTextureExtensions)
+            result.emplace(std::string(extension), DragDropInfo{"TEXTURE_FILE", "Texture"});
+        for (const auto extension : asset_formats::kMeshExtensions)
+            result.emplace(std::string(extension), DragDropInfo{"MODEL_FILE", "Model"});
+        for (const auto extension : asset_formats::kAudioExtensions)
+            result.emplace(std::string(extension), DragDropInfo{"AUDIO_FILE", "Audio"});
+        return result;
+    }();
     return map;
 }
 
 const std::unordered_map<std::string, ProjectPanel::GuidDragDropInfo> &ProjectPanel::GetGuidDragDropMap()
 {
-    static const std::unordered_map<std::string, GuidDragDropInfo> map = {
-        {".prefab", {"PREFAB_GUID", "PREFAB_FILE", "Prefab"}}, {".fbx", {"MODEL_GUID", "MODEL_FILE", "Model"}},
-        {".obj", {"MODEL_GUID", "MODEL_FILE", "Model"}},       {".gltf", {"MODEL_GUID", "MODEL_FILE", "Model"}},
-        {".glb", {"MODEL_GUID", "MODEL_FILE", "Model"}},       {".dae", {"MODEL_GUID", "MODEL_FILE", "Model"}},
-        {".3ds", {"MODEL_GUID", "MODEL_FILE", "Model"}},       {".ply", {"MODEL_GUID", "MODEL_FILE", "Model"}},
-        {".stl", {"MODEL_GUID", "MODEL_FILE", "Model"}},
-    };
+    static const std::unordered_map<std::string, GuidDragDropInfo> map = [] {
+        std::unordered_map<std::string, GuidDragDropInfo> result = {
+            {".prefab", {"PREFAB_GUID", "PREFAB_FILE", "Prefab"}},
+        };
+        for (const auto extension : asset_formats::kMeshExtensions)
+            result.emplace(std::string(extension), GuidDragDropInfo{"MODEL_GUID", "MODEL_FILE", "Model"});
+        return result;
+    }();
     return map;
 }
 
@@ -351,10 +375,16 @@ const char *ProjectPanel::GetFileTypeTag(const std::string &filename)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (ext == ".py" || ext == ".lua" || ext == ".cs")
         return "[PY]";
+    if (asset_formats::Contains(asset_formats::kAudioExtensions, ext))
+        return "[AUD]";
     if (ext == ".mat")
         return "[MAT]";
     if (ext == ".physicmaterial")
         return "[PMAT]";
+    if (ext == ".effect")
+        return "[FX]";
+    if (ext == ".effectgroup")
+        return "[FXG]";
     if (ext == ".vert" || ext == ".frag" || ext == ".glsl" || ext == ".hlsl")
         return "[SHDR]";
     if (IsImageExt(ext))
@@ -371,7 +401,7 @@ const char *ProjectPanel::GetFileTypeTag(const std::string &filename)
         return "[Timeline]";
     if (ext == ".timelinefsm")
         return "[TLFSM]";
-    if (ext == ".wav")
+    if (asset_formats::Contains(asset_formats::kAudioExtensions, ext))
         return "[AUD]";
     if (ext == ".ttf" || ext == ".otf")
         return "[FNT]";
@@ -413,44 +443,11 @@ bool ProjectPanel::ShouldShow(const std::string &name)
 // Path utilities
 // ════════════════════════════════════════════════════════════════════
 
-std::string ProjectPanel::NormalizePath(const std::string &path)
-{
-    std::error_code ec;
-    auto canonical = fs::weakly_canonical(fs::u8path(path), ec);
-    if (ec)
-        return path;
-    std::string str = infernux::FromFsPath(canonical);
-    // Case-fold ASCII letters only — UTF-8 multibyte sequences must stay intact.
-#ifdef _WIN32
-    for (auto &c : str) {
-        unsigned char uc = static_cast<unsigned char>(c);
-        if (uc >= 'A' && uc <= 'Z')
-            c = static_cast<char>(uc + 32);
-    }
-#endif
-    return str;
-}
-
-bool ProjectPanel::IsPathWithin(const std::string &path, const std::string &parent)
-{
-    auto np = NormalizePath(path);
-    auto npar = NormalizePath(parent);
-    if (np.size() < npar.size())
-        return false;
-    if (np.substr(0, npar.size()) != npar)
-        return false;
-    // Must be exactly parent or parent + separator
-    if (np.size() == npar.size())
-        return true;
-    char sep = np[npar.size()];
-    return sep == '/' || sep == '\\';
-}
-
 std::string ProjectPanel::GetMinimumBrowsePath() const
 {
     if (!m_rootPath.empty() && m_navHasSubfolders && !m_preferredNavPath.empty())
-        return NormalizePath(m_preferredNavPath);
-    return NormalizePath(m_rootPath);
+        return FilesystemPathKey(m_preferredNavPath);
+    return FilesystemPathKey(m_rootPath);
 }
 
 bool ProjectPanel::CanNavigateUpFromCurrent() const
@@ -463,20 +460,14 @@ int ProjectPanel::GetPathDepthFromRoot(const std::string &path) const
     if (m_rootPath.empty() || path.empty())
         return 0;
 
-    const std::string normPath = NormalizePath(path);
-    const std::string normRoot = NormalizePath(m_rootPath);
-    if (!IsPathWithin(normPath, normRoot))
+    std::string relative;
+    if (!infernux::TryMakeRelativeFilesystemPath(path, m_rootPath, relative, true))
         return -1;
-
-    std::error_code ec;
-    const fs::path rel = fs::relative(fs::u8path(normPath), fs::u8path(normRoot), ec);
-    if (ec)
-        return normPath == normRoot ? 0 : -1;
-    if (rel.empty() || rel == ".")
+    if (relative == ".")
         return 0;
 
     int depth = 0;
-    for (const auto &part : rel) {
+    for (const auto &part : infernux::ToFsPath(relative)) {
         const std::string name = infernux::FromFsPath(part);
         if (name.empty() || name == ".")
             continue;
@@ -492,15 +483,15 @@ void ProjectPanel::ClampNavigationPath()
         return;
     }
 
-    if (!IsPathWithin(m_currentPath, m_rootPath)) {
+    if (!IsFilesystemPathWithin(m_currentPath, m_rootPath)) {
         m_currentPath = (m_navHasSubfolders && !m_preferredNavPath.empty()) ? m_preferredNavPath : m_rootPath;
         UpdateNavigationCache();
         return;
     }
 
     if (m_navHasSubfolders) {
-        const std::string cur = NormalizePath(m_currentPath);
-        if (cur == NormalizePath(m_rootPath) || GetPathDepthFromRoot(m_currentPath) < 1)
+        const std::string cur = FilesystemPathKey(m_currentPath);
+        if (cur == FilesystemPathKey(m_rootPath) || GetPathDepthFromRoot(m_currentPath) < 1)
             m_currentPath = m_preferredNavPath.empty() ? m_rootPath : m_preferredNavPath;
     }
     UpdateNavigationCache();
@@ -512,12 +503,10 @@ void ProjectPanel::UpdateNavigationCache()
         m_canNavigateUp = false;
         return;
     }
-    const std::string current = NormalizePath(m_currentPath);
-    const std::string root = NormalizePath(m_rootPath);
+    const std::string current = FilesystemPathKey(m_currentPath);
+    const std::string root = FilesystemPathKey(m_rootPath);
     const std::string floor = GetMinimumBrowsePath();
-    const bool withinRoot =
-        current.size() >= root.size() && current.compare(0, root.size(), root) == 0 &&
-        (current.size() == root.size() || current[root.size()] == '/' || current[root.size()] == '\\');
+    const bool withinRoot = IsFilesystemPathWithin(current, root);
     m_canNavigateUp = withinRoot && current != floor;
 }
 
@@ -589,6 +578,10 @@ void ProjectPanel::SetRootPath(const std::string &path)
     m_rootPath = path;
     m_preferredNavPath = path;
     m_navHasSubfolders = false;
+    m_searchIndexGeneration = UINT64_MAX;
+    m_searchIndexRoot.clear();
+    m_searchIndex.clear();
+    m_lastSearchGeneration = UINT64_MAX;
     InvalidateDirCache();
 
     std::error_code ec;
@@ -642,6 +635,9 @@ void ProjectPanel::SetAssetDatabase(AssetDatabase *adb)
     if (m_assetDatabase == adb)
         return;
     m_assetDatabase = adb;
+    m_searchIndexGeneration = UINT64_MAX;
+    m_searchIndex.clear();
+    m_lastSearchGeneration = UINT64_MAX;
     InvalidateDirCache();
 }
 void ProjectPanel::SetIconsDirectory(const std::string &dir)
@@ -665,12 +661,12 @@ void ProjectPanel::SetCurrentPath(const std::string &path)
     std::error_code ec;
     if (path.empty() || !fs::is_directory(fs::u8path(path), ec))
         return;
-    if (!m_rootPath.empty() && !IsPathWithin(path, m_rootPath))
+    if (!m_rootPath.empty() && !IsFilesystemPathWithin(path, m_rootPath))
         return;
     if (m_navHasSubfolders) {
         if (GetPathDepthFromRoot(path) < 1)
             return;
-        if (NormalizePath(path) == NormalizePath(m_rootPath))
+        if (FilesystemPathKey(path) == FilesystemPathKey(m_rootPath))
             return;
     }
     AssignCurrentPath(path);
@@ -710,11 +706,11 @@ void ProjectPanel::InvalidateMaterialThumbnail(const std::string &filePath)
 {
     if (filePath.empty())
         return;
-    auto normTarget = NormalizePath(filePath);
+    auto normTarget = FilesystemPathKey(filePath);
 
     std::vector<std::string> mtimeToRemove;
     for (auto &[path, _] : m_materialMtimeCache) {
-        if (NormalizePath(path) == normTarget)
+        if (FilesystemPathKey(path) == normTarget)
             mtimeToRemove.push_back(path);
     }
     for (auto &path : mtimeToRemove)
@@ -725,11 +721,11 @@ void ProjectPanel::InvalidateTextureThumbnail(const std::string &filePath)
 {
     if (filePath.empty())
         return;
-    auto normTarget = NormalizePath(filePath);
+    auto normTarget = FilesystemPathKey(filePath);
 
     std::vector<std::string> mtimeToRemove;
     for (auto &[path, _] : m_textureMtimeCache) {
-        if (NormalizePath(path) == normTarget)
+        if (FilesystemPathKey(path) == normTarget)
             mtimeToRemove.push_back(path);
     }
     for (auto &path : mtimeToRemove)
@@ -875,7 +871,7 @@ ProjectPanel::DirSnapshot *ProjectPanel::GetDirSnapshot(const std::string &path)
     }
 
     if (catalog) {
-        const auto &assets = catalog->GetDirectory(NormalizePath(path));
+        const auto &assets = catalog->GetDirectory(FilesystemPathKey(path));
         snap.files.reserve(assets.size());
         for (const auto &asset : assets) {
             if (!ShouldShow(asset.name))
@@ -1187,9 +1183,12 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
     if (filePath.empty() || !m_engine)
         return 0;
 
-    // Read import settings from .meta for nearest/srgb.
+    // Read the complete preview-affecting import contract from .meta.
     bool nearest = false;
     bool srgb = false;
+    int maxSize = 2048;
+    std::string textureFormat = "auto";
+    std::string textureType = "default";
     if (m_assetDatabase) {
         const auto meta = m_assetDatabase->GetMetaByPath(filePath);
         if (meta) {
@@ -1199,6 +1198,12 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
             }
             if (meta->HasKey("srgb"))
                 srgb = meta->GetDataAs<bool>("srgb");
+            if (meta->HasKey("max_size"))
+                maxSize = meta->GetDataAs<int>("max_size");
+            if (meta->HasKey("texture_format"))
+                textureFormat = meta->GetDataAs<std::string>("texture_format");
+            if (meta->HasKey("texture_type"))
+                textureType = meta->GetDataAs<std::string>("texture_type");
         }
     }
 
@@ -1214,8 +1219,15 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
     texMtime ^= srgb ? UINT64_C(0xc2b2ae3d27d4eb4f) : 0;
 
     const std::string resourceKey = std::string("tex|") + filePath;
+    const uint64_t readyTexture = m_engine->GetTexturePreviewTextureId(resourceKey);
+    if (readyTexture != 0)
+        return readyTexture;
+    if (m_texturePreviewRequestsThisFrame >= kTexturePreviewRequestBudget)
+        return 0;
+    ++m_texturePreviewRequestsThisFrame;
     // pump=false: PreRender already pumped once this frame.
-    auto [texId, w, h] = m_engine->QueryOrScheduleTexturePreview(resourceKey, filePath, texMtime, nearest, srgb, false);
+    auto [texId, w, h] = m_engine->QueryOrScheduleTexturePreview(resourceKey, filePath, texMtime, nearest, srgb,
+                                                                 maxSize, textureFormat, textureType, false, false);
     return texId;
 }
 
@@ -1223,13 +1235,6 @@ uint64_t ProjectPanel::GetMaterialThumbnail(const std::string &filePath, uint64_
 {
     if (filePath.empty() || !m_engine)
         return 0;
-
-    // The Inspector publishes its current document under matedit|. Prefer that
-    // in-memory preview so thumbnails follow edits without waiting for autosave.
-    const std::string liveResourceKey = std::string("matedit|") + filePath;
-    const uint64_t liveTexture = m_engine->GetMaterialPreviewTextureId(liveResourceKey);
-    if (liveTexture != 0)
-        return liveTexture;
 
     const std::string resourceKey = std::string("mat|") + filePath;
     uint64_t mtimeNs = cachedMtimeNs != 0 ? cachedMtimeNs : GetMaterialMtimeNs(filePath);
@@ -1287,6 +1292,12 @@ uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath, uint64_t c
         return 0;
 
     const std::string resourceKey = std::string("mesh|") + filePath;
+    const uint64_t readyTexture = m_engine->GetMeshPreviewTextureId(resourceKey);
+    if (readyTexture != 0)
+        return readyTexture;
+    if (m_modelPreviewRequestsThisFrame >= kModelPreviewRequestBudget)
+        return 0;
+    ++m_modelPreviewRequestsThisFrame;
     return m_engine->QueryOrScheduleMeshPreview(resourceKey, filePath, mtimeNs);
 }
 
@@ -1657,9 +1668,9 @@ void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
         } else if (item.ext == ".animfsm") {
             if (openAnimFsm)
                 openAnimFsm(item.path);
-        } else if (item.ext == ".vfxsystem") {
-            if (openVfxSystem)
-                openVfxSystem(item.path);
+        } else if (item.ext == ".particlegraph") {
+            if (openParticleGraph)
+                openParticleGraph(item.path);
         } else if (item.ext == ".animtimeline") {
             if (openAnimTimeline)
                 openAnimTimeline(item.path);
@@ -1783,13 +1794,19 @@ void ProjectPanel::ReceiveDroppedFiles(const std::vector<std::string> &paths)
         }
 
         try {
-            if (fs::is_directory(fs::u8path(src), ec)) {
+            if (copyItemToPath) {
+                auto result = copyItemToPath(src, dst);
+                if (!result.empty())
+                    copiedPaths.push_back(result);
+            } else if (fs::is_directory(fs::u8path(src), ec)) {
                 fs::copy(fs::u8path(src), fs::u8path(dst), fs::copy_options::recursive, ec);
+                if (!ec)
+                    copiedPaths.push_back(dst);
             } else {
                 fs::copy_file(fs::u8path(src), fs::u8path(dst), ec);
+                if (!ec)
+                    copiedPaths.push_back(dst);
             }
-            if (!ec)
-                copiedPaths.push_back(dst);
         } catch (...) {
             continue;
         }
@@ -1981,7 +1998,7 @@ void ProjectPanel::ClipboardPaste()
     for (auto &src : sources) {
         auto name = FromFsPath(fs::u8path(src).filename());
         auto dst = FromFsPath(fs::u8path(m_currentPath) / fs::u8path(name));
-        bool samePath = (NormalizePath(src) == NormalizePath(dst));
+        bool samePath = (FilesystemPathKey(src) == FilesystemPathKey(dst));
 
         if (samePath && isCut)
             continue;
@@ -2010,6 +2027,10 @@ void ProjectPanel::ClipboardPaste()
                     if (!ec)
                         pastedPaths.push_back(dst);
                 }
+            } else if (copyItemToPath) {
+                auto result = copyItemToPath(src, dst);
+                if (!result.empty())
+                    pastedPaths.push_back(result);
             } else if (fs::is_directory(fs::u8path(src), ec)) {
                 fs::copy(fs::u8path(src), fs::u8path(dst), fs::copy_options::recursive, ec);
                 if (!ec)
@@ -2064,7 +2085,7 @@ std::vector<std::string> ProjectPanel::GetDragMoveSources(const std::string &dra
     for (auto &p : candidates) {
         bool subsumed = false;
         for (auto &k : kept) {
-            if (IsPathWithin(p, k)) {
+            if (IsFilesystemPathWithin(p, k)) {
                 subsumed = true;
                 break;
             }
@@ -2139,16 +2160,17 @@ void ProjectPanel::MoveProjectItemsToFolder(const std::string &targetDir, const 
 
     auto sources = GetDragMoveSources(draggedPath);
     // Remove items targeting self
-    sources.erase(std::remove_if(sources.begin(), sources.end(),
-                                 [&](const std::string &s) { return NormalizePath(s) == NormalizePath(targetDir); }),
-                  sources.end());
+    sources.erase(
+        std::remove_if(sources.begin(), sources.end(),
+                       [&](const std::string &s) { return FilesystemPathKey(s) == FilesystemPathKey(targetDir); }),
+        sources.end());
 
     if (sources.empty())
         return;
 
     std::vector<std::string> movedPaths;
     for (auto &source : sources) {
-        if (fs::is_directory(fs::u8path(source), ec) && IsPathWithin(targetDir, source))
+        if (fs::is_directory(fs::u8path(source), ec) && IsFilesystemPathWithin(targetDir, source))
             continue; // Can't move folder into itself
 
         if (moveItemToDirectory) {
@@ -2191,6 +2213,8 @@ void ProjectPanel::VisiblePreRender(InxGUIContext *ctx)
     const auto iconsStart = std::chrono::steady_clock::now();
     EnsureTypeIconsLoaded();
     const auto previewStart = std::chrono::steady_clock::now();
+    m_texturePreviewRequestsThisFrame = 0;
+    m_modelPreviewRequestsThisFrame = 0;
     ProcessPendingThumbnails();
     const auto otherStart = std::chrono::steady_clock::now();
     GetGridTextLineHeight(ctx);
@@ -2225,6 +2249,8 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
     ctx->Separator();
     const auto folderStart = std::chrono::steady_clock::now();
 
+    const bool searchActive = m_searchBuf[0] != '\0';
+
     // Left panel: folder tree (200px)
     if (ctx->BeginChild("FolderTree", 200, 0, false)) {
         RenderFolderTree(ctx);
@@ -2234,11 +2260,15 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
 
     ctx->SameLine();
 
-    // Right panel: file grid
+    // Right panel: file grid, or project-wide search hits while the Path
+    // search box has text.
     ctx->PushStyleVarVec2(ImGuiStyleVar_WindowPadding, 12.0f, 8.0f);
     ctx->PushStyleColor(ImGuiCol_Border, 0.0f, 0.0f, 0.0f, 0.0f); // transparent border
     if (ctx->BeginChild("FileGrid", 0, 0, true)) {
-        RenderFileGrid(ctx);
+        if (searchActive)
+            RenderSearchResults(ctx);
+        else
+            RenderFileGrid(ctx);
     }
     ctx->EndChild();
     ctx->PopStyleColor(1); // Border
@@ -2279,8 +2309,9 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
     if (m_currentPath != m_breadcrumbPath) {
         m_breadcrumbPath = m_currentPath;
         if (!m_rootPath.empty()) {
-            auto rel = fs::relative(fs::u8path(m_currentPath), fs::u8path(m_rootPath));
-            auto relStr = infernux::FromFsPath(rel);
+            std::string relStr;
+            if (!infernux::TryMakeRelativeFilesystemPath(m_currentPath, m_rootPath, relStr, true))
+                relStr = m_currentPath;
             if (relStr == ".")
                 relStr = infernux::FromFsPath(fs::u8path(m_rootPath).filename());
             m_breadcrumbText = "Path: " + relStr;
@@ -2288,7 +2319,207 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
             m_breadcrumbText = "Path: " + m_currentPath;
         }
     }
-    ctx->Label(m_breadcrumbText);
+
+    constexpr float kSearchWidth = 220.0f;
+    constexpr float kSearchGap = 8.0f;
+    const float avail = ctx->GetContentRegionAvailWidth();
+    const float searchW = (std::min)(kSearchWidth, (std::max)(140.0f, avail * 0.32f));
+    const float pathBudget = (std::max)(48.0f, avail - searchW - kSearchGap);
+
+    std::string pathLabel = m_breadcrumbText;
+    if (ctx->CalcTextSizeA(pathLabel).first > pathBudget && pathLabel.size() > 4) {
+        // Keep the trailing folders readable when the Path row is tight.
+        while (pathLabel.size() > 1 && ctx->CalcTextSizeA(std::string("...") + pathLabel).first > pathBudget) {
+            pathLabel.erase(pathLabel.begin());
+        }
+        pathLabel = "..." + pathLabel;
+    }
+
+    ctx->Label(pathLabel);
+    ctx->SameLine(0.0f, kSearchGap);
+    const float remain = ctx->GetContentRegionAvailWidth();
+    if (remain > searchW)
+        ctx->SetCursorPosX(ctx->GetCursorPosX() + (remain - searchW));
+    ctx->SetNextItemWidth(searchW);
+    ctx->InputTextWithHint("##project_search", Tr("project.search_hint"), m_searchBuf, sizeof(m_searchBuf));
+    UpdateSearchResults();
+}
+
+namespace
+{
+std::string ToLowerAsciiCopy(std::string value)
+{
+    for (char &ch : value) {
+        if (ch >= 'A' && ch <= 'Z')
+            ch = static_cast<char>(ch + ('a' - 'A'));
+    }
+    return value;
+}
+} // namespace
+
+void ProjectPanel::RebuildSearchIndex(uint64_t generation)
+{
+    const std::string folderRoot = !m_preferredNavPath.empty() ? m_preferredNavPath : m_rootPath;
+    if (generation == m_searchIndexGeneration && folderRoot == m_searchIndexRoot)
+        return;
+
+    m_searchIndexGeneration = generation;
+    m_searchIndexRoot = folderRoot;
+    m_searchIndex.clear();
+    if (!m_assetDatabase)
+        return;
+
+    std::unordered_set<std::string> folderPaths;
+    const fs::path rootPath = fs::u8path(folderRoot);
+    const auto guids = m_assetDatabase->GetAllGuids();
+    m_searchIndex.reserve(guids.size());
+
+    for (const auto &guid : guids) {
+        const std::string path = m_assetDatabase->GetPathFromGuid(guid);
+        if (path.empty())
+            continue;
+        const std::string name = infernux::FromFsPath(fs::u8path(path).filename());
+        if (!ShouldShow(name))
+            continue;
+
+        std::string rel = path;
+        std::string relativePath;
+        if (!m_rootPath.empty() && infernux::TryMakeRelativeFilesystemPath(path, m_rootPath, relativePath, true))
+            rel = std::move(relativePath);
+
+        FileItem item;
+        item.type = FileItem::File;
+        item.name = name;
+        item.path = path;
+        item.ext = infernux::FromFsPath(fs::u8path(path).extension());
+        if (!item.ext.empty() && item.ext.front() == '.')
+            item.ext.erase(item.ext.begin());
+
+        SearchIndexEntry indexed;
+        indexed.item = std::move(item);
+        indexed.sortKey = ToLowerAsciiCopy(name);
+        indexed.searchKey = indexed.sortKey + "\n" + ToLowerAsciiCopy(rel);
+        m_searchIndex.push_back(std::move(indexed));
+
+        // Folder hits are derived from catalogued asset paths. This avoids the
+        // previous recursive directory walk on every search edit while still
+        // indexing every non-empty project folder and all of its ancestors.
+        fs::path parent = fs::u8path(path).parent_path();
+        while (!folderRoot.empty() && !parent.empty()) {
+            const std::string parentString = infernux::FromFsPath(parent);
+            std::string ignored;
+            if (!infernux::TryMakeRelativeFilesystemPath(parentString, folderRoot, ignored, true))
+                break;
+            if (parent == rootPath)
+                break;
+            folderPaths.insert(parentString);
+            const fs::path next = parent.parent_path();
+            if (next == parent)
+                break;
+            parent = next;
+        }
+    }
+
+    for (const std::string &path : folderPaths) {
+        FileItem item;
+        item.type = FileItem::Dir;
+        item.path = path;
+        item.name = infernux::FromFsPath(fs::u8path(path).filename());
+        if (!ShouldShow(item.name))
+            continue;
+
+        std::string rel = path;
+        std::string relativePath;
+        if (!m_rootPath.empty() && infernux::TryMakeRelativeFilesystemPath(path, m_rootPath, relativePath, true))
+            rel = std::move(relativePath);
+
+        SearchIndexEntry indexed;
+        indexed.item = std::move(item);
+        indexed.sortKey = ToLowerAsciiCopy(indexed.item.name);
+        indexed.searchKey = indexed.sortKey + "\n" + ToLowerAsciiCopy(rel);
+        m_searchIndex.push_back(std::move(indexed));
+    }
+
+    std::sort(m_searchIndex.begin(), m_searchIndex.end(), [](const SearchIndexEntry &a, const SearchIndexEntry &b) {
+        if (a.item.type != b.item.type)
+            return a.item.type < b.item.type;
+        if (a.sortKey != b.sortKey)
+            return a.sortKey < b.sortKey;
+        return a.item.path < b.item.path;
+    });
+}
+
+void ProjectPanel::UpdateSearchResults()
+{
+    const std::string query(m_searchBuf);
+    const uint64_t generation = m_assetDatabase ? m_assetDatabase->GetQueryGeneration() : 0;
+    const std::string folderRoot = !m_preferredNavPath.empty() ? m_preferredNavPath : m_rootPath;
+    if (query == m_lastSearchQuery && generation == m_lastSearchGeneration && folderRoot == m_searchIndexRoot)
+        return;
+
+    m_lastSearchQuery = query;
+    m_lastSearchGeneration = generation;
+    m_searchResults.clear();
+    if (query.empty()) {
+        m_searchIndexRoot = folderRoot;
+        return;
+    }
+
+    RebuildSearchIndex(generation);
+    const std::string queryLower = ToLowerAsciiCopy(query);
+    m_searchResults.reserve((std::min)(kMaxSearchResults, m_searchIndex.size()));
+    for (const auto &indexed : m_searchIndex) {
+        if (indexed.searchKey.find(queryLower) == std::string::npos)
+            continue;
+        m_searchResults.push_back(indexed.item);
+        if (m_searchResults.size() == kMaxSearchResults)
+            break;
+    }
+}
+
+void ProjectPanel::RenderSearchResults(InxGUIContext *ctx)
+{
+    if (m_searchResults.empty()) {
+        ctx->Label(Tr("project.search_no_results"));
+        return;
+    }
+
+    FileItem activatedItem;
+    bool hasActivatedItem = false;
+    for (const auto &item : m_searchResults) {
+        std::string rel = item.path;
+        if (!m_rootPath.empty()) {
+            std::string tmp;
+            if (infernux::TryMakeRelativeFilesystemPath(item.path, m_rootPath, tmp, true))
+                rel = std::move(tmp);
+        }
+
+        const std::string kind =
+            (item.type == FileItem::Dir) ? Tr("project.search_folder") : Tr("project.search_asset");
+        // Show "Name — relative/path" so users can tell duplicates apart.
+        const std::string label = item.name + "  —  " + rel + "  (" + kind + ")##search_" + item.path;
+        if (!ctx->Selectable(label, false))
+            continue;
+
+        // Keep a stable copy. Clearing m_searchResults while item still refers to
+        // one of its elements leaves a dangling reference and made activation
+        // intermittently navigate to an invalid path.
+        activatedItem = item;
+        hasActivatedItem = true;
+        break;
+    }
+
+    if (!hasActivatedItem)
+        return;
+
+    // Selecting a hit ends search mode and jumps File Manager to that location.
+    m_searchBuf[0] = '\0';
+    m_lastSearchQuery.clear();
+    m_searchResults.clear();
+    if (activatedItem.type == FileItem::Dir)
+        SetCurrentPath(activatedItem.path);
+    else
+        SetSelectedFile(activatedItem.path);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -2396,8 +2627,16 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
     // any path above it.
     if (CanNavigateUpFromCurrent()) {
         if (ctx->Selectable("[..]", false)) {
-            const std::string parent = infernux::FromFsPath(fs::u8path(NormalizePath(m_currentPath)).parent_path());
+            const std::string parent =
+                infernux::FromFsPath(infernux::ToFsPath(infernux::ResolveFilesystemPath(m_currentPath)).parent_path());
             AssignCurrentPath(parent);
+            // The snapshot and item pointers above belong to the previous
+            // directory. Do not continue rendering this frame with a new path
+            // and stale grid data; the next frame will acquire one coherent
+            // snapshot for the parent directory.
+            m_subGridData +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - dataStart).count();
+            return;
         }
     }
 
@@ -2603,15 +2842,18 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 int srcW = 0;
                 int srcH = 0;
                 if (item.type == FileItem::SubMaterial) {
-                    srcW = 256;
-                    srcH = 256;
+                    srcW = 200;
+                    srcH = 200;
                 } else if (item.type == FileItem::File) {
                     if (IsImageExt(item.ext) && m_engine) {
                         const std::string resourceKey = std::string("tex|") + item.path;
                         auto [readyW, readyH] = m_engine->GetTexturePreviewSize(resourceKey);
                         srcW = readyW;
                         srcH = readyH;
-                    } else if (IsMaterialExt(item.ext) || IsModelExt(item.ext) || item.ext == ".prefab") {
+                    } else if (IsMaterialExt(item.ext)) {
+                        srcW = 200;
+                        srcH = 200;
+                    } else if (IsModelExt(item.ext) || item.ext == ".prefab") {
                         srcW = 256;
                         srcH = 256;
                     }
@@ -2874,10 +3116,42 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
             });
         }
         ctx->Separator();
-        if (ctx->Selectable(Tr("project.create_vfxsystem"), false)) {
-            CreateAndRename("NewVFXSystem", ".vfxsystem", [this](const std::string &name) {
-                if (createVfxSystem)
-                    return createVfxSystem(m_currentPath, name);
+        if (ctx->Selectable(Tr("project.create_particlegraph"), false)) {
+            CreateAndRename("NewParticleGraph", ".particlegraph", [this](const std::string &name) {
+                if (createParticleGraph)
+                    return createParticleGraph(m_currentPath, name);
+                return std::make_pair(false, std::string("No callback"));
+            });
+        }
+        if (ctx->BeginMenu(Tr("project.create_render_effect"))) {
+            auto effectItem = [this, ctx](const char *labelKey, const char *baseName, const char *featureType) {
+                if (!ctx->Selectable(Tr(labelKey), false))
+                    return;
+                CreateAndRename(baseName, ".effect", [this, featureType](const std::string &name) {
+                    if (createRenderEffect)
+                        return createRenderEffect(m_currentPath, name, featureType);
+                    return std::make_pair(false, std::string("No callback"));
+                });
+            };
+            effectItem("project.effect_bloom", "NewBloom", "infernux.post.bloom");
+            effectItem("project.effect_tonemapping", "NewToneMapping", "infernux.post.tonemapping");
+            effectItem("project.effect_color_adjustments", "NewColorAdjustments", "infernux.post.color_adjustments");
+            effectItem("project.effect_chromatic_aberration", "NewChromaticAberration",
+                       "infernux.post.chromatic_aberration");
+            effectItem("project.effect_film_grain", "NewFilmGrain", "infernux.post.film_grain");
+            effectItem("project.effect_motion_blur", "NewMotionBlur", "infernux.post.motion_blur");
+            effectItem("project.effect_temporal_aa", "NewTemporalAA", "infernux.post.temporal_aa");
+            effectItem("project.effect_sharpen", "NewSharpen", "infernux.post.sharpen");
+            effectItem("project.effect_vignette", "NewVignette", "infernux.post.vignette");
+            effectItem("project.effect_white_balance", "NewWhiteBalance", "infernux.post.white_balance");
+            ctx->Separator();
+            effectItem("project.effect_pixelation", "NewPixelation", "infernux.route.pixelation");
+            ctx->EndMenu();
+        }
+        if (ctx->Selectable(Tr("project.create_render_effect_group"), false)) {
+            CreateAndRename("NewRenderEffectGroup", ".effectgroup", [this](const std::string &name) {
+                if (createRenderEffectGroup)
+                    return createRenderEffectGroup(m_currentPath, name);
                 return std::make_pair(false, std::string("No callback"));
             });
         }
@@ -3013,7 +3287,15 @@ void ProjectPanel::RenderDragDropSource(InxGUIContext *ctx, const FileItem &item
         const char *pType = ddIt->second.payloadType;
         const char *labelPfx = ddIt->second.label;
 
-        if (item.ext == ".py" && validateScriptComponent) {
+        constexpr std::string_view kParticleScriptSuffix = ".particle.py";
+        const bool isParticleScript =
+            item.name.size() >= kParticleScriptSuffix.size() &&
+            item.name.compare(item.name.size() - kParticleScriptSuffix.size(), kParticleScriptSuffix.size(),
+                              kParticleScriptSuffix.data(), kParticleScriptSuffix.size()) == 0;
+        if (item.ext == ".py" && isParticleScript) {
+            pType = "PARTICLE_GRAPH_FILE";
+            labelPfx = "Particle Script";
+        } else if (item.ext == ".py" && validateScriptComponent) {
             if (!validateScriptComponent(item.path)) {
                 pType = DRAG_TYPE_PROJECT_ITEM;
                 labelPfx = "Item (script file not attachable)";
@@ -3093,8 +3375,19 @@ void ProjectPanel::RenderItemLabel(InxGUIContext *ctx, const FileItem &item, flo
             CommitRename();
     } else {
         auto &entry = GetCachedItemLabel(ctx, item, iconSize);
-        ctx->SetCursorPosX(cellStartX + entry.offsetX);
-        ctx->Label(entry.displayText);
+        const float labelHeight = GetGridTextLineHeight(ctx);
+        ctx->SetCursorPosX(cellStartX);
+        const ImVec2 labelMin = ImGui::GetCursorScreenPos();
+        ctx->InvisibleButton("##label_click", iconSize, labelHeight);
+
+        const float textY = labelMin.y + std::max((labelHeight - ImGui::GetTextLineHeight()) * 0.5f, 0.0f);
+        ImGui::GetWindowDrawList()->AddText(ImVec2(labelMin.x + entry.offsetX, textY),
+                                            ImGui::GetColorU32(ImGuiCol_Text), entry.displayText.c_str());
+
+        // The icon and its filename are one file item. Previously only the icon
+        // received clicks, so a normal double-click on the filename did nothing.
+        if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+            HandleItemClick(item, ctx);
     }
 }
 
@@ -3116,10 +3409,9 @@ std::string ProjectPanel::MakeProjectRelativeSemanticPath(const std::string &pat
     std::string relativePath;
 
     if (!m_rootPath.empty() && !realPath.empty()) {
-        std::error_code ec;
-        const fs::path relative = fs::relative(fs::u8path(realPath), fs::u8path(m_rootPath), ec);
-        if (!ec && !relative.empty() && relative != ".")
-            relativePath = infernux::FromFsPath(relative);
+        std::string candidate;
+        if (infernux::TryMakeRelativeFilesystemPath(realPath, m_rootPath, candidate) && !candidate.empty())
+            relativePath = std::move(candidate);
     }
 
     if (relativePath.empty() && !realPath.empty())
@@ -3127,8 +3419,7 @@ std::string ProjectPanel::MakeProjectRelativeSemanticPath(const std::string &pat
     if (relativePath.empty())
         relativePath = "unknown";
 
-    std::replace(relativePath.begin(), relativePath.end(), '\\', '/');
-    return relativePath + virtualSuffix;
+    return infernux::NormalizePortablePath(relativePath) + virtualSuffix;
 }
 
 } // namespace infernux

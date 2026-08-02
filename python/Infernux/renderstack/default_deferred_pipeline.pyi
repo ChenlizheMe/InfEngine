@@ -24,10 +24,11 @@ class DefaultDeferredPipeline(RenderPipeline):
 
     GBuffer layout::
 
-        Slot 0 — Lit Scene Color    (RGBA8_UNORM)
+        Slot 0 — Base Color         (RGBA16_SFLOAT)
         Slot 1 — World Normals      (RGBA16_SFLOAT)
         Slot 2 — Material Params    (RGBA8_UNORM)
         Slot 3 — Emission           (RGBA16_SFLOAT)
+        Slot 4 — Object Metadata    (RG32_UINT)
         Depth  — Scene depth        (D32_SFLOAT)
 
     Injection points:

@@ -109,35 +109,15 @@ std::filesystem::path NormalizeRoot(const std::string &projectRoot)
 {
     if (projectRoot.empty())
         throw std::invalid_argument("document transaction project root cannot be empty");
-    std::error_code error;
-    auto root = std::filesystem::weakly_canonical(ToFsPath(projectRoot), error);
-    if (error)
-        throw std::invalid_argument("failed to normalize document transaction root: " + error.message());
-    return root.lexically_normal();
-}
-
-bool PathComponentEqual(const std::filesystem::path &left, const std::filesystem::path &right)
-{
-#ifdef _WIN32
-    std::wstring lhs = left.native();
-    std::wstring rhs = right.native();
-    std::transform(lhs.begin(), lhs.end(), lhs.begin(), ::towlower);
-    std::transform(rhs.begin(), rhs.end(), rhs.begin(), ::towlower);
-    return lhs == rhs;
-#else
-    return left == right;
-#endif
+    const std::string root = ResolveFilesystemPath(projectRoot);
+    if (root.empty())
+        throw std::invalid_argument("failed to normalize document transaction root");
+    return ToFsPath(root);
 }
 
 bool PathsEqual(const std::filesystem::path &left, const std::filesystem::path &right)
 {
-    auto leftPart = left.begin();
-    auto rightPart = right.begin();
-    for (; leftPart != left.end() && rightPart != right.end(); ++leftPart, ++rightPart) {
-        if (!PathComponentEqual(*leftPart, *rightPart))
-            return false;
-    }
-    return leftPart == left.end() && rightPart == right.end();
+    return FilesystemPathsEquivalent(FromFsPath(left), FromFsPath(right));
 }
 
 using CanonicalParentCache = std::unordered_map<std::string, std::filesystem::path>;
@@ -147,33 +127,22 @@ std::filesystem::path RequireInsideRoot(const std::filesystem::path &root, const
 {
     if (path.empty())
         throw std::invalid_argument("document transaction path cannot be empty");
-    std::error_code error;
-    auto absolute = std::filesystem::absolute(ToFsPath(path), error).lexically_normal();
-    if (error)
-        throw std::invalid_argument("failed to normalize document transaction path: " + error.message());
+    auto absolute = ToFsPath(NormalizeFilesystemPathLexically(path));
     if (parentCache) {
         const auto lexicalParent = absolute.parent_path();
-        const std::string parentKey = lexicalParent.generic_u8string();
+        const std::string parentKey = LexicalFilesystemPathKey(FromFsPath(lexicalParent));
         auto cached = parentCache->find(parentKey);
         if (cached == parentCache->end()) {
-            auto canonicalParent = std::filesystem::weakly_canonical(lexicalParent, error).lexically_normal();
-            if (error)
-                throw std::invalid_argument("failed to normalize document transaction parent: " + error.message());
+            auto canonicalParent = ToFsPath(ResolveFilesystemPath(FromFsPath(lexicalParent)));
             cached = parentCache->emplace(parentKey, std::move(canonicalParent)).first;
         }
-        absolute = (cached->second / absolute.filename()).lexically_normal();
+        absolute = cached->second / absolute.filename();
     } else {
-        absolute = std::filesystem::weakly_canonical(absolute, error).lexically_normal();
-        if (error)
-            throw std::invalid_argument("failed to canonicalize document transaction path: " + error.message());
+        absolute = ToFsPath(ResolveFilesystemPath(FromFsPath(absolute)));
     }
 
-    auto rootPart = root.begin();
-    auto pathPart = absolute.begin();
-    for (; rootPart != root.end(); ++rootPart, ++pathPart) {
-        if (pathPart == absolute.end() || !PathComponentEqual(*rootPart, *pathPart))
-            throw std::invalid_argument("document transaction path escapes project root: " + path);
-    }
+    if (!IsFilesystemPathWithin(FromFsPath(absolute), FromFsPath(root)))
+        throw std::invalid_argument("document transaction path escapes project root: " + path);
     return absolute;
 }
 
@@ -181,18 +150,19 @@ std::string ToRelativePath(const std::filesystem::path &root, const std::string 
                            CanonicalParentCache *parentCache = nullptr)
 {
     const auto absolute = RequireInsideRoot(root, path, parentCache);
-    auto relative = absolute.lexically_relative(root).lexically_normal();
-    if (relative.empty() || relative.is_absolute() || *relative.begin() == "..")
+    std::string relative;
+    if (!TryMakeRelativeFilesystemPath(FromFsPath(absolute), FromFsPath(root), relative))
         throw std::invalid_argument("invalid project-relative transaction path: " + path);
-    return relative.generic_u8string();
+    return relative;
 }
 
 std::string ResolveRelativePath(const std::filesystem::path &root, const std::string &relative,
                                 CanonicalParentCache *parentCache = nullptr)
 {
-    const std::filesystem::path relativePath = std::filesystem::u8path(relative).lexically_normal();
-    if (relativePath.empty() || relativePath.is_absolute() || *relativePath.begin() == "..")
+    std::string normalizedRelative;
+    if (!TryNormalizePortableRelativePath(relative, normalizedRelative))
         throw std::invalid_argument("journal contains an invalid relative path");
+    const std::filesystem::path relativePath = ToFsPath(normalizedRelative);
     return FromFsPath(RequireInsideRoot(root, FromFsPath(root / relativePath), parentCache));
 }
 

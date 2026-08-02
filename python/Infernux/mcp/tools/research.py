@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from Infernux.engine.path_utils import relative_path
 from Infernux.mcp import capabilities
 from Infernux.mcp.project_tools.trace import current_trace, last_trace, list_traces
 from Infernux.mcp.tools.common import get_tool_metadata, list_tool_metadata, ok, register_tool_metadata
@@ -108,7 +109,7 @@ def register_research_tools(mcp, project_path: str) -> None:
     def mcp_research_profile() -> dict:
         """Return the research claims this MCP configuration is designed to support."""
         return ok({
-            "profile": capabilities.current_config().get("profile", "research_full"),
+            "profile": capabilities.profile_name(),
             "claims": [
                 "Self-describing tools reduce engine-specific hallucinations.",
                 "Executable contracts make long-horizon tool use easier to validate and repair.",
@@ -214,7 +215,7 @@ def _rel(project_path: str, path: str) -> str:
     if not path:
         return ""
     try:
-        return os.path.relpath(os.path.abspath(path), os.path.abspath(project_path)).replace("\\", "/")
+        return relative_path(path, project_path, allow_root=True)
     except Exception:
         return path
 

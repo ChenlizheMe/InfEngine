@@ -9,7 +9,7 @@ namespace infernux
  * @brief IAssetLoader implementation for shader assets (.vert, .frag).
  *
  * Compiles GLSL source → SPIR-V and produces a ShaderAsset instance
- * containing forward, shadow, and gbuffer pass variants.
+ * containing explicit semantic pass variants keyed by ShaderCompileTarget.
  *
  * Key design points:
  *   - Load() reads the shader source, compiles all variants via InxShaderLoader,

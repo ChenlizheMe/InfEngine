@@ -39,6 +39,10 @@ const char *ResourceTypeName(ResourceType type)
         return "DefaultBinary";
     case ResourceType::PhysicMaterial:
         return "PhysicMaterial";
+    case ResourceType::RenderEffect:
+        return "RenderEffect";
+    case ResourceType::ParticleGraph:
+        return "ParticleGraph";
     }
     return "Unknown";
 }

@@ -2,13 +2,56 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
-from Infernux.mcp.tools.common import main_thread, register_tool_metadata, serialize_value
+from Infernux.engine.path_utils import relative_path
+from Infernux.mcp.tools.common import (
+    get_asset_database,
+    main_thread,
+    register_tool_metadata,
+    resolve_asset_path,
+    serialize_value,
+)
 
 
-def register_renderstack_tools(mcp) -> None:
+def register_renderstack_tools(mcp, project_path: str = "") -> None:
     _register_metadata()
+
+    @mcp.tool(name="render_effect_create")
+    def render_effect_create(path: str, feature_type: str) -> dict:
+        """Create and import a strict reusable RenderEffect asset."""
+
+        def _create_effect():
+            from Infernux.engine.ui.project_file_ops import create_render_effect
+
+            file_path = resolve_asset_path(project_path, path)
+            if not file_path.lower().endswith(".effect"):
+                file_path += ".effect"
+            directory = os.path.dirname(file_path)
+            os.makedirs(directory, exist_ok=True)
+            name = os.path.splitext(os.path.basename(file_path))[0]
+            created, error = create_render_effect(
+                directory,
+                name,
+                str(feature_type),
+                get_asset_database(),
+            )
+            if not created:
+                if os.path.exists(file_path):
+                    raise FileExistsError(error or f"Render Effect already exists: {path}")
+                raise RuntimeError(error or f"Failed to create Render Effect: {path}")
+            return {
+                "path": relative_path(file_path, project_path),
+                "feature_type": str(feature_type),
+                "created": True,
+            }
+
+        return main_thread(
+            "render_effect_create",
+            _create_effect,
+            arguments={"path": path, "feature_type": feature_type},
+        )
 
     @mcp.tool(name="renderstack_find_or_create")
     def renderstack_find_or_create(name: str = "RenderStack", create_if_missing: bool = True) -> dict:
@@ -31,7 +74,7 @@ def register_renderstack_tools(mcp) -> None:
 
     @mcp.tool(name="renderstack_inspect")
     def renderstack_inspect() -> dict:
-        """Inspect the active RenderStack, pipeline, injection points, and mounted passes."""
+        """Inspect the active RenderStack pipeline and ordered EffectStage slots."""
 
         def _inspect():
             stack = _find_stack()
@@ -77,81 +120,115 @@ def register_renderstack_tools(mcp) -> None:
 
         return main_thread("renderstack_set_pipeline", _set, arguments={"pipeline": pipeline})
 
-    @mcp.tool(name="renderstack_list_passes")
-    def renderstack_list_passes(include_mounted: bool = True, include_available: bool = True) -> dict:
-        """List mounted and/or available RenderPass effects."""
+    @mcp.tool(name="renderstack_set_pipeline_parameter")
+    def renderstack_set_pipeline_parameter(field: str, value: Any) -> dict:
+        """Set one exposed parameter on the active RenderStack pipeline."""
 
-        def _list():
-            stack = _find_stack()
-            result: dict[str, Any] = {}
-            if include_mounted and stack is not None:
-                result["mounted"] = _mounted_passes(stack)
-                result["injection_points"] = _injection_points(stack)
-            if include_available:
-                result["available"] = _available_passes()
-            return result
+        def _set_parameter():
+            from Infernux.components.serialized_field import get_serialized_fields
 
-        return main_thread("renderstack_list_passes", _list)
-
-    @mcp.tool(name="renderstack_add_pass")
-    def renderstack_add_pass(pass_name: str, enabled: bool = True, params: dict[str, Any] | None = None) -> dict:
-        """Add a discovered RenderPass or FullScreenEffect to the active RenderStack."""
-
-        def _add():
             stack = _require_stack()
-            cls = _pass_class(pass_name)
-            render_pass = cls(enabled=bool(enabled))
-            if params:
-                _set_pass_params(render_pass, params)
-            added = bool(stack.add_pass(render_pass))
-            if not added:
-                raise ValueError(f"Render pass '{pass_name}' could not be added. It may already be mounted or target an invalid injection point.")
-            _mark_scene_dirty()
-            return _stack_snapshot(stack)
-
-        return main_thread("renderstack_add_pass", _add, arguments={"pass_name": pass_name, "enabled": enabled, "params": params or {}})
-
-    @mcp.tool(name="renderstack_remove_pass")
-    def renderstack_remove_pass(pass_name: str) -> dict:
-        """Remove a mounted pass from the active RenderStack."""
-
-        def _remove():
-            stack = _require_stack()
-            removed = bool(stack.remove_pass(str(pass_name)))
-            if not removed:
-                raise FileNotFoundError(f"Mounted render pass '{pass_name}' was not found.")
-            _mark_scene_dirty()
-            return _stack_snapshot(stack)
-
-        return main_thread("renderstack_remove_pass", _remove, arguments={"pass_name": pass_name})
-
-    @mcp.tool(name="renderstack_set_pass_enabled")
-    def renderstack_set_pass_enabled(pass_name: str, enabled: bool) -> dict:
-        """Enable or disable a mounted pass."""
-
-        def _set_enabled():
-            stack = _require_stack()
-            _require_mounted_pass(stack, pass_name)
-            stack.set_pass_enabled(str(pass_name), bool(enabled))
-            _mark_scene_dirty()
-            return _stack_snapshot(stack)
-
-        return main_thread("renderstack_set_pass_enabled", _set_enabled, arguments={"pass_name": pass_name, "enabled": enabled})
-
-    @mcp.tool(name="renderstack_set_pass_params")
-    def renderstack_set_pass_params(pass_name: str, params: dict[str, Any]) -> dict:
-        """Set serialized parameters on a mounted pass/effect."""
-
-        def _set_params():
-            stack = _require_stack()
-            entry = _require_mounted_pass(stack, pass_name)
-            _set_pass_params(entry.render_pass, params or {})
+            pipeline = stack.pipeline
+            fields = get_serialized_fields(type(pipeline))
+            field_name = str(field)
+            metadata = fields.get(field_name)
+            if metadata is None:
+                raise AttributeError(
+                    f"Pipeline '{pipeline.name}' has no exposed parameter "
+                    f"{field_name!r}; valid parameters: {sorted(fields)}"
+                )
+            if metadata.readonly:
+                raise AttributeError(
+                    f"Pipeline parameter '{pipeline.name}.{field_name}' is readonly"
+                )
+            coerced = _coerce_pipeline_parameter(
+                value, metadata, f"{pipeline.name}.{field_name}"
+            )
+            setattr(pipeline, field_name, coerced)
+            stack.sync_pipeline_parameters()
             stack.invalidate_graph()
             _mark_scene_dirty()
             return _stack_snapshot(stack)
 
-        return main_thread("renderstack_set_pass_params", _set_params, arguments={"pass_name": pass_name, "params": params or {}})
+        return main_thread(
+            "renderstack_set_pipeline_parameter",
+            _set_parameter,
+            arguments={"field": field},
+        )
 
+    @mcp.tool(name="renderstack_list_effect_stages")
+    def renderstack_list_effect_stages() -> dict:
+        """List pipeline EffectStages and their ordered asset slots."""
+
+        def _list_effect_stages():
+            return {
+                "stages": _effect_stages(_require_stack()),
+            }
+
+        return main_thread("renderstack_list_effect_stages", _list_effect_stages)
+
+    @mcp.tool(name="renderstack_add_effect")
+    def renderstack_add_effect(stage_id: str, asset_path: str, enabled: bool = True) -> dict:
+        """Mount a .effect or .effectgroup asset in one pipeline EffectStage."""
+
+        def _add_effect():
+            stack = _require_stack()
+            reference = _render_effect_reference(asset_path)
+            stack.add_effect_slot(str(stage_id), reference, enabled=bool(enabled))
+            _mark_scene_dirty()
+            return _stack_snapshot(stack)
+
+        return main_thread(
+            "renderstack_add_effect",
+            _add_effect,
+            arguments={"stage_id": stage_id, "asset_path": asset_path, "enabled": enabled},
+        )
+
+    @mcp.tool(name="renderstack_remove_effect")
+    def renderstack_remove_effect(stage_id: str, index: int = 0) -> dict:
+        """Remove one ordered EffectStage slot."""
+
+        def _remove_effect():
+            stack = _require_stack()
+            slots = list(stack.get_effect_stage_slots(str(stage_id)))
+            slot_index = int(index)
+            if slot_index < 0 or slot_index >= len(slots):
+                raise IndexError(
+                    f"EffectStage '{stage_id}' has {len(slots)} slots; index {slot_index} is invalid."
+                )
+            slots.pop(slot_index)
+            stack.set_effect_stage_slots(str(stage_id), slots)
+            _mark_scene_dirty()
+            return _stack_snapshot(stack)
+
+        return main_thread(
+            "renderstack_remove_effect",
+            _remove_effect,
+            arguments={"stage_id": stage_id, "index": index},
+        )
+
+    @mcp.tool(name="renderstack_set_effect_enabled")
+    def renderstack_set_effect_enabled(stage_id: str, index: int, enabled: bool) -> dict:
+        """Enable or disable one ordered EffectStage slot."""
+
+        def _set_effect_enabled():
+            stack = _require_stack()
+            slots = list(stack.get_effect_stage_slots(str(stage_id)))
+            slot_index = int(index)
+            if slot_index < 0 or slot_index >= len(slots):
+                raise IndexError(
+                    f"EffectStage '{stage_id}' has {len(slots)} slots; index {slot_index} is invalid."
+                )
+            slots[slot_index].enabled = bool(enabled)
+            stack.set_effect_stage_slots(str(stage_id), slots)
+            _mark_scene_dirty()
+            return _stack_snapshot(stack)
+
+        return main_thread(
+            "renderstack_set_effect_enabled",
+            _set_effect_enabled,
+            arguments={"stage_id": stage_id, "index": index, "enabled": enabled},
+        )
 
 def _find_stack():
     try:
@@ -206,42 +283,121 @@ def _stack_snapshot(stack, *, include_catalog: bool = False) -> dict[str, Any]:
         "pipeline": str(getattr(stack, "pipeline_class_name", "") or ""),
         "active": bool(stack is type(stack).instance()),
         "enabled": bool(getattr(stack, "enabled", True)),
-        "injection_points": _injection_points(stack),
-        "mounted_passes": _mounted_passes(stack),
+        "effect_stages": _effect_stages(stack),
+        "effect_compile_errors": list(getattr(stack, "effect_compile_errors", ()) or ()),
         "build_failed": bool(getattr(stack, "_build_failed", False)),
+        "pipeline_parameters": _pipeline_parameters(stack),
     }
     if include_catalog:
         data["available_pipelines"] = _available_pipelines()
-        data["available_passes"] = _available_passes()
     return data
 
 
-def _injection_points(stack) -> list[dict[str, Any]]:
-    points = []
-    try:
-        for point in stack.injection_points:
-            points.append({
-                "name": str(getattr(point, "name", "")),
-                "description": str(getattr(point, "description", "")),
-            })
-    except Exception:
-        pass
-    return points
+def _pipeline_parameters(stack) -> list[dict[str, Any]]:
+    from Infernux.components.serialized_field import get_serialized_fields
 
-
-def _mounted_passes(stack) -> list[dict[str, Any]]:
-    items = []
-    for entry in list(getattr(stack, "pass_entries", []) or []):
-        render_pass = entry.render_pass
-        items.append({
-            "name": str(getattr(render_pass, "name", "")),
-            "class_name": type(render_pass).__name__,
-            "injection_point": str(getattr(render_pass, "injection_point", "")),
-            "enabled": bool(getattr(entry, "enabled", getattr(render_pass, "enabled", True))),
-            "order": int(getattr(entry, "order", 0) or 0),
-            "params": _pass_params(render_pass),
+    pipeline = stack.pipeline
+    parameters = []
+    for name, metadata in get_serialized_fields(type(pipeline)).items():
+        parameters.append({
+            "name": str(name),
+            "type": getattr(metadata.field_type, "name", str(metadata.field_type)),
+            "value": _serialize_pipeline_parameter(getattr(pipeline, name)),
+            "default": _serialize_pipeline_parameter(metadata.default),
+            "readonly": bool(metadata.readonly),
         })
-    return items
+    return parameters
+
+
+def _serialize_pipeline_parameter(value: Any) -> Any:
+    from enum import Enum
+
+    if isinstance(value, Enum):
+        return {"name": value.name, "value": value.value}
+    return serialize_value(value)
+
+
+def _coerce_pipeline_parameter(value: Any, metadata, path: str) -> Any:
+    from Infernux.components.serialized_field import (
+        FieldType,
+        coerce_serialized_field_input,
+    )
+
+    if metadata.field_type == FieldType.ENUM:
+        enum_type = metadata.enum_type
+        if enum_type is None:
+            raise TypeError(f"{path}: enum type is unavailable")
+        if isinstance(value, enum_type):
+            return value
+        if isinstance(value, dict) and "name" in value:
+            value = value["name"]
+        if isinstance(value, str):
+            lookup = {name.casefold(): member for name, member in enum_type.__members__.items()}
+            member = lookup.get(value.casefold())
+            if member is None:
+                raise ValueError(
+                    f"{path}: unknown enum member {value!r}; "
+                    f"valid values: {list(enum_type.__members__)}"
+                )
+            return member
+        try:
+            return enum_type(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{path}: invalid enum value {value!r}; "
+                f"valid values: {list(enum_type.__members__)}"
+            ) from exc
+    return coerce_serialized_field_input(value, metadata, path)
+
+
+def _effect_stages(stack) -> list[dict[str, Any]]:
+    stages = []
+    for stage in list(getattr(stack, "effect_stages", ()) or ()):
+        stage_id = str(getattr(stage, "stable_id", "") or "")
+        slots = []
+        for index, slot in enumerate(stack.get_effect_stage_slots(stage_id)):
+            reference = getattr(slot, "effect_ref", None)
+            slots.append({
+                "index": index,
+                "slot_id": str(getattr(slot, "slot_id", "") or ""),
+                "enabled": bool(getattr(slot, "enabled", True)),
+                "asset": {
+                    "guid": str(getattr(reference, "guid", "") or ""),
+                    "path_hint": str(getattr(reference, "path_hint", "") or ""),
+                },
+            })
+        stages.append({
+            "stable_id": stage_id,
+            "display_name": str(getattr(stage, "display_name", "") or stage_id),
+            "scope": str(getattr(getattr(stage, "scope", ""), "value", getattr(stage, "scope", ""))),
+            "slots": slots,
+        })
+    return stages
+
+
+def _render_effect_reference(asset_path: str):
+    import os
+
+    from Infernux.core.asset_ref import RenderEffectRef
+    from Infernux.engine.path_utils import relative_path
+    from Infernux.mcp import capabilities
+    from Infernux.mcp.tools.common import get_asset_database, resolve_asset_path
+
+    project_root = capabilities.project_path()
+    resolved = resolve_asset_path(project_root, asset_path)
+    if not os.path.isfile(resolved):
+        raise FileNotFoundError(f"RenderEffect asset was not found: {asset_path}")
+    extension = os.path.splitext(resolved)[1].lower()
+    if extension not in {".effect", ".effectgroup"}:
+        raise ValueError("RenderStack EffectStage assets must use .effect or .effectgroup")
+    database = get_asset_database()
+    guid = str(database.get_guid_from_path(resolved) or "") if database is not None else ""
+    if not guid:
+        raise FileNotFoundError(
+            f"RenderEffect asset is not imported in the AssetDatabase: {asset_path}"
+        )
+    path_hint = relative_path(resolved, project_root, allow_root=True).replace("\\", "/")
+    return RenderEffectRef(guid=guid, path_hint=path_hint)
 
 
 def _available_pipelines() -> list[dict[str, Any]]:
@@ -249,28 +405,8 @@ def _available_pipelines() -> list[dict[str, Any]]:
     return [_pipeline_entry(name, cls) for name, cls in sorted(discover_pipelines().items())]
 
 
-def _available_passes() -> list[dict[str, Any]]:
-    from Infernux.renderstack.discovery import discover_passes
-    return [_pass_entry(name, cls) for name, cls in sorted(discover_passes().items())]
-
-
 def _pipeline_entry(name: str, cls) -> dict[str, Any]:
     return {"name": str(name), "class_name": cls.__name__, "module": cls.__module__, "fields": _field_schema(cls)}
-
-
-def _pass_entry(name: str, cls) -> dict[str, Any]:
-    return {
-        "name": str(name),
-        "class_name": cls.__name__,
-        "module": cls.__module__,
-        "injection_point": str(getattr(cls, "injection_point", "")),
-        "default_order": int(getattr(cls, "default_order", 0) or 0),
-        "menu_path": str(getattr(cls, "menu_path", "")),
-        "requires": sorted(str(item) for item in getattr(cls, "requires", set()) or set()),
-        "modifies": sorted(str(item) for item in getattr(cls, "modifies", set()) or set()),
-        "creates": sorted(str(item) for item in getattr(cls, "creates", set()) or set()),
-        "fields": _field_schema(cls),
-    }
 
 
 def _field_schema(cls) -> list[dict[str, Any]]:
@@ -288,44 +424,6 @@ def _field_schema(cls) -> list[dict[str, Any]]:
     return fields
 
 
-def _pass_class(pass_name: str):
-    from Infernux.renderstack.discovery import discover_passes
-    passes = discover_passes()
-    if pass_name in passes:
-        return passes[pass_name]
-    lowered = str(pass_name).lower()
-    for name, cls in passes.items():
-        if name.lower() == lowered or cls.__name__.lower() == lowered:
-            return cls
-    raise FileNotFoundError(f"Render pass '{pass_name}' was not found.")
-
-
-def _require_mounted_pass(stack, pass_name: str):
-    lowered = str(pass_name).lower()
-    for entry in list(getattr(stack, "pass_entries", []) or []):
-        render_pass = entry.render_pass
-        if str(getattr(render_pass, "name", "")).lower() == lowered or type(render_pass).__name__.lower() == lowered:
-            return entry
-    raise FileNotFoundError(f"Mounted render pass '{pass_name}' was not found.")
-
-
-def _pass_params(render_pass) -> dict[str, Any]:
-    if hasattr(render_pass, "get_params_dict"):
-        try:
-            return serialize_value(render_pass.get_params_dict())
-        except Exception:
-            return {}
-    return {}
-
-
-def _set_pass_params(render_pass, params: dict[str, Any]) -> None:
-    if hasattr(render_pass, "set_params_dict"):
-        render_pass.set_params_dict(params or {})
-        return
-    for key, value in (params or {}).items():
-        setattr(render_pass, key, value)
-
-
 def _mark_scene_dirty() -> None:
     try:
         from Infernux.engine.scene_manager import SceneFileManager
@@ -339,14 +437,15 @@ def _mark_scene_dirty() -> None:
 def _register_metadata() -> None:
     for name, summary in {
         "renderstack_find_or_create": "Find or create the active scene RenderStack.",
-        "renderstack_inspect": "Inspect the active RenderStack pipeline and mounted passes.",
+        "render_effect_create": "Create and import a strict reusable RenderEffect asset.",
+        "renderstack_inspect": "Inspect the active RenderStack pipeline and EffectStages.",
         "renderstack_list_pipelines": "List discovered RenderPipeline classes.",
         "renderstack_set_pipeline": "Switch the active RenderStack pipeline.",
-        "renderstack_list_passes": "List mounted and available RenderStack passes.",
-        "renderstack_add_pass": "Mount a post-process or render pass on the active RenderStack.",
-        "renderstack_remove_pass": "Remove a mounted RenderStack pass.",
-        "renderstack_set_pass_enabled": "Enable or disable a mounted RenderStack pass.",
-        "renderstack_set_pass_params": "Edit serialized parameters on a mounted RenderStack pass.",
+        "renderstack_set_pipeline_parameter": "Set one exposed parameter on the active RenderStack pipeline.",
+        "renderstack_list_effect_stages": "List pipeline EffectStages and mounted Effect assets.",
+        "renderstack_add_effect": "Mount a RenderEffect or EffectGroup asset in an EffectStage.",
+        "renderstack_remove_effect": "Remove one mounted EffectStage asset slot.",
+        "renderstack_set_effect_enabled": "Enable or disable one mounted EffectStage asset slot.",
     }.items():
         category = "renderstack/pipeline" if "pipeline" in name or name.endswith(("inspect", "find_or_create")) else "renderstack/effects"
         register_tool_metadata(
@@ -359,5 +458,5 @@ def _register_metadata() -> None:
                 "If renderstack_inspect returns exists=false, do not repeat it.",
                 "Call renderstack_find_or_create(name='RenderStack', create_if_missing=true) before editing the stack.",
             ],
-            next_suggested_tools=["renderstack_find_or_create", "renderstack_inspect", "runtime_read_errors"],
+            next_suggested_tools=["renderstack_find_or_create", "renderstack_inspect", "renderstack_list_effect_stages", "runtime_read_errors"],
         )

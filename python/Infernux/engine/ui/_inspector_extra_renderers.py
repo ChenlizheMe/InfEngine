@@ -3,23 +3,419 @@
 import os
 
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import path_key
+from Infernux.graph.types import (
+    AssetReference,
+    BUILTIN_MESH_NAMES,
+    builtin_mesh_name,
+    builtin_mesh_reference,
+)
 from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
 from .inspector_utils import (
     max_label_w,
     field_label,
     float_close as _float_close,
+    has_field_changed,
+    render_compact_section_header,
+    render_compact_section_title,
+    render_serialized_field,
     semantic_capture_enabled,
     inspector_component_semantic_id,
 )
 from .theme import Theme, ImGuiCol
 from ._inspector_undo import (
     _notify_scene_modified, _record_track_volume, _record_material_slot,
-    _record_generic_component,
+    _record_generic_component, _record_python_component_document_edit,
 )
 from ._inspector_references import (
-    _picker_assets, render_object_field,
+    _create_component_ref_from_go,
+    _picker_assets,
+    _picker_scene_gameobjects,
+    _portable_asset_path_hint,
+    render_object_field,
 )
+
+
+def _particle_parameter_ui_value(kind: str, value):
+    """Adapt ParticleGraph storage values to the Inspector's native vectors."""
+    if kind == "vec2":
+        from Infernux.lib import Vector2
+        return Vector2(float(value[0]), float(value[1]))
+    if kind == "vec3":
+        from Infernux.lib import Vector3
+        return Vector3(float(value[0]), float(value[1]), float(value[2]))
+    if kind == "vec4":
+        from Infernux.lib import vec4f
+        return vec4f(
+            float(value[0]),
+            float(value[1]),
+            float(value[2]),
+            float(value[3]),
+        )
+    return value
+
+
+def _particle_parameter_storage_value(kind: str, value):
+    """Adapt Inspector vector results back to the ParticleGraph JSON contract."""
+    if kind == "vec2":
+        return [float(value.x), float(value.y)]
+    if kind == "vec3":
+        return [float(value.x), float(value.y), float(value.z)]
+    if kind == "vec4":
+        return [float(value.x), float(value.y), float(value.z), float(value.w)]
+    return value
+
+
+def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
+    """Render emitter playback and graph parameters as instance overrides."""
+    from Infernux.components.serialized_field import FieldMetadata, FieldType
+    from Infernux.core.asset_types import IMAGE_EXTENSIONS
+
+    emitter_schema = getattr(comp, "emitter_instance_schema", None)
+    emitters = emitter_schema() if callable(emitter_schema) else []
+    if emitters:
+        ctx.separator()
+        emitter_header = (
+            f"{t('particle_graph_editor.emitters')}"
+            f"##particle_system_emitters_{getattr(comp, 'component_id', id(comp))}"
+        )
+        if render_compact_section_header(ctx, emitter_header, level="secondary"):
+            lw = max_label_w(
+                ctx,
+                [
+                    t("particle_graph_editor.enabled"),
+                    t("particle_graph_editor.play_on_start"),
+                ],
+            )
+            for emitter in emitters:
+                stable_id = str(emitter["stable_id"])
+                render_compact_section_title(ctx, str(emitter["name"]), level="secondary")
+                for option, label in (
+                    ("enabled", t("particle_graph_editor.enabled")),
+                    ("play_on_start", t("particle_graph_editor.play_on_start")),
+                ):
+                    metadata = FieldMetadata(
+                        name=option,
+                        field_type=FieldType.BOOL,
+                        default=True,
+                    )
+                    current = bool(emitter[option])
+                    changed = render_serialized_field(
+                        ctx,
+                        f"##particle_emitter_{stable_id}_{option}",
+                        f"{label}##particle_emitter_{stable_id}_{option}",
+                        metadata,
+                        current,
+                        lw,
+                    )
+                    if bool(changed) != current:
+                        try:
+                            _record_python_component_document_edit(
+                                comp,
+                                lambda _stable_id=stable_id, _option=option, _value=bool(changed):
+                                    comp.set_emitter_options(_stable_id, **{_option: _value}),
+                                f"Set {emitter['name']} {option}",
+                                edit_key=f"emitter:{stable_id}:{option}",
+                            )
+                        except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+                            Debug.log_error(f"Particle emitter option edit failed: {exc}")
+
+    schema = comp.exposed_parameter_schema()
+    if not schema:
+        return
+    field_types = {
+        "bool": FieldType.BOOL,
+        "i32": FieldType.INT,
+        "u32": FieldType.INT,
+        "f32": FieldType.FLOAT,
+        "vec2": FieldType.VEC2,
+        "vec3": FieldType.VEC3,
+        "vec4": FieldType.VEC4,
+        "color": FieldType.COLOR,
+    }
+    labels = [str(parameter["name"]) for parameter in schema]
+    lw = max_label_w(ctx, labels)
+    ctx.separator()
+    parameter_header = (
+        f"{t('particle_graph_editor.parameters')}"
+        f"##particle_system_parameters_{getattr(comp, 'component_id', id(comp))}"
+    )
+    if not render_compact_section_header(
+        ctx, parameter_header, level="secondary"
+    ):
+        return
+    active_category = None
+    for parameter in schema:
+        category = str(parameter.get("category") or "")
+        if category and category != active_category:
+            render_compact_section_title(ctx, category, level="secondary")
+        active_category = category
+        kind = str(parameter["type"])
+        stable_id = str(parameter["stable_id"])
+        if kind in {"curve", "gradient"}:
+            from .particle_graph_editor_panel import ParticleGraphEditorPanel
+
+            render_compact_section_title(
+                ctx,
+                str(parameter["name"]),
+                level="secondary",
+            )
+            editor = (
+                ParticleGraphEditorPanel._render_curve_property
+                if kind == "curve"
+                else ParticleGraphEditorPanel._render_gradient_property
+            )
+            current = dict(parameter["value"])
+            changed = editor(
+                ctx,
+                f"particle_system_parameter_{stable_id}",
+                "value",
+                current,
+                semantic_prefix=(
+                    f"inspector.particle_system.parameter.{stable_id}"
+                ),
+            )
+            if changed != current:
+                try:
+                    _record_python_component_document_edit(
+                        comp,
+                        lambda _stable_id=stable_id, _changed=changed:
+                            comp.set_parameter(_stable_id, _changed),
+                        f"Set {parameter['name']}",
+                        edit_key=f"parameter:{stable_id}",
+                    )
+                except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+                    Debug.log_error(f"Particle parameter edit failed: {exc}")
+            continue
+        if kind in {"texture2d", "mesh"}:
+            reference = dict(parameter["value"])
+            path_hint = str(reference.get("path_hint") or "")
+            is_mesh = kind == "mesh"
+            is_skinned_source = bool(
+                is_mesh
+                and reference.get("$type") == "component_ref"
+                and reference.get("component_type") == "SkinnedMeshRenderer"
+            )
+            skinned_reference = None
+            if is_skinned_source:
+                from Infernux.components.ref_wrappers import ComponentRef
+
+                skinned_reference = ComponentRef._from_dict(reference)
+            builtin_name = ""
+            if is_mesh and not is_skinned_source:
+                try:
+                    builtin_name = builtin_mesh_name(
+                        AssetReference.from_dict(reference)
+                    )
+                except (TypeError, ValueError):
+                    builtin_name = ""
+            extensions = (
+                (".fbx", ".obj", ".gltf", ".glb", ".dae")
+                if is_mesh
+                else tuple(sorted(IMAGE_EXTENSIONS))
+            )
+
+            def _set_resource(
+                path,
+                *,
+                _stable_id=stable_id,
+                _parameter_name=str(parameter["name"]),
+                _parameter_kind=kind,
+                _extensions=extensions,
+            ):
+                if _parameter_kind == "mesh" and type(path) is dict:
+                    try:
+                        builtin = AssetReference.from_dict(path)
+                        if builtin_mesh_name(builtin):
+                            _record_python_component_document_edit(
+                                comp,
+                                lambda: comp.set_parameter(
+                                    _stable_id, builtin.to_dict()
+                                ),
+                                f"Set {_parameter_name}",
+                                edit_key=f"parameter:{_stable_id}",
+                            )
+                            return
+                    except (TypeError, ValueError):
+                        pass
+                target = str(path)
+                if os.path.splitext(target)[1].lower() not in _extensions:
+                    Debug.log_warning(
+                        f"Particle {_parameter_kind} parameter received an incompatible "
+                        f"asset: {target}"
+                    )
+                    return
+                try:
+                    from Infernux.lib import AssetRegistry
+
+                    database = AssetRegistry.instance().get_asset_database()
+                    guid = database.get_guid_from_path(target) if database else ""
+                    if not guid:
+                        Debug.log_warning(
+                            f"Particle {_parameter_kind} parameter asset is not imported: "
+                            f"{target}"
+                        )
+                        return
+                    value = {
+                        "guid": guid,
+                        "path_hint": _portable_asset_path_hint(target),
+                    }
+                    _record_python_component_document_edit(
+                        comp,
+                        lambda: comp.set_parameter(_stable_id, value),
+                        f"Set {_parameter_name}",
+                        edit_key=f"parameter:{_stable_id}",
+                    )
+                except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                    Debug.log_error(
+                        f"Particle {_parameter_kind} assignment failed: {exc}"
+                    )
+
+            def _set_skinned_source(
+                game_object,
+                *,
+                _stable_id=stable_id,
+                _parameter_name=str(parameter["name"]),
+            ):
+                reference_value = _create_component_ref_from_go(
+                    game_object, "SkinnedMeshRenderer"
+                )
+                if reference_value is None:
+                    Debug.log_warning(
+                        "Particle Mesh parameter requires a GameObject with a "
+                        "SkinnedMeshRenderer"
+                    )
+                    return
+                try:
+                    _record_python_component_document_edit(
+                        comp,
+                        lambda: comp.set_parameter(_stable_id, reference_value),
+                        f"Set {_parameter_name}",
+                        edit_key=f"parameter:{_stable_id}",
+                    )
+                except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+                    Debug.log_error(f"Particle Mesh assignment failed: {exc}")
+
+            def _pick_resource(value):
+                if is_mesh and hasattr(value, "id"):
+                    _set_skinned_source(value)
+                else:
+                    _set_resource(value)
+
+            def _drop_resource(payload):
+                if is_mesh and isinstance(payload, int):
+                    try:
+                        from Infernux.lib import SceneManager
+
+                        scene = SceneManager.instance().get_active_scene()
+                        game_object = scene.find_by_id(payload) if scene else None
+                    except (AttributeError, RuntimeError):
+                        game_object = None
+                    if game_object is not None:
+                        _set_skinned_source(game_object)
+                    return
+                _set_resource(payload)
+
+            def _clear_resource(
+                *,
+                _stable_id=stable_id,
+                _parameter_name=str(parameter["name"]),
+                _parameter_kind=kind,
+            ):
+                try:
+                    _record_python_component_document_edit(
+                        comp,
+                        lambda: comp.reset_parameter(_stable_id),
+                        f"Reset {_parameter_name}",
+                        edit_key=f"parameter:{_stable_id}",
+                    )
+                except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+                    Debug.log_error(f"Particle {_parameter_kind} reset failed: {exc}")
+
+            field_label(ctx, str(parameter["name"]), lw)
+            render_object_field(
+                ctx,
+                f"particle_system_parameter_{stable_id}",
+                (
+                    skinned_reference.display_name
+                    if skinned_reference is not None
+                    else f"Built-in {builtin_name}"
+                    if builtin_name
+                    else os.path.basename(path_hint) if path_hint else t("igui.none")
+                ),
+                "Mesh" if is_mesh else "Texture",
+                accept_drag_type=(
+                    (
+                        "MODEL_GUID",
+                        "MODEL_FILE",
+                        "ASSET_FILE",
+                        "HIERARCHY_GAMEOBJECT",
+                    )
+                    if is_mesh
+                    else ("TEXTURE_GUID", "TEXTURE_FILE", "ASSET_FILE")
+                ),
+                on_drop_callback=_drop_resource,
+                picker_scene_items=(
+                    lambda query: _picker_scene_gameobjects(
+                        query, required_component="SkinnedMeshRenderer"
+                    )
+                ) if is_mesh else None,
+                picker_asset_items=lambda query, _extensions=extensions: (
+                    [
+                        (
+                            f"Built-in/{name}",
+                            builtin_mesh_reference(name).to_dict(),
+                        )
+                        for name in BUILTIN_MESH_NAMES
+                        if is_mesh
+                        and (
+                            not str(query).strip()
+                            or str(query).strip().lower() in name.lower()
+                            or str(query).strip().lower() in "built-in"
+                        )
+                    ]
+                    + [
+                        item
+                        for extension in _extensions
+                        for item in _picker_assets(query, f"*{extension}")
+                    ]
+                ),
+                on_pick=_pick_resource,
+                on_clear=_clear_resource,
+                ping_path=path_hint or None,
+                semantic_id=f"inspector.particle_system.parameter.{stable_id}",
+            )
+            continue
+        metadata = FieldMetadata(
+            name=stable_id,
+            field_type=field_types[kind],
+            default=parameter["default"],
+            tooltip=str(parameter.get("tooltip") or ""),
+        )
+        current = _particle_parameter_ui_value(kind, parameter["value"])
+        changed = render_serialized_field(
+            ctx,
+            f"##particle_parameter_{parameter['stable_id']}",
+            str(parameter["name"]),
+            metadata,
+            current,
+            lw,
+        )
+        if metadata.tooltip and ctx.is_item_hovered():
+            ctx.set_tooltip(metadata.tooltip)
+        if has_field_changed(metadata.field_type, current, changed):
+            try:
+                storage_value = _particle_parameter_storage_value(kind, changed)
+                _record_python_component_document_edit(
+                    comp,
+                    lambda _stable_id=stable_id, _value=storage_value:
+                        comp.set_parameter(_stable_id, _value),
+                    f"Set {parameter['name']}",
+                    edit_key=f"parameter:{stable_id}",
+                )
+            except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+                Debug.log_error(f"Particle parameter edit failed: {exc}")
 
 
 # ============================================================================
@@ -98,7 +494,8 @@ def _render_audio_source_extra(ctx: InxGUIContext, comp):
 
 def _audio_clip_picker_items(filter_text: str):
     items = []
-    for pattern in ("*.wav", "*.mp3", "*.ogg"):
+    from Infernux.core.asset_types import AUDIO_EXTENSIONS
+    for pattern in (f"*{extension}" for extension in sorted(AUDIO_EXTENSIONS)):
         items += _picker_assets(filter_text, pattern)
     return items
 
@@ -177,6 +574,21 @@ _PRIMITIVE_MESH_ITEMS = (
 )
 
 _MODEL_ASSET_GLOBS = ("*.fbx", "*.obj", "*.gltf", "*.glb", "*.dae", "*.3ds", "*.ply", "*.stl")
+
+
+def _mesh_asset_path(comp) -> str:
+    """Disk path of the mesh/model asset assigned to *comp*, or empty."""
+    try:
+        if comp.has_inline_mesh():
+            return ""
+    except Exception as exc:
+        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+
+    guid = getattr(comp, 'mesh_asset_guid', '') or getattr(comp, 'source_model_guid', '') or ''
+    path = _path_from_guid(guid)
+    if path:
+        return path
+    return str(getattr(comp, 'source_model_path', '') or "")
 
 
 def _mesh_display_name(comp) -> str:
@@ -271,7 +683,7 @@ def _mesh_picker_items(filter_text: str):
     seen_paths = set()
     for pattern in _MODEL_ASSET_GLOBS:
         for name, path in _picker_assets(filter_text, pattern):
-            norm = os.path.normcase(os.path.normpath(str(path)))
+            norm = path_key(str(path))
             if norm in seen_paths:
                 continue
             seen_paths.add(norm)
@@ -346,6 +758,28 @@ def _apply_mesh_pick(comp, picked_value) -> None:
     _assign_model_mesh(comp, picked_value)
 
 
+def _set_material_slot_from_path(comp, slot_idx: int, material_path) -> None:
+    from Infernux.lib import AssetRegistry
+
+    adb = AssetRegistry.instance().get_asset_database()
+    if not adb:
+        return
+    guid = adb.get_guid_from_path(str(material_path))
+    if not guid:
+        return
+    guids = comp.get_material_guids()
+    old_guid = guids[slot_idx] or "" if slot_idx < len(guids) else ""
+    comp.set_material(slot_idx, guid)
+    _record_material_slot(comp, slot_idx, old_guid, guid, f"Set Material Slot {slot_idx}")
+
+
+def _clear_material_slot(comp, slot_idx: int) -> None:
+    guids = comp.get_material_guids()
+    old_guid = guids[slot_idx] or "" if slot_idx < len(guids) else ""
+    comp.set_material(slot_idx, "")
+    _record_material_slot(comp, slot_idx, old_guid, "", f"Clear Material Slot {slot_idx}")
+
+
 def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
     """Render material slot fields after MeshRenderer CppProperty fields."""
     from Infernux.components.builtin_component import BuiltinComponent
@@ -364,26 +798,16 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
     labels = [t("inspector.mesh"), "Materials", "Element 0"]
     lw = max_label_w(ctx, labels)
 
-    field_label(ctx, t("inspector.mesh"), lw)
     mesh_field_id = f"mesh_field_{getattr(comp, 'component_id', id(comp))}"
-    render_object_field(
-        ctx, mesh_field_id, _mesh_display_name(comp), "Mesh",
-        clickable=False,
-        accept_drag_type=["MODEL_GUID", "MODEL_FILE"],
-        on_drop_callback=lambda payload, _comp=comp: _assign_model_mesh(_comp, payload),
-        picker_asset_items=_mesh_picker_items,
-        on_pick=lambda picked, _comp=comp: _apply_mesh_pick(_comp, picked),
-        on_clear=lambda _comp=comp: _clear_mesh(_comp),
-    )
+    mesh_display = _mesh_display_name(comp)
 
     # Material slots
     mat_count = getattr(comp, 'material_count', 0) or 1
     material_guids = comp.get_material_guids() if hasattr(comp, 'get_material_guids') else []
     slot_names = comp.get_material_slot_names() if hasattr(comp, 'get_material_slot_names') else []
 
-    field_label(ctx, "Materials", lw)
-    ctx.label(f"Size: {mat_count}")
-
+    slot_rows = []
+    slot_paths = []
     for slot_idx in range(mat_count):
         # Determine slot label
         if slot_idx < len(slot_names) and slot_names[slot_idx]:
@@ -403,24 +827,91 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
         is_default = ((slot_idx >= len(material_guids)) or (not material_guids[slot_idx])) and not is_embedded
         mat_name = getattr(mat, 'name', 'None') if mat else 'None'
         display_name = mat_name + (" (Default)" if is_default else "")
+        slot_rows.append((slot_label, display_name))
+        if is_default or not mat_path:
+            slot_paths.append("")
+        else:
+            slot_paths.append(str(mat_path))
+
+    native_batch = getattr(ctx, "render_mesh_renderer_inspector_fields", None)
+    if callable(native_batch):
+        from .editor_icons import EditorIcons
+        from .igui import IGUI
+        from ._inspector_references import ping_asset_in_project
+
+        picker_texture = EditorIcons.get_cached(Theme.ICON_IMG_PICKER)
+        interactions = native_batch(
+            mesh_field_id,
+            t("inspector.mesh"),
+            mesh_display,
+            [row[0] for row in slot_rows],
+            [row[1] for row in slot_rows],
+            int(picker_texture or 0),
+            lw,
+        )
+        for interaction in interactions:
+            slot_idx = int(interaction.get("index", -1))
+            flags = int(interaction.get("flags", 0) or 0)
+            payload = interaction.get("payload", "")
+            if payload:
+                if slot_idx < 0:
+                    _assign_model_mesh(comp, payload)
+                else:
+                    _set_material_slot_from_path(comp, slot_idx, payload)
+            if flags & 4:
+                if slot_idx < 0:
+                    mesh_path = _mesh_asset_path(comp)
+                    if mesh_path:
+                        ping_asset_in_project(mesh_path)
+                elif 0 <= slot_idx < len(slot_paths) and slot_paths[slot_idx]:
+                    ping_asset_in_project(slot_paths[slot_idx])
+            if not interaction.get("popup_open", False):
+                continue
+            field_id = mesh_field_id if slot_idx < 0 else f"mat_{slot_idx}"
+            ctx.push_id_str(field_id)
+            try:
+                if slot_idx < 0:
+                    IGUI._render_object_picker_popup(
+                        ctx, field_id, None, _mesh_picker_items,
+                        lambda picked, _comp=comp: _apply_mesh_pick(_comp, picked),
+                        lambda _comp=comp: _clear_mesh(_comp),
+                    )
+                else:
+                    IGUI._render_object_picker_popup(
+                        ctx, field_id, None,
+                        lambda filt: _picker_assets(filt, "*.mat"),
+                        lambda picked, _comp=comp, _slot=slot_idx:
+                            _set_material_slot_from_path(_comp, _slot, picked),
+                        lambda _comp=comp, _slot=slot_idx:
+                            _clear_material_slot(_comp, _slot),
+                    )
+            finally:
+                ctx.pop_id()
+        return
+
+    from ._inspector_references import ping_asset_in_project
+
+    field_label(ctx, t("inspector.mesh"), lw)
+    mesh_path = _mesh_asset_path(comp)
+    render_object_field(
+        ctx, mesh_field_id, mesh_display, "Mesh",
+        clickable=False,
+        accept_drag_type=["MODEL_GUID", "MODEL_FILE"],
+        on_drop_callback=lambda payload, _comp=comp: _assign_model_mesh(_comp, payload),
+        picker_asset_items=_mesh_picker_items,
+        on_pick=lambda picked, _comp=comp: _apply_mesh_pick(_comp, picked),
+        on_clear=lambda _comp=comp: _clear_mesh(_comp),
+        on_ping=(lambda p=mesh_path: ping_asset_in_project(p)) if mesh_path else None,
+    )
+
+    field_label(ctx, "Materials", lw)
+    ctx.label(f"Size: {mat_count}")
+
+    for slot_idx, (slot_label, display_name) in enumerate(slot_rows):
 
         def _make_on_drop(s, _comp=comp):
             def _on_drop(mat_path):
-                from Infernux.lib import AssetRegistry
-                registry = AssetRegistry.instance()
-                adb = registry.get_asset_database()
-                if not adb:
-                    return
-                guid = adb.get_guid_from_path(str(mat_path))
-                if not guid:
-                    return
-                old_guid = ""
-                guids = _comp.get_material_guids()
-                if s < len(guids):
-                    old_guid = guids[s] or ""
-                _comp.set_material(s, guid)
-                _record_material_slot(_comp, s, old_guid, guid,
-                                     f"Set Material Slot {s}")
+                _set_material_slot_from_path(_comp, s, mat_path)
             return _on_drop
 
         def _make_on_pick(s, _comp=comp):
@@ -430,16 +921,11 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
 
         def _make_on_clear(s, _comp=comp):
             def _on_clear():
-                old_guid = ""
-                guids = _comp.get_material_guids()
-                if s < len(guids):
-                    old_guid = guids[s] or ""
-                _comp.set_material(s, "")
-                _record_material_slot(_comp, s, old_guid, "",
-                                     f"Clear Material Slot {s}")
+                _clear_material_slot(_comp, s)
             return _on_clear
 
         field_label(ctx, slot_label, lw)
+        mat_path = slot_paths[slot_idx] if slot_idx < len(slot_paths) else ""
         render_object_field(
             ctx, f"mat_{slot_idx}", display_name, "Material",
             clickable=False,
@@ -448,4 +934,5 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
             picker_asset_items=lambda filt: _picker_assets(filt, "*.mat"),
             on_pick=_make_on_pick(slot_idx),
             on_clear=_make_on_clear(slot_idx),
+            on_ping=(lambda p=mat_path: ping_asset_in_project(p)) if mat_path else None,
         )

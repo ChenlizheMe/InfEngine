@@ -2,7 +2,7 @@
 Prefab system for Infernux.
 
 Handles saving GameObjects as .prefab files and instantiating them back into scenes.
-Prefab files contain a typed GameObject document wrapped in a strict versioned envelope.
+Prefab files contain a typed GameObject document wrapped in a strict envelope.
 """
 
 import json
@@ -10,9 +10,9 @@ import os
 import copy
 
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import path_key, resolved_path
 
 PREFAB_EXTENSION = ".prefab"
-PREFAB_VERSION = 1
 _PREFAB_TEMPLATE_SCENE_NAME = "__InfernuxPrefabTemplateCache__"
 _PREFAB_TEMPLATE_CACHE = {}
 
@@ -31,7 +31,7 @@ def _validate_game_object_document(
     if local_ids is None:
         local_ids = set()
     required = {
-        "schema_version", "local_id", "name", "active", "is_static", "tag", "layer",
+        "local_id", "name", "active", "is_static", "tag", "layer",
         "transform", "components", "children",
     }
     if set(document) != required:
@@ -40,8 +40,6 @@ def _validate_game_object_document(
         raise PrefabDocumentError(
             f"{location} fields do not match the current schema; missing={missing}, unknown={unknown}"
         )
-    if type(document["schema_version"]) is not int or document["schema_version"] != 2:
-        raise PrefabDocumentError(f"{location}.schema_version must be 2")
     local_id = document["local_id"]
     if type(local_id) is not int or local_id <= 0 or local_id in local_ids:
         raise PrefabDocumentError(f"{location}.local_id must be a unique positive integer")
@@ -64,14 +62,10 @@ def _validate_game_object_document(
 def _validate_prefab_document(document: dict, file_path: str = "<memory>") -> None:
     if not isinstance(document, dict):
         raise PrefabDocumentError(f"Prefab '{file_path}' must contain an object")
-    allowed = {"prefab_version", "root_object", "source_canvas_name"}
-    required = {"prefab_version", "root_object"}
+    allowed = {"root_object", "source_canvas_name"}
+    required = {"root_object"}
     if not required.issubset(document) or not set(document).issubset(allowed):
         raise PrefabDocumentError(f"Prefab '{file_path}' has missing or unknown envelope fields")
-    if type(document["prefab_version"]) is not int or document["prefab_version"] != PREFAB_VERSION:
-        raise PrefabDocumentError(
-            f"Prefab '{file_path}' must use prefab_version {PREFAB_VERSION}"
-        )
     if "source_canvas_name" in document and not isinstance(document["source_canvas_name"], str):
         raise PrefabDocumentError(f"Prefab '{file_path}' source_canvas_name must be a string")
     _validate_game_object_document(document["root_object"])
@@ -89,7 +83,7 @@ def _invalidate_prefab_template_cache(file_path: str = None, guid: str = ""):
     if guid:
         keys_to_remove.add(guid)
     if file_path:
-        keys_to_remove.add(os.path.normcase(os.path.abspath(file_path)))
+        keys_to_remove.add(path_key(file_path))
     for key in keys_to_remove:
         _PREFAB_TEMPLATE_CACHE.pop(key, None)
 
@@ -137,7 +131,7 @@ def _get_cached_prefab_template(file_path: str, resolved_guid: str, asset_databa
         Debug.log_warning(f"Prefab file not found: {file_path}")
         return None
 
-    cache_key = resolved_guid or os.path.normcase(os.path.abspath(file_path))
+    cache_key = resolved_guid or path_key(file_path)
     cached = _PREFAB_TEMPLATE_CACHE.get(cache_key)
     if cached and cached.get("stamp") == stamp:
         template = cached.get("template")
@@ -284,7 +278,11 @@ def save_prefab(game_object, file_path: str, asset_database=None,
         file_path += PREFAB_EXTENSION
 
     try:
-        go_data = game_object.serialize_document()
+        from Infernux.engine.component_restore import (
+            serialize_game_object_document_authoritatively,
+        )
+
+        go_data = serialize_game_object_document_authoritatively(game_object)
         if not isinstance(go_data, dict):
             raise TypeError("GameObject.serialize_document() did not return a dict")
         if isinstance(root_document_template, dict):
@@ -310,7 +308,6 @@ def save_prefab(game_object, file_path: str, asset_database=None,
         return False
 
     prefab_data = {
-        "prefab_version": PREFAB_VERSION,
         "root_object": go_data,
     }
     if source_canvas_name:
@@ -323,7 +320,7 @@ def save_prefab(game_object, file_path: str, asset_database=None,
         return False
 
     try:
-        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+        os.makedirs(os.path.dirname(resolved_path(file_path)), exist_ok=True)
         from Infernux.core.document_store import DocumentStore
         content = json.dumps(prefab_data, indent=2, ensure_ascii=False)
         DocumentStore.instance().write_and_wait(file_path, content)
@@ -351,7 +348,9 @@ def save_prefab(game_object, file_path: str, asset_database=None,
 
 
 def instantiate_prefab(file_path: str = None, guid: str = None,
-                       scene=None, parent=None, asset_database=None):
+                       scene=None, parent=None, asset_database=None,
+                       *, instantiate_in_world_space: bool = False,
+                       configure_created=None):
     """Instantiate a prefab into the active scene.
 
     Supply either *file_path* or *guid* (GUID is resolved via asset_database).
@@ -392,6 +391,8 @@ def instantiate_prefab(file_path: str = None, guid: str = None,
             template,
             parent,
             asset_database,
+            instantiate_in_world_space=instantiate_in_world_space,
+            configure_created=configure_created,
         )
     except RuntimeError as exc:
         Debug.log_error(f"Failed to preflight prefab clone: {exc}")

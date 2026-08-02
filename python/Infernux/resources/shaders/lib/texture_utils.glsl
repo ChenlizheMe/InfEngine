@@ -1,4 +1,6 @@
-@shader_id: lib/texture_utils
+ShaderInfo {
+    Name "Lib Texture Utils"
+}
 
 // ============================================================================
 // lib/texture_utils.glsl — Texture sampling utilities
@@ -6,7 +8,7 @@
 // Full-coverage texture toolkit matching Unity ShaderGraph Input/Texture category.
 // Provides: normal blending, detail texture, height blend, unpack, LOD sampling,
 // gradient sampling, cube reflection, texture bombing, channel packing, and more.
-// Usage: @import: lib/texture_utils
+// Usage: ShaderInfo Imports: Lib Texture Utils
 // ============================================================================
 
 // ============================================================================
@@ -34,24 +36,24 @@ vec3 blendNormalsWhiteout(vec3 base, vec3 detail) {
 // Unpack / Decode  (Unity: Normal Unpack)
 // ============================================================================
 
-// Decode normal from normal map texture sample [0,1] -> [-1,1]  (Unity: Normal Unpack)
-vec3 unpackNormal(vec4 normalSample) {
-    return normalSample.rgb * 2.0 - 1.0;
-}
-
-// Decode normal with adjustable scale  (Unity: Normal Strength)
-vec3 unpackNormalScale(vec4 normalSample, float scale) {
-    vec3 n = normalSample.rgb * 2.0 - 1.0;
-    n.xy *= scale;
-    return normalize(n);
-}
-
 // Unpack two-channel normal (RG only, reconstruct Z)  (Unity: Normal Reconstruct Z)
 vec3 unpackNormalRG(vec2 rg) {
     vec3 n;
     n.xy = rg * 2.0 - 1.0;
     n.z = sqrt(max(1.0 - dot(n.xy, n.xy), 0.0));
     return n;
+}
+
+// Decode normal from normal map texture sample [0,1] -> [-1,1]  (Unity: Normal Unpack)
+vec3 unpackNormal(vec4 normalSample) {
+    return unpackNormalRG(normalSample.rg);
+}
+
+// Decode normal with adjustable scale  (Unity: Normal Strength)
+vec3 unpackNormalScale(vec4 normalSample, float scale) {
+    vec3 n = unpackNormalRG(normalSample.rg);
+    n.xy *= scale;
+    return normalize(n);
 }
 
 // ============================================================================

@@ -197,6 +197,26 @@ def test_global_validation_writes_logic_backed_blocker(tmp_path):
     assert report["attempt_manifest_path"] == stopped["attempt_manifest_path"]
 
 
+def test_unmanaged_attempt_uses_session_start_when_checkpoint_is_omitted(tmp_path):
+    session.configure(str(tmp_path), _config("developer_assist"))
+
+    attempt = session.start_attempt("author a particle graph", "")
+    stopped = session.stop_attempt()
+
+    assert attempt["checkpoint"] == "session-start"
+    assert stopped["checkpoint"] == "session-start"
+
+
+def test_managed_attempt_still_requires_a_supervisor_checkpoint(tmp_path):
+    session.configure(
+        str(tmp_path),
+        _config("global_validation", managed_checkpoints_required=True),
+    )
+
+    with pytest.raises(session.McpPolicyError, match="mcp_checkpoint_list"):
+        session.start_attempt("validate particles", "")
+
+
 def test_global_validation_trace_persists_attempt_and_session_context(tmp_path):
     configured = session.configure(str(tmp_path), _config("global_validation", recording_enabled=True))
 
@@ -206,7 +226,6 @@ def test_global_validation_trace_persists_attempt_and_session_context(tmp_path):
     trace_path = tmp_path / stopped["trace_path"]
     with open(trace_path, "r", encoding="utf-8") as f:
         trace = json.load(f)
-    assert trace["schema_version"] == 1
     assert trace["task"] == "save persistence validation"
     context = dict(trace["context"])
     assert context.pop("build_identity") == configured.build_identity
@@ -248,7 +267,6 @@ def test_global_validation_trace_persists_compact_tool_results(tmp_path, monkeyp
 
 def test_global_validation_attempt_manifest_persists_build_identity(tmp_path, monkeypatch):
     identity = {
-        "schema_version": 1,
         "source_root": "E:/engine",
         "package_version": "0.2.1",
         "git": {"available": True, "branch": "029/030preview", "revision": "abc123"},

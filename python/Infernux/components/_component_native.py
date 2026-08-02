@@ -190,6 +190,7 @@ class ComponentNativeMixin:
 
     def _invalidate_native_binding(self):
         """Invalidate native references after scene rebuild/destruction."""
+        self._release_component_data_slot()
         self._cpp_component = None
         self._native_handle = None
         self._native_scene = None
@@ -201,6 +202,14 @@ class ComponentNativeMixin:
         self._remove_from_active_registry()
         self._game_object = None
         self._game_object_ref = None
+
+    def _detach_native_binding_for_replacement(self):
+        """Detach for script reload without invoking the user's on_destroy hook."""
+        scheduler = getattr(self, '_coroutine_scheduler', None)
+        if scheduler is not None:
+            scheduler.stop_all()
+            self._coroutine_scheduler = None
+        self._invalidate_native_binding()
 
     def _get_bound_native_component(self):
         """Return the native component if still alive, otherwise invalidate it."""

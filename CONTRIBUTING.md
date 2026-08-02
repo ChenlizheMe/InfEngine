@@ -66,4 +66,4 @@ python -m mkdocs build --clean -f docs/wiki/mkdocs.yml
 
 ## Discussions and questions
 
-Use GitHub Discussions for open-ended design conversations or evaluation questions. Use Issues for actionable bugs, feature requests, and task-shaped work.
+Use the [Infernux community](https://infernux-engine.discourse.group/) for open-ended design conversations or evaluation questions. Use Issues for actionable bugs, feature requests, and task-shaped work.

@@ -1,8 +1,7 @@
-@shader_id: lib/surface_utils
-
-@import: lib/normal_utils
-@import: lib/camera
-@import: lib/common
+ShaderInfo {
+    Name "Lib Surface Utils"
+    Imports ["Lib Normal Utils", "Lib Camera", "Lib Common"]
+}
 
 // ============================================================================
 // lib/surface_utils.glsl — Surface shader utility functions
@@ -19,7 +18,7 @@
 //   v_ViewDepth  — linear eye-space depth
 //
 // Available uniforms (auto-injected by engine):
-//   material.<name>  — MaterialProperties UBO from @property declarations
+//   material.<name>  — MaterialProperties UBO from ShaderInfo Properties declarations
 //   _Globals.*       — Engine globals (time, screen, camera, etc.)
 // ============================================================================
 

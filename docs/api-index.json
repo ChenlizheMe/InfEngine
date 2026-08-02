@@ -1784,7 +1784,7 @@
       "signatures": [
         "RenderPipeline.__init__() → None",
         "str",
-        "render(context: Any, cameras: Any) → None",
+        "render(context: Any, camera: Any) → None",
         "should_render_camera(camera: Any) → bool",
         "render_camera(context: Any, camera: Any, culling: Any) → None",
         "define_topology(graph: RenderGraph) → None",

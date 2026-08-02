@@ -15,8 +15,12 @@ from Infernux.core.asset_types import (
     MeshImportSettings,
     ShaderAssetInfo,
     TextureImportSettings,
+    TextureCompression,
+    TextureCompressionQuality,
+    TextureFormat,
     TextureType,
     WrapMode,
+    _load_strict_meta_root,
     _python_type_to_meta_tag,
     asset_category_from_extension,
     IMAGE_EXTENSIONS,
@@ -26,6 +30,7 @@ from Infernux.core.asset_types import (
     FONT_EXTENSIONS,
     MESH_EXTENSIONS,
     PREFAB_EXTENSIONS,
+    read_texture_import_settings,
 )
 
 
@@ -38,6 +43,20 @@ class TestTextureType:
         assert int(TextureType.DEFAULT) == 0
         assert int(TextureType.NORMAL_MAP) == 1
         assert int(TextureType.UI) == 2
+        assert int(TextureType.SPRITE) == 3
+        assert int(TextureType.DATA) == 4
+        assert int(TextureType.VECTOR_FIELD) == 5
+        assert int(TextureType.SDF) == 6
+
+
+class TestTextureCompression:
+    def test_round_trip(self):
+        for mode in TextureCompression:
+            assert TextureCompression.from_string(mode.to_string()) == mode
+        for quality in TextureCompressionQuality:
+            assert TextureCompressionQuality.from_string(quality.to_string()) == quality
+        for texture_format in TextureFormat:
+            assert TextureFormat.from_string(texture_format.to_string()) == texture_format
 
 
 class TestWrapMode:
@@ -89,6 +108,9 @@ class TestTextureImportSettings:
         assert s.srgb is True
         assert s.max_size == 2048
         assert s.aniso_level == 1
+        assert s.format == TextureFormat.AUTO
+        assert s.compression == TextureCompression.AUTO
+        assert s.compression_quality == TextureCompressionQuality.NORMAL
 
     def test_to_dict_round_trip(self):
         s = TextureImportSettings(
@@ -99,6 +121,8 @@ class TestTextureImportSettings:
             srgb=False,
             max_size=1024,
             aniso_level=4,
+            compression=TextureCompression.BC5,
+            compression_quality=TextureCompressionQuality.HIGH,
         )
         d = s.to_dict()
         s2 = TextureImportSettings.from_dict(d)
@@ -111,6 +135,13 @@ class TestTextureImportSettings:
         c.max_size = 256
         assert s.max_size == 512
 
+    def test_explicit_format_disables_compression_when_loading(self):
+        document = TextureImportSettings().to_dict()
+        document.update(texture_format="rgba4444", texture_compression="bc1")
+        settings = TextureImportSettings.from_dict(document)
+        assert settings.format == TextureFormat.RGBA4444
+        assert settings.compression == TextureCompression.NONE
+
     def test_sync_derived_fields_normal_map(self):
         s = TextureImportSettings(srgb=True, texture_type=TextureType.NORMAL_MAP)
         s._sync_derived_fields()
@@ -120,6 +151,47 @@ class TestTextureImportSettings:
         s = TextureImportSettings(srgb=True, texture_type=TextureType.DEFAULT)
         s._sync_derived_fields()
         assert s.srgb is True
+
+    def test_vector_field_round_trip_forces_linear_data(self):
+        document = TextureImportSettings().to_dict()
+        document.update(
+            texture_type="vector_field", srgb=False,
+            texture_format="rgba16_float", texture_compression="none",
+        )
+        settings = TextureImportSettings.from_dict(document)
+        assert settings.texture_type == TextureType.VECTOR_FIELD
+        assert settings.srgb is False
+        assert TextureImportSettings.from_dict(settings.to_dict()) == settings
+
+    def test_vector_field_extension_uses_canonical_import_settings(self, tmp_path):
+        path = str(tmp_path / "wind.inxvfield")
+        settings = read_texture_import_settings(path)
+        assert settings.texture_type == TextureType.VECTOR_FIELD
+        assert settings.srgb is False
+        assert settings.format == TextureFormat.RGBA16_FLOAT
+        assert settings.compression == TextureCompression.NONE
+
+    def test_sdf_extension_uses_canonical_volume_import_settings(self, tmp_path):
+        path = str(tmp_path / "collider.inxsdf")
+        settings = read_texture_import_settings(path)
+        assert settings.texture_type == TextureType.SDF
+        assert settings.srgb is False
+        assert settings.generate_mipmaps is False
+        assert settings.wrap_mode == WrapMode.CLAMP
+        assert settings.format == TextureFormat.RGBA16_FLOAT
+        assert settings.compression == TextureCompression.NONE
+        assert TextureImportSettings.from_dict(settings.to_dict()) == settings
+
+    def test_meta_rejects_string_encoded_sprite_frames(self, tmp_path):
+        meta_path = tmp_path / "sprite.png.meta"
+        meta_path.write_text(json.dumps({
+            "metadata": {
+                "sprite_frames": {"type": "string", "value": "[]"},
+            },
+        }), encoding="utf-8")
+
+        with pytest.raises(TypeError, match="sprite_frames must use json_array"):
+            _load_strict_meta_root(str(meta_path))
 
     def test_equality_false_for_different(self):
         s1 = TextureImportSettings()
@@ -163,13 +235,27 @@ class TestAudioImportSettings:
 class TestMeshImportSettings:
     def test_defaults(self):
         s = MeshImportSettings()
-        assert s.scale_factor == 0.01
+        assert s.scale_factor == 1.0
         assert s.generate_normals is True
 
     def test_to_dict_round_trip(self):
         s = MeshImportSettings(scale_factor=1.0, flip_uvs=True)
         s2 = MeshImportSettings.from_dict(s.to_dict())
         assert s == s2
+
+    def test_incomplete_importer_metadata_is_rejected(self):
+        with pytest.raises(ValueError):
+            MeshImportSettings.from_dict({"flip_uvs": False})
+
+    def test_importer_metadata_can_coexist_with_current_settings(self):
+        document = MeshImportSettings().to_dict()
+        document.update(
+            guid="mesh-guid",
+            bone_count=14,
+            animation_names_csv="Armature|ArmatureAction",
+        )
+
+        assert MeshImportSettings.from_dict(document) == MeshImportSettings()
 
     def test_copy(self):
         s = MeshImportSettings(optimize_mesh=False)
@@ -223,6 +309,7 @@ class TestAssetCategory:
     def test_texture(self):
         assert asset_category_from_extension(".png") == "texture"
         assert asset_category_from_extension(".jpg") == "texture"
+        assert asset_category_from_extension(".jpe") == "texture"
 
     def test_shader(self):
         assert asset_category_from_extension(".vert") == "shader"
@@ -230,6 +317,7 @@ class TestAssetCategory:
 
     def test_audio(self):
         assert asset_category_from_extension(".wav") == "audio"
+        assert asset_category_from_extension(".ogg") == "audio"
 
     def test_font(self):
         assert asset_category_from_extension(".ttf") == "font"
@@ -237,12 +325,13 @@ class TestAssetCategory:
     def test_mesh(self):
         assert asset_category_from_extension(".fbx") == "mesh"
         assert asset_category_from_extension(".gltf") == "mesh"
+        assert asset_category_from_extension(".blend") == "mesh"
 
     def test_prefab(self):
         assert asset_category_from_extension(".prefab") == "prefab"
 
-    def test_vfx_system(self):
-        assert asset_category_from_extension(".vfxsystem") == "vfxsystem"
+    def test_particle_graph(self):
+        assert asset_category_from_extension(".particlegraph") == "particle_graph"
 
     def test_unknown(self):
         assert asset_category_from_extension(".xyz") is None
@@ -288,7 +377,6 @@ class TestReadMetaGuid:
         asset = tmp_path / "model.fbx"
         asset.write_bytes(b"fbx")
         meta = {
-            "meta_version": 2,
             "metadata": {
                 "guid": {"type": "string", "value": "abc123def456"},
             },
@@ -316,7 +404,6 @@ class TestNativeResourceMetaSchema:
         from Infernux.lib import ResourceMeta
 
         valid = {
-            "meta_version": 2,
             "metadata": {
                 "guid": {"type": "string", "value": "strict-guid"},
                 "resource_type": {
@@ -330,9 +417,6 @@ class TestNativeResourceMetaSchema:
         assert meta.serialize_document() == valid
 
         invalid_documents = []
-        old_version = json.loads(json.dumps(valid))
-        old_version["meta_version"] = 1
-        invalid_documents.append(old_version)
         unknown_field = json.loads(json.dumps(valid))
         unknown_field["legacy_guid"] = "strict-guid"
         invalid_documents.append(unknown_field)

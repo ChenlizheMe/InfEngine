@@ -94,8 +94,13 @@ class ProjectPanel : public EditorPanel
     std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimClip3D;
     /// Create animation state machine: (currentPath, name) → (ok, errorMsg)
     std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimFsm;
-    /// Create VFX system: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createVfxSystem;
+    /// Create Particle Graph: (currentPath, name) → (ok, errorMsg)
+    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createParticleGraph;
+    /// Create Render Effect: (currentPath, name, featureType) → (ok, errorMsg)
+    std::function<std::pair<bool, std::string>(const std::string &, const std::string &, const std::string &)>
+        createRenderEffect;
+    /// Create Render Effect Group: (currentPath, name) → (ok, errorMsg)
+    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createRenderEffectGroup;
     /// Create transform timeline: (currentPath, name) → (ok, errorMsg)
     std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimTimeline;
     /// Create timeline state machine: (currentPath, name) → (ok, errorMsg)
@@ -113,6 +118,8 @@ class ProjectPanel : public EditorPanel
 
     /// Move item to directory: (itemPath, destDir) → newPath or empty
     std::function<std::string(const std::string &, const std::string &)> moveItemToDirectory;
+    /// Copy item to exact path as a distinct asset: (itemPath, destinationPath) → newPath or empty
+    std::function<std::string(const std::string &, const std::string &)> copyItemToPath;
 
     /// Open file: (filePath)
     std::function<void(const std::string &)> openFile;
@@ -124,8 +131,8 @@ class ProjectPanel : public EditorPanel
     std::function<void(const std::string &)> openAnimClip;
     /// Open animation state machine: (filePath)
     std::function<void(const std::string &)> openAnimFsm;
-    /// Open VFX system: (filePath)
-    std::function<void(const std::string &)> openVfxSystem;
+    /// Open Particle Graph: (filePath)
+    std::function<void(const std::string &)> openParticleGraph;
     /// Open transform timeline: (filePath)
     std::function<void(const std::string &)> openAnimTimeline;
     /// Open timeline state machine: (filePath)
@@ -184,6 +191,13 @@ class ProjectPanel : public EditorPanel
         uint64_t mtimeNs = 0;
         int slotIndex = -1; // for SubMaterial
         ResourceType resourceType = ResourceType::DefaultText;
+    };
+
+    struct SearchIndexEntry
+    {
+        FileItem item;
+        std::string searchKey;
+        std::string sortKey;
     };
 
     // ── Directory snapshot cache ─────────────────────────────────────
@@ -254,6 +268,12 @@ class ProjectPanel : public EditorPanel
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_materialMtimeCache;
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_textureMtimeCache;
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_modelMtimeCache;
+    // FileManager must not enqueue a whole directory's previews in one frame.
+    // These are scheduling budgets, not display limits: ready thumbnails remain visible.
+    int m_texturePreviewRequestsThisFrame = 0;
+    int m_modelPreviewRequestsThisFrame = 0;
+    static constexpr int kTexturePreviewRequestBudget = 2;
+    static constexpr int kModelPreviewRequestBudget = 1;
     struct PrefabTypeCacheEntry
     {
         uint64_t mtimeNs = 0;
@@ -330,6 +350,16 @@ class ProjectPanel : public EditorPanel
     std::string m_breadcrumbPath;
     std::string m_breadcrumbText;
 
+    // Project-wide search (Unity-style box on the Path bar)
+    char m_searchBuf[256] = {};
+    std::string m_lastSearchQuery;
+    uint64_t m_lastSearchGeneration = UINT64_MAX;
+    uint64_t m_searchIndexGeneration = UINT64_MAX;
+    std::string m_searchIndexRoot;
+    std::vector<SearchIndexEntry> m_searchIndex;
+    std::vector<FileItem> m_searchResults;
+    static constexpr size_t kMaxSearchResults = 200;
+
     // Selection
     std::string m_selectedFile;
     std::vector<std::string> m_selectedFiles;
@@ -383,6 +413,9 @@ class ProjectPanel : public EditorPanel
 
     // ── Rendering helpers ────────────────────────────────────────────
     void RenderBreadcrumb(InxGUIContext *ctx);
+    void RebuildSearchIndex(uint64_t generation);
+    void UpdateSearchResults();
+    void RenderSearchResults(InxGUIContext *ctx);
     void RenderFolderTree(InxGUIContext *ctx);
     void RenderFolderTreeRecursive(InxGUIContext *ctx, const std::string &path, DirSnapshot *snapshot = nullptr);
     void RenderFileGrid(InxGUIContext *ctx);
@@ -425,8 +458,6 @@ class ProjectPanel : public EditorPanel
                                   const std::string &payload);
 
     // ── Path utility ─────────────────────────────────────────────────
-    static std::string NormalizePath(const std::string &path);
-    static bool IsPathWithin(const std::string &path, const std::string &parent);
     /// Directory depth relative to m_rootPath (root=0, Assets=1, Assets/Mats=2, …).
     int GetPathDepthFromRoot(const std::string &path) const;
     /// Lowest folder users may browse (Assets/Logs when present, else project root).

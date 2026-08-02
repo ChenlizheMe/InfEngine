@@ -1,0 +1,236 @@
+ShadingModelInfo {
+    Name "SixWaySmoke"
+    Imports ["Lighting"]
+    Requires [Lighting]
+    Unsupported [Deferred]
+}
+
+vec3 inxSixWayBasisWeights(vec3 lightDirection, out bvec3 positiveDirection) {
+    ShadingContext ctx = GetShadingContext();
+    vec3 rightAxis = normalize(ctx.tangentWS.xyz);
+    vec3 backAxis = normalize(ctx.geometricNormalWS);
+    vec3 upAxis = normalize(cross(backAxis, rightAxis)) * ctx.tangentWS.w;
+    vec3 localDirection = vec3(
+        dot(lightDirection, rightAxis),
+        dot(lightDirection, upAxis),
+        dot(lightDirection, backAxis));
+    positiveDirection = greaterThanEqual(localDirection, vec3(0.0));
+    return localDirection * localDirection;
+}
+
+vec3 inxSixWayDensityScales(vec3 absorptionColor) {
+    const float absorptionReference = 0.2;
+    vec3 color = max(absorptionColor, vec3(1e-5));
+    return vec3(1.0) + log2(color) / log2(absorptionReference);
+}
+
+vec3 inxSixWayTransmission(float transmission, float alpha) {
+    const float inversePi = 0.31830988618;
+    float absorptionRange = mix(inversePi, 1.0, clamp(material.absorption, 0.0, 1.0));
+    absorptionRange *= max(alpha, 0.0);
+    vec3 densityScales = inxSixWayDensityScales(material.baseColor.rgb);
+    return pow(clamp(vec3(transmission / max(absorptionRange, 1e-5)), 0.0, 1.0), densityScales) *
+        absorptionRange;
+}
+
+vec3 inxSixWayDirectionalResponse(vec3 lightDirection, float alpha) {
+    bvec3 positiveDirection;
+    vec3 weights = inxSixWayBasisWeights(normalize(lightDirection), positiveDirection);
+    vec3 coefficients = vec3(
+        positiveDirection.x ? _inxSixWayPositive.r : _inxSixWayNegative.r,
+        positiveDirection.y ? _inxSixWayPositive.g : _inxSixWayNegative.g,
+        positiveDirection.z ? _inxSixWayPositive.b : _inxSixWayNegative.b);
+    return inxSixWayTransmission(max(dot(coefficients, weights), 0.0), alpha);
+}
+
+vec3 inxSixWayAmbient(float alpha) {
+    ShadingContext ctx = GetShadingContext();
+    vec3 rightAxis = normalize(ctx.tangentWS.xyz);
+    vec3 backAxis = normalize(ctx.geometricNormalWS);
+    vec3 upAxis = normalize(cross(backAxis, rightAxis)) * ctx.tangentWS.w;
+    vec3 ambient =
+        inxSixWayTransmission(_inxSixWayPositive.r, alpha) * sampleAmbientIrradiance(rightAxis) +
+        inxSixWayTransmission(_inxSixWayNegative.r, alpha) * sampleAmbientIrradiance(-rightAxis) +
+        inxSixWayTransmission(_inxSixWayPositive.g, alpha) * sampleAmbientIrradiance(upAxis) +
+        inxSixWayTransmission(_inxSixWayNegative.g, alpha) * sampleAmbientIrradiance(-upAxis) +
+        inxSixWayTransmission(_inxSixWayPositive.b, alpha) * sampleAmbientIrradiance(backAxis) +
+        inxSixWayTransmission(_inxSixWayNegative.b, alpha) * sampleAmbientIrradiance(-backAxis);
+    // Environment lighting is only a low-frequency visibility fill. It must
+    // not turn dense smoke into a glowing copy of the sky, so normalise the
+    // six samples, discard probe chroma by default and attenuate the fill as
+    // the card becomes optically dense. Direct lights remain responsible for
+    // the recognisable six-way response.
+    ambient *= (1.0 / 6.0);
+    float rawEnergy = max(dot(ambient, vec3(0.2126, 0.7152, 0.0722)), 0.0);
+    // Skyboxes can carry HDR radiance several stops above ordinary scene
+    // lighting. Ambient is only a visibility fill for smoke, so preserve its
+    // directionless shape while preventing sky exposure from becoming a key.
+    float neutralEnergy = min(rawEnergy, 1.0);
+    vec3 cappedAmbient = clamp(
+        ambient * (neutralEnergy / max(rawEnergy, 1e-5)),
+        vec3(0.0),
+        vec3(1.0));
+    // Ambient is deliberately achromatic by default. Sky/probe chroma is a
+    // stylistic opt-in through ambientSaturation, not an implicit blue light
+    // that remains after every scene light has been disabled.
+    vec3 neutralAmbient = vec3(neutralEnergy);
+    vec3 tintedAmbient = mix(neutralAmbient, cappedAmbient, clamp(material.ambientSaturation, 0.0, 1.0));
+    float denseSmokeSuppression = mix(1.0, 0.18, smoothstep(0.15, 0.85, alpha));
+    return tintedAmbient * denseSmokeSuppression;
+}
+
+vec3 inxSixWayDirectLighting(vec3 shadowNormal, float alpha) {
+    ShadingContext ctx = GetShadingContext();
+    vec3 directLighting = vec3(0.0);
+    const uint particleLightDomain = 2u;
+
+#ifdef INX_FORWARD_PLUS_PASS
+    uint directionalCount = canonicalLightCountsAndGeneration.x;
+    for (uint i = 0u; i < directionalCount; ++i) {
+        CanonicalLightData light = canonicalLights[i];
+        if ((light.metadata.w & particleLightDomain) == 0u) continue;
+        if ((light.metadata.y & _inx_ObjectLayerMask) == 0u) continue;
+        vec3 toLight = normalize(-light.directionOuterCos.xyz);
+        float visibility = inxParticleReceivesShadows() ? sampleDirectionalViews(
+            light.identityAndShadow.z,
+            light.identityAndShadow.w,
+            vec4(light.shadowAndInnerCos.xyz, float(light.metadata.z)),
+            ctx.positionWS,
+            toLight,
+            toLight,
+            ctx.viewDepth) : 1.0;
+        directLighting += light.colorIntensity.rgb * light.colorIntensity.w *
+            inxSixWayDirectionalResponse(toLight, alpha) * visibility;
+    }
+
+    uvec4 tileHeader = inxForwardPlusTileHeader();
+    for (uint wordEntry = 0u; wordEntry < tileHeader.y; ++wordEntry) {
+        uint lightMask = forwardPlusTileMasks[tileHeader.x + wordEntry];
+        while (lightMask != 0u) {
+            uint bit = uint(findLSB(lightMask));
+            uint localIndex = wordEntry * 32u + bit;
+            lightMask &= lightMask - 1u;
+            if (localIndex >= tileHeader.z) continue;
+
+            CanonicalLightData light = canonicalLights[directionalCount + localIndex];
+            if ((light.metadata.w & particleLightDomain) == 0u) continue;
+            if ((light.metadata.y & _inx_ObjectLayerMask) == 0u) continue;
+
+            vec3 lightVector = light.positionRange.xyz - ctx.positionWS;
+            float lightDistance = length(lightVector);
+            float lightRange = max(light.positionRange.w, 0.0001);
+            if (lightDistance <= 0.00001 || lightDistance >= lightRange) continue;
+
+            vec3 toLight = lightVector / lightDistance;
+            float attenuation = calculateAttenuation(vec3(lightRange, 0.0, 0.0), lightDistance);
+            if (light.metadata.x == 2u) {
+                float cone = dot(toLight, -normalize(light.directionOuterCos.xyz));
+                attenuation *= smoothstep(light.directionOuterCos.w, light.shadowAndInnerCos.w, cone);
+            } else if (light.metadata.x == 3u) {
+                vec3 fromLight = normalize(ctx.positionWS - light.positionRange.xyz);
+                float facing = dot(normalize(light.directionOuterCos.xyz), fromLight);
+                attenuation *= light.directionOuterCos.w > 0.5 ? abs(facing) : max(facing, 0.0);
+            }
+            if (attenuation <= 0.0001) continue;
+
+            float visibility = inxParticleReceivesShadows() ? sampleLocalShadow(
+                light.identityAndShadow.z,
+                light.identityAndShadow.w,
+                light.metadata.x,
+                vec4(light.shadowAndInnerCos.xyz, float(light.metadata.z)),
+                light.positionRange.xyz,
+                ctx.positionWS,
+                toLight,
+                toLight) : 1.0;
+            directLighting += light.colorIntensity.rgb * light.colorIntensity.w *
+                attenuation * inxSixWayDirectionalResponse(toLight, alpha) * visibility;
+        }
+    }
+#else
+    for (int i = 0; i < lighting.lightCounts.x && i < MAX_DIRECTIONAL_LIGHTS; ++i) {
+        DirectionalLightData light = lighting.directionalLights[i];
+        if ((light.metadata.y & particleLightDomain) == 0u) continue;
+        if ((light.metadata.x & _inx_ObjectLayerMask) == 0u) continue;
+        vec3 toLight = normalize(-light.direction.xyz);
+        float visibility = inxParticleReceivesShadows() ? sampleDirectionalViews(
+            light.metadata.z,
+            light.metadata.w,
+            light.shadowParams,
+            ctx.positionWS,
+            toLight,
+            toLight,
+            ctx.viewDepth) : 1.0;
+        directLighting += light.color.rgb * light.color.w *
+            inxSixWayDirectionalResponse(toLight, alpha) * visibility;
+    }
+
+    for (int i = 0; i < lighting.lightCounts.y && i < MAX_POINT_LIGHTS; ++i) {
+        PointLightData light = lighting.pointLights[i];
+        if ((light.metadata.y & particleLightDomain) == 0u) continue;
+        if ((light.metadata.x & _inx_ObjectLayerMask) == 0u) continue;
+        vec3 lightVector = light.position.xyz - ctx.positionWS;
+        float lightDistance = length(lightVector);
+        if (lightDistance <= 0.00001) continue;
+        vec3 toLight = lightVector / lightDistance;
+        float attenuation = calculateAttenuation(light.attenuation.xyz, lightDistance);
+        float visibility = inxParticleReceivesShadows() ? sampleLocalShadow(
+            light.metadata.z, light.metadata.w, 1u, light.shadowParams,
+            light.position.xyz, ctx.positionWS, toLight, toLight) : 1.0;
+        directLighting += light.color.rgb * light.color.w * attenuation *
+            inxSixWayDirectionalResponse(toLight, alpha) * visibility;
+    }
+
+    for (int i = 0; i < lighting.lightCounts.z && i < MAX_SPOT_LIGHTS; ++i) {
+        SpotLightData light = lighting.spotLights[i];
+        if ((light.metadata.y & particleLightDomain) == 0u) continue;
+        if ((light.metadata.x & _inx_ObjectLayerMask) == 0u) continue;
+        vec3 lightVector = light.position.xyz - ctx.positionWS;
+        float lightDistance = length(lightVector);
+        if (lightDistance <= 0.00001) continue;
+        vec3 toLight = lightVector / lightDistance;
+        float attenuation = calculateAttenuation(light.attenuation.xyz, lightDistance);
+        attenuation *= calculateSpotFalloff(toLight, light.direction.xyz, light.spotParams.x, light.spotParams.y);
+        float visibility = inxParticleReceivesShadows() ? sampleLocalShadow(
+            light.metadata.z, light.metadata.w, 2u, light.shadowParams,
+            light.position.xyz, ctx.positionWS, toLight, toLight) : 1.0;
+        directLighting += light.color.rgb * light.color.w * attenuation *
+            inxSixWayDirectionalResponse(toLight, alpha) * visibility;
+    }
+
+    for (int i = 0; i < lighting.lightCounts.w && i < MAX_AREA_LIGHTS; ++i) {
+        AreaLightData light = lighting.areaLights[i];
+        if ((light.metadata.y & particleLightDomain) == 0u) continue;
+        if ((light.metadata.x & _inx_ObjectLayerMask) == 0u) continue;
+        vec3 lightVector = light.positionRange.xyz - ctx.positionWS;
+        float lightDistance = length(lightVector);
+        float lightRange = max(light.positionRange.w, 0.0001);
+        if (lightDistance <= 0.00001 || lightDistance >= lightRange) continue;
+        vec3 toLight = lightVector / lightDistance;
+        vec3 fromLight = normalize(ctx.positionWS - light.positionRange.xyz);
+        float facing = dot(normalize(light.direction.xyz), fromLight);
+        facing = light.direction.w > 0.5 ? abs(facing) : max(facing, 0.0);
+        float attenuation = calculateAttenuation(vec3(lightRange, 0.0, 0.0), lightDistance) * facing;
+        directLighting += light.color.rgb * light.color.w * attenuation *
+            inxSixWayDirectionalResponse(toLight, alpha);
+    }
+#endif
+
+    return directLighting;
+}
+
+void shading(in SurfaceData s, out vec4 color) {
+    ShadingContext ctx = GetShadingContext();
+    vec3 shadowNormal = normalize(ctx.geometricNormalWS);
+    // Zero ambient is a strict opt-out: do not sample sky/probes at all. Even
+    // when enabled, ambient is deliberately capped as a weak fill so it can
+    // never replace authored direct lighting on dense smoke.
+    float ambientWeight = clamp(material.ambientIntensity, 0.0, 0.002);
+    vec3 ambient = ambientWeight > 0.0001
+        ? inxSixWayAmbient(s.alpha) * ambientWeight
+        : vec3(0.0);
+    vec3 direct = inxSixWayDirectLighting(shadowNormal, s.alpha) * material.lightingIntensity;
+    // The six directional coefficients are already density-weighted. The
+    // premultiplied output must not multiply the lit result by alpha again.
+    vec3 litColor = max(ambient + direct, vec3(0.0));
+    color = vec4(litColor + s.emission * s.alpha, s.alpha);
+}

@@ -1,6 +1,7 @@
 #include "DocumentStore.h"
 
 #include "AtomicFile.h"
+#include "InxPath.h"
 
 #include <algorithm>
 #include <cctype>
@@ -125,7 +126,7 @@ DocumentStore &DocumentStore::Instance()
 std::shared_ptr<DocumentWriteTicket> DocumentStore::Submit(const std::string &path, std::string content,
                                                            DocumentWriteOptions options)
 {
-    const std::string normalizedPath = NormalizePath(path);
+    const std::string normalizedPath = FilesystemPathKey(path);
     const std::string resolvedPath = ResolvePath(path);
     std::shared_ptr<DocumentWriteTicket> superseded;
     std::shared_ptr<DocumentWriteTicket> ticket;
@@ -198,7 +199,7 @@ bool DocumentStore::Cancel(const std::shared_ptr<DocumentWriteTicket> &ticket)
 
 DocumentPathMetrics DocumentStore::GetMetrics(const std::string &path) const
 {
-    const std::string key = NormalizePath(path);
+    const std::string key = FilesystemPathKey(path);
     std::lock_guard lock(m_mutex);
     DocumentPathMetrics metrics;
     if (const auto generation = m_generations.find(key); generation != m_generations.end())
@@ -222,7 +223,7 @@ void DocumentStore::Flush()
 
 void DocumentStore::Flush(const std::string &path)
 {
-    const std::string key = NormalizePath(path);
+    const std::string key = FilesystemPathKey(path);
     std::unique_lock lock(m_mutex);
     m_condition.wait(lock, [this, &key] { return IsIdleLocked(&key); });
 }
@@ -258,21 +259,7 @@ std::string DocumentStore::ResolvePath(const std::string &path)
 {
     if (path.empty())
         throw std::invalid_argument("document path must not be empty");
-    std::error_code error;
-    auto absolute = std::filesystem::absolute(std::filesystem::u8path(path), error);
-    if (error)
-        throw std::invalid_argument("failed to normalize document path '" + path + "': " + error.message());
-    return absolute.lexically_normal().generic_u8string();
-}
-
-std::string DocumentStore::NormalizePath(const std::string &path)
-{
-    std::string normalized = ResolvePath(path);
-#ifdef _WIN32
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                   [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
-#endif
-    return normalized;
+    return ResolveFilesystemPath(path);
 }
 
 void DocumentStore::StartWorkerLocked()
@@ -312,10 +299,10 @@ void DocumentStore::WorkerMain()
         try {
             m_writer(request.path, request.content, request.options);
             std::error_code stateError;
-            const uintmax_t size = std::filesystem::file_size(std::filesystem::u8path(request.path), stateError);
+            const auto filePath = ToFsPath(request.path);
+            const uintmax_t size = std::filesystem::file_size(filePath, stateError);
             if (!stateError && size <= std::numeric_limits<uint64_t>::max()) {
-                const auto modified =
-                    std::filesystem::last_write_time(std::filesystem::u8path(request.path), stateError);
+                const auto modified = std::filesystem::last_write_time(filePath, stateError);
                 if (!stateError)
                     fileState = DocumentFileState{static_cast<uint64_t>(size),
                                                   static_cast<int64_t>(modified.time_since_epoch().count())};

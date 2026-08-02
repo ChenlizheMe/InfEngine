@@ -110,7 +110,9 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
         _inline_material_state, engine, _inspector_support,
     )
 
-    def _render_material_sections(ctx, obj_id):
+    _material_section_heights = {}
+
+    def _render_material_sections_live(ctx, obj_id):
         from Infernux.components.builtin_component import BuiltinComponent
         from Infernux.engine.ui import inspector_material as mat_ui
         from Infernux.engine.ui.inspector_utils import render_compact_section_header, render_info_text
@@ -198,5 +200,22 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
                 native.pump_preview_tasks()
         except Exception:
             pass
+
+    def _render_material_sections(ctx, obj_id):
+        cached_height = _material_section_heights.get(obj_id, 0.0)
+        visibility_query = getattr(ctx, "is_virtualized_region_visible", None)
+        if cached_height > 0.0 and callable(visibility_query) and not visibility_query(cached_height):
+            ctx.dummy(0.0, cached_height)
+            return
+
+        start_y = ctx.get_cursor_pos_y()
+        try:
+            _render_material_sections_live(ctx, obj_id)
+        finally:
+            measured_height = max(0.0, ctx.get_cursor_pos_y() - start_y)
+            if measured_height > 0.0:
+                _material_section_heights[obj_id] = measured_height
+            else:
+                _material_section_heights.pop(obj_id, None)
 
     ip.render_material_sections = _render_material_sections

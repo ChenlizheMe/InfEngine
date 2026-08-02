@@ -10,17 +10,47 @@
 #include "RenderGraph.h"
 #include "VkDeviceContext.h"
 #include "VkPipelineManager.h"
+#include "VulkanQueueManager.h"
 #include <core/error/InxError.h>
 #include <function/renderer/ProfileConfig.h>
 
 #include <algorithm>
 #include <chrono>
 #include <sstream>
+#include <utility>
 
 namespace infernux
 {
 namespace vk
 {
+
+namespace
+{
+constexpr size_t QueueRoleIndex(rhi::QueueRole role) noexcept
+{
+    return static_cast<size_t>(role);
+}
+
+rhi::QueueRole QueueRoleForPass(PassType type) noexcept
+{
+    switch (type) {
+    case PassType::Graphics:
+        return rhi::QueueRole::Graphics;
+    case PassType::Compute:
+        return rhi::QueueRole::Compute;
+    case PassType::Transfer:
+        return rhi::QueueRole::Transfer;
+    case PassType::Present:
+        // A RenderGraph Present pass records the final image-layout transition.
+        // vkQueuePresentKHR itself is owned by PresentationManager and happens
+        // after command submission; a presentation-only queue cannot record or
+        // execute pipeline barriers.
+        return rhi::QueueRole::Graphics;
+    }
+    return rhi::QueueRole::Graphics;
+}
+
+} // namespace
 
 #if INFERNUX_FRAME_PROFILE
 RenderGraph::ExecuteProfileSnapshot RenderGraph::GetExecuteProfileSnapshot()
@@ -61,6 +91,11 @@ void RenderGraph::ResetExecuteProfileSnapshot()
 
 RenderContext::RenderContext(VkCommandBuffer cmdBuffer, RenderGraph *graph) : m_cmdBuffer(cmdBuffer), m_graph(graph)
 {
+    if (m_graph && m_graph->m_rhiDevice) {
+        m_graphicsEncoder = m_graph->m_rhiDevice->MakeGraphicsCommandEncoder(m_graphicsCommandContext, cmdBuffer);
+        m_computeEncoder = m_graph->m_rhiDevice->MakeComputeCommandEncoder(m_computeCommandContext, cmdBuffer);
+        m_transferEncoder = m_graph->m_rhiDevice->MakeTransferCommandEncoder(m_transferCommandContext, cmdBuffer);
+    }
 }
 
 void RenderContext::SetViewport(const VkViewport &viewport)
@@ -101,9 +136,29 @@ VkImageView RenderContext::GetTexture(ResourceHandle handle) const
     return m_graph ? m_graph->ResolveTextureView(handle) : VK_NULL_HANDLE;
 }
 
+rhi::TextureViewHandle RenderContext::GetTextureView(ResourceHandle handle) const
+{
+    return m_graph ? m_graph->ResolveRhiTextureView(handle) : rhi::TextureViewHandle{};
+}
+
+rhi::TextureHandle RenderContext::GetTextureHandle(ResourceHandle handle) const
+{
+    return m_graph ? m_graph->ResolveRhiTexture(handle) : rhi::TextureHandle{};
+}
+
 VkBuffer RenderContext::GetBuffer(ResourceHandle handle) const
 {
     return m_graph ? m_graph->ResolveBuffer(handle) : VK_NULL_HANDLE;
+}
+
+rhi::BufferHandle RenderContext::GetBufferHandle(ResourceHandle handle) const
+{
+    return m_graph ? m_graph->ResolveRhiBuffer(handle) : rhi::BufferHandle{};
+}
+
+const RendererList *RenderContext::GetRendererList(ResourceHandle handle) const
+{
+    return m_graph ? m_graph->ResolveRendererList(handle) : nullptr;
 }
 
 // ============================================================================
@@ -118,7 +173,7 @@ ResourceHandle PassBuilder::CreateTexture(const std::string &name, uint32_t widt
                                           VkSampleCountFlagBits samples)
 {
     ResourceHandle handle = m_graph->CreateResource(name, ResourceType::Texture2D);
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -137,7 +192,7 @@ ResourceHandle PassBuilder::CreateDepthStencil(const std::string &name, uint32_t
                                                VkFormat format, VkSampleCountFlagBits samples)
 {
     ResourceHandle handle = m_graph->CreateResource(name, ResourceType::DepthStencil);
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -155,7 +210,7 @@ ResourceHandle PassBuilder::CreateDepthStencil(const std::string &name, uint32_t
 ResourceHandle PassBuilder::CreateBuffer(const std::string &name, VkDeviceSize size, VkBufferUsageFlags usage)
 {
     ResourceHandle handle = m_graph->CreateResource(name, ResourceType::Buffer);
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -172,7 +227,7 @@ ResourceHandle PassBuilder::ImportTexture(const std::string &name, VkImage image
                                           uint32_t width, uint32_t height)
 {
     ResourceHandle handle = m_graph->CreateResource(name, ResourceType::Texture2D);
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -185,14 +240,35 @@ ResourceHandle PassBuilder::ImportTexture(const std::string &name, VkImage image
     resource.isExternal = true;
     resource.externalImage = image;
     resource.externalView = view;
+    resource.rhiView =
+        m_graph->m_rhiDevice ? m_graph->m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
+    resource.rhiTexture = m_graph->m_rhiDevice ? m_graph->m_rhiDevice->RegisterTexture(image) : rhi::TextureHandle{};
 
     return handle;
 }
 
 ResourceHandle PassBuilder::ImportBuffer(const std::string &name, VkBuffer buffer, VkDeviceSize size)
 {
+    if (buffer != VK_NULL_HANDLE) {
+        for (uint32_t resourceId = 0; resourceId < m_graph->m_resources.size(); ++resourceId) {
+            auto &resource = m_graph->m_resources[resourceId];
+            if (!resource.isExternal || resource.type != ResourceType::Buffer || resource.externalBuffer != buffer)
+                continue;
+            if (size > resource.bufferDesc.size) {
+                resource.bufferDesc.size = size;
+                if (m_graph->m_rhiDevice) {
+                    m_graph->m_rhiDevice->Release(resource.rhiBuffer);
+                    resource.rhiBuffer = m_graph->m_rhiDevice->RegisterBuffer(buffer, size);
+                    if (!resource.rhiBuffer.IsValid())
+                        return {};
+                }
+            }
+            return {m_graph->m_identity.Current(), resourceId, m_graph->m_resourceVersions[resourceId]};
+        }
+    }
+
     ResourceHandle handle = m_graph->CreateResource(name, ResourceType::Buffer);
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -202,13 +278,29 @@ ResourceHandle PassBuilder::ImportBuffer(const std::string &name, VkBuffer buffe
     resource.bufferDesc.isTransient = false;
     resource.isExternal = true;
     resource.externalBuffer = buffer;
+    resource.rhiBuffer =
+        m_graph->m_rhiDevice ? m_graph->m_rhiDevice->RegisterBuffer(buffer, size) : rhi::BufferHandle{};
 
     return handle;
 }
 
-ResourceHandle PassBuilder::Read(ResourceHandle handle, VkPipelineStageFlags stages)
+ResourceHandle PassBuilder::ImportBuffer(const std::string &name, rhi::BufferHandle buffer, uint64_t size)
 {
-    if (!handle.IsValid()) {
+    if (!buffer.IsValid() || size == 0 || !m_graph->m_rhiDevice)
+        return {};
+    const VkBuffer nativeBuffer = m_graph->m_rhiDevice->Resolve(buffer);
+    if (nativeBuffer == VK_NULL_HANDLE)
+        return {};
+    const ResourceHandle handle = ImportBuffer(name, nativeBuffer, static_cast<VkDeviceSize>(size));
+    if (m_graph->Owns(handle))
+        m_graph->m_resources[handle.id].concurrentQueueSharing =
+            m_graph->m_rhiDevice->UsesConcurrentQueueSharing(buffer);
+    return handle;
+}
+
+ResourceHandle PassBuilder::Read(ResourceHandle handle, rhi::PipelineStage stages)
+{
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -218,17 +310,17 @@ ResourceHandle PassBuilder::Read(ResourceHandle handle, VkPipelineStageFlags sta
     access.handle = handle;
     access.usage = ResourceUsage::Read | ResourceUsage::ShaderRead;
     access.stages = stages;
-    access.access = VK_ACCESS_SHADER_READ_BIT;
-    access.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    access.access = rhi::Access::ShaderRead;
+    access.layout = rhi::TextureLayout::ShaderReadOnly;
 
     pass.reads.push_back(access);
 
     return handle;
 }
 
-ResourceHandle PassBuilder::ReadSampledDepth(ResourceHandle handle, VkPipelineStageFlags stages)
+ResourceHandle PassBuilder::ReadSampledDepth(ResourceHandle handle, rhi::PipelineStage stages)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -240,8 +332,8 @@ ResourceHandle PassBuilder::ReadSampledDepth(ResourceHandle handle, VkPipelineSt
     // to DepthStencil images; without it the GPU cannot sample the depth texture.
     access.usage = ResourceUsage::Read | ResourceUsage::DepthRead | ResourceUsage::ShaderRead;
     access.stages = stages;
-    access.access = VK_ACCESS_SHADER_READ_BIT;
-    access.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    access.access = rhi::Access::ShaderRead;
+    access.layout = rhi::TextureLayout::DepthStencilReadOnly;
 
     pass.reads.push_back(access);
 
@@ -250,18 +342,27 @@ ResourceHandle PassBuilder::ReadSampledDepth(ResourceHandle handle, VkPipelineSt
 
 ResourceHandle PassBuilder::WriteColor(ResourceHandle handle, uint32_t attachmentIndex)
 {
-    if (!handle.IsValid()) {
-        return handle;
+    if (!m_graph->Owns(handle)) {
+        return {};
     }
+
+    ResourceHandle newHandle = m_graph->AdvanceResourceVersion(handle);
+    if (!newHandle.IsValid())
+        return {};
 
     auto &pass = m_graph->m_passes[m_passId];
 
+    // Model the previous attachment version as a graph-only input. A later
+    // SetClearColor() removes this dependency when the pass fully overwrites it.
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::VersionDependency, rhi::PipelineStage::None,
+                          rhi::Access::None, rhi::TextureLayout::Undefined});
+
     ResourceAccess access;
-    access.handle = handle;
+    access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::ColorOutput;
-    access.stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    access.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    access.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    access.stages = rhi::PipelineStage::ColorOutput;
+    access.access = rhi::Access::ColorWrite;
+    access.layout = rhi::TextureLayout::ColorAttachment;
 
     pass.writes.push_back(access);
 
@@ -269,42 +370,42 @@ ResourceHandle PassBuilder::WriteColor(ResourceHandle handle, uint32_t attachmen
     if (pass.colorOutputs.size() <= attachmentIndex) {
         pass.colorOutputs.resize(attachmentIndex + 1);
     }
-    pass.colorOutputs[attachmentIndex] = handle;
-
-    // New version of the resource
-    ResourceHandle newHandle = handle;
-    newHandle.version++;
+    pass.colorOutputs[attachmentIndex] = newHandle;
 
     return newHandle;
 }
 
 ResourceHandle PassBuilder::WriteDepth(ResourceHandle handle)
 {
-    if (!handle.IsValid()) {
-        return handle;
+    if (!m_graph->Owns(handle)) {
+        return {};
     }
+
+    ResourceHandle newHandle = m_graph->AdvanceResourceVersion(handle);
+    if (!newHandle.IsValid())
+        return {};
 
     auto &pass = m_graph->m_passes[m_passId];
 
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::VersionDependency, rhi::PipelineStage::None,
+                          rhi::Access::None, rhi::TextureLayout::Undefined});
+
     ResourceAccess access;
-    access.handle = handle;
+    access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::DepthOutput;
-    access.stages = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    access.access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    access.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    access.stages = rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
+    access.access = rhi::Access::DepthWrite;
+    access.layout = rhi::TextureLayout::DepthStencilAttachment;
 
     pass.writes.push_back(access);
-    pass.depthOutput = handle;
-
-    ResourceHandle newHandle = handle;
-    newHandle.version++;
+    pass.depthOutput = newHandle;
 
     return newHandle;
 }
 
 ResourceHandle PassBuilder::ReadDepth(ResourceHandle handle)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -313,12 +414,12 @@ ResourceHandle PassBuilder::ReadDepth(ResourceHandle handle)
     ResourceAccess access;
     access.handle = handle;
     access.usage = ResourceUsage::Read | ResourceUsage::DepthRead;
-    access.stages = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    access.access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    access.stages = rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
+    access.access = rhi::Access::DepthRead;
     // Read-only depth: the render pass uses DEPTH_STENCIL_READ_ONLY_OPTIMAL
     // for both the subpass attachment and initialLayout/finalLayout.
     // The barrier must transition to this layout (not ATTACHMENT_OPTIMAL).
-    access.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    access.layout = rhi::TextureLayout::DepthStencilReadOnly;
 
     pass.reads.push_back(access);
     pass.depthInput = handle;
@@ -326,33 +427,112 @@ ResourceHandle PassBuilder::ReadDepth(ResourceHandle handle)
     return handle; // No version bump â€” read-only
 }
 
-ResourceHandle PassBuilder::ReadWrite(ResourceHandle handle, VkPipelineStageFlags stages)
+ResourceHandle PassBuilder::ReadWrite(ResourceHandle handle, rhi::PipelineStage stages)
 {
-    if (!handle.IsValid()) {
-        return handle;
+    if (!m_graph->Owns(handle)) {
+        return {};
     }
+
+    ResourceHandle newHandle = m_graph->AdvanceResourceVersion(handle);
+    if (!newHandle.IsValid())
+        return {};
 
     auto &pass = m_graph->m_passes[m_passId];
 
-    ResourceAccess access;
-    access.handle = handle;
-    access.usage = ResourceUsage::ReadWrite;
-    access.stages = stages;
-    access.access = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-    access.layout = VK_IMAGE_LAYOUT_GENERAL;
-
-    pass.reads.push_back(access);
-    pass.writes.push_back(access);
-
-    ResourceHandle newHandle = handle;
-    newHandle.version++;
+    pass.reads.push_back({handle, ResourceUsage::Read, stages, rhi::Access::ShaderRead, rhi::TextureLayout::General});
+    pass.writes.push_back(
+        {newHandle, ResourceUsage::Write, stages, rhi::Access::ShaderWrite, rhi::TextureLayout::General});
 
     return newHandle;
 }
 
+ResourceHandle PassBuilder::ReadStorageBuffer(ResourceHandle handle, rhi::PipelineStage stages)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
+        return handle;
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::ShaderRead, stages, rhi::Access::ShaderRead,
+                          rhi::TextureLayout::Undefined});
+    return handle;
+}
+
+ResourceHandle PassBuilder::ReadUniformBuffer(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
+        return handle;
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::ShaderRead, rhi::PipelineStage::ComputeShader,
+                          rhi::Access::UniformRead, rhi::TextureLayout::Undefined});
+    return handle;
+}
+
+ResourceHandle PassBuilder::WriteStorageBuffer(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
+        return {};
+
+    ResourceHandle next = m_graph->AdvanceResourceVersion(handle);
+    if (!next.IsValid())
+        return {};
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.writes.push_back({next, ResourceUsage::Write, rhi::PipelineStage::ComputeShader, rhi::Access::ShaderWrite,
+                           rhi::TextureLayout::Undefined});
+    return next;
+}
+
+ResourceHandle PassBuilder::WriteStorageTexture(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type == ResourceType::Buffer ||
+        m_graph->m_resources[handle.id].type == ResourceType::RendererList) {
+        return {};
+    }
+
+    ResourceHandle next = m_graph->AdvanceResourceVersion(handle);
+    if (!next.IsValid())
+        return {};
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::VersionDependency, rhi::PipelineStage::None,
+                          rhi::Access::None, rhi::TextureLayout::Undefined});
+    pass.writes.push_back({next, ResourceUsage::Write | ResourceUsage::Storage, rhi::PipelineStage::ComputeShader,
+                           rhi::Access::ShaderWrite, rhi::TextureLayout::General});
+    return next;
+}
+
+ResourceHandle PassBuilder::ReadIndirectBuffer(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
+        return handle;
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::IndirectArgument,
+                          rhi::PipelineStage::DrawIndirect, rhi::Access::IndirectRead, rhi::TextureLayout::Undefined});
+    return handle;
+}
+
+ResourceHandle PassBuilder::ReadRendererList(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::RendererList)
+        return handle;
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::RendererListRead, rhi::PipelineStage::None,
+                          rhi::Access::None, rhi::TextureLayout::Undefined});
+    pass.rendererListInputs.push_back(handle);
+    return handle;
+}
+
+void PassBuilder::SkipCallbackWhenRendererListsEmpty(bool enabled)
+{
+    m_graph->m_passes[m_passId].skipCallbackWhenRendererListsEmpty = enabled;
+}
+
 ResourceHandle PassBuilder::TransferRead(ResourceHandle handle)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -361,9 +541,9 @@ ResourceHandle PassBuilder::TransferRead(ResourceHandle handle)
     ResourceAccess access;
     access.handle = handle;
     access.usage = ResourceUsage::Read | ResourceUsage::Transfer;
-    access.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    access.access = VK_ACCESS_TRANSFER_READ_BIT;
-    access.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    access.stages = rhi::PipelineStage::Transfer;
+    access.access = rhi::Access::TransferRead;
+    access.layout = rhi::TextureLayout::TransferSource;
 
     pass.reads.push_back(access);
 
@@ -372,48 +552,96 @@ ResourceHandle PassBuilder::TransferRead(ResourceHandle handle)
 
 ResourceHandle PassBuilder::TransferWrite(ResourceHandle handle)
 {
-    if (!handle.IsValid()) {
-        return handle;
+    if (!m_graph->Owns(handle)) {
+        return {};
     }
+
+    ResourceHandle newHandle = m_graph->AdvanceResourceVersion(handle);
+    if (!newHandle.IsValid())
+        return {};
 
     auto &pass = m_graph->m_passes[m_passId];
 
     ResourceAccess access;
-    access.handle = handle;
+    access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::Transfer;
-    access.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    access.access = VK_ACCESS_TRANSFER_WRITE_BIT;
-    access.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    access.stages = rhi::PipelineStage::Transfer;
+    access.access = rhi::Access::TransferWrite;
+    access.layout = rhi::TextureLayout::TransferDestination;
 
     pass.writes.push_back(access);
-
-    ResourceHandle newHandle = handle;
-    newHandle.version++;
 
     return newHandle;
 }
 
-ResourceHandle PassBuilder::WriteResolve(ResourceHandle handle)
+ResourceHandle PassBuilder::PrepareColorAttachment(ResourceHandle handle)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type == ResourceType::Buffer ||
+        m_graph->m_resources[handle.id].type == ResourceType::RendererList) {
         return handle;
     }
 
     auto &pass = m_graph->m_passes[m_passId];
-    pass.resolveOutput = handle;
+    pass.reads.push_back({handle, ResourceUsage::Read, rhi::PipelineStage::ColorOutput, rhi::Access::ColorRead,
+                          rhi::TextureLayout::ColorAttachment});
+    return handle;
+}
+
+ResourceHandle PassBuilder::PrepareDepthStencilAttachment(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type == ResourceType::Buffer ||
+        m_graph->m_resources[handle.id].type == ResourceType::RendererList) {
+        return handle;
+    }
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.reads.push_back({handle, ResourceUsage::Read, rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth,
+                          rhi::Access::DepthRead, rhi::TextureLayout::DepthStencilAttachment});
+    return handle;
+}
+
+ResourceHandle PassBuilder::PresentRead(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type == ResourceType::Buffer ||
+        m_graph->m_resources[handle.id].type == ResourceType::RendererList) {
+        return handle;
+    }
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::Present, rhi::PipelineStage::Bottom,
+                          rhi::Access::MemoryRead, rhi::TextureLayout::Present});
+    pass.hasSideEffect = true;
+    return handle;
+}
+
+ResourceHandle PassBuilder::WriteResolve(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle)) {
+        return {};
+    }
+
+    ResourceHandle newHandle = m_graph->AdvanceResourceVersion(handle);
+    if (!newHandle.IsValid())
+        return {};
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.resolveOutput = newHandle;
 
     // Track as a write so dependency/lifetime analysis picks it up
     ResourceAccess access;
-    access.handle = handle;
+    access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::ColorOutput;
-    access.stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    access.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    access.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    access.stages = rhi::PipelineStage::ColorOutput;
+    access.access = rhi::Access::ColorWrite;
+    access.layout = rhi::TextureLayout::ColorAttachment;
     pass.writes.push_back(access);
 
-    ResourceHandle newHandle = handle;
-    newHandle.version++;
     return newHandle;
+}
+
+void PassBuilder::SetSideEffect(bool enabled)
+{
+    m_graph->m_passes[m_passId].hasSideEffect = enabled;
 }
 
 void PassBuilder::SetRenderArea(uint32_t width, uint32_t height)
@@ -421,11 +649,37 @@ void PassBuilder::SetRenderArea(uint32_t width, uint32_t height)
     m_graph->m_passes[m_passId].renderArea = {width, height};
 }
 
+void PassBuilder::SetQueueRole(rhi::QueueRole queue)
+{
+    if (!m_graph || m_passId >= m_graph->m_passes.size() || queue == rhi::QueueRole::Count)
+        return;
+    auto &pass = m_graph->m_passes[m_passId];
+    const bool compatible = queue == rhi::QueueRole::Graphics ||
+                            (queue == rhi::QueueRole::Compute && pass.type == PassType::Compute) ||
+                            (queue == rhi::QueueRole::Transfer && pass.type == PassType::Transfer);
+    if (!compatible) {
+        INXLOG_ERROR("RenderGraph pass '", pass.name, "' rejected incompatible queue override");
+        return;
+    }
+    pass.queue = queue;
+}
+
 void PassBuilder::SetClearColor(float r, float g, float b, float a)
 {
     auto &pass = m_graph->m_passes[m_passId];
     pass.clearColor = {{r, g, b, a}};
     pass.clearColorEnabled = true;
+    pass.reads.erase(std::remove_if(pass.reads.begin(), pass.reads.end(),
+                                    [&](const ResourceAccess &read) {
+                                        if (static_cast<int>(read.usage & ResourceUsage::VersionDependency) == 0)
+                                            return false;
+                                        return std::any_of(pass.colorOutputs.begin(), pass.colorOutputs.end(),
+                                                           [&](ResourceHandle output) {
+                                                               return output.IsValid() && output.id == read.handle.id &&
+                                                                      output.version == read.handle.version + 1;
+                                                           });
+                                    }),
+                     pass.reads.end());
 }
 
 void PassBuilder::SetClearDepth(float depth, uint32_t stencil)
@@ -433,6 +687,16 @@ void PassBuilder::SetClearDepth(float depth, uint32_t stencil)
     auto &pass = m_graph->m_passes[m_passId];
     pass.clearDepth = {depth, stencil};
     pass.clearDepthEnabled = true;
+    if (pass.depthOutput.IsValid()) {
+        pass.reads.erase(std::remove_if(pass.reads.begin(), pass.reads.end(),
+                                        [&](const ResourceAccess &read) {
+                                            return static_cast<int>(read.usage & ResourceUsage::VersionDependency) !=
+                                                       0 &&
+                                                   read.handle.id == pass.depthOutput.id &&
+                                                   pass.depthOutput.version == read.handle.version + 1;
+                                        }),
+                         pass.reads.end());
+    }
 }
 
 // ============================================================================
@@ -447,13 +711,34 @@ RenderGraph::~RenderGraph()
 }
 
 RenderGraph::RenderGraph(RenderGraph &&other) noexcept
-    : m_context(other.m_context), m_pipelineManager(other.m_pipelineManager), m_passes(std::move(other.m_passes)),
-      m_resources(std::move(other.m_resources)), m_executionOrder(std::move(other.m_executionOrder)),
-      m_backbuffer(other.m_backbuffer), m_output(other.m_output), m_compiled(other.m_compiled)
+    : m_identity(std::move(other.m_identity)), m_context(std::exchange(other.m_context, nullptr)),
+      m_deviceId(std::exchange(other.m_deviceId, rhi::InvalidDeviceId)),
+      m_renderViewId(std::exchange(other.m_renderViewId, rhi::InvalidRenderViewId)),
+      m_rhiDevice(std::exchange(other.m_rhiDevice, nullptr)),
+      m_pipelineManager(std::exchange(other.m_pipelineManager, nullptr)),
+      m_deletionQueue(std::exchange(other.m_deletionQueue, nullptr)), m_queueTopology(other.m_queueTopology),
+      m_passes(std::move(other.m_passes)), m_resources(std::move(other.m_resources)),
+      m_resourceVersions(std::move(other.m_resourceVersions)), m_executionOrder(std::move(other.m_executionOrder)),
+      m_submissionPlan(std::move(other.m_submissionPlan)),
+      m_queueOwnershipTransfers(std::move(other.m_queueOwnershipTransfers)),
+      m_queueOwnershipTransferInfos(std::move(other.m_queueOwnershipTransferInfos)),
+      m_batchOutgoingOwnershipTransfers(std::move(other.m_batchOutgoingOwnershipTransfers)),
+      m_backbuffer(other.m_backbuffer), m_output(other.m_output), m_compiled(std::exchange(other.m_compiled, false)),
+      m_structuralCompileCache(std::move(other.m_structuralCompileCache)),
+      m_structuralCacheHits(other.m_structuralCacheHits), m_structuralCacheMisses(other.m_structuralCacheMisses),
+      m_resourceStates(std::move(other.m_resourceStates)),
+      m_initialResourceStates(std::move(other.m_initialResourceStates)),
+      m_barrierScratch(std::move(other.m_barrierScratch)),
+      m_bufferBarrierScratch(std::move(other.m_bufferBarrierScratch)),
+      m_clearValueScratch(std::move(other.m_clearValueScratch)), m_renderPassCache(std::move(other.m_renderPassCache)),
+      m_renderTargetLayoutCache(std::move(other.m_renderTargetLayoutCache)),
+      m_framebufferCache(std::move(other.m_framebufferCache)),
+      m_usedRenderPassKeys(std::move(other.m_usedRenderPassKeys)),
+      m_usedFramebufferKeys(std::move(other.m_usedFramebufferKeys)),
+      m_aliasedMemoryHeaps(std::move(other.m_aliasedMemoryHeaps))
 {
-    other.m_context = nullptr;
-    other.m_pipelineManager = nullptr;
-    other.m_compiled = false;
+    other.m_backbuffer = {};
+    other.m_output = {};
 }
 
 RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
@@ -461,89 +746,247 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
     if (this != &other) {
         Destroy();
 
-        m_context = other.m_context;
-        m_pipelineManager = other.m_pipelineManager;
+        m_identity = std::move(other.m_identity);
+        m_context = std::exchange(other.m_context, nullptr);
+        m_deviceId = std::exchange(other.m_deviceId, rhi::InvalidDeviceId);
+        m_renderViewId = std::exchange(other.m_renderViewId, rhi::InvalidRenderViewId);
+        m_rhiDevice = std::exchange(other.m_rhiDevice, nullptr);
+        m_pipelineManager = std::exchange(other.m_pipelineManager, nullptr);
+        m_deletionQueue = std::exchange(other.m_deletionQueue, nullptr);
+        m_queueTopology = other.m_queueTopology;
         m_passes = std::move(other.m_passes);
         m_resources = std::move(other.m_resources);
+        m_resourceVersions = std::move(other.m_resourceVersions);
         m_executionOrder = std::move(other.m_executionOrder);
+        m_submissionPlan = std::move(other.m_submissionPlan);
+        m_queueOwnershipTransfers = std::move(other.m_queueOwnershipTransfers);
+        m_queueOwnershipTransferInfos = std::move(other.m_queueOwnershipTransferInfos);
+        m_batchOutgoingOwnershipTransfers = std::move(other.m_batchOutgoingOwnershipTransfers);
         m_backbuffer = other.m_backbuffer;
         m_output = other.m_output;
-        m_compiled = other.m_compiled;
+        m_compiled = std::exchange(other.m_compiled, false);
+        m_resourceStates = std::move(other.m_resourceStates);
+        m_initialResourceStates = std::move(other.m_initialResourceStates);
+        m_barrierScratch = std::move(other.m_barrierScratch);
+        m_bufferBarrierScratch = std::move(other.m_bufferBarrierScratch);
+        m_clearValueScratch = std::move(other.m_clearValueScratch);
+        m_renderPassCache = std::move(other.m_renderPassCache);
+        m_renderTargetLayoutCache = std::move(other.m_renderTargetLayoutCache);
+        m_framebufferCache = std::move(other.m_framebufferCache);
+        m_usedRenderPassKeys = std::move(other.m_usedRenderPassKeys);
+        m_usedFramebufferKeys = std::move(other.m_usedFramebufferKeys);
+        m_aliasedMemoryHeaps = std::move(other.m_aliasedMemoryHeaps);
+        m_structuralCompileCache = std::move(other.m_structuralCompileCache);
+        m_structuralCacheHits = other.m_structuralCacheHits;
+        m_structuralCacheMisses = other.m_structuralCacheMisses;
 
-        other.m_context = nullptr;
-        other.m_pipelineManager = nullptr;
-        other.m_compiled = false;
+        other.m_backbuffer = {};
+        other.m_output = {};
     }
     return *this;
 }
 
-void RenderGraph::Initialize(VkDeviceContext *context, VkPipelineManager *pipelineManager)
+void RenderGraph::Initialize(VkDeviceContext *context, VkPipelineManager *pipelineManager,
+                             GpuRetirementQueue *deletionQueue, const VulkanQueueManager *queueManager)
 {
     m_context = context;
+    m_deviceId = context ? context->GetDeviceId() : rhi::InvalidDeviceId;
+    m_rhiDevice = context ? &context->GetRhiDevice() : nullptr;
     m_pipelineManager = pipelineManager;
+    m_deletionQueue = deletionQueue;
+
+    std::array<NativeQueueBinding, static_cast<size_t>(rhi::QueueRole::Count)> topology{};
+    if (queueManager && context && queueManager->GetDeviceId() == context->GetDeviceId()) {
+        for (const rhi::QueueRole role :
+             {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer, rhi::QueueRole::Present}) {
+            const auto snapshot = queueManager->GetSnapshot(role);
+            topology[QueueRoleIndex(role)] = {snapshot.family, snapshot.nativeLane};
+        }
+    } else if (context) {
+        const auto &indices = context->GetQueueIndices();
+        const uint32_t graphicsFamily = indices.graphicsFamily.value_or(0);
+        const uint32_t computeFamily = indices.computeFamily.value_or(graphicsFamily);
+        const uint32_t transferFamily = indices.transferFamily.value_or(graphicsFamily);
+        const uint32_t presentFamily = indices.presentFamily.value_or(graphicsFamily);
+        const std::array<VkQueue, static_cast<size_t>(rhi::QueueRole::Count)> queues = {
+            context->GetGraphicsQueue(), context->GetComputeQueue(), context->GetTransferQueue(),
+            context->GetPresentQueue()};
+        const std::array<uint32_t, static_cast<size_t>(rhi::QueueRole::Count)> families = {
+            graphicsFamily, computeFamily, transferFamily, presentFamily};
+        uint32_t nextLane = 0;
+        for (size_t roleIndex = 0; roleIndex < queues.size(); ++roleIndex) {
+            if (queues[roleIndex] == VK_NULL_HANDLE)
+                continue;
+            uint32_t lane = UINT32_MAX;
+            for (size_t previous = 0; previous < roleIndex; ++previous) {
+                if (queues[previous] == queues[roleIndex]) {
+                    lane = topology[previous].lane;
+                    break;
+                }
+            }
+            if (lane == UINT32_MAX)
+                lane = nextLane++;
+            topology[roleIndex] = {families[roleIndex], lane};
+        }
+    }
+    SetQueueTopology(topology);
+}
+
+void RenderGraph::SetQueueTopology(
+    const std::array<NativeQueueBinding, static_cast<size_t>(rhi::QueueRole::Count)> &topology)
+{
+    if (m_queueTopology == topology)
+        return;
+    m_queueTopology = topology;
+    m_compiled = false;
+}
+
+void RenderGraph::SetRenderView(const rhi::RenderViewContext &view)
+{
+    if (view.device != rhi::InvalidDeviceId && m_deviceId != rhi::InvalidDeviceId && view.device != m_deviceId) {
+        INXLOG_ERROR("RenderGraph: render view belongs to device ", view.device, " but graph belongs to device ",
+                     m_deviceId);
+        return;
+    }
+    m_renderViewId = view.id;
 }
 
 void RenderGraph::Reset()
 {
-    // Only free per-frame resources, not cached VkRenderPass/VkFramebuffer objects
-    // FreeResources() destroys per-frame framebuffers and transient images.
-    // RenderPass cache and framebuffer cache persist across frames.
+    // Render-pass objects remain reusable across graph rebuilds. Framebuffers
+    // that reference transient views retire together with those views.
     FreeResources();
     m_passes.clear();
     m_resources.clear();
+    m_resourceVersions.clear();
     m_executionOrder.clear();
+    m_submissionPlan.Clear();
+    m_queueOwnershipTransfers.clear();
+    m_queueOwnershipTransferInfos.clear();
+    m_batchOutgoingOwnershipTransfers.clear();
     m_resourceStates.clear();
     m_initialResourceStates.clear();
     m_usedRenderPassKeys.clear();
     m_usedFramebufferKeys.clear();
     m_backbuffer = {};
-    m_backbufferFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     m_output = {};
     m_compiled = false;
+    m_identity.AdvanceEpoch();
 
     // GC: flush unused cache entries periodically
     FlushUnusedCaches();
+}
+
+void RenderGraph::RetireFramebufferCacheAfter(rhi::SubmissionSerial retirementSerial)
+{
+    for (auto &pass : m_passes)
+        pass.framebuffer = VK_NULL_HANDLE;
+    m_usedFramebufferKeys.clear();
+    m_compiled = false;
+
+    if (m_framebufferCache.empty())
+        return;
+
+    if (!m_context || !m_deletionQueue) {
+        INXLOG_ERROR("RenderGraph::RetireFramebufferCacheAfter requires an initialized GPU retirement queue");
+        return;
+    }
+
+    std::vector<VkFramebuffer> framebuffers;
+    framebuffers.reserve(m_framebufferCache.size());
+    for (const auto &[key, entry] : m_framebufferCache) {
+        (void)key;
+        if (entry.framebuffer != VK_NULL_HANDLE)
+            framebuffers.push_back(entry.framebuffer);
+    }
+    m_framebufferCache.clear();
+
+    if (framebuffers.empty())
+        return;
+
+    const VkDevice device = m_context->GetDevice();
+    m_deletionQueue->RetireAfter(retirementSerial, [device, framebuffers = std::move(framebuffers)]() {
+        for (VkFramebuffer framebuffer : framebuffers)
+            vkDestroyFramebuffer(device, framebuffer, nullptr);
+    });
 }
 
 void RenderGraph::Destroy()
 {
     FreeResources();
 
-    // Destroy cached render passes
+    // Retire cached framebuffers before their compatible render passes.
     if (m_context) {
-        VkDevice device = m_context->GetDevice();
+        const VkDevice device = m_context->GetDevice();
+        std::vector<VkFramebuffer> framebuffers;
+        std::vector<VkRenderPass> renderPasses;
         for (auto &[key, rp] : m_renderPassCache) {
-            if (rp != VK_NULL_HANDLE) {
-                vkDestroyRenderPass(device, rp, nullptr);
+            if (m_rhiDevice) {
+                const auto layoutIt = m_renderTargetLayoutCache.find(key);
+                if (layoutIt != m_renderTargetLayoutCache.end())
+                    m_rhiDevice->Release(layoutIt->second);
             }
+            if (rp != VK_NULL_HANDLE)
+                renderPasses.push_back(rp);
         }
         for (auto &[key, entry] : m_framebufferCache) {
-            if (entry.framebuffer != VK_NULL_HANDLE) {
-                vkDestroyFramebuffer(device, entry.framebuffer, nullptr);
-            }
+            if (entry.framebuffer != VK_NULL_HANDLE)
+                framebuffers.push_back(entry.framebuffer);
+        }
+        const bool hasBackendObjects = !framebuffers.empty() || !renderPasses.empty();
+        auto destroyCaches = [device, framebuffers = std::move(framebuffers),
+                              renderPasses = std::move(renderPasses)]() {
+            for (VkFramebuffer framebuffer : framebuffers)
+                vkDestroyFramebuffer(device, framebuffer, nullptr);
+            for (VkRenderPass renderPass : renderPasses)
+                vkDestroyRenderPass(device, renderPass, nullptr);
+        };
+        if (hasBackendObjects) {
+            if (m_deletionQueue && !m_context->IsShuttingDown())
+                m_deletionQueue->Retire(std::move(destroyCaches));
+            else
+                destroyCaches();
         }
     }
     m_renderPassCache.clear();
+    m_renderTargetLayoutCache.clear();
     m_framebufferCache.clear();
+    m_structuralCompileCache.clear();
+    m_structuralCacheHits = 0;
+    m_structuralCacheMisses = 0;
 
     m_passes.clear();
     m_resources.clear();
+    m_resourceVersions.clear();
     m_executionOrder.clear();
+    m_submissionPlan.Clear();
+    m_queueOwnershipTransfers.clear();
+    m_queueOwnershipTransferInfos.clear();
+    m_batchOutgoingOwnershipTransfers.clear();
     m_resourceStates.clear();
     m_initialResourceStates.clear();
     m_context = nullptr;
+    m_deviceId = rhi::InvalidDeviceId;
+    m_renderViewId = rhi::InvalidRenderViewId;
+    m_rhiDevice = nullptr;
     m_pipelineManager = nullptr;
+    m_deletionQueue = nullptr;
+    m_identity.AdvanceEpoch();
 }
 
 PassHandle RenderGraph::AddPass(const std::string &name, PassSetupCallback setup)
 {
     PassHandle handle;
+    handle.scope = m_identity.Current();
     handle.id = static_cast<uint32_t>(m_passes.size());
 
     RenderPassData passData;
     passData.name = name;
     passData.id = handle.id;
     passData.type = PassType::Graphics;
+    passData.device = m_deviceId;
+    passData.queue = QueueRoleForPass(passData.type);
+    passData.view = m_renderViewId;
 
     m_passes.push_back(std::move(passData));
 
@@ -555,15 +998,48 @@ PassHandle RenderGraph::AddPass(const std::string &name, PassSetupCallback setup
     return handle;
 }
 
+PassHandle RenderGraph::AddComputePass(const std::string &name, PassSetupCallback setup)
+{
+    PassHandle handle;
+    handle.scope = m_identity.Current();
+    handle.id = static_cast<uint32_t>(m_passes.size());
+
+    RenderPassData passData;
+    passData.name = name;
+    passData.id = handle.id;
+    passData.type = PassType::Compute;
+    passData.device = m_deviceId;
+    passData.queue = QueueRoleForPass(passData.type);
+    passData.view = m_renderViewId;
+    m_passes.push_back(std::move(passData));
+
+    PassBuilder builder(this, handle.id);
+    m_passes[handle.id].executeCallback = setup(builder);
+    return handle;
+}
+
+void RenderGraph::SetSubmissionBoundaryBefore(PassHandle pass)
+{
+    if (!Owns(pass) || pass.id >= m_passes.size()) {
+        INXLOG_ERROR("RenderGraph::SetSubmissionBoundaryBefore rejected a foreign pass handle");
+        return;
+    }
+    m_passes[pass.id].forceSubmissionBoundary = true;
+}
+
 PassHandle RenderGraph::AddTransferPass(const std::string &name, PassSetupCallback setup)
 {
     PassHandle handle;
+    handle.scope = m_identity.Current();
     handle.id = static_cast<uint32_t>(m_passes.size());
 
     RenderPassData passData;
     passData.name = name;
     passData.id = handle.id;
     passData.type = PassType::Transfer;
+    passData.device = m_deviceId;
+    passData.queue = QueueRoleForPass(passData.type);
+    passData.view = m_renderViewId;
 
     m_passes.push_back(std::move(passData));
 
@@ -574,14 +1050,37 @@ PassHandle RenderGraph::AddTransferPass(const std::string &name, PassSetupCallba
     return handle;
 }
 
+PassHandle RenderGraph::AddPresentPass(const std::string &name, PassSetupCallback setup)
+{
+    PassHandle handle;
+    handle.scope = m_identity.Current();
+    handle.id = static_cast<uint32_t>(m_passes.size());
+
+    RenderPassData passData;
+    passData.name = name;
+    passData.id = handle.id;
+    passData.type = PassType::Present;
+    passData.device = m_deviceId;
+    passData.queue = QueueRoleForPass(passData.type);
+    passData.view = m_renderViewId;
+    m_passes.push_back(std::move(passData));
+
+    PassBuilder builder(this, handle.id);
+    m_passes[handle.id].executeCallback = setup(builder);
+    return handle;
+}
+
 ResourceHandle RenderGraph::SetBackbuffer(VkImage image, VkImageView view, VkFormat format, uint32_t width,
-                                          uint32_t height, VkSampleCountFlagBits samples, VkImageLayout initialLayout)
+                                          uint32_t height, VkSampleCountFlagBits samples,
+                                          rhi::TextureLayout initialLayout)
 {
     ResourceHandle handle;
+    handle.scope = m_identity.Current();
     handle.id = static_cast<uint32_t>(m_resources.size());
     handle.version = 0;
 
     ResourceData resource;
+    resource.ownerDevice = m_deviceId;
     resource.name = "Backbuffer";
     resource.type = ResourceType::Texture2D;
     resource.textureDesc.name = "Backbuffer";
@@ -591,28 +1090,41 @@ ResourceHandle RenderGraph::SetBackbuffer(VkImage image, VkImageView view, VkFor
     resource.textureDesc.samples = samples;
     resource.textureDesc.isTransient = false;
     resource.isExternal = true;
+    const auto graphicsBinding = m_queueTopology[QueueRoleIndex(rhi::QueueRole::Graphics)];
+    const auto presentBinding = m_queueTopology[QueueRoleIndex(rhi::QueueRole::Present)];
+    resource.concurrentQueueSharing =
+        graphicsBinding.IsValid() && presentBinding.IsValid() && graphicsBinding.family != presentBinding.family;
     resource.externalImage = image;
     resource.externalView = view;
+    resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
+    resource.rhiTexture = m_rhiDevice ? m_rhiDevice->RegisterTexture(image) : rhi::TextureHandle{};
 
     m_resources.push_back(std::move(resource));
+    m_resourceVersions.push_back(0);
     m_resourceStates.resize(m_resources.size());
     m_initialResourceStates.resize(m_resources.size());
     m_backbuffer = handle;
 
     ResourceState initialState{};
-    if (initialLayout != VK_IMAGE_LAYOUT_MAX_ENUM) {
+    const rhi::QueueRole initialOwner =
+        initialLayout == rhi::TextureLayout::Present ? rhi::QueueRole::Present : rhi::QueueRole::Graphics;
+    const auto initialBinding = m_queueTopology[QueueRoleIndex(initialOwner)];
+    initialState.queue = initialOwner;
+    initialState.queueFamily = initialBinding.family;
+    initialState.nativeQueueLane = initialBinding.lane;
+    if (initialLayout != rhi::TextureLayout::Automatic) {
         // Caller-specified initial layout (e.g. UNDEFINED for swapchain images)
         initialState.layout = initialLayout;
-        initialState.accessMask = 0;
-        initialState.stages = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        initialState.accessMask = rhi::Access::None;
+        initialState.stages = rhi::PipelineStage::Top;
     } else if (samples == VK_SAMPLE_COUNT_1_BIT) {
-        initialState.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        initialState.accessMask = VK_ACCESS_SHADER_READ_BIT;
-        initialState.stages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        initialState.layout = rhi::TextureLayout::ShaderReadOnly;
+        initialState.accessMask = rhi::Access::ShaderRead;
+        initialState.stages = rhi::PipelineStage::FragmentShader;
     } else {
-        initialState.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        initialState.accessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        initialState.stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        initialState.layout = rhi::TextureLayout::ColorAttachment;
+        initialState.accessMask = rhi::Access::ColorWrite;
+        initialState.stages = rhi::PipelineStage::ColorOutput;
     }
     m_resourceStates[handle.id] = initialState;
     m_initialResourceStates[handle.id] = initialState;
@@ -624,10 +1136,12 @@ ResourceHandle RenderGraph::ImportResolveTarget(VkImage image, VkImageView view,
                                                 uint32_t height)
 {
     ResourceHandle handle;
+    handle.scope = m_identity.Current();
     handle.id = static_cast<uint32_t>(m_resources.size());
     handle.version = 0;
 
     ResourceData resource;
+    resource.ownerDevice = m_deviceId;
     resource.name = "ResolveTarget";
     resource.type = ResourceType::Texture2D;
     resource.textureDesc.name = "ResolveTarget";
@@ -639,25 +1153,114 @@ ResourceHandle RenderGraph::ImportResolveTarget(VkImage image, VkImageView view,
     resource.isExternal = true;
     resource.externalImage = image;
     resource.externalView = view;
+    resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
+    resource.rhiTexture = m_rhiDevice ? m_rhiDevice->RegisterTexture(image) : rhi::TextureHandle{};
 
     m_resources.push_back(std::move(resource));
+    m_resourceVersions.push_back(0);
     m_resourceStates.resize(m_resources.size());
     m_initialResourceStates.resize(m_resources.size());
 
     ResourceState initialState{};
-    initialState.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    initialState.accessMask = VK_ACCESS_SHADER_READ_BIT;
-    initialState.stages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    const auto graphicsBinding = m_queueTopology[QueueRoleIndex(rhi::QueueRole::Graphics)];
+    initialState.queue = rhi::QueueRole::Graphics;
+    initialState.queueFamily = graphicsBinding.family;
+    initialState.nativeQueueLane = graphicsBinding.lane;
+    initialState.layout = rhi::TextureLayout::ShaderReadOnly;
+    initialState.accessMask = rhi::Access::ShaderRead;
+    initialState.stages = rhi::PipelineStage::FragmentShader;
     m_resourceStates[handle.id] = initialState;
     m_initialResourceStates[handle.id] = initialState;
 
     return handle;
 }
 
-void RenderGraph::SetResourceInitialState(ResourceHandle handle, VkImageLayout layout, VkAccessFlags accessMask,
-                                          VkPipelineStageFlags stages)
+ResourceHandle RenderGraph::ImportTexture(const std::string &name, VkImage image, VkImageView view, VkFormat format,
+                                          uint32_t width, uint32_t height, VkSampleCountFlagBits samples)
 {
-    if (!handle.IsValid()) {
+    ResourceHandle handle;
+    handle.scope = m_identity.Current();
+    handle.id = static_cast<uint32_t>(m_resources.size());
+    handle.version = 0;
+
+    ResourceData resource;
+    resource.ownerDevice = m_deviceId;
+    resource.name = name;
+    resource.type = ResourceType::Texture2D;
+    resource.textureDesc.name = name;
+    resource.textureDesc.width = width;
+    resource.textureDesc.height = height;
+    resource.textureDesc.format = format;
+    resource.textureDesc.samples = samples;
+    resource.textureDesc.isTransient = false;
+    resource.isExternal = true;
+    resource.externalImage = image;
+    resource.externalView = view;
+    resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
+    resource.rhiTexture = m_rhiDevice ? m_rhiDevice->RegisterTexture(image) : rhi::TextureHandle{};
+
+    m_resources.push_back(std::move(resource));
+    m_resourceVersions.push_back(0);
+    m_resourceStates.resize(m_resources.size());
+    m_initialResourceStates.resize(m_resources.size());
+    SetResourceInitialState(handle, rhi::TextureLayout::Undefined, rhi::Access::None, rhi::PipelineStage::Top);
+    return handle;
+}
+
+ResourceHandle RenderGraph::ImportTexture(const std::string &name, rhi::TextureHandle texture,
+                                          rhi::TextureViewHandle view, VkFormat format, uint32_t width, uint32_t height,
+                                          VkSampleCountFlagBits samples)
+{
+    if (!m_rhiDevice || !texture.IsValid() || !view.IsValid())
+        return {};
+
+    const VkImage image = m_rhiDevice->Resolve(texture);
+    const VkImageView imageView = m_rhiDevice->Resolve(view);
+    if (image == VK_NULL_HANDLE || imageView == VK_NULL_HANDLE)
+        return {};
+
+    const ResourceHandle handle = ImportTexture(name, image, imageView, format, width, height, samples);
+    if (Owns(handle))
+        m_resources[handle.id].concurrentQueueSharing = m_rhiDevice->UsesConcurrentQueueSharing(texture);
+    return handle;
+}
+
+bool RenderGraph::UpdateImportedTexture(ResourceHandle handle, VkImage image, VkImageView view)
+{
+    if (!Owns(handle) || image == VK_NULL_HANDLE || view == VK_NULL_HANDLE)
+        return false;
+    auto &resource = m_resources[handle.id];
+    if (!resource.isExternal || resource.type != ResourceType::Texture2D)
+        return false;
+    if (resource.externalImage == image && resource.externalView == view)
+        return true;
+
+    if (m_rhiDevice) {
+        m_rhiDevice->Release(resource.rhiView);
+        m_rhiDevice->Release(resource.rhiTexture);
+        resource.rhiView = m_rhiDevice->RegisterTextureView(view);
+        resource.rhiTexture = m_rhiDevice->RegisterTexture(image);
+        if (!resource.rhiView.IsValid() || !resource.rhiTexture.IsValid())
+            return false;
+    }
+    resource.externalImage = image;
+    resource.externalView = view;
+    return true;
+}
+
+ResourceHandle RenderGraph::ImportRendererList(const std::string &name, const RendererList *rendererList)
+{
+    ResourceHandle handle = CreateResource(name, ResourceType::RendererList);
+    auto &resource = m_resources[handle.id];
+    resource.isExternal = true;
+    resource.externalRendererList = rendererList;
+    return handle;
+}
+
+void RenderGraph::SetResourceInitialState(ResourceHandle handle, rhi::TextureLayout layout, rhi::Access accessMask,
+                                          rhi::PipelineStage stages, rhi::QueueRole ownerQueue)
+{
+    if (!Owns(handle)) {
         return;
     }
 
@@ -670,6 +1273,11 @@ void RenderGraph::SetResourceInitialState(ResourceHandle handle, VkImageLayout l
     state.accessMask = accessMask;
     state.stages = stages;
     state.writerPassId = UINT32_MAX;
+    const rhi::QueueRole queue = ownerQueue == rhi::QueueRole::Count ? rhi::QueueRole::Graphics : ownerQueue;
+    const auto binding = m_queueTopology[QueueRoleIndex(queue)];
+    state.queue = queue;
+    state.queueFamily = binding.family;
+    state.nativeQueueLane = binding.lane;
 
     m_initialResourceStates[handle.id] = state;
     m_resourceStates[handle.id] = state;
@@ -677,14 +1285,14 @@ void RenderGraph::SetResourceInitialState(ResourceHandle handle, VkImageLayout l
 
 void RenderGraph::SetOutput(ResourceHandle handle)
 {
-    m_output = handle;
+    m_output = Owns(handle) ? handle : ResourceHandle{};
 }
 
 ResourceHandle RenderGraph::RegisterTransientTexture(const std::string &name, uint32_t width, uint32_t height,
                                                      VkFormat format, VkSampleCountFlagBits samples, bool isTransient)
 {
     ResourceHandle handle = CreateResource(name, ResourceType::Texture2D);
-    if (handle.IsValid()) {
+    if (Owns(handle)) {
         auto &res = m_resources[handle.id];
         res.textureDesc.name = name;
         res.textureDesc.width = width;
@@ -692,6 +1300,20 @@ ResourceHandle RenderGraph::RegisterTransientTexture(const std::string &name, ui
         res.textureDesc.format = format;
         res.textureDesc.samples = samples;
         res.textureDesc.isTransient = isTransient;
+    }
+    return handle;
+}
+
+ResourceHandle RenderGraph::RegisterTransientBuffer(const std::string &name, VkDeviceSize size,
+                                                    VkBufferUsageFlags usage)
+{
+    ResourceHandle handle = CreateResource(name, ResourceType::Buffer);
+    if (Owns(handle)) {
+        auto &resource = m_resources[handle.id];
+        resource.bufferDesc.name = name;
+        resource.bufferDesc.size = size;
+        resource.bufferDesc.usage = usage;
+        resource.bufferDesc.isTransient = true;
     }
     return handle;
 }
@@ -731,17 +1353,43 @@ bool RenderGraph::UpdatePassClearDepth(const std::string &passName, float depth,
 ResourceHandle RenderGraph::CreateResource(const std::string &name, ResourceType type)
 {
     ResourceHandle handle;
+    handle.scope = m_identity.Current();
     handle.id = static_cast<uint32_t>(m_resources.size());
     handle.version = 0;
 
     ResourceData resource;
+    resource.ownerDevice = m_deviceId;
     resource.name = name;
     resource.type = type;
 
     m_resources.push_back(std::move(resource));
+    m_resourceVersions.push_back(0);
     m_resourceStates.resize(m_resources.size());
     m_initialResourceStates.resize(m_resources.size());
 
+    return handle;
+}
+
+ResourceHandle RenderGraph::AdvanceResourceVersion(ResourceHandle handle)
+{
+    if (!Owns(handle)) {
+        INXLOG_ERROR("RenderGraph: cannot write a resource handle owned by another graph or epoch");
+        return {};
+    }
+
+    uint32_t &latestVersion = m_resourceVersions[handle.id];
+    if (handle.version != latestVersion) {
+        INXLOG_ERROR("RenderGraph: resource '", m_resources[handle.id].name, "' write uses stale version ",
+                     handle.version, " while latest is ", latestVersion);
+        return {};
+    }
+    if (latestVersion == std::numeric_limits<uint32_t>::max()) {
+        INXLOG_ERROR("RenderGraph: resource version overflow for '", m_resources[handle.id].name, "'");
+        return {};
+    }
+
+    ++latestVersion;
+    handle.version = latestVersion;
     return handle;
 }
 
@@ -751,44 +1399,137 @@ bool RenderGraph::Compile()
         INXLOG_WARN("RenderGraph::Compile - No passes to compile");
         return true;
     }
+    if (m_deviceId == rhi::InvalidDeviceId) {
+        INXLOG_ERROR("RenderGraph::Compile - Graph has no owning render device");
+        return false;
+    }
+    for (const auto &pass : m_passes) {
+        if (pass.device != m_deviceId) {
+            INXLOG_ERROR("RenderGraph::Compile - Pass '", pass.name, "' belongs to a different device");
+            return false;
+        }
+    }
+    for (const auto &resource : m_resources) {
+        if (resource.ownerDevice != m_deviceId) {
+            INXLOG_ERROR("RenderGraph::Compile - Resource '", resource.name, "' belongs to a different device");
+            return false;
+        }
+    }
 
-    // Step 1: Cull unused passes
-    CullPasses();
+    const auto structuralSignature = BuildStructuralSignature();
+    if (!RestoreStructuralCompilation(structuralSignature)) {
+        // Step 1: Cull unused passes
+        CullPasses();
 
-    // Step 2: Compute resource lifetimes
-    ComputeResourceLifetimes();
+        // Step 2: Topological sort via Kahn's algorithm
+        if (!TopologicalSort()) {
+            return false;
+        }
 
-    // Step 3: Topological sort via Kahn's algorithm
-    TopologicalSort();
+        // Step 3: Compute lifetimes in final execution order so transient
+        // aliasing does not depend on declaration order.
+        ComputeResourceLifetimes();
+        StoreStructuralCompilation(structuralSignature);
+    }
 
-    // Step 4: Allocate transient resources
+    // Step 4: Compile backend-neutral queue batches and dependency waits.
+    if (!CompileSubmissionPlan())
+        return false;
+
+    // Step 5: Allocate transient resources
     if (!AllocateResources()) {
         return false;
     }
 
-    // Step 5: Create Vulkan render passes
+    // Step 6: Create Vulkan render passes
     if (!CreateVulkanRenderPasses()) {
         return false;
     }
 
-    // Step 6: Create framebuffers
+    // Step 7: Create framebuffers
     if (!CreateFramebuffers()) {
         return false;
     }
 
-    // Step 7: Pre-compute per-pass Execute() data (beginInfo, viewport, etc.)
+    // Step 8: Pre-compute per-pass Execute() data (beginInfo, viewport, etc.)
     PrecomputeExecuteData();
+
+    // Step 9: Compile the release/acquire pairs required when an exclusive
+    // resource crosses native Vulkan queue families.
+    if (!CompileQueueOwnershipTransfers())
+        return false;
 
     m_compiled = true;
     return true;
 }
 
-void RenderGraph::Execute(VkCommandBuffer commandBuffer)
+void RenderGraph::BeginExecution()
+{
+    if (!m_compiled) {
+        INXLOG_ERROR("RenderGraph::BeginExecution - Graph not compiled");
+        return;
+    }
+
+#if INFERNUX_FRAME_PROFILE
+    ++s_executeProfile.executeCalls;
+#endif
+
+    m_recordingSubmissionBatches = true;
+
+    // Resource state is shared by the ordered batch recording session. The
+    // Vulkan executor records batches in plan order, so every later command
+    // buffer observes the state produced by the preceding batch.
+    m_resourceStates = m_initialResourceStates;
+}
+
+bool RenderGraph::RecordSubmissionBatch(uint32_t batchIndex, VkCommandBuffer commandBuffer)
+{
+    if (!m_compiled || batchIndex >= m_submissionPlan.batches.size() || commandBuffer == VK_NULL_HANDLE) {
+        INXLOG_ERROR("RenderGraph::RecordSubmissionBatch - invalid execution request");
+        return false;
+    }
+    RecordPasses(commandBuffer, m_submissionPlan.batches[batchIndex].workItems);
+    InsertQueueOwnershipReleases(commandBuffer, batchIndex);
+    return true;
+}
+
+bool RenderGraph::HasExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue) const noexcept
+{
+    return sourceQueue != rhi::QueueRole::Count &&
+           !m_externalOutgoingOwnershipTransfers[static_cast<size_t>(sourceQueue)].empty();
+}
+
+bool RenderGraph::RecordExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue, VkCommandBuffer commandBuffer)
+{
+    if (!m_compiled || sourceQueue == rhi::QueueRole::Count || commandBuffer == VK_NULL_HANDLE)
+        return false;
+    const rhi::QueueRole previousRecordingQueue = m_immediateRecordingQueue;
+    m_immediateRecordingQueue = sourceQueue;
+    InsertQueueOwnershipReleases(commandBuffer, rhi::InvalidSubmissionBatchIndex);
+    m_immediateRecordingQueue = previousRecordingQueue;
+    return true;
+}
+
+void RenderGraph::Execute(VkCommandBuffer commandBuffer, rhi::QueueRole recordingQueue)
 {
     if (!m_compiled) {
         INXLOG_ERROR("RenderGraph::Execute - Graph not compiled");
         return;
     }
+
+    m_recordingSubmissionBatches = false;
+    m_immediateRecordingQueue = recordingQueue == rhi::QueueRole::Count ? rhi::QueueRole::Graphics : recordingQueue;
+    m_resourceStates = m_initialResourceStates;
+#if INFERNUX_FRAME_PROFILE
+    ++s_executeProfile.executeCalls;
+#endif
+    RecordPasses(commandBuffer, m_executionOrder);
+}
+
+void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<uint32_t> &passIndices)
+{
+    if (commandBuffer == VK_NULL_HANDLE)
+        return;
 
     // One-shot diagnostic: log detailed per-pass info for first N executions
     static int s_execDiagCount = 0;
@@ -799,15 +1540,15 @@ void RenderGraph::Execute(VkCommandBuffer commandBuffer)
 
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
-    ++s_executeProfile.executeCalls;
 #endif
-
-    // Reset resource states to initial (flat vector copy — POD memcpy).
-    m_resourceStates = m_initialResourceStates;
 
     RenderContext context(commandBuffer, this);
 
-    for (uint32_t passIndex : m_executionOrder) {
+    for (uint32_t passIndex : passIndices) {
+        if (passIndex >= m_passes.size()) {
+            INXLOG_ERROR("RenderGraph::RecordPasses - invalid pass id ", passIndex);
+            continue;
+        }
         auto &pass = m_passes[passIndex];
 
         if (pass.culled) {
@@ -822,6 +1563,9 @@ void RenderGraph::Execute(VkCommandBuffer commandBuffer)
 #if INFERNUX_FRAME_PROFILE
         if (isGraphicsPass) {
             ++s_executeProfile.graphicsPassCount;
+        }
+        if (pass.type == PassType::Compute) {
+            ++s_executeProfile.computePassCount;
         }
 #endif
 
@@ -880,7 +1624,15 @@ void RenderGraph::Execute(VkCommandBuffer commandBuffer)
         }
 
         // Execute pass callback
-        if (pass.executeCallback) {
+        bool executeCallback = static_cast<bool>(pass.executeCallback);
+        if (executeCallback && pass.skipCallbackWhenRendererListsEmpty) {
+            executeCallback =
+                std::any_of(pass.rendererListInputs.begin(), pass.rendererListInputs.end(), [&](ResourceHandle handle) {
+                    const RendererList *rendererList = ResolveRendererList(handle);
+                    return rendererList && !rendererList->Empty();
+                });
+        }
+        if (executeCallback) {
 #if INFERNUX_FRAME_PROFILE
             stageStart = Clock::now();
 #endif
@@ -927,23 +1679,54 @@ std::vector<std::string> RenderGraph::GetExecutionPassNames() const
     return names;
 }
 
+std::vector<PassCompileInfo> RenderGraph::GetPassCompileInfos() const
+{
+    std::vector<PassCompileInfo> infos;
+    infos.reserve(m_passes.size());
+    for (const auto &pass : m_passes) {
+        infos.push_back({pass.name, pass.type, pass.culled, pass.cullReason, pass.device, pass.queue,
+                         pass.submissionDomain, pass.view});
+    }
+    return infos;
+}
+
 std::string RenderGraph::GetDebugString() const
 {
     std::ostringstream oss;
     oss << "RenderGraph (" << m_passes.size() << " passes, " << m_resources.size() << " resources)\n";
+    oss << "Structural cache: " << m_structuralCacheHits << " hits, " << m_structuralCacheMisses << " misses, "
+        << m_structuralCompileCache.size() << " entries\n";
 
     oss << "\nPasses:\n";
     for (const auto &pass : m_passes) {
         oss << "  [" << pass.id << "] " << pass.name;
-        if (pass.culled) {
-            oss << " (CULLED)";
+        const char *reason = "unreachable";
+        switch (pass.cullReason) {
+        case PassCullReason::GraphOutput:
+            reason = "graph-output";
+            break;
+        case PassCullReason::SideEffect:
+            reason = "side-effect";
+            break;
+        case PassCullReason::ExternalWrite:
+            reason = "external-write";
+            break;
+        case PassCullReason::Dependency:
+            reason = "dependency";
+            break;
+        case PassCullReason::Unreachable:
+            break;
         }
+        oss << (pass.culled ? " (CULLED: " : " (RETAINED: ") << reason << ")";
         oss << "\n";
 
         if (!pass.reads.empty()) {
             oss << "    Reads: ";
             for (const auto &read : pass.reads) {
-                oss << m_resources[read.handle.id].name << " ";
+                oss << m_resources[read.handle.id].name << "#" << read.handle.version;
+                if (static_cast<int>(read.usage & ResourceUsage::VersionDependency) != 0)
+                    oss << "[order]";
+                oss << " ";
             }
             oss << "\n";
         }
@@ -951,7 +1734,7 @@ std::string RenderGraph::GetDebugString() const
         if (!pass.writes.empty()) {
             oss << "    Writes: ";
             for (const auto &write : pass.writes) {
-                oss << m_resources[write.handle.id].name << " ";
+                oss << m_resources[write.handle.id].name << "#" << write.handle.version << " ";
             }
             oss << "\n";
         }
@@ -972,7 +1755,7 @@ std::string RenderGraph::GetDebugString() const
 
 VkImageView RenderGraph::ResolveTextureView(ResourceHandle handle) const
 {
-    if (!handle.IsValid() || handle.id >= m_resources.size()) {
+    if (!Owns(handle) || handle.id >= m_resources.size()) {
         return VK_NULL_HANDLE;
     }
 
@@ -983,9 +1766,24 @@ VkImageView RenderGraph::ResolveTextureView(ResourceHandle handle) const
     return resource.allocatedView;
 }
 
+rhi::TextureViewHandle RenderGraph::ResolveRhiTextureView(ResourceHandle handle) const
+{
+    if (!Owns(handle) || handle.id >= m_resources.size()) {
+        return {};
+    }
+    return m_resources[handle.id].rhiView;
+}
+
+rhi::TextureHandle RenderGraph::ResolveRhiTexture(ResourceHandle handle) const
+{
+    if (!Owns(handle) || handle.id >= m_resources.size())
+        return {};
+    return m_resources[handle.id].rhiTexture;
+}
+
 VkBuffer RenderGraph::ResolveBuffer(ResourceHandle handle) const
 {
-    if (!handle.IsValid() || handle.id >= m_resources.size()) {
+    if (!Owns(handle) || handle.id >= m_resources.size()) {
         return VK_NULL_HANDLE;
     }
 
@@ -996,6 +1794,21 @@ VkBuffer RenderGraph::ResolveBuffer(ResourceHandle handle) const
     return resource.allocatedBuffer;
 }
 
+rhi::BufferHandle RenderGraph::ResolveRhiBuffer(ResourceHandle handle) const
+{
+    if (!Owns(handle) || handle.id >= m_resources.size())
+        return {};
+    return m_resources[handle.id].rhiBuffer;
+}
+
+const RendererList *RenderGraph::ResolveRendererList(ResourceHandle handle) const
+{
+    if (!Owns(handle) || handle.id >= m_resources.size())
+        return nullptr;
+    const auto &resource = m_resources[handle.id];
+    return resource.type == ResourceType::RendererList ? resource.externalRendererList : nullptr;
+}
+
 VkRenderPass RenderGraph::GetPassRenderPass(const std::string &passName) const
 {
     for (const auto &pass : m_passes) {
@@ -1004,6 +1817,30 @@ VkRenderPass RenderGraph::GetPassRenderPass(const std::string &passName) const
         }
     }
     return VK_NULL_HANDLE;
+}
+
+VkRenderPass RenderGraph::GetPassRenderPass(PassHandle pass) const
+{
+    if (!Owns(pass) || pass.id >= m_passes.size()) {
+        return VK_NULL_HANDLE;
+    }
+    return m_passes[pass.id].vulkanRenderPass;
+}
+
+rhi::RenderTargetLayoutHandle RenderGraph::GetPassRenderTargetLayout(const std::string &passName) const
+{
+    for (const auto &pass : m_passes) {
+        if (pass.name == passName)
+            return pass.renderTargetLayout;
+    }
+    return {};
+}
+
+rhi::RenderTargetLayoutHandle RenderGraph::GetPassRenderTargetLayout(PassHandle pass) const
+{
+    if (!Owns(pass) || pass.id >= m_passes.size())
+        return {};
+    return m_passes[pass.id].renderTargetLayout;
 }
 
 VkRenderPass RenderGraph::GetCompatibleRenderPass() const

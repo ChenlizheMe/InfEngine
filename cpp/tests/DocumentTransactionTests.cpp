@@ -52,6 +52,18 @@ void TestCommitWritesAllTargetsAndInvalidatesDerivedIndex(const std::filesystem:
     Require(!std::filesystem::exists(journal), "successful transaction left its journal behind");
 }
 
+void TestCommitCreatesMissingTargetDirectories(const std::filesystem::path &root)
+{
+    const auto journal = root / "Library" / "Nested.transaction";
+    const auto target = root / "Library" / "Artifacts" / "Mesh" / "mesh.inxmesh";
+    std::filesystem::remove_all(root / "Library" / "Artifacts");
+
+    DocumentTransaction::Commit(root.u8string(), journal.u8string(), {{target.u8string(), "mesh-artifact"}}, {});
+
+    Require(ReadText(target) == "mesh-artifact", "transaction did not write a target in a missing nested directory");
+    Require(!std::filesystem::exists(journal), "nested-directory transaction left its journal behind");
+}
+
 void TestRecoveryReplaysInterruptedTransaction(const std::filesystem::path &root)
 {
     const auto journal = root / "Library" / "Recovery.transaction";
@@ -176,6 +188,7 @@ int main()
     std::filesystem::create_directories(root / "Library");
     try {
         TestCommitWritesAllTargetsAndInvalidatesDerivedIndex(root);
+        TestCommitCreatesMissingTargetDirectories(root);
         TestRecoveryReplaysInterruptedTransaction(root);
         TestRecoveryUsesProjectRelativePathsAfterMove(root);
         TestCorruptJournalAndEscapingPathAreRejected(root);

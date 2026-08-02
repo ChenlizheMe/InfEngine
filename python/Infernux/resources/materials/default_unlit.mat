@@ -1,10 +1,17 @@
 {
-  "material_version": 3,
   "name": "DefaultUnlit",
   "builtin": false,
   "shaders": {
-    "vertex": "standard",
-    "fragment": "unlit"
+    "vertex": {
+      "guid": "",
+      "shader_id": "Standard",
+      "path_hint": ""
+    },
+    "fragment": {
+      "guid": "",
+      "shader_id": "Unlit",
+      "path_hint": ""
+    }
   },
   "renderState": {
     "cullMode": 1,

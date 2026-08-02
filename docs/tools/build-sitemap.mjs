@@ -9,7 +9,15 @@ const manifest = JSON.parse(await readFile(path.join(docsRoot, "docs-manifest.js
 const apiIndex = JSON.parse(await readFile(path.join(docsRoot, "api-index.json"), "utf8"));
 const origin = manifest.canonical_origin.replace(/\/$/, "");
 const defaultLastmod = manifest.last_verified;
-const rootPages = ["index.html", "start.html", "learn.html", "learn/placeholder.html", "roadmap.html", "community.html", "download.html"];
+const rootPages = [
+    "index.html",
+    "start.html",
+    "learn.html",
+    "learn/shaders.html",
+    "learn/renderstack-post-processing.html",
+    "roadmap.html",
+    "download.html",
+];
 const entries = new Map();
 
 function escapeXml(value) {

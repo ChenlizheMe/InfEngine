@@ -2,6 +2,11 @@
 
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <platform/filesystem/InxPath.h>
+
+#ifdef DrawText
+#undef DrawText
+#endif
 
 #include <algorithm>
 #include <cassert>
@@ -84,22 +89,7 @@ inline float ResolveFontSize(float fontSize)
 
 inline std::string NormalizeFontPath(const std::string &fontPath)
 {
-    if (fontPath.empty())
-        return {};
-
-    std::error_code ec;
-    std::filesystem::path path(fontPath);
-    if (path.is_relative())
-        path = std::filesystem::current_path(ec) / path;
-    if (ec)
-        return fontPath;
-
-    path = std::filesystem::weakly_canonical(path, ec);
-    if (ec)
-        path = std::filesystem::absolute(path, ec);
-    if (ec)
-        return fontPath;
-    return path.generic_string();
+    return ResolveFilesystemPath(fontPath);
 }
 
 inline ImFont *ResolveFont(const std::string &fontPath)
@@ -110,18 +100,19 @@ inline ImFont *ResolveFont(const std::string &fontPath)
     const std::string normalizedPath = NormalizeFontPath(fontPath);
     if (normalizedPath.empty())
         return ImGui::GetFont();
+    const std::string pathKey = FilesystemPathKey(normalizedPath);
 
     auto &fontCache = GetFontCache();
     auto &missingFonts = GetMissingFonts();
 
-    if (auto it = fontCache.find(normalizedPath); it != fontCache.end() && it->second != nullptr)
+    if (auto it = fontCache.find(pathKey); it != fontCache.end() && it->second != nullptr)
         return it->second;
-    if (missingFonts.find(normalizedPath) != missingFonts.end())
+    if (missingFonts.find(pathKey) != missingFonts.end())
         return ImGui::GetFont();
 
     std::error_code ec;
-    if (!std::filesystem::exists(normalizedPath, ec) || ec) {
-        missingFonts.insert(normalizedPath);
+    if (!std::filesystem::exists(ToFsPath(normalizedPath), ec) || ec) {
+        missingFonts.insert(pathKey);
         return ImGui::GetFont();
     }
 
@@ -129,11 +120,11 @@ inline ImFont *ResolveFont(const std::string &fontPath)
     config.FontDataOwnedByAtlas = false;
     ImFont *font = ImGui::GetIO().Fonts->AddFontFromFileTTF(normalizedPath.c_str(), 18.0f, &config);
     if (font == nullptr) {
-        missingFonts.insert(normalizedPath);
+        missingFonts.insert(pathKey);
         return ImGui::GetFont();
     }
 
-    fontCache[normalizedPath] = font;
+    fontCache[pathKey] = font;
     return font;
 }
 

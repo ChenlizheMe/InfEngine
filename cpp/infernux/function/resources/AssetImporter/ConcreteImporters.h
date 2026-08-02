@@ -2,6 +2,7 @@
 
 #include "AssetImporter.h"
 #include <function/resources/AssetDependencyGraph.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 
 #include <fstream>
@@ -26,13 +27,15 @@ class TextureImporter final : public AssetImporter
 
     [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
     {
-        return {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".hdr", ".pic", ".pnm", ".pgm", ".ppm"};
+        return asset_formats::ToVector(asset_formats::kTextureExtensions);
     }
 
     [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
 
     void EnsureDefaultSettings(InxResourceMeta &meta) const override
     {
+        if (!meta.HasKey("texture_type"))
+            meta.AddMetadata("texture_type", std::string("default"));
         if (!meta.HasKey("wrap_mode"))
             meta.AddMetadata("wrap_mode", std::string("repeat"));
         if (!meta.HasKey("filter_mode"))
@@ -43,6 +46,22 @@ class TextureImporter final : public AssetImporter
             meta.AddMetadata("srgb", true);
         if (!meta.HasKey("max_size"))
             meta.AddMetadata("max_size", 2048);
+        if (!meta.HasKey("aniso_level"))
+            meta.AddMetadata("aniso_level", 1);
+        if (!meta.HasKey("texture_compression"))
+            meta.AddMetadata("texture_compression", std::string("auto"));
+        if (!meta.HasKey("texture_compression_quality"))
+            meta.AddMetadata("texture_compression_quality", std::string("normal"));
+        static const std::unordered_set<std::string> targetFormats = {
+            "auto", "rgba8", "rgba4444", "rgba16_unorm", "rgba16_float", "rgba32_float",
+        };
+        if (!meta.HasKey("texture_format") ||
+            targetFormats.find(meta.GetDataAs<std::string>("texture_format")) == targetFormats.end())
+            meta.AddMetadata("texture_format", std::string("auto"));
+        const std::string textureType = meta.GetDataAs<std::string>("texture_type");
+        if (textureType == "normal_map" || textureType == "data" || textureType == "vector_field" ||
+            textureType == "sdf")
+            meta.AddMetadata("srgb", false);
     }
 };
 
@@ -119,6 +138,52 @@ class PhysicMaterialImporter final : public AssetImporter
 };
 
 // ==========================================================================
+// RenderEffectImporter — validates effect sources and tracks asset edges
+// ==========================================================================
+
+class RenderEffectImporter final : public AssetImporter
+{
+  public:
+    [[nodiscard]] ResourceType GetResourceType() const override
+    {
+        return ResourceType::RenderEffect;
+    }
+
+    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".effect", ".effectgroup"};
+    }
+
+    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
+
+  private:
+    [[nodiscard]] std::vector<std::string> ScanDependencies(const ImportRequest &request) const;
+};
+
+// ==========================================================================
+// ParticleGraphImporter - validates particle graph sources and asset edges
+// ==========================================================================
+
+class ParticleGraphImporter final : public AssetImporter
+{
+  public:
+    [[nodiscard]] ResourceType GetResourceType() const override
+    {
+        return ResourceType::ParticleGraph;
+    }
+
+    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".particlegraph"};
+    }
+
+    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
+
+  private:
+    [[nodiscard]] std::vector<std::string> ScanDependencies(const ImportRequest &request) const;
+};
+
+// ==========================================================================
 // ScriptImporter
 // ==========================================================================
 
@@ -155,7 +220,7 @@ class AudioImporter final : public AssetImporter
 
     [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
     {
-        return {".wav"};
+        return asset_formats::ToVector(asset_formats::kAudioExtensions);
     }
 
     [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override
@@ -173,6 +238,8 @@ class AudioImporter final : public AssetImporter
             meta.AddMetadata("load_in_background", false);
         if (!meta.HasKey("quality"))
             meta.AddMetadata("quality", 1.0f);
+        if (!meta.HasKey("compression_format"))
+            meta.AddMetadata("compression_format", std::string("pcm"));
     }
 };
 
@@ -190,7 +257,7 @@ class ModelImporter final : public AssetImporter
 
     [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
     {
-        return {".fbx", ".obj", ".gltf", ".glb", ".dae", ".3ds", ".ply", ".stl"};
+        return asset_formats::ToVector(asset_formats::kMeshExtensions);
     }
 
     [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
@@ -198,7 +265,7 @@ class ModelImporter final : public AssetImporter
     void EnsureDefaultSettings(InxResourceMeta &meta) const override
     {
         if (!meta.HasKey("scale_factor"))
-            meta.AddMetadata("scale_factor", 0.01f);
+            meta.AddMetadata("scale_factor", 1.0f);
         if (!meta.HasKey("generate_normals"))
             meta.AddMetadata("generate_normals", true);
         if (!meta.HasKey("generate_tangents"))
@@ -209,11 +276,6 @@ class ModelImporter final : public AssetImporter
             meta.AddMetadata("swap_uv_channels", false);
         if (!meta.HasKey("optimize_mesh"))
             meta.AddMetadata("optimize_mesh", true);
-        if (!meta.HasKey("importer_version")) {
-            meta.AddMetadata("importer_version", InxResourceMeta::ImporterVersion);
-        } else if (meta.GetDataAs<int>("importer_version") != InxResourceMeta::ImporterVersion) {
-            throw std::runtime_error("ModelImporter metadata uses an unsupported importer_version");
-        }
     }
 };
 

@@ -27,8 +27,25 @@ def _tooltip_and_info(ctx, metadata):
 # ── GUID / path resolution ──
 
 
+def _portable_asset_path_hint(file_path: str) -> str:
+    from Infernux.engine.path_utils import portable_path, relative_path
+    from Infernux.engine.project_context import get_project_root
+
+    path = str(file_path or "")
+    if not path:
+        return ""
+    project_root = get_project_root()
+    if project_root:
+        try:
+            return relative_path(path, project_root)
+        except ValueError:
+            pass
+    return portable_path(path)
+
+
 def _asset_guid_from_path(file_path: str) -> str:
     from Infernux.debug import Debug
+    from Infernux.core.asset_types import read_meta_guid
     from Infernux.core.assets import AssetManager
 
     guid = ""
@@ -38,8 +55,10 @@ def _asset_guid_from_path(file_path: str) -> str:
             guid = adb.get_guid_from_path(file_path) or ""
         except RuntimeError as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
-    return guid
+    # AssetDatabase paths may be project-relative or canonical absolute paths,
+    # depending on the caller. The adjacent current-format meta remains the
+    # source of truth when a path lookup has not produced an identity.
+    return guid or read_meta_guid(file_path)
 
 
 def _resolve_guid_and_path(payload: str):
@@ -54,7 +73,7 @@ def _resolve_guid_and_path(payload: str):
     guid = ""
     path_hint = ""
     if os.path.isfile(payload):
-        path_hint = payload
+        path_hint = _portable_asset_path_hint(payload)
         guid = _asset_guid_from_path(payload)
     else:
         guid = payload
@@ -62,7 +81,7 @@ def _resolve_guid_and_path(payload: str):
             from Infernux.core.assets import AssetManager
             adb = getattr(AssetManager, '_asset_database', None)
             if adb:
-                path_hint = adb.get_path_from_guid(guid) or ""
+                path_hint = _portable_asset_path_hint(adb.get_path_from_guid(guid) or "")
         except Exception as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
@@ -107,15 +126,21 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
         mat = Material.load(file_path)
         if mat is None:
             return None
-        return MaterialRef(mat, path_hint=file_path)
+        return MaterialRef(mat, path_hint=_portable_asset_path_hint(file_path))
 
     if element_type == FieldType.TEXTURE:
         from Infernux.core.asset_ref import TextureRef
-        return TextureRef(guid=_asset_guid_from_path(file_path), path_hint=file_path)
+        return TextureRef(
+            guid=_asset_guid_from_path(file_path),
+            path_hint=_portable_asset_path_hint(file_path),
+        )
 
     if element_type == FieldType.SHADER:
         from Infernux.core.asset_ref import ShaderRef
-        return ShaderRef(guid=_asset_guid_from_path(file_path), path_hint=file_path)
+        return ShaderRef(
+            guid=_asset_guid_from_path(file_path),
+            path_hint=_portable_asset_path_hint(file_path),
+        )
 
     if element_type == FieldType.ASSET:
         guid = _asset_guid_from_path(file_path)
@@ -124,9 +149,15 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
             from Infernux.core.asset_ref import get_asset_type_config
             cfg = get_asset_type_config(asset_type)
             if cfg:
-                return cfg["ref_class"](guid=guid, path_hint=file_path)
+                return cfg["ref_class"](
+                    guid=guid,
+                    path_hint=_portable_asset_path_hint(file_path),
+                )
         from Infernux.core.asset_ref import AudioClipRef
-        return AudioClipRef(guid=guid, path_hint=file_path)
+        return AudioClipRef(
+            guid=guid,
+            path_hint=_portable_asset_path_hint(file_path),
+        )
 
     if element_type == FieldType.COMPONENT:
         from Infernux.lib import SceneManager as _SM
@@ -299,17 +330,20 @@ def _get_asset_ref_config():
     global _ASSET_REF_CONFIG
     if _ASSET_REF_CONFIG is None:
         from Infernux.components.serialized_field import FieldType
+        from Infernux.core.asset_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS
+        texture_patterns = tuple(f"*{extension}" for extension in sorted(IMAGE_EXTENSIONS))
+        audio_patterns = tuple(f"*{extension}" for extension in sorted(AUDIO_EXTENSIONS))
         _ASSET_REF_CONFIG = {
             FieldType.MATERIAL: ("Material",  "MATERIAL_FILE", ("*.mat",),            "mat"),
             FieldType.TEXTURE:  (
                 "Texture",
                 "TEXTURE_FILE",
-                ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.gif", "*.psd", "*.hdr", "*.pic", "*.pnm", "*.pgm", "*.ppm"),
+                texture_patterns,
                 "tex",
             ),
             FieldType.SHADER:   ("Shader",    "SHADER_FILE",   ("*.vert", "*.frag"),   "shd"),
             # ASSET is kept as a fallback; _resolve_asset_config overrides it.
-            FieldType.ASSET:    ("AudioClip", "AUDIO_FILE",    ("*.wav", "*.mp3", "*.ogg"), "aud"),
+            FieldType.ASSET:    ("AudioClip", "AUDIO_FILE",    audio_patterns, "aud"),
         }
     return _ASSET_REF_CONFIG
 
@@ -338,10 +372,16 @@ def _create_asset_ref_from_payload(metadata, file_path: str):
         from Infernux.core.asset_ref import get_asset_type_config
         cfg = get_asset_type_config(asset_type)
         if cfg:
-            return cfg["ref_class"](guid=guid, path_hint=file_path)
+            return cfg["ref_class"](
+                guid=guid,
+                path_hint=_portable_asset_path_hint(file_path),
+            )
     # Fallback
     from Infernux.core.asset_ref import AudioClipRef
-    return AudioClipRef(guid=guid, path_hint=file_path)
+    return AudioClipRef(
+        guid=guid,
+        path_hint=_portable_asset_path_hint(file_path),
+    )
 
 
 def _render_asset_reference_field(
@@ -396,7 +436,17 @@ def _render_asset_reference_field(
         else:
             _apply_reference_drop(_ft, _comp, _fn, payload)
 
-    field_label(ctx, pretty_field_name(field_name), lw)
+    label_key = str(getattr(metadata, "display_name_key", "") or "")
+    label = t(label_key) if label_key else pretty_field_name(field_name)
+    if label == label_key:
+        label = pretty_field_name(field_name)
+    field_label(ctx, label, lw)
+
+    def _on_ping(_value=current_value):
+        path = _resolve_asset_disk_path(_value)
+        if path:
+            ping_asset_in_project(path)
+
     render_object_field(
         ctx, f"{prefix}_ref_{field_name}", display, type_hint,
         accept_drag_type=drag_type,
@@ -404,6 +454,7 @@ def _render_asset_reference_field(
         picker_asset_items=_picker,
         on_pick=_on_pick,
         on_clear=_on_clear,
+        on_ping=_on_ping if current_value is not None and display != "None" else None,
         semantic_id=(inspector_component_semantic_id(comp, field_name)
                      if semantic_capture_enabled(ctx) else ""),
     )
@@ -608,11 +659,106 @@ def _picker_assets(filter_text: str, pattern: str, *, assets_only: bool = False)
 # ── Object field wrapper ──
 
 
+def _resolve_asset_disk_path(value) -> str:
+    """Best-effort absolute (or AssetDatabase) path for an asset reference value."""
+    import os
+
+    if value is None:
+        return ""
+
+    guid = str(getattr(value, "guid", "") or "")
+    path_hint = str(getattr(value, "path_hint", "") or "")
+
+    adb = None
+    try:
+        from Infernux.core.asset_ref import _get_asset_database
+        adb = _get_asset_database()
+    except Exception:
+        adb = None
+
+    if guid and adb is not None:
+        try:
+            resolved = adb.get_path_from_guid(guid) or ""
+            if resolved:
+                return resolved
+        except Exception:
+            pass
+
+    resolved_obj = None
+    if hasattr(value, "resolve"):
+        try:
+            resolved_obj = value.resolve()
+        except Exception:
+            resolved_obj = None
+    elif not isinstance(value, str):
+        resolved_obj = value
+
+    if resolved_obj is not None:
+        for attr in ("file_path", "source_path", "path"):
+            candidate = getattr(resolved_obj, attr, None)
+            if candidate:
+                text = str(candidate)
+                # Embedded sub-assets use virtual paths; ping the host file.
+                for token in ("::submat:", "::subanim:", "::subbone:"):
+                    if token in text:
+                        text = text.split(token, 1)[0]
+                        break
+                if text:
+                    return text
+
+    if path_hint:
+        if os.path.isfile(path_hint):
+            return path_hint
+        if adb is not None:
+            try:
+                # path_hint may be project-relative / portable.
+                guid_from_hint = adb.get_guid_from_path(path_hint) or ""
+                if guid_from_hint:
+                    return adb.get_path_from_guid(guid_from_hint) or path_hint
+            except Exception:
+                pass
+        return path_hint
+
+    if isinstance(value, str) and value:
+        return value
+    return ""
+
+
+def ping_asset_in_project(path: str) -> None:
+    """Focus Project panel and select *path* (navigates to its folder)."""
+    disk_path = str(path or "").strip()
+    if not disk_path:
+        return
+    for token in ("::submat:", "::subanim:", "::subbone:"):
+        if token in disk_path:
+            disk_path = disk_path.split(token, 1)[0]
+            break
+    try:
+        from Infernux.engine.bootstrap import EditorBootstrap
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        bs = EditorBootstrap.instance()
+        pp = getattr(bs, "project_panel", None) if bs else None
+        if pp is None:
+            return
+        ClosablePanel.focus_panel_by_id("project")
+        engine = getattr(bs, "engine", None)
+        native = engine.get_native_engine() if engine is not None else None
+        if native is not None and hasattr(native, "select_docked_window"):
+            native.select_docked_window("project")
+        pp.set_selected_file(disk_path)
+    except Exception as exc:
+        from Infernux.debug import Debug
+        Debug.log_suppressed("ping_asset_in_project", exc)
+
+
 def render_object_field(ctx: InxGUIContext, field_id: str, display_text: str,
                         type_hint: str, selected: bool = False, clickable: bool = True,
                         accept_drag_type: str = None, on_drop_callback=None,
                         picker_scene_items=None, picker_asset_items=None,
-                        on_pick=None, on_clear=None, semantic_id: str = "") -> bool:
+                        on_pick=None, on_clear=None, on_ping=None,
+                        ping_path=None,
+                        semantic_id: str = "") -> bool:
     """Render a Unity-style object field (selectable box showing an object reference)."""
     from .igui import IGUI
     return IGUI.object_field(
@@ -621,6 +767,7 @@ def render_object_field(ctx: InxGUIContext, field_id: str, display_text: str,
         accept=accept_drag_type, on_drop=on_drop_callback,
         picker_scene_items=picker_scene_items,
         picker_asset_items=picker_asset_items,
-        on_pick=on_pick, on_clear=on_clear,
+        on_pick=on_pick, on_clear=on_clear, on_ping=on_ping,
+        ping_path=ping_path,
         semantic_id=semantic_id,
     )

@@ -16,8 +16,10 @@ def test_cds_generational_handles_reject_stale_access():
     assert len(first) == 2
     lib._cds_set(class_id, field_id, first, 0, 4.5)
     assert lib._cds_get(class_id, field_id, first, 0) == pytest.approx(4.5)
+    assert lib._cds_is_alive(class_id, first) is True
 
     lib._cds_free(class_id, first)
+    assert lib._cds_is_alive(class_id, first) is False
     replacement = lib._cds_alloc(class_id)
     assert replacement[0] == first[0]
     assert replacement[1] != first[1]
@@ -122,6 +124,38 @@ def test_component_class_can_reserve_numeric_storage():
 
     with pytest.raises(ValueError, match="non-negative integer"):
         ReservedComponent.reserve_instances(-1)
+
+
+def test_component_cleanup_tolerates_an_already_released_slot():
+    class CleanupComponent(InxComponent):
+        value: float = 1.0
+
+    component = CleanupComponent()
+    class_id = component._cds_class_id
+    slot = component._cds_slot
+    assert class_id is not None and slot is not None
+
+    lib._cds_free(class_id, slot)
+    component._call_on_destroy()
+
+    assert component._cds_slot is None
+    assert component._cds_class_id is None
+
+
+def test_script_replacement_detach_releases_the_old_numeric_slot():
+    class ReplacedComponent(InxComponent):
+        value: float = 1.0
+
+    component = ReplacedComponent()
+    class_id = component._cds_class_id
+    slot = component._cds_slot
+    assert class_id is not None and slot is not None
+    assert lib._cds_is_alive(class_id, slot) is True
+
+    component._detach_native_binding_for_replacement()
+
+    assert component._cds_slot is None
+    assert lib._cds_is_alive(class_id, slot) is False
 
 
 def test_reserve_rejects_component_without_numeric_storage():

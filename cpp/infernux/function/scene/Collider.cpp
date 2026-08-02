@@ -87,7 +87,11 @@ uint32_t Collider::GetBodyId() const
 
 void Collider::SetCachedRigidbody(Rigidbody *rigidbody)
 {
-    ActorMut().rigidbody = rigidbody;
+    auto &actor = ActorMut();
+    if (actor.rigidbody == rigidbody)
+        return;
+    actor.rigidbody = rigidbody;
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
 
 Rigidbody *Collider::GetCachedRigidbody() const
@@ -151,6 +155,7 @@ void Collider::Awake()
 
 void Collider::OnEnable()
 {
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
     if (GetBodyId() == 0xFFFFFFFF) {
         // Body not yet created (deferred from Awake) — ensure it's queued.
         PhysicsECSStore::Instance().QueueBodyCreation(m_ecsHandle);
@@ -166,6 +171,7 @@ void Collider::OnEnable()
 
 void Collider::OnDisable()
 {
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
     if (IsBeingDestroyed()) {
         return;
     }
@@ -213,6 +219,7 @@ void Collider::SetIsTrigger(bool trigger)
     if (d.isTrigger == trigger)
         return;
     d.isTrigger = trigger;
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 
     const uint32_t bodyId = GetBodyId();
     if (bodyId != 0xFFFFFFFF) {
@@ -307,6 +314,7 @@ void Collider::SetPhysicMaterial(std::shared_ptr<PhysicMaterial> material)
     if (!guid.empty())
         graph.AddRuntimeDependency(GetInstanceGuid(), guid);
     ApplyMaterialToBody(this);
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
 
 void Collider::SetPhysicMaterialGuid(const std::string &guid)
@@ -334,6 +342,8 @@ void Collider::OnPhysicMaterialAssetEvent(AssetEvent event)
     }
     if (event == AssetEvent::Modified)
         ApplyMaterialToBody(this);
+    if (event == AssetEvent::Modified)
+        PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
 
 float Collider::GetFriction() const
@@ -498,7 +508,15 @@ void Collider::UnregisterBody()
             }
         }
     } else {
-        RemoveFromBroadphase();
+        auto &pendingStore = PhysicsECSStore::Instance();
+        const bool hadPendingAdd = pendingStore.CancelBroadphaseAdd(actor.bodyId);
+        const bool hadPendingRemove = pendingStore.CancelBroadphaseRemove(actor.bodyId);
+        // Destruction is already committed at a main-thread safe point. A
+        // queued removal means the body is still physically resident even
+        // though the logical actor state was changed when it was disabled.
+        if (!hadPendingAdd && (actor.bodyInBroadphase || hadPendingRemove)) {
+            PhysicsWorld::Instance().RemoveBodyFromBroadphase(actor.bodyId);
+        }
         PhysicsWorld::Instance().DestroyBody(this);
         actor.bodyId = 0xFFFFFFFF;
         actor.bodyInBroadphase = false;
@@ -511,6 +529,11 @@ void Collider::AddToBroadphase()
     auto &actor = ActorMut();
     if (actor.bodyId == 0xFFFFFFFF)
         return;
+    auto &store = PhysicsECSStore::Instance();
+    if (store.CancelBroadphaseRemove(actor.bodyId)) {
+        actor.bodyInBroadphase = true;
+        return;
+    }
     if (actor.bodyInBroadphase)
         return;
 
@@ -519,7 +542,7 @@ void Collider::AddToBroadphase()
     // Defer broadphase addition to the next pre-physics flush (Unity-style).
     // The body exists in Jolt but won't participate in queries/simulation
     // until SceneManager flushes the pending queue.
-    PhysicsECSStore::Instance().QueueBroadphaseAdd(actor.bodyId, isStatic);
+    store.QueueBroadphaseAdd(actor.bodyId, isStatic);
     actor.bodyInBroadphase = true;
 }
 
@@ -541,7 +564,10 @@ void Collider::RemoveFromBroadphase()
         }
     }
 
-    PhysicsWorld::Instance().RemoveBodyFromBroadphase(actor.bodyId);
+    auto &store = PhysicsECSStore::Instance();
+    if (!store.CancelBroadphaseAdd(actor.bodyId)) {
+        store.QueueBroadphaseRemove(actor.bodyId);
+    }
     actor.bodyInBroadphase = false;
 }
 
@@ -563,6 +589,7 @@ void Collider::RestoreSceneResidency()
 
 void Collider::RebuildShape()
 {
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
     auto &actor = ActorMut();
     if (actor.bodyId == 0xFFFFFFFF)
         return;
@@ -623,18 +650,34 @@ void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsB
         ++actor.transformRevision;
 
         PhysicsWorld &physicsWorld = PhysicsWorld::Instance();
+        const bool hasRigidbodies = PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0;
         bool isKinematicBody = (rb != nullptr && rb->IsEnabled() && rb->IsKinematic());
+        bool movedWithVelocity = false;
         if (isKinematicBody && fixedDeltaTime > 0.0f) {
-            physicsWorld.MoveBodyKinematic(actor.bodyId, pos, rot, fixedDeltaTime);
+            // Cap the drive speed: a transform write that jumps far (scripted
+            // teleport) must land the body immediately, not launch it across
+            // the scene at delta/dt.
+            physicsWorld.MoveBodyKinematic(actor.bodyId, pos, rot, fixedDeltaTime,
+                                           PhysicsWorld::kMaxTransformDriveSpeed);
+        } else if (!rb && fixedDeltaTime > 0.0f && hasRigidbodies) {
+            // Collider-only body moved while the simulation is stepping
+            // (gizmo drag / scripted move). A static teleport only produces
+            // positional depenetration — overlapped dynamic bodies would be
+            // squeezed out with zero exit velocity and stop dead. Drive it
+            // kinematically instead so contacts carry real momentum.
+            physicsWorld.MoveStaticBodyWithVelocity(actor.bodyId, pos, rot, fixedDeltaTime);
+            movedWithVelocity = true;
         } else if (staticPoseBatch && !rb) {
             staticPoseBatch->push_back({actor.bodyId, pos, rot});
         } else {
             physicsWorld.SetBodyPosition(actor.bodyId, pos, rot);
         }
 
-        // After moving a static/kinematic body, wake nearby dynamic bodies.
+        // After teleporting a static body, wake nearby dynamic bodies. The
+        // velocity path is exempt: the body is temporarily kinematic and Jolt
+        // wakes everything it touches during the step.
         bool isStaticBody = (rb == nullptr || !rb->IsEnabled());
-        if (isStaticBody && PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
+        if (isStaticBody && !movedWithVelocity && hasRigidbodies) {
             physicsWorld.WakeBodiesTouchingStatic(actor.bodyId);
         }
     }

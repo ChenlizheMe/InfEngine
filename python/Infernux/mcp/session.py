@@ -18,6 +18,7 @@ import zipfile
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from Infernux.engine.path_utils import is_path_within, path_key, portable_path, relative_path, resolved_path
 from Infernux.mcp import checkpoints as checkpoint_store
 
 
@@ -83,7 +84,7 @@ def configure(project_path: str, config: dict[str, Any] | None = None) -> McpSes
     """Create the active in-process session from the project MCP config."""
     global _CURRENT
     config = config or {}
-    root = os.path.abspath(project_path or ".")
+    root = resolved_path(project_path or ".")
     policy = config.get("session") or {}
     policy = policy if isinstance(policy, dict) else {}
     mode = str(config.get("profile", "developer_assist") or "developer_assist")
@@ -235,12 +236,12 @@ def write_project_script(relative_path: str, content: str) -> dict[str, Any]:
 def read_release_wheel_source(wheel_path: str, member: str) -> dict[str, Any]:
     """Read an allowlisted text member from a wheel during release exploration."""
     session = require_release_exploration()
-    target = os.path.abspath(wheel_path)
-    if target not in set(session.whl_readonly_source):
+    target = resolved_path(wheel_path)
+    if path_key(target) not in {path_key(path) for path in session.whl_readonly_source}:
         raise McpPolicyError("Wheel is not listed in session.whl_readonly_source.")
     if not target.lower().endswith(".whl") or not os.path.isfile(target):
         raise FileNotFoundError("Approved wheel file was not found.")
-    member = str(member or "").replace("\\", "/").lstrip("/")
+    member = portable_path(str(member or "")).lstrip("/")
     if not member.endswith((".py", ".pyi", ".txt", ".json")):
         raise McpPolicyError("Only text source members may be read from an approved wheel.")
     with zipfile.ZipFile(target) as archive:
@@ -358,7 +359,11 @@ def start_attempt(task: str, checkpoint: str) -> dict[str, Any]:
         raise McpPolicyError("A project attempt is already active. Stop it before starting another attempt.")
     checkpoint = str(checkpoint or "").strip()
     if not checkpoint:
-        raise McpPolicyError("Project attempts require a non-empty checkpoint identifier.")
+        if active.managed_checkpoints_required:
+            raise McpPolicyError(
+                "Managed project attempts require a checkpoint from mcp_checkpoint_list."
+            )
+        checkpoint = "session-start"
     checkpoint_proof: dict[str, Any] = {
         "managed": False,
         "checkpoint_id": checkpoint,
@@ -484,7 +489,6 @@ def _write_attempt_manifest(active: McpSession, trace: dict[str, Any]) -> str:
     trace_id = str(trace.get("trace_id", "") or "")
     trace_path = active.last_trace_path or _expected_trace_path(trace_id)
     payload = {
-        "schema_version": 2,
         "kind": "infernux.mcp.attempt_manifest",
         "generated_at": time.time(),
         "session": {
@@ -524,7 +528,6 @@ def _write_persistence_proof(active: McpSession, trace: dict[str, Any]) -> str:
     delta = checkpoint_store.diff_ledgers(active.attempt_baseline_ledger, current_ledger)
     trace_id = str(trace.get("trace_id", "") or "")
     payload = {
-        "schema_version": 1,
         "kind": "infernux.mcp.attempt_persistence_proof",
         "generated_at": time.time(),
         "session_id": active.session_id,
@@ -552,7 +555,6 @@ def _write_persistence_proof(active: McpSession, trace: dict[str, Any]) -> str:
 def _capture_build_identity(policy: dict[str, Any], build_profile: str) -> dict[str, Any]:
     source_root = _find_source_root()
     return {
-        "schema_version": 2,
         "captured_at": time.time(),
         "source_root": source_root,
         "package_version": _read_package_version(source_root),
@@ -564,7 +566,8 @@ def _capture_build_identity(policy: dict[str, Any], build_profile: str) -> dict[
 
 
 def _find_source_root() -> str:
-    for candidate in (Path(__file__).resolve().parent, *Path(__file__).resolve().parents):
+    module_path = Path(resolved_path(__file__))
+    for candidate in (module_path.parent, *module_path.parents):
         if (candidate / "pyproject.toml").is_file() and (candidate / "CMakePresets.json").is_file():
             return str(candidate)
     return ""
@@ -590,7 +593,7 @@ def _python_package_identity(
     source_root: str,
     package_root: Path | None = None,
 ) -> dict[str, Any]:
-    root = package_root or Path(__file__).resolve().parents[1]
+    root = package_root or Path(resolved_path(__file__)).parents[1]
     if not root.is_dir():
         return {"available": False}
 
@@ -712,7 +715,7 @@ def _build_preset_configuration(source_root: str, build_preset: str) -> tuple[st
 
 
 def _native_artifact_identity(source_root: str) -> dict[str, Any]:
-    package_root = Path(__file__).resolve().parents[1]
+    package_root = Path(resolved_path(__file__)).parents[1]
     native_dir = package_root / "lib"
     candidates = sorted(
         path for path in native_dir.glob("_Infernux.*") if path.suffix.lower() in {".pyd", ".so", ".dylib"}
@@ -751,7 +754,7 @@ def _relative_project_path(root: str, path: str) -> str:
     if not path:
         return ""
     try:
-        return os.path.relpath(os.path.abspath(path), os.path.abspath(root)).replace("\\", "/") if root else path
+        return relative_path(path, root, allow_root=True) if root else path
     except ValueError:
         return path
 
@@ -770,7 +773,7 @@ def _secret_fingerprint(value: str) -> str:
 
 def _normalized_paths(value: Any, project_root: str) -> list[str]:
     items = value if isinstance(value, (list, tuple)) else []
-    return [os.path.abspath(os.path.join(project_root, str(item))) if not os.path.isabs(str(item)) else os.path.abspath(str(item)) for item in items if str(item)]
+    return [resolved_path(os.path.join(project_root, str(item)) if not os.path.isabs(str(item)) else str(item)) for item in items if str(item)]
 
 
 def _normalized_roots(value: Any, project_root: str) -> list[str]:
@@ -779,31 +782,24 @@ def _normalized_roots(value: Any, project_root: str) -> list[str]:
 
 
 def _is_within_any_root(path: str, roots: list[str]) -> bool:
-    target = os.path.normcase(os.path.abspath(path))
-    for root in roots:
-        try:
-            if os.path.commonpath([target, os.path.normcase(os.path.abspath(root))]) == os.path.normcase(os.path.abspath(root)):
-                return True
-        except ValueError:
-            continue
-    return False
+    return any(is_path_within(path, root) for root in roots)
 
 
 def _script_path(session: McpSession, relative_path: str) -> str:
-    value = str(relative_path or "").replace("\\", "/").lstrip("/")
+    value = portable_path(str(relative_path or "")).lstrip("/")
     if value.startswith("Assets/"):
         value = value[len("Assets/"):]
     if not value or not value.endswith(".py"):
         raise McpPolicyError("Project scripts must use a relative .py path under Assets/.")
-    target = os.path.abspath(os.path.join(session.project_root, "Assets", value))
-    assets_root = os.path.abspath(os.path.join(session.project_root, "Assets"))
+    target = resolved_path(os.path.join(session.project_root, "Assets", value))
+    assets_root = os.path.join(session.project_root, "Assets")
     if not _is_within_any_root(target, [assets_root]):
         raise McpPolicyError("Project script path escapes Assets/.")
     return target
 
 
 def _relative_to_project(session: McpSession, path: str) -> str:
-    return os.path.relpath(path, session.project_root).replace("\\", "/")
+    return relative_path(path, session.project_root)
 
 
 def _append_jsonl(path: str, value: dict[str, Any]) -> None:

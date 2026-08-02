@@ -14,6 +14,8 @@ moved to the final destination afterwards.
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.machinery
 import json
 import os
 import platform
@@ -33,6 +35,7 @@ from typing import Callable, List, Optional
 from Infernux.debug import Debug
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.i18n import t
+from Infernux.engine.path_utils import path_key, resolved_path
 
 # ASCII-safe root for Nuitka staging and temporary build artifacts.
 _STAGING_ROOT = "C:\\_InxBuild"
@@ -42,12 +45,10 @@ _STAGING_ROOT = "C:\\_InxBuild"
 _NUITKA_CACHE_DIR = os.path.join(_STAGING_ROOT, "_nuitka_cache")
 _RUNTIME_PACK_DIR = os.path.join(_STAGING_ROOT, "_runtime_packs")
 _REQUIREMENTS_STATE_DIR = os.path.join(_STAGING_ROOT, "_requirements_state")
-_RUNTIME_PACK_SCHEMA_VERSION = 4
 _MAX_RUNTIME_PACKS = 4
 _RUNTIME_HASH_STATE_FILENAME = "content-hashes.json"
 _RUNTIME_ARCHIVE_FILENAME = "runtime-pack.zip"
 _PACKAGED_RUNTIME_DIRNAME = "_runtime_packs"
-_RUNTIME_MODULE_SCHEMA_VERSION = 1
 _RUNTIME_MODULE_ARCHIVE_FILENAME = "parallel-module.zip"
 _RUNTIME_MODULE_MANIFEST_FILENAME = "parallel-module.json"
 _PACKAGED_RUNTIME_MODULE_DIRNAME = "_runtime_modules"
@@ -68,7 +69,7 @@ _AUTO_INSTALLABLE_PACKAGES = {
 _BuildCancelled = BuildCancelled
 
 
-def _terminate_process_tree(proc: subprocess.Popen, *, timeout: float = 10.0) -> None:
+def _terminate_process_tree(proc: subprocess.Popen, *, timeout: float = 1.0) -> None:
     """Stop the compiler process tree created for one cancelled build."""
     if proc.poll() is not None:
         return
@@ -122,7 +123,7 @@ def _dedupe_env_paths(paths: list[str]) -> list[str]:
     for path in paths:
         if not path:
             continue
-        normalized = os.path.normcase(os.path.abspath(os.path.expandvars(path)))
+        normalized = path_key(os.path.expandvars(path))
         if normalized in seen:
             continue
         seen.add(normalized)
@@ -142,7 +143,7 @@ def _env_path_has_file(env: dict[str, str], key: str, filename: str) -> bool:
 
 
 def _with_trailing_backslash(path: str) -> str:
-    return os.path.abspath(path).rstrip("\\/") + "\\"
+    return resolved_path(path).rstrip("\\/") + "\\"
 
 
 def _version_sort_key(version: str) -> tuple[int, ...]:
@@ -172,10 +173,10 @@ def _windows_sdk_roots_from_registry() -> list[str]:
     def _add(path: str) -> None:
         if not path:
             return
-        root = os.path.abspath(os.path.expandvars(path.strip().strip('"')))
+        root = resolved_path(os.path.expandvars(path.strip().strip('"')))
         if not os.path.isdir(root):
             return
-        normalized = os.path.normcase(root)
+        normalized = path_key(root)
         if normalized in seen:
             return
         seen.add(normalized)
@@ -217,10 +218,10 @@ def _windows_sdk_roots(env: Optional[dict[str, str]] = None) -> list[str]:
     def _add(path: str) -> None:
         if not path:
             return
-        root = os.path.abspath(os.path.expandvars(path.strip().strip('"')))
+        root = resolved_path(os.path.expandvars(path.strip().strip('"')))
         if not os.path.isdir(root):
             return
-        normalized = os.path.normcase(root)
+        normalized = path_key(root)
         if normalized in seen:
             return
         seen.add(normalized)
@@ -464,10 +465,10 @@ def _visual_studio_roots_from_registry() -> list[str]:
     def _add(path: str) -> None:
         if not path:
             return
-        root = os.path.abspath(os.path.expandvars(path.strip().strip('"')))
+        root = resolved_path(os.path.expandvars(path.strip().strip('"')))
         if not os.path.isdir(root):
             return
-        normalized = os.path.normcase(root)
+        normalized = path_key(root)
         if normalized in seen:
             return
         seen.add(normalized)
@@ -564,7 +565,7 @@ def _find_msvc_environment_scripts() -> list[tuple[str, list[str]]]:
     for env_name in ("VSINSTALLDIR", "VCINSTALLDIR"):
         root = os.environ.get(env_name, "")
         if env_name == "VCINSTALLDIR" and root:
-            root = os.path.abspath(os.path.join(root, "..", ".."))
+            root = resolved_path(os.path.join(root, "..", ".."))
         if root and os.path.isdir(root):
             roots.append(root)
 
@@ -576,7 +577,7 @@ def _find_msvc_environment_scripts() -> list[tuple[str, list[str]]]:
     candidates: list[tuple[str, list[str]]] = []
     seen_roots: set[str] = set()
     for root in roots:
-        normalized_root = os.path.normcase(os.path.abspath(root))
+        normalized_root = path_key(root)
         if normalized_root in seen_roots:
             continue
         seen_roots.add(normalized_root)
@@ -720,7 +721,7 @@ def _python_version(python_exe: str) -> str:
 
 def _is_embeddable_python_exe(python_exe: str) -> bool:
     try:
-        root = os.path.dirname(os.path.abspath(python_exe))
+        root = os.path.dirname(resolved_path(python_exe))
         return any(name.lower().endswith("._pth") for name in os.listdir(root))
     except OSError as _exc:
         Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
@@ -742,7 +743,7 @@ def _dedupe_paths(paths: List[str]) -> List[str]:
     for path in paths:
         if not path:
             continue
-        normalized = os.path.normcase(os.path.abspath(path))
+        normalized = path_key(path)
         if normalized in seen:
             continue
         seen.add(normalized)
@@ -814,7 +815,7 @@ def _ensure_python_packages(python_exe: str, *module_names: str) -> None:
 
 def _install_requirements_files(python_exe: str, requirement_files: List[str]) -> None:
     os.makedirs(_REQUIREMENTS_STATE_DIR, exist_ok=True)
-    interpreter_key = hashlib.sha256(os.path.normcase(os.path.abspath(python_exe)).encode("utf-8")).hexdigest()[:24]
+    interpreter_key = hashlib.sha256(path_key(python_exe).encode("utf-8")).hexdigest()[:24]
     state_path = os.path.join(_REQUIREMENTS_STATE_DIR, f"{interpreter_key}.json")
     try:
         with open(state_path, "r", encoding="utf-8") as state_file:
@@ -830,7 +831,7 @@ def _install_requirements_files(python_exe: str, requirement_files: List[str]) -
             continue
         with open(requirement_file, "rb") as source:
             requirement_hash = hashlib.sha256(source.read()).hexdigest()
-        state_key = os.path.normcase(os.path.abspath(requirement_file))
+        state_key = path_key(requirement_file)
         if state.get(state_key) == requirement_hash:
             Debug.log_internal(f"Project requirements unchanged; reusing builder environment: {requirement_file}")
             continue
@@ -913,8 +914,8 @@ class NuitkaBuilder:
         runtime_pack_cache: bool = False,
         packaged_runtime_lookup: bool = True,
     ):
-        self.entry_script = os.path.abspath(entry_script)
-        self.output_dir = os.path.abspath(output_dir)
+        self.entry_script = resolved_path(entry_script)
+        self.output_dir = resolved_path(output_dir)
         # Platform-normalized executable name: the Windows-style ".exe"
         # default is stripped on Linux/macOS so callers don't need to care.
         if sys.platform != "win32" and output_filename.lower().endswith(".exe"):
@@ -936,7 +937,7 @@ class NuitkaBuilder:
         ]
         self.extra_include_data = list(extra_include_data or [])
         self.extra_requirements_files = [
-            os.path.abspath(path)
+            resolved_path(path)
             for path in list(extra_requirements_files or [])
             if path
         ]
@@ -1041,7 +1042,7 @@ class NuitkaBuilder:
     def _runtime_pack_fingerprint(self, cmd: List[str]) -> str:
         """Fingerprint every input that can change a reusable Player runtime."""
         digest = hashlib.sha256()
-        digest.update(f"runtime-pack-v{_RUNTIME_PACK_SCHEMA_VERSION}\0".encode("ascii"))
+        digest.update(b"runtime-pack\0")
         normalized_command = []
         for index, argument in enumerate(cmd):
             value = str(argument)
@@ -1077,7 +1078,6 @@ class NuitkaBuilder:
                 "sha256": self._hash_file(Path(requirement_file)),
             })
         payload = {
-            "schema_version": _RUNTIME_PACK_SCHEMA_VERSION,
             "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
             "platform": sys.platform,
             "machine": platform.machine().lower(),
@@ -1116,7 +1116,7 @@ class NuitkaBuilder:
         import Infernux
 
         digest = hashlib.sha256()
-        package_root = Path(Infernux.__file__).resolve().parent
+        package_root = Path(resolved_path(Infernux.__file__)).parent
         hash_state = self._load_runtime_hash_state()
         live_hash_keys: set[str] = set()
         for path in sorted(package_root.rglob("*")):
@@ -1140,6 +1140,19 @@ class NuitkaBuilder:
             content_hash, state_key = self._cached_file_hash(path, hash_state)
             live_hash_keys.add(state_key)
             digest.update(content_hash.encode("ascii"))
+
+        # Development editors may load the native module from an immutable
+        # runtime snapshot while python/Infernux/lib remains locked by an
+        # older process.  The Player pack must follow the actually loaded
+        # native payload, and its cache key must change with that payload.
+        native_payload_dir = self._native_payload_dir()
+        package_lib_dir = package_root / "lib"
+        if path_key(native_payload_dir) != path_key(package_lib_dir):
+            for path in self._native_payload_files(native_payload_dir):
+                digest.update(f"native/{path.name}".encode("utf-8"))
+                content_hash, state_key = self._cached_file_hash(path, hash_state)
+                live_hash_keys.add(state_key)
+                digest.update(content_hash.encode("ascii"))
         self._store_runtime_hash_state(
             {key: value for key, value in hash_state.items() if key in live_hash_keys}
         )
@@ -1200,7 +1213,7 @@ print(json.dumps({{
     @staticmethod
     def _cached_file_hash(path: Path, state: dict[str, dict]) -> tuple[str, str]:
         stat = path.stat()
-        key = os.path.normcase(os.path.abspath(path))
+        key = path_key(path)
         cached = state.get(key, {})
         if (
             cached.get("size") == stat.st_size
@@ -1271,11 +1284,11 @@ print(json.dumps({{
         roots: list[str] = []
         configured = os.environ.get("INFERNUX_PREBUILT_RUNTIME_PACK_DIR", "")
         if configured:
-            roots.append(os.path.abspath(os.path.expanduser(configured)))
+            roots.append(resolved_path(os.path.expanduser(configured)))
         try:
             import Infernux
 
-            roots.append(str(Path(Infernux.__file__).resolve().parent / _PACKAGED_RUNTIME_DIRNAME))
+            roots.append(str(Path(resolved_path(Infernux.__file__)).parent / _PACKAGED_RUNTIME_DIRNAME))
         except (ImportError, OSError):
             pass
         return list(dict.fromkeys(roots))
@@ -1297,8 +1310,7 @@ print(json.dumps({{
         except (OSError, json.JSONDecodeError):
             return None
         if (
-            manifest.get("schema_version") != _RUNTIME_PACK_SCHEMA_VERSION
-            or (expected_fingerprint and manifest.get("fingerprint") != expected_fingerprint)
+            (expected_fingerprint and manifest.get("fingerprint") != expected_fingerprint)
             or (
                 expected_compatibility_key
                 and manifest.get("compatibility_key") != expected_compatibility_key
@@ -1364,7 +1376,6 @@ print(json.dumps({{
         os.makedirs(_RUNTIME_PACK_DIR, exist_ok=True)
         pack_root = self._runtime_pack_path(runtime_pack_key)
         marker = {
-            "schema_version": _RUNTIME_PACK_SCHEMA_VERSION,
             "fingerprint": runtime_pack_key,
             "compatibility_key": compatibility_key,
             "engine_fingerprint": self._engine_content_fingerprint(),
@@ -1446,7 +1457,7 @@ print(json.dumps({{
         if not source.is_dir():
             raise RuntimeError(f"Runtime Pack cache is missing: {source}")
 
-        destination = Path(destination_root).resolve() / self.last_runtime_compatibility_key
+        destination = Path(resolved_path(destination_root)) / self.last_runtime_compatibility_key
         temporary = destination.with_name(destination.name + f".{os.getpid()}.tmp")
         shutil.rmtree(temporary, ignore_errors=True)
         temporary.parent.mkdir(parents=True, exist_ok=True)
@@ -1471,7 +1482,7 @@ print(json.dumps({{
 
         selected_packages = sorted(set(packages or ["numba", "llvmlite"]))
         destination = (
-            Path(destination_root).resolve() / self.last_runtime_compatibility_key
+            Path(resolved_path(destination_root)) / self.last_runtime_compatibility_key
         )
         temporary = destination.with_name(destination.name + f".{os.getpid()}.tmp")
         payload_root = Path(tempfile.mkdtemp(prefix="infernux-runtime-module-"))
@@ -1502,7 +1513,6 @@ print(json.dumps({{
             if file_count == 0:
                 raise RuntimeError("Parallel Runtime Module contains no files")
             manifest = {
-                "schema_version": _RUNTIME_MODULE_SCHEMA_VERSION,
                 "module": module_name,
                 "compatibility_key": self.last_runtime_compatibility_key,
                 "engine_fingerprint": self._engine_content_fingerprint(),
@@ -1537,13 +1547,13 @@ print(json.dumps({{
         roots: list[str] = []
         configured = os.environ.get("INFERNUX_PREBUILT_RUNTIME_MODULE_DIR", "")
         if configured:
-            roots.append(os.path.abspath(os.path.expanduser(configured)))
+            roots.append(resolved_path(os.path.expanduser(configured)))
         try:
             import Infernux
 
             roots.append(
                 str(
-                    Path(Infernux.__file__).resolve().parent
+                    Path(resolved_path(Infernux.__file__)).parent
                     / _PACKAGED_RUNTIME_MODULE_DIRNAME
                 )
             )
@@ -1572,8 +1582,7 @@ print(json.dumps({{
                 except (OSError, json.JSONDecodeError):
                     continue
                 if (
-                    manifest.get("schema_version") != _RUNTIME_MODULE_SCHEMA_VERSION
-                    or manifest.get("module") != module_name
+                    manifest.get("module") != module_name
                     or manifest.get("compatibility_key") != compatibility_key
                     or manifest.get("engine_fingerprint")
                     != self._engine_content_fingerprint()
@@ -1963,6 +1972,9 @@ print(json.dumps({{
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """Run Nuitka as a subprocess and stream output.  Returns dist dir."""
+        if cancel_event is not None and cancel_event.is_set():
+            raise BuildCancelled()
+
         env = os.environ.copy()
 
         # Redirect TEMP / TMP to an ASCII-safe location so MinGW's
@@ -2118,6 +2130,65 @@ print(json.dumps({{
     # Inject native engine libraries
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _native_module_file(lib_dir: Path) -> Path:
+        """Resolve the current interpreter's exact Infernux extension module."""
+        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+            candidate = lib_dir / f"_Infernux{suffix}"
+            if candidate.is_file():
+                return candidate
+        raise RuntimeError(
+            f"Infernux native payload has no compatible _Infernux module: {lib_dir}"
+        )
+
+    @staticmethod
+    def _native_payload_files(lib_dir: Path) -> list[Path]:
+        """Return one ABI-compatible extension module plus its shared libraries."""
+        if sys.platform == "win32":
+            wanted = (".dll",)
+        elif sys.platform == "darwin":
+            wanted = (".so", ".dylib")
+        else:
+            wanted = (".so",)
+
+        module_file = NuitkaBuilder._native_module_file(lib_dir)
+        files = [module_file]
+        for path in lib_dir.iterdir():
+            if not path.is_file() or path == module_file:
+                continue
+            # Never mix a stale short-name extension with the selected
+            # ABI-tagged module. Nuitka creates the short name itself.
+            if path.name.startswith("_Infernux"):
+                continue
+            if path.suffix.lower() in wanted or (
+                sys.platform.startswith("linux")
+                and path.name.startswith("lib")
+                and ".so" in path.name
+            ):
+                files.append(path)
+        return sorted(files, key=lambda path: path.name.lower())
+
+    @staticmethod
+    def _native_payload_dir() -> Path:
+        """Resolve the atomic native payload used by this builder process."""
+        override = os.environ.get("INFERNUX_NATIVE_MODULE_DIR", "").strip()
+        if override:
+            candidate = Path(resolved_path(override))
+            if not candidate.is_dir():
+                raise RuntimeError(
+                    f"INFERNUX_NATIVE_MODULE_DIR is not a directory: {candidate}"
+                )
+            NuitkaBuilder._native_payload_files(candidate)
+            return candidate
+
+        native_module = importlib.import_module("Infernux.lib._Infernux")
+        module_file = getattr(native_module, "__file__", "")
+        if not module_file:
+            raise RuntimeError("Loaded Infernux native module has no filesystem path")
+        candidate = Path(resolved_path(module_file)).parent
+        NuitkaBuilder._native_payload_files(candidate)
+        return candidate
+
     def _inject_native_libs(self, dist_dir: str):
         """Copy _Infernux.pyd + engine DLLs into the Nuitka dist directory.
 
@@ -2130,8 +2201,7 @@ print(json.dumps({{
         """
         import time as _time
         _inject_t0 = _time.perf_counter()
-        import Infernux.lib as _lib
-        lib_dir = Path(_lib.__file__).parent
+        lib_dir = self._native_payload_dir()
 
         # Target: <dist>/Infernux/lib/  — mirrors the installed package
         # structure so relative imports work at runtime.
@@ -2142,37 +2212,33 @@ print(json.dumps({{
         # search (the .exe directory is always searched).
         dist_root = Path(dist_dir)
 
-        # List of native files to inject — platform-filtered so a lib dir
-        # that was synced across machines never ships foreign binaries.
-        if sys.platform == "win32":
-            wanted = (".pyd", ".dll")
-        elif sys.platform == "darwin":
-            wanted = (".so", ".dylib")
-        else:
-            wanted = (".so",)
-        native_files = []
-        for f in lib_dir.iterdir():
-            if f.is_file() and f.suffix.lower() in wanted:
-                native_files.append(f)
-            elif f.is_file() and f.name.startswith("lib") and ".so" in f.name and sys.platform.startswith("linux"):
-                # Versioned sonames like libSDL3.so.0
-                native_files.append(f)
+        native_files = self._native_payload_files(lib_dir)
+        native_module = self._native_module_file(lib_dir)
 
         for src in native_files:
             # Native modules + shared libs go into the package subdir; on
             # Linux/macOS the module's RPATH ($ORIGIN/@loader_path) finds its
             # dependencies right there.
             dst_pkg = target_dir / src.name
-            if not dst_pkg.exists():
-                shutil.copy2(src, dst_pkg)
-                Debug.log_internal(f"  Injected (lib): {src.name}")
+            shutil.copy2(src, dst_pkg)
+            Debug.log_internal(f"  Injected (lib): {src.name}")
+
+            if src == native_module:
+                # Nuitka imports extension modules through a canonical short
+                # filename. Always overwrite that file as well; leaving the
+                # Nuitka-discovered copy in place can pair an old pybind ABI
+                # with freshly injected engine DLLs and crash before frame 1.
+                canonical_name = "_Infernux.pyd" if sys.platform == "win32" else "_Infernux.so"
+                canonical_module = target_dir / canonical_name
+                if canonical_module != dst_pkg:
+                    shutil.copy2(src, canonical_module)
+                    Debug.log_internal(f"  Injected (canonical lib): {canonical_name}")
 
             # DLLs also go into the dist root (Windows searches the .exe dir)
             if sys.platform == "win32" and src.suffix.lower() == ".dll":
                 dst_root = dist_root / src.name
-                if not dst_root.exists():
-                    shutil.copy2(src, dst_root)
-                    Debug.log_internal(f"  Injected (root): {src.name}")
+                shutil.copy2(src, dst_root)
+                Debug.log_internal(f"  Injected (root): {src.name}")
 
         Debug.log_internal(
             f"  native lib injection total: {_time.perf_counter() - _inject_t0:.2f}s  "

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from Infernux.engine import player_control
 from Infernux.engine.player_control import PlayerControlChannel
@@ -13,11 +14,37 @@ class _Native:
         self.last_processed_synthetic_input_sequence = 0
         self.pending_synthetic_input_count = 0
         self.keys: list[tuple[int, bool, bool]] = []
+        self.mouse_buttons: list[tuple[int, bool, float, float]] = []
+        self.capture_status = "pending_gpu"
+        self.capture_output_path = ""
+        self.cancelled_capture_ids: list[int] = []
 
     def queue_synthetic_key_input(self, scancode: int, pressed: bool, repeat: bool) -> int:
         self.keys.append((scancode, pressed, repeat))
         self.pending_synthetic_input_count = 1
         return 11 + len(self.keys)
+
+    def queue_synthetic_mouse_button_input(self, button: int, pressed: bool, x: float, y: float) -> int:
+        self.mouse_buttons.append((button, pressed, x, y))
+        self.pending_synthetic_input_count = 1
+        return 21 + len(self.mouse_buttons)
+
+    def request_capture(self, source: str, output_path: str) -> int:
+        assert source == "game"
+        self.capture_output_path = output_path
+        return 31
+
+    def query_capture(self, capture_id: int):
+        return {
+            "capture_id": capture_id,
+            "status": self.capture_status,
+            "output_path": self.capture_output_path,
+            "error": "",
+        }
+
+    def cancel_capture(self, capture_id: int):
+        self.cancelled_capture_ids.append(capture_id)
+        return True
 
 
 class _Engine:
@@ -35,12 +62,12 @@ def _configure(tmp_path, monkeypatch, *, debug=True):
     monkeypatch.setenv("_INFERNUX_PLAYER_CONTROL_FILE", str(request))
     monkeypatch.setenv("_INFERNUX_PLAYER_RESPONSE_FILE", str(response))
     monkeypatch.setenv("_INFERNUX_PLAYER_CONTROL_TOKEN", "control-token-123456789")
+    monkeypatch.setenv("_INFERNUX_PLAYER_ARTIFACT_ROOT", str(tmp_path / "artifacts"))
     return request, response, PlayerControlChannel.from_environment()
 
 
 def _write_request(path, command_id: str, action: str, **values):
     path.write_text(json.dumps({
-        "schema_version": 1,
         "command_id": command_id,
         "token": "control-token-123456789",
         "action": action,
@@ -327,6 +354,9 @@ def test_player_control_capture_owns_frame_bounded_input_and_pauses(tmp_path, mo
         sample_interval=0.02,
         trigger_scene_name="racetrack",
         hold_scancodes=[26, 4],
+        hold_mouse_buttons=[1],
+        mouse_x=640.0,
+        mouse_y=360.0,
         hold_frame_count=2,
         wait_frame_count=2,
         pause_on_complete=True,
@@ -341,6 +371,7 @@ def test_player_control_capture_owns_frame_bounded_input_and_pauses(tmp_path, mo
     now[0] = 6.0
     assert channel.poll(engine) is None
     assert engine.native.keys == [(26, True, False), (4, True, False)]
+    assert engine.native.mouse_buttons == [(1, True, 640.0, 360.0)]
 
     frame[0] = 21
     now[0] = 6.03
@@ -349,8 +380,12 @@ def test_player_control_capture_owns_frame_bounded_input_and_pauses(tmp_path, mo
     now[0] = 6.06
     assert channel.poll(engine) is None
     assert engine.native.keys == [(26, True, False), (4, True, False), (4, False, False), (26, False, False)]
+    assert engine.native.mouse_buttons == [
+        (1, True, 640.0, 360.0),
+        (1, False, 640.0, 360.0),
+    ]
 
-    engine.native.last_processed_synthetic_input_sequence = 15
+    engine.native.last_processed_synthetic_input_sequence = 23
     frame[0] = 24
     now[0] = 6.12
     assert channel.poll(engine) is None
@@ -366,7 +401,10 @@ def test_player_control_capture_owns_frame_bounded_input_and_pauses(tmp_path, mo
     assert completed["elapsed_frame_count"] == 4
     assert completed["input_released_after_hold_frame"] == 2
     assert completed["paused_on_complete"] is True
-    assert [item["scancode"] for item in completed["input_releases"]] == [4, 26]
+    assert [item["scancode"] for item in completed["input_releases"] if "scancode" in item] == [4, 26]
+    assert completed["hold_mouse_buttons"] == [1]
+    assert completed["input_presses"][2]["button"] == 1
+    assert completed["input_releases"][0]["button"] == 1
 
 
 def test_player_control_capture_stops_on_sampled_public_condition(tmp_path, monkeypatch):
@@ -517,6 +555,13 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
             "material_descriptor_set_count": 3,
             "retired_material_descriptor_set_count": 0,
         },
+        "msaa_state": {
+            "active_samples": 4,
+            "supported_samples": [1, 2, 4, 8],
+            "scene_target_aligned": True,
+            "game_target_aligned": True,
+            "material_pipelines_aligned": True,
+        },
         "last_processed_synthetic_input_sequence": 0,
         "pending_synthetic_input_count": 0,
     })()
@@ -564,6 +609,13 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
         "material_descriptor_set_count": 3,
         "retired_material_descriptor_set_count": 0,
     }
+    assert data["msaa"] == {
+        "active_samples": 4,
+        "supported_samples": [1, 2, 4, 8],
+        "scene_target_aligned": True,
+        "game_target_aligned": True,
+        "material_pipelines_aligned": True,
+    }
 
     scene_manager.is_paused = lambda: True
     engine.get_play_mode_manager = lambda: type("_PlayManager", (), {
@@ -572,6 +624,46 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
     paused_data = player_control._observe_player(engine, ["Prompt"])
 
     assert paused_data["play_state"] == "paused"
+
+
+def test_player_control_capture_uses_player_game_render_target(tmp_path, monkeypatch):
+    request, response, channel = _configure(tmp_path, monkeypatch)
+    engine = _Engine()
+    _write_request(request, "render-capture-1", "capture", file_name="first-load.png")
+
+    assert channel.poll(engine) is None
+    assert engine.native.capture_output_path.endswith(os.path.join("review", "first-load.png"))
+    assert not response.exists()
+
+    engine.native.capture_status = "completed"
+    assert channel.poll(engine) is None
+    payload = json.loads(response.read_text(encoding="utf-8"))
+    assert payload["ok"] is True
+    assert payload["data"]["status"] == "completed"
+    assert payload["data"]["pixel_origin"] == "engine_render_target"
+    assert payload["data"]["os_capture_fallback"] is False
+
+
+def test_player_control_capture_timeout_releases_command_channel(tmp_path, monkeypatch):
+    request, response, channel = _configure(tmp_path, monkeypatch)
+    engine = _Engine()
+    clock = [10.0]
+    monkeypatch.setattr(player_control.time, "monotonic", lambda: clock[0])
+    _write_request(
+        request,
+        "render-capture-timeout",
+        "capture",
+        file_name="timeout.png",
+        timeout_seconds=0.5,
+    )
+
+    assert channel.poll(engine) is None
+    clock[0] = 10.6
+    assert channel.poll(engine) is None
+    payload = json.loads(response.read_text(encoding="utf-8"))
+    assert payload["ok"] is False
+    assert payload["data"]["status"] == "cancelled"
+    assert engine.native.cancelled_capture_ids == [31]
 
 
 def test_player_observation_discovers_bounded_objects_by_public_component_type(monkeypatch):

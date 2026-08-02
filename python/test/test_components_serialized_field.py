@@ -3,6 +3,8 @@
 Merges tests from test_component_annotation_defaults.py.
 """
 
+import weakref
+
 from Infernux.components import InxComponent
 from Infernux.components.serialized_field import (
     FieldType,
@@ -16,6 +18,34 @@ from Infernux.components.serialized_field import (
     HiddenField,
     hide_field,
 )
+
+
+def test_project_relative_asset_path_is_resolved_before_guid_lookup(monkeypatch, tmp_path):
+    import importlib
+
+    from Infernux.engine import project_context
+
+    serialized_field_module = importlib.import_module("Infernux.components.serialized_field")
+
+    project = tmp_path / "Project"
+    asset = project / "Assets" / "VFX" / "Ribbon.particlegraph"
+    asset.parent.mkdir(parents=True)
+    asset.write_text("{}", encoding="ascii")
+
+    class AbsoluteOnlyDatabase:
+        @staticmethod
+        def get_guid_from_path(path):
+            return "ribbon-guid" if str(path) == str(asset) else ""
+
+    monkeypatch.setattr(serialized_field_module, "_get_asset_db", lambda: AbsoluteOnlyDatabase())
+    monkeypatch.setattr(project_context, "_project_root", str(project))
+
+    guid, path_hint = serialized_field_module._extract_guid_and_path(
+        "Assets/VFX/Ribbon.particlegraph", ()
+    )
+
+    assert guid == "ribbon-guid"
+    assert path_hint == "Assets/VFX/Ribbon.particlegraph"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -76,6 +106,28 @@ class TestSerializedFieldFactory:
         sf = list_field(element_type=FieldType.INT)
         assert isinstance(sf, SerializedFieldDescriptor)
         assert sf.metadata.field_type == FieldType.LIST
+
+    def test_stale_weakref_callback_cannot_remove_reused_instance_slot(self):
+        descriptor = SerializedFieldDescriptor(
+            FieldMetadata(name="value", field_type=FieldType.STRING, default="")
+        )
+
+        class Owner:
+            pass
+
+        stale_owner = Owner()
+        current_owner = Owner()
+        stale_ref = weakref.ref(stale_owner)
+        current_ref = weakref.ref(current_owner)
+        slot = 17
+        descriptor._weak_refs[slot] = current_ref
+        descriptor._values[slot] = "current"
+
+        with descriptor._lock:
+            descriptor._make_ref_callback(slot)(stale_ref)
+
+        assert descriptor._weak_refs[slot] is current_ref
+        assert descriptor._values[slot] == "current"
 
 
 # ══════════════════════════════════════════════════════════════════════

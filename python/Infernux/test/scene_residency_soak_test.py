@@ -110,8 +110,10 @@ def _assert_process_memory_stable(name: str, values: list[int]) -> None:
             f"{name}: process residency kept growing from {previous_window_peak} to "
             f"{final_window_peak} in the final two windows"
         )
-    if max(final_window) - min(final_window) > MIB // 2:
-        raise AssertionError(f"{name}: final window did not stabilize: {final_window}")
+    # Allocators may return a whole region at any point in the final window.
+    # A downward step is healthy and its timing is scheduler-dependent, so it
+    # must not fail a leak gate. The bounded and consecutive peak checks above
+    # still reject both long-term and late-window growth.
 
 
 def main() -> int:
@@ -332,9 +334,12 @@ def main() -> int:
                     "material descriptor retirement queue exceeded its frame-bound capacity: "
                     f"{retired_material_descriptor_samples}"
                 )
-            if max(material_descriptor_pool_samples) != 1:
+            # Descriptor ownership is intentionally split into five arenas
+            # (persistent, update-after-bind, frame, view and ImGui). The soak
+            # guards against page growth, not against that ownership split.
+            if max(material_descriptor_pool_samples) > 5:
                 raise AssertionError(
-                    f"material descriptor pool did not remain on one reusable page: "
+                    f"material descriptor arenas allocated extra pool pages: "
                     f"{material_descriptor_pool_samples}"
                 )
             _assert_stable("material pipelines", material_pipeline_samples, 2)

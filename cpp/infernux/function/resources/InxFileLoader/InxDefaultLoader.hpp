@@ -6,7 +6,7 @@ namespace infernux
 class InxDefaultTextLoader : public IAssetLoader
 {
   public:
-    InxDefaultTextLoader();
+    explicit InxDefaultTextLoader(ResourceType resourceType = ResourceType::DefaultText);
 
     void CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
                     InxResourceMeta &metaData) const override;
@@ -31,6 +31,9 @@ class InxDefaultTextLoader : public IAssetLoader
     {
         return {};
     }
+
+  private:
+    ResourceType m_resourceType;
 };
 
 class InxDefaultBinaryLoader : public IAssetLoader

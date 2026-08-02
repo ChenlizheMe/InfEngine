@@ -8,9 +8,13 @@ import Infernux.lib as native
 from Infernux.lib import (
     CommandBuffer,
     RenderGraphDescription, GraphPassDesc, GraphTextureDesc,
-    GraphPassActionType, PixelFormat, SampleCount,
+    GraphBufferUsage, GraphCommandType, GraphMaterialFilter,
+    GraphTextureRole,
+    GraphPassType,
+    MaterialPassType, PixelFormat, SampleCount,
 )
-from Infernux.rendergraph.graph import RenderGraph, Format, TextureHandle
+from Infernux.rendergraph.graph import BufferHandle, RenderGraph, Format, TextureHandle
+from Infernux.renderstack.effect_stage import EffectScope
 
 
 # ── Helpers ──
@@ -93,6 +97,119 @@ class TestTextureHandle:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Buffer and typed non-raster IR
+# ══════════════════════════════════════════════════════════════════════
+
+class TestTypedResourcePasses:
+    @staticmethod
+    def _add_camera_output(graph):
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        graph.set_output("color")
+
+    def test_buffer_handle_and_usage(self):
+        graph = _make_graph()
+        handle = graph.create_buffer(
+            "particles",
+            4096,
+            indirect=True,
+            transfer_source=True,
+        )
+        assert isinstance(handle, BufferHandle)
+        assert graph.buffer_count == 1
+        assert handle.usage & int(GraphBufferUsage.STORAGE)
+        assert handle.usage & int(GraphBufferUsage.INDIRECT)
+        assert handle.usage & int(GraphBufferUsage.TRANSFER_SOURCE)
+
+    def test_python_pipeline_does_not_expose_noop_compute_passes(self):
+        graph = _make_graph()
+        assert not hasattr(graph, "add_compute_pass")
+        assert not hasattr(GraphPassType, "COMPUTE")
+
+    def test_buffer_copy_serializes_and_adds_transfer_usage(self):
+        graph = _make_graph()
+        graph.create_buffer("source", 1024)
+        graph.create_buffer("destination", 2048)
+        self._add_camera_output(graph)
+        with graph.add_copy_pass("CopyParticles") as p:
+            p.copy_buffer("source", "destination", byte_count=512)
+            p.set_side_effect()
+
+        description = graph.build()
+        copy_pass = next(p for p in description.passes if p.name == "CopyParticles")
+        command = copy_pass.commands[0]
+        buffers = {buffer.name: buffer for buffer in description.buffers}
+        assert copy_pass.type == GraphPassType.COPY
+        assert command.type == GraphCommandType.COPY_BUFFER
+        assert command.source_resource == "source"
+        assert command.destination_resource == "destination"
+        assert command.copy_bytes == 512
+        assert buffers["source"].usage & int(GraphBufferUsage.TRANSFER_SOURCE)
+        assert buffers["destination"].usage & int(GraphBufferUsage.TRANSFER_DESTINATION)
+
+    def test_texture_copy_serializes(self):
+        graph = _make_graph()
+        graph.create_texture("source", format=Format.RGBA16_SFLOAT)
+        graph.create_texture("destination", format=Format.RGBA16_SFLOAT)
+        with graph.add_pass("Produce") as p:
+            p.write_color("source")
+            p.draw_renderers()
+        with graph.add_copy_pass("CopyColor") as p:
+            p.copy_texture("source", "destination")
+        graph.set_output("destination")
+
+        description = graph.build()
+        copy_pass = next(p for p in description.passes if p.name == "CopyColor")
+        command = copy_pass.commands[0]
+        assert copy_pass.type == GraphPassType.COPY
+        assert command.type == GraphCommandType.COPY_TEXTURE
+        assert command.source_resource == "source"
+        assert command.destination_resource == "destination"
+
+    def test_present_pass_sets_graph_output(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        with graph.add_present_pass("Present") as p:
+            p.present("color")
+
+        description = graph.build()
+        present = description.passes[-1]
+        assert description.output_texture == "color"
+        assert present.type == GraphPassType.PRESENT
+        assert present.commands[0].type == GraphCommandType.PRESENT
+        assert present.commands[0].source_resource == "color"
+
+    def test_copy_rejects_same_resource(self):
+        graph = _make_graph()
+        graph.create_buffer("particles", 1024)
+        self._add_camera_output(graph)
+        with graph.add_copy_pass("BadCopy") as p:
+            p.copy_buffer("particles", "particles")
+        with pytest.raises(ValueError, match="distinct buffers"):
+            graph.build()
+
+    def test_texture_copy_rejects_camera_target(self):
+        graph = _make_graph()
+        graph.create_texture("destination", format=Format.RGBA8_UNORM)
+        with graph.add_copy_pass("BadCameraCopy") as p:
+            p.copy_texture("color", "destination")
+        graph.set_output("destination")
+        with pytest.raises(ValueError, match="requires transient textures"):
+            graph.build()
+
+    def test_present_rejects_depth_texture(self):
+        graph = RenderGraph("BadPresent")
+        graph.create_texture("depth", format=Format.D32_SFLOAT)
+        with graph.add_present_pass("PresentDepth") as p:
+            p.present("depth")
+        with pytest.raises(ValueError, match="cannot export a depth"):
+            graph.build()
+
+
+# ══════════════════════════════════════════════════════════════════════
 # RenderPassBuilder
 # ══════════════════════════════════════════════════════════════════════
 
@@ -103,6 +220,46 @@ class TestRenderPassBuilder:
             p.write_color("color")
             p.draw_renderers()
         assert p._action == "draw_renderers"
+
+    def test_draw_renderers_selects_linked_material_pass(self):
+        graph = _make_graph()
+        graph.create_texture("g0", format=Format.RGBA8_UNORM)
+        with graph.add_pass("GBuffer") as p:
+            p.write_color("g0")
+            p.write_depth("depth")
+            p.draw_renderers(material_pass="gbuffer")
+        graph.set_output("g0")
+        description = graph.build()
+        assert description.passes[0].commands[0].type == GraphCommandType.DRAW_RENDERERS
+        assert description.passes[0].commands[0].material_pass == MaterialPassType.GBUFFER
+
+    def test_draw_renderers_rejects_unknown_material_pass(self):
+        graph = _make_graph()
+        with graph.add_pass("Bad") as p:
+            p.write_color("color")
+            with pytest.raises(ValueError, match="Unknown material pass"):
+                p.draw_renderers(material_pass="magic")
+
+    def test_draw_renderers_serializes_deferred_material_filter(self):
+        graph = RenderGraph("DeferredFilter")
+        graph.create_texture("color", camera_target=True)
+        with graph.add_pass("ForwardFallback") as render_pass:
+            render_pass.write_color("color")
+            render_pass.draw_renderers(
+                material_pass="forward_plus",
+                material_filter="deferred_unsupported",
+            )
+
+        description = graph.build()
+        assert description.passes[0].commands[0].material_filter == GraphMaterialFilter.DEFERRED_UNSUPPORTED
+
+    def test_draw_renderers_rejects_unknown_material_filter(self):
+        graph = RenderGraph("InvalidDeferredFilter")
+        graph.create_texture("color", camera_target=True)
+        with graph.add_pass("Opaque") as render_pass:
+            render_pass.write_color("color")
+            with pytest.raises(ValueError, match="Unknown material filter"):
+                render_pass.draw_renderers(material_filter="sometimes")
 
     def test_draw_skybox(self):
         graph = _make_graph()
@@ -132,6 +289,21 @@ class TestRenderPassBuilder:
         assert p._action == "fullscreen_quad"
         assert p._shader_name == "my_shader"
         assert p._push_constants["intensity"] == 0.5
+
+    def test_fullscreen_quad_can_bind_dynamic_parameter_block(self):
+        graph = _make_graph()
+        graph.create_texture("fx", format=Format.RGBA16_SFLOAT)
+        with graph.add_pass("FX") as p:
+            p.set_texture("_Src", "color")
+            p.write_color("fx")
+            p.bind_parameter_block(
+                "slot-1/composite",
+                {"intensity": 0.5, "threshold": 1.0},
+            )
+            p.fullscreen_quad("my_shader")
+
+        assert p._parameter_block == "slot-1/composite"
+        assert list(p._push_constants) == ["intensity", "threshold"]
 
     def test_draw_screen_ui_camera(self):
         graph = _make_graph()
@@ -165,6 +337,20 @@ class TestRenderPassBuilder:
 # ══════════════════════════════════════════════════════════════════════
 
 class TestGraphTextures:
+    def test_build_assigns_a_new_nonzero_source_revision(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as render_pass:
+            render_pass.write_color("color")
+            render_pass.write_depth("depth")
+            render_pass.draw_renderers()
+        graph.set_output("color")
+
+        first = graph.build()
+        second = graph.build()
+
+        assert first.source_revision > 0
+        assert second.source_revision > first.source_revision
+
     def test_create_and_get(self):
         g = RenderGraph("G")
         h = g.create_texture("t", format=Format.RGBA8_UNORM)
@@ -200,12 +386,71 @@ class TestGraphTextures:
         g = RenderGraph("G")
         assert g.get_texture("nope") is None
 
+    def test_name_scope_reuses_readable_local_resource_and_pass_names(self):
+        graph = _make_graph()
+        for scope in ("first", "second"):
+            with graph.name_scope(scope):
+                output = graph.create_texture("result", format=Format.RGBA16_SFLOAT)
+                with graph.add_pass("Apply") as render_pass:
+                    render_pass.set_texture("_SourceTex", "color")
+                    render_pass.write_color(output)
+                    render_pass.fullscreen_quad("effect")
+
+        assert graph.get_texture("first/result") is not None
+        assert graph.get_texture("second/result") is not None
+        assert [render_pass.name for render_pass in graph._passes] == [
+            "first/Apply",
+            "second/Apply",
+        ]
+
     def test_msaa_valid_values(self):
         g = RenderGraph("G")
         for v in (0, 1, 2, 4, 8):
             g.set_msaa_samples(v)
         with pytest.raises(ValueError):
             g.set_msaa_samples(3)
+
+    def test_texture_sample_defaults_follow_resource_role(self):
+        graph = RenderGraph("Samples")
+        color = graph.create_texture("color", camera_target=True)
+        depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
+        transient = graph.create_texture("transient")
+
+        assert color.samples == 0
+        assert depth.samples == 0
+        assert transient.samples == 1
+
+    def test_invalid_texture_sample_count_raises(self):
+        graph = RenderGraph("Samples")
+        with pytest.raises(ValueError, match="samples"):
+            graph.create_texture("bad", samples=3)
+
+    def test_temporal_history_builds_typed_single_sample_pair(self):
+        graph = RenderGraph("Temporal")
+        history_read, history_write = graph.create_temporal_history("taa")
+        with graph.add_copy_pass("Commit") as commit:
+            commit.copy_texture(history_read, history_write)
+            commit.set_side_effect()
+        graph.set_output(history_read)
+
+        description = graph.build()
+        textures = {texture.name: texture for texture in description.textures}
+
+        assert history_read.name == "taa/read"
+        assert history_write.name == "taa/write"
+        assert textures["taa/read"].role == GraphTextureRole.TEMPORAL_READ
+        assert textures["taa/write"].role == GraphTextureRole.TEMPORAL_WRITE
+        assert textures["taa/read"].temporal_key == "taa"
+        assert textures["taa/write"].temporal_key == "taa"
+        assert textures["taa/read"].samples == 1
+
+    def test_temporal_history_rejects_depth_and_duplicate_identity(self):
+        graph = RenderGraph("Temporal")
+        with pytest.raises(ValueError, match="color format"):
+            graph.create_temporal_history("depth", format=Format.D32_SFLOAT)
+        graph.create_temporal_history("taa")
+        with pytest.raises(ValueError, match="already exists"):
+            graph.create_temporal_history("taa")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -314,6 +559,51 @@ class TestInjectionPointCallback:
         assert ip_names.count("after_post_process") == 1
 
 
+class TestEffectStageDeclaration:
+    def test_effect_stage_records_stable_identity_and_contract(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as render_pass:
+            render_pass.write_color("color")
+            render_pass.draw_renderers()
+
+        fired = []
+        graph._effect_stage_callback = fired.append
+        stage = graph.effects(
+            "final",
+            scope="composite",
+            display_name="Final Post Processing",
+            inputs={"color"},
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
+
+        assert stage.scope is EffectScope.COMPOSITE
+        assert stage.contract.inputs == frozenset({"color"})
+        assert graph.effect_stages == [stage]
+        assert graph.has_effect_stage("final")
+        assert not graph.has_effect_stage("post_process")
+        assert ("effect_stage", "final") in graph.topology_sequence
+        assert fired == [stage]
+
+    def test_effect_stage_rejects_duplicate_ids(self):
+        graph = _make_graph()
+        graph.effects("final")
+
+        with pytest.raises(ValueError, match="must be unique"):
+            graph.effects("final")
+
+    def test_effect_stage_before_first_pass_is_rejected(self):
+        graph = _make_graph()
+        graph.effects("final")
+        with graph.add_pass("Opaque") as render_pass:
+            render_pass.write_color("color")
+            render_pass.draw_renderers()
+        graph.set_output("color")
+
+        with pytest.raises(ValueError, match="requires an upstream result"):
+            graph.build()
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Overlay reordering
 # ══════════════════════════════════════════════════════════════════════
@@ -356,6 +646,27 @@ class TestBuild:
         assert graph.has_injection_point("before_post_process")
         assert graph.has_injection_point("after_post_process")
 
+    def test_multisample_color_resolve_is_serialized(self):
+        graph = RenderGraph("Resolve")
+        graph.set_msaa_samples(4)
+        graph.create_texture("depth", format=Format.D32_SFLOAT)
+        graph.create_texture("route_msaa", format=Format.RGBA16_SFLOAT, samples=4)
+        graph.create_texture("route", format=Format.RGBA16_SFLOAT, samples=1)
+        with graph.add_pass("Route") as render_pass:
+            render_pass.write_color("route_msaa")
+            render_pass.write_depth("depth")
+            render_pass.write_resolve("route")
+            render_pass.draw_renderers()
+        graph.set_output("route")
+
+        description = graph.build()
+        textures = {texture.name: texture for texture in description.textures}
+        route_pass = next(item for item in description.passes if item.name == "Route")
+
+        assert textures["route_msaa"].samples == 4
+        assert textures["route"].samples == 1
+        assert route_pass.resolve_color == "route"
+
     def test_shadow_pass_preserves_light_index(self):
         graph = _make_graph()
         graph.create_texture("shadow_map", format=Format.D32_SFLOAT, size=(4096, 4096))
@@ -370,7 +681,8 @@ class TestBuild:
         graph.set_output("color")
         desc = graph.build()
         shadow_pass = next(p for p in desc.passes if p.name == "ShadowCaster")
-        assert shadow_pass.light_index == 0
+        assert shadow_pass.commands[0].type == GraphCommandType.DRAW_SHADOW_CASTERS
+        assert shadow_pass.commands[0].light_index == 0
         # hard/soft shadow selection lives on the Light component, not the
         # graph pass (the former shadow_type parameter was a dead end and
         # has been removed from the API).
@@ -390,10 +702,29 @@ class TestBuild:
         graph.set_output("_fx_out")
         desc = graph.build()
         fx_pass = next(p for p in desc.passes if p.name == "FX")
-        assert fx_pass.shader_name == "my_effect"
-        pc_dict = dict(fx_pass.push_constants)
+        assert fx_pass.commands[0].type == GraphCommandType.FULLSCREEN_QUAD
+        assert fx_pass.commands[0].shader_name == "my_effect"
+        pc_dict = dict(fx_pass.commands[0].push_constants)
         assert pc_dict["intensity"] == 0.5
         assert pc_dict["threshold"] == 1.0
+
+    def test_dynamic_parameter_block_is_emitted_in_command_ir(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        graph.create_texture("_fx_out", format=Format.RGBA16_SFLOAT)
+        with graph.add_pass("FX") as p:
+            p.set_texture("_SourceTex", "color")
+            p.write_color("_fx_out")
+            p.bind_parameter_block("slot-1/fx", {"intensity": 0.5})
+            p.fullscreen_quad("my_effect")
+        graph.set_output("_fx_out")
+
+        command = graph.build().passes[1].commands[0]
+
+        assert command.parameter_block == "slot-1/fx"
+        assert command.push_constants == [("intensity", 0.5)]
 
     def test_empty_graph_raises(self):
         g = RenderGraph("Empty")

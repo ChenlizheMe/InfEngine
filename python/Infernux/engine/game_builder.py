@@ -22,6 +22,7 @@ Windows output layout::
 
 from __future__ import annotations
 
+import io
 import json
 import hashlib
 import os
@@ -42,6 +43,13 @@ from Infernux.debug import Debug
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.i18n import t
 from Infernux.engine.nuitka_builder import NuitkaBuilder
+from Infernux.engine.path_utils import (
+    path_fingerprint,
+    portable_path,
+    relative_path,
+    resolved_path,
+    same_path,
+)
 
 
 def _ensure_video_splash_packages() -> None:
@@ -113,10 +121,23 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     _EXCLUDE_PATTERNS = {"__pycache__", ".git", ".gitignore", ".infernux-engine-lock.json"}
     _ICON_EXTS = {".png", ".jpg", ".jpeg", ".ico"}
     _GAME_BUILD_EXCLUDED_PACKAGES = frozenset({"mcp", "fastmcp"})
+    _PLAYER_EXCLUDED_CONTENT_RELATIVE_PATHS = frozenset(
+        {
+            "ProjectSettings/agent_tools.json",
+            "ProjectSettings/mcp_capabilities.json",
+        }
+    )
+    _PLAYER_EXCLUDED_PARTICLE_AUTHORING_SUFFIXES = (
+        ".particlegraph",
+        ".particlegraph.meta",
+        ".particle.py",
+        ".particle.py.meta",
+        ".particle.pyc",
+        ".particle.pyc.meta",
+    )
     _CONTENT_ARCHIVE_FILENAME = "Content.inxpkg"
     _CONTENT_MANIFEST_FILENAME = "Content.json"
-    _CONTENT_SCHEMA_VERSION = 1
-
+    _PARTICLE_RUNTIME_INDEX_FILENAME = "RuntimeIndex.json"
     def __init__(
         self,
         project_path: str,
@@ -133,10 +154,11 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         lto: bool = True,
         enable_jit: bool = False,
     ):
-        self.project_path = os.path.abspath(project_path)
+        self.project_path = resolved_path(project_path)
         self.project_name = game_name.strip() if game_name.strip() else os.path.basename(self.project_path)
-        self.output_dir = os.path.abspath(output_dir)
-        self.icon_path = os.path.abspath(icon_path) if icon_path else ""
+        self.output_dir = resolved_path(output_dir)
+        self.icon_path = resolved_path(icon_path) if icon_path else ""
+        self._built_icon_path = ""
         self.display_mode = display_mode
         self.window_width = window_width
         self.window_height = window_height
@@ -250,6 +272,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self._compile_user_scripts(final_dir)
 
         _p(t("build.step.processing_splash"), 0.93)
+        self._process_build_icon(final_dir)
         self._process_splash_items(final_dir)
 
         _p(t("build.step.fixing_scenes"), 0.96)
@@ -293,6 +316,25 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     # Validation
     # ------------------------------------------------------------------
 
+    def _resolve_build_scene_path(self, scene_path: str) -> str:
+        if type(scene_path) is not str or not scene_path.strip():
+            raise ValueError("BuildSettings scenes must contain non-empty strings")
+        candidate = (
+            scene_path
+            if os.path.isabs(scene_path)
+            else os.path.join(self.project_path, scene_path)
+        )
+        absolute = resolved_path(candidate)
+        try:
+            relative_path(absolute, self.project_path)
+        except ValueError as exc:
+            raise ValueError(
+                f"Build scene must be inside the project: {scene_path}"
+            ) from exc
+        if not absolute.lower().endswith(".scene"):
+            raise ValueError(f"Build scene must use the .scene extension: {scene_path}")
+        return absolute
+
     def _validate(self):
         bs = os.path.join(
             self.project_path, "ProjectSettings", "BuildSettings.json"
@@ -305,11 +347,12 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         with open(bs, "r", encoding="utf-8", errors="replace") as f:
             data = json.load(f)
         scenes = data.get("scenes", [])
-        if not scenes:
+        if type(scenes) is not list or not scenes:
             raise ValueError(
                 "Build list is empty. Add at least one scene in Build Settings."
             )
-        missing = [s for s in scenes if not os.path.isfile(s)]
+        resolved_scenes = [self._resolve_build_scene_path(scene) for scene in scenes]
+        missing = [scene for scene in resolved_scenes if not os.path.isfile(scene)]
         if missing:
             names = ", ".join(os.path.basename(m) for m in missing)
             raise FileNotFoundError(f"Scene file(s) not found: {names}")
@@ -326,13 +369,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self._validate_output_directory()
 
     def _output_marker_path(self, directory: Optional[str] = None) -> str:
-        target_dir = os.path.abspath(directory or self.output_dir)
+        target_dir = resolved_path(directory or self.output_dir)
         if self._player_launcher_path():
             target_dir = os.path.join(target_dir, f"{self.project_name}_Data")
-        return os.path.join(target_dir, self.OUTPUT_MARKER_FILENAME)
-
-    def _legacy_output_marker_path(self, directory: Optional[str] = None) -> str:
-        target_dir = os.path.abspath(directory or self.output_dir)
         return os.path.join(target_dir, self.OUTPUT_MARKER_FILENAME)
 
     def _validate_output_directory(self) -> None:
@@ -368,11 +407,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             if os.path.isdir(temp_dir) and not os.path.islink(temp_dir):
                 return
 
-        marker_paths = (
-            self._output_marker_path(self.output_dir),
-            self._legacy_output_marker_path(self.output_dir),
-        )
-        if any(os.path.isfile(path) for path in marker_paths):
+        if os.path.isfile(self._output_marker_path(self.output_dir)):
             return
 
         raise BuildOutputDirectoryError(
@@ -418,6 +453,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             "tool": "Infernux",
             "kind": "build-output",
             "project_name": self.project_name,
+            "project_identity": path_fingerprint(self.project_path),
             "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         with open(marker_path, "w", encoding="utf-8") as f:
@@ -454,9 +490,9 @@ sys.dont_write_bytecode = True
 # these explicitly; the fallback keeps older flat distributions portable.
 _DIR = os.environ.get("_INFERNUX_PLAYER_RUNTIME_ROOT", "").strip()
 if not _DIR:
-    _DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
+    _DIR = os.path.dirname(resolved_path(sys.argv[0]))
     if not os.path.isdir(os.path.join(_DIR, "Data")):
-        _DIR = os.path.dirname(os.path.abspath(sys.executable))
+        _DIR = os.path.dirname(resolved_path(sys.executable))
 _DATA_ROOT = os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", "").strip()
 if not _DATA_ROOT:
     _DATA_ROOT = os.path.join(_DIR, "Data")
@@ -877,7 +913,7 @@ finally:
         if (
             not self._player_launcher_path()
             and os.path.isfile(runtime_executable)
-            and os.path.normcase(runtime_executable) != os.path.normcase(game_executable)
+            and not same_path(runtime_executable, game_executable)
         ):
             os.replace(runtime_executable, game_executable)
 
@@ -938,9 +974,10 @@ finally:
             shutil.move(source, destination)
 
         shutil.copy2(launcher_path, game_executable)
+        if self.icon_path:
+            self._apply_windows_executable_icon(game_executable, self.icon_path)
         layout_manifest = {
-            "schema_version": 3,
-            "layout": "infernux-windows-player-v3",
+            "layout": "infernux-windows-player",
             "launcher": os.path.basename(game_executable),
             "data_directory": data_name,
             "runtime_directory": "Runtime",
@@ -954,12 +991,157 @@ finally:
             json.dump(layout_manifest, manifest_file, indent=2, sort_keys=True)
             manifest_file.write("\n")
 
+    @staticmethod
+    def _windows_icon_resource(icon_path: str) -> bytes:
+        """Convert a supported source image to a multi-resolution ICO payload."""
+        if os.path.splitext(icon_path)[1].lower() == ".ico":
+            with open(icon_path, "rb") as source:
+                return source.read()
+
+        try:
+            from PIL import Image, ImageOps
+        except ImportError as exc:
+            raise RuntimeError(
+                "Pillow is required to convert the configured Windows build icon"
+            ) from exc
+
+        with Image.open(icon_path) as source:
+            image = source.convert("RGBA")
+            image = ImageOps.contain(image, (256, 256), Image.Resampling.LANCZOS)
+            canvas = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+            canvas.alpha_composite(
+                image,
+                ((256 - image.width) // 2, (256 - image.height) // 2),
+            )
+            output = io.BytesIO()
+            canvas.save(
+                output,
+                format="ICO",
+                sizes=((256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)),
+            )
+            return output.getvalue()
+
+    @classmethod
+    def _apply_windows_executable_icon(cls, executable: str, icon_path: str) -> None:
+        """Replace the copied thin launcher's icon without rebuilding the runtime."""
+        if sys.platform != "win32":
+            return
+
+        import ctypes
+        from ctypes import wintypes
+
+        payload = cls._windows_icon_resource(icon_path)
+        if len(payload) < 6:
+            raise RuntimeError(f"Build icon is not a valid ICO payload: {icon_path}")
+        reserved, icon_type, count = struct.unpack_from("<HHH", payload, 0)
+        if reserved != 0 or icon_type != 1 or count == 0 or len(payload) < 6 + count * 16:
+            raise RuntimeError(f"Build icon is not a valid ICO payload: {icon_path}")
+
+        images: list[tuple[int, bytes]] = []
+        group_entries = bytearray(struct.pack("<HHH", 0, 1, count))
+        for index in range(count):
+            entry = struct.unpack_from("<BBBBHHII", payload, 6 + index * 16)
+            width, height, colors, entry_reserved, planes, bits, byte_count, offset = entry
+            end = offset + byte_count
+            if offset < 6 + count * 16 or end > len(payload):
+                raise RuntimeError(f"Build icon contains an invalid image entry: {icon_path}")
+            resource_id = index + 1
+            images.append((resource_id, payload[offset:end]))
+            group_entries.extend(
+                struct.pack(
+                    "<BBBBHHIH",
+                    width,
+                    height,
+                    colors,
+                    entry_reserved,
+                    planes,
+                    bits,
+                    byte_count,
+                    resource_id,
+                )
+            )
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.BeginUpdateResourceW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL]
+        kernel32.BeginUpdateResourceW.restype = wintypes.HANDLE
+        kernel32.UpdateResourceW.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.WORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.UpdateResourceW.restype = wintypes.BOOL
+        kernel32.EndUpdateResourceW.argtypes = [wintypes.HANDLE, wintypes.BOOL]
+        kernel32.EndUpdateResourceW.restype = wintypes.BOOL
+
+        update = kernel32.BeginUpdateResourceW(executable, False)
+        if not update:
+            raise RuntimeError(
+                f"Unable to open Player launcher icon resources (Windows error {ctypes.get_last_error()})"
+            )
+
+        buffers = []
+        committed = False
+        try:
+            # The bundled launcher uses group 101. Update both neutral and
+            # English resources so Explorer cannot select the stale group.
+            for language in (0, 0x0409):
+                for resource_id, image_bytes in images:
+                    image_buffer = ctypes.create_string_buffer(image_bytes)
+                    buffers.append(image_buffer)
+                    if not kernel32.UpdateResourceW(
+                        update,
+                        ctypes.c_void_p(3),
+                        ctypes.c_void_p(resource_id),
+                        language,
+                        image_buffer,
+                        len(image_bytes),
+                    ):
+                        raise RuntimeError(
+                            f"Unable to write Player icon image (Windows error {ctypes.get_last_error()})"
+                        )
+                group_buffer = ctypes.create_string_buffer(bytes(group_entries))
+                buffers.append(group_buffer)
+                if not kernel32.UpdateResourceW(
+                    update,
+                    ctypes.c_void_p(14),
+                    ctypes.c_void_p(101),
+                    language,
+                    group_buffer,
+                    len(group_entries),
+                ):
+                    raise RuntimeError(
+                        f"Unable to write Player icon group (Windows error {ctypes.get_last_error()})"
+                    )
+            if not kernel32.EndUpdateResourceW(update, False):
+                raise RuntimeError(
+                    f"Unable to commit Player icon resources (Windows error {ctypes.get_last_error()})"
+                )
+            committed = True
+        finally:
+            if not committed:
+                kernel32.EndUpdateResourceW(update, True)
+
+    def _process_build_icon(self, final_dir: str) -> None:
+        """Stage the project icon for the runtime window and taskbar."""
+        self._built_icon_path = ""
+        if not self.icon_path:
+            return
+        extension = os.path.splitext(self.icon_path)[1].lower()
+        branding_dir = os.path.join(final_dir, "Data", "Branding")
+        os.makedirs(branding_dir, exist_ok=True)
+        destination = os.path.join(branding_dir, "icon" + extension)
+        shutil.copy2(self.icon_path, destination)
+        self._built_icon_path = portable_path(relative_path(destination, os.path.join(final_dir, "Data")))
+
     # ------------------------------------------------------------------
     # Game data
     # ------------------------------------------------------------------
 
     def _copy_game_data(self, final_dir: str):
-        """Copy Assets, ProjectSettings, materials to Data/."""
+        """Copy authored data and selected runtime artifacts to Data/."""
         data_dir = os.path.join(final_dir, "Data")
         ignore = shutil.ignore_patterns(*self._EXCLUDE_PATTERNS)
         for dirname in self._GAME_DATA_DIRS:
@@ -993,7 +1175,269 @@ finally:
                     f"  copied {dirname}/ in {time.perf_counter() - _t0:.2f}s"
                 )
 
+        for artifact_kind in ("RenderEffect",):
+            artifact_source = os.path.join(
+                self.project_path, "Library", "Artifacts", artifact_kind
+            )
+            if os.path.isdir(artifact_source):
+                shutil.copytree(
+                    artifact_source,
+                    os.path.join(data_dir, "Library", "Artifacts", artifact_kind),
+                    dirs_exist_ok=True,
+                )
+
+        self._copy_reachable_particle_artifacts(data_dir)
+        self._copy_particle_data_interface_artifacts(data_dir)
+
         self._filter_shipped_requirements(data_dir)
+
+    def _copy_reachable_particle_artifacts(self, data_dir: str) -> None:
+        """Copy only Particle artifacts referenced by scenes in BuildSettings."""
+        source_root = os.path.join(
+            self.project_path, "Library", "Artifacts", "Particle"
+        )
+        if not os.path.isdir(source_root):
+            return
+
+        references = self._collect_reachable_particle_artifacts()
+        stable_ids = {item["stable_id"] for item in references}
+        destination_root = os.path.join(
+            data_dir, "Library", "Artifacts", "Particle"
+        )
+        for stable_id in sorted(stable_ids):
+            filename = stable_id + ".inxparticle"
+            source = os.path.join(source_root, filename)
+            if not os.path.isfile(source):
+                raise RuntimeError(
+                    "Reachable ParticleGraph has no current AOT artifact: "
+                    f"Library/Artifacts/Particle/{filename}"
+                )
+            os.makedirs(destination_root, exist_ok=True)
+            shutil.copy2(source, os.path.join(destination_root, filename))
+
+        if references:
+            os.makedirs(destination_root, exist_ok=True)
+            index_path = os.path.join(
+                destination_root, self._PARTICLE_RUNTIME_INDEX_FILENAME
+            )
+            payload = {
+                "$schema": "infernux.particle_runtime_index",
+                "entries": references,
+            }
+            with open(index_path, "w", encoding="utf-8") as stream:
+                json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
+                stream.write("\n")
+
+    def _collect_reachable_particle_stable_ids(self) -> set[str]:
+        return {
+            item["stable_id"]
+            for item in self._collect_reachable_particle_artifacts()
+        }
+
+    def _collect_reachable_particle_artifacts(self) -> list[dict[str, str]]:
+        settings_path = os.path.join(
+            self.project_path, "ProjectSettings", "BuildSettings.json"
+        )
+        with open(settings_path, "r", encoding="utf-8", errors="replace") as stream:
+            settings = json.load(stream)
+
+        references: set[tuple[str, str]] = set()
+        for configured_scene in settings.get("scenes", ()):
+            scene_path = self._resolve_build_scene_path(configured_scene)
+            try:
+                with open(scene_path, "r", encoding="utf-8") as stream:
+                    scene = json.load(stream)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"Build scene is not valid current JSON: {scene_path}"
+                ) from exc
+            self._collect_particle_asset_references(scene, references)
+
+        entries: list[dict[str, str]] = []
+        guid_index: Optional[dict[str, str]] = None
+        for guid, path_hint in sorted(references):
+            source_path = self._resolve_particle_source_path(path_hint)
+            if source_path is None and guid:
+                if guid_index is None:
+                    guid_index = self._build_asset_guid_index()
+                source_path = guid_index.get(guid)
+            if source_path is None:
+                raise RuntimeError(
+                    "Build scene references a ParticleGraph that cannot be resolved: "
+                    f"guid={guid!r}, path_hint={path_hint!r}"
+                )
+            entries.append(
+                {
+                    "guid": guid,
+                    "path_hint": path_hint.replace("\\", "/"),
+                    "stable_id": self._particle_source_stable_id(source_path),
+                }
+            )
+        return entries
+
+    @classmethod
+    def _collect_particle_asset_references(
+        cls,
+        value,
+        references: set[tuple[str, str]],
+    ) -> None:
+        if type(value) is dict:
+            if (
+                value.get("$type") == "asset_ref"
+                and value.get("asset_type") == "ParticleGraph"
+            ):
+                guid = value.get("guid", "")
+                path_hint = value.get("path_hint", "")
+                if type(guid) is not str or type(path_hint) is not str:
+                    raise RuntimeError("ParticleGraph asset references must use string identity")
+                if guid or path_hint:
+                    references.add((guid, path_hint))
+            for nested in value.values():
+                cls._collect_particle_asset_references(nested, references)
+        elif type(value) is list:
+            for nested in value:
+                cls._collect_particle_asset_references(nested, references)
+
+    def _resolve_particle_source_path(self, path_hint: str) -> Optional[str]:
+        if not path_hint:
+            return None
+        candidate = resolved_path(os.path.join(self.project_path, path_hint))
+        try:
+            relative_path(candidate, self.project_path)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"ParticleGraph path escapes the project: {path_hint}"
+            ) from exc
+        return candidate if os.path.isfile(candidate) else None
+
+    def _build_asset_guid_index(self) -> dict[str, str]:
+        result: dict[str, str] = {}
+        assets_root = os.path.join(self.project_path, "Assets")
+        for root, _dirs, filenames in os.walk(assets_root):
+            for filename in filenames:
+                if not filename.endswith(".meta"):
+                    continue
+                meta_path = os.path.join(root, filename)
+                try:
+                    with open(meta_path, "r", encoding="utf-8") as stream:
+                        metadata = json.load(stream).get("metadata", {})
+                    guid = metadata.get("guid", {}).get("value", "")
+                except (OSError, AttributeError, json.JSONDecodeError):
+                    continue
+                source_path = meta_path[:-5]
+                if guid and os.path.isfile(source_path):
+                    result[str(guid)] = source_path
+        return result
+
+    @staticmethod
+    def _particle_source_stable_id(source_path: str) -> str:
+        lower = source_path.lower()
+        if not lower.endswith(".particlegraph"):
+            raise RuntimeError(
+                "Player builds only accept saved ParticleGraph sources; "
+                f"ParticleScript is Preview/Future: {source_path}"
+            )
+        try:
+            with open(source_path, "r", encoding="utf-8") as stream:
+                stable_id = json.load(stream).get("stable_id", "")
+        except (OSError, AttributeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"ParticleGraph source is not valid current JSON: {source_path}"
+            ) from exc
+
+        if type(stable_id) is not str or not stable_id.strip():
+            raise RuntimeError(
+                f"Particle source must declare a non-empty stable_id: {source_path}"
+            )
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", stable_id):
+            raise RuntimeError(
+                f"Particle source stable_id is not artifact-safe: {stable_id!r}"
+            )
+        return stable_id
+
+    @classmethod
+    def _is_particle_authoring_payload(cls, relative: str) -> bool:
+        lower = relative.casefold()
+        if lower.endswith(cls._PLAYER_EXCLUDED_PARTICLE_AUTHORING_SUFFIXES):
+            return True
+        filename = lower.rsplit("/", 1)[-1]
+        return bool(
+            re.fullmatch(
+                r".+\.particle\.[a-z0-9_-]+(?:\.opt-\d+)?\.pyc(?:\.meta)?",
+                filename,
+            )
+        )
+
+    def _copy_particle_data_interface_artifacts(self, data_dir: str) -> None:
+        """Copy the imported payloads referenced by sampled particle interfaces."""
+        particle_root = os.path.join(data_dir, "Library", "Artifacts", "Particle")
+        if not os.path.isdir(particle_root):
+            return
+
+        dependencies: set[tuple[str, str]] = set()
+        for root, _dirs, filenames in os.walk(particle_root):
+            for filename in filenames:
+                if not filename.endswith(".inxparticle"):
+                    continue
+                artifact_path = os.path.join(root, filename)
+                try:
+                    with open(artifact_path, "r", encoding="utf-8") as artifact_file:
+                        artifact = json.load(artifact_file)
+                    for emitter in artifact["kernel_ir"]["emitters"]:
+                        interfaces = {
+                            item["stable_id"]: item
+                            for item in emitter["data_interfaces"]
+                            if type(item) is dict and type(item.get("stable_id")) is str
+                        }
+                        sampled = set()
+                        for stage_name in ("init", "update", "rendering"):
+                            for instruction in emitter[stage_name]["instructions"]:
+                                if instruction.get("opcode") not in {
+                                    "sample_vector_field",
+                                    "collide_sdf_position",
+                                    "collide_sdf_velocity",
+                                }:
+                                    continue
+                                immediates = dict(instruction.get("immediates", ()))
+                                sampled.add(immediates.get("interface"))
+                        for stable_id in sampled:
+                            interface = interfaces.get(stable_id)
+                            if interface is None:
+                                raise RuntimeError(
+                                    f"Particle artifact {filename!r} references missing Data Interface {stable_id!r}"
+                                )
+                            if interface.get("kind") == "vector_field":
+                                reference = interface.get("texture")
+                                kind, extension = "Texture", ".inxtex"
+                            elif interface.get("kind") == "sdf_volume":
+                                reference = interface.get("texture")
+                                kind, extension = "Texture", ".inxtex"
+                            else:
+                                continue
+                            guid = reference.get("guid") if type(reference) is dict else ""
+                            if type(guid) is not str or not guid:
+                                raise RuntimeError(
+                                    f"Particle Data Interface {stable_id!r} must reference an imported asset GUID before building"
+                                )
+                            dependencies.add((kind, guid + extension))
+                except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(
+                        f"Particle artifact is not a valid current build input: {artifact_path}"
+                    ) from exc
+
+        for kind, filename in sorted(dependencies):
+            source = os.path.join(
+                self.project_path, "Library", "Artifacts", kind, filename
+            )
+            if not os.path.isfile(source):
+                raise RuntimeError(
+                    f"Particle build dependency is missing: Library/Artifacts/{kind}/{filename}"
+                )
+            destination = os.path.join(
+                data_dir, "Library", "Artifacts", kind, filename
+            )
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copy2(source, destination)
 
     def _filter_shipped_requirements(self, data_dir: str) -> None:
         req_file = os.path.join(data_dir, "ProjectSettings", "requirements.txt")
@@ -1070,9 +1514,7 @@ finally:
                                         .get("guid", {})
                                         .get("value", ""))
                             if guid:
-                                pyc_rel = os.path.relpath(
-                                    py_path + "c", data_dir
-                                ).replace("\\", "/")
+                                pyc_rel = relative_path(py_path + "c", data_dir)
                                 guid_map[guid] = pyc_rel
                         except (json.JSONDecodeError, OSError) as _exc:
                             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
@@ -1095,7 +1537,7 @@ finally:
                             py_compile.compile(
                                 sidecar_py,
                                 cfile=sidecar_py + "c",
-                                dfile=os.path.relpath(sidecar_py, data_dir).replace("\\", "/"),
+                                dfile=relative_path(sidecar_py, data_dir),
                                 optimize=2,
                                 doraise=True,
                             )
@@ -1113,7 +1555,7 @@ finally:
                         py_compile.compile(
                             py_path,
                             cfile=py_path + "c",
-                            dfile=os.path.relpath(py_path, data_dir).replace("\\", "/"),
+                            dfile=relative_path(py_path, data_dir),
                             optimize=2,
                             doraise=True,
                         )
@@ -1161,7 +1603,7 @@ finally:
             for root, _dirs, filenames in os.walk(payload_root):
                 for filename in filenames:
                     source_path = os.path.join(root, filename)
-                    relative = os.path.relpath(source_path, final_dir).replace("\\", "/")
+                    relative = relative_path(source_path, final_dir)
                     files.append((source_path, relative))
                     uncompressed_bytes += os.path.getsize(source_path)
         if not files:
@@ -1186,7 +1628,6 @@ finally:
 
         archive_bytes = os.path.getsize(archive_path)
         manifest = {
-            "schema_version": 1,
             "module": "core",
             "archive": "core-module.zip",
             "archive_sha256": self._sha256_file(archive_path),
@@ -1210,7 +1651,7 @@ finally:
         )
 
     def _pack_content_archive(self, final_dir: str) -> None:
-        """Pack authoring files into one validated Player content archive."""
+        """Pack runtime content into one validated Player content archive."""
         data_root = os.path.join(final_dir, "Data")
         if not os.path.isdir(data_root):
             raise RuntimeError("Player Data directory is missing")
@@ -1228,14 +1669,21 @@ finally:
         project_bytecode_count = 0
         project_metadata_count = 0
         plaintext_project_scripts: list[str] = []
+        excluded_files: list[str] = []
         uncompressed_bytes = 0
 
         for root, dirs, filenames in os.walk(data_root):
             dirs[:] = [directory for directory in dirs if directory != "Logs"]
             for filename in filenames:
                 path = os.path.join(root, filename)
-                relative = os.path.relpath(path, data_root).replace("\\", "/")
+                relative = relative_path(path, data_root)
                 if "/" not in relative and relative in retained:
+                    continue
+                if relative in self._PLAYER_EXCLUDED_CONTENT_RELATIVE_PATHS:
+                    excluded_files.append(path)
+                    continue
+                if self._is_particle_authoring_payload(relative):
+                    excluded_files.append(path)
                     continue
                 suffix = os.path.splitext(filename)[1].lower()
                 if relative.startswith("Assets/") and suffix == ".py":
@@ -1274,7 +1722,6 @@ finally:
 
         archive_bytes = os.path.getsize(archive_path)
         manifest = {
-            "schema_version": self._CONTENT_SCHEMA_VERSION,
             "archive": self._CONTENT_ARCHIVE_FILENAME,
             "archive_sha256": self._sha256_file(archive_path),
             "archive_bytes": archive_bytes,
@@ -1290,6 +1737,8 @@ finally:
 
         for source_path, _relative in files:
             os.remove(source_path)
+        for excluded_path in excluded_files:
+            os.remove(excluded_path)
         for root, dirs, _files in os.walk(data_root, topdown=False):
             for directory in dirs:
                 path = os.path.join(root, directory)
@@ -1323,7 +1772,7 @@ finally:
         for root, _dirs, files in os.walk(final_dir):
             for filename in files:
                 path = os.path.join(root, filename)
-                relative = os.path.relpath(path, final_dir).replace("\\", "/")
+                relative = relative_path(path, final_dir)
                 try:
                     size = os.path.getsize(path)
                 except OSError:
@@ -1390,11 +1839,10 @@ finally:
             pass
 
         payload = {
-            "schema_version": 3 if self._player_launcher_path() else 2,
             "layout": (
-                "infernux-windows-player-v3"
+                "infernux-windows-player"
                 if self._player_launcher_path()
-                else "infernux-player-directory-v2"
+                else "infernux-player-directory"
             ),
             "code_protection": {
                 "engine": "nuitka-native",
@@ -1444,11 +1892,9 @@ finally:
         scenes = data.get("scenes", [])
         rel_scenes = []
         for scene_path in scenes:
-            try:
-                rel = os.path.relpath(scene_path, self.project_path)
-            except ValueError:
-                rel = os.path.basename(scene_path)
-            rel_scenes.append(rel.replace("\\", "/"))
+            absolute = self._resolve_build_scene_path(scene_path)
+            rel = relative_path(absolute, self.project_path)
+            rel_scenes.append(portable_path(rel))
         data["scenes"] = rel_scenes
 
         with open(bs, "w", encoding="utf-8") as f:
@@ -1483,6 +1929,7 @@ finally:
 
         manifest = {
             "game_name": self.project_name,
+            "icon_path": self._built_icon_path,
             "debug_build": bool(self.debug_mode),
             "display_mode": self.display_mode,
             "window_width": self.window_width,

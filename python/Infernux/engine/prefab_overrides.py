@@ -38,7 +38,7 @@ class Override:
 # ─── Core diff ────────────────────────────────────────────────────────────
 
 _SKIP_KEYS = frozenset({
-    "id", "local_id", "schema_version", "children", "components",
+    "id", "local_id", "children", "components",
     "transform", "prefab_guid", "prefab_root",
 })
 
@@ -212,7 +212,7 @@ def _build_reverted_prefab_document(instance_obj, prefab_path: str):
     # not prefab overrides, so preserve them while reverting prefab-owned
     # scale and every child transform.
     try:
-        current_document = instance_obj.serialize_document()
+        current_document = _serialize_obj(instance_obj)
         current_transform = current_document.get("transform")
     except Exception:
         current_document = None
@@ -261,7 +261,11 @@ def _snapshot_linked_instances(instance_root, prefab_guid: str):
             continue
         if not bool(getattr(obj, "prefab_root", False)):
             continue
-        runtime_document = obj.serialize_document()
+        runtime_document = _serialize_obj(obj)
+        if runtime_document is None:
+            raise RuntimeError(
+                f"Failed to snapshot linked prefab instance '{getattr(obj, 'name', '')}'"
+            )
         local_document = copy.deepcopy(runtime_document)
         _strip_prefab_fields(local_document)
         _strip_prefab_runtime_fields(local_document)
@@ -365,6 +369,7 @@ def _propagate_applied_prefab(base_root: dict, updated_root: dict, snapshots,
                 merged,
                 asset_database,
                 preserve_document_ids=False,
+                reference_scene=obj.scene,
             )
             prepared_updates.append((obj, merged, prepared))
     except Exception as exc:
@@ -408,7 +413,11 @@ def _load_prefab_root(prefab_path: str) -> Optional[dict]:
 def _serialize_obj(obj) -> Optional[dict]:
     """Serialize a live GameObject to a dict."""
     try:
-        return obj.serialize_document()
+        from Infernux.engine.component_restore import (
+            serialize_game_object_document_authoritatively,
+        )
+
+        return serialize_game_object_document_authoritatively(obj)
     except Exception as _exc:
         Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         return None

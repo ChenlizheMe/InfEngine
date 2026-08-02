@@ -50,7 +50,7 @@
     {
       "name": "Infernux Community",
       "short_name": "Community",
-      "description": "Browse GitHub Discussions, support channels, and engineering queues.",
+      "description": "Open the official Infernux community on Discourse.",
       "url": "/community.html",
       "icons": [{ "src": "/assets/infernux-icon-192.png", "sizes": "192x192", "type": "image/png" }]
     },

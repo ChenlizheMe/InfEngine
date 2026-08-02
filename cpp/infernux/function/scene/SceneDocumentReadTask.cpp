@@ -48,9 +48,7 @@ void ValidateNativeComponentRecord(const json &component, const std::string &pat
                                    std::unordered_set<uint64_t> &componentIds,
                                    std::unordered_map<uint64_t, std::string> &componentTypes)
 {
-    if (!component.is_object() || !component.contains("schema_version") ||
-        !component["schema_version"].is_number_integer() || component["schema_version"].get<int>() <= 0 ||
-        !component.contains("type") || !component["type"].is_string() ||
+    if (!component.is_object() || !component.contains("type") || !component["type"].is_string() ||
         component["type"].get_ref<const std::string &>().empty() || !component.contains("enabled") ||
         !component["enabled"].is_boolean() || !component.contains("execution_order") ||
         !component["execution_order"].is_number_integer()) {
@@ -102,17 +100,15 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
                     std::unordered_map<uint64_t, std::string> &componentTypes)
 {
     static const std::unordered_set<std::string> allowed = {
-        "schema_version", "name",        "id",          "active",    "is_static",  "tag",
-        "layer",          "prefab_guid", "prefab_root", "transform", "components", "children",
+        "name",        "id",          "active",    "is_static",  "tag",      "layer",
+        "prefab_guid", "prefab_root", "transform", "components", "children",
     };
     RequireExactFields(object, allowed, path);
-    if (!object.contains("schema_version") || !object["schema_version"].is_number_integer() ||
-        object["schema_version"].get<int>() != 2 || !object.contains("name") || !object["name"].is_string() ||
-        !object.contains("active") || !object["active"].is_boolean() || !object.contains("is_static") ||
-        !object["is_static"].is_boolean() || !object.contains("tag") || !object["tag"].is_string() ||
-        !object.contains("layer") || !object["layer"].is_number_integer() || !object.contains("transform") ||
-        !object.contains("components") || !object["components"].is_array() || !object.contains("children") ||
-        !object["children"].is_array()) {
+    if (!object.contains("name") || !object["name"].is_string() || !object.contains("active") ||
+        !object["active"].is_boolean() || !object.contains("is_static") || !object["is_static"].is_boolean() ||
+        !object.contains("tag") || !object["tag"].is_string() || !object.contains("layer") ||
+        !object["layer"].is_number_integer() || !object.contains("transform") || !object.contains("components") ||
+        !object["components"].is_array() || !object.contains("children") || !object["children"].is_array()) {
         throw std::invalid_argument(path + " has invalid GameObject fields");
     }
     const int layer = object["layer"].get<int>();
@@ -141,13 +137,11 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
 void ValidateSceneDocument(const json &document)
 {
     static const std::unordered_set<std::string> allowed = {
-        "schema_version", "name", "isPlaying", "objects", "mainCameraComponentId",
+        "name", "isPlaying", "objects", "mainCameraComponentId", "environment",
     };
     RequireExactFields(document, allowed, "Scene");
-    if (!document.contains("schema_version") || !document["schema_version"].is_number_integer() ||
-        document["schema_version"].get<int>() != 2 || !document.contains("name") || !document["name"].is_string() ||
-        !document.contains("isPlaying") || !document["isPlaying"].is_boolean() || !document.contains("objects") ||
-        !document["objects"].is_array()) {
+    if (!document.contains("name") || !document["name"].is_string() || !document.contains("isPlaying") ||
+        !document["isPlaying"].is_boolean() || !document.contains("objects") || !document["objects"].is_array()) {
         throw std::invalid_argument("Scene has invalid required fields");
     }
 

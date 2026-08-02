@@ -62,16 +62,16 @@ class RenderPipeline:
 
     def __init__(self) -> None: ...
 
-    def render(self, context: Any, cameras: Any) -> None:
-        """Render all cameras.
+    def render(self, context: Any, camera: Any) -> None:
+        """Render one camera through its dedicated context and RenderView.
 
         The base implementation builds the graph from ``define_topology()``,
-        filters cameras via ``should_render_camera()``, then calls
-        ``render_camera()`` for each accepted camera.
+        filters the camera via ``should_render_camera()``, then calls
+        ``render_camera()``.
 
         Args:
             context: The render context provided by the engine.
-            cameras: Iterable of camera objects to render.
+            camera: The camera owned by this render context.
         """
         ...
 
@@ -99,12 +99,16 @@ class RenderPipeline:
 
         1. Create textures via ``graph.create_texture(...)``
         2. Add passes via ``graph.add_pass(...)``
-        3. Declare injection points via ``graph.injection_point(...)``
+        3. Declare stable stages via ``graph.effects(...)``
         4. Call ``graph.set_output(...)``
 
         Args:
             graph: The ``RenderGraph`` builder to populate.
         """
+        ...
+
+    def define(self, pipeline: Any) -> None:
+        """Declare a low-nesting pipeline topology."""
         ...
 
     def dispose(self) -> None:

@@ -204,6 +204,7 @@ class BuiltinComponent(InxComponent):
 
     # ---- Must be overridden in concrete subclasses ----
     _cpp_type_name: str = ""
+    _is_builtin_component_wrapper = True
     _registers_active_instance = False
     _uses_component_data_store = False
 
