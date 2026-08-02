@@ -14,6 +14,8 @@ class UndoCommand(ABC):
     supports_redo: bool = True
     marks_dirty: bool = True
     _is_property_edit: bool = False
+    before_selection_snapshot = None
+    after_selection_snapshot = None
 
     def __init__(self, description: str = ""):
         self.description: str = description
@@ -53,6 +55,25 @@ class CompoundCommand(UndoCommand):
         super().__init__(description or "Compound")
         self._commands = list(commands)
         self.marks_dirty = any(c.marks_dirty for c in self._commands)
+        before_selection = next(
+            (
+                command.before_selection_snapshot
+                for command in self._commands
+                if command.before_selection_snapshot is not None
+            ),
+            None,
+        )
+        after_selection = next(
+            (
+                command.after_selection_snapshot
+                for command in reversed(self._commands)
+                if command.after_selection_snapshot is not None
+            ),
+            None,
+        )
+        if before_selection is not None and after_selection is not None:
+            self.before_selection_snapshot = before_selection
+            self.after_selection_snapshot = after_selection
 
     def execute(self) -> None:
         applied: list[UndoCommand] = []

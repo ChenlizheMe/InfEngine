@@ -23,8 +23,6 @@ class BootstrapSelectionMixin:
         project = self.project_panel
         scene_view = self.scene_view
 
-        hierarchy.on_selection_changed = self._on_hierarchy_selected
-        project.on_file_selected = None
         project.on_selection_changed = self._on_project_selection_changed
         scene_view.set_on_object_picked(self._on_scene_view_picked)
         scene_view.set_on_box_select(self._on_box_select_done)
@@ -92,6 +90,11 @@ class BootstrapSelectionMixin:
 
     def _on_global_selection_changed(self, change) -> None:
         self._present_selection_snapshot(change.after)
+        self._record_selection_snapshot(
+            change.after,
+            previous_snapshot=change.before,
+            record=change.record_history,
+        )
 
     def _present_selection_snapshot(self, snapshot) -> None:
         """Project the one authoritative selection into editor views."""
@@ -174,37 +177,6 @@ class BootstrapSelectionMixin:
         if obj:
             self.scene_view.fly_to_object(obj)
 
-    def _on_hierarchy_selected(self, object_id: int):
-        """C++ HierarchyPanel calls this with uint64_t primary ID (0 = none)."""
-        self._synchronize_object_selection(record=True, owner_id="hierarchy")
-
-    def _synchronize_object_selection(
-        self,
-        *,
-        record: bool,
-        reveal_primary: bool = False,
-        owner_id: str = "hierarchy",
-    ):
-        """Record the already-published object selection and reveal its primary."""
-        from Infernux.engine.ui.selection_manager import SelectionManager
-        sel = SelectionManager.instance()
-        new_ids = sel.get_ids()
-        primary_id = sel.get_primary()
-
-        if record:
-            self._record_editor_selection_change(new_ids, "", owner_id=owner_id)
-        else:
-            self._prev_selection_ids = list(new_ids)
-            self._prev_selected_file = ""
-
-        if reveal_primary and primary_id:
-            from Infernux.lib import SceneManager
-
-            scene = SceneManager.instance().get_active_scene()
-            obj = scene.find_by_id(primary_id) if scene else None
-            if obj:
-                self.hierarchy.expand_to_object(obj.id)
-
     def _on_project_selection_changed(self, paths, primary_path):
         from Infernux.engine.interaction import (
             SelectionService,
@@ -222,9 +194,8 @@ class BootstrapSelectionMixin:
         SelectionService.instance().apply_snapshot(
             snapshot,
             reason="project_select",
-            record_history=False,
+            record_history=True,
         )
-        self._record_selection_snapshot(snapshot)
 
     def _on_scene_view_picked(self, object_id: int, ctrl: bool = False):
         from Infernux.engine.interaction import SelectionService, SelectionTarget
@@ -235,40 +206,25 @@ class BootstrapSelectionMixin:
             selection.toggle(
                 SelectionTarget.scene_object(object_id),
                 owner_id="scene_view",
-                record_history=False,
+                record_history=True,
             )
         elif object_id:
             selection.select(
                 SelectionTarget.scene_object(object_id),
                 owner_id="scene_view",
-                record_history=False,
+                record_history=True,
             )
         elif not ctrl:
-            selection.clear(record_history=False)
+            selection.clear(record_history=True)
 
-        self._record_selection_snapshot(selection.snapshot)
         primary = selection.snapshot.primary
         if primary is not None:
             self.hierarchy.expand_to_object(primary.scene_object_id())
 
     def _on_box_select_done(self, _primary_obj):
-        from Infernux.engine.interaction import SelectionService, SelectionSnapshot
+        from Infernux.engine.interaction import SelectionService
 
-        selection = SelectionService.instance()
-        current = selection.snapshot
-        snapshot = SelectionSnapshot.create(
-            current.targets,
-            owner_id="scene_view" if current.targets else "",
-            primary=current.primary,
-            anchor=current.anchor,
-        )
-        selection.apply_snapshot(
-            snapshot,
-            reason="scene_box_select",
-            record_history=False,
-        )
-        self._record_selection_snapshot(snapshot)
-        primary = snapshot.primary
+        primary = SelectionService.instance().snapshot.primary
         if primary is not None:
             self.hierarchy.expand_to_object(primary.scene_object_id())
 
@@ -290,56 +246,25 @@ class BootstrapSelectionMixin:
             if not self.window_manager.is_window_open("inspector"):
                 self.window_manager.open_window("inspector")
 
-        self.hierarchy.set_selected_object_by_id(object_id, clear_search=True)
+        from Infernux.engine.interaction import SelectionService, SelectionTarget
 
-        if not self.hierarchy.get_ui_mode():
-            self._synchronize_object_selection(
-                record=True,
-                reveal_primary=True,
-                owner_id="hierarchy",
-            )
+        SelectionService.instance().select(
+            SelectionTarget.scene_object(object_id),
+            owner_id="hierarchy",
+            reason="console_navigate_to_object",
+            record_history=True,
+        )
+        self.hierarchy.expand_to_object(object_id)
 
         return True
 
-    def _record_editor_selection_change(
+    def _record_selection_snapshot(
         self,
-        new_ids: list,
-        file_path: str,
+        next_snapshot,
         *,
-        owner_id: str = "hierarchy",
+        previous_snapshot=None,
+        record: bool = True,
     ):
-        """Record hierarchy/project navigation as a non-dirty Undo step."""
-        from Infernux.engine.interaction import (
-            SelectionService,
-            SelectionSnapshot,
-            SelectionTarget,
-        )
-        next_ids = list(new_ids)
-        next_file = file_path or ""
-        if next_file:
-            next_snapshot = SelectionSnapshot.create(
-                (SelectionTarget.asset(next_file),),
-                owner_id="project",
-            )
-        else:
-            targets = tuple(
-                SelectionTarget.scene_object(object_id)
-                for object_id in next_ids
-                if int(object_id) > 0
-            )
-            next_snapshot = SelectionSnapshot.create(
-                targets,
-                owner_id=owner_id if targets else "",
-            )
-
-        SelectionService.instance().apply_snapshot(
-            next_snapshot,
-            reason="editor_surface",
-            record_history=False,
-        )
-        self._record_selection_snapshot(next_snapshot)
-
-    def _record_selection_snapshot(self, next_snapshot):
         from Infernux.engine.ui.asset_resource_preview import release_all_preview_authoring
         from Infernux.engine.interaction import (
             SelectionDomain,
@@ -378,7 +303,8 @@ class BootstrapSelectionMixin:
                 for target in next_snapshot.targets
                 if target.domain is SelectionDomain.SCENE_OBJECT
             ]
-        previous_snapshot = getattr(self, "_prev_selection_snapshot", None)
+        if previous_snapshot is None:
+            previous_snapshot = getattr(self, "_prev_selection_snapshot", None)
         if previous_snapshot is None:
             previous_file = getattr(self, "_prev_selected_file", "") or ""
             previous_ids = list(getattr(self, "_prev_selection_ids", []) or [])
@@ -401,7 +327,7 @@ class BootstrapSelectionMixin:
         self._prev_selection_ids = next_ids
         self._prev_selected_file = next_file
 
-        if previous_snapshot == next_snapshot:
+        if not record or previous_snapshot == next_snapshot:
             return
         manager = UndoManager.instance()
         if manager is None or manager.is_executing:
@@ -411,9 +337,6 @@ class BootstrapSelectionMixin:
             next_snapshot,
             self._apply_selection_snapshot,
         ))
-
-    def _record_selection_change(self, new_ids: list):
-        self._record_editor_selection_change(new_ids, "")
 
     def _apply_editor_selection_undo(self, ids: list, file_path: str):
         from Infernux.engine.interaction import SelectionSnapshot, SelectionTarget

@@ -153,12 +153,23 @@ class HierarchyUndoTracker:
         from Infernux.engine.undo._manager import UndoManager
         return UndoManager.instance()
 
-    def record_create(self, object_id: int,
-                      description: str = "Create GameObject") -> None:
+    def record_create(
+        self,
+        object_id: int,
+        description: str = "Create GameObject",
+        *,
+        before_selection=None,
+        after_selection=None,
+    ) -> None:
         from Infernux.engine.undo._structural_commands import CreateGameObjectCommand
         mgr = self._mgr()
         if mgr:
-            mgr.record(CreateGameObjectCommand(object_id, description))
+            mgr.record(CreateGameObjectCommand(
+                object_id,
+                description,
+                before_selection=before_selection,
+                after_selection=after_selection,
+            ))
             return
         from Infernux.engine.scene_manager import SceneFileManager
         sfm = SceneFileManager.instance()

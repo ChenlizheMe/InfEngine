@@ -454,11 +454,11 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
                 self.scene_view.bind_document(document_id)
                 self.game_view.bind_document(document_id)
             self._prev_selection[0] = 0
-            from Infernux.engine.ui.selection_manager import SelectionManager
-            SelectionManager.instance().clear()
-            self.hierarchy.clear_selection_and_notify()
-            self.inspector_panel.set_selected_object_id(0)
-            self._set_outline(0)
+            from Infernux.engine.interaction import SelectionService
+            SelectionService.instance().clear(
+                reason="scene_changed",
+                record_history=False,
+            )
             self.scene_view._fly_to_active = False
             self.scene_view._fly_to_last_obj_id = 0
             self.scene_view._fly_to_close = False

@@ -26,13 +26,23 @@ class CreateGameObjectCommand(UndoCommand):
 
     _selection_restore_fn: Optional[Callable[[List[int]], None]] = None
 
-    def __init__(self, object_id: int, description: str = "Create GameObject"):
+    def __init__(
+        self,
+        object_id: int,
+        description: str = "Create GameObject",
+        *,
+        before_selection=None,
+        after_selection=None,
+    ):
         super().__init__(description)
         self._object_id = object_id
         self._document: Optional[dict] = None
         self._parent_id: Optional[int] = None
         self._sibling_index: int = 0
         self._post_create_ids: List[int] = _get_current_selection_ids()
+        if before_selection is not None and after_selection is not None:
+            self.before_selection_snapshot = before_selection
+            self.after_selection_snapshot = after_selection
 
     def execute(self) -> None:
         pass
@@ -345,6 +355,8 @@ class GlobalSelectionCommand(EditorSelectionCommand):
         UndoCommand.__init__(self, description or "Change Selection")
         self._old_snapshot = old_snapshot
         self._new_snapshot = new_snapshot
+        self.before_selection_snapshot = old_snapshot
+        self.after_selection_snapshot = new_snapshot
         self._apply_fn = apply_fn
 
     def execute(self) -> None:

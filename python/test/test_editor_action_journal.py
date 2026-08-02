@@ -6,6 +6,7 @@ from Infernux.engine.interaction import (
     ActionOrigin,
     EditorActionJournal,
     EditorContextSnapshot,
+    SelectionSnapshot,
 )
 
 
@@ -25,6 +26,14 @@ class _DisposableAction:
 
     def dispose(self) -> None:
         self.disposed.append(self.name)
+
+
+def test_editor_context_rejects_non_selection_payloads():
+    with pytest.raises(TypeError, match="SelectionSnapshot"):
+        EditorContextSnapshot().with_selection({"component": 7})
+
+    snapshot = SelectionSnapshot()
+    assert EditorContextSnapshot().with_selection(snapshot).selection == snapshot
 
 
 from Infernux.engine.undo import UndoCommand, UndoManager

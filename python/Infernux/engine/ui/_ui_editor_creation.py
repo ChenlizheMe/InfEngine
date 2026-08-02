@@ -74,8 +74,6 @@ class UIEditorCreationMixin:
         go = elem.game_object
         self._selected_element_comp = None
         self._dragging = False
-        if self._on_selection_changed:
-            self._on_selection_changed(None)
         if go is not None:
             from Infernux.engine.undo import UndoManager, DeleteGameObjectCommand
             mgr = UndoManager.instance()
@@ -86,13 +84,31 @@ class UIEditorCreationMixin:
                 scene = SceneManager.instance().get_active_scene()
                 if scene is not None:
                     scene.destroy_game_object(go)
+                from Infernux.engine.interaction import SelectionService
 
-    def _record_ui_create(self, object_id: int, description: str = "Create UI Element"):
+                SelectionService.instance().clear(
+                    reason="delete_ui_element",
+                    record_history=False,
+                )
+
+    def _record_ui_create(
+        self,
+        object_id: int,
+        description: str = "Create UI Element",
+        *,
+        before_selection=None,
+        after_selection=None,
+    ):
         """Record a UI object creation through the undo system."""
         from Infernux.engine.undo import UndoManager, CreateGameObjectCommand
         mgr = UndoManager.instance()
         if mgr:
-            mgr.record(CreateGameObjectCommand(object_id, description))
+            mgr.record(CreateGameObjectCommand(
+                object_id,
+                description,
+                before_selection=before_selection,
+                after_selection=after_selection,
+            ))
 
     def _create_canvas(self):
         """Create a new Canvas GameObject in the scene."""
@@ -102,6 +118,10 @@ class UIEditorCreationMixin:
         scene = SceneManager.instance().get_active_scene()
         if scene is None:
             return
+        from Infernux.engine.interaction import SelectionService
+
+        selection = SelectionService.instance()
+        before_selection = selection.snapshot
         mgr = self._get_undo_mgr()
         ctx_mgr = mgr.suppress() if mgr else _nullcontext()
         go = None
@@ -111,13 +131,14 @@ class UIEditorCreationMixin:
                 go.add_py_component(UICanvasCls())
                 self._focused_canvas_id = go.id
                 invalidate_canvas_cache()
-                # Select the new canvas in hierarchy
-                if self._hierarchy_panel:
-                    self._hierarchy_panel.set_selected_object_by_id(go.id)
-                elif self._on_selection_changed:
-                    self._on_selection_changed(go)
+                self._select_canvas(go)
         if go:
-            self._record_ui_create(go.id, "Create Canvas")
+            self._record_ui_create(
+                go.id,
+                "Create Canvas",
+                before_selection=before_selection,
+                after_selection=selection.snapshot,
+            )
 
     def _create_ui_element(self, canvas_go, component_cls, go_name: str,
                            default_size=None, default_pos=None,
@@ -137,6 +158,10 @@ class UIEditorCreationMixin:
         scene = SceneManager.instance().get_active_scene()
         if scene is None:
             return
+        from Infernux.engine.interaction import SelectionService
+
+        selection = SelectionService.instance()
+        before_selection = selection.snapshot
         mgr = self._get_undo_mgr()
         ctx_mgr = mgr.suppress() if mgr else _nullcontext()
         go = None
@@ -174,10 +199,14 @@ class UIEditorCreationMixin:
                 self._select_element(comp)
                 invalidate_canvas_cache()
                 if self._hierarchy_panel:
-                    self._hierarchy_panel.set_selected_object_by_id(go.id)
                     self._hierarchy_panel.set_pending_expand_id(canvas_go.id)
         if go:
-            self._record_ui_create(go.id, undo_label)
+            self._record_ui_create(
+                go.id,
+                undo_label,
+                before_selection=before_selection,
+                after_selection=selection.snapshot,
+            )
 
     def _create_text_element(self, canvas_go):
         """Create a UIText child under the given canvas GameObject."""

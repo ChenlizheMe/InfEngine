@@ -280,8 +280,6 @@ void HierarchyPanel::NotifySelectionChanged()
         }
     }
 
-    if (onSelectionChanged)
-        onSelectionChanged(primary);
     if (onSelectionChangedUiEditor)
         onSelectionChangedUiEditor(primary);
 }

@@ -116,10 +116,18 @@ def wire_prefab_actions(ctx):
             if revert_overrides_with_undo(go, path):
                 root_id = go.id
                 hp.invalidate_scene_structure_cache()
-                hp.set_selected_object_by_id(root_id, True)
+                from Infernux.engine.interaction import (
+                    SelectionService,
+                    SelectionTarget,
+                )
+
+                SelectionService.instance().select(
+                    SelectionTarget.scene_object(root_id),
+                    owner_id="hierarchy",
+                    reason="prefab_revert",
+                    record_history=False,
+                )
                 hp.set_pending_expand_id(root_id)
-                if hp.on_selection_changed:
-                    hp.on_selection_changed(root_id)
                 from Infernux.engine.scene_manager import SceneFileManager
                 sfm = SceneFileManager.instance()
                 if sfm:
@@ -249,9 +257,7 @@ def wire_clipboard(ctx):
                         scene.destroy_game_object(live)
                 if sfm2:
                     sfm2.mark_dirty()
-            sel.clear()
-            if hp.on_selection_changed:
-                hp.on_selection_changed(0)
+            sel.clear(record_history=False)
         return True
 
     def _paste_clipboard():
@@ -271,6 +277,10 @@ def wire_clipboard(ctx):
         scene = SceneManager.instance().get_active_scene()
         if not scene:
             return False
+        from Infernux.engine.interaction import SelectionService
+
+        selection = SelectionService.instance()
+        before_selection = selection.snapshot
         anchor = scene.find_by_id(sel.get_primary()) if sel.count() >= 1 else None
         anchor_parent = anchor.get_parent() if anchor else None
         anchor_index = anchor.transform.get_sibling_index() if anchor and getattr(anchor, "transform", None) else -1
@@ -354,7 +364,17 @@ def wire_clipboard(ctx):
         if not created:
             return False
         cids = [o.id for o in created]
-        cmds = [CreateGameObjectCommand(cid, "Paste GameObject") for cid in cids]
+        sel.set_ids(cids)
+        after_selection = selection.snapshot
+        cmds = [
+            CreateGameObjectCommand(
+                cid,
+                "Paste GameObject",
+                before_selection=(before_selection if index == 0 else None),
+                after_selection=(after_selection if index == 0 else None),
+            )
+            for index, cid in enumerate(cids)
+        ]
         mgr = UndoManager.instance()
         if mgr:
             cmd = cmds[0] if len(cmds) == 1 else CompoundCommand(cmds, "Paste GameObjects")
@@ -363,9 +383,6 @@ def wire_clipboard(ctx):
             sfm2 = bs.scene_file_manager
             if sfm2:
                 sfm2.mark_dirty()
-        sel.set_ids(cids)
-        if hp.on_selection_changed:
-            hp.on_selection_changed(cids[-1] if cids else 0)
         if payload.operation is ClipboardOperation.CUT:
             clipboard.consume_cut(payload.revision)
         return True

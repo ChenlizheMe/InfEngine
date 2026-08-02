@@ -779,13 +779,6 @@ void ProjectPanel::NotifySelectionChanged()
     const std::string primaryPath = m_selectedFile.empty() ? "" : SelectionPathForInspector(m_selectedFile);
     if (onSelectionChanged)
         onSelectionChanged(selectedPaths, primaryPath);
-
-    if (onFileSelected) {
-        if (selectedPaths.size() == 1)
-            onFileSelected(selectedPaths[0]);
-        else
-            onFileSelected("");
-    }
 }
 
 std::vector<std::string> ProjectPanel::GetSelectedPaths() const

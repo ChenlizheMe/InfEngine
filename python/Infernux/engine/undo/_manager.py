@@ -200,12 +200,12 @@ class UndoManager:
         current_context = self._capture_context()
         before_context = before_context or current_context
         after_context = after_context or current_context
-        old_selection = getattr(cmd, "_old_snapshot", None)
-        new_selection = getattr(cmd, "_new_snapshot", None)
-        if before_context is not None and old_selection is not None:
-            before_context = before_context.with_selection(old_selection)
-        if after_context is not None and new_selection is not None:
-            after_context = after_context.with_selection(new_selection)
+        before_selection = cmd.before_selection_snapshot
+        after_selection = cmd.after_selection_snapshot
+        if before_context is not None and before_selection is not None:
+            before_context = before_context.with_selection(before_selection)
+        if after_context is not None and after_selection is not None:
+            after_context = after_context.with_selection(after_selection)
         self._push(
             cmd,
             before_context=before_context,

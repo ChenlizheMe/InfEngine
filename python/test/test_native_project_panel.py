@@ -232,12 +232,6 @@ class TestProjectPanelCallbacks:
         pp.translate = lambda key: f"[{key}]"
         assert pp.translate("project.create_folder") == "[project.create_folder]"
 
-    def test_on_file_selected_callback(self):
-        pp = ProjectPanel()
-        received = []
-        pp.on_file_selected = lambda path: received.append(path)
-        assert pp.on_file_selected is not None
-
     def test_selection_snapshot_reports_all_paths_and_supports_silent_sync(self, tmp_path):
         first = tmp_path / "First.mat"
         second = tmp_path / "Second.mat"

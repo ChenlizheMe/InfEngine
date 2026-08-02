@@ -106,6 +106,8 @@ RenderStackFieldCommand = _undo_mod.RenderStackFieldCommand
 _snapshot_value = _undo_mod._snapshot_value
 SelectionManager = _sel_mod.SelectionManager
 SelectionService = sys.modules["Infernux.engine.interaction"].SelectionService
+SelectionSnapshot = sys.modules["Infernux.engine.interaction"].SelectionSnapshot
+SelectionTarget = sys.modules["Infernux.engine.interaction"].SelectionTarget
 _helpers_mod = sys.modules["Infernux.engine.undo._helpers"]
 _property_mod = sys.modules["Infernux.engine.undo._property_commands"]
 _structural_mod = sys.modules["Infernux.engine.undo._structural_commands"]
@@ -174,6 +176,19 @@ def _reset_undo_manager():
     mgr._sync_dirty = lambda: None
     yield mgr
     UndoManager._instance = old
+
+
+def test_unbound_component_identity_probe_falls_back_to_own_id():
+    class _UnboundComponent:
+        id = 73
+
+        @property
+        def game_object(self):
+            raise RuntimeError("not bound")
+
+    component = _UnboundComponent()
+    assert _helpers_mod._game_object_id_of(component) == 73
+    assert _helpers_mod._comp_type_name_of(component) == "GameObject"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -478,6 +493,35 @@ class TestCompoundCommand:
         cmds = [SetPropertyCommand(obj, "x", 0, 1)]
         compound = CompoundCommand(cmds)
         assert compound.supports_redo is True
+
+    def test_only_explicit_selection_context_propagates(self):
+        before = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(7),),
+            owner_id="hierarchy",
+        )
+        after = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(42),),
+            owner_id="hierarchy",
+        )
+        inspector = InspectorSnapshotCommand(
+            "component:1",
+            {"value": 1},
+            {"value": 2},
+            restore_fn=lambda _snapshot: None,
+        )
+        create = CreateGameObjectCommand(
+            42,
+            before_selection=before,
+            after_selection=after,
+        )
+
+        inspector_only = CompoundCommand([inspector])
+        structural = CompoundCommand([inspector, create])
+
+        assert inspector_only.before_selection_snapshot is None
+        assert inspector_only.after_selection_snapshot is None
+        assert structural.before_selection_snapshot == before
+        assert structural.after_selection_snapshot == after
 
     def test_compound_add_component_undo_reverses_auto_created(self):
         """Simulate adding Rigidbody (which auto-creates BoxCollider).
@@ -1275,13 +1319,19 @@ class TestSelectionUndoIntegration:
         )
 
         selection = module.BootstrapSelectionMixin()
+        selection.window_manager = None
+        selection._present_selection_snapshot = lambda _snapshot: None
+        selection._prev_selection_snapshot = SelectionService.instance().snapshot
         selection._prev_selection_ids = []
         selection._prev_selected_file = ""
-        selection._apply_editor_selection_undo = lambda ids, path: (
-            setattr(selection, "_prev_selection_ids", list(ids)),
-            setattr(selection, "_prev_selected_file", path or ""),
+        SelectionService.instance().add_listener(
+            selection._on_global_selection_changed
         )
-        selection._record_editor_selection_change([42], "")
+        SelectionService.instance().select(
+            SelectionTarget.scene_object(42),
+            owner_id="hierarchy",
+            record_history=True,
+        )
 
         assert len(_reset_undo_manager._undo_stack) == 1
         assert isinstance(_reset_undo_manager._undo_stack[0], EditorSelectionCommand)
@@ -1289,10 +1339,13 @@ class TestSelectionUndoIntegration:
         assert selection._prev_selection_ids == [42]
 
         _reset_undo_manager.undo()
-        assert selection._prev_selection_ids == []
+        assert SelectionService.instance().snapshot.is_empty
 
         _reset_undo_manager.redo()
-        assert selection._prev_selection_ids == [42]
+        assert (
+            SelectionService.instance().snapshot.primary
+            == SelectionTarget.scene_object(42)
+        )
 
     def test_select_undo_redo_cycle(self, _reset_undo_manager, _fresh_selection):
         mgr = _reset_undo_manager

@@ -1039,10 +1039,18 @@ def _wire_prefab_and_misc(ctx):
             if path and revert_overrides_with_undo(root, path, adb):
                 hierarchy = bs.hierarchy
                 hierarchy.invalidate_scene_structure_cache()
-                hierarchy.set_selected_object_by_id(root.id, True)
+                from Infernux.engine.interaction import (
+                    SelectionService,
+                    SelectionTarget,
+                )
+
+                SelectionService.instance().select(
+                    SelectionTarget.scene_object(root.id),
+                    owner_id="inspector",
+                    reason="prefab_revert",
+                    record_history=False,
+                )
                 hierarchy.set_pending_expand_id(root.id)
-                if hierarchy.on_selection_changed:
-                    hierarchy.on_selection_changed(root.id)
         _invalidate()
         _bump()
 

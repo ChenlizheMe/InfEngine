@@ -1221,7 +1221,6 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("is_selection_empty", &HierarchyPanel::isSelectionEmpty)
         .def_readwrite("set_ordered_ids", &HierarchyPanel::setOrderedIds)
         // Notification callbacks
-        .def_readwrite("on_selection_changed", &HierarchyPanel::onSelectionChanged)
         .def_readwrite("on_double_click_focus", &HierarchyPanel::onDoubleClickFocus)
         .def_readwrite("on_selection_changed_ui_editor", &HierarchyPanel::onSelectionChangedUiEditor)
         // Undo callbacks
@@ -1316,7 +1315,6 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("paste_asset_clipboard", &ProjectPanel::pasteAssetClipboard)
         .def_readwrite("move_asset_paths", &ProjectPanel::moveAssetPaths)
         // Notification callbacks
-        .def_readwrite("on_file_selected", &ProjectPanel::onFileSelected)
         .def_readwrite("on_selection_changed", &ProjectPanel::onSelectionChanged)
         .def_readwrite("on_state_changed", &ProjectPanel::onStateChanged)
         // File operation callbacks

@@ -372,17 +372,14 @@ class SceneViewPickingMixin:
         from .selection_manager import SelectionManager
         sel = SelectionManager.instance()
         if selected_ids:
-            sel.box_select(selected_ids, additive=ctrl)
+            sel.box_select(
+                selected_ids,
+                additive=ctrl,
+                owner_id="scene_view",
+                record_history=True,
+            )
         elif not ctrl:
-            sel.clear()
-
-        # Update outline — combined for multi-select
-        all_ids = sel.get_ids()
-        if native:
-            if all_ids:
-                native.set_selection_outlines(all_ids)
-            else:
-                native.clear_selection_outline()
+            sel.clear(record_history=True)
 
         # Resolve primary object for inspector
         primary_id = sel.get_primary()

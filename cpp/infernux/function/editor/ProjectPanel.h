@@ -90,8 +90,6 @@ class ProjectPanel : public EditorPanel
 
     // ── Notification callbacks ───────────────────────────────────────
 
-    /// Called when file selection changes (receives single path or empty).
-    std::function<void(const std::string &)> onFileSelected;
     /// Authoritative Project selection snapshot: ordered paths and primary path.
     std::function<void(const std::vector<std::string> &, const std::string &)> onSelectionChanged;
     /// Called when current_path changes between frames.

@@ -81,43 +81,68 @@ class SelectionManager:
 
     # ── Mutation ──────────────────────────────────────────────────────
 
-    def select(self, obj_id: int) -> None:
+    def select(
+        self,
+        obj_id: int,
+        *,
+        owner_id: str = "hierarchy",
+        record_history: bool = True,
+    ) -> None:
         """Replace selection with a single object."""
         obj_id = int(obj_id)
         if obj_id <= 0:
-            self.clear()
+            self.clear(record_history=record_history)
             return
         self._selection.select(
             SelectionTarget.scene_object(obj_id),
-            owner_id="hierarchy",
-            record_history=False,
+            owner_id=owner_id,
+            record_history=record_history,
         )
 
-    def toggle(self, obj_id: int) -> None:
+    def toggle(
+        self,
+        obj_id: int,
+        *,
+        owner_id: str = "hierarchy",
+        record_history: bool = True,
+    ) -> None:
         """Ctrl+click: add or remove *obj_id* from the selection."""
         obj_id = int(obj_id)
         if obj_id <= 0:
             return
         self._selection.toggle(
             SelectionTarget.scene_object(obj_id),
-            owner_id="hierarchy",
-            record_history=False,
+            owner_id=owner_id,
+            record_history=record_history,
         )
 
-    def range_select(self, obj_id: int) -> None:
+    def range_select(
+        self,
+        obj_id: int,
+        *,
+        owner_id: str = "hierarchy",
+        record_history: bool = True,
+    ) -> None:
         """Shift+click: select contiguous range from primary → *obj_id*
         using the ordered-ID list provided by the panel."""
         obj_id = int(obj_id)
         if obj_id <= 0:
-            self.clear()
+            self.clear(record_history=record_history)
             return
         self._selection.range_select(
             SelectionTarget.scene_object(obj_id),
-            owner_id="hierarchy",
-            record_history=False,
+            owner_id=owner_id,
+            record_history=record_history,
         )
 
-    def box_select(self, ids: Sequence[int], *, additive: bool = False) -> None:
+    def box_select(
+        self,
+        ids: Sequence[int],
+        *,
+        additive: bool = False,
+        owner_id: str = "hierarchy",
+        record_history: bool = True,
+    ) -> None:
         """Replace (or union) selection with the result of a box/lasso drag."""
         targets = [
             SelectionTarget.scene_object(obj_id)
@@ -133,20 +158,20 @@ class SelectionManager:
             combined = list(dict.fromkeys(existing + targets))
             self._selection.replace(
                 combined,
-                owner_id="hierarchy" if combined else "",
+                owner_id=owner_id if combined else "",
                 primary=combined[-1] if combined else None,
                 anchor=self._selection.snapshot.anchor,
-                record_history=False,
+                record_history=record_history,
             )
             return
         self._selection.replace(
             targets,
-            owner_id="hierarchy" if targets else "",
-            record_history=False,
+            owner_id=owner_id if targets else "",
+            record_history=record_history,
         )
 
-    def clear(self) -> None:
-        self._selection.clear(record_history=False)
+    def clear(self, *, record_history: bool = True) -> None:
+        self._selection.clear(record_history=record_history)
 
     def set_ids(self, ids: Sequence[int]) -> None:
         """Replace the entire selection with *ids* (last element = primary).

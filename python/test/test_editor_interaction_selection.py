@@ -356,18 +356,16 @@ def test_scene_box_selection_preserves_primary_and_anchor():
     service = SelectionService()
     first = SelectionTarget.scene_object(41)
     second = SelectionTarget.scene_object(42)
-    hierarchy_snapshot = SelectionSnapshot.create(
+    scene_snapshot = SelectionSnapshot.create(
         (first, second),
-        owner_id="hierarchy",
+        owner_id="scene_view",
         primary=first,
         anchor=second,
     )
-    service.apply_snapshot(hierarchy_snapshot, record_history=False)
+    service.apply_snapshot(scene_snapshot, record_history=False)
 
-    recorded = []
     revealed = []
     bootstrap = BootstrapSelectionMixin()
-    bootstrap._record_selection_snapshot = recorded.append
     bootstrap.hierarchy = SimpleNamespace(expand_to_object=revealed.append)
 
     bootstrap._on_box_select_done(None)
@@ -376,5 +374,4 @@ def test_scene_box_selection_preserves_primary_and_anchor():
     assert service.snapshot.targets == (first, second)
     assert service.snapshot.primary == first
     assert service.snapshot.anchor == second
-    assert recorded == [service.snapshot]
     assert revealed == [41]

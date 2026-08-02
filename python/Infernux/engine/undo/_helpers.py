@@ -12,24 +12,31 @@ def _get_active_scene():
     return SceneManager.instance().get_active_scene()
 
 
+def _safe_attr(target: Any, name: str, default=None):
+    try:
+        return getattr(target, name, default)
+    except (AttributeError, ReferenceError, RuntimeError):
+        return default
+
+
 def _game_object_id_of(target: Any) -> int:
-    goid = getattr(target, 'game_object_id', None) or 0
+    goid = _safe_attr(target, 'game_object_id') or 0
     if not goid:
-        go = getattr(target, 'game_object', None)
+        go = _safe_attr(target, 'game_object')
         if go is not None:
-            goid = getattr(go, 'id', 0) or 0
+            goid = _safe_attr(go, 'id', 0) or 0
     if not goid:
-        goid = getattr(target, 'id', 0) or 0
+        goid = _safe_attr(target, 'id', 0) or 0
     return goid
 
 
 def _comp_type_name_of(target: Any) -> str:
-    tn = getattr(target, 'type_name', None)
+    tn = _safe_attr(target, 'type_name')
     if tn:
         return str(tn)
-    if (getattr(target, 'id', 0)
-            and not getattr(target, 'component_id', 0)
-            and getattr(target, 'game_object', None) is None):
+    if (_safe_attr(target, 'id', 0)
+            and not _safe_attr(target, 'component_id', 0)
+            and _safe_attr(target, 'game_object') is None):
         return "GameObject"
     return type(target).__name__
 

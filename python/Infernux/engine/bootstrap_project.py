@@ -157,8 +157,19 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         result_paths = [target for _source, target in planned]
 
         def _on_applied(applied_paths: list[str]) -> None:
+            from Infernux.engine.interaction import (
+                SelectionService,
+                SelectionTarget,
+            )
+
             pp.invalidate_dir_cache()
-            pp.set_selected_files(applied_paths, applied_paths[-1])
+            SelectionService.instance().replace(
+                tuple(SelectionTarget.asset(path) for path in applied_paths),
+                owner_id="project",
+                primary=SelectionTarget.asset(applied_paths[-1]),
+                reason="project_asset_transfer",
+                record_history=False,
+            )
 
         command = ProjectAssetPasteCommand(
             commands,
@@ -276,11 +287,6 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
             reason="project_asset_rename",
             record_history=False,
         )
-        # The native panel publishes the same selection after CommitRename.
-        # Advance the compatibility snapshot now so that publication is a no-op
-        # instead of a second selection-only history entry.
-        with manager.suppress():
-            bs._record_selection_snapshot(next_snapshot)
 
         manager.record(
             ProjectAssetRenameCommand(
@@ -321,7 +327,12 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
             from Infernux.engine.undo import ProjectAssetDeleteCommand, UndoManager
 
             def _on_deleted() -> None:
-                pp.clear_selection()
+                from Infernux.engine.interaction import SelectionService
+
+                SelectionService.instance().clear(
+                    reason="project_asset_delete",
+                    record_history=False,
+                )
                 pp.invalidate_dir_cache()
 
             command = ProjectAssetDeleteCommand(

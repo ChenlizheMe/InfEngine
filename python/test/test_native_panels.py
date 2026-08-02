@@ -374,10 +374,10 @@ class TestHierarchyPanel:
         hp.set_runtime_hidden_ids({30, 40})
         hp.set_scene_header_snapshot("Sample *", False, "")
 
-    def test_on_selection_changed_callback(self):
+    def test_ui_editor_selection_changed_callback(self):
         hp = HierarchyPanel()
         received = []
-        hp.on_selection_changed = lambda oid: received.append(oid)
+        hp.on_selection_changed_ui_editor = lambda oid: received.append(oid)
 
         # Wire minimal selection so ClearSelectionAndNotify works
         hp.is_selection_empty = lambda: True
@@ -529,7 +529,6 @@ class TestHierarchyPanel:
         hp.select_id = lambda oid: selected.add(oid)
         hp.get_primary = lambda: max(selected) if selected else 0
         hp.selection_count = lambda: len(selected)
-        hp.on_selection_changed = lambda oid: None
         hp.get_selected_ids = lambda: list(selected)
         hp.is_selection_empty = lambda: len(selected) == 0
         hp.set_selected_object_by_id(42)

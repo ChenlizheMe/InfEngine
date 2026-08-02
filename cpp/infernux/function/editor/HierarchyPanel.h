@@ -78,8 +78,6 @@ class HierarchyPanel : public EditorPanel
 
     // ── Notification callbacks ───────────────────────────────────────
 
-    /// Called when selection changes (receives primary object ID, 0 = none).
-    std::function<void(uint64_t)> onSelectionChanged;
     /// Called on double-click (receives object ID to focus camera on).
     std::function<void(uint64_t)> onDoubleClickFocus;
     /// Extra callback for UI-editor sync.

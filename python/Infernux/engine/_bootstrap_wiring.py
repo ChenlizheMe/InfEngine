@@ -714,10 +714,20 @@ class BootstrapWiringMixin:
         ui_editor.set_on_request_ui_mode(on_ui_mode_request)
 
         def on_ui_editor_selected(go):
+            from Infernux.engine.interaction import SelectionService, SelectionTarget
+
             if go is not None:
-                hierarchy.set_selected_object_by_id(go.id)
+                SelectionService.instance().select(
+                    SelectionTarget.scene_object(go.id),
+                    owner_id="ui_editor",
+                    reason="ui_editor_select",
+                    record_history=True,
+                )
             else:
-                hierarchy.clear_selection_and_notify()
+                SelectionService.instance().clear(
+                    reason="ui_editor_clear",
+                    record_history=True,
+                )
 
         ui_editor.set_on_selection_changed(on_ui_editor_selected)
 

@@ -25,6 +25,8 @@ class EditorContextSnapshot:
     selection: SelectionSnapshot = SelectionSnapshot()
 
     def with_selection(self, selection: SelectionSnapshot) -> "EditorContextSnapshot":
+        if not isinstance(selection, SelectionSnapshot):
+            raise TypeError("editor context selection must be a SelectionSnapshot")
         return EditorContextSnapshot(self.focus, selection)
 
 

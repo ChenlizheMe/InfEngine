@@ -2292,7 +2292,7 @@ class AnimFSMEditorPanel(EditorPanel):
         try:
             from Infernux.engine.ui.selection_manager import SelectionManager
 
-            SelectionManager.instance().clear()
+            SelectionManager.instance().clear(record_history=False)
         finally:
             self._clearing_selection = False
 

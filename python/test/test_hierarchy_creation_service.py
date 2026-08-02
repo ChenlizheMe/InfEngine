@@ -87,24 +87,40 @@ def test_hierarchy_creation_catalog_includes_image():
     assert service._description_for("ui.image") == "Create Image"
 
 
-def test_creation_explicitly_asks_hierarchy_to_reveal_selected_object():
+def test_creation_selects_through_typed_service_and_records_one_context():
     from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from Infernux.engine.interaction import SelectionService, SelectionTarget
 
-    selected = []
     revealed = []
+    recorded = []
+    selection = SelectionService()
+    selection.select(
+        SelectionTarget.scene_object(7),
+        owner_id="hierarchy",
+        record_history=False,
+    )
+
+    class _UndoTracker:
+        @staticmethod
+        def record_create(object_id, description, **kwargs):
+            recorded.append((object_id, description, kwargs))
+
     service = HierarchyCreationService()
     service.configure(
-        selection_manager=SimpleNamespace(select=lambda object_id: selected.append(object_id)),
-        undo_tracker=None,
+        selection_manager=None,
+        undo_tracker=_UndoTracker(),
         hierarchy_panel=SimpleNamespace(
-            set_selected_object_by_id=lambda object_id: revealed.append(object_id)
+            set_pending_expand_id=lambda object_id: revealed.append(object_id)
         ),
     )
 
-    service._finalize(_Object(42, "Created"), 0, "Create", select=True, record_undo=False)
+    service._finalize(_Object(42, "Created"), 0, "Create", select=True, record_undo=True)
 
-    assert selected == [42]
+    assert selection.snapshot.primary == SelectionTarget.scene_object(42)
     assert revealed == [42]
+    assert len(recorded) == 1
+    assert recorded[0][2]["before_selection"].primary == SelectionTarget.scene_object(7)
+    assert recorded[0][2]["after_selection"].primary == SelectionTarget.scene_object(42)
 
 
 def test_ui_element_creation_uses_the_only_existing_canvas_when_context_parent_is_lost():

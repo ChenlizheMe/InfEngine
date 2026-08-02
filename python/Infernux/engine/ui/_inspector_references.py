@@ -838,7 +838,14 @@ def ping_asset_in_project(path: str) -> None:
         native = engine.get_native_engine() if engine is not None else None
         if native is not None and hasattr(native, "select_docked_window"):
             native.select_docked_window("project")
-        pp.set_selected_file(disk_path)
+        from Infernux.engine.interaction import SelectionService, SelectionTarget
+
+        SelectionService.instance().select(
+            SelectionTarget.asset(disk_path),
+            owner_id="project",
+            reason="ping_asset",
+            record_history=True,
+        )
     except Exception as exc:
         from Infernux.debug import Debug
         Debug.log_suppressed("ping_asset_in_project", exc)

@@ -218,10 +218,17 @@ def _wire_drop_and_delete(ctx):
             Debug.log_error(f"Prefab instantiation failed: {exc}")
             return
         if new_obj:
-            sel.select(new_obj.id)
-            undo.record_create(new_obj.id, "Instantiate Prefab")
-            if hp.on_selection_changed:
-                hp.on_selection_changed(new_obj.id)
+            from Infernux.engine.interaction import SelectionService
+
+            selection = SelectionService.instance()
+            before_selection = selection.snapshot
+            sel.select(new_obj.id, record_history=False)
+            undo.record_create(
+                new_obj.id,
+                "Instantiate Prefab",
+                before_selection=before_selection,
+                after_selection=selection.snapshot,
+            )
 
     def _create_model_object(ref, parent_id, is_guid):
         from Infernux.lib import SceneManager, AssetRegistry
@@ -265,9 +272,7 @@ def _wire_drop_and_delete(ctx):
             sfm2 = bs.scene_file_manager
             if sfm2:
                 sfm2.mark_dirty()
-            sel.clear()
-            if hp.on_selection_changed:
-                hp.on_selection_changed(0)
+            sel.clear(record_history=False)
 
     def _delete_selected_objects():
         from Infernux.lib import SceneManager
@@ -298,10 +303,17 @@ def _finalize_drop(new_obj, parent_id, description, sel, undo, hp, SceneManager)
             parent = scene.find_by_id(parent_id)
             if parent:
                 new_obj.set_parent(parent)
-    sel.select(new_obj.id)
-    undo.record_create(new_obj.id, description)
-    if hp.on_selection_changed:
-        hp.on_selection_changed(new_obj.id)
+    from Infernux.engine.interaction import SelectionService
+
+    selection = SelectionService.instance()
+    before_selection = selection.snapshot
+    sel.select(new_obj.id, record_history=False)
+    undo.record_create(
+        new_obj.id,
+        description,
+        before_selection=before_selection,
+        after_selection=selection.snapshot,
+    )
 
 
 # ═══════ Main entry point ══════════════════════════════════════

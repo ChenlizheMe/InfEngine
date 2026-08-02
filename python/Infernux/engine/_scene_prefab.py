@@ -139,7 +139,10 @@ class ScenePrefabMixin:
 
         roots = _get_scene_root_objects(new_scene)
         if roots:
-            SelectionManager.instance().select(roots[0].id)
+            SelectionManager.instance().select(
+                roots[0].id,
+                record_history=False,
+            )
 
         self.is_prefab_mode = True
         self.prefab_mode_path = resolved_path(prefab_path)
