@@ -125,6 +125,7 @@ def test_keyframe_defaults():
     assert k.rotation == [0.0, 0.0, 0.0]
     assert k.scale == [1.0, 1.0, 1.0]
     assert k.interp == INTERP_LINEAR
+    assert len(k.stable_id) == 32
 
 
 def test_keyframe_default_lists_are_independent():
@@ -132,11 +133,12 @@ def test_keyframe_default_lists_are_independent():
     b = TimelineKeyframe()
     a.position[0] = 9.0
     assert b.position[0] == 0.0
+    assert a.stable_id != b.stable_id
 
 
 def test_keyframe_to_dict_keys():
     d = TimelineKeyframe(time=1.5).to_dict()
-    assert set(d) == {"time", "position", "rotation", "scale", "interp"}
+    assert set(d) == {"stable_id", "time", "position", "rotation", "scale", "interp"}
 
 
 def test_keyframe_round_trip():
@@ -148,6 +150,7 @@ def test_keyframe_round_trip():
     assert k2.rotation == [10.0, 20.0, 30.0]
     assert k2.scale == [2.0, 2.0, 2.0]
     assert k2.interp == INTERP_EASE_IN
+    assert k2.stable_id == k.stable_id
 
 
 def test_keyframe_from_dict_invalid_interp_is_rejected():
@@ -160,6 +163,13 @@ def test_keyframe_from_dict_invalid_interp_is_rejected():
 def test_keyframe_from_dict_missing_fields_is_rejected():
     with pytest.raises(ValueError, match="fields mismatch"):
         TimelineKeyframe.from_dict({})
+
+
+def test_keyframe_from_dict_rejects_empty_stable_id():
+    document = TimelineKeyframe().to_dict()
+    document["stable_id"] = ""
+    with pytest.raises(ValueError, match="stable_id"):
+        TimelineKeyframe.from_dict(document)
 
 
 def test_keyframe_from_dict_short_vector_is_rejected():
@@ -336,6 +346,26 @@ def test_timeline_round_trip():
     assert tl2.duration == 3.5
     assert tl2.apply_mode == APPLY_ABSOLUTE
     assert len(tl2.keyframes) == 2
+    assert [key.stable_id for key in tl2.keyframes] == [
+        key.stable_id for key in tl.keyframes
+    ]
+
+
+def test_timeline_find_keyframe_uses_stable_identity():
+    key = TimelineKeyframe(time=1.0)
+    timeline = AnimationTimeline(keyframes=[key])
+
+    assert timeline.find_keyframe(key.stable_id) is key
+    assert timeline.find_keyframe("missing") is None
+
+
+def test_timeline_rejects_duplicate_keyframe_ids():
+    first = TimelineKeyframe(stable_id="same")
+    second = TimelineKeyframe(stable_id="same")
+    timeline = AnimationTimeline(keyframes=[first, second])
+
+    with pytest.raises(ValueError, match="must be unique"):
+        timeline.to_dict()
 
 
 def test_timeline_from_dict_invalid_apply_mode_is_rejected():

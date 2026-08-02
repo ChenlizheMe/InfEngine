@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import uuid
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -116,9 +117,11 @@ class TimelineKeyframe:
     scale: Vec3 = field(default_factory=lambda: [1.0, 1.0, 1.0])
     # Transition from the PREVIOUS keyframe into this one.
     interp: str = INTERP_LINEAR
+    stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def to_dict(self) -> dict:
         return {
+            "stable_id": self.stable_id,
             "time": float(self.time),
             "position": list(self.position),
             "rotation": list(self.rotation),
@@ -128,7 +131,7 @@ class TimelineKeyframe:
 
     @classmethod
     def from_dict(cls, d: dict) -> "TimelineKeyframe":
-        expected = {"time", "position", "rotation", "scale", "interp"}
+        expected = {"stable_id", "time", "position", "rotation", "scale", "interp"}
         if type(d) is not dict or set(d) != expected:
             actual = set(d) if type(d) is dict else set()
             raise ValueError(
@@ -137,6 +140,9 @@ class TimelineKeyframe:
             )
         if not isinstance(d["time"], (int, float)) or isinstance(d["time"], bool):
             raise TypeError("timeline keyframe time must be numeric")
+        stable_id = d["stable_id"]
+        if type(stable_id) is not str or not stable_id.strip():
+            raise ValueError("timeline keyframe stable_id must be a non-empty string")
         time = float(d["time"])
         if not math.isfinite(time):
             raise ValueError("timeline keyframe time must be finite")
@@ -149,6 +155,7 @@ class TimelineKeyframe:
             rotation=_vec3(d["rotation"], "timeline keyframe rotation"),
             scale=_vec3(d["scale"], "timeline keyframe scale"),
             interp=interp,
+            stable_id=stable_id,
         )
 
 
@@ -173,6 +180,10 @@ class AnimationTimeline:
     def sorted_keys(self) -> List[TimelineKeyframe]:
         return sorted(self.keyframes, key=lambda k: k.time)
 
+    def find_keyframe(self, stable_id: str) -> Optional[TimelineKeyframe]:
+        identifier = str(stable_id or "")
+        return next((key for key in self.keyframes if key.stable_id == identifier), None)
+
     def sample(self, t: float) -> Optional[Tuple[Vec3, Vec3, Vec3]]:
         """Return ``(position, rotation, scale)`` at time *t*; ``None`` if empty.
 
@@ -184,6 +195,7 @@ class AnimationTimeline:
 
     # ── Serialization ──────────────────────────────────────────────────
     def to_dict(self) -> dict:
+        self._validate_keyframe_ids(self.keyframes)
         return {
             "name": self.name,
             "duration": float(self.duration),
@@ -213,12 +225,21 @@ class AnimationTimeline:
         if type(d["keyframes"]) is not list:
             raise TypeError("animation timeline keyframes must be an array")
         keys = [TimelineKeyframe.from_dict(k) for k in d["keyframes"]]
+        cls._validate_keyframe_ids(keys)
         return cls(
             name=d["name"],
             duration=duration,
             apply_mode=mode,
             keyframes=keys,
         )
+
+    @staticmethod
+    def _validate_keyframe_ids(keys: List[TimelineKeyframe]) -> None:
+        identifiers = [key.stable_id for key in keys]
+        if any(type(identifier) is not str or not identifier.strip() for identifier in identifiers):
+            raise ValueError("timeline keyframe stable_id must be a non-empty string")
+        if len(set(identifiers)) != len(identifiers):
+            raise ValueError("timeline keyframe stable_id values must be unique")
 
     def save(self, path: str = "") -> bool:
         target = path or self.file_path
