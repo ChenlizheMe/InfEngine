@@ -6,11 +6,20 @@ from typing import Any, Callable, List, Optional
 
 from Infernux.engine.undo._base import UndoCommand
 from Infernux.engine.undo._helpers import (
-    _get_active_scene, _get_current_selection_ids,
+    _get_active_scene,
     _destroy_game_object_immediately,
     _bump_inspector_structure, _notify_gizmos_scene_changed,
     _preserve_ui_world_position, _invalidate_canvas_caches,
 )
+
+
+def _clear_selection_after_structure_change(reason: str) -> None:
+    from Infernux.engine.interaction import SelectionService
+
+    SelectionService.instance().clear(
+        reason=reason,
+        record_history=False,
+    )
 
 
 def _snapshot_object(obj) -> dict:
@@ -23,8 +32,6 @@ def _snapshot_object(obj) -> dict:
 
 class CreateGameObjectCommand(UndoCommand):
     """Undo destroys the object; redo recreates from a document snapshot."""
-
-    _selection_restore_fn: Optional[Callable[[List[int]], None]] = None
 
     def __init__(
         self,
@@ -39,7 +46,6 @@ class CreateGameObjectCommand(UndoCommand):
         self._document: Optional[dict] = None
         self._parent_id: Optional[int] = None
         self._sibling_index: int = 0
-        self._post_create_ids: List[int] = _get_current_selection_ids()
         if before_selection is not None and after_selection is not None:
             self.before_selection_snapshot = before_selection
             self.after_selection_snapshot = after_selection
@@ -58,9 +64,7 @@ class CreateGameObjectCommand(UndoCommand):
                 t = getattr(obj, "transform", None)
                 self._sibling_index = t.get_sibling_index() if t else 0
                 _destroy_game_object_immediately(scene, obj)
-        fn = type(self)._selection_restore_fn
-        if fn:
-            fn([])
+        _clear_selection_after_structure_change("undo_create_game_object")
 
     def redo(self) -> None:
         if self._document is not None:
@@ -69,15 +73,10 @@ class CreateGameObjectCommand(UndoCommand):
                 self._document, self._parent_id, self._sibling_index)
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()
-            fn = type(self)._selection_restore_fn
-            if fn and self._post_create_ids:
-                fn(self._post_create_ids)
 
 
 class DeleteGameObjectCommand(UndoCommand):
     """Undo recreates from a document snapshot; redo re-destroys."""
-
-    _selection_restore_fn: Optional[Callable[[List[int]], None]] = None
 
     def __init__(self, object_id: int, description: str = "Delete GameObject"):
         super().__init__(description)
@@ -85,7 +84,6 @@ class DeleteGameObjectCommand(UndoCommand):
         self._document: Optional[dict] = None
         self._parent_id: Optional[int] = None
         self._sibling_index: int = 0
-        self._pre_delete_selection_ids: List[int] = []
 
         scene = _get_active_scene()
         if scene:
@@ -96,7 +94,6 @@ class DeleteGameObjectCommand(UndoCommand):
                 self._parent_id = parent.id if parent else None
                 t = getattr(obj, "transform", None)
                 self._sibling_index = t.get_sibling_index() if t else 0
-        self._pre_delete_selection_ids = _get_current_selection_ids()
 
     def execute(self) -> None:
         scene = _get_active_scene()
@@ -104,9 +101,7 @@ class DeleteGameObjectCommand(UndoCommand):
             obj = scene.find_by_id(self._object_id)
             if obj:
                 _destroy_game_object_immediately(scene, obj)
-        fn = type(self)._selection_restore_fn
-        if fn:
-            fn([])
+        _clear_selection_after_structure_change("delete_game_object")
 
     def undo(self) -> None:
         if self._document is not None:
@@ -115,9 +110,6 @@ class DeleteGameObjectCommand(UndoCommand):
                 self._document, self._parent_id, self._sibling_index)
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()
-            fn = type(self)._selection_restore_fn
-            if fn and self._pre_delete_selection_ids:
-                fn(self._pre_delete_selection_ids)
 
     def redo(self) -> None:
         self.execute()
@@ -131,12 +123,9 @@ class DeleteGameObjectsCommand(UndoCommand):
     roots in ascending sibling order preserves the exact hierarchy ordering.
     """
 
-    _selection_restore_fn: Optional[Callable[[List[int]], None]] = None
-
     def __init__(self, object_ids: List[int], description: str = "Delete GameObjects"):
         super().__init__(description)
         self._entries: List[dict] = []
-        self._pre_delete_selection_ids = _get_current_selection_ids()
 
         scene = _get_active_scene()
         if not scene:
@@ -181,9 +170,7 @@ class DeleteGameObjectsCommand(UndoCommand):
     def execute(self) -> None:
         scene = _get_active_scene()
         if not scene:
-            fn = type(self)._selection_restore_fn
-            if fn:
-                fn([])
+            _clear_selection_after_structure_change("delete_game_objects")
             return
         # Destroy from the end of each sibling list so earlier indices do not
         # shift while the transaction is being applied.
@@ -191,9 +178,7 @@ class DeleteGameObjectsCommand(UndoCommand):
             obj = scene.find_by_id(entry["object_id"])
             if obj is not None:
                 _destroy_game_object_immediately(scene, obj)
-        fn = type(self)._selection_restore_fn
-        if fn:
-            fn([])
+        _clear_selection_after_structure_change("delete_game_objects")
 
     def undo(self) -> None:
         from Infernux.engine.undo._recreate import _recreate_game_object_from_document
@@ -204,9 +189,6 @@ class DeleteGameObjectsCommand(UndoCommand):
         if self._entries:
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()
-        fn = type(self)._selection_restore_fn
-        if fn and self._pre_delete_selection_ids:
-            fn(self._pre_delete_selection_ids)
 
     def redo(self) -> None:
         self.execute()

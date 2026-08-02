@@ -31,6 +31,8 @@ class UndoCommand(ABC):
     timestamp: float
     supports_redo: bool
     marks_dirty: bool
+    before_selection_snapshot: Any
+    after_selection_snapshot: Any
 
     def __init__(self, description: str = "") -> None: ...
 
@@ -168,9 +170,15 @@ class CreateGameObjectCommand(UndoCommand):
     """Records the creation of a new GameObject."""
 
     supports_redo: bool
-    _selection_restore_fn: Optional[Callable[[list[int]], None]]
 
-    def __init__(self, object_id: int, description: str = "Create GameObject") -> None: ...
+    def __init__(
+        self,
+        object_id: int,
+        description: str = "Create GameObject",
+        *,
+        before_selection: Any = None,
+        after_selection: Any = None,
+    ) -> None: ...
     def execute(self) -> None: ...
     def undo(self) -> None: ...
     def redo(self) -> None: ...
@@ -178,8 +186,6 @@ class CreateGameObjectCommand(UndoCommand):
 
 class DeleteGameObjectCommand(UndoCommand):
     """Records the deletion of a GameObject (restorable on undo)."""
-
-    _selection_restore_fn: Optional[Callable[[list[int]], None]]
 
     def __init__(self, object_id: int, description: str = "Delete GameObject") -> None: ...
     def execute(self) -> None: ...
@@ -189,8 +195,6 @@ class DeleteGameObjectCommand(UndoCommand):
 
 class DeleteGameObjectsCommand(UndoCommand):
     """Records an atomic multi-selection hierarchy deletion."""
-
-    _selection_restore_fn: Optional[Callable[[list[int]], None]]
 
     def __init__(self, object_ids: list[int], description: str = "Delete GameObjects") -> None: ...
     def execute(self) -> None: ...

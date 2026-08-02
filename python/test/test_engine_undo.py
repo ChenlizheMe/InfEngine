@@ -108,6 +108,7 @@ SelectionManager = _sel_mod.SelectionManager
 SelectionService = sys.modules["Infernux.engine.interaction"].SelectionService
 SelectionSnapshot = sys.modules["Infernux.engine.interaction"].SelectionSnapshot
 SelectionTarget = sys.modules["Infernux.engine.interaction"].SelectionTarget
+EditorContextSnapshot = sys.modules["Infernux.engine.interaction"].EditorContextSnapshot
 _helpers_mod = sys.modules["Infernux.engine.undo._helpers"]
 _property_mod = sys.modules["Infernux.engine.undo._property_commands"]
 _structural_mod = sys.modules["Infernux.engine.undo._structural_commands"]
@@ -1397,7 +1398,7 @@ class TestSelectionUndoIntegration:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Delete/Create selection restore callback
+# Structural command selection context
 # ══════════════════════════════════════════════════════════════════════
 
 # The commands call _get_active_scene() which uses SceneManager (native).
@@ -1407,9 +1408,8 @@ class TestSelectionUndoIntegration:
 _undo_mod_ref = _undo_mod  # keep reference for patching
 
 
-class TestDeleteCommandSelectionRestore:
-    """DeleteGameObjectCommand should capture pre-delete selection and restore
-    it on undo via _selection_restore_fn."""
+class TestStructuralCommandSelectionContext:
+    """Structural commands use the global action context for selection."""
 
     @pytest.fixture(autouse=True)
     def _patch_scene(self, monkeypatch):
@@ -1426,63 +1426,82 @@ class TestDeleteCommandSelectionRestore:
         yield
         SelectionManager._instance = old
 
-    def test_captures_pre_delete_selection(self):
-        self.sel.set_ids([42])
-        cmd = DeleteGameObjectCommand(42, "Delete")
-        assert cmd._pre_delete_selection_ids == [42]
+    def test_delete_is_one_action_and_context_restores_selection(
+        self,
+        monkeypatch,
+        _reset_undo_manager,
+    ):
+        class _Transform:
+            @staticmethod
+            def get_sibling_index():
+                return 0
 
-    def test_undo_calls_selection_restore(self, _reset_undo_manager):
-        restored = []
-        old_fn = DeleteGameObjectCommand._selection_restore_fn
-        DeleteGameObjectCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            self.sel.set_ids([42])
-            cmd = DeleteGameObjectCommand(42, "Delete")
-            cmd._document = {"id": 42}
-            with _override_recreate_game_object(lambda *a, **k: None):
-                cmd.undo()
-            assert restored == [[42]]
-        finally:
-            DeleteGameObjectCommand._selection_restore_fn = old_fn
+        class _Object:
+            id = 42
+            transform = _Transform()
 
-    def test_redo_clears_selection(self, _reset_undo_manager):
-        restored = []
-        old_fn = DeleteGameObjectCommand._selection_restore_fn
-        DeleteGameObjectCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            cmd = DeleteGameObjectCommand(42, "Delete")
-            cmd.redo()  # no scene → no-op destruction, but selection should clear
-            assert restored == [[]]
-        finally:
-            DeleteGameObjectCommand._selection_restore_fn = old_fn
+            @staticmethod
+            def get_parent():
+                return None
 
-    def test_no_restore_when_callback_not_set(self, _reset_undo_manager):
-        old_fn = DeleteGameObjectCommand._selection_restore_fn
-        DeleteGameObjectCommand._selection_restore_fn = None
-        try:
-            cmd = DeleteGameObjectCommand(42, "Delete")
-            cmd._pre_delete_selection_ids = [42]
-            cmd._document = {"id": 42}
-            with _override_recreate_game_object(lambda *a, **k: None):
-                cmd.undo()  # should not raise
-        finally:
-            DeleteGameObjectCommand._selection_restore_fn = old_fn
+        class _Scene:
+            def __init__(self):
+                self.object = _Object()
 
-    def test_empty_selection_not_restored(self, _reset_undo_manager):
-        """If nothing was selected before delete, undo doesn't call restore."""
-        restored = []
-        old_fn = DeleteGameObjectCommand._selection_restore_fn
-        DeleteGameObjectCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            # Don't select anything → pre_delete_selection_ids is []
-            cmd = DeleteGameObjectCommand(42, "Delete")
-            cmd._document = {"id": 42}
-            with _override_recreate_game_object(lambda *a, **k: None):
-                cmd.undo()
-            # Empty list → fn not called (guard: `if fn and ids`)
-            assert restored == []
-        finally:
-            DeleteGameObjectCommand._selection_restore_fn = old_fn
+            def find_by_id(self, object_id):
+                return self.object if self.object and object_id == 42 else None
+
+        scene = _Scene()
+        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
+        monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 42})
+        monkeypatch.setattr(
+            _structural_mod,
+            "_destroy_game_object_immediately",
+            lambda _scene, _obj: setattr(scene, "object", None),
+        )
+
+        service = SelectionService.instance()
+        selected = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(42),),
+            owner_id="hierarchy",
+        )
+        service.apply_snapshot(selected, record_history=False)
+        manager = _reset_undo_manager
+        restore_phases = []
+
+        def _restore_context(context, phase):
+            if phase == "undo_complete":
+                assert scene.object is not None
+            restore_phases.append(phase)
+            service.apply_snapshot(context.selection, record_history=False)
+
+        manager.set_context_hooks(
+            lambda: EditorContextSnapshot(selection=service.snapshot),
+            _restore_context,
+        )
+
+        assert manager.execute(DeleteGameObjectCommand(42, "Delete"))
+        assert service.snapshot == SelectionSnapshot()
+        assert len(manager.action_journal.entries) == 1
+
+        with _override_recreate_game_object(
+            lambda *args, **kwargs: setattr(scene, "object", _Object())
+        ):
+            manager.undo()
+        assert service.snapshot == selected
+        assert scene.object is not None
+        assert len(manager.action_journal.entries) == 1
+        assert restore_phases == ["prepare_undo", "undo_complete"]
+
+        manager.redo()
+        assert service.snapshot == SelectionSnapshot()
+        assert scene.object is None
+        assert len(manager.action_journal.entries) == 1
+
+    def test_create_undo_clears_selection_without_private_callback(self):
+        self.sel.set_ids([99])
+        CreateGameObjectCommand(99, "Create").undo()
+        assert SelectionService.instance().snapshot == SelectionSnapshot()
 
 
 class TestDeleteGameObjectsCommand:
@@ -1518,7 +1537,6 @@ class TestDeleteGameObjectsCommand:
         restored = []
 
         monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
-        monkeypatch.setattr(_structural_mod, "_get_current_selection_ids", lambda: [20, 21, 10])
         monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda obj: {"id": obj.id})
         monkeypatch.setattr(
             _structural_mod,
@@ -1528,46 +1546,19 @@ class TestDeleteGameObjectsCommand:
         monkeypatch.setattr(_structural_mod, "_bump_inspector_structure", lambda: None)
         monkeypatch.setattr(_structural_mod, "_notify_gizmos_scene_changed", lambda: None)
 
-        old_fn = DeleteGameObjectsCommand._selection_restore_fn
-        DeleteGameObjectsCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            command = DeleteGameObjectsCommand([20, 21, 10])
-            assert [entry["object_id"] for entry in command._entries] == [20, 10]
+        command = DeleteGameObjectsCommand([20, 21, 10])
+        assert [entry["object_id"] for entry in command._entries] == [20, 10]
 
-            command.execute()
-            assert destroyed == [20, 10]
+        command.execute()
+        assert destroyed == [20, 10]
 
-            with _override_recreate_game_object(
-                lambda document, parent_id, sibling_index: restored.append(
-                    (document["id"], parent_id, sibling_index)
-                )
-            ):
-                command.undo()
-            assert restored == [[], (10, None, 0), (20, None, 1), [20, 21, 10]]
-        finally:
-            DeleteGameObjectsCommand._selection_restore_fn = old_fn
-
-
-class TestCreateCommandSelectionRestore:
-    """CreateGameObjectCommand should clear selection on undo and re-select
-    on redo via _selection_restore_fn."""
-
-    @pytest.fixture(autouse=True)
-    def _patch_scene(self, monkeypatch):
-        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: None)
-        _patch_undo_modules(monkeypatch, "_bump_inspector_structure", lambda: None)
-        _patch_undo_modules(monkeypatch, "_notify_gizmos_scene_changed", lambda: None)
-
-    def test_undo_clears_selection(self, _reset_undo_manager):
-        restored = []
-        old_fn = CreateGameObjectCommand._selection_restore_fn
-        CreateGameObjectCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            cmd = CreateGameObjectCommand(99, "Create")
-            cmd.undo()  # no scene → no-op destruction, but selection should clear
-            assert restored == [[]]
-        finally:
-            CreateGameObjectCommand._selection_restore_fn = old_fn
+        with _override_recreate_game_object(
+            lambda document, parent_id, sibling_index: restored.append(
+                (document["id"], parent_id, sibling_index)
+            )
+        ):
+            command.undo()
+        assert restored == [(10, None, 0), (20, None, 1)]
 
 
 class TestImmediateDestroyHelpers:
@@ -1683,32 +1674,3 @@ class TestImmediateDestroyHelpers:
         delete_cmd.redo()
 
         assert calls == [(True, 42), (True, 42), (True, 42)]
-
-    def test_redo_restores_selection(self, _reset_undo_manager):
-        restored = []
-        old_fn = CreateGameObjectCommand._selection_restore_fn
-        CreateGameObjectCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            cmd = CreateGameObjectCommand(99, "Create")
-            cmd._post_create_ids = [99]
-            cmd._document = {"id": 99}
-            with _override_recreate_game_object(lambda *a, **k: None):
-                cmd.redo()
-            assert restored == [[99]]
-        finally:
-            CreateGameObjectCommand._selection_restore_fn = old_fn
-
-    def test_redo_no_restore_when_no_post_ids(self, _reset_undo_manager):
-        """If post_create_ids is empty, redo doesn't call restore."""
-        restored = []
-        old_fn = CreateGameObjectCommand._selection_restore_fn
-        CreateGameObjectCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
-        try:
-            cmd = CreateGameObjectCommand(99, "Create")
-            cmd._post_create_ids = []
-            cmd._document = {"id": 99}
-            with _override_recreate_game_object(lambda *a, **k: None):
-                cmd.redo()
-            assert restored == []
-        finally:
-            CreateGameObjectCommand._selection_restore_fn = old_fn

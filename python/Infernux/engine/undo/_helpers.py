@@ -112,17 +112,6 @@ def _find_live_native_component(obj, type_name: str):
     return None
 
 
-def _get_current_selection_ids() -> List[int]:
-    try:
-        from Infernux.engine.ui.selection_manager import SelectionManager
-        sel = SelectionManager.instance()
-        if sel:
-            return sel.get_ids()
-    except Exception as exc:
-        Debug.log_suppressed("undo._get_current_selection_ids", exc)
-    return []
-
-
 def _bump_inspector_structure():
     try:
         from Infernux.engine.ui.inspector_support import bump_component_structure_version

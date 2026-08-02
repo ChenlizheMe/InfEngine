@@ -30,16 +30,6 @@ class BootstrapSelectionMixin:
             lambda oid: self._fly_to_object_by_id(oid)
         )
 
-        # Let structural undo commands restore selection via the same
-        # pipeline as SelectionCommand (updates inspector, outline, etc.).
-        from Infernux.engine.undo import (
-            CreateGameObjectCommand,
-            DeleteGameObjectCommand,
-            DeleteGameObjectsCommand,
-        )
-        CreateGameObjectCommand._selection_restore_fn = self._apply_selection_undo
-        DeleteGameObjectCommand._selection_restore_fn = self._apply_selection_undo
-        DeleteGameObjectsCommand._selection_restore_fn = self._apply_selection_undo
         selection = SelectionService.instance()
         previous_service = getattr(self, "_selection_projection_service", None)
         previous_listener = getattr(self, "_selection_projection_listener", None)
