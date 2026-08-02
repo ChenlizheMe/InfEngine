@@ -46,16 +46,37 @@ class CompoundCommand(UndoCommand):
         self.marks_dirty = any(c.marks_dirty for c in self._commands)
 
     def execute(self) -> None:
-        for cmd in self._commands:
-            cmd.execute()
+        applied: list[UndoCommand] = []
+        try:
+            for cmd in self._commands:
+                cmd.execute()
+                applied.append(cmd)
+        except Exception:
+            for cmd in reversed(applied):
+                cmd.undo()
+            raise
 
     def undo(self) -> None:
-        for cmd in reversed(self._commands):
-            cmd.undo()
+        undone: list[UndoCommand] = []
+        try:
+            for cmd in reversed(self._commands):
+                cmd.undo()
+                undone.append(cmd)
+        except Exception:
+            for cmd in reversed(undone):
+                cmd.redo()
+            raise
 
     def redo(self) -> None:
-        for cmd in self._commands:
-            cmd.redo()
+        applied: list[UndoCommand] = []
+        try:
+            for cmd in self._commands:
+                cmd.redo()
+                applied.append(cmd)
+        except Exception:
+            for cmd in reversed(applied):
+                cmd.undo()
+            raise
 
 
 class LambdaCommand(UndoCommand):

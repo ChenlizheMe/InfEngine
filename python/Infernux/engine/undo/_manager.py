@@ -1,61 +1,74 @@
-"""UndoManager — the central undo/redo stack singleton."""
+"""UndoManager compatibility surface backed by the global action journal."""
 
 from __future__ import annotations
 
 from contextlib import contextmanager
 import os
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
+from Infernux.engine.interaction import (
+    ActionOrigin,
+    EditorActionJournal,
+    EditorContextSnapshot,
+)
 from Infernux.engine.undo._base import UndoCommand
 from Infernux.engine.undo._helpers import _bump_inspector_values
 
 
 class UndoManager:
-    """Central undo/redo manager with save-point tracking.
-
-    Exception-safe: if ``undo()`` or ``redo()`` raises, the stack entry
-    is preserved (not lost).
-    """
+    """Execute and replay editor actions through one chronological cursor."""
 
     MAX_STACK_DEPTH: int = 200
-    _instance: Optional[UndoManager] = None
+    _instance: Optional["UndoManager"] = None
 
-    def __init__(self) -> None:
-        self._undo_stack: List[UndoCommand] = []
-        self._redo_stack: List[UndoCommand] = []
-        self._save_point: Optional[int] = 0
+    def __init__(self, journal: Optional[EditorActionJournal] = None) -> None:
+        self._journal = journal or EditorActionJournal(self.MAX_STACK_DEPTH)
+        self._save_signature: Optional[tuple[tuple[str, int], ...]] = ()
         self._base_scene_dirty: bool = False
         self._is_executing: bool = False
         self._enabled: bool = True
         self._suppress_property_recording: bool = False
         self._on_state_changed: Optional[Callable[[], None]] = None
+        self._context_provider: Optional[Callable[[], EditorContextSnapshot]] = None
+        self._context_restorer: Optional[
+            Callable[[EditorContextSnapshot, str], None]
+        ] = None
         UndoManager._instance = self
 
     @classmethod
-    def instance(cls) -> Optional[UndoManager]:
+    def instance(cls) -> Optional["UndoManager"]:
         return cls._instance
 
-    # -- Context managers --
+    @property
+    def action_journal(self) -> EditorActionJournal:
+        return self._journal
+
+    # Read-only compatibility views. New code must query action_journal.
+    @property
+    def _undo_stack(self) -> list[UndoCommand]:
+        return [entry.action for entry in self._journal.applied_entries()]
+
+    @property
+    def _redo_stack(self) -> list[UndoCommand]:
+        return [entry.action for entry in self._journal.redo_entries()]
 
     @contextmanager
     def suppress(self):
-        prev = self._is_executing
+        previous = self._is_executing
         self._is_executing = True
         try:
             yield
         finally:
-            self._is_executing = prev
+            self._is_executing = previous
 
     @contextmanager
     def suppress_property_recording(self):
-        prev = self._suppress_property_recording
+        previous = self._suppress_property_recording
         self._suppress_property_recording = True
         try:
             yield
         finally:
-            self._suppress_property_recording = prev
-
-    # -- Properties --
+            self._suppress_property_recording = previous
 
     @property
     def is_executing(self) -> bool:
@@ -63,29 +76,32 @@ class UndoManager:
 
     @property
     def can_undo(self) -> bool:
-        return len(self._undo_stack) > 0
+        return self._journal.can_undo
 
     @property
     def can_redo(self) -> bool:
-        return len(self._redo_stack) > 0
+        return self._journal.can_redo
 
     @property
     def undo_description(self) -> str:
-        return self._undo_stack[-1].description if self._undo_stack else ""
+        entry = self._journal.peek_undo()
+        return entry.action.description if entry is not None else ""
 
     @property
     def redo_description(self) -> str:
-        return self._redo_stack[-1].description if self._redo_stack else ""
+        entry = self._journal.peek_redo()
+        return entry.action.description if entry is not None else ""
 
     @property
     def _dirty_depth(self) -> int:
-        return sum(1 for cmd in self._undo_stack if cmd.marks_dirty)
+        return len(self._journal.dirty_signature())
 
     @property
     def is_at_save_point(self) -> bool:
-        if self._save_point is None:
-            return False
-        return self._dirty_depth == self._save_point
+        return (
+            self._save_signature is not None
+            and self._journal.dirty_signature() == self._save_signature
+        )
 
     @property
     def enabled(self) -> bool:
@@ -93,13 +109,42 @@ class UndoManager:
 
     @enabled.setter
     def enabled(self, value: bool) -> None:
-        self._enabled = value
+        self._enabled = bool(value)
 
-    # -- Core operations --
+    def set_context_hooks(
+        self,
+        provider: Optional[Callable[[], EditorContextSnapshot]],
+        restorer: Optional[Callable[[EditorContextSnapshot, str], None]],
+    ) -> None:
+        self._context_provider = provider
+        self._context_restorer = restorer
 
-    def execute(self, cmd: UndoCommand) -> bool:
+    @contextmanager
+    def transaction(self, description: str):
+        from Infernux.engine.interaction import EditorTransaction
+
+        transaction = EditorTransaction(description)
+        try:
+            with self.suppress():
+                yield transaction
+        except Exception:
+            transaction.rollback()
+            raise
+        else:
+            command = transaction.commit()
+            if command is not None:
+                self.record(command, transaction_id=transaction.transaction_id)
+
+    def execute(
+        self,
+        cmd: UndoCommand,
+        *,
+        origin: ActionOrigin = ActionOrigin.USER,
+        transaction_id: str = "",
+    ) -> bool:
         from Infernux.debug import Debug
 
+        before_context = self._capture_context()
         if not self._enabled:
             try:
                 cmd.execute()
@@ -113,48 +158,77 @@ class UndoManager:
         try:
             cmd.execute()
         except Exception as exc:
-            self._is_executing = False
             Debug.log_exception(exc)
             self._debug_dump_stack("execute-failed")
             return False
-        self._is_executing = False
+        finally:
+            self._is_executing = False
         _bump_inspector_values()
 
         if self._suppress_property_recording and cmd._is_property_edit:
             return True
 
-        self._push(cmd)
+        self._push(
+            cmd,
+            before_context=before_context,
+            after_context=self._capture_context(),
+            origin=origin,
+            transaction_id=transaction_id,
+        )
         return True
 
-    def record(self, cmd: UndoCommand) -> None:
+    def record(
+        self,
+        cmd: UndoCommand,
+        *,
+        origin: ActionOrigin = ActionOrigin.USER,
+        transaction_id: str = "",
+        before_context: Optional[EditorContextSnapshot] = None,
+        after_context: Optional[EditorContextSnapshot] = None,
+    ) -> None:
         if not self._enabled:
             return
         if self._suppress_property_recording and cmd._is_property_edit:
             return
-        self._push(cmd)
+
+        current_context = self._capture_context()
+        before_context = before_context or current_context
+        after_context = after_context or current_context
+        old_selection = getattr(cmd, "_old_snapshot", None)
+        new_selection = getattr(cmd, "_new_snapshot", None)
+        if before_context is not None and old_selection is not None:
+            before_context = before_context.with_selection(old_selection)
+        if after_context is not None and new_selection is not None:
+            after_context = after_context.with_selection(new_selection)
+        self._push(
+            cmd,
+            before_context=before_context,
+            after_context=after_context,
+            origin=origin,
+            transaction_id=transaction_id,
+        )
         _bump_inspector_values()
 
     def undo(self) -> None:
         from Infernux.debug import Debug
 
-        if not self._undo_stack:
+        entry = self._journal.peek_undo()
+        if entry is None:
             return
-        cmd = self._undo_stack.pop()
+        self._restore_context(entry.after_context, "prepare_undo")
         self._is_executing = True
         try:
-            cmd.undo()
+            entry.action.undo()
         except Exception as exc:
-            self._is_executing = False
-            self._undo_stack.append(cmd)
             Debug.log_exception(exc)
             self._debug_dump_stack("undo-failed")
             return
-        self._is_executing = False
+        finally:
+            self._is_executing = False
+
+        self._journal.commit_undo(entry)
+        self._restore_context(entry.before_context, "undo_complete")
         _bump_inspector_values()
-
-        if cmd.supports_redo:
-            self._redo_stack.append(cmd)
-
         self._sync_dirty()
         self._fire_state_changed()
         self._debug_dump_stack("undo")
@@ -162,68 +236,100 @@ class UndoManager:
     def redo(self) -> None:
         from Infernux.debug import Debug
 
-        if not self._redo_stack:
+        entry = self._journal.peek_redo()
+        if entry is None:
             return
-        cmd = self._redo_stack.pop()
+        self._restore_context(entry.before_context, "prepare_redo")
         self._is_executing = True
         try:
-            cmd.redo()
+            entry.action.redo()
         except Exception as exc:
-            self._is_executing = False
-            self._redo_stack.append(cmd)
             Debug.log_exception(exc)
             self._debug_dump_stack("redo-failed")
             return
-        self._is_executing = False
+        finally:
+            self._is_executing = False
+
+        self._journal.commit_redo(entry)
+        self._restore_context(entry.after_context, "redo_complete")
         _bump_inspector_values()
-
-        self._undo_stack.append(cmd)
-
         self._sync_dirty()
         self._fire_state_changed()
         self._debug_dump_stack("redo")
 
     def clear(self, scene_is_dirty: bool = False) -> None:
-        self._undo_stack.clear()
-        self._redo_stack.clear()
-        self._save_point = 0
+        self._journal.clear()
+        self._save_signature = ()
         self._base_scene_dirty = bool(scene_is_dirty)
         self._fire_state_changed()
 
     def set_scene_dirty_baseline(self, scene_is_dirty: bool) -> None:
-        """Update scene dirty baseline without clearing stacks (e.g. after play mode exit)."""
         self._base_scene_dirty = bool(scene_is_dirty)
         self._sync_dirty()
         self._fire_state_changed()
 
     def mark_save_point(self) -> None:
-        self._save_point = self._dirty_depth
+        self._save_signature = self._journal.dirty_signature()
         self._base_scene_dirty = False
 
     def sync_dirty_state(self) -> None:
         self._sync_dirty()
 
-    def set_on_state_changed(self, cb: Optional[Callable[[], None]]) -> None:
-        self._on_state_changed = cb
+    def set_on_state_changed(self, callback: Optional[Callable[[], None]]) -> None:
+        self._on_state_changed = callback
 
-    # -- Private --
+    def _capture_context(self) -> Optional[EditorContextSnapshot]:
+        if self._context_provider is None:
+            return None
+        try:
+            return self._context_provider()
+        except Exception as exc:
+            from Infernux.debug import Debug
 
-    def _push(self, cmd: UndoCommand) -> None:
-        if self._undo_stack and self._undo_stack[-1].can_merge(cmd):
-            self._undo_stack[-1].merge(cmd)
-        else:
-            self._undo_stack.append(cmd)
-            if len(self._undo_stack) > self.MAX_STACK_DEPTH:
-                overflow = len(self._undo_stack) - self.MAX_STACK_DEPTH
-                dirty_dropped = sum(
-                    1 for c in self._undo_stack[:overflow] if c.marks_dirty)
-                del self._undo_stack[:overflow]
-                if self._save_point is not None:
-                    self._save_point -= dirty_dropped
-                    if self._save_point < 0:
-                        self._save_point = None
+            Debug.log_suppressed("UndoManager.capture_context", exc)
+            return None
 
-        self._redo_stack.clear()
+    def _restore_context(
+        self,
+        context: Optional[EditorContextSnapshot],
+        phase: str,
+    ) -> None:
+        if context is None or self._context_restorer is None:
+            return
+        try:
+            self._context_restorer(context, phase)
+        except Exception as exc:
+            from Infernux.debug import Debug
+
+            Debug.log_suppressed("UndoManager.restore_context", exc)
+
+    def _push(
+        self,
+        cmd: UndoCommand,
+        *,
+        before_context: Optional[EditorContextSnapshot] = None,
+        after_context: Optional[EditorContextSnapshot] = None,
+        origin: ActionOrigin = ActionOrigin.USER,
+        transaction_id: str = "",
+    ) -> None:
+        self._journal.max_entries = max(1, int(self.MAX_STACK_DEPTH))
+        result = self._journal.record(
+            cmd,
+            before_context=before_context,
+            after_context=after_context,
+            origin=origin,
+            transaction_id=transaction_id,
+        )
+        if not result.recorded:
+            return
+
+        # A merge mutates an already-saved operation without increasing stack
+        # depth. The signature revision prevents a false clean state.
+        if result.dropped and self._save_signature is not None:
+            dropped_ids = {entry.operation_id for entry in result.dropped}
+            if any(operation_id in dropped_ids for operation_id, _ in self._save_signature):
+                self._save_signature = None
+
         self._sync_dirty()
         self._fire_state_changed()
         self._debug_dump_stack("push")
@@ -232,31 +338,31 @@ class UndoManager:
         if os.environ.get("INFERNUX_UNDO_TRACE") != "1":
             return
         from Infernux.debug import Debug
-        pos = len(self._undo_stack)
-        total = pos + len(self._redo_stack)
+
         parts = []
-        for i, cmd in enumerate(self._undo_stack, 1):
-            parts.append(f"{i}: {cmd.description}")
-        for j, cmd in enumerate(self._redo_stack[::-1], pos + 1):
-            parts.append(f"{j}: (redo) {cmd.description}")
+        for index, entry in enumerate(self._journal.entries, 1):
+            marker = "" if index <= self._journal.cursor else "(redo) "
+            parts.append(f"{index}: {marker}{entry.action.description}")
         Debug.log(
-            f"[UndoTrace] {action} pos={pos} total={total} "
-            + " | ".join(parts)
+            f"[UndoTrace] {action} pos={self._journal.cursor} "
+            f"total={len(self._journal.entries)} " + " | ".join(parts)
         )
 
     def _sync_dirty(self) -> None:
         from Infernux.engine.play_mode import PlayModeManager, PlayModeState
-        pm = PlayModeManager.instance()
-        if pm and pm.state != PlayModeState.EDIT:
+
+        play_mode = PlayModeManager.instance()
+        if play_mode and play_mode.state != PlayModeState.EDIT:
             return
         from Infernux.engine.scene_manager import SceneFileManager
-        sfm = SceneFileManager.instance()
-        if sfm is None:
+
+        scene_files = SceneFileManager.instance()
+        if scene_files is None:
             return
         if self._base_scene_dirty or not self.is_at_save_point:
-            sfm.mark_dirty()
+            scene_files.mark_dirty()
         else:
-            sfm.clear_dirty()
+            scene_files.clear_dirty()
 
     def _fire_state_changed(self) -> None:
         if self._on_state_changed:

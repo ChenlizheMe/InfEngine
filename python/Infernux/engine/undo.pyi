@@ -67,9 +67,10 @@ class LambdaCommand(UndoCommand):
 
     def __init__(
         self,
+        description: str,
         undo_fn: Callable[[], None],
         redo_fn: Callable[[], None],
-        description: str = "",
+        marks_dirty: bool = True,
     ) -> None: ...
 
     def execute(self) -> None: ...
@@ -484,7 +485,19 @@ class UndoManager:
         """Return the singleton, or ``None`` if not yet created."""
         ...
 
-    def __init__(self) -> None: ...
+    def __init__(self, journal: Any = None) -> None: ...
+
+    @property
+    def action_journal(self) -> Any: ...
+
+    def set_context_hooks(
+        self,
+        provider: Optional[Callable[[], Any]],
+        restorer: Optional[Callable[[Any, str], None]],
+    ) -> None: ...
+
+    @contextmanager
+    def transaction(self, description: str) -> Iterator[Any]: ...
 
     @contextmanager
     def suppress(self) -> Iterator[None]:
@@ -523,7 +536,13 @@ class UndoManager:
     @enabled.setter
     def enabled(self, value: bool) -> None: ...
 
-    def execute(self, cmd: UndoCommand) -> bool:
+    def execute(
+        self,
+        cmd: UndoCommand,
+        *,
+        origin: Any = ...,
+        transaction_id: str = "",
+    ) -> bool:
         """Execute *cmd* and push it onto the undo stack.
 
         Args:
@@ -535,7 +554,15 @@ class UndoManager:
         """
         ...
 
-    def record(self, cmd: UndoCommand) -> None:
+    def record(
+        self,
+        cmd: UndoCommand,
+        *,
+        origin: Any = ...,
+        transaction_id: str = "",
+        before_context: Any = None,
+        after_context: Any = None,
+    ) -> None:
         """Push *cmd* without executing it (for externally-applied changes)."""
         ...
 

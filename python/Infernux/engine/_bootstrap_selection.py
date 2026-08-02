@@ -46,6 +46,26 @@ class BootstrapSelectionMixin:
         DeleteGameObjectCommand._selection_restore_fn = self._apply_selection_undo
         DeleteGameObjectsCommand._selection_restore_fn = self._apply_selection_undo
         self._prev_selection_snapshot = SelectionService.instance().snapshot
+        self.undo_manager.set_context_hooks(
+            self.interaction_core.capture_context,
+            self._restore_editor_context,
+        )
+
+    def _restore_editor_context(self, context, phase: str) -> None:
+        from Infernux.engine.interaction import SelectionService
+
+        if SelectionService.instance().snapshot != context.selection:
+            self._apply_selection_snapshot(context.selection)
+
+        panel_id = context.focus.active_panel_id
+        if not panel_id or self.window_manager is None:
+            return
+        if not self.window_manager.is_window_open(panel_id):
+            registered = self.window_manager.get_registered_types()
+            if panel_id in registered:
+                self.window_manager.open_window(panel_id)
+        if self.window_manager.is_window_open(panel_id):
+            self.window_manager.focus_window(panel_id)
 
     def _set_outline(self, object_id: int, object_ids=None):
         native = self.engine.get_native_engine()

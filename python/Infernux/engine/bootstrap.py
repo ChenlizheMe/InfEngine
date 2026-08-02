@@ -288,7 +288,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         from Infernux.engine.undo import UndoManager
 
         self.interaction_core = EditorInteractionCore()
-        self.undo_manager = UndoManager()
+        self.undo_manager = UndoManager(self.interaction_core.action_journal)
 
         self.scene_file_manager = SceneFileManager()
         self.scene_file_manager.set_asset_database(self.engine.get_asset_database())
