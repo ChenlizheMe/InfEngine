@@ -241,16 +241,31 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         )
 
         def _delete_confirmed(confirmed_paths: list[str]) -> bool:
-            for item_path in sorted(
+            from Infernux.engine.undo import ProjectAssetDeleteCommand, UndoManager
+
+            def _on_deleted() -> None:
+                pp.clear_selection()
+                pp.invalidate_dir_cache()
+
+            command = ProjectAssetDeleteCommand(
                 confirmed_paths,
-                key=lambda p: (p.count(os.sep), len(p)),
-                reverse=True,
-            ):
-                if os.path.exists(item_path) and not file_ops.delete_item(item_path, adb):
-                    return False
-            pp.clear_selection()
-            pp.invalidate_dir_cache()
-            return not any(os.path.exists(path) for path in confirmed_paths)
+                project_root=bs.project_path,
+                backup_root=os.path.join(bs.project_path, "Library", "EditorUndo"),
+                asset_database=adb,
+                on_deleted=_on_deleted,
+                on_restored=pp.invalidate_dir_cache,
+                description=(
+                    "Delete Asset" if len(confirmed_paths) == 1 else "Delete Assets"
+                ),
+            )
+            manager = UndoManager.instance()
+            if manager is not None:
+                return manager.execute(command)
+            try:
+                command.execute()
+                return True
+            finally:
+                command.dispose()
 
         ProjectDeleteConfirmationCoordinator.instance().request(valid, _delete_confirmed)
 

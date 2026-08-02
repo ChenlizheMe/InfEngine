@@ -1,16 +1,36 @@
 from __future__ import annotations
 
 import os
+import shutil
 
 import pytest
 
 from Infernux.engine.interaction import EditorActionJournal
-from Infernux.engine.undo import ProjectAssetRenameCommand, UndoManager
+from Infernux.engine.undo import (
+    ProjectAssetDeleteCommand,
+    ProjectAssetRenameCommand,
+    UndoManager,
+)
 
 
 def _filesystem_move(source: str, destination: str, _database):
     os.replace(source, destination)
     return destination
+
+
+def _filesystem_delete(path: str, _database):
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+    else:
+        os.remove(path)
+    meta = path + ".meta"
+    if os.path.exists(meta):
+        os.remove(meta)
+    return True
+
+
+def _successful_import(_path: str, _database):
+    return True
 
 
 def test_project_asset_rename_command_replays_both_directions(tmp_path):
@@ -89,3 +109,146 @@ def test_failed_asset_rename_undo_keeps_global_cursor_and_files(tmp_path):
     assert manager.action_journal.cursor == 1
     assert old_path.read_text(encoding="utf-8") == "external"
     assert new_path.read_text(encoding="utf-8") == "original"
+
+
+def test_project_asset_delete_preserves_file_and_guid_meta_across_replay(tmp_path):
+    asset = tmp_path / "Assets" / "Smoke.mat"
+    asset.parent.mkdir()
+    asset.write_text("material", encoding="utf-8")
+    meta = asset.with_name(asset.name + ".meta")
+    meta.write_text('{"guid":"stable-guid"}', encoding="utf-8")
+    backup_root = tmp_path / "Library" / "EditorUndo"
+    changed = []
+    command = ProjectAssetDeleteCommand(
+        [str(asset)],
+        project_root=str(tmp_path),
+        backup_root=str(backup_root),
+        delete_fn=_filesystem_delete,
+        import_fn=_successful_import,
+        on_deleted=lambda: changed.append("deleted"),
+        on_restored=lambda: changed.append("restored"),
+    )
+
+    command.execute()
+    assert not asset.exists()
+    assert not meta.exists()
+
+    command.undo()
+    assert asset.read_text(encoding="utf-8") == "material"
+    assert meta.read_text(encoding="utf-8") == '{"guid":"stable-guid"}'
+
+    command.redo()
+    assert not asset.exists()
+    assert changed == ["deleted", "restored", "deleted"]
+
+    command.dispose()
+    assert not any(backup_root.glob("asset-delete-*"))
+
+
+def test_project_asset_delete_deduplicates_nested_selected_roots(tmp_path):
+    folder = tmp_path / "Assets" / "Folder"
+    nested = folder / "Nested.mat"
+    folder.mkdir(parents=True)
+    nested.write_text("nested", encoding="utf-8")
+    nested_meta = nested.with_name(nested.name + ".meta")
+    nested_meta.write_text("guid", encoding="utf-8")
+    imported = []
+    command = ProjectAssetDeleteCommand(
+        [str(folder), str(nested)],
+        project_root=str(tmp_path),
+        delete_fn=_filesystem_delete,
+        import_fn=lambda path, _database: imported.append(path) or True,
+    )
+
+    command.execute()
+    command.undo()
+
+    assert nested.read_text(encoding="utf-8") == "nested"
+    assert nested_meta.read_text(encoding="utf-8") == "guid"
+    assert imported == [str(nested)]
+    command.dispose()
+
+
+def test_project_asset_delete_rolls_back_batch_failure(tmp_path):
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    first = assets / "A.mat"
+    second = assets / "B.mat"
+    first.write_text("A", encoding="utf-8")
+    second.write_text("B", encoding="utf-8")
+
+    def _fail_after_one(path: str, database):
+        if os.path.basename(path) == "A.mat":
+            return False
+        return _filesystem_delete(path, database)
+
+    command = ProjectAssetDeleteCommand(
+        [str(first), str(second)],
+        project_root=str(tmp_path),
+        delete_fn=_fail_after_one,
+        import_fn=_successful_import,
+    )
+
+    with pytest.raises(RuntimeError, match="asset delete failed"):
+        command.execute()
+
+    assert first.read_text(encoding="utf-8") == "A"
+    assert second.read_text(encoding="utf-8") == "B"
+    command.dispose()
+
+
+def test_failed_asset_delete_undo_keeps_cursor_and_external_file(tmp_path):
+    asset = tmp_path / "Assets" / "Original.mat"
+    asset.parent.mkdir()
+    asset.write_text("original", encoding="utf-8")
+    command = ProjectAssetDeleteCommand(
+        [str(asset)],
+        project_root=str(tmp_path),
+        delete_fn=_filesystem_delete,
+        import_fn=_successful_import,
+    )
+    manager = UndoManager(EditorActionJournal())
+    assert manager.execute(command)
+    asset.write_text("external", encoding="utf-8")
+
+    manager.undo()
+
+    assert manager.action_journal.cursor == 1
+    assert asset.read_text(encoding="utf-8") == "external"
+    manager.clear()
+
+
+def test_project_asset_delete_restores_real_asset_database_guid(tmp_path, engine):
+    import json
+
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    database = engine.get_asset_database()
+    asset = assets / "Stable.effect"
+    asset.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.render_effect",
+                "feature_type": "infernux.post.bloom",
+                "parameters": {},
+                "dependencies": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    guid = database.import_asset(str(asset)).guid
+    assert guid
+
+    command = ProjectAssetDeleteCommand(
+        [str(asset)],
+        project_root=str(tmp_path),
+        asset_database=database,
+    )
+
+    command.execute()
+    assert not database.contains_guid(guid)
+    command.undo()
+
+    assert database.get_guid_from_path(str(asset)) == guid
+    assert database.get_path_from_guid(guid)
+    command.dispose()

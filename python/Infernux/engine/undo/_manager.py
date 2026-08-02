@@ -151,7 +151,9 @@ class UndoManager:
                 _bump_inspector_values()
             except Exception as exc:
                 Debug.log_exception(exc)
+                cmd.dispose()
                 return False
+            cmd.dispose()
             return True
 
         self._is_executing = True
@@ -160,12 +162,14 @@ class UndoManager:
         except Exception as exc:
             Debug.log_exception(exc)
             self._debug_dump_stack("execute-failed")
+            cmd.dispose()
             return False
         finally:
             self._is_executing = False
         _bump_inspector_values()
 
         if self._suppress_property_recording and cmd._is_property_edit:
+            cmd.dispose()
             return True
 
         self._push(
@@ -187,8 +191,10 @@ class UndoManager:
         after_context: Optional[EditorContextSnapshot] = None,
     ) -> None:
         if not self._enabled:
+            cmd.dispose()
             return
         if self._suppress_property_recording and cmd._is_property_edit:
+            cmd.dispose()
             return
 
         current_context = self._capture_context()

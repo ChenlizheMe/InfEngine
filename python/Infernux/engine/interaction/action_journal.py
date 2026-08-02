@@ -102,6 +102,7 @@ class EditorActionJournal:
         transaction_id: str = "",
     ) -> JournalPushResult:
         if origin is ActionOrigin.EXTERNAL:
+            self._dispose_action(action)
             return JournalPushResult(False)
 
         discarded_redo = tuple(self._entries[self._cursor :])
