@@ -31,6 +31,22 @@ def make_component_ref(game_object_id: int, component_type: str) -> dict:
     )
 
 
+def is_component_ref_document(value, component_type: str = "") -> bool:
+    """Return whether *value* is one complete current component reference."""
+    return (
+        type(value) is dict
+        and set(value) == {TYPE_KEY, "game_object_id", "component_type"}
+        and value.get(TYPE_KEY) == COMPONENT_REF
+        and type(value.get("game_object_id")) is int
+        and value["game_object_id"] >= 0
+        and type(value.get("component_type")) is str
+        and (
+            not component_type
+            or value["component_type"] == component_type
+        )
+    )
+
+
 def make_asset_ref(asset_type: str, guid: str, path_hint: str = "") -> dict:
     return make_document(
         ASSET_REF,

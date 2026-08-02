@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -261,10 +262,27 @@ struct GpuParticleEmitterDiagnostic
     float collisionMaxOutwardSpeed = 0.0f;
     float collisionMaxTangentSpeed = 0.0f;
     uint32_t collisionCandidateOverflowCount = 0;
+    uint32_t contactOverflowCount = 0;
+    uint32_t contactWorkItemOverflowCount = 0;
+    uint32_t contactCurrentSimulationStep = 0;
+    uint32_t contactResetSerial = 0;
+    uint32_t contactCurrentRecordCount = 0;
+    uint32_t contactWorkItemCount = 0;
+    uint32_t contactMaxPerParticle = 0;
+    uint32_t multiContactParticleCount = 0;
+    uint32_t contactRetainedOrderHash = 0;
+    uint32_t contactDroppedOrderHash = 0;
+    uint32_t contactMinParticleIndex = std::numeric_limits<uint32_t>::max();
+    uint32_t contactMaxParticleIndex = 0;
     uint32_t preparedSpawnCount = 0;
     uint32_t preparedSpawnBaseId = 0;
     uint32_t preparedSpawnGeneration = 0;
     uint32_t spawnOverflowCount = 0;
+    uint32_t acceptedSpawnTotal = 0;
+    uint32_t queuedBurstCount = 0;
+    uint32_t consumingBurstCount = 0;
+    bool acceptingBurstRequests = false;
+    bool gpuEmitterPlaying = false;
     std::vector<uint32_t> eventOverflowCounts;
     std::vector<uint32_t> eventEnqueueCounts;
     std::vector<uint32_t> eventCompleteCounts;
@@ -337,6 +355,8 @@ class ParticleGpuSystemManager
     /// instance. No scheduler is armed until the complete batch validates and
     /// all transform uploads succeed.
     [[nodiscard]] bool BeginFrameBatch(uint64_t graphInstanceId, const std::vector<GpuParticleBatchFrameItem> &items);
+    /// Update one emitter's graph-owned runtime playing state without rebuilding resources.
+    [[nodiscard]] bool SetEmitterPlaying(uint64_t id, bool playing);
     [[nodiscard]] bool Reset(uint64_t id);
     void Execute(VkCommandBuffer commandBuffer);
     /// Record the pre-export simulation phase on an independent Compute queue.

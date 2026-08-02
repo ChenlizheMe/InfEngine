@@ -1192,6 +1192,7 @@ class KernelParameter:
     value_type: TypeRef
     default: Any
     exposed: bool
+    writable: bool
     slot: int
 
     def __post_init__(self) -> None:
@@ -1201,7 +1202,12 @@ class KernelParameter:
             raise KernelCompileError("kernel parameter name cannot be empty")
         if not isinstance(self.value_type, TypeRef):
             raise KernelCompileError("kernel parameter type is invalid")
-        if type(self.exposed) is not bool or type(self.slot) is not int or self.slot < 0:
+        if (
+            type(self.exposed) is not bool
+            or type(self.writable) is not bool
+            or type(self.slot) is not int
+            or self.slot < 0
+        ):
             raise KernelCompileError("kernel parameter runtime metadata is invalid")
         _finite_json(self.default)
 
@@ -1212,6 +1218,7 @@ class KernelParameter:
             "type": self.value_type.to_dict(),
             "default": self.default,
             "exposed": self.exposed,
+            "writable": self.writable,
             "slot": self.slot,
         }
 
@@ -1219,7 +1226,7 @@ class KernelParameter:
     def from_dict(cls, value: Any) -> "KernelParameter":
         _exact_dict(
             value,
-            {"stable_id", "name", "type", "default", "exposed", "slot"},
+            {"stable_id", "name", "type", "default", "exposed", "writable", "slot"},
             "kernel parameter",
         )
         return cls(
@@ -1228,6 +1235,7 @@ class KernelParameter:
             TypeRef.from_dict(value["type"]),
             value["default"],
             value["exposed"],
+            value["writable"],
             value["slot"],
         )
 
@@ -1274,7 +1282,7 @@ class ParticleKernelProgram:
 
     def _validate_parameter_access(self) -> None:
         parameters = {
-            parameter.stable_id: parameter.value_type
+            parameter.stable_id: parameter
             for parameter in self.parameters
         }
         for emitter in self.emitters:
@@ -1285,12 +1293,24 @@ class ParticleKernelProgram:
                 emitter.rendering,
             ):
                 for instruction in function.instructions:
-                    if instruction.opcode != "load_parameter":
+                    if instruction.opcode not in {"load_parameter", "store_parameter"}:
                         continue
                     stable_id = instruction.immediate_dict()["parameter"]
-                    if parameters.get(stable_id) != instruction.result_type:
+                    parameter = parameters.get(stable_id)
+                    if instruction.opcode == "load_parameter" and (
+                        parameter is None or parameter.value_type != instruction.result_type
+                    ):
                         raise KernelCompileError(
                             f"kernel references unknown or mismatched parameter {stable_id!r}"
+                        )
+                    if instruction.opcode == "store_parameter" and (
+                        parameter is None
+                        or not parameter.writable
+                        or len(instruction.operands) != 1
+                        or instruction.operands[0].value_type != parameter.value_type
+                    ):
+                        raise KernelCompileError(
+                            f"kernel writes unknown, read-only, or mismatched parameter {stable_id!r}"
                         )
 
     def _validate_event_access(self) -> None:
@@ -1349,13 +1369,16 @@ class ParticleKernelProgram:
                 emitter.rendering,
             ):
                 for instruction in function.instructions:
-                    if instruction.opcode != "burst_enqueue":
+                    if instruction.opcode not in {
+                        "burst_enqueue",
+                        "emitter_set_playing",
+                    }:
                         continue
                     immediate = instruction.immediate_dict()
                     target_index = immediate["target_emitter_index"]
                     if not 0 <= target_index < len(self.emitters):
                         raise KernelCompileError(
-                            "kernel Burst instruction references an unknown emitter"
+                            "kernel cross-emitter instruction references an unknown emitter"
                         )
 
     def to_dict(self, *, include_source: bool = True) -> dict[str, Any]:
@@ -1435,6 +1458,7 @@ class ParticleKernelLowerer:
                 parameter.value_type,
                 parameter.default,
                 parameter.exposed,
+                parameter.writable,
                 parameter.slot,
             )
             for parameter in program.parameters
@@ -2233,6 +2257,12 @@ class ParticleKernelLowerer:
                 )
             elif operation.opcode == "emitter.burst":
                 self._lower_emitter_burst(builder, operation, expression_values, source)
+            elif operation.opcode == "emitter.set_playing":
+                self._lower_emitter_playing(builder, operation, expression_values, source)
+            elif operation.opcode == "parameter.store":
+                self._lower_parameter_store(
+                    builder, operation, expression_values, parameter_types, source
+                )
             elif operation.opcode in {
                 "collision.plane",
                 "collision.sphere",
@@ -2408,6 +2438,12 @@ class ParticleKernelLowerer:
                 )
             elif operation.opcode == "emitter.burst":
                 self._lower_emitter_burst(builder, operation, expression_values, source)
+            elif operation.opcode == "emitter.set_playing":
+                self._lower_emitter_playing(builder, operation, expression_values, source)
+            elif operation.opcode == "parameter.store":
+                self._lower_parameter_store(
+                    builder, operation, expression_values, parameter_types, source
+                )
             elif operation.opcode in collision_opcodes:
                 self._lower_collision(
                     builder,
@@ -2576,6 +2612,14 @@ class ParticleKernelLowerer:
                     self._lower_emitter_burst(
                         builder, operation, expression_values, source
                     )
+                elif operation.opcode == "emitter.set_playing":
+                    self._lower_emitter_playing(
+                        builder, operation, expression_values, source
+                    )
+                elif operation.opcode == "parameter.store":
+                    self._lower_parameter_store(
+                        builder, operation, expression_values, parameter_types, source
+                    )
                 elif operation.opcode in {
                     "collision.plane",
                     "collision.sphere",
@@ -2699,6 +2743,12 @@ class ParticleKernelLowerer:
                 )
             elif operation.opcode == "emitter.burst":
                 self._lower_emitter_burst(builder, operation, expression_values, source)
+            elif operation.opcode == "emitter.set_playing":
+                self._lower_emitter_playing(builder, operation, expression_values, source)
+            elif operation.opcode == "parameter.store":
+                self._lower_parameter_store(
+                    builder, operation, expression_values, parameter_types, source
+                )
             elif operation.opcode in {
                 "collision.plane",
                 "collision.sphere",
@@ -2827,6 +2877,47 @@ class ParticleKernelLowerer:
                 "target_capacity": int(parameters["target_capacity"]),
             },
             source,
+        )
+
+    @staticmethod
+    def _lower_emitter_playing(builder, operation, expression_values, source) -> None:
+        parameters = operation.parameter_dict()
+        playing = builder.operation_value(
+            "playing",
+            dict(operation.value_bindings),
+            expression_values,
+            parameters,
+            TypeRef(ValueType.BOOL),
+            source,
+        )
+        builder.emit_void(
+            "emitter_set_playing",
+            (playing,),
+            {"target_emitter_index": int(parameters["target_emitter_index"])},
+            source,
+        )
+
+    @staticmethod
+    def _lower_parameter_store(
+        builder, operation, expression_values, parameter_types, source
+    ) -> None:
+        parameters = operation.parameter_dict()
+        stable_id = str(parameters.get("parameter", ""))
+        value_type = parameter_types.get(stable_id)
+        if value_type is None:
+            raise KernelCompileError(
+                f"Set Parameter references unknown parameter {stable_id!r}"
+            )
+        value = builder.operation_value(
+            "value",
+            dict(operation.value_bindings),
+            expression_values,
+            parameters,
+            value_type,
+            source,
+        )
+        builder.emit_void(
+            "store_parameter", (value,), {"parameter": stable_id}, source
         )
 
 
@@ -3090,12 +3181,23 @@ class _KernelBuilder:
                     source,
                 )
             elif instruction.opcode == "sample_mesh":
-                if len(instruction.operands) != 1:
+                if len(instruction.operands) not in {0, 1}:
                     raise KernelCompileError(
-                        "resolved Sample Mesh requires one sample-coordinate input"
+                        "resolved Sample Mesh accepts at most one explicit sample-coordinate input"
                     )
-                sample_operand = instruction.operands[0]
-                if sample_operand.value_id:
+                authored = instruction.immediate_dict()
+                seeded_sample = bool(authored["seeded_sample"])
+                if seeded_sample != (not instruction.operands):
+                    raise KernelCompileError(
+                        "resolved Sample Mesh seeded-sample contract is inconsistent"
+                    )
+                operands = ()
+                if instruction.operands:
+                    sample_operand = instruction.operands[0]
+                    if not sample_operand.value_id:
+                        raise KernelCompileError(
+                            "explicit Sample Mesh coordinates require a connected value"
+                        )
                     try:
                         sample_value = lowered[sample_operand.value_id]
                     except KeyError as exc:
@@ -3103,21 +3205,16 @@ class _KernelBuilder:
                             f"Sample Mesh reads unavailable value "
                             f"{sample_operand.value_id!r}"
                         ) from exc
-                else:
-                    sample_value = self.constant(
-                        sample_operand.value_type,
-                        sample_operand.literal,
-                        source,
-                    )
-                authored = instruction.immediate_dict()
+                    operands = (sample_value,)
                 value = self.emit(
                     "sample_mesh",
                     instruction.result_type,
-                    (sample_value,),
+                    operands,
                     {
                         "interface": authored["interface"],
                         "mode": authored["mode"],
                         "output": authored["output"],
+                        "seed": authored["seed"],
                     },
                     source,
                 )
@@ -3207,6 +3304,16 @@ class _KernelBuilder:
             if actual == expected_type:
                 return value
             if actual.value_type == expected_type.value_type:
+                if (
+                    actual.space is not CoordinateSpace.NONE
+                    and expected_type.space is not CoordinateSpace.NONE
+                    and actual.space is not expected_type.space
+                ):
+                    raise KernelCompileError(
+                        f"operation {property_id!r} cannot implicitly convert "
+                        f"{actual.space.value} to {expected_type.space.value}; use an "
+                        "explicit Transform Position or Transform Direction node"
+                    )
                 return self.emit(
                     "convert_space",
                     expected_type,

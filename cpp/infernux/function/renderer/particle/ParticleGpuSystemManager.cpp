@@ -354,6 +354,11 @@ struct ParticleGpuSystemManager::Impl
                 uint64_t counterBytes = 0;
                 uint64_t boundsOffset = 0;
                 uint64_t spawnMetadataOffset = 0;
+                uint64_t spawnDomainStateOffset = 0;
+                uint64_t contactCounterOffset = 0;
+                uint64_t contactCounterBytes = 0;
+                uint32_t contactRecordCapacity = 0;
+                uint32_t contactWorkItemCapacity = 0;
                 uint64_t stateOffset = 0;
                 uint64_t stateBytes = 0;
                 uint32_t stateStride = 0;
@@ -373,6 +378,11 @@ struct ParticleGpuSystemManager::Impl
                 capture.diagnostic.eventEnqueueCounts.resize(emitter->runtime->EventTypeCount());
                 capture.diagnostic.eventCompleteCounts.resize(emitter->runtime->EventTypeCount());
                 capture.counterBytes = emitter->runtime->CounterBufferByteSize();
+                if (emitter->runtime->HasContactRuntime()) {
+                    capture.contactCounterBytes = sizeof(GpuParticleContactCounters);
+                    capture.contactRecordCapacity = emitter->runtime->ContactTelemetry().contactRecordCapacity;
+                    capture.contactWorkItemCapacity = emitter->runtime->ContactTelemetry().workItemCapacity;
+                }
                 if (request.stateSampleCount > 0) {
                     capture.stateStride = emitter->runtime->StateStride();
                     capture.stateSampleCount = request.stateSampleCount;
@@ -398,7 +408,8 @@ struct ParticleGpuSystemManager::Impl
             uint64_t totalBytes = 0;
             for (const auto &capture : emitterCaptures)
                 totalBytes += capture.counterBytes + ParticleGpuBounds::BoundsBufferBytes +
-                              sizeof(GpuParticleSpawnMetadata) + capture.stateBytes;
+                              sizeof(GpuParticleSpawnMetadata) + sizeof(uint32_t) * 4u +
+                              capture.contactCounterBytes + capture.stateBytes;
             constexpr uint64_t MaxDiagnosticStateReadbackBytes = 16ull * 1024ull * 1024ull;
             const uint64_t stateReadbackBytes =
                 std::accumulate(emitterCaptures.begin(), emitterCaptures.end(), uint64_t{0},
@@ -449,6 +460,25 @@ struct ParticleGpuSystemManager::Impl
                                          sizeof(GpuParticleSpawnMetadata)});
                 }
                 offset += sizeof(GpuParticleSpawnMetadata);
+                capture.spawnDomainStateOffset = offset;
+                if (graphState && spawnDomain != graphState->spawnDomains.end()) {
+                    const uint64_t slotOffset = uint64_t(capture.diagnostic.emitterIndex) * sizeof(uint32_t);
+                    transfer.CopyBuffer(spawnDomain->second->BurstRequestBuffer(), readbackHandle,
+                                        {slotOffset, offset, sizeof(uint32_t)});
+                    transfer.CopyBuffer(spawnDomain->second->ConsumingBuffer(), readbackHandle,
+                                        {slotOffset, offset + sizeof(uint32_t), sizeof(uint32_t)});
+                    transfer.CopyBuffer(spawnDomain->second->BurstRequestAcceptanceBuffer(), readbackHandle,
+                                        {slotOffset, offset + sizeof(uint32_t) * 2u, sizeof(uint32_t)});
+                    transfer.CopyBuffer(spawnDomain->second->EmitterPlayingStateBuffer(), readbackHandle,
+                                        {slotOffset, offset + sizeof(uint32_t) * 3u, sizeof(uint32_t)});
+                }
+                offset += sizeof(uint32_t) * 4u;
+                if (capture.contactCounterBytes > 0) {
+                    capture.contactCounterOffset = offset;
+                    transfer.CopyBuffer(emitter->second->runtime->ContactResources().counters, readbackHandle,
+                                        {0, offset, capture.contactCounterBytes});
+                    offset += capture.contactCounterBytes;
+                }
                 if (capture.stateBytes > 0) {
                     capture.stateOffset = offset;
                     transfer.CopyBuffer(emitter->second->runtime->StateBuffer(), readbackHandle,
@@ -518,6 +548,33 @@ struct ParticleGpuSystemManager::Impl
                         capture.diagnostic.preparedSpawnBaseId = spawnMetadata.baseId;
                         capture.diagnostic.preparedSpawnGeneration = spawnMetadata.generation;
                         capture.diagnostic.spawnOverflowCount = spawnMetadata.overflowCount;
+                        capture.diagnostic.acceptedSpawnTotal = spawnMetadata.acceptedSpawnTotal;
+                        std::array<uint32_t, 4> spawnDomainState{};
+                        std::memcpy(spawnDomainState.data(), bytes.data() + capture.spawnDomainStateOffset,
+                                    sizeof(spawnDomainState));
+                        capture.diagnostic.queuedBurstCount = spawnDomainState[0];
+                        capture.diagnostic.consumingBurstCount = spawnDomainState[1];
+                        capture.diagnostic.acceptingBurstRequests = spawnDomainState[2] != 0u;
+                        capture.diagnostic.gpuEmitterPlaying = spawnDomainState[3] != 0u;
+                        if (capture.contactCounterBytes > 0) {
+                            GpuParticleContactCounters contactCounters{};
+                            std::memcpy(&contactCounters, bytes.data() + capture.contactCounterOffset,
+                                        sizeof(contactCounters));
+                            capture.diagnostic.contactOverflowCount = contactCounters.contactOverflow;
+                            capture.diagnostic.contactWorkItemOverflowCount = contactCounters.workItemOverflow;
+                            capture.diagnostic.contactCurrentSimulationStep = contactCounters.currentSimulationStep;
+                            capture.diagnostic.contactResetSerial = contactCounters.resetSerial;
+                            capture.diagnostic.contactCurrentRecordCount =
+                                std::min(contactCounters.currentRecordCount, capture.contactRecordCapacity);
+                            capture.diagnostic.contactWorkItemCount =
+                                std::min(contactCounters.workItemCount, capture.contactWorkItemCapacity);
+                            capture.diagnostic.contactMaxPerParticle = contactCounters.maxContactsPerParticle;
+                            capture.diagnostic.multiContactParticleCount = contactCounters.multiContactParticleCount;
+                            capture.diagnostic.contactRetainedOrderHash = contactCounters.retainedOrderHash;
+                            capture.diagnostic.contactDroppedOrderHash = contactCounters.droppedOrderHash;
+                            capture.diagnostic.contactMinParticleIndex = contactCounters.minParticleIndex;
+                            capture.diagnostic.contactMaxParticleIndex = contactCounters.maxParticleIndex;
+                        }
                         if (capture.stateBytes > 0 && capture.stateSampleCount > 0) {
                             const size_t wordsPerState = capture.stateStride / sizeof(uint32_t);
                             for (uint32_t slot = 0; slot < capture.diagnostic.capacity &&
@@ -761,7 +818,6 @@ struct ParticleGpuSystemManager::Impl
         runtimeDesc.stateStride = program.stateStride;
         runtimeDesc.eventTypeCount = program.eventTypeCount;
         runtimeDesc.collisionEnabled = program.collisionEnabled;
-        runtimeDesc.parameterWords = program.parameterWords;
         for (size_t index = 0; index < program.kernels.size(); ++index)
             runtimeDesc.kernels[index] = {program.kernels[index].data(), program.kernels[index].size()};
         runtimeDesc.continuation.capacity = program.continuationCapacity;
@@ -1510,9 +1566,16 @@ struct ParticleGpuSystemManager::Impl
                 }
             }
             auto domain = std::make_shared<ParticleGpuGraphSpawnDomain>();
+            const auto &parameterWords = graphEmitters.front()->sourceProgram.parameterWords;
+            if (std::any_of(graphEmitters.begin(), graphEmitters.end(), [&](const auto &emitter) {
+                    return emitter->sourceProgram.parameterWords != parameterWords;
+                })) {
+                SetError(error, "GPU particle graph emitters disagree on the shared parameter block");
+                return {};
+            }
             if (!spawnProgram || !spawnProgram->IsValid() ||
                 !domain->Create(context->GetRhiDevice(), graphInstanceId, static_cast<uint32_t>(graphEmitters.size()),
-                                spawnProgram->View())) {
+                                spawnProgram->View(), parameterWords)) {
                 SetError(error, "failed to create the GPU particle graph spawn domain");
                 return {};
             }
@@ -1531,7 +1594,18 @@ struct ParticleGpuSystemManager::Impl
         }
         state->schedulers.reserve(candidateEmitters.size());
         state->schedulerById.reserve(candidateEmitters.size());
-        for (const auto &[id, emitter] : candidateEmitters) {
+        std::vector<std::pair<uint64_t, std::shared_ptr<Emitter>>> orderedEmitters(candidateEmitters.begin(),
+                                                                                   candidateEmitters.end());
+        std::sort(orderedEmitters.begin(), orderedEmitters.end(), [](const auto &lhs, const auto &rhs) {
+            const auto &lhsEmitter = lhs.second;
+            const auto &rhsEmitter = rhs.second;
+            if (lhsEmitter->graphInstanceId != rhsEmitter->graphInstanceId)
+                return lhsEmitter->graphInstanceId < rhsEmitter->graphInstanceId;
+            if (lhsEmitter->sourceProgram.graphEmitterIndex != rhsEmitter->sourceProgram.graphEmitterIndex)
+                return lhsEmitter->sourceProgram.graphEmitterIndex < rhsEmitter->sourceProgram.graphEmitterIndex;
+            return lhs.first < rhs.first;
+        });
+        for (const auto &[id, emitter] : orderedEmitters) {
             auto scheduler = std::make_unique<ParticleRenderGraph>();
             const std::string prefix = "GpuParticle/" + std::to_string(id);
             const auto domain = state->spawnDomains.find(emitter->graphInstanceId);
@@ -1917,11 +1991,14 @@ bool ParticleGpuSystemManager::UpdateGraphParameters(uint64_t graphInstanceId,
         SetError(error, "GPU particle parameter layout does not match the active graph");
         return false;
     }
-    for (const auto &emitter : targets) {
-        if (!emitter->runtime->UpdateParameters(parameterWords)) {
-            SetError(error, "GPU particle parameter upload failed");
-            return false;
-        }
+    if (!m_impl->graphState) {
+        SetError(error, "GPU particle graph state is unavailable");
+        return false;
+    }
+    const auto domain = m_impl->graphState->spawnDomains.find(graphInstanceId);
+    if (domain == m_impl->graphState->spawnDomains.end() || !domain->second->UpdateParameters(parameterWords)) {
+        SetError(error, "GPU particle shared parameter upload failed");
+        return false;
     }
     for (const auto &emitter : targets)
         emitter->sourceProgram.parameterWords = parameterWords;
@@ -2215,6 +2292,18 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
         }
     }
     return true;
+}
+
+bool ParticleGpuSystemManager::SetEmitterPlaying(uint64_t id, bool playing)
+{
+    if (!m_impl || !m_impl->graphState)
+        return false;
+    const auto emitter = m_impl->emitters.find(id);
+    if (emitter == m_impl->emitters.end())
+        return false;
+    const auto domain = m_impl->graphState->spawnDomains.find(emitter->second->graphInstanceId);
+    return domain != m_impl->graphState->spawnDomains.end() &&
+           domain->second->SetEmitterPlaying(emitter->second->sourceProgram.graphEmitterIndex, playing);
 }
 
 bool ParticleGpuSystemManager::Reset(uint64_t id)

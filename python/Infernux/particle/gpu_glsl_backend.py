@@ -11,6 +11,7 @@ import struct
 from typing import Any, Mapping
 import zlib
 
+from Infernux.components.value_document import is_component_ref_document
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 from Infernux.graph.ramp import (
     CURVE_WRAP_MODES,
@@ -1033,12 +1034,14 @@ class GpuParticleGlslLowerer:
             emitter.random_seed,
             data_interface_layout,
             parameter_slots,
+            emitter_index,
         )
         update_prelude = _shader_prelude(
             fields,
             emitter.random_seed,
             data_interface_layout,
             parameter_slots,
+            emitter_index,
             contact_enabled=collision_enabled,
         )
         continuation_lane_indices = {
@@ -1089,7 +1092,11 @@ class GpuParticleGlslLowerer:
             parameter_slots=parameter_slots,
             continuation_lane_indices=continuation_lane_indices,
             continuation_join_indices=continuation_join_indices,
-            entry_guard="state.update_resume_step != pc.simulation_step",
+            flow_entry_guards={
+                (ParticleStage.UPDATE, ""): (
+                    "state.update_resume_step != pc.simulation_step"
+                ),
+            },
         ).compile(emitter.update, update_flows)
         contact_body, _ = _StageCompiler(
             emitter,
@@ -2261,6 +2268,17 @@ class _StageCompiler:
                 self._values[instruction.result_id] = f"{parameter[0]}u"
                 return
             expression = _parameter_load_glsl(parameter[0], result_type)
+        elif opcode == "store_parameter":
+            stable_id = str(immediate["parameter"])
+            parameter = self._parameter_slots.get(stable_id)
+            if parameter is None or len(operands) != 1:
+                raise GpuParticleCompileError(
+                    f"GPU backend cannot write parameter {stable_id!r}"
+                )
+            self._lines.append(
+                _parameter_store_glsl(parameter[0], parameter[1], operands[0])
+            )
+            return
         elif opcode == "event_payload":
             event_index = int(immediate["event_type_index"])
             if not 0 <= event_index < len(self._events.event_types):
@@ -2344,6 +2362,12 @@ class _StageCompiler:
                 f"inx_enqueue_burst({target_index}u, {operands[0]});"
             )
             return
+        elif opcode == "emitter_set_playing":
+            target_index = int(immediate["target_emitter_index"])
+            self._lines.append(
+                f"inx_request_emitter_playing({target_index}u, {operands[0]});"
+            )
+            return
         elif opcode == "event_complete":
             event_index = int(immediate["event_type_index"])
             capacity = int(immediate["queue_capacity"])
@@ -2422,6 +2446,34 @@ class _StageCompiler:
             return
         elif opcode == "normalize":
             expression = f"inx_safe_normalize({operands[0]})"
+        elif opcode == "minimum":
+            expression = f"min({operands[0]}, {operands[1]})"
+        elif opcode == "maximum":
+            expression = f"max({operands[0]}, {operands[1]})"
+        elif opcode == "power":
+            expression = f"pow({operands[0]}, {operands[1]})"
+        elif opcode == "clamp":
+            expression = f"clamp({operands[0]}, {operands[1]}, {operands[2]})"
+        elif opcode == "saturate":
+            expression = f"clamp({operands[0]}, 0.0, 1.0)"
+        elif opcode == "absolute":
+            expression = f"abs({operands[0]})"
+        elif opcode in {"floor", "ceil"}:
+            expression = f"{opcode}({operands[0]})"
+        elif opcode == "fraction":
+            expression = f"fract({operands[0]})"
+        elif opcode == "square_root":
+            expression = f"sqrt({operands[0]})"
+        elif opcode == "sine":
+            expression = f"sin({operands[0]})"
+        elif opcode == "cosine":
+            expression = f"cos({operands[0]})"
+        elif opcode == "length":
+            expression = f"length({operands[0]})"
+        elif opcode == "dot":
+            expression = f"dot({operands[0]}, {operands[1]})"
+        elif opcode == "cross":
+            expression = f"cross({operands[0]}, {operands[1]})"
         elif opcode == "target_position_velocity":
             expression = f"inx_target_position_velocity({', '.join(operands)})"
         elif opcode == "random_f32":
@@ -2527,8 +2579,14 @@ class _StageCompiler:
                 raise GpuParticleCompileError(
                     f"GPU Mesh resource sample layout is missing {stable_id!r}"
                 ) from exc
+            sample_value = operands[0] if operands else (
+                "vec3("
+                f"inx_random01({int(immediate['seed'])}u, 0u, particle_index, 0u), "
+                f"inx_random01({int(immediate['seed'])}u, 1u, particle_index, 0u), "
+                f"inx_random01({int(immediate['seed'])}u, 2u, particle_index, 0u))"
+            )
             expression = (
-                f"inx_sample_mesh_{sample_index}({operands[0]}, "
+                f"inx_sample_mesh_{sample_index}({sample_value}, "
                 f"INX_MESH_SAMPLE_{str(immediate['mode']).upper()})."
                 f"{str(immediate['output'])}"
             )
@@ -3645,8 +3703,12 @@ layout(std430, set = {set_index}, binding = 6) buffer ParticleContactCounters {{
     uint contact_reset_serial;
     uint contact_current_record_count;
     uint contact_work_item_count;
-    uint contact_counter_reserved0;
-    uint contact_counter_reserved1;
+    uint contact_max_per_particle;
+    uint multi_contact_particle_count;
+    uint contact_retained_order_hash;
+    uint contact_dropped_order_hash;
+    uint contact_min_particle_index;
+    uint contact_max_particle_index;
 }} contact_counters;
 layout(std430, set = {set_index}, binding = 7) buffer ParticleContactContinuationSnapshots {{
     uint contact_continuation_snapshot_words[];
@@ -3659,6 +3721,8 @@ const uint INX_CONTACTS_PER_PARTICLE = 8u;
 const uint INX_CONTACT_INVALID_INDEX = 0xffffffffu;
 const uint INX_CONTACT_JOIN_EMPTY = 0xffffffffu;
 const uint INX_CONTACT_JOIN_TOMBSTONE = 0xfffffffeu;
+const uint INX_CONTACT_WORK_COUNT_BITS = 5u;
+const uint INX_CONTACT_WORK_COUNT_MASK = 31u;
 
 uint inx_contact_record_capacity() {{
     return min(pc.capacity * INX_CONTACTS_PER_PARTICLE, 65536u);
@@ -3709,7 +3773,8 @@ uint inx_find_contact_record(uint page, uvec4 key) {{
     return INX_CONTACT_INVALID_INDEX;
 }}
 
-void inx_store_contact(uint particle_index, uvec2 collider_id,
+void inx_store_contact(uint particle_index, uint contact_order,
+                       uvec2 collider_id,
                        vec3 world_point, vec3 world_normal,
                        vec3 world_relative_velocity, float world_penetration,
                        bool is_trigger, vec4 material, float simulation_scale) {{
@@ -3723,13 +3788,24 @@ void inx_store_contact(uint particle_index, uvec2 collider_id,
 
     uint contact_slot = particle_state.z;
     if (contact_slot >= INX_CONTACTS_PER_PARTICLE) {{
-        atomicAdd(contact_counters.contact_overflow_count, 1u);
+        if ((pc.diagnostic_flags & 1u) != 0u) {{
+            atomicAdd(contact_counters.contact_overflow_count, 1u);
+            atomicAdd(contact_counters.contact_dropped_order_hash,
+                      inx_contact_hash(uvec4(collider_id, contact_order, 1u)));
+        }}
         return;
     }}
+    // Contact records use a bounded global sparse pool. Particle-local record
+    // indices still preserve the eight stable slots, while allocation no
+    // longer privileges particle indices below record_capacity / 8.
     uint record_capacity = inx_contact_record_capacity();
-    uint local_record = particle_index * INX_CONTACTS_PER_PARTICLE + contact_slot;
+    uint local_record = atomicAdd(contact_counters.contact_current_record_count, 1u);
     if (local_record >= record_capacity) {{
-        atomicAdd(contact_counters.contact_overflow_count, 1u);
+        if ((pc.diagnostic_flags & 1u) != 0u) {{
+            atomicAdd(contact_counters.contact_overflow_count, 1u);
+            atomicAdd(contact_counters.contact_dropped_order_hash,
+                      inx_contact_hash(uvec4(collider_id, contact_order, 1u)));
+        }}
         return;
     }}
 
@@ -3766,7 +3842,15 @@ void inx_store_contact(uint particle_index, uvec2 collider_id,
     contact_particle_record_indices[index_base + contact_slot] = record_index;
     particle_state.z = contact_slot + 1u;
     contact_particle_states[particle_index] = particle_state;
-    atomicAdd(contact_counters.contact_current_record_count, 1u);
+    if ((pc.diagnostic_flags & 1u) != 0u) {{
+        atomicMax(contact_counters.contact_max_per_particle, contact_slot + 1u);
+        atomicAdd(contact_counters.contact_retained_order_hash,
+                  inx_contact_hash(uvec4(collider_id, contact_slot, 0u)));
+        atomicMin(contact_counters.contact_min_particle_index, particle_index);
+        atomicMax(contact_counters.contact_max_particle_index, particle_index);
+        if (contact_slot == 1u)
+            atomicAdd(contact_counters.multi_contact_particle_count, 1u);
+    }}
 }}
 """
 
@@ -3774,6 +3858,7 @@ void inx_store_contact(uint particle_index, uvec2 collider_id,
 def _contact_prepare_main() -> str:
     return """
 void main() {
+    if (!inx_current_emitter_playing()) return;
     uint particle_index = gl_GlobalInvocationID.x;
     uint current_page = pc.simulation_step & 1u;
     bool reset_all = (pc.diagnostic_flags & 4u) != 0u;
@@ -3805,15 +3890,6 @@ void main() {
                     INX_CONTACT_INVALID_INDEX;
         }
 
-        uint work_capacity = inx_contact_record_capacity() * 2u;
-        uint work_base = particle_index * INX_CONTACTS_PER_PARTICLE * 2u;
-        for (uint slot = 0u; slot < INX_CONTACTS_PER_PARTICLE * 2u; ++slot) {
-            uint work_index = work_base + slot;
-            if (work_index >= work_capacity) break;
-            contact_work_items[work_index].identity =
-                uvec4(INX_CONTACT_INVALID_INDEX);
-            contact_work_items[work_index].dispatch = uvec4(0u);
-        }
     }
 
     if (reset_all && particle_index < inx_contact_join_capacity()) {
@@ -3840,6 +3916,12 @@ void main() {
         contact_counters.contact_current_simulation_step = pc.simulation_step;
         contact_counters.contact_current_record_count = 0u;
         contact_counters.contact_work_item_count = 0u;
+        contact_counters.contact_max_per_particle = 0u;
+        contact_counters.multi_contact_particle_count = 0u;
+        contact_counters.contact_retained_order_hash = 0u;
+        contact_counters.contact_dropped_order_hash = 0u;
+        contact_counters.contact_min_particle_index = INX_CONTACT_INVALID_INDEX;
+        contact_counters.contact_max_particle_index = 0u;
         if (reset_all)
             contact_counters.contact_reset_serial = pc.simulation_step + 1u;
         contact_dispatch_indirect = uvec4(
@@ -3852,6 +3934,7 @@ void main() {
 def _contact_solve_main() -> str:
     return """
 void main() {
+    if (!inx_current_emitter_playing()) return;
     uint particle_index = gl_GlobalInvocationID.x;
     if (particle_index >= pc.capacity) return;
 
@@ -3897,17 +3980,17 @@ void main() {
                 }
             }
             hash_slot = (hash_slot + 1u) & hash_mask;
-            if (probe + 1u == hash_capacity)
+            if (probe + 1u == hash_capacity
+                && (pc.diagnostic_flags & 1u) != 0u)
                 atomicAdd(contact_counters.contact_overflow_count, 1u);
         }
     }
 
-    // One invocation owns one particle's complete range. This fixed sparse
-    // layout is deterministic without a global prefix scan: lifecycle order
-    // is Enter, Stay, Exit and each class inherits the stable collider order
-    // of the current/previous contact lists.
+    // Count this particle's lifecycle work before reserving one contiguous
+    // range from the bounded global pool. The packed range stays on the
+    // per-particle contact state, so dispatch remains one invocation per
+    // particle and executes Enter, Stay, Exit in stable collider order.
     uint work_capacity = record_capacity * 2u;
-    uint work_base = particle_index * INX_CONTACTS_PER_PARTICLE * 2u;
     uint work_count = 0u;
     uint previous_count = min(particle_state.w, INX_CONTACTS_PER_PARTICLE);
     uint previous_base = previous_page * pc.capacity * INX_CONTACTS_PER_PARTICLE
@@ -3922,15 +4005,6 @@ void main() {
                 != INX_CONTACT_INVALID_INDEX;
             if ((lifecycle == 0u && existed) || (lifecycle == 1u && !existed))
                 continue;
-            uint work_index = work_base + work_count;
-            if (work_index >= work_capacity) {
-                atomicAdd(contact_counters.contact_work_item_overflow_count, 1u);
-                continue;
-            }
-            contact_work_items[work_index].identity = key;
-            contact_work_items[work_index].dispatch = uvec4(
-                lifecycle, record_index, pc.simulation_step,
-                contact_records[record_index].metadata.w);
             ++work_count;
         }
     }
@@ -3941,19 +4015,58 @@ void main() {
         uvec4 key = contact_records[record_index].identity;
         if (inx_find_contact_record(current_page, key) != INX_CONTACT_INVALID_INDEX)
             continue;
-        uint work_index = work_base + work_count;
-        if (work_index >= work_capacity) {
-            atomicAdd(contact_counters.contact_work_item_overflow_count, 1u);
-            continue;
+        ++work_count;
+    }
+
+    uint work_base = work_count == 0u
+        ? 0u
+        : atomicAdd(contact_counters.contact_work_item_count, work_count);
+    uint accepted_work_count = work_base < work_capacity
+        ? min(work_count, work_capacity - work_base)
+        : 0u;
+    if (accepted_work_count < work_count
+        && (pc.diagnostic_flags & 1u) != 0u)
+        atomicAdd(contact_counters.contact_work_item_overflow_count,
+                  work_count - accepted_work_count);
+    particle_state.w = (work_base << INX_CONTACT_WORK_COUNT_BITS)
+        | accepted_work_count;
+    contact_particle_states[particle_index] = particle_state;
+
+    uint local_work = 0u;
+    for (uint lifecycle = 0u;
+         lifecycle < 2u && local_work < accepted_work_count;
+         ++lifecycle) {
+        for (uint contact_slot = 0u;
+             contact_slot < contact_count && local_work < accepted_work_count;
+             ++contact_slot) {
+            uint record_index = contact_particle_record_indices[index_base + contact_slot];
+            if (record_index == INX_CONTACT_INVALID_INDEX) continue;
+            uvec4 key = contact_records[record_index].identity;
+            bool existed = inx_find_contact_record(previous_page, key)
+                != INX_CONTACT_INVALID_INDEX;
+            if ((lifecycle == 0u && existed) || (lifecycle == 1u && !existed))
+                continue;
+            uint work_index = work_base + local_work++;
+            contact_work_items[work_index].identity = key;
+            contact_work_items[work_index].dispatch = uvec4(
+                lifecycle, record_index, pc.simulation_step,
+                contact_records[record_index].metadata.w);
         }
+    }
+    for (uint contact_slot = 0u;
+         contact_slot < previous_count && local_work < accepted_work_count;
+         ++contact_slot) {
+        uint record_index = contact_particle_record_indices[previous_base + contact_slot];
+        if (record_index == INX_CONTACT_INVALID_INDEX) continue;
+        uvec4 key = contact_records[record_index].identity;
+        if (inx_find_contact_record(current_page, key) != INX_CONTACT_INVALID_INDEX)
+            continue;
+        uint work_index = work_base + local_work++;
         contact_work_items[work_index].identity = key;
         contact_work_items[work_index].dispatch = uvec4(
             2u, record_index, pc.simulation_step,
             contact_records[record_index].metadata.w);
-        ++work_count;
     }
-    if (work_count != 0u)
-        atomicAdd(contact_counters.contact_work_item_count, work_count);
 }
 """
 
@@ -3990,23 +4103,24 @@ def _contact_dispatch_main(
     )
     return f"""
 void main() {{
+    if (!inx_current_emitter_playing()) return;
     uint particle_index = gl_GlobalInvocationID.x;
     if (particle_index >= pc.capacity) return;
     ParticleState state = states[particle_index];
     if ((state.lifecycle_flags & INX_PARTICLE_ALIVE) == 0u) return;
 
     uint particle_generation = state.spawn_generation;
-    uint work_capacity = inx_contact_record_capacity() * 2u;
-    uint work_base = particle_index * INX_CONTACTS_PER_PARTICLE * 2u;
+    uint packed_work_range = contact_particle_states[particle_index].w;
+    uint work_base = packed_work_range >> INX_CONTACT_WORK_COUNT_BITS;
+    uint work_count = packed_work_range & INX_CONTACT_WORK_COUNT_MASK;
     bool particle_alive = true;
     bool inx_stage_suspended = false;
     bool inx_continuation_resuspended = false;
 
     for (uint local_work = 0u;
-         local_work < INX_CONTACTS_PER_PARTICLE * 2u;
+         local_work < work_count;
          ++local_work) {{
         uint work_index = work_base + local_work;
-        if (work_index >= work_capacity) break;
         InxParticleContactWorkItem work = contact_work_items[work_index];
         if (work.identity.x == INX_CONTACT_INVALID_INDEX) continue;
         if (work.identity.x != particle_index
@@ -5232,6 +5346,7 @@ def _continuation_dispatch_glsl(
         emitter.random_seed,
         data_interface_layout,
         parameter_slots,
+        emitter_index,
         continuation_dispatch=True,
         contact_enabled=collision_enabled,
     )
@@ -5277,6 +5392,15 @@ void main() {{
         inx_finish_continuation(
             inx_continuation_record_index, particle_index, lane_index
         );
+        return;
+    }}
+    if (!inx_current_emitter_playing()) {{
+        if (!inx_continuation_append_active(inx_continuation_record_index)) {{
+            atomicAdd(continuation_counters.dropped_capacity, 1u);
+            inx_finish_continuation(
+                inx_continuation_record_index, particle_index, lane_index
+            );
+        }}
         return;
     }}
 {contact_validation}
@@ -5376,6 +5500,7 @@ def _shader_prelude(
     emitter_seed: int,
     data_interface_layout: dict[str, Any],
     parameter_slots: Mapping[str, tuple[int, TypeRef]],
+    emitter_index: int,
     *,
     continuation_dispatch: bool = False,
     contact_enabled: bool = False,
@@ -5394,7 +5519,7 @@ def _shader_prelude(
         if part
     )
     parameter_glsl = (
-        "layout(std430, set = 0, binding = 7) readonly buffer "
+        "layout(std430, set = 3, binding = 2) buffer "
         "ParticleParameters { uvec4 parameter_words[]; };"
         if parameter_slots
         else ""
@@ -5403,9 +5528,11 @@ def _shader_prelude(
     contact_glsl = _contact_bindings_glsl(7) if contact_enabled else ""
     contact_store_call = (
         """inx_store_contact(
-            gl_GlobalInvocationID.x, collider_id, corrected_world_position,
+            gl_GlobalInvocationID.x, contact_hit_order, collider_id,
+            corrected_world_position,
             world_normal, relative_velocity, penetration, is_trigger,
-            collider.material, simulation_scale);"""
+            collider.material, simulation_scale);
+        ++contact_hit_order;"""
         if contact_enabled
         else ""
     )
@@ -5570,17 +5697,34 @@ layout(std430, set = 3, binding = 1) readonly buffer ParticleEmitterSpawnMetadat
     uint spawn_dispatch_group_count_z;
     uint spawn_metadata_reserved;
 }} emitter_spawn;
+layout(std430, set = 3, binding = 3) buffer ParticleEmitterPlayingRequests {{
+    uint emitter_playing_requests[];
+}};
+layout(std430, set = 3, binding = 4) readonly buffer ParticleEmitterPlayingStates {{
+    uint emitter_playing_states[];
+}};
 {data_interface_glsl}
 {push_constants}
 {ramp_parameter_glsl}
 {contact_glsl}
 
 const uint INX_EMITTER_SEED = {emitter_seed}u;
+const uint INX_GRAPH_EMITTER_INDEX = {int(emitter_index)}u;
 const uint INX_INVALID_INDEX = 0xffffffffu;
+
+bool inx_current_emitter_playing() {{
+    return emitter_playing_states[INX_GRAPH_EMITTER_INDEX] != 0u;
+}}
+
+void inx_request_emitter_playing(uint target_emitter_index, bool playing) {{
+    atomicExchange(
+        emitter_playing_requests[target_emitter_index],
+        playing ? 2u : 1u);
+}}
 
 void inx_enqueue_burst(uint target_emitter_index, uint count) {{
     if (count == 0u) return;
-    uint observed = emitter_burst_request_counts[target_emitter_index];
+    uint observed = atomicAdd(emitter_burst_request_counts[target_emitter_index], 0u);
     for (;;) {{
         uint desired = observed > 0xffffffffu - count
             ? 0xffffffffu
@@ -6258,6 +6402,7 @@ bool inx_collide_scene(inout vec3 simulation_position, inout vec3 simulation_vel
     vec3 world_velocity = (transforms.simulation_to_world * vec4(simulation_velocity, 0.0)).xyz;
     bool any_hit = false;
     bool primary_contact_set = false;
+    uint contact_hit_order = 0u;
     vec3 primary_world_normal = vec3(0.0, 1.0, 0.0);
     vec3 primary_world_point = world_position;
     vec3 primary_world_relative_velocity = vec3(0.0);
@@ -6343,6 +6488,9 @@ bool inx_collide_scene(inout vec3 simulation_position, inout vec3 simulation_vel
         }}
     }}
 
+    // All retained broadphase candidates participate in physical response.
+    // The lifecycle stream is deliberately bounded to the first eight actual
+    // hits in stable collider-ID order; later hits are reported as dropped.
     for (uint candidate = 0u; candidate < candidate_count; ++candidate) {{
         uint collider_index = candidate_indices[candidate];
         InxParticleCollider collider = particle_colliders[collider_index];
@@ -6519,7 +6667,8 @@ def _init_main(
     finite = _finite_state_check(emitter.init, fields)
     return f"""
 void main() {{
-    if (simulation_control.simulation_allowed == 0u) return;
+    if (simulation_control.simulation_allowed == 0u
+        || !inx_current_emitter_playing()) return;
     uint invocation = gl_GlobalInvocationID.x;
     if (invocation >= emitter_spawn.spawn_count) return;
     uint particle_index = inx_pop_free();
@@ -6551,7 +6700,8 @@ def _update_main(
     finite = _finite_state_check(emitter.update, fields)
     return f"""
 void main() {{
-    if (simulation_control.simulation_allowed == 0u) return;
+    if (simulation_control.simulation_allowed == 0u
+        || !inx_current_emitter_playing()) return;
     uint particle_index = gl_GlobalInvocationID.x;
     if (particle_index >= pc.capacity
         || (states[particle_index].lifecycle_flags & INX_PARTICLE_ALIVE) == 0u
@@ -6628,7 +6778,8 @@ def _rendering_main(body: str, exports: dict[str, str]) -> str:
     )
     return f"""
 void main() {{
-    if (simulation_control.simulation_allowed == 0u) return;
+    if (simulation_control.simulation_allowed == 0u
+        || !inx_current_emitter_playing()) return;
     uint particle_index = gl_GlobalInvocationID.x;
     if (particle_index >= pc.capacity
         || (states[particle_index].lifecycle_flags & INX_PARTICLE_ALIVE) == 0u
@@ -6695,6 +6846,8 @@ def _space_conversion(expression: str, result_type: TypeRef | None, immediate: d
         raise GpuParticleCompileError("GPU space conversion currently requires vec3")
     source = CoordinateSpace(immediate["from"])
     target = CoordinateSpace(immediate["to"])
+    if source is target:
+        return expression
     if source is CoordinateSpace.NONE or target is CoordinateSpace.NONE:
         return expression
     supported = {CoordinateSpace.EMITTER_LOCAL, CoordinateSpace.SIMULATION, CoordinateSpace.WORLD}
@@ -6809,6 +6962,30 @@ def _parameter_load_glsl(slot: int, value_type: TypeRef | None) -> str:
             f"GPU parameters do not support {kind.value!r}"
         )
     return f"uintBitsToFloat({words}.{swizzle})"
+
+
+def _parameter_store_glsl(slot: int, value_type: TypeRef, expression: str) -> str:
+    words = f"parameter_words[{int(slot)}]"
+    kind = value_type.value_type
+    if kind is ValueType.BOOL:
+        encoded = f"uvec4(({expression}) ? 1u : 0u, 0u, 0u, 0u)"
+    elif kind is ValueType.I32:
+        encoded = f"uvec4(uint({expression}), 0u, 0u, 0u)"
+    elif kind is ValueType.U32:
+        encoded = f"uvec4({expression}, 0u, 0u, 0u)"
+    elif kind is ValueType.F32:
+        encoded = f"uvec4(floatBitsToUint({expression}), 0u, 0u, 0u)"
+    elif kind is ValueType.VEC2:
+        encoded = f"uvec4(floatBitsToUint({expression}), 0u, 0u)"
+    elif kind is ValueType.VEC3:
+        encoded = f"uvec4(floatBitsToUint({expression}), 0u)"
+    elif kind in {ValueType.VEC4, ValueType.COLOR}:
+        encoded = f"floatBitsToUint({expression})"
+    else:
+        raise GpuParticleCompileError(
+            f"GPU writable parameters do not support {kind.value!r}"
+        )
+    return f"{words} = {encoded};"
 
 
 def _parameter_slot_width(value_type: TypeRef) -> int:
@@ -7000,13 +7177,23 @@ def pack_gpu_particle_parameters(
                         struct.pack("<4f", key.color[3], 0.0, 0.0, 0.0),
                     )
                 )
-        elif kind in {ValueType.TEXTURE2D, ValueType.MESH}:
+        elif kind is ValueType.TEXTURE2D:
             try:
                 AssetReference.from_dict(value)
             except (TypeError, ValueError) as exc:
                 raise GpuParticleCompileError(
                     f"particle parameter {parameter.name!r} requires an asset reference"
                 ) from exc
+            encoded = []
+        elif kind is ValueType.MESH:
+            if not is_component_ref_document(value, "SkinnedMeshRenderer"):
+                try:
+                    AssetReference.from_dict(value)
+                except (TypeError, ValueError) as exc:
+                    raise GpuParticleCompileError(
+                        f"particle Mesh parameter {parameter.name!r} requires a Mesh "
+                        "asset or SkinnedMeshRenderer"
+                    ) from exc
             encoded = []
         elif kind is ValueType.BOOL:
             if type(value) is not bool:

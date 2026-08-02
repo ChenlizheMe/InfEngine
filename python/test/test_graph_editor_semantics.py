@@ -408,6 +408,45 @@ def test_node_graph_inline_overlay_submits_layout_item_after_cursor_restore():
     assert ctx.dummy_calls == [(0.0, 0.0)]
 
 
+def test_node_graph_canvas_unwinds_clip_and_child_when_inline_render_raises():
+    events: list[str] = []
+    ctx = SimpleNamespace(
+        get_content_region_avail_width=lambda: 640.0,
+        get_content_region_avail_height=lambda: 360.0,
+        begin_child=lambda *_args: True,
+        end_child=lambda: events.append("end_child"),
+        set_scroll_x=lambda _value: None,
+        set_scroll_y=lambda _value: None,
+        is_window_hovered=lambda: True,
+        get_window_pos_x=lambda: 12.0,
+        get_window_pos_y=lambda: 24.0,
+        semantic_capture_enabled=False,
+        push_draw_list_clip_rect=lambda *_args: events.append("push_clip"),
+        pop_draw_list_clip_rect=lambda: events.append("pop_clip"),
+        draw_filled_rect=lambda *_args: None,
+        get_mouse_pos_x=lambda: 20.0,
+        get_mouse_pos_y=lambda: 30.0,
+    )
+    view = NodeGraphView()
+    view.graph = SimpleNamespace(nodes=[], links=[])
+    view._submit_canvas_background_region = lambda *_args: True
+    view._draw_grid = lambda *_args: None
+    view._compute_layouts = lambda: None
+    view._hit_test_pin = lambda *_args: (None, None, None)
+    view._draw_links = lambda *_args: None
+    view._draw_nodes = lambda *_args: None
+
+    def _raise_inline(_ctx):
+        raise RuntimeError("inline render failed")
+
+    view._draw_inline_fields = _raise_inline
+
+    with pytest.raises(RuntimeError, match="inline render failed"):
+        view.render(ctx)
+
+    assert events == ["push_clip", "pop_clip", "end_child"]
+
+
 def test_node_graph_inline_enum_records_combo_semantics():
     class _InlineEnumContext:
         def __init__(self) -> None:
@@ -475,6 +514,81 @@ def test_node_graph_inline_enum_records_combo_semantics():
                 "node_graph.inline.sprite.alignment",
             ),
             {"string_value": "camera_plane"},
+        )
+    ]
+
+
+def test_node_graph_inline_scalar_tolerates_stale_vector_without_mutating_document():
+    class _InlineFloatContext:
+        def __init__(self) -> None:
+            self.received = None
+            self.semantic_items: list[tuple] = []
+
+        @staticmethod
+        def set_cursor_pos_x(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def set_cursor_pos_y(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def push_id_str(_value: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_id() -> None:
+            pass
+
+        @staticmethod
+        def set_next_item_width(_value: float) -> None:
+            pass
+
+        def drag_float(self, _label: str, value: float, *_args) -> float:
+            self.received = value
+            return value
+
+        @staticmethod
+        def is_item_hovered() -> bool:
+            return False
+
+        @staticmethod
+        def is_item_active() -> bool:
+            return False
+
+        def record_semantic_item(self, *args, **kwargs) -> None:
+            self.semantic_items.append((args, kwargs))
+
+    original = [2.5, 4.0, 8.0]
+    node = SimpleNamespace(uid="dynamic", data={"value": list(original)})
+    layout = SimpleNamespace(node=node, sx=0.0, w=200.0)
+    field = SimpleNamespace(
+        id="value",
+        default=0.0,
+        label="Value",
+        data_type="f32",
+        enum_values=(),
+    )
+    view = NodeGraphView()
+    view._origin_x = 0.0
+    view._origin_y = 0.0
+    view.zoom = 1.0
+    view._semantic_capture_active = True
+    ctx = _InlineFloatContext()
+
+    view._draw_inline_field(ctx, layout, field, 40.0)
+
+    assert ctx.received == 2.5
+    assert node.data["value"] == original
+    assert ctx.semantic_items == [
+        (
+            (
+                "drag_float",
+                "Value",
+                True,
+                "node_graph.inline.dynamic.value",
+            ),
+            {"numeric_value": 2.5},
         )
     ]
 

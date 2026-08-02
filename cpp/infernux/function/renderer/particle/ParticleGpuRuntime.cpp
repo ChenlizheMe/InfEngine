@@ -189,8 +189,6 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
         return false;
     std::swap(m_layout, replacement.m_layout);
     std::swap(m_group, replacement.m_group);
-    std::swap(m_parameterBuffer, replacement.m_parameterBuffer);
-    std::swap(m_parameterWordCount, replacement.m_parameterWordCount);
     std::swap(m_dataInterfaces, replacement.m_dataInterfaces);
     std::swap(m_vectorFields, replacement.m_vectorFields);
     std::swap(m_emptyDataInterfaceLayout, replacement.m_emptyDataInterfaceLayout);
@@ -234,7 +232,11 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         m_residentState = std::make_shared<ResidentState>();
         m_residentState->device = &device;
         const auto storage = rhi::BufferUsageFlags::Storage;
-        m_residentState->states = device.CreateBuffer({stateBytes, storage});
+        // State snapshots are copied asynchronously into a readback buffer by
+        // ParticleGpuSystemManager diagnostics. Keep the transfer capability
+        // on the resident allocation itself; the copy source cannot acquire
+        // usage flags retroactively when a diagnostic request arrives.
+        m_residentState->states = device.CreateBuffer({stateBytes, storage | rhi::BufferUsageFlags::TransferSource});
         m_residentState->freeList =
             device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
         m_residentState->counters =
@@ -272,26 +274,6 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         }
     }
 
-    std::vector<uint32_t> parameterWords = desc.parameterWords;
-    if (parameterWords.empty())
-        parameterWords.resize(4, 0u);
-    if (parameterWords.size() % 4 != 0 || parameterWords.size() > std::numeric_limits<uint32_t>::max()) {
-        Destroy();
-        return false;
-    }
-    rhi::BufferDesc parameterDesc;
-    parameterDesc.byteSize = parameterWords.size() * sizeof(uint32_t);
-    parameterDesc.usage = rhi::BufferUsageFlags::Storage;
-    parameterDesc.memory = rhi::BufferMemory::Upload;
-    parameterDesc.initialData = parameterWords.data();
-    parameterDesc.initialDataBytes = parameterDesc.byteSize;
-    m_parameterBuffer = device.CreateBuffer(parameterDesc);
-    m_parameterWordCount = static_cast<uint32_t>(parameterWords.size());
-    if (!m_parameterBuffer.IsValid()) {
-        Destroy();
-        return false;
-    }
-
     rhi::BindingLayoutDesc layoutDesc;
     if (desc.collisionEnabled &&
         (!desc.collisionSceneHeader.IsValid() || !desc.collisionSceneColliders.IsValid() ||
@@ -301,7 +283,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         Destroy();
         return false;
     }
-    for (uint32_t binding = 0; binding < 8; ++binding) {
+    for (uint32_t binding = 0; binding < 7; ++binding) {
         layoutDesc.entries[layoutDesc.entryCount++] = {
             binding, binding == 5 ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer,
             rhi::ShaderStage::Compute, 1};
@@ -315,9 +297,9 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
 
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 8> coreBuffers = {StateBuffer(),       FreeListBuffer(), CounterBuffer(),
-                                                          InstanceBuffer(),    IndirectBuffer(), TransformBuffer(),
-                                                          RenderIndexBuffer(), ParameterBuffer()};
+    const std::array<rhi::BufferHandle, 7> coreBuffers = {StateBuffer(),      FreeListBuffer(), CounterBuffer(),
+                                                          InstanceBuffer(),   IndirectBuffer(), TransformBuffer(),
+                                                          RenderIndexBuffer()};
     for (uint32_t binding = 0; binding < coreBuffers.size(); ++binding) {
         auto &entry = groupDesc.buffers[groupDesc.bufferCount++];
         entry = {binding, binding == 5 ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer,
@@ -342,7 +324,10 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     rhi::BindingLayoutDesc graphSpawnLayoutDesc;
     graphSpawnLayoutDesc.entries[0] = {0, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     graphSpawnLayoutDesc.entries[1] = {1, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    graphSpawnLayoutDesc.entryCount = 2;
+    graphSpawnLayoutDesc.entries[2] = {2, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    graphSpawnLayoutDesc.entries[3] = {3, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    graphSpawnLayoutDesc.entries[4] = {4, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    graphSpawnLayoutDesc.entryCount = 5;
     m_graphSpawnLayout = device.CreateBindingLayout(graphSpawnLayoutDesc);
     if (!m_graphSpawnLayout.IsValid()) {
         Destroy();
@@ -677,7 +662,6 @@ void ParticleGpuRuntime::Destroy() noexcept
             m_device->Release(pipeline);
         m_device->Release(m_group);
         m_device->Release(m_layout);
-        m_device->Release(m_parameterBuffer);
         m_device->Release(m_emptyDataInterfaceGroup);
         m_device->Release(m_emptyDataInterfaceLayout);
         m_device->Release(m_graphSpawnLayout);
@@ -697,8 +681,6 @@ void ParticleGpuRuntime::Destroy() noexcept
     m_contactDispatchRecordCalls = 0;
     m_layout = {};
     m_group = {};
-    m_parameterBuffer = {};
-    m_parameterWordCount = 0;
     m_emptyDataInterfaceLayout = {};
     m_emptyDataInterfaceGroup = {};
     m_graphSpawnLayout = {};
@@ -709,9 +691,8 @@ void ParticleGpuRuntime::Destroy() noexcept
 
 bool ParticleGpuRuntime::IsValid() const noexcept
 {
-    if (!m_device || !m_residentState || m_capacity == 0 || !m_group.IsValid() || !m_parameterBuffer.IsValid() ||
-        m_parameterWordCount == 0 || !m_emptyDataInterfaceLayout.IsValid() || !m_emptyDataInterfaceGroup.IsValid() ||
-        !m_graphSpawnLayout.IsValid())
+    if (!m_device || !m_residentState || m_capacity == 0 || !m_group.IsValid() ||
+        !m_emptyDataInterfaceLayout.IsValid() || !m_emptyDataInterfaceGroup.IsValid() || !m_graphSpawnLayout.IsValid())
         return false;
     if (m_dataInterfaces && (!m_dataInterfaces->layout.IsValid() || !m_dataInterfaces->group.IsValid() ||
                              !m_dataInterfaces->metadataBuffer.IsValid()))
@@ -885,13 +866,6 @@ bool ParticleGpuRuntime::UpdateMeshInterfaceMetadata(const GpuParticleTransforms
     }
     return m_device->WriteBuffer(m_dataInterfaces->metadataBuffer, 0, m_dataInterfaces->metadataWords.data(),
                                  m_dataInterfaces->metadataWords.size() * sizeof(uint32_t));
-}
-
-bool ParticleGpuRuntime::UpdateParameters(const std::vector<uint32_t> &parameterWords)
-{
-    if (!m_device || parameterWords.size() != m_parameterWordCount || parameterWords.size() % 4 != 0)
-        return false;
-    return m_device->WriteBuffer(ParameterBuffer(), 0, parameterWords.data(), parameterWords.size() * sizeof(uint32_t));
 }
 
 bool ParticleGpuRuntime::UpdateVectorFieldMetadata(const GpuParticleTransforms &transforms)

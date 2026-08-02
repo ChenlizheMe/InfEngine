@@ -254,6 +254,8 @@ class NodeGraph:
         ("int", "float"),
         ("vec3", "color"),
         ("color", "vec3"),
+        ("vec4", "color"),
+        ("color", "vec4"),
     }
 
     def __init__(
@@ -294,16 +296,16 @@ class NodeGraph:
     def add_node(
         self,
         type_id: str,
-        x: float = 0.0,
-        y: float = 0.0,
+        canvas_x: float = 0.0,
+        canvas_y: float = 0.0,
         uid: Optional[str] = None,
         **data: Any,
     ) -> GraphNode:
         node = GraphNode(
             uid=uid or uuid.uuid4().hex[:8],
             type_id=type_id,
-            pos_x=x,
-            pos_y=y,
+            pos_x=canvas_x,
+            pos_y=canvas_y,
             data=data,
         )
         self.nodes.append(node)

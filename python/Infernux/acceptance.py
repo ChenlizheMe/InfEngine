@@ -15,6 +15,7 @@ import math
 import os
 from pathlib import PurePosixPath
 import threading
+import time
 from typing import Any, Mapping, Optional
 
 from Infernux.application import Application
@@ -30,6 +31,9 @@ from Infernux.engine.path_utils import (
 
 _MANIFEST_SCHEMA = "infernux.runtime_acceptance"
 _RESULT_SCHEMA = "infernux.runtime_acceptance_result"
+_RESULT_REPLACE_ATTEMPTS = 20
+_RESULT_REPLACE_INITIAL_DELAY_SECONDS = 0.002
+_RESULT_REPLACE_MAX_DELAY_SECONDS = 0.025
 
 
 def _relative_asset_path(value: Any, label: str, suffix: str) -> str:
@@ -59,6 +63,27 @@ def _positive_number(value: Any, label: str) -> float:
     return result
 
 
+def _positive_integer(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{label} must be a positive integer")
+    return value
+
+
+def _replace_result_file(temporary: str, destination: str) -> None:
+    """Publish a result despite short-lived Windows reader sharing locks."""
+
+    delay = _RESULT_REPLACE_INITIAL_DELAY_SECONDS
+    for attempt in range(_RESULT_REPLACE_ATTEMPTS):
+        try:
+            os.replace(temporary, destination)
+            return
+        except PermissionError:
+            if attempt + 1 >= _RESULT_REPLACE_ATTEMPTS:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2.0, _RESULT_REPLACE_MAX_DELAY_SECONDS)
+
+
 @dataclass(frozen=True)
 class RuntimeAcceptanceTest:
     """One immutable test entry from a runtime acceptance manifest."""
@@ -76,6 +101,7 @@ class RuntimeAcceptanceManifest:
 
     name: str
     path: str
+    cycles: int
     tests: tuple[RuntimeAcceptanceTest, ...]
 
     @staticmethod
@@ -97,6 +123,7 @@ class RuntimeAcceptanceManifest:
         name = document.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("runtime acceptance manifest name must be a non-empty string")
+        cycles = _positive_integer(document.get("cycles", 1), "cycles")
         raw_tests = document.get("tests")
         if not isinstance(raw_tests, list) or not raw_tests:
             raise ValueError("runtime acceptance manifest tests must be a non-empty array")
@@ -132,7 +159,12 @@ class RuntimeAcceptanceManifest:
                     document=deepcopy(raw),
                 )
             )
-        return RuntimeAcceptanceManifest(name=name.strip(), path=manifest_path, tests=tuple(tests))
+        return RuntimeAcceptanceManifest(
+            name=name.strip(),
+            path=manifest_path,
+            cycles=cycles,
+            tests=tuple(tests),
+        )
 
 
 class _RuntimeAcceptanceSession:
@@ -140,11 +172,16 @@ class _RuntimeAcceptanceSession:
         self.manifest = manifest
         self.result_path = result_path
         self.index = 0
+        self.cycle = 0
         self.phase = "pending_load"
         self.elapsed = 0.0
         self.results: list[dict[str, Any]] = []
         self.finished = False
         self.exit_code = 0
+        self.started_at_unix = time.time()
+        self.started_at_monotonic = time.monotonic()
+        self.finished_elapsed_wall_seconds: Optional[float] = None
+        self._require_scene_reload = False
         self._write_result()
 
     @property
@@ -180,7 +217,12 @@ class _RuntimeAcceptanceSession:
 
         manager = SceneFileManager.instance()
         target = resolved_path(os.path.join(Application.data_path(), current.scene))
-        if manager is not None and manager.current_scene_path and same_path(manager.current_scene_path, target):
+        if (
+            not self._require_scene_reload
+            and manager is not None
+            and manager.current_scene_path
+            and same_path(manager.current_scene_path, target)
+        ):
             self.phase = "running"
             self.elapsed = 0.0
             self._write_result()
@@ -198,12 +240,13 @@ class _RuntimeAcceptanceSession:
 
         manager = SceneFileManager.instance()
         target = resolved_path(os.path.join(Application.data_path(), current.scene))
-        if manager is not None and manager.current_scene_path and same_path(manager.current_scene_path, target):
+        if manager is None or manager.is_loading or SceneManager.is_scene_load_pending():
+            return
+        if manager.current_scene_path and same_path(manager.current_scene_path, target):
+            self._require_scene_reload = False
             self.phase = "running"
             self.elapsed = 0.0
             self._write_result()
-            return
-        if manager is None or manager.is_loading or SceneManager.is_scene_load_pending():
             return
         if self.elapsed > current.timeout_seconds:
             self.complete("failed", error=f"acceptance scene did not become active: {current.scene}")
@@ -224,6 +267,7 @@ class _RuntimeAcceptanceSession:
         result: dict[str, Any] = {
             "id": current.id,
             "scene": current.scene,
+            "cycle": self.cycle + 1,
             "status": normalized,
             "elapsed_seconds": self.elapsed,
             "details": deepcopy(dict(details or {})),
@@ -235,35 +279,60 @@ class _RuntimeAcceptanceSession:
             self.finished = True
             self.phase = "finished"
             self.exit_code = 1
+            self.finished_elapsed_wall_seconds = max(
+                0.0, time.monotonic() - self.started_at_monotonic
+            )
         else:
             self.index += 1
             self.elapsed = 0.0
             if self.index >= len(self.manifest.tests):
-                self.finished = True
-                self.phase = "finished"
+                self.cycle += 1
+                if self.cycle >= self.manifest.cycles:
+                    self.finished = True
+                    self.phase = "finished"
+                    self.finished_elapsed_wall_seconds = max(
+                        0.0, time.monotonic() - self.started_at_monotonic
+                    )
+                else:
+                    self.index = 0
+                    self.phase = "pending_load"
             else:
                 self.phase = "pending_load"
+            if not self.finished:
+                self._require_scene_reload = True
         self._write_result()
 
     def snapshot(self) -> dict[str, Any]:
-        completed = {result["id"]: result for result in self.results}
+        completed = {
+            (int(result["cycle"]), str(result["id"])): result
+            for result in self.results
+        }
         tests = []
-        for test in self.manifest.tests:
-            tests.append(
-                deepcopy(
-                    completed.get(
-                        test.id,
-                        {
-                            "id": test.id,
-                            "scene": test.scene,
-                            "status": "running" if self.current is test and self.phase == "running" else "pending",
-                        },
+        for cycle in range(self.manifest.cycles):
+            for test in self.manifest.tests:
+                tests.append(
+                    deepcopy(
+                        completed.get(
+                            (cycle + 1, test.id),
+                            {
+                                "id": test.id,
+                                "scene": test.scene,
+                                "cycle": cycle + 1,
+                                "status": (
+                                    "running"
+                                    if self.cycle == cycle
+                                    and self.current is test
+                                    and self.phase == "running"
+                                    else "pending"
+                                ),
+                            },
+                        )
                     )
                 )
-            )
         passed = sum(result["status"] == "passed" for result in self.results)
         failed = sum(result["status"] == "failed" for result in self.results)
         status = "failed" if failed else ("passed" if self.finished else "running")
+        total = len(self.manifest.tests) * self.manifest.cycles
         return {
             "$schema": _RESULT_SCHEMA,
             "name": self.manifest.name,
@@ -273,13 +342,21 @@ class _RuntimeAcceptanceSession:
                 Application.data_path(),
                 allow_root=False,
             ),
+            "cycles": self.manifest.cycles,
+            "current_cycle": min(self.cycle + 1, self.manifest.cycles),
+            "started_at_unix": self.started_at_unix,
+            "elapsed_wall_seconds": (
+                self.finished_elapsed_wall_seconds
+                if self.finished_elapsed_wall_seconds is not None
+                else max(0.0, time.monotonic() - self.started_at_monotonic)
+            ),
             "status": status,
             "summary": {
-                "total": len(self.manifest.tests),
+                "total": total,
                 "passed": passed,
                 "failed": failed,
                 "skipped": 0,
-                "pending": len(self.manifest.tests) - passed - failed,
+                "pending": total - passed - failed,
             },
             "tests": tests,
         }
@@ -292,7 +369,7 @@ class _RuntimeAcceptanceSession:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, self.result_path)
+        _replace_result_file(temporary, self.result_path)
 
 
 class RuntimeAcceptance:
@@ -311,7 +388,10 @@ class RuntimeAcceptance:
             output = cls._resolve_result_path(manifest, result_path)
             cls._session = _RuntimeAcceptanceSession(manifest, output)
             cls._completion_consumed = False
-            Debug.log(f"[RuntimeAcceptance] begin name={manifest.name!r} tests={len(manifest.tests)} result={output}")
+            Debug.log(
+                f"[RuntimeAcceptance] begin name={manifest.name!r} "
+                f"tests={len(manifest.tests)} cycles={manifest.cycles} result={output}"
+            )
             return cls._session.snapshot()
 
     @classmethod
@@ -325,8 +405,16 @@ class RuntimeAcceptance:
     @classmethod
     def current_test(cls) -> dict[str, Any]:
         with cls._lock:
-            current = cls._require_session().current
-            return deepcopy(current.document) if current is not None else {}
+            session = cls._require_session()
+            current = session.current
+            if current is None:
+                return {}
+            document = deepcopy(current.document)
+            document["$acceptance"] = {
+                "cycle": session.cycle + 1,
+                "cycles": session.manifest.cycles,
+            }
+            return document
 
     @classmethod
     def pass_current(cls, details: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:

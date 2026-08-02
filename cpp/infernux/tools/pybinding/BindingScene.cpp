@@ -39,6 +39,7 @@
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <mutex>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -224,6 +225,34 @@ static void GetPrimitiveMeshData(PrimitiveType type, const std::vector<Vertex> *
         outDefaultName = "Quad";
         break;
     }
+}
+
+static std::shared_ptr<InxMesh> GetBuiltinPrimitiveMeshAsset(const std::string &name)
+{
+    static std::mutex cacheMutex;
+    static std::unordered_map<std::string, std::shared_ptr<InxMesh>> cache;
+    std::lock_guard lock(cacheMutex);
+    if (const auto found = cache.find(name); found != cache.end())
+        return found->second;
+
+    static const std::unordered_map<std::string, PrimitiveType> types = {
+        {"Cube", PrimitiveType::Cube},         {"Sphere", PrimitiveType::Sphere}, {"Capsule", PrimitiveType::Capsule},
+        {"Cylinder", PrimitiveType::Cylinder}, {"Plane", PrimitiveType::Plane},   {"Quad", PrimitiveType::Quad},
+    };
+    const auto type = types.find(name);
+    if (type == types.end())
+        throw std::invalid_argument("unknown built-in primitive Mesh '" + name + "'");
+
+    const std::vector<Vertex> *vertices = nullptr;
+    const std::vector<uint32_t> *indices = nullptr;
+    const char *defaultName = "Primitive";
+    GetPrimitiveMeshData(type->second, vertices, indices, defaultName);
+    auto mesh = std::make_shared<InxMesh>(defaultName);
+    mesh->SetGuid("builtin-mesh:" + name);
+    mesh->SetData(std::vector<Vertex>(vertices->begin(), vertices->end()),
+                  std::vector<uint32_t>(indices->begin(), indices->end()), {});
+    cache.emplace(name, mesh);
+    return mesh;
 }
 
 static void AddPrimitiveCollider(GameObject &object, PrimitiveType type)
@@ -523,6 +552,9 @@ void RegisterSceneBindings(py::module_ &m)
         .value("Plane", PrimitiveType::Plane)
         .value("Quad", PrimitiveType::Quad)
         .export_values();
+
+    m.def("get_builtin_primitive_mesh", &GetBuiltinPrimitiveMeshAsset, py::arg("name"),
+          "Return an immutable engine built-in primitive Mesh resource");
 
     // ========================================================================
     // Space enum (Unity: Space.Self, Space.World)
@@ -2122,8 +2154,7 @@ void RegisterSceneBindings(py::module_ &m)
             "Get the explicitly preferred active Camera, or the first active camera by depth")
         .def_property_readonly(
             "active_game_cameras", [](Scene &scene) { return scene.GetActiveGameCameras(nullptr); },
-            py::return_value_policy::reference,
-            "Get all active Game cameras in stable depth order");
+            py::return_value_policy::reference, "Get all active Game cameras in stable depth order");
 
     // ========================================================================
     // SceneManager binding (singleton - use nodelete to prevent pybind11 from deleting)

@@ -1,15 +1,3 @@
-layout(push_constant) uniform ParticleViewConstants {
-    mat4 view_projection;
-    mat4 previous_view_projection;
-    vec4 camera_right;
-    vec4 camera_up;
-    vec4 material_tint;
-    vec4 depth_reconstruct;
-    vec4 lighting_control;
-    vec4 rendering_control;
-    vec4 alignment_reference;
-} particleView;
-
 layout(set = 2, binding = 15) uniform sampler2D _InxParticleSceneDepth;
 
 float _inxParticleEyeDepth(float deviceDepth) {

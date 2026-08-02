@@ -16,7 +16,14 @@ from .registry import (
     PortDirection,
     PortKind,
 )
-from .types import AssetReference, PORTABLE_TYPE_SYSTEM, TypeRef, TypeSystem, ValueType
+from .types import (
+    AssetReference,
+    CoordinateSpace,
+    PORTABLE_TYPE_SYSTEM,
+    TypeRef,
+    TypeSystem,
+    ValueType,
+)
 from .ramp import Curve, Gradient
 
 
@@ -202,6 +209,39 @@ class ExpressionCompiler:
                         ]
                     )
                 immediates.append((prop.id, literal))
+            if opcode in {"convert_space_position", "convert_space_direction"}:
+                source_type = input_types["input"]
+                supported_spaces = {
+                    CoordinateSpace.EMITTER_LOCAL,
+                    CoordinateSpace.SIMULATION,
+                    CoordinateSpace.WORLD,
+                }
+                if (
+                    source_type.value_type is not ValueType.VEC3
+                    or source_type.space not in supported_spaces
+                    or result_type.value_type is not ValueType.VEC3
+                    or result_type.space not in supported_spaces
+                ):
+                    raise ExpressionCompileError(
+                        [
+                            ExpressionDiagnostic(
+                                "invalid_space_conversion",
+                                f"{definition.type_id} requires a spatial vec3 input and output",
+                                node_uid,
+                            )
+                        ]
+                    )
+                opcode = "convert_space"
+                immediates = [
+                    ("from", source_type.space.value),
+                    ("to", result_type.space.value),
+                    (
+                        "semantic",
+                        "position"
+                        if definition.type_id == "common.space.transform_position"
+                        else "direction",
+                    ),
+                ]
             if opcode == "split_component":
                 try:
                     component = "xyzw".index(port_id)
@@ -306,11 +346,62 @@ class ExpressionCompiler:
         inputs: Mapping[str, TypeRef],
     ) -> TypeRef:
         type_id = definition.type_id
+        unary_numeric = {
+            "common.math.absolute",
+            "common.math.floor",
+            "common.math.ceil",
+            "common.math.fraction",
+            "common.math.square_root",
+            "common.math.sine",
+            "common.math.cosine",
+            "common.math.saturate",
+        }
+        if type_id in unary_numeric:
+            value_type = inputs["value"]
+            if value_type.value_type not in {
+                ValueType.F32,
+                ValueType.VEC2,
+                ValueType.VEC3,
+                ValueType.VEC4,
+                ValueType.COLOR,
+            }:
+                raise TypeError(f"{type_id} requires an f32 scalar or vector input")
+            return value_type
+        if type_id == "common.vector.length":
+            if inputs["value"].value_type not in {
+                ValueType.VEC2,
+                ValueType.VEC3,
+                ValueType.VEC4,
+            }:
+                raise TypeError(f"{type_id} requires a vector input")
+            return TypeRef(ValueType.F32)
+        if type_id == "common.vector.dot":
+            vector_type = self._types.unify_numeric(inputs["a"], inputs["b"])
+            if vector_type.value_type not in {
+                ValueType.VEC2,
+                ValueType.VEC3,
+                ValueType.VEC4,
+            }:
+                raise TypeError(f"{type_id} requires matching vector inputs")
+            return TypeRef(ValueType.F32)
+        if type_id == "common.vector.cross":
+            vector_type = self._types.unify_numeric(inputs["a"], inputs["b"])
+            if vector_type.value_type is not ValueType.VEC3:
+                raise TypeError(f"{type_id} requires matching vec3 inputs")
+            return vector_type
         if output.value_type is not None:
             return output.value_type
         if output.type_property:
             property_def = definition.property(output.type_property)
             selected = node.properties.get(output.type_property, property_def.default)
+            if output.type_property == "target_space":
+                try:
+                    return TypeRef(ValueType.VEC3, CoordinateSpace(str(selected)))
+                except ValueError as exc:
+                    raise TypeError(
+                        f"{type_id}.{output.type_property} references unsupported space "
+                        f"{selected!r}"
+                    ) from exc
             resolved = (
                 self._property_type_resolver(output.type_property, selected)
                 if self._property_type_resolver is not None
@@ -328,8 +419,16 @@ class ExpressionCompiler:
             "common.math.multiply",
             "common.math.divide",
             "common.math.lerp",
+            "common.math.minimum",
+            "common.math.maximum",
+            "common.math.power",
         }:
             return self._types.unify_numeric(inputs["a"], inputs["b"])
+        if type_id == "common.math.clamp":
+            return self._types.unify_numeric(
+                self._types.unify_numeric(inputs["value"], inputs["minimum"]),
+                inputs["maximum"],
+            )
         if type_id == "common.noise.vector3d":
             input_type = inputs["position"]
             if input_type.value_type is not ValueType.VEC3:

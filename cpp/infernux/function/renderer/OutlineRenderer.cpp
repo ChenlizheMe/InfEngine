@@ -750,7 +750,10 @@ VkDescriptorSet OutlineRenderer::GetOrCreateMtlOutlineDescSet(InxMaterial *mater
     } else {
         vertMatBufInfo.buffer = m_core->GetFallbackMaterialUbo();
         vertMatBufInfo.offset = 0;
-        vertMatBufInfo.range = sizeof(UniformBufferObject);
+        // The fallback is the renderer's fixed-size material UBO, not a
+        // camera UniformBufferObject. VK_WHOLE_SIZE keeps this descriptor
+        // coupled to the buffer that is actually bound.
+        vertMatBufInfo.range = VK_WHOLE_SIZE;
     }
     vkrender::UpdateDescriptorSetWithBuffer(device, descSet, kOutlineVertexMaterialUBOBinding,
                                             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, vertMatBufInfo);

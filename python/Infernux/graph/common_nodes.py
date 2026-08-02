@@ -10,7 +10,7 @@ from .registry import (
     PortDirection,
     PropertyDef,
 )
-from .types import TypeRef, ValueType
+from .types import CoordinateSpace, TypeRef, ValueType
 from .ramp import Curve, Gradient
 
 
@@ -36,12 +36,13 @@ def _input(
     )
 
 
-def _output(port_id: str, value_type=None, *, variable="") -> PortDef:
+def _output(port_id: str, value_type=None, *, variable="", type_property="") -> PortDef:
     return PortDef(
         port_id,
         PortDirection.OUTPUT,
         value_type=value_type,
         type_variable=variable,
+        type_property=type_property,
     )
 
 
@@ -99,8 +100,14 @@ COMMON_NODE_DEFINITIONS = (
         "common.math.add",
         "Add",
         (
-            _input("a", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
-            _input("b", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
+            _input(
+                "a", variable="T", default=0.0,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
+            _input(
+                "b", variable="T", default=0.0,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
             _output("result", variable="T"),
         ),
         target_opcodes={"expression": "add"},
@@ -109,8 +116,14 @@ COMMON_NODE_DEFINITIONS = (
         "common.math.subtract",
         "Subtract",
         (
-            _input("a", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
-            _input("b", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
+            _input(
+                "a", variable="T", default=0.0,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
+            _input(
+                "b", variable="T", default=0.0,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
             _output("result", variable="T"),
         ),
         target_opcodes={"expression": "subtract"},
@@ -145,6 +158,91 @@ COMMON_NODE_DEFINITIONS = (
             _output("result", variable="T"),
         ),
         target_opcodes={"expression": "lerp"},
+    ),
+    NodeDef(
+        "common.math.minimum",
+        "Minimum",
+        (
+            _input("a", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
+            _input("b", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
+            _output("result", variable="T"),
+        ),
+        target_opcodes={"expression": "minimum"},
+    ),
+    NodeDef(
+        "common.math.maximum",
+        "Maximum",
+        (
+            _input("a", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
+            _input("b", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
+            _output("result", variable="T"),
+        ),
+        target_opcodes={"expression": "maximum"},
+    ),
+    NodeDef(
+        "common.math.power",
+        "Power",
+        (
+            _input(
+                "a", variable="T", default=1.0,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
+            _input(
+                "b", variable="T", default=1.0,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
+            _output("result", variable="T"),
+        ),
+        target_opcodes={"expression": "power"},
+    ),
+    NodeDef(
+        "common.math.clamp",
+        "Clamp",
+        (
+            _input(
+                "value", variable="T", default=0.0,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
+            _input(
+                "minimum", variable="T", default=0.0,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
+            _input(
+                "maximum", variable="T", default=1.0,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
+            _output("result", variable="T"),
+        ),
+        target_opcodes={"expression": "clamp"},
+    ),
+    NodeDef(
+        "common.math.saturate",
+        "Saturate",
+        (
+            _input("value", variable="T", default=0.0),
+            _output("result", variable="T"),
+        ),
+        target_opcodes={"expression": "saturate"},
+    ),
+    *tuple(
+        NodeDef(
+            f"common.math.{type_id}",
+            display_name,
+            (
+                _input("value", variable="T", default=0.0),
+                _output("result", variable="T"),
+            ),
+            target_opcodes={"expression": opcode},
+        )
+        for type_id, display_name, opcode in (
+            ("absolute", "Absolute", "absolute"),
+            ("floor", "Floor", "floor"),
+            ("ceil", "Ceil", "ceil"),
+            ("fraction", "Fraction", "fraction"),
+            ("square_root", "Square Root", "square_root"),
+            ("sine", "Sine", "sine"),
+            ("cosine", "Cosine", "cosine"),
+        )
     ),
     NodeDef(
         "common.constant.vec4",
@@ -254,6 +352,109 @@ COMMON_NODE_DEFINITIONS = (
             _output("result", TypeRef(ValueType.VEC3)),
         ),
         target_opcodes={"expression": "normalize"},
+    ),
+    NodeDef(
+        "common.vector.length",
+        "Length",
+        (
+            _input("value", variable="T", required=True),
+            _output("result", TypeRef(ValueType.F32)),
+        ),
+        target_opcodes={"expression": "length"},
+    ),
+    NodeDef(
+        "common.vector.dot",
+        "Dot Product",
+        (
+            _input(
+                "a", variable="T", required=True,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
+            _input(
+                "b", variable="T", required=True,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
+            _output("result", TypeRef(ValueType.F32)),
+        ),
+        target_opcodes={"expression": "dot"},
+    ),
+    NodeDef(
+        "common.vector.cross",
+        "Cross Product",
+        (
+            _input(
+                "a", variable="T", required=True,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
+            _input(
+                "b", variable="T", required=True,
+                dimension_policy=PortDimensionPolicy.PROMOTE,
+            ),
+            _output("result", variable="T"),
+        ),
+        target_opcodes={"expression": "cross"},
+    ),
+    NodeDef(
+        "common.space.transform_position",
+        "Transform Position",
+        (
+            _input(
+                "input",
+                variable="spatial_value",
+                required=True,
+                display_name="Position",
+            ),
+            _output(
+                "value", variable="SpatialOutput", type_property="target_space"
+            ),
+        ),
+        (
+            PropertyDef(
+                "target_space",
+                TypeRef(ValueType.STRING),
+                CoordinateSpace.WORLD.value,
+                tuple(
+                    (label, space.value)
+                    for label, space in (
+                        ("Emitter Local", CoordinateSpace.EMITTER_LOCAL),
+                        ("Simulation", CoordinateSpace.SIMULATION),
+                        ("World", CoordinateSpace.WORLD),
+                    )
+                ),
+            ),
+        ),
+        target_opcodes={"expression": "convert_space_position"},
+    ),
+    NodeDef(
+        "common.space.transform_direction",
+        "Transform Direction",
+        (
+            _input(
+                "input",
+                variable="spatial_value",
+                required=True,
+                display_name="Direction",
+            ),
+            _output(
+                "value", variable="SpatialOutput", type_property="target_space"
+            ),
+        ),
+        (
+            PropertyDef(
+                "target_space",
+                TypeRef(ValueType.STRING),
+                CoordinateSpace.WORLD.value,
+                tuple(
+                    (label, space.value)
+                    for label, space in (
+                        ("Emitter Local", CoordinateSpace.EMITTER_LOCAL),
+                        ("Simulation", CoordinateSpace.SIMULATION),
+                        ("World", CoordinateSpace.WORLD),
+                    )
+                ),
+            ),
+        ),
+        target_opcodes={"expression": "convert_space_direction"},
     ),
     NodeDef(
         "common.vector.compose2",

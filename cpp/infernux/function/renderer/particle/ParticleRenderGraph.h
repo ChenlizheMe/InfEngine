@@ -7,6 +7,7 @@
 
 #include <function/renderer/vk/RenderGraph.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -56,8 +57,10 @@ struct alignas(16) GpuParticleSpawnMetadata
     uint32_t dispatchGroupCountX = 0;
     uint32_t dispatchGroupCountY = 1;
     uint32_t dispatchGroupCountZ = 1;
-    uint32_t reserved = 0;
+    uint32_t acceptedSpawnTotal = 0;
 };
+static_assert(sizeof(GpuParticleSpawnMetadata) == 32);
+static_assert(offsetof(GpuParticleSpawnMetadata, dispatchGroupCountX) == 16);
 
 struct alignas(16) GpuParticleSpawnDomainConstants
 {
@@ -117,10 +120,12 @@ class ParticleGpuGraphSpawnDomain
     ParticleGpuGraphSpawnDomain &operator=(ParticleGpuGraphSpawnDomain &&) = delete;
 
     [[nodiscard]] bool Create(rhi::Device &device, uint64_t graphInstanceId, uint32_t slotCount,
-                              const GpuParticleSpawnProgram &program);
+                              const GpuParticleSpawnProgram &program, const std::vector<uint32_t> &parameterWords);
     void Destroy() noexcept;
     [[nodiscard]] bool RegisterEmitter(uint32_t targetSlot, const ParticleGpuRuntime &runtime);
     [[nodiscard]] bool SetEmitterAcceptingBurstRequests(uint32_t targetSlot, bool accepting);
+    [[nodiscard]] bool SetEmitterPlaying(uint32_t targetSlot, bool playing);
+    [[nodiscard]] bool UpdateParameters(const std::vector<uint32_t> &parameterWords);
     [[nodiscard]] bool Attach(vk::RenderGraph &graph, const std::string &namePrefix);
     void DeclarePrepare(vk::PassBuilder &builder);
     void DeclareKernelWrite(vk::PassBuilder &builder);
@@ -150,6 +155,14 @@ class ParticleGpuGraphSpawnDomain
     {
         return m_acceptingRequestSlots;
     }
+    [[nodiscard]] rhi::BufferHandle EmitterPlayingRequestBuffer() const noexcept
+    {
+        return m_emitterPlayingRequests;
+    }
+    [[nodiscard]] rhi::BufferHandle EmitterPlayingStateBuffer() const noexcept
+    {
+        return m_emitterPlayingStates;
+    }
     [[nodiscard]] rhi::BufferHandle MetadataBuffer() const noexcept
     {
         return m_spawnMetadata;
@@ -170,7 +183,11 @@ class ParticleGpuGraphSpawnDomain
     rhi::BufferHandle m_burstRequestCounts;
     rhi::BufferHandle m_consumingCounts;
     rhi::BufferHandle m_acceptingRequestSlots;
+    rhi::BufferHandle m_emitterPlayingRequests;
+    rhi::BufferHandle m_emitterPlayingStates;
     rhi::BufferHandle m_spawnMetadata;
+    rhi::BufferHandle m_parameterBuffer;
+    uint32_t m_parameterWordCount = 0;
     rhi::BindingLayoutHandle m_domainLayout;
     rhi::BindGroupHandle m_advanceGroup;
     rhi::BindGroupHandle m_prepareGroup;
@@ -181,6 +198,9 @@ class ParticleGpuGraphSpawnDomain
     vk::ResourceHandle m_burstRequestResource;
     vk::ResourceHandle m_consumingResource;
     vk::ResourceHandle m_metadataResource;
+    vk::ResourceHandle m_parameterResource;
+    vk::ResourceHandle m_emitterPlayingRequestResource;
+    vk::ResourceHandle m_emitterPlayingStateResource;
 };
 
 struct GpuParticleGraphOutputs

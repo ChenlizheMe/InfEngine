@@ -12,6 +12,10 @@ vec2 getParticleLocalUV() {
     return getUV();
 }
 
+bool isParticleRibbonOutput() {
+    return false;
+}
+
 // ============================================================================
 // lib/object_utils.glsl — Per-object fragment data toolkit
 //

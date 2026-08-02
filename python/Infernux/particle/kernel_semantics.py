@@ -79,6 +79,7 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "constant": KernelOpcodeSpec(True, 0, frozenset({"value"})),
     "load_attribute": KernelOpcodeSpec(True, 0, frozenset({"attribute"})),
     "load_parameter": KernelOpcodeSpec(True, 0, frozenset({"parameter"})),
+    "store_parameter": KernelOpcodeSpec(False, 1, frozenset({"parameter"})),
     "store_attribute": KernelOpcodeSpec(False, 1, frozenset({"attribute"})),
     "load_uniform": KernelOpcodeSpec(True, 0, frozenset({"name"})),
     "event_payload": KernelOpcodeSpec(
@@ -99,6 +100,21 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "normalized_age": KernelOpcodeSpec(True, 2),
     "lerp": KernelOpcodeSpec(True, 3),
     "normalize": KernelOpcodeSpec(True, 1),
+    "minimum": KernelOpcodeSpec(True, 2),
+    "maximum": KernelOpcodeSpec(True, 2),
+    "power": KernelOpcodeSpec(True, 2),
+    "clamp": KernelOpcodeSpec(True, 3),
+    "saturate": KernelOpcodeSpec(True, 1),
+    "absolute": KernelOpcodeSpec(True, 1),
+    "floor": KernelOpcodeSpec(True, 1),
+    "ceil": KernelOpcodeSpec(True, 1),
+    "fraction": KernelOpcodeSpec(True, 1),
+    "square_root": KernelOpcodeSpec(True, 1),
+    "sine": KernelOpcodeSpec(True, 1),
+    "cosine": KernelOpcodeSpec(True, 1),
+    "length": KernelOpcodeSpec(True, 1),
+    "dot": KernelOpcodeSpec(True, 2),
+    "cross": KernelOpcodeSpec(True, 2),
     "target_position_velocity": KernelOpcodeSpec(True, 7),
     "random_f32": KernelOpcodeSpec(True, 3, frozenset({"random_slot"})),
     "sample_curve": KernelOpcodeSpec(True, 1, frozenset({"curve"})),
@@ -130,8 +146,8 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     ),
     "sample_mesh": KernelOpcodeSpec(
         True,
-        1,
-        frozenset({"interface", "mode", "output"}),
+        -1,
+        frozenset({"interface", "mode", "output", "seed"}),
         _ALL_STAGES,
     ),
     "less_than": KernelOpcodeSpec(True, 2),
@@ -215,6 +231,12 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         False,
         1,
         frozenset({"target_emitter_index", "target_capacity"}),
+        _ALL_STAGES,
+    ),
+    "emitter_set_playing": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset({"target_emitter_index"}),
         _ALL_STAGES,
     ),
     "event_complete": KernelOpcodeSpec(
@@ -453,6 +475,9 @@ def _validate_opcode_types(
     elif opcode == "load_parameter":
         if type(immediates["parameter"]) is not str or not immediates["parameter"]:
             raise KernelSemanticError("kernel parameter id cannot be empty")
+    elif opcode == "store_parameter":
+        if type(immediates["parameter"]) is not str or not immediates["parameter"]:
+            raise KernelSemanticError("kernel parameter id cannot be empty")
     elif opcode == "load_uniform":
         expected = KERNEL_RUNTIME_UNIFORMS.get(immediates["name"])
         if expected is None or result_type != expected:
@@ -553,6 +578,62 @@ def _validate_opcode_types(
             ValueType.VEC4,
         }:
             raise KernelSemanticError("kernel normalize requires one matching vector operand")
+    elif opcode in {
+        "saturate",
+        "absolute",
+        "floor",
+        "ceil",
+        "fraction",
+        "square_root",
+        "sine",
+        "cosine",
+    }:
+        if result_type is None or operands != (result_type,) or result_type.value_type not in {
+            ValueType.F32,
+            ValueType.VEC2,
+            ValueType.VEC3,
+            ValueType.VEC4,
+            ValueType.COLOR,
+        }:
+            raise KernelSemanticError(
+                f"kernel {opcode} requires one matching f32 scalar or vector operand"
+            )
+    elif opcode in {"minimum", "maximum", "power"}:
+        if result_type is None or not all(
+            _matches_numeric_result(operand, result_type) for operand in operands
+        ):
+            raise KernelSemanticError(
+                f"kernel {opcode} requires two operands matching its result"
+            )
+    elif opcode == "clamp":
+        if result_type is None or not all(
+            _matches_numeric_result(operand, result_type) for operand in operands
+        ):
+            raise KernelSemanticError(
+                "kernel clamp requires value, minimum and maximum matching its result"
+            )
+    elif opcode == "length":
+        if result_type != f32 or len(operands) != 1 or operands[0].value_type not in {
+            ValueType.VEC2,
+            ValueType.VEC3,
+            ValueType.VEC4,
+        }:
+            raise KernelSemanticError("kernel length requires one vector and an f32 result")
+    elif opcode == "dot":
+        if (
+            result_type != f32
+            or len(operands) != 2
+            or operands[0] != operands[1]
+            or operands[0].value_type not in {ValueType.VEC2, ValueType.VEC3, ValueType.VEC4}
+        ):
+            raise KernelSemanticError("kernel dot requires two matching vectors and an f32 result")
+    elif opcode == "cross":
+        if (
+            result_type is None
+            or result_type.value_type is not ValueType.VEC3
+            or operands != (result_type, result_type)
+        ):
+            raise KernelSemanticError("kernel cross requires two matching vec3 operands")
     elif opcode == "target_position_velocity":
         simulation_vector = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
         if result_type != simulation_vector or operands != (
@@ -699,8 +780,10 @@ def _validate_opcode_types(
         if type(immediates["interface"]) is not str or not immediates["interface"].strip():
             raise KernelSemanticError("SDF interface cannot be empty")
     elif opcode == "sample_mesh":
-        if operands != (TypeRef(ValueType.VEC3),):
-            raise KernelSemanticError("mesh sampling requires one unit vec3 sample coordinate")
+        if operands not in {(), (TypeRef(ValueType.VEC3),)}:
+            raise KernelSemanticError(
+                "mesh sampling accepts zero or one unit vec3 sample coordinate"
+            )
         output_types = {
             "position": TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
             "normal": TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
@@ -714,6 +797,7 @@ def _validate_opcode_types(
             raise KernelSemanticError("mesh resource binding cannot be empty")
         if immediates["mode"] not in {"vertex", "edge", "surface"}:
             raise KernelSemanticError("mesh sampling mode is invalid")
+        _validate_u32(immediates["seed"], "mesh sampling seed")
     elif opcode in {"less_than", "less_equal", "greater_than", "greater_equal", "equal", "not_equal"}:
         if result_type != bool_type or operands[0] != operands[1] or operands[0].value_type not in {
             ValueType.I32,
@@ -851,6 +935,12 @@ def _validate_opcode_types(
         capacity = immediates["target_capacity"]
         if type(capacity) is not int or capacity <= 0:
             raise KernelSemanticError("kernel burst_enqueue target capacity is invalid")
+    elif opcode == "emitter_set_playing":
+        if operands != (TypeRef(ValueType.BOOL),):
+            raise KernelSemanticError(
+                "kernel emitter_set_playing requires one bool operand"
+            )
+        _validate_u32(immediates["target_emitter_index"], "target emitter index")
     elif opcode in {"collide_plane_position", "collide_plane_velocity"}:
         simulation_vec3 = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
         if result_type != simulation_vec3 or operands != (
@@ -935,8 +1025,6 @@ def _validate_opcode_types(
             raise KernelSemanticError("kernel space conversion must preserve value type")
         if operands[0].space.value != immediates["from"] or result_type.space.value != immediates["to"]:
             raise KernelSemanticError("kernel space conversion metadata does not match its types")
-        if operands[0].space is result_type.space:
-            raise KernelSemanticError("kernel space conversion must change coordinate space")
         if immediates["semantic"] not in {"position", "direction", "vector"}:
             raise KernelSemanticError("kernel space conversion semantic is invalid")
 

@@ -204,6 +204,10 @@ def test_burst_node_queues_a_spawn_request_for_the_target_emitter():
     gpu = GpuParticleGlslLowerer().lower(kernel)
     assert "inx_enqueue_burst(1u," in gpu.emitters[0].update
     assert "emitter_burst_request_counts[target_emitter_index]" in gpu.emitters[0].update
+    assert (
+        "atomicAdd(emitter_burst_request_counts[target_emitter_index], 0u)"
+        in gpu.emitters[0].update
+    )
     assert "emitter_spawn.spawn_count" in gpu.emitters[1].init
 
 
@@ -1582,6 +1586,284 @@ def test_graph_parameters_have_stable_slots_and_default_only_hot_updates():
     assert kernel.to_dict() == type(kernel).from_dict(kernel.to_dict()).to_dict()
 
 
+def test_writable_graph_parameter_lowers_to_one_typed_shared_store():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "set-intensity",
+                "particle.parameter.set",
+                properties={"parameter": "intensity", "value": 2.5},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream",
+                "root.update",
+                "out",
+                "set-intensity",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+    parameter = ParticleParameter(
+        "intensity",
+        "Intensity",
+        TypeRef(ValueType.F32),
+        1.0,
+        writable=True,
+    )
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(
+            parameters=(parameter,),
+            emitters=(ParticleEmitterAsset(update=update),),
+        )
+    )
+    operations = _operations(program.emitters[0].update)
+    assert [operation.opcode for operation in operations] == ["parameter.store"]
+    kernel = ParticleKernelLowerer().lower(program)
+    stores = [
+        instruction
+        for instruction in kernel.emitters[0].update.instructions
+        if instruction.opcode == "store_parameter"
+    ]
+    assert len(stores) == 1
+    assert stores[0].immediate_dict() == {"parameter": "intensity"}
+    assert stores[0].operands[0].value_type == TypeRef(ValueType.F32)
+
+
+def test_set_parameter_rejects_read_only_graph_parameter():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "set-intensity",
+                "particle.parameter.set",
+                properties={"parameter": "intensity", "value": 2.5},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream",
+                "root.update",
+                "out",
+                "set-intensity",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+    with pytest.raises(ParticleCompileError, match="read-only parameter"):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(
+                parameters=(
+                    ParticleParameter(
+                        "intensity",
+                        "Intensity",
+                        TypeRef(ValueType.F32),
+                        1.0,
+                    ),
+                ),
+                emitters=(ParticleEmitterAsset(update=update),),
+            )
+        )
+
+
+def test_set_emitter_playing_lowers_to_graph_owned_target_state():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "start-trail",
+                "particle.emitter.playing",
+                properties={"emitter": "trail", "playing": True},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream",
+                "root.update",
+                "out",
+                "start-trail",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+    asset = ParticleGraphAsset(
+        emitters=(
+            ParticleEmitterAsset(stable_id="meteor", update=update),
+            ParticleEmitterAsset(stable_id="trail"),
+        )
+    )
+    program = ParticleGraphCompiler().compile(asset)
+    operation = _operations(program.emitters[0].update)[0]
+    assert operation.opcode == "emitter.set_playing"
+    assert operation.parameter_dict()["target_emitter_index"] == 1
+    instruction = next(
+        item
+        for item in ParticleKernelLowerer().lower(program).emitters[0].update.instructions
+        if item.opcode == "emitter_set_playing"
+    )
+    assert instruction.immediate_dict() == {"target_emitter_index": 1}
+    assert instruction.operands[0].value_type == TypeRef(ValueType.BOOL)
+
+
+def test_shared_parameter_and_playing_state_form_one_cross_emitter_contract():
+    meteor_init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "start-trail",
+                "particle.emitter.playing",
+                properties={"emitter": "trail", "playing": True},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "start-trail-exec",
+                "root.init",
+                "out",
+                "start-trail",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+    meteor_update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "position",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.position"},
+            ),
+            GraphNodeRecord(
+                "publish-position",
+                "particle.parameter.set",
+                properties={"parameter": "meteor-position"},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "publish-exec",
+                "root.update",
+                "out",
+                "publish-position",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "publish-value",
+                "position",
+                "value",
+                "publish-position",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+    trail_init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "meteor-position",
+                "particle.parameter",
+                properties={"parameter": "meteor-position"},
+            ),
+            GraphNodeRecord("set-position", "particle.attribute.position"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "set-position-exec",
+                "root.init",
+                "out",
+                "set-position",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "set-position-value",
+                "meteor-position",
+                "value",
+                "set-position",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(
+            parameters=(
+                ParticleParameter(
+                    "meteor-position",
+                    "Meteor Position",
+                    TypeRef(ValueType.VEC3),
+                    [0.0, 0.0, 0.0],
+                    writable=True,
+                ),
+            ),
+            emitters=(
+                ParticleEmitterAsset(
+                    stable_id="meteor",
+                    init=meteor_init,
+                    update=meteor_update,
+                ),
+                ParticleEmitterAsset(stable_id="trail", init=trail_init),
+            ),
+        )
+    )
+    kernel = ParticleKernelLowerer().lower(program)
+
+    meteor_init_opcodes = {
+        instruction.opcode for instruction in kernel.emitters[0].init.instructions
+    }
+    meteor_update_opcodes = {
+        instruction.opcode for instruction in kernel.emitters[0].update.instructions
+    }
+    trail_init_opcodes = {
+        instruction.opcode for instruction in kernel.emitters[1].init.instructions
+    }
+    assert "emitter_set_playing" in meteor_init_opcodes
+    assert {"load_attribute", "store_parameter"} <= meteor_update_opcodes
+    assert {"load_parameter", "store_attribute"} <= trail_init_opcodes
+
+
+def test_set_emitter_playing_rejects_its_own_emitter():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "self-play",
+                "particle.emitter.playing",
+                properties={"emitter": "meteor", "playing": False},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "self-play", "in", PortKind.EXEC
+            ),
+        ),
+    )
+    with pytest.raises(ParticleCompileError, match="cannot target its owning emitter"):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(
+                emitters=(
+                    ParticleEmitterAsset(stable_id="meteor", update=update),
+                    ParticleEmitterAsset(stable_id="trail"),
+                )
+            )
+        )
+
+
 def test_particle_graph_rejects_removed_cpu_execution_target():
     document = ParticleGraphAsset().to_dict()
     settings = document["emitters"][0]["settings"]
@@ -1895,6 +2177,42 @@ def test_particle_graph_persists_builtin_defaults_and_node_owned_attribute_cache
     stale["emitters"][0]["attribute_cache"] = []
     with pytest.raises(ParticleGraphSchemaError, match="keys mismatch"):
         ParticleGraphAsset.from_dict(stale)
+
+
+def test_attribute_cache_rejects_an_empty_authoring_name():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "cache.empty",
+                "particle.attribute.cache",
+                properties={
+                    "name": "   ",
+                    "value_type": "f32",
+                    "value_space": "none",
+                    "composition": "set",
+                    "value": 0.5,
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "init-cache",
+                "root.init",
+                "out",
+                "cache.empty",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+    emitter = ParticleEmitterAsset(init=init)
+
+    with pytest.raises(ParticleGraphSchemaError, match="name must not be empty"):
+        particle_cache_attributes(emitter)
+    with pytest.raises(ParticleGraphSchemaError, match="name must not be empty"):
+        ParticleGraphCompiler().compile(ParticleGraphAsset(emitters=(emitter,)))
 
 
 def test_attribute_cache_is_written_in_init_and_read_live_from_update():
@@ -2783,37 +3101,39 @@ def test_particle_update_can_author_color_and_size_over_lifetime():
     assert {"builtin.color", "builtin.size"} <= set(kernel.update.written_attributes)
 
 
-def test_particle_behavior_hash_ignores_graph_node_identity_and_layout():
-    def make_update(prefix: str, offset: float) -> GraphDocument:
+def test_particle_behavior_hash_ignores_graph_identity_layout_and_record_order():
+    def make_update(prefix: str, offset: float, *, reverse: bool = False) -> GraphDocument:
+        nodes = (
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(f"{prefix}.gravity", "particle.attribute.velocity"),
+            GraphNodeRecord(
+                f"{prefix}.value",
+                "common.constant.vec3",
+                (offset, offset),
+                {"value": [0.0, -1.0, 0.0]},
+            ),
+        )
+        links = (
+            GraphLinkRecord(
+                f"{prefix}.stream",
+                "root.update",
+                "out",
+                f"{prefix}.gravity",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                f"{prefix}.value-link",
+                f"{prefix}.value",
+                "value",
+                f"{prefix}.gravity",
+                "value",
+            ),
+        )
         return GraphDocument(
             "particle.update",
-            nodes=(
-                GraphNodeRecord("root.update", "particle.root.update"),
-                GraphNodeRecord(f"{prefix}.gravity", "particle.attribute.velocity"),
-                GraphNodeRecord(
-                    f"{prefix}.value",
-                    "common.constant.vec3",
-                    (offset, offset),
-                    {"value": [0.0, -1.0, 0.0]},
-                ),
-            ),
-            links=(
-                GraphLinkRecord(
-                    f"{prefix}.stream",
-                    "root.update",
-                    "out",
-                    f"{prefix}.gravity",
-                    "in",
-                    PortKind.EXEC,
-                ),
-                GraphLinkRecord(
-                    f"{prefix}.value-link",
-                    f"{prefix}.value",
-                    "value",
-                    f"{prefix}.gravity",
-                    "value",
-                ),
-            ),
+            nodes=tuple(reversed(nodes)) if reverse else nodes,
+            links=tuple(reversed(links)) if reverse else links,
         )
 
     first = ParticleGraphAsset(
@@ -2822,13 +3142,21 @@ def test_particle_behavior_hash_ignores_graph_node_identity_and_layout():
     )
     second = ParticleGraphAsset(
         stable_id="graph",
-        emitters=(ParticleEmitterAsset(stable_id="emitter", update=make_update("second", 500.0)),),
+        name="Renamed Graph",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="emitter",
+                name="Renamed Emitter",
+                update=make_update("second", 500.0, reverse=True),
+            ),
+        ),
     )
     first_hir = ParticleGraphCompiler().compile(first)
     second_hir = ParticleGraphCompiler().compile(second)
 
     assert first_hir.semantic_hash != second_hir.semantic_hash
     assert first_hir.behavior_hash == second_hir.behavior_hash
+    assert first_hir.emitters[0].render_plan == second_hir.emitters[0].render_plan
 
 
 def test_particle_graph_schema_is_strict_and_semantic_hash_ignores_positions():
@@ -2979,7 +3307,7 @@ class MeshShapeGraph(ParticleScript):
     assert shape.mesh_mode is MeshEmissionMode.SURFACE
 
 
-def test_particle_script_sdf_shape_matches_graph_asset_contract():
+def test_particle_script_rejects_sdf_shape_authoring():
     source = '''\
 from Infernux.particle import AssetReference, EmitterShape, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
 
@@ -3010,14 +3338,8 @@ class SdfShapeGraph(ParticleScript):
             particles.sprite()
 '''
 
-    asset = ParticleScriptCompiler().parse(
-        source, source_name="SdfShape.particle.py"
-    )
-
-    shape = asset.emitters[0].settings.shape
-    assert shape.kind.value == "sdf"
-    assert shape.sdf_interface == "shape-field"
-    assert shape.sdf_mode.value == "volume"
+    with pytest.raises(ParticleScriptError, match="SDF authoring is not available"):
+        ParticleScriptCompiler().parse(source, source_name="SdfShape.particle.py")
 
 
 PARTICLE_SCRIPT_SOURCE = '''\
@@ -4162,7 +4484,7 @@ class RemovedCollisionNode(ParticleScript):
         )
 
 
-def test_sdf_collision_graph_and_script_share_typed_data_interface_contract():
+def test_particle_script_rejects_sdf_collision_authoring():
     source = '''
 from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
 
@@ -4192,26 +4514,8 @@ class CollisionGraph(ParticleScript):
         def rendering(self, ctx, particles):
             particles.sprite()
 '''
-    compiler = ParticleScriptCompiler()
-    asset = compiler.parse(source, source_name="SdfCollision.particle.py")
-    emitter = compiler.compile(
-        source, source_name="SdfCollision.particle.py"
-    ).emitters[0]
-
-    assert _operations(emitter.update)[-1].opcode == "collision.sdf"
-    assert _operations(emitter.update)[-1].parameter_dict() == {
-        "friction": 0.25,
-        "interface": "collision-field",
-        "inverted": True,
-        "particle_radius": 0.1,
-        "restitution": 0.7,
-    }
-    assert emitter == ParticleGraphCompiler().compile(asset).emitters[0]
-
-    value = asset.to_dict()
-    value["emitters"][0]["stages"]["update"]["nodes"][1]["properties"]["interface"] = "missing"
-    with pytest.raises(ParticleCompileError, match="unknown SdfVolume"):
-        ParticleGraphCompiler().compile(ParticleGraphAsset.from_dict(value))
+    with pytest.raises(ParticleScriptError, match="SDF authoring is not available"):
+        ParticleScriptCompiler().parse(source, source_name="SdfCollision.particle.py")
 
 
 @pytest.mark.parametrize(
@@ -4306,7 +4610,7 @@ def test_particle_script_vector_field_expression_matches_graph_kernel_contract()
     assert sample.immediate_dict() == {"interface": "wind-field"}
 
 
-def test_particle_script_sdf_samples_match_graph_kernel_contract():
+def test_particle_script_rejects_sdf_sampling_authoring():
     source = '''\
 from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
 
@@ -4333,16 +4637,8 @@ class SdfSampleGraph(ParticleScript):
         def rendering(self, ctx, particles):
             particles.sprite()
 '''
-    asset = ParticleScriptCompiler().parse(source, source_name="SdfSample.particle.py")
-    update = asset.emitters[0].update
-    assert "particle.sdf.sample_distance" in {node.type_id for node in update.nodes}
-    assert "particle.sdf.sample_gradient" in {node.type_id for node in update.nodes}
-
-    kernel = ParticleKernelLowerer().lower(
-        ParticleGraphCompiler().compile(asset)
-    ).emitters[0]
-    opcodes = {instruction.opcode for instruction in kernel.update.instructions}
-    assert {"sample_sdf_distance", "sample_sdf_gradient"}.issubset(opcodes)
+    with pytest.raises(ParticleScriptError, match="SDF authoring is not available"):
+        ParticleScriptCompiler().parse(source, source_name="SdfSample.particle.py")
 
 
 def test_particle_script_target_position_is_a_stateless_motion_operation():
@@ -4784,38 +5080,32 @@ def test_particle_graph_save_compiles_the_in_memory_snapshot_once(tmp_path, monk
 
     assert compiled_assets == [asset]
     assert ParticleGraphAsset.load(str(path)) == asset
-    assert ParticleArtifactRegistry.get(str(path)) is not None
-
-
-def test_particle_graph_save_promotes_matching_live_draft_without_new_revision(
-    tmp_path, monkeypatch
-):
-    from Infernux.engine import project_context
-
-    ParticleArtifactRegistry.clear()
-    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
-    path = tmp_path / "Assets" / "DraftPromotion.particlegraph"
-    asset = ParticleGraphAsset(stable_id="draft-promotion")
-    draft = ParticleArtifactRegistry.publish_graph_asset(asset, str(path))
-    assert draft.artifact_path == ""
-
-    monkeypatch.setattr(
-        ParticleArtifactRegistry,
-        "_compile_graph_asset",
-        classmethod(
-            lambda cls, *args, **kwargs: (_ for _ in ()).throw(
-                AssertionError("matching live draft must be promoted without recompiling")
-            )
-        ),
-    )
-    asset.save(str(path))
     persisted = ParticleArtifactRegistry.get(str(path))
-
     assert persisted is not None
-    assert persisted.revision == draft.revision
-    assert persisted.source_hash == draft.source_hash
-    assert persisted.artifact_path.endswith("draft-promotion.inxparticle")
-    assert Path(persisted.artifact_path).is_file()
+
+    runtime_index = json.loads(
+        (tmp_path / "Library" / "Artifacts" / "Particle" / "RuntimeIndex.json")
+        .read_text(encoding="utf-8")
+    )
+    assert runtime_index == {
+        "$schema": "infernux.particle_runtime_index",
+        "entries": [
+            {
+                "guid": "",
+                "path_hint": "Assets/SingleSnapshot.particlegraph",
+                "stable_id": "single-snapshot",
+            }
+        ],
+    }
+
+    path.unlink()
+    ParticleArtifactRegistry.clear()
+    restored = ParticleArtifactRegistry.load_runtime_reference(
+        "Assets/SingleSnapshot.particlegraph", guid="scene-reference-guid"
+    )
+    assert restored is not None
+    assert restored.source_kind == "graph"
+    assert restored.behavior_hash == persisted.behavior_hash
 
 
 def test_particle_graph_artifact_hash_ignores_json_formatting(tmp_path, monkeypatch):
@@ -4847,10 +5137,45 @@ def test_particle_graph_artifact_hash_ignores_json_formatting(tmp_path, monkeypa
     assert restored.behavior_hash == current.behavior_hash
 
 
+def test_particle_graph_rebuilds_deterministically_after_library_cleanup(
+    tmp_path, monkeypatch
+):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "Rebuild.particlegraph"
+    asset = ParticleGraphAsset(stable_id="deterministic-rebuild")
+    asset.save(str(path))
+    first = ParticleArtifactRegistry.get(str(path))
+    assert first is not None
+
+    artifact_path = Path(first.artifact_path)
+    artifact_path.unlink()
+    runtime_index = artifact_path.parent / "RuntimeIndex.json"
+    runtime_index.unlink()
+    ParticleArtifactRegistry.clear()
+
+    rebuilt = ParticleArtifactRegistry.compile_path(str(path))
+
+    assert Path(rebuilt.artifact_path).is_file()
+    assert runtime_index.is_file()
+    assert rebuilt.source_hash == first.source_hash
+    assert rebuilt.semantic_hash == first.semantic_hash
+    assert rebuilt.behavior_hash == first.behavior_hash
+    assert rebuilt.hir == first.hir
+    assert rebuilt.kernel_ir == first.kernel_ir
+    assert rebuilt.gpu_glsl == first.gpu_glsl
+    assert rebuilt.gpu_spirv == first.gpu_spirv
+
+
 def test_particle_graph_latest_request_wins_out_of_order_compilation(
     tmp_path, monkeypatch
 ):
-    path = str(tmp_path / "LatestWins.particlegraph")
+    from Infernux.engine import project_context
+
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = str(tmp_path / "Assets" / "LatestWins.particlegraph")
     older = ParticleGraphAsset(stable_id="latest-wins", name="Older")
     newer = replace(older, name="Newer")
     old_started = threading.Event()
@@ -4872,12 +5197,12 @@ def test_particle_graph_latest_request_wins_out_of_order_compilation(
     ParticleArtifactRegistry.clear()
     old_thread = threading.Thread(
         target=lambda: old_results.append(
-            ParticleArtifactRegistry.publish_graph_asset(older, path)
+            ParticleArtifactRegistry.save_graph_asset(older, path)
         )
     )
     old_thread.start()
     assert old_started.wait(timeout=5.0)
-    latest = ParticleArtifactRegistry.publish_graph_asset(newer, path)
+    latest = ParticleArtifactRegistry.save_graph_asset(newer, path)
     release_old.set()
     old_thread.join(timeout=5.0)
 
@@ -4890,12 +5215,15 @@ def test_particle_graph_latest_request_wins_out_of_order_compilation(
 def test_failed_newer_particle_compile_invalidates_older_in_flight_result(
     tmp_path, monkeypatch
 ):
-    path = str(tmp_path / "FailedLatest.particlegraph")
+    from Infernux.engine import project_context
+
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = str(tmp_path / "Assets" / "FailedLatest.particlegraph")
     baseline = ParticleGraphAsset(stable_id="failed-latest", name="Baseline")
     older = replace(baseline, name="Older In Flight")
     broken = replace(baseline, name="Broken Newer")
     ParticleArtifactRegistry.clear()
-    published = ParticleArtifactRegistry.publish_graph_asset(baseline, path)
+    published = ParticleArtifactRegistry.save_graph_asset(baseline, path)
     old_started = threading.Event()
     release_old = threading.Event()
     old_results = []
@@ -4916,13 +5244,13 @@ def test_failed_newer_particle_compile_invalidates_older_in_flight_result(
     )
     old_thread = threading.Thread(
         target=lambda: old_results.append(
-            ParticleArtifactRegistry.publish_graph_asset(older, path)
+            ParticleArtifactRegistry.save_graph_asset(older, path)
         )
     )
     old_thread.start()
     assert old_started.wait(timeout=5.0)
     with pytest.raises(ParticleArtifactError, match="intentional latest revision failure"):
-        ParticleArtifactRegistry.publish_graph_asset(broken, path)
+        ParticleArtifactRegistry.save_graph_asset(broken, path)
     release_old.set()
     old_thread.join(timeout=5.0)
 

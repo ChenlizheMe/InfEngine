@@ -163,8 +163,9 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
                 "guid": "surface-mesh-guid",
                 "path_hint": "Assets/Models/Surface.fbx",
             },
-            "exposed": True,
-            "category": "",
+                "exposed": True,
+                "writable": False,
+                "category": "",
             "tooltip": "",
         }
     )

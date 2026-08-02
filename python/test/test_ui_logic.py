@@ -237,6 +237,49 @@ class TestWindowManager:
         finally:
             WindowManager._instance = previous
 
+    def test_focus_window_requires_known_open_panel(self):
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.focused = []
+
+            def register_gui(self, _window_id, _instance):
+                pass
+
+            def select_docked_window(self, window_id):
+                self.focused.append(window_id)
+
+        class Panel:
+            def __init__(self):
+                self.is_open = True
+
+            def set_open(self, value):
+                self.is_open = bool(value)
+
+        previous = WindowManager._instance
+        try:
+            engine = Engine()
+            manager = WindowManager(engine)
+            panel = Panel()
+            manager.register_window_type("game_view", Panel, "Game", factory=Panel)
+            manager.register_existing_window("game_view", panel, "game_view")
+
+            manager.focus_window("game_view")
+            assert manager.get_window_state("game_view") is WindowState.FOCUS_REQUESTED
+            manager.process_pending_actions()
+            assert manager.get_window_state("game_view") is WindowState.FOCUSED
+            assert engine.focused == ["game_view"]
+
+            manager.close_window("game_view")
+            assert manager.get_window_state("game_view") is WindowState.CLOSED
+            with pytest.raises(RuntimeError, match="not open"):
+                manager.focus_window("game_view")
+            with pytest.raises(KeyError, match="Unknown window"):
+                manager.focus_window("missing")
+        finally:
+            WindowManager._instance = previous
+
     def test_builtin_window_closes_without_unregistering(self):
         from Infernux.engine.ui.window_manager import WindowManager, WindowState
 

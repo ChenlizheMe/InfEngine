@@ -11,7 +11,7 @@ from Infernux.engine.ide_preference import get_ide
 from Infernux.engine.path_utils import resolved_path
 
 # File extensions to hide
-HIDDEN_EXTENSIONS = {'.meta', '.pyc', '.pyo', '.tmp'}
+HIDDEN_EXTENSIONS = {'.meta', '.pyc', '.pyo', '.tmp', '.inxparticle'}
 HIDDEN_PREFIXES = {'.', '__'}
 HIDDEN_FILES = {'imgui.ini'}
 
@@ -865,7 +865,16 @@ def open_file_with_system(file_path: str, project_root: str = "") -> bool:
     try:
         system = platform.system()
         if system == 'Windows':
-            os.startfile(file_path)
+            try:
+                os.startfile(file_path)
+            except OSError as exc:
+                # ShellExecute reports ERROR_NO_ASSOCIATION (1155) when the
+                # extension has no registered handler. The `openas` shell verb
+                # opens Windows' native app picker instead of leaking the
+                # exception through the editor frame.
+                if getattr(exc, "winerror", None) != 1155 and exc.errno != 1155:
+                    raise
+                os.startfile(file_path, "openas")
         elif system == 'Darwin':
             subprocess.run(['open', file_path], check=True)
         else:

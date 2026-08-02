@@ -819,7 +819,7 @@ def test_game_data_requires_reachable_particle_artifact(tmp_path):
         builder._copy_game_data(str(tmp_path / "dist"))
 
 
-def test_particle_script_stable_id_is_collected_without_importing_user_code(tmp_path):
+def test_particle_script_is_not_a_player_build_source(tmp_path):
     source = tmp_path / "Smoke.particle.py"
     source.write_text(
         "from Infernux.particle import ParticleScript\n"
@@ -828,7 +828,8 @@ def test_particle_script_stable_id_is_collected_without_importing_user_code(tmp_
         encoding="utf-8",
     )
 
-    assert GameBuilder._particle_source_stable_id(str(source)) == "smoke-script"
+    with pytest.raises(RuntimeError, match="ParticleScript is Preview/Future"):
+        GameBuilder._particle_source_stable_id(str(source))
 
 
 def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
@@ -959,6 +960,42 @@ def test_content_archive_replaces_loose_project_files(tmp_path):
             "Assets/Player.pyc",
             "ProjectSettings/BuildSettings.json",
         }
+
+
+def test_content_archive_excludes_particle_authoring_and_keeps_aot(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    data = tmp_path / "dist" / "Data"
+    graph = data / "Assets" / "VFX" / "Smoke.particlegraph"
+    script = data / "Assets" / "VFX" / "Future.particle.py"
+    artifact = data / "Library" / "Artifacts" / "Particle" / "smoke.inxparticle"
+    runtime_index = artifact.parent / builder._PARTICLE_RUNTIME_INDEX_FILENAME
+    graph.parent.mkdir(parents=True)
+    artifact.parent.mkdir(parents=True)
+    graph.write_text('{"$schema":"infernux.particle_graph"}', encoding="utf-8")
+    graph.with_suffix(graph.suffix + ".meta").write_text("graph-meta", encoding="utf-8")
+    script.write_text("# Preview ParticleScript", encoding="utf-8")
+    script.with_suffix(".pyc").write_bytes(b"preview-bytecode")
+    script.with_suffix(script.suffix + ".meta").write_text("script-meta", encoding="utf-8")
+    cache = script.parent / "__pycache__"
+    cache.mkdir()
+    (cache / "Future.particle.cpython-312.pyc").write_bytes(b"preview-bytecode")
+    (cache / "Future.particle.cpython-312.opt-2.pyc").write_bytes(b"optimized-preview")
+    artifact.write_text('{"$schema":"infernux.particle_artifact"}', encoding="utf-8")
+    runtime_index.write_text(
+        '{"$schema":"infernux.particle_runtime_index","entries":[]}',
+        encoding="utf-8",
+    )
+
+    builder._pack_content_archive(str(tmp_path / "dist"))
+
+    with zipfile.ZipFile(data / builder._CONTENT_ARCHIVE_FILENAME) as archive:
+        names = set(archive.namelist())
+    assert "Library/Artifacts/Particle/smoke.inxparticle" in names
+    assert "Library/Artifacts/Particle/RuntimeIndex.json" in names
+    assert not any(name.casefold().endswith(".particlegraph") for name in names)
+    assert not any(".particle." in name.casefold() for name in names)
+    assert not graph.exists()
+    assert not script.exists()
 
 
 def test_content_archive_rejects_plaintext_project_scripts(tmp_path):

@@ -341,6 +341,17 @@ class TestProjectPanelCallbacks:
         assert 'itemSemanticId + ".expand"' in source
         assert '"project_model_expand"' in source
 
+    def test_particle_runtime_artifacts_are_hidden_from_the_project_panel(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        hidden_extensions = source[
+            source.index("sHiddenExtensions") : source.index("sHiddenFiles")
+        ]
+
+        assert '".inxparticle"' in hidden_extensions
+        assert '".inxtex"' in hidden_extensions
+        assert '".inxvfield"' in hidden_extensions
+        assert '".inxsdf"' in hidden_extensions
+
     def test_project_asset_selection_waits_for_non_drag_release(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
         icon_render = source[source.index("// ── Render icon"):source.index("// ── Drag-drop source")]

@@ -5,6 +5,12 @@ from Infernux.engine.ui.project_file_ops import copy_path_as_new_asset
 from Infernux.particle import ParticleGraphAsset
 
 
+def test_project_panel_hides_particle_runtime_artifacts():
+    assert project_utils.should_show("Smoke.particlegraph") is True
+    assert project_utils.should_show("Smoke.inxparticle") is False
+    assert project_utils.should_show("SMOKE.INXPARTICLE") is False
+
+
 def test_code_file_open_refreshes_ides_and_uses_preference(tmp_path, monkeypatch):
     script = tmp_path / "player.py"
     script.write_text("pass\n", encoding="utf-8")
@@ -37,7 +43,24 @@ def test_code_file_open_refreshes_ides_and_uses_preference(tmp_path, monkeypatch
     assert launches == [("vscode", str(script), str(tmp_path))]
 
 
-def test_system_open_failure_does_not_escape_ui_render(tmp_path, monkeypatch):
+def test_windows_missing_file_association_opens_native_app_picker(tmp_path, monkeypatch):
+    model = tmp_path / "model.obj"
+    model.write_text("o Model\n", encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    def startfile(path, operation="open"):
+        calls.append((path, operation))
+        if operation == "open":
+            raise OSError(1155, "no associated application")
+
+    monkeypatch.setattr(project_utils.os, "startfile", startfile, raising=False)
+
+    assert project_utils.open_file_with_system(str(model)) is True
+    assert calls == [(str(model), "open"), (str(model), "openas")]
+
+
+def test_windows_app_picker_failure_does_not_escape_ui_render(tmp_path, monkeypatch):
     model = tmp_path / "model.obj"
     model.write_text("o Model\n", encoding="utf-8")
     warnings = []
@@ -46,7 +69,9 @@ def test_system_open_failure_does_not_escape_ui_render(tmp_path, monkeypatch):
     monkeypatch.setattr(
         project_utils.os,
         "startfile",
-        lambda _path: (_ for _ in ()).throw(OSError(1155, "no associated application")),
+        lambda _path, _operation="open": (_ for _ in ()).throw(
+            OSError(1155, "no associated application")
+        ),
         raising=False,
     )
     monkeypatch.setattr(project_utils.Debug, "log_warning", warnings.append)

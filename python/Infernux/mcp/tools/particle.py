@@ -80,7 +80,13 @@ def register_particle_tools(mcp, project_path: str) -> None:
 
         def _set():
             panel = _require_particle_graph_panel()
-            target = resolve_asset_path(project_path, asset_path)
+            token = str(asset_path).strip()
+            target = (
+                token
+                if str(property_name) == "mesh"
+                and token.startswith("builtin-mesh:")
+                else resolve_asset_path(project_path, token)
+            )
             reference = panel.set_node_asset_reference(
                 str(node_uid), str(property_name), target
             )
@@ -133,6 +139,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
         value_type: str = "f32",
         default=None,
         exposed: bool = True,
+        space: str = "none",
     ) -> dict:
         """Add one typed Blackboard parameter through the visible editor."""
 
@@ -143,6 +150,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
                 value_type,
                 default,
                 exposed=bool(exposed),
+                space=space,
             )
             return {
                 "parameter": parameter,
@@ -159,6 +167,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
                 "value_type": value_type,
                 "default": default,
                 "exposed": exposed,
+                "space": space,
             },
         )
 
@@ -289,6 +298,26 @@ def register_particle_tools(mcp, project_path: str) -> None:
             arguments={"link_uid": link_uid},
         )
 
+    @mcp.tool(name="particle_graph_remove_node")
+    def particle_graph_remove_node(node_uid: str) -> dict:
+        """Delete one user node through the live ParticleGraph editor model."""
+
+        def _remove():
+            panel = _require_particle_graph_panel()
+            result = panel.remove_authoring_node(node_uid)
+            return {
+                **result,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_remove_node",
+            _remove,
+            arguments={"node_uid": node_uid},
+        )
+
     @mcp.tool(name="particle_graph_connect_value")
     def particle_graph_connect_value(
         source_node_uid: str,
@@ -406,109 +435,6 @@ def register_particle_tools(mcp, project_path: str) -> None:
             "particle_graph_patch_emitter_settings",
             _patch,
             arguments={"emitter_id": emitter_id, "values": values},
-        )
-
-    @mcp.tool(name="particle_graph_add_data_interface")
-    def particle_graph_add_data_interface(
-        emitter_id: str, kind: str, name: str = ""
-    ) -> dict:
-        """Add a typed Data Interface to one ParticleGraph emitter."""
-
-        def _add():
-            panel = _require_particle_graph_panel()
-            interface = panel.add_authoring_data_interface(emitter_id, kind, name)
-            return {
-                "interface": interface,
-                "editor": _portable_snapshot(
-                    panel.authoring_snapshot(), project_path
-                ),
-            }
-
-        return main_thread(
-            "particle_graph_add_data_interface",
-            _add,
-            arguments={"emitter_id": emitter_id, "kind": kind, "name": name},
-        )
-
-    @mcp.tool(name="particle_graph_set_data_interface_asset")
-    def particle_graph_set_data_interface_asset(
-        emitter_id: str, interface_id: str, asset_path: str
-    ) -> dict:
-        """Set an imported source asset on a typed ParticleGraph Data Interface."""
-
-        def _set():
-            panel = _require_particle_graph_panel()
-            target = resolve_asset_path(project_path, asset_path)
-            interface = panel.set_authoring_data_interface_asset(
-                emitter_id, interface_id, target
-            )
-            return {
-                "interface": interface,
-                "editor": _portable_snapshot(
-                    panel.authoring_snapshot(), project_path
-                ),
-            }
-
-        return main_thread(
-            "particle_graph_set_data_interface_asset",
-            _set,
-            arguments={
-                "emitter_id": emitter_id,
-                "interface_id": interface_id,
-                "asset_path": asset_path,
-            },
-        )
-
-    @mcp.tool(name="particle_graph_patch_data_interface")
-    def particle_graph_patch_data_interface(
-        emitter_id: str, interface_id: str, values: dict
-    ) -> dict:
-        """Patch editable fields on one ParticleGraph Data Interface."""
-
-        def _patch():
-            panel = _require_particle_graph_panel()
-            interface = panel.patch_authoring_data_interface(
-                emitter_id, interface_id, values
-            )
-            return {
-                "interface": interface,
-                "editor": _portable_snapshot(
-                    panel.authoring_snapshot(), project_path
-                ),
-            }
-
-        return main_thread(
-            "particle_graph_patch_data_interface",
-            _patch,
-            arguments={
-                "emitter_id": emitter_id,
-                "interface_id": interface_id,
-                "values": values,
-            },
-        )
-
-    @mcp.tool(name="particle_graph_remove_data_interface")
-    def particle_graph_remove_data_interface(
-        emitter_id: str, interface_id: str
-    ) -> dict:
-        """Remove an unreferenced Data Interface from one ParticleGraph emitter."""
-
-        def _remove():
-            panel = _require_particle_graph_panel()
-            interface = panel.remove_authoring_data_interface(
-                emitter_id, interface_id
-            )
-            return {
-                "interface": interface,
-                "editor": _portable_snapshot(
-                    panel.authoring_snapshot(), project_path
-                ),
-            }
-
-        return main_thread(
-            "particle_graph_remove_data_interface",
-            _remove,
-            arguments={"emitter_id": emitter_id, "interface_id": interface_id},
         )
 
     @mcp.tool(name="particle_graph_remove_emitter")
@@ -1218,7 +1144,7 @@ def _register_authoring_metadata() -> None:
         tags=["particle", "graph", "editor", "authoring"],
         aliases=["add particle node", "创建粒子节点"],
         preconditions=["A .particlegraph asset must be open."],
-        side_effects=["Records Undo, marks the panel dirty, and republishes the live draft."],
+        side_effects=["Records Undo and marks the unsaved document dirty."],
         recovery=["Use particle_graph_inspect_editor to inspect valid canvas state."],
         next_suggested_tools=[
             "particle_graph_set_node_property",
@@ -1234,9 +1160,10 @@ def _register_authoring_metadata() -> None:
         preconditions=[
             "A .particlegraph asset must be open.",
             "value_type must be bool, i32, u32, f32, vec2, vec3, vec4, color, curve, gradient, texture2d, or mesh.",
+            "space may be world only for vec3; all other parameter types use none.",
         ],
         side_effects=[
-            "Records Undo, selects the new Blackboard field, and republishes the live draft."
+            "Records Undo and selects the new unsaved Blackboard field. Save the document to AOT compile and publish it."
         ],
         recovery=["Inspect the Blackboard and retry with a unique non-empty name."],
         next_suggested_tools=[
@@ -1252,10 +1179,10 @@ def _register_authoring_metadata() -> None:
         aliases=["edit particle parameter", "修改粒子参数"],
         preconditions=[
             "parameter_id must identify a current Blackboard field.",
-            "values may contain name, type, default, exposed, category, or tooltip.",
+            "values may contain name, type, default, exposed, writable, category, or tooltip.",
         ],
         side_effects=[
-            "Records Undo and disconnects incompatible value links after a type change."
+            "Records Undo and disconnects incompatible value links after a type change. Save the document to AOT compile and publish it."
         ],
         recovery=["Inspect the editor and retry with the field's stable ID."],
         next_suggested_tools=["particle_graph_inspect_editor", "editor_save_document"],
@@ -1283,7 +1210,7 @@ def _register_authoring_metadata() -> None:
             "The node must exist in the open ParticleGraph.",
             "Asset references must use particle_graph_set_node_asset.",
         ],
-        side_effects=["Records Undo, marks the panel dirty, and republishes the live draft."],
+        side_effects=["Records Undo and marks the unsaved document dirty."],
         recovery=["Inspect the node properties before retrying."],
         next_suggested_tools=["particle_graph_connect_exec", "editor_save_document"],
     )
@@ -1297,7 +1224,7 @@ def _register_authoring_metadata() -> None:
             "Both node UIDs must exist in the same stage.",
             "The named source and target ports must both be Exec ports.",
         ],
-        side_effects=["Records Undo, marks the panel dirty, and republishes the live draft."],
+        side_effects=["Records Undo and marks the unsaved document dirty."],
         recovery=["Inspect existing links and endpoint stages before retrying."],
         next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
     )
@@ -1311,7 +1238,7 @@ def _register_authoring_metadata() -> None:
             "The link UID must identify an existing link in the open ParticleGraph."
         ],
         side_effects=[
-            "Records Undo, marks the panel dirty, and republishes the live draft."
+            "Records Undo and marks the unsaved document dirty."
         ],
         recovery=[
             "Inspect the current links and retry with an existing link UID."
@@ -1322,13 +1249,33 @@ def _register_authoring_metadata() -> None:
         ],
     )
     register_tool_metadata(
+        "particle_graph_remove_node",
+        summary="Delete one user node through the live ParticleGraph authoring model.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "editor", "node", "delete"],
+        aliases=["delete particle node", "删除粒子节点"],
+        preconditions=[
+            "The node UID must identify a deletable user node in the open ParticleGraph."
+        ],
+        side_effects=[
+            "Removes dependent links, records Undo, and marks the unsaved document dirty."
+        ],
+        recovery=[
+            "Inspect the graph and do not target lifecycle roots or rendering outputs."
+        ],
+        next_suggested_tools=[
+            "editor_save_document",
+            "particle_graph_inspect_editor",
+        ],
+    )
+    register_tool_metadata(
         "particle_graph_connect_value",
         summary="Connect or replace one typed ParticleGraph value input.",
         category="assets/particle_graph",
         tags=["particle", "graph", "editor", "value"],
         aliases=["connect particle value", "连接粒子数值端口"],
         preconditions=["Both nodes and named ports must exist in the selected emitter."],
-        side_effects=["Records Undo, marks the document dirty, and republishes the live draft."],
+        side_effects=["Records Undo and marks the unsaved document dirty."],
         recovery=["Inspect registered node types, nodes, ports, and existing links before retrying."],
         next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
     )
@@ -1350,7 +1297,7 @@ def _register_authoring_metadata() -> None:
         tags=["particle", "graph", "editor", "emitter", "authoring"],
         aliases=["add particle emitter", "添加粒子发射器"],
         preconditions=["A .particlegraph asset must be open."],
-        side_effects=["Records Undo, selects the new emitter, and republishes the live draft."],
+        side_effects=["Records Undo and selects the new emitter in the unsaved document."],
         recovery=["Use a non-empty emitter display name that is unique in the graph."],
         next_suggested_tools=["particle_graph_set_emitter_settings"],
     )
@@ -1361,7 +1308,7 @@ def _register_authoring_metadata() -> None:
         tags=["particle", "graph", "editor", "emitter", "settings"],
         aliases=["set particle emitter", "设置粒子发射器"],
         preconditions=["Use the complete settings object returned by particle_graph_inspect_editor."],
-        side_effects=["Records Undo, marks the document dirty, and republishes the live draft."],
+        side_effects=["Records Undo and marks the unsaved document dirty."],
         recovery=["Inspect the emitter and retry with the exact current settings field set."],
         next_suggested_tools=["particle_graph_implement_event", "editor_save_document"],
     )
@@ -1372,59 +1319,9 @@ def _register_authoring_metadata() -> None:
         tags=["particle", "graph", "editor", "emitter", "settings", "patch"],
         aliases=["patch particle emitter", "修改粒子发射器参数"],
         preconditions=["A .particlegraph asset must be open."],
-        side_effects=["Records one Undo transaction, marks the document dirty, and republishes the draft."],
+        side_effects=["Records one Undo transaction and marks the unsaved document dirty."],
         recovery=["Use only field names returned in the emitter settings snapshot."],
         next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
-    )
-    register_tool_metadata(
-        "particle_graph_add_data_interface",
-        summary="Add a typed Data Interface to a ParticleGraph emitter.",
-        category="assets/particle_graph",
-        tags=["particle", "graph", "data interface", "sdf", "vector field"],
-        aliases=["add particle data interface", "添加粒子数据接口"],
-        preconditions=[
-            "kind must be sdf_volume or vector_field.",
-            "The emitter stable ID must exist in the open ParticleGraph.",
-        ],
-        side_effects=["Records Undo, marks the document dirty, and republishes the draft."],
-        recovery=["Inspect emitter data_interfaces and retry with a current stable ID."],
-        next_suggested_tools=["particle_graph_set_data_interface_asset"],
-    )
-    register_tool_metadata(
-        "particle_graph_set_data_interface_asset",
-        summary="Bind an imported source asset to a typed ParticleGraph Data Interface.",
-        category="assets/particle_graph",
-        tags=["particle", "graph", "data interface", "asset"],
-        aliases=["bind particle data asset", "绑定粒子数据资产"],
-        preconditions=[
-            "SDF volumes require .inxsdf and vector fields require .inxvfield.",
-            "The source asset must already be imported and have a GUID.",
-        ],
-        side_effects=["Records Undo, marks the document dirty, and republishes the draft."],
-        recovery=["Import the matching source asset, then retry with its Assets-relative path."],
-        next_suggested_tools=["particle_graph_patch_data_interface"],
-    )
-    register_tool_metadata(
-        "particle_graph_patch_data_interface",
-        summary="Patch editable transform and sampling fields on one Data Interface.",
-        category="assets/particle_graph",
-        tags=["particle", "graph", "data interface", "settings"],
-        aliases=["edit particle data interface", "修改粒子数据接口"],
-        preconditions=["Use only fields returned by particle_graph_inspect_editor."],
-        side_effects=["Records Undo, marks the document dirty, and republishes the draft."],
-        recovery=["Use particle_graph_set_data_interface_asset for resource references."],
-        next_suggested_tools=["particle_graph_set_node_property", "editor_save_document"],
-    )
-    register_tool_metadata(
-        "particle_graph_remove_data_interface",
-        summary="Remove an unreferenced Data Interface from one ParticleGraph emitter.",
-        category="assets/particle_graph",
-        tags=["particle", "graph", "data interface", "remove"],
-        aliases=["remove particle data interface", "移除粒子数据接口"],
-        preconditions=["No graph node may still reference the interface stable ID."],
-        side_effects=["Records Undo, marks the document dirty, and republishes the draft."],
-        recovery=["Clear or redirect referencing node properties before removal."],
-        next_suggested_tools=["particle_graph_inspect_editor", "editor_save_document"],
     )
     register_tool_metadata(
         "particle_graph_remove_emitter",
@@ -1444,7 +1341,7 @@ def _register_authoring_metadata() -> None:
         tags=["particle", "graph", "event", "schema"],
         aliases=["add particle event", "添加粒子事件类型"],
         preconditions=["Field types use the current TypeRef object shape."],
-        side_effects=["Records Undo, rebuilds derived node definitions, and republishes the draft."],
+        side_effects=["Records Undo, rebuilds derived node definitions, and marks the unsaved document dirty."],
         recovery=["Fix invalid field types/defaults and retry; no partial schema is retained."],
         next_suggested_tools=["particle_graph_implement_event"],
     )
@@ -1498,7 +1395,7 @@ def _register_authoring_metadata() -> None:
             "asset_path must identify an imported asset inside Assets/.",
         ],
         side_effects=[
-            "Updates the live editor document, records Undo, marks the panel dirty, and republishes its in-memory draft."
+            "Updates the editor document, records Undo, and marks it dirty. Saving performs AOT compilation and publication."
         ],
         recovery=[
             "Call particle_graph_inspect_editor to verify node_uid and the Mesh or shader Texture2D input ID."

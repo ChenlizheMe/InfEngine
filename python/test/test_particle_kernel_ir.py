@@ -670,6 +670,77 @@ def test_enabling_collision_is_a_layout_migratable_kernel_change():
     )
 
 
+def _attribute_cache_emitter(*fields):
+    nodes = [GraphNodeRecord("root.init", "particle.root.init")]
+    links = []
+    for stable_id, name, value_type, value in fields:
+        nodes.append(
+            GraphNodeRecord(
+                stable_id,
+                "particle.attribute.cache",
+                properties={
+                    "name": name,
+                    "value_type": value_type,
+                    "value_space": "none",
+                    "composition": "set",
+                    "value": value,
+                },
+            )
+        )
+        links.append(
+            GraphLinkRecord(
+                f"root-{stable_id}",
+                "root.init",
+                "out",
+                stable_id,
+                "in",
+                PortKind.EXEC,
+            )
+        )
+    return ParticleEmitterAsset(
+        stable_id="cache-hot-reload",
+        init=GraphDocument("particle.init", nodes=nodes, links=links),
+    )
+
+
+def test_attribute_cache_addition_migrates_but_storage_type_change_restarts():
+    previous_emitter = _attribute_cache_emitter(
+        ("phase", "Phase", "f32", 0.5),
+    )
+    extended_emitter = _attribute_cache_emitter(
+        ("phase", "Phase", "f32", 0.5),
+        ("heat", "Heat", "f32", 0.25),
+    )
+    changed_type_emitter = _attribute_cache_emitter(
+        ("phase", "Phase", "f32", 0.5),
+        ("heat", "Heat", "vec3", [0.25, 0.5, 0.75]),
+    )
+    previous = _lower(ParticleGraphAsset(emitters=(previous_emitter,))).emitters[0]
+    extended = _lower(ParticleGraphAsset(emitters=(extended_emitter,))).emitters[0]
+    changed_type = _lower(
+        ParticleGraphAsset(emitters=(changed_type_emitter,))
+    ).emitters[0]
+
+    assert (
+        classify_emitter_update(
+            previous,
+            extended,
+            previous_emitter.settings,
+            extended_emitter.settings,
+        )
+        is ParticleRuntimeCompatibility.LAYOUT_MIGRATABLE
+    )
+    assert (
+        classify_emitter_update(
+            extended,
+            changed_type,
+            extended_emitter.settings,
+            changed_type_emitter.settings,
+        )
+        is ParticleRuntimeCompatibility.EMITTER_RESTART
+    )
+
+
 def test_event_queue_abi_change_restarts_the_owning_emitter():
     event_flow = ParticleEventFlow("impact", default_event_graph("impact"))
     previous_emitter = ParticleEmitterAsset(
@@ -965,7 +1036,46 @@ def test_sample_mesh_input_lowers_typed_sampling_outputs(output, mode, expected_
     assert immediates["interface"].startswith("sample.mesh.")
     assert immediates["mode"] == mode
     assert immediates["output"] == output
+    assert immediates["seed"] == 0
+    assert sample.operands == ()
     assert sample.result_type == expected_type
+
+
+def test_sample_mesh_seed_is_stable_per_particle_slot_without_sample_connection():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "sample",
+                "particle.mesh.sample",
+                properties={
+                    "mesh": AssetReference(guid="surface-mesh").to_dict(),
+                    "mode": "surface",
+                    "seed": 123,
+                },
+            ),
+            GraphNodeRecord(
+                "write",
+                "particle.attribute.position",
+            ),
+        ),
+        links=(
+            GraphLinkRecord("exec", "root.update", "out", "write", "in", PortKind.EXEC),
+            GraphLinkRecord("position", "sample", "position", "write", "value", PortKind.VALUE),
+        ),
+    )
+
+    sample = next(
+        instruction
+        for instruction in _lower(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+        ).emitters[0].update.instructions
+        if instruction.opcode == "sample_mesh"
+    )
+
+    assert sample.operands == ()
+    assert sample.immediate_dict()["seed"] == 123
 
 
 def test_kernel_random_slots_are_unique_and_source_uid_independent():

@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 
 namespace infernux::particle
@@ -61,8 +62,12 @@ struct alignas(16) GpuParticleContactCounters
     uint32_t resetSerial = 0;
     uint32_t currentRecordCount = 0;
     uint32_t workItemCount = 0;
-    uint32_t reserved0 = 0;
-    uint32_t reserved1 = 0;
+    uint32_t maxContactsPerParticle = 0;
+    uint32_t multiContactParticleCount = 0;
+    uint32_t retainedOrderHash = 0;
+    uint32_t droppedOrderHash = 0;
+    uint32_t minParticleIndex = std::numeric_limits<uint32_t>::max();
+    uint32_t maxParticleIndex = 0;
 };
 
 struct GpuParticleContactResources
@@ -155,6 +160,6 @@ static_assert(offsetof(GpuParticleContactWorkItem, dispatch) == 16);
 static_assert(sizeof(GpuParticleContactJoinState) == 48);
 static_assert(offsetof(GpuParticleContactJoinState, context) == 16);
 static_assert(offsetof(GpuParticleContactJoinState, state) == 32);
-static_assert(sizeof(GpuParticleContactCounters) == 32);
+static_assert(sizeof(GpuParticleContactCounters) == 48);
 
 } // namespace infernux::particle

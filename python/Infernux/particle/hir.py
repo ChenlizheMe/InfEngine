@@ -406,6 +406,7 @@ class ParticleParameterHIR:
     value_type: TypeRef
     default: Any
     exposed: bool
+    writable: bool
     slot: int
     category: str
     tooltip: str
@@ -418,6 +419,7 @@ class ParticleParameterHIR:
             parameter.value_type,
             parameter.default,
             parameter.exposed,
+            parameter.writable,
             slot,
             parameter.category,
             parameter.tooltip,
@@ -591,6 +593,7 @@ class ParticleGraphCompiler:
                         "stable_id": parameter.stable_id,
                         "type": parameter.value_type.to_dict(),
                         "slot": parameter.slot,
+                        "writable": parameter.writable,
                     }
                     for parameter in parameters
                 ]
@@ -1356,6 +1359,11 @@ class ParticleGraphCompiler:
                     return TypeRef(ValueType(str(selected)))
                 except ValueError:
                     return None
+            if property_name == "target_space":
+                try:
+                    return TypeRef(ValueType.VEC3, CoordinateSpace(str(selected)))
+                except ValueError:
+                    return None
             if property_name == "parameter":
                 return definitions.parameter_type_by_id.get(str(selected))
             return None
@@ -1450,6 +1458,7 @@ class ParticleGraphCompiler:
             value_bindings,
             definitions,
             expressions,
+            str(emitter.stable_id),
             entry_operations=settings_operations,
             entry_condition=entry_condition,
         )
@@ -1597,11 +1606,12 @@ class ParticleGraphCompiler:
                 interface=interface_id,
                 mesh=reference.to_dict(),
                 mesh_parameter=mesh_parameter,
+                seeded_sample=not bool(sample_operand.value_id),
             )
             resolved.append(
                 replace(
                     instruction,
-                    operands=(sample_operand,),
+                    operands=(sample_operand,) if sample_operand.value_id else (),
                     immediates=tuple(sorted(immediates.items())),
                 )
             )
@@ -1615,6 +1625,7 @@ class ParticleGraphCompiler:
         value_bindings,
         definitions,
         expressions,
+        owner_emitter_id: str,
         *,
         entry_operations: tuple[ParticleOperation, ...],
         entry_condition: str = "",
@@ -1750,6 +1761,32 @@ class ParticleGraphCompiler:
                     )
                 properties["target_emitter_index"] = target_index
                 properties["target_capacity"] = target_capacity
+            if opcode == "emitter.set_playing":
+                target_id = str(properties["emitter"])
+                target_index = definitions.emitter_index_by_id.get(target_id)
+                if target_index is None:
+                    raise ParticleCompileError(
+                        f"Set Emitter Playing node {node.uid!r} references unknown "
+                        f"emitter {target_id!r}"
+                    )
+                if target_id == owner_emitter_id:
+                    raise ParticleCompileError(
+                        "Set Emitter Playing cannot target its owning emitter"
+                    )
+                properties["target_emitter_index"] = target_index
+            if opcode == "parameter.store":
+                parameter_id = str(properties["parameter"])
+                parameter = definitions.parameter_by_id.get(parameter_id)
+                if parameter is None:
+                    raise ParticleCompileError(
+                        f"Set Parameter node {node.uid!r} references unknown parameter "
+                        f"{parameter_id!r}"
+                    )
+                if not bool(parameter.writable):
+                    raise ParticleCompileError(
+                        f"Set Parameter node {node.uid!r} cannot write read-only parameter "
+                        f"{parameter.name!r}"
+                    )
             from Infernux.graph.expression_ir import ExpressionCompiler
 
             for property_def in definition.properties:

@@ -127,6 +127,93 @@ def test_common_add_normalize_random_compile_to_typed_expression_ir():
     assert dict(program.outputs)["normal.result"].value_type is ValueType.VEC3
 
 
+def test_common_foundational_math_nodes_compile_with_strict_vector_types():
+    document = GraphDocument(
+        "particle.expression",
+        nodes=(
+            GraphNodeRecord(
+                "a", "common.constant.vec3", properties={"value": [1.0, 2.0, 3.0]}
+            ),
+            GraphNodeRecord(
+                "b", "common.constant.vec3", properties={"value": [3.0, 2.0, 1.0]}
+            ),
+            GraphNodeRecord("dot", "common.vector.dot"),
+            GraphNodeRecord("cross", "common.vector.cross"),
+            GraphNodeRecord("length", "common.vector.length"),
+            GraphNodeRecord("sine", "common.math.sine"),
+            GraphNodeRecord(
+                "clamp",
+                "common.math.clamp",
+                properties={"minimum": -0.5, "maximum": 0.5},
+            ),
+        ),
+        links=(
+            GraphLinkRecord("a-dot", "a", "value", "dot", "a"),
+            GraphLinkRecord("b-dot", "b", "value", "dot", "b"),
+            GraphLinkRecord("a-cross", "a", "value", "cross", "a"),
+            GraphLinkRecord("b-cross", "b", "value", "cross", "b"),
+            GraphLinkRecord("cross-length", "cross", "result", "length", "value"),
+            GraphLinkRecord("a-sine", "a", "value", "sine", "value"),
+            GraphLinkRecord("sine-clamp", "sine", "result", "clamp", "value"),
+        ),
+    )
+
+    program = ExpressionCompiler().compile(
+        document,
+        outputs=(("dot", "result"), ("length", "result"), ("clamp", "result")),
+    )
+    by_result = {
+        instruction.result_id: instruction for instruction in program.instructions
+    }
+
+    assert by_result["dot.result"].result_type == TypeRef(ValueType.F32)
+    assert by_result["cross.result"].result_type == TypeRef(ValueType.VEC3)
+    assert by_result["length.result"].result_type == TypeRef(ValueType.F32)
+    assert by_result["sine.result"].result_type == TypeRef(ValueType.VEC3)
+    assert by_result["clamp.result"].result_type == TypeRef(ValueType.VEC3)
+    assert [operand.value_type for operand in by_result["clamp.result"].operands] == [
+        TypeRef(ValueType.VEC3),
+        TypeRef(ValueType.VEC3),
+        TypeRef(ValueType.VEC3),
+    ]
+
+
+def test_common_vector_math_rejects_scalar_dot_and_non_vec3_cross():
+    scalar_dot = GraphDocument(
+        "particle.expression",
+        nodes=(
+            GraphNodeRecord("a", "common.constant.f32", properties={"value": 1.0}),
+            GraphNodeRecord("b", "common.constant.f32", properties={"value": 2.0}),
+            GraphNodeRecord("dot", "common.vector.dot"),
+        ),
+        links=(
+            GraphLinkRecord("a-dot", "a", "value", "dot", "a"),
+            GraphLinkRecord("b-dot", "b", "value", "dot", "b"),
+        ),
+    )
+    with pytest.raises(ExpressionCompileError, match="requires matching vector inputs"):
+        ExpressionCompiler().compile(scalar_dot, outputs=(("dot", "result"),))
+
+    vec2_cross = GraphDocument(
+        "particle.expression",
+        nodes=(
+            GraphNodeRecord(
+                "a", "common.constant.vec2", properties={"value": [1.0, 0.0]}
+            ),
+            GraphNodeRecord(
+                "b", "common.constant.vec2", properties={"value": [0.0, 1.0]}
+            ),
+            GraphNodeRecord("cross", "common.vector.cross"),
+        ),
+        links=(
+            GraphLinkRecord("a-cross", "a", "value", "cross", "a"),
+            GraphLinkRecord("b-cross", "b", "value", "cross", "b"),
+        ),
+    )
+    with pytest.raises(ExpressionCompileError, match="requires matching vec3 inputs"):
+        ExpressionCompiler().compile(vec2_cross, outputs=(("cross", "result"),))
+
+
 def test_common_expression_compiler_promotes_numeric_inputs_to_largest_shape():
     document = GraphDocument(
         "particle.expression",
@@ -235,6 +322,15 @@ def test_numeric_space_inherits_from_spatial_operand_but_rejects_mixed_spaces():
     assert types.unify_numeric(constant, simulation) == simulation
     with pytest.raises(TypeError, match="cannot mix simulation and world"):
         types.unify_numeric(simulation, world)
+
+
+def test_vec4_and_color_are_assignment_compatible_four_channel_values():
+    types = TypeSystem()
+    vec4 = TypeRef(ValueType.VEC4)
+    color = TypeRef(ValueType.COLOR)
+
+    assert types.can_connect(vec4, color)
+    assert types.can_connect(color, vec4)
 
 
 def test_common_lifecycle_math_preserves_color_type_and_scalar_factor():

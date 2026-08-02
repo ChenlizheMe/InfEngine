@@ -18,7 +18,12 @@ import numpy as np
 
 from Infernux.core.asset_ref import ParticleGraphRef
 from Infernux.debug import Debug
-from Infernux.graph import AssetReference, CoordinateSpace, ValueType
+from Infernux.graph import (
+    AssetReference,
+    CoordinateSpace,
+    ValueType,
+    builtin_mesh_name,
+)
 from Infernux.graph.ramp import Curve, Gradient
 from Infernux.particle import (
     GpuParticleEmitterController,
@@ -43,6 +48,7 @@ from Infernux.lib import Vector3
 from .component import InxComponent
 from .decorators import add_component_menu, disallow_multiple
 from .serialized_field import get_raw_field_value, serialized_field
+from .value_document import is_component_ref_document
 
 
 _RUNTIME_BATCH_IDS = itertools.count(1)
@@ -50,18 +56,7 @@ _RUNTIME_BATCH_ID_LOCK = threading.Lock()
 
 
 def _is_skinned_mesh_source_document(value) -> bool:
-    return (
-        type(value) is dict
-        and value.get("$type") == "component_ref"
-        and set(value) == {
-            "$type",
-            "game_object_id",
-            "component_type",
-        }
-        and type(value.get("game_object_id")) is int
-        and value.get("game_object_id", 0) >= 0
-        and value.get("component_type") == "SkinnedMeshRenderer"
-    )
+    return is_component_ref_document(value, "SkinnedMeshRenderer")
 
 
 def _normalize_mesh_source_value(value, parameter_name: str) -> dict:
@@ -242,6 +237,7 @@ class ParticleSystem(InxComponent):
     _particle_event_types: tuple[dict, ...]
     _artifact_revision: int = 0
     _artifact_source_key: str = ""
+    _graph_simulation_time_ticks: int = 0
     _emitter_to_world_cache: Optional[np.ndarray] = None
     _gpu_transform_buffers: dict[bool, np.ndarray]
     _batch_id: int = 0
@@ -282,6 +278,7 @@ class ParticleSystem(InxComponent):
         self._particle_event_types = ()
         self._artifact_revision = 0
         self._artifact_source_key = ""
+        self._graph_simulation_time_ticks = 0
         self._emitter_to_world_cache = None
         self._gpu_transform_buffers = {}
         self._gpu_diagnostic_requests = set()
@@ -358,18 +355,23 @@ class ParticleSystem(InxComponent):
 
     def start(self):
         if not self._has_runtime():
-            self._compile_asset()
+            self._load_saved_artifact()
 
     def on_enable(self):
         if hasattr(self, "_gpu_controllers") and not self._has_runtime():
-            self._compile_asset()
+            self._load_saved_artifact()
 
     def play(self, emitter: int | str | None = None) -> bool:
+        if not self._has_runtime() and not self._load_saved_artifact(force=True):
+            return False
         if emitter is None:
             self._playing = True
             runtimes = tuple(getattr(self, "_gpu_controllers", ()))
-            for runtime in runtimes:
+            for emitter_index, runtime in zip(
+                getattr(self, "_gpu_emitter_indices", ()), runtimes
+            ):
                 runtime.play()
+                self._set_gpu_emitter_playing(emitter_index, True)
             return bool(runtimes)
         emitter_index = self._resolve_emitter_index(emitter)
         if emitter_index is None:
@@ -377,15 +379,20 @@ class ParticleSystem(InxComponent):
         runtime = self._runtime_at(emitter_index)
         if runtime is None:
             return False
+        self._playing = True
         runtime.play()
+        self._set_gpu_emitter_playing(emitter_index, True)
         return True
 
     def pause(self, emitter: int | str | None = None) -> bool:
         if emitter is None:
             self._playing = False
             runtimes = tuple(getattr(self, "_gpu_controllers", ()))
-            for runtime in runtimes:
+            for emitter_index, runtime in zip(
+                getattr(self, "_gpu_emitter_indices", ()), runtimes
+            ):
                 runtime.pause()
+                self._set_gpu_emitter_playing(emitter_index, False)
             return bool(runtimes)
         emitter_index = self._resolve_emitter_index(emitter)
         if emitter_index is None:
@@ -394,15 +401,21 @@ class ParticleSystem(InxComponent):
         if runtime is None:
             return False
         runtime.pause()
+        self._set_gpu_emitter_playing(emitter_index, False)
         return True
 
     def stop(self, emitter: int | str | None = None) -> bool:
         if emitter is None:
             self._playing = False
+            self._graph_simulation_time_ticks = 0
             self._prewarm_pending_emitters.clear()
             self._pending_seek_seconds.clear()
-            for runtime in getattr(self, "_gpu_controllers", ()):
+            for emitter_index, runtime in zip(
+                getattr(self, "_gpu_emitter_indices", ()),
+                getattr(self, "_gpu_controllers", ()),
+            ):
                 runtime.reset(playing=False)
+                self._set_gpu_emitter_playing(emitter_index, False)
             self._reset_gpu_emitters()
             return bool(self._gpu_controllers)
         emitter_index = self._resolve_emitter_index(emitter)
@@ -412,6 +425,7 @@ class ParticleSystem(InxComponent):
         if runtime is None:
             return False
         runtime.reset(playing=False)
+        self._set_gpu_emitter_playing(emitter_index, False)
         stable_id = self._emitter_stable_id(emitter_index)
         self._prewarm_pending_emitters.discard(stable_id)
         self._pending_seek_seconds.pop(stable_id, None)
@@ -425,7 +439,7 @@ class ParticleSystem(InxComponent):
         """Return the current instance-editable ParticleGraph parameter schema."""
         self._sync_serialized_instance_overrides()
         if getattr(self, "_particle_metadata", None) is None:
-            self._compile_asset()
+            self._load_saved_artifact()
         metadata = getattr(self, "_particle_metadata", None)
         result = []
         for parameter in getattr(metadata, "parameters", ()):
@@ -451,7 +465,7 @@ class ParticleSystem(InxComponent):
         """Return per-component playback controls for every graph emitter."""
         self._sync_serialized_instance_overrides()
         if getattr(self, "_particle_metadata", None) is None:
-            self._compile_asset()
+            self._load_saved_artifact()
         metadata = getattr(self, "_particle_metadata", None)
         result = []
         for index, emitter in enumerate(getattr(metadata, "emitters", ())):
@@ -512,7 +526,7 @@ class ParticleSystem(InxComponent):
         if (
             parameter.value_type.value_type in {ValueType.TEXTURE2D, ValueType.MESH}
             and self._has_runtime()
-            and not self._compile_asset(force=True)
+            and not self._load_saved_artifact(force=True)
         ):
             if previous is marker:
                 self._parameter_overrides.pop(parameter.stable_id, None)
@@ -538,7 +552,7 @@ class ParticleSystem(InxComponent):
         if (
             parameter.value_type.value_type in {ValueType.TEXTURE2D, ValueType.MESH}
             and self._has_runtime()
-            and not self._compile_asset(force=True)
+            and not self._load_saved_artifact(force=True)
         ):
             self._parameter_overrides[parameter.stable_id] = previous
             return False
@@ -699,6 +713,9 @@ class ParticleSystem(InxComponent):
                 "resident": resident,
                 "playing": playing,
                 "simulation_step": int(getattr(runtime, "simulation_step", 0)),
+                "simulation_time_ticks": int(
+                    getattr(runtime, "simulation_time_ticks", 0)
+                ),
                 "simulation_time_seconds": float(
                     getattr(runtime, "simulation_time_ticks", 0)
                 )
@@ -735,6 +752,9 @@ class ParticleSystem(InxComponent):
                 self._editor_preview_controls_allowed()
             ),
             "artifact_revision": int(self._artifact_revision),
+            "graph_simulation_time_ticks": int(
+                getattr(self, "_graph_simulation_time_ticks", 0)
+            ),
             "last_compile_error": str(self._last_compile_error),
             "parameters": self.exposed_parameter_schema(),
             "events": self.runtime_event_schema(),
@@ -965,6 +985,7 @@ class ParticleSystem(InxComponent):
     ) -> bool:
         if emitter is None:
             self._playing = True
+            self._graph_simulation_time_ticks = 0
             restarted = False
             for index, runtime in zip(
                 getattr(self, "_gpu_emitter_indices", ()),
@@ -974,6 +995,7 @@ class ParticleSystem(InxComponent):
                     index, honor_play_on_start=honor_play_on_start
                 )
                 runtime.reset(playing=should_play)
+                self._set_gpu_emitter_playing(index, should_play)
                 self._pending_seek_seconds.pop(
                     self._emitter_stable_id(index), None
                 )
@@ -988,10 +1010,17 @@ class ParticleSystem(InxComponent):
         if runtime is None:
             return False
         runtime.reset(playing=True)
+        self._playing = True
+        self._set_gpu_emitter_playing(emitter_index, True)
         self._pending_seek_seconds.pop(
             self._emitter_stable_id(emitter_index), None
         )
-        self._set_emitter_prewarm_pending(emitter_index, True)
+        # Prewarm is a graph-wide startup transaction. Replaying one emitter
+        # in isolation would let it observe a different parameter/event
+        # history from the other emitters while sharing the same graph clock.
+        self._prewarm_pending_emitters.discard(
+            self._emitter_stable_id(emitter_index)
+        )
         self._reset_gpu_emitters(emitter_index)
         return True
 
@@ -1012,7 +1041,7 @@ class ParticleSystem(InxComponent):
                 f"particle seek requires {required_steps} fixed steps; maximum is "
                 f"{self._MAX_PREROLL_STEPS}"
             )
-        if not self._has_runtime() and not self._compile_asset():
+        if not self._has_runtime() and not self._load_saved_artifact():
             return False
 
         if emitter is None:
@@ -1068,7 +1097,7 @@ class ParticleSystem(InxComponent):
     def update(self, delta_time: float):
         self._sync_serialized_instance_overrides()
         self._apply_pending_runtime_rebuild()
-        if not self._has_runtime() and not self._compile_asset():
+        if not self._has_runtime() and not self._load_saved_artifact():
             return
         self._reload_published_artifact_if_needed()
         scaled_delta_time = float(delta_time) * float(self.simulation_speed)
@@ -1161,14 +1190,10 @@ class ParticleSystem(InxComponent):
         )
 
     def editor_preview_time_seconds(self) -> float:
-        return max(
-            (
-                float(getattr(controller, "simulation_time_ticks", 0))
-                / 1_000_000_000.0
-                for controller in getattr(self, "_gpu_controllers", ())
-            ),
-            default=0.0,
-        )
+        # Preview is a view over the same graph runtime used by Play Mode. Its
+        # timeline must therefore expose the authoritative graph clock rather
+        # than reconstructing time from individual emitter controllers.
+        return int(getattr(self, "_graph_simulation_time_ticks", 0)) / 1_000_000_000.0
 
     def editor_preview_duration_seconds(self) -> float:
         metadata = getattr(self, "_particle_metadata", None)
@@ -1377,18 +1402,21 @@ class ParticleSystem(InxComponent):
             self._remove_native_batch()
             self._clear_runtime_state()
             return
-        # Publication is transactional: a failed compile leaves the previous
-        # valid native graph resident instead of blanking the current frame.
-        self._compile_asset(force=True)
+        # Artifact replacement is transactional: a failed load leaves the
+        # previous valid native graph resident instead of blanking the frame.
+        self._load_saved_artifact(force=True)
 
-    def _compile_asset(self, *, force: bool = False) -> bool:
+    def _load_saved_artifact(self, *, force: bool = False) -> bool:
         if self._try_get_game_object() is None:
             return False
         self._ensure_runtime_state(playing=bool(getattr(self, "_playing", False)))
+        graph_ref = get_raw_field_value(self, "graph")
         now = time.monotonic()
         if not force and now < getattr(self, "_compile_retry_at", 0.0):
-            return False
-        graph_ref = get_raw_field_value(self, "graph")
+            path = self._particle_source_path(graph_ref)
+            guid = getattr(graph_ref, "guid", "")
+            if not path or ParticleArtifactRegistry.get(path, guid=guid) is None:
+                return False
         if graph_ref is not None and (
             isinstance(graph_ref, ParticleGraphAsset)
             or bool(graph_ref)
@@ -1398,13 +1426,13 @@ class ParticleSystem(InxComponent):
                 and graph_ref.resolve() is not None
             )
         ):
-            compiled = self._compile_particle_graph(graph_ref)
-            if compiled:
+            loaded = self._load_particle_graph_artifact(graph_ref)
+            if loaded:
                 self._compile_retry_at = 0.0
                 self._last_compile_error = ""
             elif self._compile_retry_at <= now:
                 self._compile_retry_at = now + 1.0
-            return compiled
+            return loaded
         return False
 
     def _report_compile_failure(self, exc: Exception) -> None:
@@ -1415,11 +1443,11 @@ class ParticleSystem(InxComponent):
             message != getattr(self, "_last_compile_error", "")
             or now - getattr(self, "_last_compile_error_log_at", 0.0) >= 5.0
         ):
-            Debug.log_error(f"[ParticleSystem] ParticleGraph compile failed: {message}")
+            Debug.log_error(f"[ParticleSystem] ParticleGraph AOT load failed: {message}")
             self._last_compile_error = message
             self._last_compile_error_log_at = now
 
-    def _compile_particle_graph(self, graph_ref: ParticleGraphRef) -> bool:
+    def _load_particle_graph_artifact(self, graph_ref: ParticleGraphRef) -> bool:
         try:
             path = self._particle_source_path(graph_ref)
             artifact = None
@@ -1431,23 +1459,19 @@ class ParticleSystem(InxComponent):
                         path, guid=guid
                     )
                 if artifact is None:
-                    artifact = ParticleArtifactRegistry.compile_path(path, guid=guid)
+                    raise RuntimeError(
+                        "ParticleGraph AOT artifact is missing or stale; save the "
+                        "ParticleGraph before Play"
+                    )
                 hir = artifact.hir
                 kernel = ParticleKernelProgram.from_dict(artifact.kernel_ir)
                 revision = artifact.revision
                 source_key = artifact.source_key
             else:
-                asset = (
-                    graph_ref
-                    if isinstance(graph_ref, ParticleGraphAsset)
-                    else graph_ref.resolve()
+                raise RuntimeError(
+                    "ParticleGraph runtime requires a saved AOT artifact; save "
+                    "the ParticleGraph before Play"
                 )
-                if not isinstance(asset, ParticleGraphAsset):
-                    return False
-                hir = ParticleGraphCompiler().compile(asset)
-                kernel = ParticleKernelLowerer().lower(hir)
-                revision = 0
-                source_key = ""
             metadata = decode_particle_runtime_metadata(hir)
             self._reconcile_parameter_overrides(metadata.parameters)
             self._reconcile_emitter_overrides(metadata.emitters)
@@ -1756,6 +1780,8 @@ class ParticleSystem(InxComponent):
         self._gpu_emitter_ids = emitter_ids
         self._gpu_emitter_indices = emitter_indices
         self._particle_event_types = runtime_event_types
+        for emitter_index, controller in zip(emitter_indices, controllers):
+            self._set_gpu_emitter_playing(emitter_index, controller.is_playing)
         live_stable_ids = {str(emitter.stable_id) for emitter in metadata.emitters}
         self._prewarm_pending_emitters.intersection_update(live_stable_ids)
         self._pending_seek_seconds = {
@@ -1838,9 +1864,56 @@ class ParticleSystem(InxComponent):
         except ValueError:
             offscreen_policy = ParticleOffscreenPolicy.ALWAYS_SIMULATE
         transactional_controllers = []
+        rollback_controllers = []
         completed_prewarm = set()
         completed_seek = set()
         instance_seed = self._instance_random_seed()
+        live_stable_ids = {str(emitter.stable_id) for emitter in metadata.emitters}
+        replay_seconds = [
+            float(seconds)
+            for stable_id, seconds in self._pending_seek_seconds.items()
+            if stable_id in live_stable_ids
+        ]
+        graph_running = bool(getattr(self, "_playing", False))
+        executing_any = graph_running and any(
+            controller.is_playing and self._emitter_is_enabled(emitter_index)
+            for emitter_index, controller in zip(
+                self._gpu_emitter_indices, self._gpu_controllers
+            )
+        )
+        graph_ticks = int(getattr(self, "_graph_simulation_time_ticks", 0))
+        startup_prewarm_seconds = max(
+            (
+                float(emitter.settings.start_delay)
+                + float(emitter.settings.duration)
+                for emitter in metadata.emitters
+                if str(emitter.stable_id) in self._prewarm_pending_emitters
+                and bool(emitter.settings.loop)
+            ),
+            default=0.0,
+        )
+        graph_prewarm = bool(
+            graph_running
+            and bool(get_raw_field_value(self, "prewarm"))
+            and graph_ticks == 0
+            and startup_prewarm_seconds > 0.0
+        )
+        if graph_prewarm:
+            replay_seconds.append(startup_prewarm_seconds)
+        replay_end_ticks = max(
+            [graph_ticks]
+            + [
+                int(round(seconds * 1_000_000_000.0))
+                for seconds in replay_seconds
+            ]
+        )
+        next_graph_ticks = replay_end_ticks
+        if executing_any:
+            next_graph_ticks = min(
+                0xFFFFFFFFFFFFFFFF,
+                replay_end_ticks
+                + int(round(float(delta_time) * 1_000_000_000.0)),
+            )
         for controller_slot, (emitter_id, emitter_index, controller) in enumerate(
             zip(
                 self._gpu_emitter_ids,
@@ -1855,13 +1928,9 @@ class ParticleSystem(InxComponent):
             if seek_seconds is not None and not enabled:
                 self._pending_seek_seconds.pop(stable_id, None)
                 seek_seconds = None
-            wants_prewarm = stable_id in self._prewarm_pending_emitters
-            if wants_prewarm and (
-                not bool(get_raw_field_value(self, "prewarm"))
-                or not bool(emitter.settings.loop)
-            ):
-                self._prewarm_pending_emitters.discard(stable_id)
-                wants_prewarm = False
+            wants_prewarm = bool(
+                graph_prewarm and enabled and controller.is_playing
+            )
             preroll_steps = []
             force_render_after_preroll = False
             if seek_seconds is not None:
@@ -1876,6 +1945,7 @@ class ParticleSystem(InxComponent):
                     seek_seconds,
                     emitter_position,
                     operation="seek",
+                    end_time_ticks=replay_end_ticks,
                 )
                 if not was_playing:
                     working_controller.pause()
@@ -1888,10 +1958,10 @@ class ParticleSystem(InxComponent):
                 working_controller = copy.deepcopy(controller)
                 preroll_steps = self._build_gpu_preroll_steps(
                     working_controller,
-                    float(emitter.settings.start_delay)
-                    + float(emitter.settings.duration),
+                    startup_prewarm_seconds,
                     emitter_position,
                     operation="prewarm",
+                    end_time_ticks=replay_end_ticks,
                 )
                 transactional_controllers.append(
                     (controller_slot, working_controller)
@@ -1899,10 +1969,15 @@ class ParticleSystem(InxComponent):
                 completed_prewarm.add(stable_id)
             else:
                 working_controller = controller
+                rollback_controllers.append(
+                    (working_controller, working_controller._checkpoint())
+                )
             schedule = working_controller.tick(
                 delta_time,
                 emitter_position,
-                enabled=enabled,
+                enabled=enabled and graph_running,
+                runtime_managed_playing=executing_any and seek_seconds is None,
+                simulation_time_ticks=next_graph_ticks,
             )
             transforms = self._gpu_transform_buffer(
                 emitter.settings.simulation_space.value == "local"
@@ -1935,10 +2010,18 @@ class ParticleSystem(InxComponent):
                 }
             )
         if frame_items:
-            accepted = bool(
-                native._begin_gpu_particle_batch(self._batch_id, frame_items)
-            )
+            accepted = False
+            try:
+                accepted = bool(
+                    native._begin_gpu_particle_batch(self._batch_id, frame_items)
+                )
+            finally:
+                if not accepted:
+                    for controller, checkpoint in rollback_controllers:
+                        controller._restore(checkpoint)
             if accepted:
+                if executing_any or replay_seconds:
+                    self._graph_simulation_time_ticks = next_graph_ticks
                 for controller_slot, controller in transactional_controllers:
                     self._gpu_controllers[controller_slot] = controller
                 self._prewarm_pending_emitters.difference_update(completed_prewarm)
@@ -1952,6 +2035,7 @@ class ParticleSystem(InxComponent):
         emitter_position,
         *,
         operation: str,
+        end_time_ticks: int,
     ) -> list[dict]:
         total_seconds = float(total_seconds)
         step_seconds = float(self._PREROLL_STEP_SECONDS)
@@ -1963,9 +2047,20 @@ class ParticleSystem(InxComponent):
             )
         result = []
         remaining = total_seconds
+        total_ticks = int(round(total_seconds * 1_000_000_000.0))
+        start_ticks = max(0, int(end_time_ticks) - total_ticks)
+        elapsed_ticks = 0
         for _ in range(step_count):
             delta_time = min(step_seconds, remaining)
-            schedule = controller.tick(delta_time, emitter_position, enabled=True)
+            elapsed_ticks += int(round(delta_time * 1_000_000_000.0))
+            schedule = controller.tick(
+                delta_time,
+                emitter_position,
+                enabled=True,
+                simulation_time_ticks=min(
+                    int(end_time_ticks), start_ticks + elapsed_ticks
+                ),
+            )
             result.append(
                 {
                     "spawn_count": schedule.spawn_count,
@@ -2040,7 +2135,7 @@ class ParticleSystem(InxComponent):
             guid=getattr(graph_ref, "guid", ""),
         )
         if artifact is not None and artifact.revision != self._artifact_revision:
-            self._compile_particle_graph(graph_ref)
+            self._load_particle_graph_artifact(graph_ref)
 
     def _runtime_at(self, emitter_index: int):
         if type(emitter_index) is not int:
@@ -2242,6 +2337,7 @@ class ParticleSystem(InxComponent):
             bool(get_raw_field_value(self, "prewarm"))
             and bool(should_play)
             and bool(emitter.settings.loop)
+            and int(getattr(self, "_graph_simulation_time_ticks", 0)) == 0
         ):
             self._prewarm_pending_emitters.add(stable_id)
         else:
@@ -2335,8 +2431,8 @@ class ParticleSystem(InxComponent):
             self._gpu_controllers = []
             self._gpu_emitter_ids = []
             self._gpu_emitter_indices = []
-        compiled = self._compile_asset(force=had_controllers)
-        return bool(compiled and self._gpu_runtime_resident()), bool(compiled)
+        loaded = self._load_saved_artifact(force=had_controllers)
+        return bool(loaded and self._gpu_runtime_resident()), bool(loaded)
 
     def _emitter_matrix(self) -> np.ndarray:
         flat = self.transform.local_to_world_matrix()
@@ -2521,7 +2617,11 @@ class ParticleSystem(InxComponent):
 
     @classmethod
     def _resolve_mesh_reference(cls, reference, purpose: str):
-        from Infernux.lib import AssetRegistry
+        from Infernux.lib import AssetRegistry, get_builtin_primitive_mesh
+
+        builtin_name = builtin_mesh_name(reference)
+        if builtin_name:
+            return get_builtin_primitive_mesh(builtin_name)
 
         registry = AssetRegistry.instance()
         native = registry.load_mesh_by_guid(reference.guid) if reference.guid else None
@@ -2776,6 +2876,29 @@ class ParticleSystem(InxComponent):
         for emitter_id in selected:
             native._reset_gpu_particle_emitter(emitter_id)
 
+    def _set_gpu_emitter_playing(
+        self, emitter_index: int, playing: bool
+    ) -> bool:
+        native = self._native_engine()
+        if native is None or not hasattr(
+            native, "_set_gpu_particle_emitter_playing"
+        ):
+            return False
+        try:
+            runtime_index = getattr(self, "_gpu_emitter_indices", ()).index(
+                emitter_index
+            )
+        except ValueError:
+            return False
+        emitter_ids = getattr(self, "_gpu_emitter_ids", ())
+        if not 0 <= runtime_index < len(emitter_ids):
+            return False
+        return bool(
+            native._set_gpu_particle_emitter_playing(
+                emitter_ids[runtime_index], bool(playing)
+            )
+        )
+
     def _remove_gpu_emitters(self) -> None:
         native = self._native_engine()
         emitter_ids = list(getattr(self, "_gpu_emitter_ids", ()))
@@ -2800,6 +2923,7 @@ class ParticleSystem(InxComponent):
         self._particle_event_types = ()
         self._artifact_revision = 0
         self._artifact_source_key = ""
+        self._graph_simulation_time_ticks = 0
         self._emitter_to_world_cache = None
         self._gpu_transform_buffers = {}
         self._compile_retry_at = 0.0
@@ -2896,7 +3020,7 @@ class ParticleSystem(InxComponent):
                     for stable_id in resource_ids
                 )
                 if resource_changed:
-                    self._compile_asset(force=True)
+                    self._load_saved_artifact(force=True)
                 else:
                     self._upload_parameter_overrides()
         emitter_raw = str(
@@ -2960,7 +3084,7 @@ class ParticleSystem(InxComponent):
         metadata = getattr(self, "_particle_metadata", None)
         if metadata is None and compile_if_needed:
             self._ensure_runtime_state()
-            self._compile_asset(force=True)
+            self._load_saved_artifact(force=True)
             metadata = getattr(self, "_particle_metadata", None)
         parameters = getattr(metadata, "parameters", ())
         for parameter in parameters:

@@ -282,6 +282,13 @@ class GameViewPanel(EditorPanel):
         self._was_focused = False
         Input.set_game_focused(False)
         self._ui_event_processor.reset()
+        from Infernux.acceptance import RuntimeAcceptance
+
+        if RuntimeAcceptance.is_active():
+            # RuntimeAcceptance owns the Game render path even while automated
+            # scene loads transiently hide or move focus away from this dock.
+            self._set_game_render_active(True)
+            return
         # Disable game rendering when the panel is invisible (e.g. another
         # tab like UI Editor covers this dock).  Without this, C++ keeps
         # submitting draw commands against a stale game render target, which

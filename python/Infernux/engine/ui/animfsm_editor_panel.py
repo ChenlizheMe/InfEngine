@@ -1874,7 +1874,7 @@ class AnimFSMEditorPanel(EditorPanel):
             return
 
         # Create entry node
-        entry = self._graph.add_node("anim_entry", x=-100, y=50)
+        entry = self._graph.add_node("anim_entry", canvas_x=-100, canvas_y=50)
         entry.data["label"] = "Entry"
         self._entry_uid = entry.uid
 
@@ -1886,7 +1886,7 @@ class AnimFSMEditorPanel(EditorPanel):
                 px = 100.0
                 py = y_offset
                 y_offset += 80.0
-            node = self._graph.add_node("anim_state", x=px, y=py)
+            node = self._graph.add_node("anim_state", canvas_x=px, canvas_y=py)
             node.data["label"] = state.name
             node.data["loop"] = state.loop
             node.data["restart_same_clip"] = state.restart_same_clip
@@ -2205,7 +2205,7 @@ class AnimFSMEditorPanel(EditorPanel):
         state.position = [x, y]
         if self._is_timeline_mode():
             state.kind = "timeline"
-        node = self._graph.add_node("anim_state", x=x, y=y)
+        node = self._graph.add_node("anim_state", canvas_x=x, canvas_y=y)
         node.data["label"] = state.name
         node.data["loop"] = state.loop
         node.data["restart_same_clip"] = state.restart_same_clip
@@ -2354,7 +2354,7 @@ class AnimFSMEditorPanel(EditorPanel):
             before = self._undo_snapshot()
             state = self._fsm.add_state()
             state.position = [gx, gy]
-            node = self._graph.add_node("anim_state", x=gx, y=gy)
+            node = self._graph.add_node("anim_state", canvas_x=gx, canvas_y=gy)
             node.data["label"] = state.name
             self._name_to_uid[state.name] = node.uid
             self._uid_to_name[node.uid] = state.name
@@ -2387,7 +2387,7 @@ class AnimFSMEditorPanel(EditorPanel):
             state = self._fsm.add_state(self._unique_state_name("Timeline"))
             state.position = [gx, gy]
             state.kind = "timeline"
-            node = self._graph.add_node("anim_state", x=gx, y=gy)
+            node = self._graph.add_node("anim_state", canvas_x=gx, canvas_y=gy)
             node.data["label"] = state.name
             self._name_to_uid[state.name] = node.uid
             self._uid_to_name[node.uid] = state.name

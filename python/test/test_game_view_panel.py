@@ -26,6 +26,15 @@ class _Engine:
         return 1
 
 
+class _RenderActivationEngine(_Engine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.game_camera_enabled: list[bool] = []
+
+    def set_game_camera_enabled(self, enabled: bool) -> None:
+        self.game_camera_enabled.append(bool(enabled))
+
+
 class _Context:
     def __init__(self, *, window_hovered: bool = True, mouse_clicked: bool = False) -> None:
         self.semantic_items: list[tuple[str, str, bool, str]] = []
@@ -243,3 +252,30 @@ def test_visible_fps_counter_has_stable_semantic_target(monkeypatch):
     assert ctx.semantic_items == [
         ("performance", "FPS: --", False, _GAME_VIEW_FPS_SEMANTIC_ID),
     ]
+
+
+def test_hidden_game_view_keeps_rendering_during_runtime_acceptance(monkeypatch):
+    from Infernux.acceptance import RuntimeAcceptance
+
+    engine = _RenderActivationEngine()
+    panel = GameViewPanel(engine=engine)
+    monkeypatch.setattr(RuntimeAcceptance, "is_active", classmethod(lambda _cls: True))
+
+    panel._on_not_visible(None)
+
+    assert engine.game_camera_enabled == [True]
+    assert panel._game_camera_was_enabled is True
+
+
+def test_hidden_game_view_disables_rendering_without_runtime_acceptance(monkeypatch):
+    from Infernux.acceptance import RuntimeAcceptance
+
+    engine = _RenderActivationEngine()
+    panel = GameViewPanel(engine=engine)
+    panel._game_camera_was_enabled = True
+    monkeypatch.setattr(RuntimeAcceptance, "is_active", classmethod(lambda _cls: False))
+
+    panel._on_not_visible(None)
+
+    assert engine.game_camera_enabled == [False]
+    assert panel._game_camera_was_enabled is False

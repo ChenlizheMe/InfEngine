@@ -19,6 +19,10 @@ def _renderer_state_from_native(native) -> dict[str, Any]:
     if native is None:
         raise RuntimeError("Renderer telemetry requires a running graphical application.")
     frame = dict(getattr(native, "renderer_frame_snapshot", {}) or {})
+    game_graph_executed = bool(
+        frame.get("game_render_graph_current_executed")
+        and int(frame.get("game_render_graph_execution_count", 0) or 0) > 0
+    )
     return {
         "frame": frame,
         "gpu_residency": dict(getattr(native, "gpu_residency_snapshot", {}) or {}),
@@ -26,7 +30,10 @@ def _renderer_state_from_native(native) -> dict[str, Any]:
         "submission_ready": bool(
             frame.get("game_camera_available")
             and frame.get("game_target_ready")
-            and int(frame.get("game_draw_call_count", 0) or 0) > 0
+            and (
+                int(frame.get("game_draw_call_count", 0) or 0) > 0
+                or game_graph_executed
+            )
         ),
     }
 

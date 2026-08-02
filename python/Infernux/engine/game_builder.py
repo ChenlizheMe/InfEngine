@@ -22,7 +22,6 @@ Windows output layout::
 
 from __future__ import annotations
 
-import ast
 import io
 import json
 import hashlib
@@ -127,6 +126,14 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             "ProjectSettings/agent_tools.json",
             "ProjectSettings/mcp_capabilities.json",
         }
+    )
+    _PLAYER_EXCLUDED_PARTICLE_AUTHORING_SUFFIXES = (
+        ".particlegraph",
+        ".particlegraph.meta",
+        ".particle.py",
+        ".particle.py.meta",
+        ".particle.pyc",
+        ".particle.pyc.meta",
     )
     _CONTENT_ARCHIVE_FILENAME = "Content.inxpkg"
     _CONTENT_MANIFEST_FILENAME = "Content.json"
@@ -1325,51 +1332,18 @@ finally:
     @staticmethod
     def _particle_source_stable_id(source_path: str) -> str:
         lower = source_path.lower()
-        if lower.endswith(".particlegraph"):
-            try:
-                with open(source_path, "r", encoding="utf-8") as stream:
-                    stable_id = json.load(stream).get("stable_id", "")
-            except (OSError, AttributeError, json.JSONDecodeError) as exc:
-                raise RuntimeError(
-                    f"ParticleGraph source is not valid current JSON: {source_path}"
-                ) from exc
-        elif lower.endswith(".particle.py"):
-            try:
-                with open(source_path, "r", encoding="utf-8") as stream:
-                    tree = ast.parse(stream.read(), filename=source_path)
-            except (OSError, SyntaxError) as exc:
-                raise RuntimeError(
-                    f"ParticleScript source cannot be parsed: {source_path}"
-                ) from exc
-            stable_id = ""
-            for node in tree.body:
-                if not isinstance(node, ast.ClassDef):
-                    continue
-                if not any(
-                    isinstance(base, ast.Name) and base.id == "ParticleScript"
-                    or isinstance(base, ast.Attribute) and base.attr == "ParticleScript"
-                    for base in node.bases
-                ):
-                    continue
-                for statement in node.body:
-                    if not isinstance(statement, ast.Assign):
-                        continue
-                    if not any(
-                        isinstance(target, ast.Name) and target.id == "stable_id"
-                        for target in statement.targets
-                    ):
-                        continue
-                    if isinstance(statement.value, ast.Constant) and isinstance(
-                        statement.value.value, str
-                    ):
-                        stable_id = statement.value.value
-                        break
-                if stable_id:
-                    break
-        else:
+        if not lower.endswith(".particlegraph"):
             raise RuntimeError(
-                f"Unsupported ParticleGraph source extension: {source_path}"
+                "Player builds only accept saved ParticleGraph sources; "
+                f"ParticleScript is Preview/Future: {source_path}"
             )
+        try:
+            with open(source_path, "r", encoding="utf-8") as stream:
+                stable_id = json.load(stream).get("stable_id", "")
+        except (OSError, AttributeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"ParticleGraph source is not valid current JSON: {source_path}"
+            ) from exc
 
         if type(stable_id) is not str or not stable_id.strip():
             raise RuntimeError(
@@ -1380,6 +1354,19 @@ finally:
                 f"Particle source stable_id is not artifact-safe: {stable_id!r}"
             )
         return stable_id
+
+    @classmethod
+    def _is_particle_authoring_payload(cls, relative: str) -> bool:
+        lower = relative.casefold()
+        if lower.endswith(cls._PLAYER_EXCLUDED_PARTICLE_AUTHORING_SUFFIXES):
+            return True
+        filename = lower.rsplit("/", 1)[-1]
+        return bool(
+            re.fullmatch(
+                r".+\.particle\.[a-z0-9_-]+(?:\.opt-\d+)?\.pyc(?:\.meta)?",
+                filename,
+            )
+        )
 
     def _copy_particle_data_interface_artifacts(self, data_dir: str) -> None:
         """Copy the imported payloads referenced by sampled particle interfaces."""
@@ -1664,7 +1651,7 @@ finally:
         )
 
     def _pack_content_archive(self, final_dir: str) -> None:
-        """Pack authoring files into one validated Player content archive."""
+        """Pack runtime content into one validated Player content archive."""
         data_root = os.path.join(final_dir, "Data")
         if not os.path.isdir(data_root):
             raise RuntimeError("Player Data directory is missing")
@@ -1693,6 +1680,9 @@ finally:
                 if "/" not in relative and relative in retained:
                     continue
                 if relative in self._PLAYER_EXCLUDED_CONTENT_RELATIVE_PATHS:
+                    excluded_files.append(path)
+                    continue
+                if self._is_particle_authoring_payload(relative):
                     excluded_files.append(path)
                     continue
                 suffix = os.path.splitext(filename)[1].lower()

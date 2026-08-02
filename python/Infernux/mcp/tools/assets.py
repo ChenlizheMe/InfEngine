@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import json
-import math
 import shutil
 
 from Infernux.engine.path_utils import relative_path, same_path
@@ -93,41 +92,6 @@ def register_asset_tools(mcp, project_path: str) -> None:
                 project_path, "particlegraph", name, directory, "frag"
             ),
             arguments={"name": name, "directory": directory},
-        )
-
-    @mcp.tool(name="asset_create_sdf_volume")
-    def asset_create_sdf_volume(
-        name: str,
-        directory: str = "Assets",
-        shape: str = "sphere",
-        resolution: int = 33,
-        radius: float = 0.32,
-        half_extents: list[float] | None = None,
-        overwrite: bool = False,
-    ) -> dict:
-        """Create an imported analytic sphere or box signed-distance volume."""
-
-        return main_thread(
-            "asset_create_sdf_volume",
-            lambda: _create_sdf_volume(
-                project_path,
-                name=name,
-                directory=directory,
-                shape=shape,
-                resolution=resolution,
-                radius=radius,
-                half_extents=half_extents,
-                overwrite=overwrite,
-            ),
-            arguments={
-                "name": name,
-                "directory": directory,
-                "shape": shape,
-                "resolution": resolution,
-                "radius": radius,
-                "half_extents": half_extents or [],
-                "overwrite": overwrite,
-            },
         )
 
     @mcp.tool(name="asset_list")
@@ -561,103 +525,6 @@ def register_asset_tools(mcp, project_path: str) -> None:
 
         return main_thread("asset_patch_text", _patch_text)
 
-
-
-def _create_sdf_volume(
-    project_path: str,
-    *,
-    name: str,
-    directory: str,
-    shape: str,
-    resolution: int,
-    radius: float,
-    half_extents: list[float] | None,
-    overwrite: bool,
-) -> dict:
-    target_dir = resolve_project_dir(project_path, directory)
-    base = str(name).strip()
-    if base.lower().endswith(".inxsdf"):
-        base = base[:-7]
-    if not base:
-        raise ValueError("SDF volume name cannot be empty")
-    target = os.path.join(target_dir, base + ".inxsdf")
-    existed = os.path.exists(target)
-    if existed and not overwrite:
-        raise FileExistsError(
-            f"SDF volume already exists: {relative_path(target, project_path)}"
-        )
-
-    dimension = int(resolution)
-    if not 5 <= dimension <= 65:
-        raise ValueError("SDF resolution must be between 5 and 65")
-    shape = str(shape).strip().lower()
-    if shape not in {"sphere", "box"}:
-        raise ValueError("SDF shape must be sphere or box")
-
-    sphere_radius = float(radius)
-    if not math.isfinite(sphere_radius) or not 0.0 < sphere_radius <= 0.5:
-        raise ValueError("SDF sphere radius must be finite and in (0, 0.5]")
-    extents = list(half_extents or (0.3, 0.3, 0.3))
-    if len(extents) != 3:
-        raise ValueError("SDF box half_extents must contain three values")
-    extents = [float(value) for value in extents]
-    if not all(math.isfinite(value) and 0.0 < value <= 0.5 for value in extents):
-        raise ValueError("SDF box half_extents must be finite and in (0, 0.5]")
-
-    distances = []
-    for z in range(dimension):
-        pz = (z + 0.5) / dimension - 0.5
-        for y in range(dimension):
-            py = (y + 0.5) / dimension - 0.5
-            for x in range(dimension):
-                px = (x + 0.5) / dimension - 0.5
-                if shape == "sphere":
-                    distance = math.sqrt(px * px + py * py + pz * pz) - sphere_radius
-                else:
-                    qx = abs(px) - extents[0]
-                    qy = abs(py) - extents[1]
-                    qz = abs(pz) - extents[2]
-                    outside = math.sqrt(
-                        max(qx, 0.0) ** 2
-                        + max(qy, 0.0) ** 2
-                        + max(qz, 0.0) ** 2
-                    )
-                    distance = outside + min(max(qx, qy, qz), 0.0)
-                distances.append(distance)
-
-    identity = [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0,
-    ]
-    document = {
-        "$schema": "infernux.sdf",
-        "dimensions": [dimension, dimension, dimension],
-        "storage_order": "x_fastest",
-        "distance_unit": "field",
-        "bake_basis": identity,
-        "distances": distances,
-    }
-    track_project_path_before_change(project_path, target, "create_sdf_volume")
-    os.makedirs(target_dir, exist_ok=True)
-    from Infernux.core.document_store import write_document_text
-
-    write_document_text(
-        target,
-        json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n",
-    )
-    notify_asset_changed(target, "modified" if existed else "created")
-    return {
-        "kind": "sdf_volume",
-        "shape": shape,
-        "path": relative_path(target, project_path),
-        "dimensions": document["dimensions"],
-        "distance_min": min(distances),
-        "distance_max": max(distances),
-        "created": not existed,
-        "overwritten": existed,
-    }
 
 
 def _create_builtin(project_path: str, kind: str, name: str, directory: str, shader_type: str) -> dict:

@@ -40,6 +40,7 @@ class ParticleParameterRuntimeMetadata:
     value_type: TypeRef
     default: Any
     exposed: bool
+    writable: bool
     slot: int
     category: str
     tooltip: str
@@ -77,6 +78,7 @@ def decode_particle_runtime_metadata(
                 parameter.value_type,
                 parameter.default,
                 parameter.exposed,
+                parameter.writable,
                 parameter.slot,
                 parameter.category,
                 parameter.tooltip,
@@ -170,6 +172,7 @@ def _decode_parameter(value: Any, index: int) -> ParticleParameterRuntimeMetadat
         "type",
         "default",
         "exposed",
+        "writable",
         "slot",
         "category",
         "tooltip",
@@ -186,6 +189,7 @@ def _decode_parameter(value: Any, index: int) -> ParticleParameterRuntimeMetadat
         or type(value["name"]) is not str
         or not value["name"]
         or type(value["exposed"]) is not bool
+        or type(value["writable"]) is not bool
         or type(value["slot"]) is not int
         or value["slot"] < 0
         or type(value["category"]) is not str
@@ -198,6 +202,7 @@ def _decode_parameter(value: Any, index: int) -> ParticleParameterRuntimeMetadat
         value_type,
         value["default"],
         value["exposed"],
+        value["writable"],
         value["slot"],
         value["category"],
         value["tooltip"],

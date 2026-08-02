@@ -6,7 +6,6 @@ import copy
 import json
 import math
 import os
-import time
 import uuid
 from dataclasses import replace
 from typing import Optional
@@ -21,7 +20,15 @@ from Infernux.graph.registry import (
 )
 from Infernux.graph.expression_ir import ExpressionCompiler
 from Infernux.graph.ramp import CURVE_WRAP_MODES, GRADIENT_MODES, MAX_RAMP_KEYS, Curve, Gradient
-from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
+from Infernux.graph.types import (
+    AssetReference,
+    BUILTIN_MESH_NAMES,
+    CoordinateSpace,
+    TypeRef,
+    ValueType,
+    builtin_mesh_name,
+    builtin_mesh_reference,
+)
 from Infernux.lib import InxGUIContext
 from Infernux.particle.asset import (
     EmitterSettings,
@@ -149,6 +156,32 @@ _WORKSPACE_EMITTER_OFF = (0.42, 0.42, 0.45, 1.0)
 _WORKSPACE_EVENT_TYPE = (0.72, 0.45, 0.88, 1.0)
 
 
+def _mesh_reference_display(reference: AssetReference) -> str:
+    builtin = builtin_mesh_name(reference)
+    if builtin:
+        return f"Built-in {builtin}"
+    return os.path.basename(reference.path_hint) if reference.path_hint else t("igui.none")
+
+
+def _builtin_mesh_picker_items(query: str) -> list[tuple[str, dict[str, str]]]:
+    filter_text = str(query).strip().lower()
+    return [
+        (f"Built-in/{name}", builtin_mesh_reference(name).to_dict())
+        for name in BUILTIN_MESH_NAMES
+        if not filter_text or filter_text in name.lower() or filter_text in "built-in"
+    ]
+
+
+def _selected_builtin_mesh(value) -> AssetReference | None:
+    if type(value) is not dict:
+        return None
+    try:
+        reference = AssetReference.from_dict(value)
+        return reference if builtin_mesh_name(reference) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _event_field_default(value_type: ValueType):
     if value_type is ValueType.CURVE:
         return Curve().to_dict()
@@ -215,6 +248,14 @@ def _node_property_is_visible(node, key: str) -> bool:
 )
 class ParticleGraphEditorPanel(EditorPanel):
     window_id = "particle_graph_editor"
+    _HIDDEN_INTERNAL_RESOURCE_NODE_TYPES = frozenset(
+        {
+            "particle.vector_field.sample",
+            "particle.collision.sdf",
+            "particle.sdf.sample_distance",
+            "particle.sdf.sample_gradient",
+        }
+    )
 
     def __init__(self):
         super().__init__(title="Particle Graph Editor", window_id=self.window_id)
@@ -232,7 +273,6 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._focus_parameter_rename = False
         self._workspace_tab_index = 0
         self._drag_snapshot: Optional[dict] = None
-        self._draft_compile_due_at = 0.0
         self._draft_compile_error = ""
         self._event_type_dialog_requested = False
         self._event_type_dialog_open = False
@@ -320,9 +360,19 @@ class ParticleGraphEditorPanel(EditorPanel):
             ],
             "parameters": [value.to_dict() for value in self._asset.parameters],
             "event_types": [value.to_dict() for value in self._asset.event_types],
+            "attribute_entries": (
+                [
+                    {"name": name, "stable_id": stable_id}
+                    for name, stable_id in self._model.attribute_entries()
+                ]
+                if self._model is not None
+                else []
+            ),
             "registered_types": (
                 [
-                    self._authoring_definition_snapshot(definition.type_id)
+                    self._authoring_definition_snapshot(
+                        definition.type_id, canvas_definition=definition
+                    )
                     for definition in (
                         self._model.registered_types()
                         if self._model is not None
@@ -351,9 +401,12 @@ class ParticleGraphEditorPanel(EditorPanel):
         matches = [
             definition
             for definition in definitions
-            if not needle
-            or needle in str(definition.type_id).casefold()
-            or needle in str(definition.label).casefold()
+            if definition.type_id not in self._HIDDEN_INTERNAL_RESOURCE_NODE_TYPES
+            and (
+                not needle
+                or needle in str(definition.type_id).casefold()
+                or needle in str(definition.label).casefold()
+            )
         ]
         start = max(0, int(offset))
         page_size = min(200, max(1, int(limit)))
@@ -365,20 +418,41 @@ class ParticleGraphEditorPanel(EditorPanel):
             "total": len(matches),
             "has_more": end < len(matches),
             "types": [
-                self._authoring_definition_snapshot(definition.type_id)
+                self._authoring_definition_snapshot(
+                    definition.type_id, canvas_definition=definition
+                )
                 for definition in matches[start:end]
             ],
         }
 
-    def _authoring_definition_snapshot(self, type_id: str) -> dict:
+    def _authoring_definition_snapshot(
+        self, type_id: str, *, canvas_definition=None
+    ) -> dict:
         definition = self._definition_for_type(type_id)
         if definition is None:
             raise RuntimeError(
                 f"Particle Graph node type is not registered: {type_id!r}"
             )
+        canvas_fields = {
+            field.id: field
+            for field in getattr(canvas_definition, "inline_fields", ())
+        }
+
+        def property_choices(field):
+            canvas_field = canvas_fields.get(field.id)
+            values = tuple(getattr(canvas_field, "enum_values", ()))
+            if not values:
+                return field.choices
+            labels = tuple(getattr(canvas_field, "enum_labels", ())) or values
+            return tuple(zip(labels, values))
+
         return {
             "type_id": definition.type_id,
-            "display_name": definition.display_name,
+            "display_name": (
+                str(canvas_definition.label)
+                if canvas_definition is not None
+                else definition.display_name
+            ),
             "ports": [
                 {
                     "id": port.id,
@@ -405,7 +479,7 @@ class ParticleGraphEditorPanel(EditorPanel):
                     "default": copy.deepcopy(field.default),
                     "choices": [
                         {"label": label, "value": copy.deepcopy(value)}
-                        for label, value in field.choices
+                        for label, value in property_choices(field)
                     ],
                 }
                 for field in definition.properties
@@ -413,7 +487,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         }
 
     def set_node_asset_reference(
-        self, node_uid: str, property_name: str, file_path: str
+        self, node_uid: str, property_name: str, file_path
     ) -> dict:
         """Edit an asset-valued node input through the live authoring model."""
         if self._model is None:
@@ -464,6 +538,31 @@ class ParticleGraphEditorPanel(EditorPanel):
                 f"Particle Graph node {node_uid!r} has no asset property {key!r}; "
                 f"valid properties: {valid}"
             )
+
+        builtin_reference = _selected_builtin_mesh(file_path) if key == "mesh" else None
+        if builtin_reference is None and key == "mesh":
+            token = str(file_path).strip()
+            if token.startswith("builtin-mesh:"):
+                builtin_reference = builtin_mesh_reference(
+                    token.removeprefix("builtin-mesh:")
+                )
+            elif token in BUILTIN_MESH_NAMES:
+                builtin_reference = builtin_mesh_reference(token)
+        if builtin_reference is not None:
+            reference = builtin_reference.to_dict()
+            if node.data.get(key) == reference:
+                return copy.deepcopy(reference)
+            before = self._snapshot()
+            node.data[key] = copy.deepcopy(reference)
+            self._selected_node_uid = node.uid
+            self._view.selected_nodes = [node.uid]
+            stage = self._model.stage_for_uid(node.uid)
+            if stage:
+                self._select_stage(stage)
+            self._sync_model_to_asset()
+            self._mark_changed()
+            self._record(f"Set Particle Graph {key}", before)
+            return copy.deepcopy(reference)
 
         target = resolved_path(file_path)
         if not os.path.isfile(target):
@@ -520,6 +619,10 @@ class ParticleGraphEditorPanel(EditorPanel):
             raise RuntimeError("Particle Graph editor has no active authoring model")
         stage = str(stage)
         type_id = str(type_id)
+        if type_id in self._HIDDEN_INTERNAL_RESOURCE_NODE_TYPES:
+            raise ValueError(
+                "Vector Field and SDF authoring are not available in this release"
+            )
         valid_stages = set(_STAGES) | {
             f"event.{flow.stable_id}" for flow in self._selected_emitter().event_flows
         }
@@ -555,12 +658,16 @@ class ParticleGraphEditorPanel(EditorPanel):
             raise RuntimeError(f"Particle Graph could not create {type_id!r} in {stage!r}")
         self._selected_node_uid = node.uid
         self._view.selected_nodes = [node.uid]
-        return {
+        result = {
             "uid": str(node.uid),
             "type_id": str(node.type_id),
             "stage": stage,
             "properties": copy.deepcopy(node.data),
         }
+        attribute_id = self._model.attribute_id_for_cache_node(node.uid)
+        if attribute_id:
+            result["attribute_id"] = attribute_id
+        return result
 
     def set_node_property(self, node_uid: str, property_name: str, value) -> dict:
         """Set a typed field currently editable in the node Inspector."""
@@ -672,6 +779,31 @@ class ParticleGraphEditorPanel(EditorPanel):
             "changed": previous != next_value,
         }
 
+    def remove_authoring_node(self, node_uid: str) -> dict:
+        """Delete one user node through the same model and Undo path as the canvas."""
+        if self._model is None:
+            raise RuntimeError("Particle Graph editor has no active authoring model")
+        node = self._model.find_node(str(node_uid))
+        if node is None:
+            raise KeyError(f"Particle Graph node not found: {node_uid!r}")
+        stage = str(self._model.stage_for_uid(node.uid) or "")
+        type_id = str(node.type_id)
+        before = self._snapshot()
+        if not self._model.remove_node(node.uid):
+            raise ValueError(f"Particle Graph node cannot be deleted: {node_uid!r}")
+        if self._selected_node_uid == node.uid:
+            self._selected_node_uid = ""
+            self._view.selected_nodes = []
+        self._sync_model_to_asset()
+        self._mark_changed()
+        self._record("Delete Particle Graph node", before)
+        return {
+            "node_uid": str(node_uid),
+            "type_id": type_id,
+            "stage": stage,
+            "changed": True,
+        }
+
     @staticmethod
     def _data_interface_type_for_node(type_id: str):
         if type_id in {
@@ -700,14 +832,9 @@ class ParticleGraphEditorPanel(EditorPanel):
 
     @staticmethod
     def _new_data_interface(kind: str, name: str):
-        kind = str(kind).strip().lower()
-        display_name = str(name).strip()
-        if kind == SdfVolume.kind:
-            return SdfVolume(name=display_name or "SDF Volume")
-        if kind == VectorField.kind:
-            return VectorField(name=display_name or "Vector Field")
+        del kind, name
         raise ValueError(
-            "Particle Data Interface kind must be sdf_volume or vector_field"
+            "Vector Field and SDF authoring are not available in this release"
         )
 
     def add_authoring_data_interface(
@@ -1146,6 +1273,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         default=None,
         *,
         exposed: bool = True,
+        space: str = CoordinateSpace.NONE.value,
     ) -> dict:
         """Add one graph-level Blackboard parameter through the Undo path."""
         name = str(name).strip()
@@ -1159,11 +1287,12 @@ class ParticleGraphEditorPanel(EditorPanel):
         if default is None:
             default = _event_field_default(kind)
         parameter = ParticleParameter(
-            uuid.uuid4().hex,
-            name,
-            TypeRef(kind),
-            copy.deepcopy(default),
-            bool(exposed),
+            stable_id=uuid.uuid4().hex,
+            name=name,
+            value_type=TypeRef(kind, CoordinateSpace(str(space))),
+            default=copy.deepcopy(default),
+            exposed=bool(exposed),
+            writable=False,
         )
         before = self._snapshot()
         self._asset = replace(
@@ -1251,7 +1380,15 @@ class ParticleGraphEditorPanel(EditorPanel):
         if index < 0:
             raise KeyError(f"Particle parameter not found: {parameter_id!r}")
         current = self._asset.parameters[index]
-        allowed = {"name", "type", "default", "exposed", "category", "tooltip"}
+        allowed = {
+            "name",
+            "type",
+            "default",
+            "exposed",
+            "writable",
+            "category",
+            "tooltip",
+        }
         unknown = set(values) - allowed
         if unknown:
             raise ValueError(f"Unknown Particle parameter fields: {sorted(unknown)}")
@@ -1269,17 +1406,26 @@ class ParticleGraphEditorPanel(EditorPanel):
             if type(encoded_type) is dict
             else TypeRef(ValueType(str(encoded_type)))
         )
+        writable = bool(values.get("writable", current.writable))
+        if value_type.value_type in {
+            ValueType.CURVE,
+            ValueType.GRADIENT,
+            ValueType.TEXTURE2D,
+            ValueType.MESH,
+        }:
+            writable = False
         default = copy.deepcopy(values.get("default", current.default))
         if value_type != current.value_type and "default" not in values:
             default = _event_field_default(value_type.value_type)
         updated = ParticleParameter(
-            current.stable_id,
-            name,
-            value_type,
-            default,
-            values.get("exposed", current.exposed),
-            str(values.get("category", current.category)),
-            str(values.get("tooltip", current.tooltip)),
+            stable_id=current.stable_id,
+            name=name,
+            value_type=value_type,
+            default=default,
+            exposed=values.get("exposed", current.exposed),
+            writable=writable,
+            category=str(values.get("category", current.category)),
+            tooltip=str(values.get("tooltip", current.tooltip)),
         )
         if updated == current:
             return {**current.to_dict(), "changed": False}
@@ -1290,6 +1436,11 @@ class ParticleGraphEditorPanel(EditorPanel):
         if updated.value_type != current.value_type:
             emitters = tuple(
                 self._disconnect_parameter_outputs(emitter, parameter_id)
+                for emitter in emitters
+            )
+        if current.writable and not updated.writable:
+            emitters = tuple(
+                self._remove_parameter_store_nodes(emitter, parameter_id)
                 for emitter in emitters
             )
         self._asset = replace(
@@ -1348,7 +1499,7 @@ class ParticleGraphEditorPanel(EditorPanel):
             node_ids = {
                 node.uid
                 for node in document.nodes
-                if node.type_id == "particle.parameter"
+                if node.type_id in {"particle.parameter", "particle.parameter.set"}
                 and node.properties.get("parameter") == parameter_id
             }
             if node_ids:
@@ -1357,7 +1508,13 @@ class ParticleGraphEditorPanel(EditorPanel):
                     links=tuple(
                         link
                         for link in document.links
-                        if link.source_node not in node_ids
+                        if not (
+                            link.source_node in node_ids
+                            or (
+                                link.target_node in node_ids
+                                and link.target_pin == "value"
+                            )
+                        )
                     ),
                 )
         return replace(emitter, **updates) if updates else emitter
@@ -1374,7 +1531,7 @@ class ParticleGraphEditorPanel(EditorPanel):
             node_ids = {
                 node.uid
                 for node in document.nodes
-                if node.type_id == "particle.parameter"
+                if node.type_id in {"particle.parameter", "particle.parameter.set"}
                 and node.properties.get("parameter") == parameter_id
             }
             if node_ids:
@@ -1385,6 +1542,36 @@ class ParticleGraphEditorPanel(EditorPanel):
                         link
                         for link in document.links
                         if link.source_node not in node_ids and link.target_node not in node_ids
+                    ),
+                )
+        return replace(emitter, **updates) if updates else emitter
+
+    @staticmethod
+    def _remove_parameter_store_nodes(
+        emitter: ParticleEmitterAsset, parameter_id: str
+    ) -> ParticleEmitterAsset:
+        updates = {}
+        for stage in _STAGES:
+            document = getattr(emitter, stage)
+            if document is None:
+                continue
+            node_ids = {
+                node.uid
+                for node in document.nodes
+                if node.type_id == "particle.parameter.set"
+                and node.properties.get("parameter") == parameter_id
+            }
+            if node_ids:
+                updates[stage] = replace(
+                    document,
+                    nodes=tuple(
+                        node for node in document.nodes if node.uid not in node_ids
+                    ),
+                    links=tuple(
+                        link
+                        for link in document.links
+                        if link.source_node not in node_ids
+                        and link.target_node not in node_ids
                     ),
                 )
         return replace(emitter, **updates) if updates else emitter
@@ -1458,6 +1645,11 @@ class ParticleGraphEditorPanel(EditorPanel):
             raise KeyError(f"Particle emitter not found: {emitter_id!r}")
         decoded = EmitterSettings.from_dict(settings, "$.settings")
         emitter = self._asset.emitters[index]
+        if (
+            decoded.shape.kind is EmitterShapeKind.SDF
+            and emitter.settings.shape.kind is not EmitterShapeKind.SDF
+        ):
+            raise ValueError("SDF authoring is not available in this release")
         if decoded == emitter.settings:
             return {
                 "stable_id": emitter_id,
@@ -2148,22 +2340,7 @@ class ParticleGraphEditorPanel(EditorPanel):
 
     def _mark_changed(self) -> None:
         self._dirty = True
-        if self._file_path:
-            self._draft_compile_due_at = time.monotonic() + 0.18
         self._sync_project_dirty_flag()
-
-    def _publish_live_draft_if_due(self) -> None:
-        if not self._file_path or self._draft_compile_due_at <= 0.0:
-            return
-        if time.monotonic() < self._draft_compile_due_at:
-            return
-        self._draft_compile_due_at = 0.0
-        self._sync_model_to_asset()
-        try:
-            ParticleArtifactRegistry.publish_graph_asset(self._asset, self._file_path)
-            self._draft_compile_error = ""
-        except (RuntimeError, TypeError, ValueError) as exc:
-            self._draft_compile_error = str(exc)
 
     def _on_node_selected(self, node_uid: str) -> None:
         self._selected_node_uid = node_uid
@@ -2207,6 +2384,8 @@ class ParticleGraphEditorPanel(EditorPanel):
             "particle.root.collision_exit",
         }
         for definition in self._model.registered_types():
+            if definition.type_id in self._HIDDEN_INTERNAL_RESOURCE_NODE_TYPES:
+                continue
             if request.get("source_node") and self._view._compatible_pin_for_type(
                 definition, request
             ) is None:
@@ -3124,6 +3303,29 @@ class ParticleGraphEditorPanel(EditorPanel):
             changes["type"] = TypeRef(selected_kind).to_dict()
             changes["default"] = _event_field_default(selected_kind)
 
+        selected_space = (
+            parameter.value_type.space
+            if selected_kind is ValueType.VEC3
+            and parameter.value_type.value_type is ValueType.VEC3
+            else CoordinateSpace.NONE
+        )
+        if selected_kind is ValueType.VEC3:
+            parameter_spaces = (CoordinateSpace.NONE, CoordinateSpace.WORLD)
+            space_index = ctx.combo(
+                f"{t('particle_graph_editor.parameter_space')}##particle_parameter_space",
+                parameter_spaces.index(selected_space),
+                [
+                    t("particle_graph_editor.space_none"),
+                    t("particle_graph_editor.space_world"),
+                ],
+                -1,
+            )
+            edited_space = parameter_spaces[
+                max(0, min(space_index, len(parameter_spaces) - 1))
+            ]
+            if edited_space is not selected_space:
+                changes["type"] = TypeRef(ValueType.VEC3, edited_space).to_dict()
+
         default = changes.get("default", copy.deepcopy(parameter.default))
         kind = selected_kind
         label = t("particle_graph_editor.parameter_default")
@@ -3154,6 +3356,9 @@ class ParticleGraphEditorPanel(EditorPanel):
             def _select_resource(path):
                 from Infernux.core.asset_types import IMAGE_EXTENSIONS
 
+                if is_mesh and (builtin := _selected_builtin_mesh(path)) is not None:
+                    selected_references.append(builtin)
+                    return
                 target = resolved_path(str(path))
                 extensions = mesh_extensions if is_mesh else IMAGE_EXTENSIONS
                 if os.path.splitext(target)[1].lower() not in extensions:
@@ -3176,6 +3381,8 @@ class ParticleGraphEditorPanel(EditorPanel):
 
                 items = []
                 extensions = mesh_extensions if is_mesh else IMAGE_EXTENSIONS
+                if is_mesh:
+                    items.extend(_builtin_mesh_picker_items(query))
                 for extension in sorted(extensions):
                     items.extend(_picker_assets(query, f"*{extension}"))
                 return items
@@ -3189,7 +3396,9 @@ class ParticleGraphEditorPanel(EditorPanel):
             render_object_field(
                 ctx,
                 f"particle_parameter_default_{kind.value}",
-                os.path.basename(reference.path_hint)
+                _mesh_reference_display(reference)
+                if is_mesh
+                else os.path.basename(reference.path_hint)
                 if reference.path_hint
                 else t("igui.none"),
                 "Mesh" if is_mesh else "Texture",
@@ -3261,6 +3470,22 @@ class ParticleGraphEditorPanel(EditorPanel):
         )
         if exposed != parameter.exposed:
             changes["exposed"] = exposed
+        writable_supported = kind not in {
+            ValueType.CURVE,
+            ValueType.GRADIENT,
+            ValueType.TEXTURE2D,
+            ValueType.MESH,
+        }
+        writable = bool(
+            ctx.checkbox(
+                f"{t('particle_graph_editor.parameter_writable')}##particle_parameter_writable",
+                parameter.writable if writable_supported else False,
+            )
+        )
+        if writable_supported and writable != parameter.writable:
+            changes["writable"] = writable
+        elif not writable_supported and parameter.writable:
+            changes["writable"] = False
         tooltip = ctx.text_input(
             f"{t('particle_graph_editor.parameter_tooltip')}##particle_parameter_tooltip",
             parameter.tooltip,
@@ -3535,7 +3760,12 @@ class ParticleGraphEditorPanel(EditorPanel):
         ctx.separator()
         ctx.label(t("particle_graph_editor.emission_shape"))
         shape = settings.shape
-        shape_kinds = list(EmitterShapeKind)
+        shape_kinds = [
+            item
+            for item in EmitterShapeKind
+            if item is not EmitterShapeKind.SDF
+            or shape.kind is EmitterShapeKind.SDF
+        ]
         kind_index = ctx.combo(
             f"{t('particle_graph_editor.shape')}##particle_shape",
             shape_kinds.index(shape.kind),
@@ -3590,6 +3820,9 @@ class ParticleGraphEditorPanel(EditorPanel):
             def _select_mesh(path):
                 from Infernux.core.asset_types import MESH_EXTENSIONS
 
+                if (builtin := _selected_builtin_mesh(path)) is not None:
+                    selected_meshes.append(builtin)
+                    return
                 target = resolved_path(str(path))
                 if os.path.splitext(target)[1].lower() not in MESH_EXTENSIONS:
                     Debug.log_warning(f"Particle emitter shape requires a model asset: {path}")
@@ -3606,6 +3839,7 @@ class ParticleGraphEditorPanel(EditorPanel):
                 from Infernux.core.asset_types import MESH_EXTENSIONS
 
                 items = []
+                items.extend(_builtin_mesh_picker_items(query))
                 for extension in sorted(MESH_EXTENSIONS):
                     items.extend(_picker_assets(query, f"*{extension}"))
                 return items
@@ -3619,7 +3853,7 @@ class ParticleGraphEditorPanel(EditorPanel):
             render_object_field(
                 ctx,
                 "particle_emitter_shape_mesh",
-                os.path.basename(mesh.path_hint) if mesh.path_hint else t("igui.none"),
+                _mesh_reference_display(mesh),
                 "Mesh",
                 accept_drag_type=("MODEL_GUID", "MODEL_FILE", "ASSET_FILE"),
                 on_drop_callback=_select_mesh,
@@ -3726,8 +3960,6 @@ class ParticleGraphEditorPanel(EditorPanel):
             self._update_settings(
                 replace(self._selected_emitter().settings, bursts=tuple(bursts))
             )
-
-        self._render_data_interfaces(ctx)
 
     @staticmethod
     def _render_collision_layer_mask(ctx: InxGUIContext, value: int) -> int:
@@ -3980,10 +4212,6 @@ class ParticleGraphEditorPanel(EditorPanel):
             self._mark_changed()
             self._record("Edit Particle Graph Data Interfaces", before)
 
-        if ctx.button(t("particle_graph_editor.add_sdf_volume")):
-            self.add_authoring_data_interface(
-                self._selected_emitter().stable_id, SdfVolume.kind
-            )
         if ctx.button(t("particle_graph_editor.add_vector_field")):
             self.add_authoring_data_interface(
                 self._selected_emitter().stable_id, VectorField.kind
@@ -4147,11 +4375,20 @@ class ParticleGraphEditorPanel(EditorPanel):
                     new_value = selected_references[-1].to_dict()
             elif value_type in {ValueType.ASSET_REF, ValueType.MESH}:
                 reference = dict(value)
+                mesh_reference = (
+                    AssetReference.from_dict(reference)
+                    if value_type is ValueType.MESH or key == "mesh"
+                    else None
+                )
                 path_hint = str(reference.get("path_hint", "") or "")
-                display = os.path.basename(path_hint) if path_hint else t("igui.none")
                 selected_reference = []
 
                 is_mesh = value_type is ValueType.MESH or key == "mesh"
+                display = (
+                    _mesh_reference_display(mesh_reference)
+                    if is_mesh
+                    else os.path.basename(path_hint) if path_hint else t("igui.none")
+                )
                 asset_kind = "Mesh" if is_mesh else "Material"
                 drag_types = (
                     ("MODEL_GUID", "MODEL_FILE", "ASSET_FILE")
@@ -4160,6 +4397,9 @@ class ParticleGraphEditorPanel(EditorPanel):
                 )
 
                 def _select_asset(path):
+                    if is_mesh and (builtin := _selected_builtin_mesh(path)) is not None:
+                        selected_reference.append(builtin.to_dict())
+                        return
                     normalized = str(path).replace("\\", "/")
                     selected_reference.append(
                         {"guid": _asset_guid_from_path(str(path)), "path_hint": normalized}
@@ -4170,7 +4410,7 @@ class ParticleGraphEditorPanel(EditorPanel):
                         return _picker_assets(query, "*.mat")
                     from Infernux.core.asset_types import MESH_EXTENSIONS
 
-                    items = []
+                    items = _builtin_mesh_picker_items(query)
                     for extension in sorted(MESH_EXTENSIONS):
                         items.extend(_picker_assets(query, f"*{extension}"))
                     return items
@@ -4520,7 +4760,6 @@ class ParticleGraphEditorPanel(EditorPanel):
 
     def on_render_content(self, ctx: InxGUIContext):
         self._refresh_shader_definitions_if_needed()
-        self._publish_live_draft_if_due()
         save_label = t("particle_graph_editor.save")
         if ctx.button(save_label):
             self._do_save()

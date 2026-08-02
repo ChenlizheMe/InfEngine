@@ -329,7 +329,7 @@ def test_particle_preview_republishes_stale_python_runtime(monkeypatch):
         component._gpu_emitter_indices = [0]
         return True
 
-    component._compile_asset = compile_asset
+    component._load_saved_artifact = compile_asset
 
     assert component._ensure_editor_preview_runtime() == (True, True)
     assert calls == [(True, [], [])]
@@ -439,7 +439,7 @@ def test_particle_validate_defers_definition_rebuild_to_update():
     component._runtime_rebuild_pending = False
     calls = []
     component._sync_serialized_instance_overrides = lambda: calls.append("sync")
-    component._compile_asset = lambda *, force=False: calls.append(
+    component._load_saved_artifact = lambda *, force=False: calls.append(
         ("compile", force)
     ) or True
     component._gpu_controllers = [object()]

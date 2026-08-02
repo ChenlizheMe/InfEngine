@@ -1028,6 +1028,9 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                                        "const uint _inx_ObjectLayerMask = 0xffffffffu;");
                 }
                 result << fragmentVaryings << "\n";
+                if (particleSpriteDomain)
+                    result << "\n// Canonical particle output controls\n"
+                           << LoadTemplate("particle_sprite_fragment_controls.glsl") << "\n";
                 if (!particleSpriteDomain &&
                     (target == ShaderCompileTarget::Forward || target == ShaderCompileTarget::ForwardPlus ||
                      target == ShaderCompileTarget::GBuffer)) {

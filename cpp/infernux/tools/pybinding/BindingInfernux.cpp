@@ -2406,6 +2406,15 @@ PYBIND11_MODULE(_Infernux, m)
             py::arg("graph_instance_id"), py::arg("items"),
             "Internal graph-instance GPU particle batch scheduling hook")
         .def(
+            "_set_gpu_particle_emitter_playing",
+            [](Infernux &self, uint64_t emitterId, bool playing) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                return manager && manager->SetEmitterPlaying(emitterId, playing);
+            },
+            py::arg("emitter_id"), py::arg("playing"),
+            "Set one GPU emitter's graph-owned runtime playing state")
+        .def(
             "_reset_gpu_particle_emitter",
             [](Infernux &self, uint64_t emitterId) {
                 auto *renderer = self.GetRenderer();
@@ -2494,6 +2503,27 @@ PYBIND11_MODULE(_Infernux, m)
                     item["collision_max_outward_speed"] = emitter.collisionMaxOutwardSpeed;
                     item["collision_max_tangent_speed"] = emitter.collisionMaxTangentSpeed;
                     item["collision_candidate_overflow_count"] = emitter.collisionCandidateOverflowCount;
+                    item["contact_overflow_count"] = emitter.contactOverflowCount;
+                    item["contact_work_item_overflow_count"] = emitter.contactWorkItemOverflowCount;
+                    item["contact_current_simulation_step"] = emitter.contactCurrentSimulationStep;
+                    item["contact_reset_serial"] = emitter.contactResetSerial;
+                    item["contact_current_record_count"] = emitter.contactCurrentRecordCount;
+                    item["contact_work_item_count"] = emitter.contactWorkItemCount;
+                    item["contact_max_per_particle"] = emitter.contactMaxPerParticle;
+                    item["multi_contact_particle_count"] = emitter.multiContactParticleCount;
+                    item["contact_retained_order_hash"] = emitter.contactRetainedOrderHash;
+                    item["contact_dropped_order_hash"] = emitter.contactDroppedOrderHash;
+                    item["contact_min_particle_index"] = emitter.contactMinParticleIndex;
+                    item["contact_max_particle_index"] = emitter.contactMaxParticleIndex;
+                    item["prepared_spawn_count"] = emitter.preparedSpawnCount;
+                    item["prepared_spawn_base_id"] = emitter.preparedSpawnBaseId;
+                    item["prepared_spawn_generation"] = emitter.preparedSpawnGeneration;
+                    item["spawn_overflow_count"] = emitter.spawnOverflowCount;
+                    item["accepted_spawn_total"] = emitter.acceptedSpawnTotal;
+                    item["queued_burst_count"] = emitter.queuedBurstCount;
+                    item["consuming_burst_count"] = emitter.consumingBurstCount;
+                    item["accepting_burst_requests"] = emitter.acceptingBurstRequests;
+                    item["gpu_emitter_playing"] = emitter.gpuEmitterPlaying;
                     item["event_overflow_counts"] = emitter.eventOverflowCounts;
                     item["event_enqueue_counts"] = emitter.eventEnqueueCounts;
                     item["event_complete_counts"] = emitter.eventCompleteCounts;

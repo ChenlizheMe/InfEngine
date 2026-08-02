@@ -4,6 +4,12 @@ import os
 
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import path_key
+from Infernux.graph.types import (
+    AssetReference,
+    BUILTIN_MESH_NAMES,
+    builtin_mesh_name,
+    builtin_mesh_reference,
+)
 from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
 from .inspector_utils import (
@@ -196,6 +202,14 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
                 from Infernux.components.ref_wrappers import ComponentRef
 
                 skinned_reference = ComponentRef._from_dict(reference)
+            builtin_name = ""
+            if is_mesh and not is_skinned_source:
+                try:
+                    builtin_name = builtin_mesh_name(
+                        AssetReference.from_dict(reference)
+                    )
+                except (TypeError, ValueError):
+                    builtin_name = ""
             extensions = (
                 (".fbx", ".obj", ".gltf", ".glb", ".dae")
                 if is_mesh
@@ -210,6 +224,21 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
                 _parameter_kind=kind,
                 _extensions=extensions,
             ):
+                if _parameter_kind == "mesh" and type(path) is dict:
+                    try:
+                        builtin = AssetReference.from_dict(path)
+                        if builtin_mesh_name(builtin):
+                            _record_python_component_document_edit(
+                                comp,
+                                lambda: comp.set_parameter(
+                                    _stable_id, builtin.to_dict()
+                                ),
+                                f"Set {_parameter_name}",
+                                edit_key=f"parameter:{_stable_id}",
+                            )
+                            return
+                    except (TypeError, ValueError):
+                        pass
                 target = str(path)
                 if os.path.splitext(target)[1].lower() not in _extensions:
                     Debug.log_warning(
@@ -311,6 +340,8 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
                 (
                     skinned_reference.display_name
                     if skinned_reference is not None
+                    else f"Built-in {builtin_name}"
+                    if builtin_name
                     else os.path.basename(path_hint) if path_hint else t("igui.none")
                 ),
                 "Mesh" if is_mesh else "Texture",
@@ -330,11 +361,26 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
                         query, required_component="SkinnedMeshRenderer"
                     )
                 ) if is_mesh else None,
-                picker_asset_items=lambda query, _extensions=extensions: [
-                    item
-                    for extension in _extensions
-                    for item in _picker_assets(query, f"*{extension}")
-                ],
+                picker_asset_items=lambda query, _extensions=extensions: (
+                    [
+                        (
+                            f"Built-in/{name}",
+                            builtin_mesh_reference(name).to_dict(),
+                        )
+                        for name in BUILTIN_MESH_NAMES
+                        if is_mesh
+                        and (
+                            not str(query).strip()
+                            or str(query).strip().lower() in name.lower()
+                            or str(query).strip().lower() in "built-in"
+                        )
+                    ]
+                    + [
+                        item
+                        for extension in _extensions
+                        for item in _picker_assets(query, f"*{extension}")
+                    ]
+                ),
                 on_pick=_pick_resource,
                 on_clear=_clear_resource,
                 ping_path=path_hint or None,

@@ -38,6 +38,8 @@ from Infernux.particle import (
     ParticleEventFlow,
     ParticleEventType,
     ParticleGraphAsset,
+    ParticleGraphCompiler,
+    ParticleKernelLowerer,
     ParticleParameter,
     ParticleRuntimeCompatibility,
     SdfVolume,
@@ -222,18 +224,18 @@ def test_particle_system_throttles_repeated_compile_failures(scene, monkeypatch)
     monkeypatch.setattr(particle_system_module.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(
         component,
-        "_compile_particle_graph",
+        "_load_particle_graph_artifact",
         lambda graph: attempts.append(graph) or False,
     )
     monkeypatch.setattr(Debug, "log_error", staticmethod(errors.append))
 
-    assert component._compile_asset() is False
+    assert component._load_saved_artifact() is False
     assert len(attempts) == 1
     now[0] = 100.5
-    assert component._compile_asset() is False
+    assert component._load_saved_artifact() is False
     assert len(attempts) == 1
     now[0] = 101.0
-    assert component._compile_asset() is False
+    assert component._load_saved_artifact() is False
     assert len(attempts) == 2
 
     component._report_compile_failure(RuntimeError("invalid particle material"))
@@ -250,8 +252,10 @@ class _GpuParticleNative:
         self.frames = []
         self.removed_batches = []
         self.reset_emitters = []
+        self.playing_updates = []
         self.parameter_updates = []
         self.diagnostic_state_samples = []
+        self.accept_batches = True
 
     def _replace_gpu_particle_graph(self, graph_instance_id, programs, removed):
         self.program_batches.append((programs, removed, graph_instance_id))
@@ -259,7 +263,7 @@ class _GpuParticleNative:
 
     def _begin_gpu_particle_batch(self, graph_instance_id, items):
         self.frames.append((graph_instance_id, items))
-        return True
+        return self.accept_batches
 
     def _update_gpu_particle_parameters(self, graph_instance_id, parameter_words):
         self.parameter_updates.append((graph_instance_id, list(parameter_words)))
@@ -267,6 +271,10 @@ class _GpuParticleNative:
 
     def _reset_gpu_particle_emitter(self, emitter_id):
         self.reset_emitters.append(emitter_id)
+        return True
+
+    def _set_gpu_particle_emitter_playing(self, emitter_id, playing):
+        self.playing_updates.append((emitter_id, bool(playing)))
         return True
 
     def _gpu_particle_artifact_revision(self, emitter_id):
@@ -800,7 +808,7 @@ def test_live_texture_parameter_rebuilds_binding_and_rolls_back_on_failure(
     rebuilds = []
     monkeypatch.setattr(
         component,
-        "_compile_asset",
+        "_load_saved_artifact",
         lambda *, force=False: rebuilds.append(force) or False,
     )
 
@@ -882,7 +890,7 @@ def test_live_mesh_parameter_rebuilds_binding_and_rolls_back_on_failure(
     rebuilds = []
     monkeypatch.setattr(
         component,
-        "_compile_asset",
+        "_load_saved_artifact",
         lambda *, force=False: rebuilds.append(force) or False,
     )
 
@@ -892,6 +900,45 @@ def test_live_mesh_parameter_rebuilds_binding_and_rolls_back_on_failure(
     assert rebuilds == [True]
     assert component.get_parameter("Surface Mesh") == default.to_dict()
     assert component._parameter_overrides_json == "{}"
+
+
+def test_live_mesh_parameter_publishes_each_distinct_override_once(
+    scene, monkeypatch
+):
+    first = AssetReference("mesh-a", "Assets/Models/A.obj")
+    second = AssetReference("mesh-b", "Assets/Models/B.obj")
+    parameter = SimpleNamespace(
+        stable_id="surface-mesh",
+        name="Surface Mesh",
+        value_type=TypeRef(ValueType.MESH),
+        default=first.to_dict(),
+        exposed=True,
+        category="",
+        tooltip="",
+    )
+    component = ParticleSystem()
+    scene.create_game_object("LiveMeshPublication").add_py_component(component)
+    component.awake()
+    component._particle_metadata = SimpleNamespace(parameters=(parameter,), emitters=())
+    monkeypatch.setattr(component, "_has_runtime", lambda: True)
+    publications = []
+    monkeypatch.setattr(
+        component,
+        "_load_saved_artifact",
+        lambda *, force=False: publications.append(force) or True,
+    )
+
+    for index in range(40):
+        component.set_parameter("Surface Mesh", second if index % 2 == 0 else first)
+
+    assert publications == [True] * 40
+    assert component.get_parameter("Surface Mesh") == first.to_dict()
+    assert json.loads(component._parameter_overrides_json) == {
+        "surface-mesh": first.to_dict()
+    }
+
+    component.set_parameter("Surface Mesh", first)
+    assert publications == [True] * 40
 
 
 def test_mesh_output_resolves_its_typed_parameter_override(monkeypatch):
@@ -997,10 +1044,22 @@ def test_particle_system_runs_gpu_emitters_by_active_index(
         item["simulation_time_ticks"] == 125_000_000
         for item in native.frames[-1][1]
     )
+    native.accept_batches = False
+    component.update(0.5)
+    assert component._graph_simulation_time_ticks == 125_000_000
+    assert {
+        runtime.simulation_time_ticks for runtime in component._gpu_controllers
+    } == {125_000_000}
+    native.accept_batches = True
+    component.update(0.5)
+    assert component._graph_simulation_time_ticks == 625_000_000
+    assert {
+        runtime.simulation_time_ticks for runtime in component._gpu_controllers
+    } == {625_000_000}
     component.pause()
     component.update(0.5)
     assert all(
-        item["simulation_time_ticks"] == 125_000_000
+        item["simulation_time_ticks"] == 625_000_000
         for item in native.frames[-1][1]
     )
     component.play()
@@ -1018,6 +1077,11 @@ def test_particle_system_runs_gpu_emitters_by_active_index(
     assert component.editor_preview_set_emitter_muted(1, False) is True
     component._editor_preview_active = False
     diagnostics = component.runtime_diagnostics()
+    assert diagnostics["graph_simulation_time_ticks"] == 625_000_000
+    assert {
+        emitter["simulation_time_ticks"]
+        for emitter in diagnostics["emitters"]
+    } == {625_000_000}
     assert diagnostics["play_requested"] is True
     assert diagnostics["resident"] is True
     assert diagnostics["playing"] is True
@@ -1123,14 +1187,20 @@ def test_particle_system_runs_gpu_emitters_by_active_index(
     assert component.pause_emitter(99) is False
     component.update(0.25)
     assert component._gpu_controllers[0].simulation_step == first_step + 1
-    assert component._gpu_controllers[1].simulation_step == second_step
+    # CPU scheduling follows the graph clock even while the graph-owned
+    # playing state gates this emitter on the GPU.
+    assert component._gpu_controllers[1].simulation_step == second_step + 1
+    assert native.playing_updates[-1] == (
+        component._gpu_emitter_ids[1],
+        False,
+    )
 
     assert component.terminate_emitter("Smoke") is True
     assert component.terminate_emitter("gpu-sparks") is True
     assert native.reset_emitters == component._gpu_emitter_ids
     assert component.start_emitter("Sparks") is True
     component.update(0.0)
-    assert component._gpu_controllers[0].simulation_step == 0
+    assert component._gpu_controllers[0].simulation_step == 1
     assert component._gpu_controllers[1].simulation_step == 1
 
     preserved_step = component._gpu_controllers[1].simulation_step
@@ -1727,16 +1797,120 @@ def test_particle_system_prewarm_uses_one_transactional_fixed_step_gpu_sequence(
     assert [step["simulation_step"] for step in looping_steps] == [0, 1, 2]
     assert frame_items[0]["simulation_step"] == 3
     assert component._gpu_controllers[0].simulation_step == 4
-    assert frame_items[1]["preroll_steps"] == []
-    assert component._gpu_controllers[1].simulation_step == 1
+    assert len(frame_items[1]["preroll_steps"]) == 3
+    assert component._gpu_controllers[1].simulation_step == 4
+    assert {
+        item["simulation_time_ticks"] for item in frame_items
+    } == {50_000_000}
+    assert {
+        controller.simulation_time_ticks
+        for controller in component._gpu_controllers
+    } == {50_000_000}
 
-    component.update(0.0)
+    for delta_time in (0.0, 1.0 / 144.0, 1.0 / 59.0, 0.125):
+        component.update(delta_time)
+        assert len(
+            {item["simulation_time_ticks"] for item in native.frames[-1][1]}
+        ) == 1
+        assert len(
+            {
+                controller.simulation_time_ticks
+                for controller in component._gpu_controllers
+            }
+        ) == 1
     assert all(item["preroll_steps"] == [] for item in native.frames[-1][1])
+
+    # Runtime time remains integer-authoritative even after nanosecond ticks
+    # exceed the exact-integer range of an IEEE-754 double.
+    long_running_ticks = (1 << 53) + 17
+    component._graph_simulation_time_ticks = long_running_ticks
+    component.update(1.0 / 144.0)
+    expected_ticks = long_running_ticks + int(round((1.0 / 144.0) * 1_000_000_000.0))
+    assert {
+        item["simulation_time_ticks"] for item in native.frames[-1][1]
+    } == {expected_ticks}
+    assert {
+        controller.simulation_time_ticks
+        for controller in component._gpu_controllers
+    } == {expected_ticks}
 
     assert component.restart("Looping Smoke") is True
     component.update(0.0)
-    assert len(native.frames[-1][1][0]["preroll_steps"]) == 3
-    assert native.frames[-1][1][1]["preroll_steps"] == []
+    assert all(item["preroll_steps"] == [] for item in native.frames[-1][1])
+
+    assert component.restart() is True
+    component.update(0.0)
+    assert all(len(item["preroll_steps"]) == 3 for item in native.frames[-1][1])
+
+
+def test_particle_system_play_consumes_saved_aot_without_source_compilation(
+    scene, monkeypatch, tmp_path
+):
+    source = tmp_path / "SavedAotOnly.particlegraph"
+    ParticleGraphAsset(stable_id="saved-aot-only").save(str(source))
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+
+    def _unexpected_compile(*_args, **_kwargs):
+        raise AssertionError("Play must not compile ParticleGraph source")
+
+    monkeypatch.setattr(ParticleGraphCompiler, "compile", _unexpected_compile)
+    monkeypatch.setattr(ParticleKernelLowerer, "lower", _unexpected_compile)
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    scene.create_game_object("SavedAotOnlyProbe").add_py_component(component)
+
+    component.awake()
+    assert component.play() is True
+    component.update(0.0)
+
+    assert component._gpu_runtime_resident()
+    assert native.program_batches
+
+
+def test_particle_preview_reuses_saved_aot_native_runtime_and_graph_clock(
+    scene, monkeypatch, tmp_path
+):
+    source = tmp_path / "SavedPreviewAotOnly.particlegraph"
+    ParticleGraphAsset(
+        stable_id="saved-preview-aot-only",
+        emitters=(
+            ParticleEmitterAsset(stable_id="first", name="First"),
+            ParticleEmitterAsset(stable_id="second", name="Second"),
+        ),
+    ).save(str(source))
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+
+    def _unexpected_compile(*_args, **_kwargs):
+        raise AssertionError("Preview must not compile ParticleGraph source")
+
+    monkeypatch.setattr(ParticleGraphCompiler, "compile", _unexpected_compile)
+    monkeypatch.setattr(ParticleKernelLowerer, "lower", _unexpected_compile)
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    scene.create_game_object("SavedPreviewAotOnlyProbe").add_py_component(component)
+
+    component.awake()
+    assert component.editor_preview_begin() is True
+    component.editor_preview_update(1.0 / 60.0)
+
+    assert component._gpu_runtime_resident()
+    assert len(native.program_batches[-1][0]) == 2
+    assert len({item["graph_instance_id"] for item in native.program_batches[-1][0]}) == 1
+    assert {
+        controller.simulation_time_ticks
+        for controller in component._gpu_controllers
+    } == {component._graph_simulation_time_ticks}
+
+    # The overlay remains a view of the graph clock even if stale diagnostic
+    # controller data is observed while a native publication is in flight.
+    component._graph_simulation_time_ticks = (1 << 53) + 19
+    component._gpu_controllers[0]._simulation_time_ticks = 1
+    component._gpu_controllers[1]._simulation_time_ticks = 2
+    assert component.editor_preview_time_seconds() == pytest.approx(
+        ((1 << 53) + 19) / 1_000_000_000.0
+    )
 
 
 def test_particle_system_seek_replays_from_zero_and_preserves_pause_state(

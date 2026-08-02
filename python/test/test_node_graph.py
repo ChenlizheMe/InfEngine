@@ -68,6 +68,22 @@ def test_catalog_partitions_types_by_graph_kind():
     assert catalog.create_graph("shader").get_type("constant") is None
 
 
+def test_node_canvas_coordinates_do_not_reserve_x_or_y_data_properties():
+    graph = NodeGraph()
+    node = graph.add_node(
+        "vector",
+        40.0,
+        80.0,
+        uid="vector",
+        x=1.0,
+        y=2.0,
+        z=3.0,
+    )
+
+    assert (node.pos_x, node.pos_y) == (40.0, 80.0)
+    assert node.data == {"x": 1.0, "y": 2.0, "z": 3.0}
+
+
 def test_link_validation_enforces_direction_category_and_type():
     graph = NodeGraph()
     for typedef in (

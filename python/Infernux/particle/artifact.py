@@ -186,52 +186,6 @@ class ParticleArtifactRegistry:
             cls._revision = max(cls._revision, artifact.revision)
         return artifact
 
-    @staticmethod
-    def validate_graph_asset(asset: ParticleGraphAsset) -> None:
-        """Run the complete portable AOT pipeline without publishing or writing files."""
-        if not isinstance(asset, ParticleGraphAsset):
-            raise ParticleArtifactError("particle draft must be a ParticleGraphAsset")
-        try:
-            ParticleArtifactRegistry._compile_graph_asset(asset, "")
-        except (TypeError, ValueError) as exc:
-            raise ParticleArtifactError(f"particle draft compile failed: {exc}") from exc
-
-    @classmethod
-    def publish_graph_asset(
-        cls,
-        asset: ParticleGraphAsset,
-        path: str,
-        *,
-        guid: str = "",
-    ) -> ParticleArtifact:
-        """Compile and publish an in-memory editor draft without writing it to disk."""
-        if not isinstance(asset, ParticleGraphAsset):
-            raise ParticleArtifactError("particle draft must be a ParticleGraphAsset")
-        source_path = resolved_path(path)
-        source_hash = cls._graph_source_hash(asset)
-        path_identity = cls._source_key(source_path)
-        key = cls._source_key(source_path, guid)
-        ticket = cls._begin_request(path_identity)
-        with cls._lock:
-            existing = cls._current_unlocked(source_path, guid)
-            if existing is not None and existing.source_hash == source_hash:
-                cls._register_unlocked(existing, key, path_identity)
-                return existing
-
-        try:
-            compiled = cls._compile_graph_asset(asset, source_path)
-        except (TypeError, ValueError) as exc:
-            raise ParticleArtifactError(f"particle draft compile failed: {exc}") from exc
-
-        return cls._publish_compiled(
-            compiled,
-            source_path=source_path,
-            key=key,
-            path_identity=path_identity,
-            ticket=ticket,
-            artifact_path="",
-        )
-
     @classmethod
     def save_graph_asset(
         cls,
@@ -242,7 +196,7 @@ class ParticleArtifactRegistry:
     ) -> ParticleArtifact:
         """Compile, atomically save, and publish one exact graph snapshot."""
         if not isinstance(asset, ParticleGraphAsset):
-            raise ParticleArtifactError("particle draft must be a ParticleGraphAsset")
+            raise ParticleArtifactError("particle graph must be a ParticleGraphAsset")
         source_path = resolved_path(path)
         if not source_path:
             raise ParticleArtifactError("particle graph save path cannot be empty")
@@ -260,7 +214,7 @@ class ParticleArtifactRegistry:
                 compiled = cls._compile_graph_asset(asset, source_path)
             except (TypeError, ValueError) as exc:
                 raise ParticleArtifactError(
-                    f"particle draft compile failed: {exc}"
+                    f"particle graph AOT compile failed: {exc}"
                 ) from exc
 
         artifact_path = cls._artifact_path(asset.stable_id)
@@ -476,10 +430,85 @@ class ParticleArtifactRegistry:
                     )
                     + "\n",
                 )
+            if compiled.source_kind == "graph":
+                cls._publish_runtime_index_entry(
+                    source_path,
+                    stable_id=compiled.stable_id,
+                )
 
             cls._revision = max(cls._revision, revision)
             cls._register_unlocked(artifact, key, path_identity)
             return artifact
+
+    @staticmethod
+    def _publish_runtime_index_entry(source_path: str, *, stable_id: str) -> None:
+        from Infernux.core.document_store import write_document_text
+        from Infernux.engine.project_context import get_project_root
+
+        project_root = get_project_root()
+        if not project_root:
+            return
+        try:
+            path_hint = portable_path(
+                relative_path(source_path, project_root, resolve=False)
+            )
+        except ValueError:
+            return
+
+        guid = ""
+        try:
+            meta = json.loads(Path(source_path + ".meta").read_text(encoding="utf-8"))
+            value = meta["metadata"]["guid"]["value"]
+            if type(value) is str:
+                guid = value.strip()
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            pass
+
+        artifact_root = os.path.join(
+            project_root, "Library", "Artifacts", "Particle"
+        )
+        index_path = os.path.join(artifact_root, PARTICLE_RUNTIME_INDEX_FILENAME)
+        entries: list[dict[str, str]] = []
+        try:
+            current = json.loads(Path(index_path).read_text(encoding="utf-8"))
+            if (
+                type(current) is dict
+                and current.get("$schema") == PARTICLE_RUNTIME_INDEX_SCHEMA
+                and type(current.get("entries")) is list
+            ):
+                entries = [
+                    entry
+                    for entry in current["entries"]
+                    if type(entry) is dict
+                    and set(entry) == {"guid", "path_hint", "stable_id"}
+                    and all(type(entry.get(key)) is str for key in entry)
+                ]
+        except (OSError, json.JSONDecodeError):
+            pass
+
+        path_identity = portable_path(path_hint).casefold()
+        entries = [
+            entry
+            for entry in entries
+            if portable_path(entry["path_hint"]).casefold() != path_identity
+            and entry["stable_id"] != stable_id
+            and (not guid or entry["guid"] != guid)
+        ]
+        entries.append(
+            {"guid": guid, "path_hint": path_hint, "stable_id": stable_id}
+        )
+        entries.sort(key=lambda entry: portable_path(entry["path_hint"]).casefold())
+        os.makedirs(artifact_root, exist_ok=True)
+        write_document_text(
+            index_path,
+            json.dumps(
+                {"$schema": PARTICLE_RUNTIME_INDEX_SCHEMA, "entries": entries},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+        )
 
     @classmethod
     def _begin_request(cls, path_identity: str) -> int:
@@ -731,6 +760,7 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                 "type": parameter.value_type.to_dict(),
                 "default": parameter.default,
                 "exposed": parameter.exposed,
+                "writable": parameter.writable,
                 "slot": parameter.slot,
                 "category": parameter.category,
                 "tooltip": parameter.tooltip,

@@ -15,6 +15,7 @@ class RuntimeAcceptanceTest:
 class RuntimeAcceptanceManifest:
     name: str
     path: str
+    cycles: int
     tests: tuple[RuntimeAcceptanceTest, ...]
     @staticmethod
     def load(path: str, *, project_root: str = ...) -> RuntimeAcceptanceManifest: ...

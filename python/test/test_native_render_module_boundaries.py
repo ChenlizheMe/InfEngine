@@ -596,6 +596,53 @@ def test_msaa_retirement_helpers_defer_destruction_without_idle_waits() -> None:
     assert "WaitIdle" in cleanup_outline
 
 
+def test_outline_fallback_material_descriptor_uses_its_actual_buffer_range() -> None:
+    outline_source = (RENDERER / "OutlineRenderer.cpp").read_text(encoding="utf-8")
+
+    assert "vertMatBufInfo.range = VK_WHOLE_SIZE;" in outline_source
+    assert "vertMatBufInfo.range = sizeof(UniformBufferObject);" not in outline_source
+
+
+def test_particle_contact_diagnostics_are_explicit_bounded_readbacks() -> None:
+    manager = (
+        RENDERER / "particle" / "ParticleGpuSystemManager.cpp"
+    ).read_text(encoding="utf-8")
+    binding = (
+        ROOT / "cpp" / "infernux" / "tools" / "pybinding" / "BindingInfernux.cpp"
+    ).read_text(encoding="utf-8")
+    contact_runtime = (
+        RENDERER / "particle" / "ParticleGpuContactRuntime.h"
+    ).read_text(encoding="utf-8")
+
+    record_diagnostics = _function_body(
+        manager, "void RecordDiagnostics(VkCommandBuffer commandBuffer)"
+    )
+    assert "if (pendingDiagnostics.empty()" in record_diagnostics
+    assert "capture.contactCounterBytes = sizeof(GpuParticleContactCounters);" in record_diagnostics
+    assert "ContactResources().counters" in record_diagnostics
+    assert "std::min(contactCounters.currentRecordCount, capture.contactRecordCapacity)" in record_diagnostics
+    assert "std::min(contactCounters.workItemCount, capture.contactWorkItemCapacity)" in record_diagnostics
+    assert 'item["contact_current_record_count"]' in binding
+    assert 'item["contact_work_item_count"]' in binding
+    assert 'item["contact_overflow_count"]' in binding
+    assert 'item["contact_max_per_particle"]' in binding
+    assert 'item["multi_contact_particle_count"]' in binding
+    assert 'item["contact_retained_order_hash"]' in binding
+    assert 'item["contact_dropped_order_hash"]' in binding
+    assert 'item["contact_min_particle_index"]' in binding
+    assert 'item["contact_max_particle_index"]' in binding
+    assert 'item["prepared_spawn_count"]' in binding
+    assert 'item["prepared_spawn_base_id"]' in binding
+    assert 'item["prepared_spawn_generation"]' in binding
+    assert 'item["spawn_overflow_count"]' in binding
+    assert 'item["accepted_spawn_total"]' in binding
+    assert 'item["queued_burst_count"]' in binding
+    assert 'item["consuming_burst_count"]' in binding
+    assert 'item["accepting_burst_requests"]' in binding
+    assert 'item["gpu_emitter_playing"]' in binding
+    assert "static_assert(sizeof(GpuParticleContactCounters) == 48);" in contact_runtime
+
+
 def test_msaa_public_contract_is_exactly_1_2_4_8() -> None:
     policy = (RENDERER / "MsaaPolicy.h").read_text(encoding="utf-8")
     pipeline = (

@@ -132,7 +132,6 @@ struct GpuEmitterDesc
     uint32_t stateStride = 0;
     uint32_t eventTypeCount = 0;
     bool collisionEnabled = false;
-    std::vector<uint32_t> parameterWords;
     std::array<ShaderBytecode, static_cast<size_t>(GpuKernelStage::Count)> kernels{};
     std::vector<GpuMeshInterfaceDesc> meshInterfaces;
     GpuVectorFieldLayoutDesc vectorFields;
@@ -205,7 +204,6 @@ class ParticleGpuRuntime
     /// Refresh scene-owned skinned Mesh parameters without rebuilding the
     /// particle graph or re-uploading immutable geometry.
     [[nodiscard]] bool UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMeshFrameData> &sources);
-    [[nodiscard]] bool UpdateParameters(const std::vector<uint32_t> &parameterWords);
 
     void RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
                          rhi::BindGroupHandle graphSpawnGroup);
@@ -286,10 +284,6 @@ class ParticleGpuRuntime
     [[nodiscard]] rhi::BufferHandle RenderIndexBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle TransformBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle SimulationControlBuffer() const noexcept;
-    [[nodiscard]] rhi::BufferHandle ParameterBuffer() const noexcept
-    {
-        return m_parameterBuffer;
-    }
     [[nodiscard]] rhi::BindingLayoutHandle GraphSpawnLayout() const noexcept
     {
         return m_graphSpawnLayout;
@@ -332,8 +326,6 @@ class ParticleGpuRuntime
     rhi::BindGroupHandle m_group;
     rhi::BindingLayoutHandle m_collisionSceneLayout;
     rhi::BindGroupHandle m_collisionSceneGroup;
-    rhi::BufferHandle m_parameterBuffer;
-    uint32_t m_parameterWordCount = 0;
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};
 };
 

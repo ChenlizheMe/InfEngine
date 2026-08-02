@@ -980,6 +980,14 @@ void main() { }
     assert(ribbonVertex.size() >= 5 * sizeof(uint32_t));
     assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("visible_segments") !=
            std::string_view::npos);
+    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find(
+               "out_particle_local_uv = segment_local_uv") != std::string_view::npos);
+    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("view.alignment_reference.z") !=
+           std::string_view::npos);
+    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("source_instance_count") !=
+           std::string_view::npos);
+    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("ribbon_join_offset") !=
+           std::string_view::npos);
     assert(ribbonPicking.size() >= 5 * sizeof(uint32_t));
     assert(ribbonMotionVertex.size() >= 5 * sizeof(uint32_t));
     assert(ribbonMotionFragment.size() >= 5 * sizeof(uint32_t));

@@ -240,6 +240,33 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
             {"particle_hir": "emitter.burst"},
         )
     )
+    registry.register(
+        NodeDef(
+            "particle.emitter.playing",
+            "Set Emitter Playing",
+            (
+                _exec("in", PortDirection.INPUT),
+                PortDef(
+                    "playing",
+                    PortDirection.INPUT,
+                    value_type=TypeRef(ValueType.BOOL),
+                    required=False,
+                    default=True,
+                    display_name="Playing",
+                ),
+                _exec("out", PortDirection.OUTPUT),
+            ),
+            (
+                PropertyDef(
+                    "emitter",
+                    TypeRef(ValueType.STRING),
+                    asset.emitters[0].stable_id,
+                    emitter_choices,
+                ),
+            ),
+            {"particle_hir": "emitter.set_playing"},
+        )
+    )
 
     event_choices = (("None", ""),) + tuple(
         (event_type.name, event_type.stable_id) for event_type in asset.event_types
@@ -696,6 +723,7 @@ def _mesh_sample() -> NodeDef:
                 "surface",
                 (("Vertex", "vertex"), ("Edge", "edge"), ("Surface", "surface")),
             ),
+            PropertyDef("seed", TypeRef(ValueType.U32), 0),
         ),
         {"expression": "sample_mesh"},
     )
@@ -807,6 +835,28 @@ def _get_parameter() -> NodeDef:
         ),
         (PropertyDef("parameter", TypeRef(ValueType.STRING), ""),),
         {"expression": "load_parameter"},
+    )
+
+
+def _set_parameter() -> NodeDef:
+    return NodeDef(
+        "particle.parameter.set",
+        "Set Parameter",
+        (
+            _exec("in", PortDirection.INPUT),
+            PortDef(
+                "value",
+                PortDirection.INPUT,
+                type_variable="ParameterType",
+                type_property="parameter",
+                required=False,
+                default=0.0,
+                display_name="Value",
+            ),
+            _exec("out", PortDirection.OUTPUT),
+        ),
+        (PropertyDef("parameter", TypeRef(ValueType.STRING), ""),),
+        {"particle_hir": "parameter.store"},
     )
 
 
@@ -1175,6 +1225,7 @@ PARTICLE_NODE_DEFINITIONS = (
     ),
     _get_attribute(),
     _get_parameter(),
+    _set_parameter(),
 )
 
 for _definition in PARTICLE_NODE_DEFINITIONS:

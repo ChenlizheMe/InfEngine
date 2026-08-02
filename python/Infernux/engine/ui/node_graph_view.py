@@ -481,99 +481,107 @@ class NodeGraphView:
             ctx.end_child()
             return
 
-        # Inline node widgets are placed by absolute cursor position, which
-        # inflates the child's content extent. Pin the scroll offset so their
-        # child-space coordinates stay aligned with the draw-list node chrome.
-        ctx.set_scroll_x(0.0)
-        ctx.set_scroll_y(0.0)
+        clip_rect_pushed = False
+        try:
+            # Inline node widgets are placed by absolute cursor position, which
+            # inflates the child's content extent. Pin the scroll offset so their
+            # child-space coordinates stay aligned with the draw-list node chrome.
+            ctx.set_scroll_x(0.0)
+            ctx.set_scroll_y(0.0)
 
         # Window-level hover, unlike the background item's hover, still reports
         # true while the cursor sits over an inline node widget — the wheel has
         # to keep zooming there. It goes false while a widget is being edited.
-        self._canvas_window_hovered = bool(ctx.is_window_hovered())
+            self._canvas_window_hovered = bool(ctx.is_window_hovered())
 
-        self._origin_x = ctx.get_window_pos_x()
-        self._origin_y = ctx.get_window_pos_y()
-        self._semantic_capture_active = bool(getattr(ctx, "semantic_capture_enabled", True))
+            self._origin_x = ctx.get_window_pos_x()
+            self._origin_y = ctx.get_window_pos_y()
+            self._semantic_capture_active = bool(getattr(ctx, "semantic_capture_enabled", True))
 
         # Canvas interaction is handled by the explicit hit tests below. A
         # full-window InvisibleButton would acquire ImGui's ActiveID before
         # inline fields are submitted and make those real widgets impossible
         # to focus. Keep only a layout reservation and a semantic rectangle.
-        canvas_hovered = self._submit_canvas_background_region(ctx, canvas_w, canvas_h)
+            canvas_hovered = self._submit_canvas_background_region(ctx, canvas_w, canvas_h)
 
         # Clipping
-        clip_x0 = self._origin_x
-        clip_y0 = self._origin_y
-        clip_x1 = self._origin_x + canvas_w
-        clip_y1 = self._origin_y + canvas_h
-        ctx.push_draw_list_clip_rect(clip_x0, clip_y0, clip_x1, clip_y1)
+            clip_x0 = self._origin_x
+            clip_y0 = self._origin_y
+            clip_x1 = self._origin_x + canvas_w
+            clip_y1 = self._origin_y + canvas_h
+            ctx.push_draw_list_clip_rect(clip_x0, clip_y0, clip_x1, clip_y1)
+            clip_rect_pushed = True
 
         # Background
-        ctx.draw_filled_rect(clip_x0, clip_y0, clip_x1, clip_y1, *_BG_COLOR)
+            ctx.draw_filled_rect(clip_x0, clip_y0, clip_x1, clip_y1, *_BG_COLOR)
 
         # Grid
-        self._draw_grid(ctx, clip_x0, clip_y0, clip_x1, clip_y1)
+            self._draw_grid(ctx, clip_x0, clip_y0, clip_x1, clip_y1)
 
         # Compute node layouts
-        self._compute_layouts()
+            self._compute_layouts()
 
         # Detect hovered pin (for highlight ring)
-        mx_h = ctx.get_mouse_pos_x()
-        my_h = ctx.get_mouse_pos_y()
-        if self._dragging_pin:
-            # During drag, highlight the nearest valid target pin
-            self._hovered_pin = self._find_drag_target_pin(mx_h, my_h)
-        else:
-            h_node, h_pin, h_kind = self._hit_test_pin(mx_h, my_h)
-            self._hovered_pin = (h_node, h_pin or "", h_kind)
+            mx_h = ctx.get_mouse_pos_x()
+            my_h = ctx.get_mouse_pos_y()
+            if self._dragging_pin:
+                # During drag, highlight the nearest valid target pin
+                self._hovered_pin = self._find_drag_target_pin(mx_h, my_h)
+            else:
+                h_node, h_pin, h_kind = self._hit_test_pin(mx_h, my_h)
+                self._hovered_pin = (h_node, h_pin or "", h_kind)
 
         # Links (behind nodes)
-        self._draw_links(ctx)
+            self._draw_links(ctx)
 
         # Nodes
-        self._draw_nodes(ctx)
+            self._draw_nodes(ctx)
 
         # Real ImGui literal controls are overlaid after the draw-list nodes.
         # They remain part of the shared canvas, so every graph editor gets
         # the same inline-value behavior.
-        self._inline_control_hovered = False
-        self._inline_control_active = False
-        self._draw_inline_fields(ctx)
+            self._inline_control_hovered = False
+            self._inline_control_active = False
+            self._draw_inline_fields(ctx)
 
         # Pending connection line
-        if self._dragging_pin:
-            self._draw_pending_link(ctx)
+            if self._dragging_pin:
+                self._draw_pending_link(ctx)
 
         # Minimap
-        self._draw_minimap(ctx, clip_x0, clip_y0, clip_x1, clip_y1)
+            self._draw_minimap(ctx, clip_x0, clip_y0, clip_x1, clip_y1)
 
         # Zoom indicator
-        if abs(self.zoom - 1.0) > 0.01:
-            ctx.draw_text(
-                clip_x0 + 8, clip_y1 - 22,
-                f"{self.zoom * 100:.0f}%", 0.55, 0.55, 0.58, 0.8, 0.0,
-            )
+            if abs(self.zoom - 1.0) > 0.01:
+                ctx.draw_text(
+                    clip_x0 + 8, clip_y1 - 22,
+                    f"{self.zoom * 100:.0f}%", 0.55, 0.55, 0.58, 0.8, 0.0,
+                )
 
-        ctx.pop_draw_list_clip_rect()
+            ctx.pop_draw_list_clip_rect()
+            clip_rect_pushed = False
 
         # Handle interaction
-        self._handle_interaction(ctx, canvas_hovered, canvas_w, canvas_h)
+            self._handle_interaction(ctx, canvas_hovered, canvas_w, canvas_h)
 
         # Header color popup
-        self._draw_header_color_popup(ctx)
+            self._draw_header_color_popup(ctx)
 
-        if not defer_canvas_drop_target:
-            self.render_canvas_drop_target(ctx)
+            if not defer_canvas_drop_target:
+                self.render_canvas_drop_target(ctx)
 
         # Context menu
-        if ctx.begin_popup_context_window("##node_graph_ctx", 1):
-            self._draw_context_menu(ctx)
-            ctx.end_popup()
+            if ctx.begin_popup_context_window("##node_graph_ctx", 1):
+                try:
+                    self._draw_context_menu(ctx)
+                finally:
+                    ctx.end_popup()
 
-        self._draw_node_create_popup(ctx)
-
-        ctx.end_child()
+            self._draw_node_create_popup(ctx)
+        finally:
+            if clip_rect_pushed:
+                ctx.pop_draw_list_clip_rect()
+            ctx.end_child()
 
     def render_canvas_drop_target(self, ctx: InxGUIContext) -> None:
         """Submit the canvas target after any floating drag sources."""
@@ -982,7 +990,10 @@ class NodeGraphView:
         ctx.push_style_var_vec2(ImGuiStyleVar.ItemInnerSpacing, 3.0 * z, 2.0 * z)
         ctx.push_style_var_float(ImGuiStyleVar.FrameRounding, 2.0 * z)
         try:
-            for layout in self._layouts.values():
+            # Inline controls may publish a property edit immediately. The
+            # document callback can rebuild this layout cache while the frame
+            # is still drawing, so iterate over a stable frame snapshot.
+            for layout in tuple(self._layouts.values()):
                 fields = getattr(layout.typedef, "inline_fields", ())
                 if not fields:
                     continue
@@ -1051,6 +1062,7 @@ class NodeGraphView:
         self, ctx, layout: _NodeLayout, field_def, row_y: float, *, detached: bool = False
     ) -> None:
         value = copy.deepcopy(layout.node.data.get(field_def.id, field_def.default))
+        value_shape_matches = True
         local_x = layout.sx - self._origin_x
         # Half of the taller 18px frame so the widget sits on the pin row.
         local_y = row_y - self._origin_y - 11.0 * self.zoom
@@ -1086,17 +1098,23 @@ class NodeGraphView:
                 new_value = bool(ctx.checkbox("##value", bool(value)))
             elif data_type == "i32":
                 ctx.set_next_item_width(field_w)
+                value_shape_matches = not isinstance(value, (list, tuple))
+                scalar_value = self._inline_scalar_value(value, field_def.default)
                 semantic_input = getattr(ctx, "input_int_semantic", None)
                 if callable(semantic_input):
                     new_value = int(
-                        semantic_input("##value", int(value or 0), semantic_id)
+                        semantic_input("##value", int(scalar_value), semantic_id)
                     )
                     semantic_recorded_by_widget = True
                 else:
-                    new_value = int(ctx.input_int("##value", int(value or 0)))
+                    new_value = int(ctx.input_int("##value", int(scalar_value)))
             elif data_type == "u32":
                 ctx.set_next_item_width(field_w)
-                current = max(0, min(0xFFFFFFFF, int(value or 0)))
+                value_shape_matches = not isinstance(value, (list, tuple))
+                current = max(
+                    0,
+                    min(0xFFFFFFFF, int(self._inline_scalar_value(value, field_def.default))),
+                )
                 semantic_input = getattr(ctx, "input_uint_semantic", None)
                 if callable(semantic_input):
                     new_value = int(semantic_input("##value", current, semantic_id))
@@ -1117,12 +1135,17 @@ class NodeGraphView:
                 new_value = max(0, min(0xFFFFFFFF, new_value))
             elif data_type == "f32":
                 ctx.set_next_item_width(field_w)
+                # Dynamic graph ports can change shape while a live document is
+                # being rebuilt.  Keep a stale frame snapshot from escaping the
+                # canvas render and unbalancing the surrounding ImGui child.
+                value_shape_matches = not isinstance(value, (list, tuple))
+                scalar_value = self._inline_scalar_value(value, field_def.default)
                 semantic_drag = getattr(ctx, "drag_float_semantic", None)
                 if callable(semantic_drag):
                     new_value = float(
                         semantic_drag(
                             "##value",
-                            float(value or 0.0),
+                            float(scalar_value or 0.0),
                             0.05,
                             -1.0e7,
                             1.0e7,
@@ -1133,13 +1156,13 @@ class NodeGraphView:
                 else:
                     new_value = float(
                         ctx.drag_float(
-                            "##value", float(value or 0.0), 0.05, -1.0e7, 1.0e7
+                            "##value", float(scalar_value or 0.0), 0.05, -1.0e7, 1.0e7
                         )
                     )
             elif data_type in {"vec2", "vec3", "vec4", "color"}:
                 size = {"vec2": 2, "vec3": 3, "vec4": 4, "color": 4}[data_type]
-                components = list(value or [0.0] * size)[:size]
-                components += [0.0] * (size - len(components))
+                value_shape_matches = self._inline_vector_shape_matches(value, size)
+                components = self._inline_vector_value(value, field_def.default, size)
                 gap = 3.0 * self.zoom
                 component_w = max(14.0 * self.zoom, (field_w - (size - 1) * gap) / size)
                 edited = []
@@ -1213,9 +1236,46 @@ class NodeGraphView:
                     f"inline.{layout.node.uid}.{field_def.id}",
                     **semantic_values,
                 )
-            self._commit_inline_value(layout.node, field_def.id, new_value)
+            # A live graph rebuild can leave one frame where the new field type
+            # and the old property value disagree. Draw a projected value for
+            # that frame, but never overwrite the document with the projection.
+            if value_shape_matches:
+                self._commit_inline_value(layout.node, field_def.id, new_value)
         finally:
             ctx.pop_id()
+
+    @staticmethod
+    def _inline_scalar_value(value, default=0.0) -> float:
+        candidate = value
+        while isinstance(candidate, (list, tuple)):
+            if not candidate:
+                candidate = default
+                break
+            candidate = candidate[0]
+        try:
+            return float(candidate)
+        except (TypeError, ValueError):
+            try:
+                return float(default)
+            except (TypeError, ValueError):
+                return 0.0
+
+    @classmethod
+    def _inline_vector_value(cls, value, default, size: int) -> list[float]:
+        source = value if isinstance(value, (list, tuple)) else default
+        if not isinstance(source, (list, tuple)):
+            source = [source]
+        components = [cls._inline_scalar_value(item) for item in list(source)[:size]]
+        components.extend([0.0] * (size - len(components)))
+        return components
+
+    @staticmethod
+    def _inline_vector_shape_matches(value, size: int) -> bool:
+        return (
+            isinstance(value, (list, tuple))
+            and len(value) == size
+            and all(not isinstance(item, (list, tuple)) for item in value)
+        )
 
     def _record_pin_semantics(self, ctx, layout: _NodeLayout, node_label: str) -> None:
         if not self._semantic_capture_active:

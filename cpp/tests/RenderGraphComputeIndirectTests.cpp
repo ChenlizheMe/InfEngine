@@ -1290,11 +1290,14 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     infernux::particle::ParticleRenderGraph particleGraph;
     infernux::particle::ParticleGpuGraphSpawnDomain particleSpawnDomain;
-    if (!Require(particleSpawnDomain.Create(rhi, 4200, 1, spawnProgram) &&
-                     particleSpawnDomain.RegisterEmitter(0, particleRuntime) &&
-                     particleSpawnDomain.SetEmitterAcceptingBurstRequests(0, true) &&
-                     particleSpawnDomain.Attach(resources.graph, "Particle/TestGraph"),
-                 "Particle graph spawn domain creation failed"))
+    if (!Require(particleSpawnDomain.Create(rhi, 4200, 1, spawnProgram, {0u, 0u, 0u, 0u}),
+                 "Particle graph spawn domain creation failed") ||
+        !Require(particleSpawnDomain.RegisterEmitter(0, particleRuntime),
+                 "Particle graph spawn-domain emitter registration failed") ||
+        !Require(particleSpawnDomain.SetEmitterAcceptingBurstRequests(0, true),
+                 "Particle graph spawn-domain acceptance update failed") ||
+        !Require(particleSpawnDomain.Attach(resources.graph, "Particle/TestGraph"),
+                 "Particle graph spawn-domain RenderGraph attachment failed"))
         return false;
     infernux::particle::GpuParticleFrameRequest particleFrame;
     particleFrame.frameIndex = 42;

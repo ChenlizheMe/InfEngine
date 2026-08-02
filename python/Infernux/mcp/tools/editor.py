@@ -34,6 +34,17 @@ def register_editor_tools(mcp) -> None:
         recovery=["Inspect the authoring tool snapshot for its panel_id and retry."],
         next_suggested_tools=["editor_get_state"],
     )
+    register_tool_metadata(
+        "editor_focus_panel",
+        summary="Focus an already-open Editor panel without manipulating the operating-system window.",
+        category="editor/windows",
+        tags=["editor", "panel", "focus", "view"],
+        aliases=["focus panel", "select dock tab", "切换编辑器面板"],
+        preconditions=["panel_id must identify an already-open Editor panel."],
+        side_effects=["Changes the active docked panel inside the Editor."],
+        recovery=["Open the panel through the normal Editor Window menu, then retry."],
+        next_suggested_tools=["editor_get_state", "runtime_renderer_state"],
+    )
 
     @mcp.tool(name="editor_get_state")
     def editor_get_state() -> dict:
@@ -59,6 +70,32 @@ def register_editor_tools(mcp) -> None:
             }
 
         return main_thread("editor_get_state", _read)
+
+    @mcp.tool(name="editor_focus_panel")
+    def editor_focus_panel(panel_id: str) -> dict:
+        """Focus an open docked panel without moving or resizing the Editor window."""
+
+        def _focus():
+            from Infernux.engine.ui.closable_panel import ClosablePanel
+            from Infernux.engine.ui.window_manager import WindowManager
+
+            target_id = str(panel_id).strip()
+            if not target_id:
+                raise ValueError("panel_id is required")
+            manager = WindowManager.instance()
+            if manager is None:
+                raise RuntimeError("WindowManager is not available.")
+            manager.focus_window(target_id)
+            ClosablePanel.focus_panel_by_id(target_id)
+            return {
+                "panel_id": target_id,
+                "focus_requested": True,
+                "window_state": manager.get_window_state(target_id).name.lower(),
+            }
+
+        return main_thread(
+            "editor_focus_panel", _focus, arguments={"panel_id": panel_id}
+        )
 
     @mcp.tool(name="editor_save_focused")
     def editor_save_focused() -> dict:

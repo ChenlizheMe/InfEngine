@@ -102,12 +102,14 @@ def _canvas_definition(
     definition: NodeDef,
     *,
     port_type_overrides=None,
+    inline_type_overrides=None,
     property_enum_entries=None,
     display_name_override: str = "",
     hidden_property_ids=(),
     hidden_port_ids=(),
 ) -> NodeTypeDef:
     port_type_overrides = dict(port_type_overrides or {})
+    inline_type_overrides = dict(inline_type_overrides or {})
     property_enum_entries = dict(property_enum_entries or {})
     hidden_property_ids = frozenset(hidden_property_ids or ())
     hidden_port_ids = frozenset(hidden_port_ids or ())
@@ -191,7 +193,11 @@ def _canvas_definition(
             and not port.required
             and port.id not in property_by_id
         ):
-            resolved_type = port_type_overrides.get(port.id) or port.value_type
+            resolved_type = (
+                inline_type_overrides.get(port.id)
+                or port_type_overrides.get(port.id)
+                or port.value_type
+            )
             if (
                 resolved_type is not None
                 and resolved_type.value_type
@@ -321,7 +327,9 @@ class GraphDocumentAuthoringModel(NodeGraph):
     def definition_for_type(self, type_id: str) -> NodeDef | None:
         return self._definitions.get(type_id)
 
-    def add_node(self, type_id: str, x=0.0, y=0.0, uid=None, **data):
+    def add_node(
+        self, type_id: str, canvas_x=0.0, canvas_y=0.0, uid=None, **data
+    ):
         if type_id not in self._creatable_type_ids:
             raise ValueError(f"node type {type_id!r} cannot be created in {self._domain!r}")
         definition = self._definitions.get(type_id)
@@ -329,7 +337,9 @@ class GraphDocumentAuthoringModel(NodeGraph):
             raise ValueError(f"unknown graph node type {type_id!r}")
         properties = _authoring_defaults(definition)
         properties.update(data)
-        return super().add_node(type_id, x, y, uid=uid, **properties)
+        return super().add_node(
+            type_id, canvas_x, canvas_y, uid=uid, **properties
+        )
 
     def remove_node(self, uid: str) -> bool:
         node = self.find_node(uid)
@@ -657,6 +667,15 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         )
 
     def node_creation_state(self, type_id: str) -> tuple[bool, str]:
+        if type_id == "particle.emitter.playing":
+            definition = self._definitions.get(type_id)
+            choices = (
+                tuple(definition.properties[0].choices)
+                if definition is not None and definition.properties
+                else ()
+            )
+            if not any(value != self._emitter_id for _label, value in choices):
+                return False, "Set Emitter Playing requires another emitter"
         if type_id not in _PARTICLE_COLLISION_ROOT_TYPES:
             return True, ""
         if not self._collision_enabled:
@@ -669,11 +688,15 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         return min(self._stages, key=lambda stage: abs(float(y) - self._stage_y[stage]))
 
     def registered_types(self) -> list[NodeTypeDef]:
-        return [
-            definition
-            for type_id in self._creatable_type_ids
-            if (definition := self.get_type(type_id)) is not None
-        ]
+        definitions = []
+        for type_id in self._creatable_type_ids:
+            if type_id == "particle.emitter.playing":
+                definition = self._emitter_playing_type()
+            else:
+                definition = self.get_type(type_id)
+            if definition is not None:
+                definitions.append(definition)
+        return definitions
 
     def definition_for_type(self, type_id: str) -> NodeDef | None:
         return self._definitions.get(type_id)
@@ -682,6 +705,25 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         return (("None", ""),) + tuple(
             (item.name, item.stable_id) for item in self._event_catalog.values()
         )
+
+    def _emitter_playing_type(self) -> NodeTypeDef | None:
+        definition = self._definitions.get("particle.emitter.playing")
+        if definition is None:
+            return None
+        cache_key = f"emitter-playing-catalog:{self._emitter_id}"
+        cached = self._dynamic_type_cache.get(cache_key)
+        if cached is None:
+            entries = tuple(
+                (label, value)
+                for label, value in definition.properties[0].choices
+                if value != self._emitter_id
+            )
+            cached = _canvas_definition(
+                definition,
+                property_enum_entries={"emitter": entries},
+            )
+            self._dynamic_type_cache[cache_key] = cached
+        return cached
 
     def definition_for_node(self, node) -> NodeDef | None:
         if node is None:
@@ -720,6 +762,11 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             if not item.stable_id.startswith("internal.")
         )
 
+    def attribute_id_for_cache_node(self, node_uid: str) -> str:
+        """Return the stable attribute owned by an Attribute Cache node."""
+        attribute = self._cache_attribute_for_node(self.find_node(str(node_uid)))
+        return str(attribute.stable_id) if attribute is not None else ""
+
     def attribute_cache_entries(self) -> tuple[tuple[str, str], ...]:
         self._ensure_attribute_catalog()
         return tuple(
@@ -732,6 +779,13 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         return tuple(
             (item.name, item.stable_id)
             for item in self._parameter_catalog.values()
+        )
+
+    def writable_parameter_entries(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (item.name, item.stable_id)
+            for item in self._parameter_catalog.values()
+            if bool(getattr(item, "writable", False))
         )
 
     def get_node_type(self, node) -> NodeTypeDef | None:
@@ -806,9 +860,60 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 self._dynamic_type_cache[cache_key] = cached
             return with_lifecycle_state(cached)
 
+        if node.type_id == "particle.emitter.playing":
+            definition = self._definitions.get(node.type_id)
+            if definition is None:
+                return with_lifecycle_state(super().get_node_type(node))
+            entries = tuple(
+                (label, value)
+                for label, value in definition.properties[0].choices
+                if value != self._emitter_id
+            )
+            selected_id = str(node.data.get("emitter", ""))
+            selected_name = next(
+                (label for label, value in entries if value == selected_id),
+                "None",
+            )
+            cache_key = f"emitter-playing:{self._emitter_id}:{selected_id}"
+            cached = self._dynamic_type_cache.get(cache_key)
+            if cached is None:
+                cached = _canvas_definition(
+                    definition,
+                    property_enum_entries={"emitter": entries},
+                    display_name_override=f"Set Emitter Playing: {selected_name}",
+                )
+                self._dynamic_type_cache[cache_key] = cached
+            return with_lifecycle_state(cached)
+
         base = super().get_node_type(node)
         if base is None:
             return base
+        if node.type_id in {
+            "common.space.transform_position",
+            "common.space.transform_direction",
+        }:
+            try:
+                target_type = TypeRef(
+                    ValueType.VEC3,
+                    CoordinateSpace(str(node.data.get("target_space", "world"))),
+                )
+            except ValueError:
+                return with_lifecycle_state(base)
+            cache_key = f"space-transform:{node.type_id}:{target_type.space.value}"
+            cached = self._dynamic_type_cache.get(cache_key)
+            if cached is None:
+                definition = self._definitions.get(node.type_id)
+                if definition is None:
+                    return with_lifecycle_state(base)
+                cached = _canvas_definition(
+                    definition,
+                    port_type_overrides={
+                        "input": TypeRef(ValueType.VEC3),
+                        "value": target_type,
+                    },
+                )
+                self._dynamic_type_cache[cache_key] = cached
+            return with_lifecycle_state(cached)
         from Infernux.particle.nodes import ATTRIBUTE_NODE_NAMES
 
         attribute_name = ATTRIBUTE_NODE_NAMES.get(node.type_id)
@@ -840,10 +945,11 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 port_type_overrides=(
                     {"value": selected_cache.value_type}
                     if selected_cache is not None
-                    and (
-                        node.type_id != "particle.attribute.cache"
-                        or cache_value_connected
-                    )
+                    else {}
+                ),
+                inline_type_overrides=(
+                    {"value": selected_cache.value_type}
+                    if selected_cache is not None
                     else {}
                 ),
                 display_name_override=(
@@ -861,9 +967,11 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         if node.type_id not in {
             "particle.attribute.get",
             "particle.parameter",
+            "particle.parameter.set",
         }:
             return with_lifecycle_state(base)
-        is_parameter = node.type_id == "particle.parameter"
+        is_parameter = node.type_id in {"particle.parameter", "particle.parameter.set"}
+        is_parameter_store = node.type_id == "particle.parameter.set"
         property_id = "parameter" if is_parameter else "attribute"
         selected_id = str(
             node.data.get(property_id, "" if is_parameter else "builtin.position")
@@ -876,7 +984,9 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 for link in self.links
             )
         )
-        cache_key = f"{property_id}:{selected_id}:sampled={int(sampled)}"
+        cache_key = (
+            f"{node.type_id}:{property_id}:{selected_id}:sampled={int(sampled)}"
+        )
         cached = self._dynamic_type_cache.get(cache_key)
         if cached is not None:
             return with_lifecycle_state(cached)
@@ -893,13 +1003,23 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             port_type_overrides={"value": selected.value_type},
             property_enum_entries={
                 property_id: (
-                    self.parameter_entries()
+                    self.writable_parameter_entries()
+                    if is_parameter_store
+                    else self.parameter_entries()
                     if is_parameter
                     else self.attribute_entries()
                 )
             },
-            display_name_override=selected.name if is_parameter else "",
-            hidden_property_ids={"parameter"} if is_parameter else (),
+            display_name_override=(
+                f"Set Parameter: {selected.name}"
+                if is_parameter_store
+                else selected.name
+                if is_parameter
+                else ""
+            ),
+            hidden_property_ids=(
+                {"parameter"} if is_parameter and not is_parameter_store else ()
+            ),
             hidden_port_ids={"out"} if not is_parameter and not sampled else (),
         )
         self._dynamic_type_cache[cache_key] = resolved
@@ -926,7 +1046,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         self.links = kept
         return tuple(removed)
 
-    def _stage_for_new_node(self, type_id: str, y: float) -> str:
+    def _stage_for_new_node(self, type_id: str, canvas_y: float) -> str:
         allowed = set(self._allowed_stages.get(type_id, set()))
         collision_stages = {"collision_enter", "collision_stay", "collision_exit"}
         if type_id not in _PARTICLE_COLLISION_ROOT_TYPES:
@@ -950,13 +1070,23 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             return self._pending_creation_stage
         if self._authoring_stage in allowed:
             selected_y = self._stage_y[self._authoring_stage]
-            nearest = min(allowed, key=lambda stage: abs(float(y) - self._stage_y[stage]))
-            if abs(float(y) - self._stage_y[nearest]) + 40.0 < abs(float(y) - selected_y):
+            nearest = min(
+                allowed,
+                key=lambda stage: abs(float(canvas_y) - self._stage_y[stage]),
+            )
+            if abs(float(canvas_y) - self._stage_y[nearest]) + 40.0 < abs(
+                float(canvas_y) - selected_y
+            ):
                 return nearest
             return self._authoring_stage
-        return min(allowed, key=lambda stage: abs(float(y) - self._stage_y[stage]))
+        return min(
+            allowed,
+            key=lambda stage: abs(float(canvas_y) - self._stage_y[stage]),
+        )
 
-    def add_node(self, type_id: str, x=0.0, y=0.0, uid=None, **data):
+    def add_node(
+        self, type_id: str, canvas_x=0.0, canvas_y=0.0, uid=None, **data
+    ):
         if type_id not in self._creatable_type_ids:
             raise ValueError(f"node type {type_id!r} cannot be created in a particle emitter")
         definition = self._definitions.get(type_id)
@@ -965,7 +1095,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         enabled, reason = self.node_creation_state(type_id)
         if not enabled:
             raise ValueError(reason)
-        stage = self._stage_for_new_node(type_id, float(y))
+        stage = self._stage_for_new_node(type_id, float(canvas_y))
         self._pending_creation_stage = ""
         raw_uid = (
             f"root.{stage}"
@@ -993,10 +1123,30 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                     "value": 0.0,
                 }
             )
-        if type_id == "particle.parameter" and self._parameter_catalog:
-            properties["parameter"] = next(iter(self._parameter_catalog))
+        if type_id in {"particle.parameter", "particle.parameter.set"}:
+            catalog = (
+                {
+                    stable_id: parameter
+                    for stable_id, parameter in self._parameter_catalog.items()
+                    if bool(getattr(parameter, "writable", False))
+                }
+                if type_id == "particle.parameter.set"
+                else self._parameter_catalog
+            )
+            if catalog:
+                properties["parameter"] = next(iter(catalog))
+        if type_id == "particle.emitter.playing":
+            choices = tuple(
+                (label, value)
+                for label, value in definition.properties[0].choices
+                if value != self._emitter_id
+            )
+            if choices:
+                properties["emitter"] = choices[0][1]
         properties.update(data)
-        node = super().add_node(type_id, x, y, uid=canvas_uid, **properties)
+        node = super().add_node(
+            type_id, canvas_x, canvas_y, uid=canvas_uid, **properties
+        )
         self._mark_attribute_catalog_dirty()
         self._authoring_stage = stage
         return node
@@ -1027,6 +1177,20 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         self._ensure_attribute_catalog()
         if port is None or port.kind is not PortKind.VALUE:
             return None
+        if node is not None and node.type_id in {
+            "common.space.transform_position",
+            "common.space.transform_direction",
+        }:
+            if port.id == "input":
+                return None
+            if port.id == "value":
+                try:
+                    return TypeRef(
+                        ValueType.VEC3,
+                        CoordinateSpace(str(node.data.get("target_space", "world"))),
+                    )
+                except ValueError:
+                    return None
         if port.value_type is not None:
             return port.value_type
         if port.type_property == "attribute":
@@ -1072,7 +1236,14 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             ignore_link_uid=ignore_link_uid,
         )
         if not basic:
-            return basic
+            inference_target = self.find_node(dst_node)
+            if not (
+                basic.code == "type_mismatch"
+                and inference_target is not None
+                and inference_target.type_id == "particle.attribute.cache"
+                and dst_pin == "value"
+            ):
+                return basic
         source = self.find_node(src_node)
         target = self.find_node(dst_node)
         source_def = self.definition_for_node(source)
@@ -1085,6 +1256,31 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             return LinkValidationResult(False, "kind_mismatch", "Graph port kinds do not match")
         source_type = self._effective_port_type(source, source_port)
         target_type = self._effective_port_type(target, target_port)
+        if (
+            target is not None
+            and target.type_id
+            in {
+                "common.space.transform_position",
+                "common.space.transform_direction",
+            }
+            and dst_pin == "input"
+        ):
+            supported_spaces = {
+                CoordinateSpace.EMITTER_LOCAL,
+                CoordinateSpace.SIMULATION,
+                CoordinateSpace.WORLD,
+            }
+            if (
+                source_type is None
+                or source_type.value_type is not ValueType.VEC3
+                or source_type.space not in supported_spaces
+            ):
+                return LinkValidationResult(
+                    False,
+                    "type_mismatch",
+                    "Space transforms require a spatial Vector3 input",
+                )
+            return LinkValidationResult(True)
         cache_type_inference = (
             target is not None
             and target.type_id == "particle.attribute.cache"

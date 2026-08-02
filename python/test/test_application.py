@@ -50,6 +50,42 @@ def test_renderer_state_has_shared_editor_player_schema():
     }
 
 
+def test_renderer_state_accepts_particle_only_render_graph_submission():
+    class _ParticleOnlyNative:
+        renderer_frame_snapshot = {
+            "frame": 18,
+            "game_camera_available": True,
+            "game_target_ready": True,
+            "game_draw_call_count": 0,
+            "game_render_graph_execution_count": 4,
+            "game_render_graph_current_executed": True,
+        }
+        gpu_residency_snapshot = {}
+        msaa_state = {}
+
+    state = _renderer_state_from_native(_ParticleOnlyNative())
+
+    assert state["submission_ready"] is True
+
+
+def test_renderer_state_rejects_target_before_first_graph_execution():
+    class _IdleNative:
+        renderer_frame_snapshot = {
+            "frame": 1,
+            "game_camera_available": True,
+            "game_target_ready": True,
+            "game_draw_call_count": 0,
+            "game_render_graph_execution_count": 0,
+            "game_render_graph_current_executed": False,
+        }
+        gpu_residency_snapshot = {}
+        msaa_state = {}
+
+    state = _renderer_state_from_native(_IdleNative())
+
+    assert state["submission_ready"] is False
+
+
 def test_editor_quit_is_ignored():
     engine = _Engine()
     Application._bind_engine(engine, "editor")

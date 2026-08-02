@@ -9,13 +9,14 @@ from Infernux.acceptance import RuntimeAcceptance, RuntimeAcceptanceManifest
 from Infernux.application import Application
 
 
-def _write_manifest(path: Path, tests=None) -> None:
+def _write_manifest(path: Path, tests=None, *, cycles: int = 1) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
                 "$schema": "infernux.runtime_acceptance",
                 "name": "Rendering and VFX",
+                "cycles": cycles,
                 "tests": tests
                 if tests is not None
                 else [
@@ -52,6 +53,7 @@ def test_manifest_is_strict_and_preserves_domain_document(tmp_path):
     manifest = RuntimeAcceptanceManifest.load(str(manifest_path), project_root=str(tmp_path))
 
     assert manifest.name == "Rendering and VFX"
+    assert manifest.cycles == 1
     assert [test.id for test in manifest.tests] == ["render.forward", "particle.sprite"]
     assert manifest.tests[0].document["expected"] == {"draws": 1}
     assert manifest.tests[0].timeout_seconds == 12.0
@@ -143,6 +145,65 @@ def test_session_aggregates_same_schema_and_atomically_advances(monkeypatch, tmp
     assert not (tmp_path / "Logs" / "All.result.json.tmp").exists()
 
 
+def test_session_runs_every_test_for_each_manifest_cycle(monkeypatch, tmp_path):
+    manifest_path = tmp_path / "Assets" / "Acceptance" / "Soak.json"
+    _write_manifest(
+        manifest_path,
+        tests=[{"id": "render.soak", "scene": "Assets/Soak.scene", "run_seconds": 1}],
+        cycles=2,
+    )
+    target_scene = str((tmp_path / "Assets/Soak.scene").resolve())
+
+    class _SceneFileManager:
+        current_scene_path = target_scene
+        is_loading = False
+
+        @classmethod
+        def instance(cls):
+            return cls
+
+    scene_loads = []
+
+    def _load_scene(path):
+        scene_loads.append(path)
+        return True
+
+    monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(tmp_path)))
+    monkeypatch.setattr(Application, "persistent_data_path", staticmethod(lambda: str(tmp_path)))
+    monkeypatch.setattr("Infernux.engine.scene_manager.SceneFileManager", _SceneFileManager)
+    monkeypatch.setattr("Infernux.scene.SceneManager.load_scene", staticmethod(_load_scene))
+    monkeypatch.setattr(
+        "Infernux.scene.SceneManager.is_scene_load_pending", staticmethod(lambda: False)
+    )
+
+    initial = RuntimeAcceptance.begin(str(manifest_path))
+    assert initial["cycles"] == 2
+    assert initial["summary"]["total"] == 2
+    assert initial["started_at_unix"] > 0.0
+    assert initial["elapsed_wall_seconds"] >= 0.0
+
+    RuntimeAcceptance.tick(0.1)
+    assert RuntimeAcceptance.current_test()["$acceptance"] == {"cycle": 1, "cycles": 2}
+    RuntimeAcceptance.pass_current({"iteration": 1})
+    RuntimeAcceptance.tick(0.1)
+    assert scene_loads == ["Assets/Soak.scene"]
+    RuntimeAcceptance.tick(0.1)
+    assert RuntimeAcceptance.current_test()["$acceptance"] == {"cycle": 2, "cycles": 2}
+    final = RuntimeAcceptance.pass_current({"iteration": 2})
+
+    assert final["status"] == "passed"
+    assert final["elapsed_wall_seconds"] >= initial["elapsed_wall_seconds"]
+    assert final["summary"] == {
+        "total": 2,
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0,
+        "pending": 0,
+    }
+    assert [test["cycle"] for test in final["tests"]] == [1, 2]
+    assert [test["details"]["iteration"] for test in final["tests"]] == [1, 2]
+
+
 def test_session_failure_is_fail_fast_and_keeps_full_test_set(monkeypatch, tmp_path):
     manifest_path = tmp_path / "Assets" / "Acceptance" / "All.json"
     _write_manifest(manifest_path)
@@ -197,3 +258,27 @@ def test_finished_session_is_consumed_by_engine_exactly_once(monkeypatch, tmp_pa
 
     assert RuntimeAcceptance._consume_completion()["status"] == "passed"
     assert RuntimeAcceptance._consume_completion() == {}
+
+
+def test_result_publication_retries_short_lived_reader_lock(monkeypatch, tmp_path):
+    manifest_path = tmp_path / "Assets" / "Acceptance" / "All.json"
+    _write_manifest(manifest_path)
+    real_replace = __import__("os").replace
+    attempts = {"count": 0}
+
+    def _replace_with_reader_lock(source, destination):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise PermissionError(13, "result is temporarily open by a reader", destination)
+        real_replace(source, destination)
+
+    monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(tmp_path)))
+    monkeypatch.setattr(Application, "persistent_data_path", staticmethod(lambda: str(tmp_path)))
+    monkeypatch.setattr("Infernux.acceptance.os.replace", _replace_with_reader_lock)
+    monkeypatch.setattr("Infernux.acceptance.time.sleep", lambda _seconds: None)
+
+    status = RuntimeAcceptance.begin(str(manifest_path))
+
+    assert status["status"] == "running"
+    assert attempts["count"] == 3
+    assert (tmp_path / "Logs" / "All.result.json").is_file()

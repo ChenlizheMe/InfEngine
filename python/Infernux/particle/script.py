@@ -1,4 +1,10 @@
-"""Public ParticleScript DSL markers and non-executing AST frontend."""
+"""Preview ParticleScript AST frontend reserved for future agent authoring.
+
+ParticleGraph is the only production authoring and acceptance path in the
+current release. This module remains non-executing and is not feature-parity
+maintained; a later milestone may use it to let agent tools generate particle
+assets through the same HIR/AOT backend.
+"""
 
 from __future__ import annotations
 
@@ -37,7 +43,7 @@ from .asset import (
     particle_attribute_zero,
     standard_particle_attributes,
 )
-from .data_interface import SdfVolume, VectorField
+from .data_interface import VectorField
 from .hir import ParticleGraphCompiler
 from .nodes import (
     PARTICLE_EVENT_TRIGGER_TYPE_ID,
@@ -45,9 +51,11 @@ from .nodes import (
     particle_graph_node_definitions,
 )
 
+PARTICLE_SCRIPT_STATUS = "preview"
+
 
 class ParticleScript:
-    """Marker base for one authored ParticleScript asset."""
+    """Preview marker for a future agent-oriented ParticleScript asset."""
 
 
 class ParticleEmitter:
@@ -573,13 +581,14 @@ class ParticleScriptCompiler:
         try:
             result = tuple(
                 ParticleParameter(
-                    value.stable_id,
-                    value.name,
-                    TypeRef(ValueType(value.value_type)),
-                    parameter_default(value.default),
-                    value.exposed,
-                    value.category,
-                    value.tooltip,
+                    stable_id=value.stable_id,
+                    name=value.name,
+                    value_type=TypeRef(ValueType(value.value_type)),
+                    default=parameter_default(value.default),
+                    exposed=value.exposed,
+                    writable=False,
+                    category=value.category,
+                    tooltip=value.tooltip,
                 )
                 for value in values
             )
@@ -659,6 +668,12 @@ class ParticleScriptCompiler:
         if settings_node is None:
             raise self._error(source_name, node, f"emitter {node.name} requires settings")
         settings = self._constructor(settings_node, "EmitterSettings")
+        if settings.shape.kind.value == "sdf":
+            raise self._error(
+                source_name,
+                settings_node,
+                "SDF authoring is not available in this release",
+            )
         methods = {
             item.name: item
             for item in node.body
@@ -703,11 +718,11 @@ class ParticleScriptCompiler:
                     "emitter data_interfaces must be a list or tuple",
                 )
             data_interfaces = tuple(decoded_interfaces)
-        if not all(isinstance(value, (VectorField, SdfVolume)) for value in data_interfaces):
+        if not all(isinstance(value, VectorField) for value in data_interfaces):
             raise self._error(
                 source_name,
                 data_interfaces_node or node,
-                "emitter data_interfaces must contain VectorField or SdfVolume values",
+                "emitter data_interfaces must contain VectorField values",
             )
         missing = self._STAGE_METHODS - set(methods)
         unknown = set(methods) - (
@@ -2386,7 +2401,6 @@ class ParticleScriptCompiler:
             ),
             "AssetReference": ("guid", "path_hint"),
             "VectorField": (),
-            "SdfVolume": (),
             "CurveKey": ("time", "value", "in_tangent", "out_tangent"),
             "Curve": ("keys", "pre_wrap", "post_wrap"),
             "GradientKey": ("time", "color"),
@@ -2420,7 +2434,6 @@ class ParticleScriptCompiler:
             "EmitterShape": EmitterShape,
             "AssetReference": AssetReference,
             "VectorField": VectorField,
-            "SdfVolume": SdfVolume,
             "CurveKey": CurveKey,
             "Curve": Curve,
             "GradientKey": GradientKey,
@@ -2432,8 +2445,6 @@ class ParticleScriptCompiler:
         try:
             if expected_name == "VectorField" and type(values.get("texture")) is dict:
                 values["texture"] = AssetReference.from_dict(values["texture"])
-            if expected_name == "SdfVolume" and type(values.get("texture")) is dict:
-                values["texture"] = AssetReference.from_dict(values["texture"])
             if expected_name == "EmitterShape" and type(values.get("mesh")) is dict:
                 values["mesh"] = AssetReference.from_dict(values["mesh"])
             result = constructor(**values)
@@ -2442,13 +2453,20 @@ class ParticleScriptCompiler:
             raise ParticleScriptError(f"invalid {expected_name}: {exc}") from exc
 
     def _value(self, node: ast.AST):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "SdfVolume"
+        ):
+            raise ParticleScriptError(
+                "SDF authoring is not available in this release"
+            )
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {
             "ScalarRange",
             "ParticleBurst",
             "EmitterShape",
             "AssetReference",
             "VectorField",
-            "SdfVolume",
             "CurveKey",
             "Curve",
             "GradientKey",
@@ -2615,12 +2633,12 @@ __all__ = [
     "ParticleEmitter",
     "Parameter",
     "ParticleScript",
+    "PARTICLE_SCRIPT_STATUS",
     "ParticleScriptCompiler",
     "ParticleScriptError",
     "ParticleStream",
     "RenderingContext",
     "UpdateContext",
-    "SdfVolume",
     "VectorField",
     "event",
 ]

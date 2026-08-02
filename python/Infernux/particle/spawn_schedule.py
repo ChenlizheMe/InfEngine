@@ -34,6 +34,24 @@ class ParticleSpawnScheduleState:
         self.previous_position = None
         self.started = False
 
+    def _checkpoint(self) -> tuple:
+        return (
+            self.elapsed,
+            self.accumulator,
+            self.distance_accumulator,
+            self.previous_position,
+            self.started,
+        )
+
+    def _restore(self, checkpoint: tuple) -> None:
+        (
+            self.elapsed,
+            self.accumulator,
+            self.distance_accumulator,
+            self.previous_position,
+            self.started,
+        ) = checkpoint
+
     def migrate_to(self, settings: EmitterSettings) -> "ParticleSpawnScheduleState":
         if not isinstance(settings, EmitterSettings):
             raise TypeError("particle spawn schedule migration requires EmitterSettings")

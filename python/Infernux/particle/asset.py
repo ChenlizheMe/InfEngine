@@ -438,6 +438,7 @@ class ParticleParameter:
     exposed: bool = True
     category: str = ""
     tooltip: str = ""
+    writable: bool = False
 
     def __post_init__(self) -> None:
         if type(self.stable_id) is not str or not self.stable_id:
@@ -446,14 +447,31 @@ class ParticleParameter:
             raise ParticleGraphSchemaError("particle parameter name cannot be empty")
         if not isinstance(self.value_type, TypeRef):
             raise ParticleGraphSchemaError("particle parameter type must be a TypeRef")
-        if self.value_type.space is not CoordinateSpace.NONE:
-            raise ParticleGraphSchemaError("particle parameters cannot carry a coordinate space")
+        if self.value_type.space is not CoordinateSpace.NONE and not (
+            self.value_type.value_type is ValueType.VEC3
+            and self.value_type.space is CoordinateSpace.WORLD
+        ):
+            raise ParticleGraphSchemaError(
+                "particle parameters may only carry world-space vec3 data"
+            )
         if self.value_type.value_type not in _PARTICLE_PARAMETER_TYPES:
             raise ParticleGraphSchemaError(
                 f"particle parameter {self.name!r} uses an unsupported type"
             )
         if type(self.exposed) is not bool:
             raise ParticleGraphSchemaError("particle parameter exposed must be a bool")
+        if type(self.writable) is not bool:
+            raise ParticleGraphSchemaError("particle parameter writable must be a bool")
+        if self.writable and self.value_type.value_type in {
+            ValueType.CURVE,
+            ValueType.GRADIENT,
+            ValueType.TEXTURE2D,
+            ValueType.MESH,
+        }:
+            raise ParticleGraphSchemaError(
+                f"particle parameter {self.name!r} cannot be writable because "
+                f"{self.value_type.value_type.value} is a resource or structured lookup"
+            )
         if type(self.category) is not str or type(self.tooltip) is not str:
             raise ParticleGraphSchemaError("particle parameter metadata must be strings")
         from Infernux.graph.expression_ir import ExpressionCompiler
@@ -471,6 +489,7 @@ class ParticleParameter:
             "type": self.value_type.to_dict(),
             "default": self.default,
             "exposed": self.exposed,
+            "writable": self.writable,
             "category": self.category,
             "tooltip": self.tooltip,
         }
@@ -479,7 +498,16 @@ class ParticleParameter:
     def from_dict(cls, value, location: str) -> "ParticleParameter":
         _exact_object(
             value,
-            {"stable_id", "name", "type", "default", "exposed", "category", "tooltip"},
+            {
+                "stable_id",
+                "name",
+                "type",
+                "default",
+                "exposed",
+                "writable",
+                "category",
+                "tooltip",
+            },
             location,
         )
         if type(value["stable_id"]) is not str or type(value["name"]) is not str:
@@ -492,6 +520,7 @@ class ParticleParameter:
             value["exposed"],
             value["category"],
             value["tooltip"],
+            value["writable"],
         )
 
 
@@ -769,11 +798,13 @@ def particle_cache_attributes(emitter) -> tuple[ParticleAttribute, ...]:
                     CoordinateSpace(str(node.properties.get("value_space", "none"))),
                 )
                 name = str(node.properties.get("name", "Attribute Cache")).strip()
+                if not name:
+                    raise ValueError("name must not be empty")
                 attribute = ParticleAttribute(
                     particle_attribute_cache_id(
                         _particle_storage_stage(stage), node.uid
                     ),
-                    name or "Attribute Cache",
+                    name,
                     value_type,
                     particle_attribute_zero(value_type),
                 )

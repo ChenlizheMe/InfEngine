@@ -123,6 +123,7 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "mcp_attempt_stop",
         "editor_save_focused",
         "editor_save_document",
+        "editor_focus_panel",
         "project_script_write",
         "project_build_scenes_get",
         "project_build_scenes_set",

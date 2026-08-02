@@ -23,6 +23,12 @@ struct ParticleRenderInstance {
 layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleRenderInstance instances[]; };
 layout(std430, set = 0, binding = 1) readonly buffer SortedIndices { uint sorted_indices[]; };
 layout(std430, set = 0, binding = 2) readonly buffer VisibleSegments { uint visible_segments[]; };
+layout(std430, set = 0, binding = 3) readonly buffer SourceIndirectArguments {
+    uint source_vertex_count;
+    uint source_instance_count;
+    uint source_first_vertex;
+    uint source_first_instance;
+};
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
     mat4 previous_view_projection;
@@ -51,37 +57,72 @@ layout(location = 15) flat out uint out_layer_mask;
 const uint endpoint_for_vertex[6] = uint[](0u, 0u, 1u, 0u, 1u, 1u);
 const float side_for_vertex[6] = float[](-1.0, 1.0, 1.0, -1.0, 1.0, -1.0);
 
-void main() {
-    bool compacted_segments = view.rendering_control.w > 0.5;
-    uint segment = compacted_segments ? visible_segments[uint(gl_InstanceIndex)] : uint(gl_VertexIndex) / 6u;
-    uint corner = uint(gl_VertexIndex) % 6u;
-    ParticleRenderInstance first = instances[sorted_indices[segment]];
-    ParticleRenderInstance second = instances[sorted_indices[segment + 1u]];
-    bool connected = first.ribbon_data.x == second.ribbon_data.x && (second.ribbon_data.z & 1u) == 0u;
+bool ribbon_points_connected(uvec4 first_data, uvec4 second_data) {
+    return first_data.x == second_data.x && (second_data.z & 1u) == 0u;
+}
 
-    vec3 first_position = first.position_size.xyz;
-    vec3 second_position = connected ? second.position_size.xyz : first_position;
+vec3 ribbon_side(vec3 first_position, vec3 second_position, vec3 fallback_side) {
     vec3 tangent = second_position - first_position;
     float tangent_length = length(tangent);
     tangent = tangent_length > 1e-7 ? tangent / tangent_length : normalize(view.camera_up.xyz);
     vec3 camera_forward = cross(view.camera_right.xyz, view.camera_up.xyz);
     vec3 side = cross(camera_forward, tangent);
     float side_length = length(side);
-    side = side_length > 1e-7 ? side / side_length : normalize(view.camera_right.xyz);
+    return side_length > 1e-7 ? side / side_length : fallback_side;
+}
+
+vec3 ribbon_join_offset(vec3 first_side, vec3 second_side, float half_width) {
+    vec3 sum = first_side + second_side;
+    float sum_length = length(sum);
+    if (sum_length <= 1e-5) return second_side * half_width;
+    vec3 join = sum / sum_length;
+    float projection = max(abs(dot(join, second_side)), 1e-4);
+    float miter_scale = min(1.0 / projection, 2.0);
+    return join * (half_width * miter_scale);
+}
+
+void main() {
+    bool compacted_segments = view.alignment_reference.z > 0.5;
+    uint segment = compacted_segments ? visible_segments[uint(gl_InstanceIndex)] : uint(gl_VertexIndex) / 6u;
+    uint corner = uint(gl_VertexIndex) % 6u;
+    ParticleRenderInstance first = instances[sorted_indices[segment]];
+    ParticleRenderInstance second = instances[sorted_indices[segment + 1u]];
+    bool connected = ribbon_points_connected(first.ribbon_data, second.ribbon_data);
+
+    vec3 first_position = first.position_size.xyz;
+    vec3 second_position = connected ? second.position_size.xyz : first_position;
+    vec3 tangent = normalize(second_position - first_position + normalize(view.camera_up.xyz) * 1e-8);
+    vec3 side = ribbon_side(first_position, second_position, normalize(view.camera_right.xyz));
 
     uint endpoint = endpoint_for_vertex[corner];
     ParticleRenderInstance point = endpoint == 0u ? first : second;
     vec3 center = endpoint == 0u ? first_position : second_position;
     float half_width = max(abs(point.position_size.w), 0.0) * 0.5;
-    vec3 world_position = center + side * side_for_vertex[corner] * half_width;
+    vec3 join_offset = side * half_width;
+    if (connected && endpoint == 0u && segment > 0u) {
+        ParticleRenderInstance previous = instances[sorted_indices[segment - 1u]];
+        if (ribbon_points_connected(previous.ribbon_data, first.ribbon_data)) {
+            vec3 previous_side = ribbon_side(previous.position_size.xyz, first_position, side);
+            join_offset = ribbon_join_offset(previous_side, side, half_width);
+        }
+    } else if (connected && endpoint == 1u && segment + 2u < source_instance_count) {
+        ParticleRenderInstance next = instances[sorted_indices[segment + 2u]];
+        if (ribbon_points_connected(second.ribbon_data, next.ribbon_data)) {
+            vec3 next_side = ribbon_side(second_position, next.position_size.xyz, side);
+            join_offset = ribbon_join_offset(side, next_side, half_width);
+        }
+    }
+    vec3 world_position = center + join_offset * side_for_vertex[corner];
     gl_Position = view.view_projection * vec4(world_position, 1.0);
 
     vec4 particle_color = point.color;
     float order_coordinate = float(point.ribbon_data.y);
-    bool repeat_uv = view.rendering_control.z > 0.5;
-    vec2 ribbon_uv = vec2(repeat_uv ? order_coordinate * view.rendering_control.y
-                                    : order_coordinate / view.rendering_control.y,
+    float uv_scale = max(view.alignment_reference.x, 1e-6);
+    bool repeat_uv = view.alignment_reference.y > 0.5;
+    vec2 ribbon_uv = vec2(repeat_uv ? order_coordinate * uv_scale
+                                    : order_coordinate / uv_scale,
                            side_for_vertex[corner] > 0.0 ? 1.0 : 0.0);
+    vec2 segment_local_uv = vec2(float(endpoint), side_for_vertex[corner] > 0.0 ? 1.0 : 0.0);
     vec3 surface_normal = normalize(cross(side, tangent));
     out_world_position = world_position;
     out_normal = surface_normal;
@@ -89,8 +130,8 @@ void main() {
     out_color = particle_color.rgb;
     out_uv = ribbon_uv;
     out_view_depth = gl_Position.w;
-    out_particle_local_uv = ribbon_uv;
-    out_particle_next_uv = ribbon_uv;
+    out_particle_local_uv = segment_local_uv;
+    out_particle_next_uv = segment_local_uv;
     out_particle_blend = 0.0;
     out_particle_age = clamp(point.scale_custom.w, 0.0, 1.0);
     out_particle_id = point.ribbon_data.w;
@@ -134,6 +175,12 @@ struct ParticleRenderInstance {
 layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleRenderInstance instances[]; };
 layout(std430, set = 0, binding = 1) readonly buffer SortedIndices { uint sorted_indices[]; };
 layout(std430, set = 0, binding = 2) readonly buffer VisibleSegments { uint visible_segments[]; };
+layout(std430, set = 0, binding = 3) readonly buffer SourceIndirectArguments {
+    uint source_vertex_count;
+    uint source_instance_count;
+    uint source_first_vertex;
+    uint source_first_instance;
+};
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
     mat4 previous_view_projection;
@@ -161,13 +208,26 @@ vec3 ribbon_side(vec3 first_position, vec3 second_position) {
     return side_length > 1e-7 ? side / side_length : normalize(view.camera_right.xyz);
 }
 
+bool ribbon_points_connected(uvec4 first_data, uvec4 second_data) {
+    return first_data.x == second_data.x && (second_data.z & 1u) == 0u;
+}
+
+vec3 ribbon_join_offset(vec3 first_side, vec3 second_side, float half_width) {
+    vec3 sum = first_side + second_side;
+    float sum_length = length(sum);
+    if (sum_length <= 1e-5) return second_side * half_width;
+    vec3 join = sum / sum_length;
+    float projection = max(abs(dot(join, second_side)), 1e-4);
+    return join * (half_width * min(1.0 / projection, 2.0));
+}
+
 void main() {
-    bool compacted_segments = view.rendering_control.w > 0.5;
+    bool compacted_segments = view.alignment_reference.z > 0.5;
     uint segment = compacted_segments ? visible_segments[uint(gl_InstanceIndex)] : uint(gl_VertexIndex) / 6u;
     uint corner = uint(gl_VertexIndex) % 6u;
     ParticleRenderInstance first = instances[sorted_indices[segment]];
     ParticleRenderInstance second = instances[sorted_indices[segment + 1u]];
-    bool connected = first.ribbon_data.x == second.ribbon_data.x && (second.ribbon_data.z & 1u) == 0u;
+    bool connected = ribbon_points_connected(first.ribbon_data, second.ribbon_data);
 
     vec3 first_position = first.position_size.xyz;
     vec3 second_position = connected ? second.position_size.xyz : first_position;
@@ -182,9 +242,25 @@ void main() {
     vec3 previous_center = endpoint == 0u ? previous_first_position : previous_second_position;
     float half_width = max(abs(point.position_size.w), 0.0) * 0.5;
     float vertex_side = side_for_vertex[corner];
-    vec4 current_clip = view.view_projection * vec4(center + side * vertex_side * half_width, 1.0);
-    vec4 previous_clip =
-        view.previous_view_projection * vec4(previous_center + previous_side * vertex_side * half_width, 1.0);
+    vec3 join_offset = side * half_width;
+    vec3 previous_join_offset = previous_side * half_width;
+    if (connected && endpoint == 0u && segment > 0u) {
+        ParticleRenderInstance previous = instances[sorted_indices[segment - 1u]];
+        if (ribbon_points_connected(previous.ribbon_data, first.ribbon_data)) {
+            join_offset = ribbon_join_offset(ribbon_side(previous.position_size.xyz, first_position), side, half_width);
+            previous_join_offset = ribbon_join_offset(
+                ribbon_side(previous.previous_position_history.xyz, previous_first_position), previous_side, half_width);
+        }
+    } else if (connected && endpoint == 1u && segment + 2u < source_instance_count) {
+        ParticleRenderInstance next = instances[sorted_indices[segment + 2u]];
+        if (ribbon_points_connected(second.ribbon_data, next.ribbon_data)) {
+            join_offset = ribbon_join_offset(side, ribbon_side(second_position, next.position_size.xyz), half_width);
+            previous_join_offset = ribbon_join_offset(
+                previous_side, ribbon_side(previous_second_position, next.previous_position_history.xyz), half_width);
+        }
+    }
+    vec4 current_clip = view.view_projection * vec4(center + join_offset * vertex_side, 1.0);
+    vec4 previous_clip = view.previous_view_projection * vec4(previous_center + previous_join_offset * vertex_side, 1.0);
     gl_Position = current_clip;
     vec2 current_ndc = current_clip.xy / max(abs(current_clip.w), 1e-6);
     vec2 previous_ndc = previous_clip.xy / max(abs(previous_clip.w), 1e-6);
@@ -333,6 +409,7 @@ bool ParticleGpuRibbonRenderer::Create(rhi::Device &device, const GpuRibbonRende
     layout.entries[layout.entryCount++] = {0, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
     layout.entries[layout.entryCount++] = {1, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
     layout.entries[layout.entryCount++] = {2, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
+    layout.entries[layout.entryCount++] = {3, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
     m_geometryLayout = device.CreateBindingLayout(layout);
     m_emptyLayout = device.CreateBindingLayout({});
     rhi::BindGroupDesc emptyGroupDesc;
@@ -417,13 +494,15 @@ rhi::BufferHandle ParticleGpuRibbonRenderer::RenderIndexBuffer() const noexcept
 
 rhi::BindGroupHandle ParticleGpuRibbonRenderer::CreateGeometryGroup(rhi::BufferHandle renderIndices) const
 {
-    if (!m_device || !m_geometryLayout.IsValid() || !InstanceBuffer().IsValid() || !renderIndices.IsValid())
+    if (!m_device || !m_geometryLayout.IsValid() || !InstanceBuffer().IsValid() || !renderIndices.IsValid() ||
+        !m_topology || !m_topology->SourceIndirectBuffer().IsValid())
         return {};
     rhi::BindGroupDesc group;
     group.layout = m_geometryLayout;
     group.buffers[group.bufferCount++] = {0, rhi::BindingType::StorageBuffer, InstanceBuffer(), 0, 0};
     group.buffers[group.bufferCount++] = {1, rhi::BindingType::StorageBuffer, RenderIndexBuffer(), 0, 0};
     group.buffers[group.bufferCount++] = {2, rhi::BindingType::StorageBuffer, renderIndices, 0, 0};
+    group.buffers[group.bufferCount++] = {3, rhi::BindingType::StorageBuffer, m_topology->SourceIndirectBuffer(), 0, 0};
     return m_device->CreateBindGroup(group);
 }
 
@@ -467,11 +546,19 @@ bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &en
         return false;
     auto constants = view;
     constants.materialTint = {1.0f, 1.0f, 1.0f, 1.0f};
+    constants.cameraRight[3] = m_semantics.softDistance;
+    constants.cameraUp[3] = m_semantics.softParticles ? 1.0f : 0.0f;
     constants.lightingControl[0] = usesForwardPlusLighting ? 1.0f : 0.0f;
+    constants.lightingControl[1] = 0.0f;
+    constants.lightingControl[2] = m_surface.ResolveMaterialFloat("softness", 0.18f);
     constants.renderingControl[0] = m_semantics.receiveShadows ? 1.0f : 0.0f;
-    constants.renderingControl[1] = m_uvScale;
-    constants.renderingControl[2] = m_uvMode == ParticleRibbonUvMode::Repeat ? 1.0f : 0.0f;
-    constants.renderingControl[3] = renderIndices.IsValid() && renderIndices != RenderIndexBuffer() ? 1.0f : 0.0f;
+    constants.renderingControl[1] = m_surface.ResolveMaterialState().premultipliedAlpha ? 1.0f : 0.0f;
+    constants.renderingControl[2] = 1.0f;
+    constants.renderingControl[3] = 1.0f;
+    constants.alignmentReference[0] = m_uvScale;
+    constants.alignmentReference[1] = m_uvMode == ParticleRibbonUvMode::Repeat ? 1.0f : 0.0f;
+    constants.alignmentReference[2] = renderIndices.IsValid() && renderIndices != RenderIndexBuffer() ? 1.0f : 0.0f;
+    constants.alignmentReference[3] = -1.0f;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, geometryGroup);
     encoder.BindGroup(pipeline, 1, usesPerViewBindings ? perView.group : m_emptyGroup);
@@ -504,9 +591,13 @@ bool ParticleGpuRibbonRenderer::RecordPickingDraw(const rhi::GraphicsCommandEnco
         0x3f800000u,
     };
     std::memcpy(constants.materialTint.data(), objectId.data(), sizeof(objectId));
-    constants.renderingControl[1] = m_uvScale;
-    constants.renderingControl[2] = m_uvMode == ParticleRibbonUvMode::Repeat ? 1.0f : 0.0f;
-    constants.renderingControl[3] = renderIndices.IsValid() && renderIndices != RenderIndexBuffer() ? 1.0f : 0.0f;
+    constants.renderingControl[1] = 0.0f;
+    constants.renderingControl[2] = 1.0f;
+    constants.renderingControl[3] = 1.0f;
+    constants.alignmentReference[0] = m_uvScale;
+    constants.alignmentReference[1] = m_uvMode == ParticleRibbonUvMode::Repeat ? 1.0f : 0.0f;
+    constants.alignmentReference[2] = renderIndices.IsValid() && renderIndices != RenderIndexBuffer() ? 1.0f : 0.0f;
+    constants.alignmentReference[3] = -1.0f;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, geometryGroup);
     encoder.BindGroup(pipeline, 1, m_emptyGroup);

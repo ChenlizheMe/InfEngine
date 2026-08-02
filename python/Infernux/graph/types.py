@@ -8,6 +8,34 @@ from enum import Enum
 from Infernux.engine.path_utils import portable_path
 
 
+BUILTIN_MESH_GUID_PREFIX = "builtin-mesh:"
+BUILTIN_MESH_NAMES = (
+    "Cube",
+    "Sphere",
+    "Capsule",
+    "Cylinder",
+    "Plane",
+    "Quad",
+)
+
+
+def builtin_mesh_reference(name: str) -> "AssetReference":
+    normalized = str(name).strip()
+    if normalized not in BUILTIN_MESH_NAMES:
+        raise ValueError(f"unknown built-in Mesh {name!r}")
+    return AssetReference(f"{BUILTIN_MESH_GUID_PREFIX}{normalized}")
+
+
+def builtin_mesh_name(reference: "AssetReference") -> str:
+    guid = str(reference.guid)
+    if not guid.startswith(BUILTIN_MESH_GUID_PREFIX):
+        return ""
+    name = guid[len(BUILTIN_MESH_GUID_PREFIX) :]
+    if name not in BUILTIN_MESH_NAMES or reference.path_hint:
+        raise ValueError(f"invalid built-in Mesh reference {reference.to_dict()!r}")
+    return name
+
+
 class ValueType(str, Enum):
     BOOL = "bool"
     I32 = "i32"
@@ -114,6 +142,11 @@ class TypeSystem:
             return True
         if source.space != target.space:
             return False
+        if {source.value_type, target.value_type} == {
+            ValueType.VEC4,
+            ValueType.COLOR,
+        }:
+            return True
         return source.value_type in {ValueType.I32, ValueType.U32} and target.value_type is ValueType.F32
 
     def numeric_dimension(self, value: TypeRef) -> int:
