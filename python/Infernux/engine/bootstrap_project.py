@@ -18,7 +18,6 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     """Wire C++ ProjectPanel callbacks to Python managers."""
     pp = bs.project_panel
     from Infernux.engine.i18n import t as _t
-    from Infernux.engine.ui.selection_manager import SelectionManager
     from Infernux.engine.ui import project_file_ops as file_ops
     from Infernux.engine.ui import project_utils
     from Infernux.engine.scene_manager import SceneFileManager
@@ -35,7 +34,36 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
 
     # -- Translation --
     pp.translate = _t
-    pp.is_hierarchy_selection_empty = lambda: SelectionManager.instance().is_empty()
+
+    from Infernux.engine.interaction import CommandSource
+
+    def _command_payload(argument: str):
+        target_id = str(argument or "").strip()
+        return {"target_id": target_id} if target_id else {}
+
+    def _activate_project_command_context():
+        bs.interaction_core.focus.activate_panel("project", view_id="project")
+
+    def _execute_project_command(command_id, source, argument):
+        _activate_project_command_context()
+        return bs.interaction_core.commands.execute(
+            command_id,
+            source=CommandSource(source),
+            payload=_command_payload(argument),
+        ).accepted
+
+    def _can_execute_project_command(command_id, argument):
+        _activate_project_command_context()
+        return bs.interaction_core.commands.can_execute(
+            command_id,
+            bs.interaction_core.commands.context(
+                CommandSource.CONTEXT_MENU,
+                _command_payload(argument),
+            ),
+        )
+
+    pp.execute_command = _execute_project_command
+    pp.can_execute_command = _can_execute_project_command
 
     # -- Asset database access (via engine) --
     adb = bs.engine.get_asset_database()

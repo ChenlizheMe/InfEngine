@@ -1296,8 +1296,18 @@ void RegisterGUIBindings(py::module_ &m)
         .def("receive_dropped_files", &ProjectPanel::ReceiveDroppedFiles, py::arg("paths"))
         .def("get_current_path", &ProjectPanel::GetCurrentPath)
         .def("set_current_path", &ProjectPanel::SetCurrentPath, py::arg("path"))
+        .def("copy_selected_assets", &ProjectPanel::CopySelectedAssets, py::arg("cut"))
+        .def("paste_assets", &ProjectPanel::PasteAssets)
+        .def("request_delete_selected_assets", &ProjectPanel::RequestDeleteSelectedAssets)
+        .def("begin_rename_selected_asset", &ProjectPanel::BeginRenameSelectedAsset, py::arg("path") = "")
+        .def("create_folder_from_command", &ProjectPanel::CreateFolderFromCommand)
+        .def("has_selected_assets", &ProjectPanel::HasSelectedAssets)
+        .def("can_rename_selected_asset", &ProjectPanel::CanRenameSelectedAsset, py::arg("path") = "")
+        .def("can_paste_assets", &ProjectPanel::CanPasteAssets)
         // Project panel focus callback
         .def_readwrite("on_project_panel_focused", &ProjectPanel::onProjectPanelFocused)
+        .def_readwrite("execute_command", &ProjectPanel::executeCommand)
+        .def_readwrite("can_execute_command", &ProjectPanel::canExecuteCommand)
         // Notification callbacks
         .def_readwrite("on_file_selected", &ProjectPanel::onFileSelected)
         .def_readwrite("on_selection_changed", &ProjectPanel::onSelectionChanged)
@@ -1339,7 +1349,6 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("get_guid_from_path", &ProjectPanel::getGuidFromPath)
         .def_readwrite("get_path_from_guid", &ProjectPanel::getPathFromGuid)
         .def_readwrite("invalidate_asset_inspector", &ProjectPanel::invalidateAssetInspector)
-        .def_readwrite("is_hierarchy_selection_empty", &ProjectPanel::isHierarchySelectionEmpty)
         // Translation
         .def_readwrite("translate", &ProjectPanel::translate);
 

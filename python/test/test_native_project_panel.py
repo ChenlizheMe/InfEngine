@@ -314,6 +314,41 @@ class TestProjectPanelCallbacks:
         pp.delete_items(["/a", "/b"])
         assert deleted == ["/a", "/b"]
 
+    def test_delete_command_retains_selection_until_confirmation(self, tmp_path):
+        asset = tmp_path / "KeepSelected.mat"
+        asset.write_text("{}", encoding="utf-8")
+        pp = ProjectPanel()
+        pp.set_root_path(str(tmp_path))
+        pp.set_selected_file(str(asset))
+        requested = []
+        pp.delete_items = lambda paths: requested.append(list(paths))
+
+        assert pp.request_delete_selected_assets() is True
+        assert requested == [[str(asset)]]
+        assert pp.has_selected_assets() is True
+
+    def test_project_command_adapters_share_one_selection_contract(self, tmp_path):
+        asset = tmp_path / "Selected.mat"
+        asset.write_text("{}", encoding="utf-8")
+        pp = ProjectPanel()
+        pp.set_root_path(str(tmp_path))
+        pp.set_selected_file(str(asset))
+
+        assert pp.has_selected_assets() is True
+        assert pp.can_rename_selected_asset() is True
+        assert pp.can_rename_selected_asset(str(asset)) is True
+        assert pp.copy_selected_assets(False) is True
+
+    def test_project_shortcuts_are_not_polled_inside_the_panel(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(
+            encoding="utf-8"
+        )
+
+        assert "HandleKeyboardShortcuts" not in source
+        assert 'ExecuteEditorCommand("edit.copy")' in source
+        assert 'ExecuteEditorCommand("edit.delete")' in source
+        assert 'ExecuteEditorCommand("project.create_folder")' in source
+
     def test_do_rename_callback(self):
         pp = ProjectPanel()
         pp.do_rename = lambda old, new_name: f"/dir/{new_name}"

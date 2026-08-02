@@ -150,6 +150,9 @@ class BootstrapWiringMixin:
         def _hierarchy_panel():
             return getattr(self, "hierarchy", None)
 
+        def _project_panel():
+            return getattr(self, "project_panel", None)
+
         def _is_scene_edit_context(context, *, hierarchy_only: bool = False) -> bool:
             active_panel = context.focus.active_panel_id
             if hierarchy_only:
@@ -161,6 +164,18 @@ class BootstrapWiringMixin:
                 _is_scene_edit_context(context)
                 and context.selection.domain is SelectionDomain.SCENE_OBJECT
                 and context.selection.targets
+            )
+
+        def _is_project_edit_context(context) -> bool:
+            return context.focus.active_panel_id == "project"
+
+        def _has_project_selection(context) -> bool:
+            return bool(
+                _is_project_edit_context(context)
+                and context.selection.domain is SelectionDomain.ASSET
+                and context.selection.targets
+                and _project_panel() is not None
+                and _project_panel().has_selected_assets()
             )
 
         def _copy_scene_selection(_context, *, cut: bool):
@@ -207,6 +222,61 @@ class BootstrapWiringMixin:
                 and panel.has_clipboard_data()
             )
 
+        def _copy_edit_selection(context, *, cut: bool):
+            if _is_project_edit_context(context):
+                panel = _project_panel()
+                return bool(panel and panel.copy_selected_assets(cut))
+            return _copy_scene_selection(context, cut=cut)
+
+        def _paste_edit_selection(context):
+            if _is_project_edit_context(context):
+                panel = _project_panel()
+                return bool(panel and panel.paste_assets())
+            return _paste_scene_selection(context)
+
+        def _delete_edit_selection(context):
+            if _is_project_edit_context(context):
+                panel = _project_panel()
+                return bool(panel and panel.request_delete_selected_assets())
+            return _delete_scene_selection(context)
+
+        def _rename_edit_selection(context):
+            if _is_project_edit_context(context):
+                panel = _project_panel()
+                if panel is None:
+                    return False
+                target_path = str(context.payload.get("target_id", "") or "").strip()
+                return bool(panel.begin_rename_selected_asset(target_path))
+            return _rename_scene_selection(context)
+
+        def _can_copy_edit_selection(context) -> bool:
+            return _has_project_selection(context) or _has_scene_selection(context)
+
+        def _can_paste_edit_selection(context) -> bool:
+            if _is_project_edit_context(context):
+                panel = _project_panel()
+                return bool(panel and panel.can_paste_assets())
+            return _can_paste_scene(context)
+
+        def _can_rename_edit_selection(context) -> bool:
+            if _is_project_edit_context(context):
+                panel = _project_panel()
+                if panel is None:
+                    return False
+                target_path = str(context.payload.get("target_id", "") or "").strip()
+                return bool(panel.can_rename_selected_asset(target_path))
+            return bool(
+                _is_scene_edit_context(context, hierarchy_only=True)
+                and context.selection.domain is SelectionDomain.SCENE_OBJECT
+                and context.selection.primary is not None
+            )
+
+        def _create_project_folder(context):
+            panel = _project_panel()
+            if not _is_project_edit_context(context) or panel is None:
+                return False
+            return bool(panel.create_folder_from_command())
+
         commands = (
             EditorCommand(
                 "file.new_scene",
@@ -251,47 +321,55 @@ class BootstrapWiringMixin:
             ),
             EditorCommand(
                 "edit.copy",
-                lambda context: _copy_scene_selection(context, cut=False),
+                lambda context: _copy_edit_selection(context, cut=False),
                 display_name="Copy",
                 category="Edit",
-                can_execute=_has_scene_selection,
+                can_execute=_can_copy_edit_selection,
                 default_shortcut="Ctrl+C",
             ),
             EditorCommand(
                 "edit.cut",
-                lambda context: _copy_scene_selection(context, cut=True),
+                lambda context: _copy_edit_selection(context, cut=True),
                 display_name="Cut",
                 category="Edit",
-                can_execute=_has_scene_selection,
+                can_execute=_can_copy_edit_selection,
                 default_shortcut="Ctrl+X",
             ),
             EditorCommand(
                 "edit.paste",
-                _paste_scene_selection,
+                _paste_edit_selection,
                 display_name="Paste",
                 category="Edit",
-                can_execute=_can_paste_scene,
+                can_execute=_can_paste_edit_selection,
                 default_shortcut="Ctrl+V",
             ),
             EditorCommand(
                 "edit.delete",
-                _delete_scene_selection,
+                _delete_edit_selection,
                 display_name="Delete",
                 category="Edit",
-                can_execute=_has_scene_selection,
+                can_execute=_can_copy_edit_selection,
                 default_shortcut="Delete",
             ),
             EditorCommand(
                 "edit.rename",
-                _rename_scene_selection,
+                _rename_edit_selection,
                 display_name="Rename",
                 category="Edit",
-                can_execute=lambda context: bool(
-                    _is_scene_edit_context(context, hierarchy_only=True)
-                    and context.selection.domain is SelectionDomain.SCENE_OBJECT
-                    and context.selection.primary is not None
-                ),
+                can_execute=_can_rename_edit_selection,
                 default_shortcut="F2",
+            ),
+            EditorCommand(
+                "project.create_folder",
+                _create_project_folder,
+                display_name="Create Folder",
+                category="Assets",
+                can_execute=lambda context: bool(
+                    _is_project_edit_context(context)
+                    and _project_panel() is not None
+                    and _project_panel().get_current_path()
+                ),
+                default_shortcut="Ctrl+Shift+N",
             ),
             EditorCommand(
                 "play.toggle",
@@ -377,6 +455,24 @@ class BootstrapWiringMixin:
             ),
             replace=True,
         )
+        for command_id, chord in (
+            ("edit.copy", "Ctrl+C"),
+            ("edit.cut", "Ctrl+X"),
+            ("edit.paste", "Ctrl+V"),
+            ("edit.delete", "Delete"),
+            ("edit.rename", "F2"),
+            ("project.create_folder", "Ctrl+Shift+N"),
+        ):
+            shortcuts.register(
+                ShortcutBinding(
+                    command_id,
+                    KeyChord.parse(chord),
+                    ShortcutScope.PANEL,
+                    "project",
+                    binding_id=f"default.project.{command_id}",
+                ),
+                replace=True,
+            )
 
     def _wire_menu_bar_callbacks(self, wm):
         """Wire C++ MenuBarPanel callbacks to Python managers."""

@@ -60,9 +60,24 @@ class ProjectPanel : public EditorPanel
     }
     void SetCurrentPath(const std::string &path);
 
+    // Unified editor-command adapters. Physical shortcuts and presentation
+    // surfaces must call these through EditorCommandRegistry.
+    bool CopySelectedAssets(bool cut);
+    bool PasteAssets();
+    bool RequestDeleteSelectedAssets();
+    bool BeginRenameSelectedAsset(const std::string &path = "");
+    bool CreateFolderFromCommand();
+    bool HasSelectedAssets() const;
+    bool CanRenameSelectedAsset(const std::string &path = "") const;
+    bool CanPasteAssets() const;
+
     // ── Focus callback ──────────────────────────────────────────────
 
     std::function<void(bool)> onProjectPanelFocused;
+
+    // Unified command presentation callbacks.
+    std::function<bool(const std::string &, const std::string &, const std::string &)> executeCommand;
+    std::function<bool(const std::string &, const std::string &)> canExecuteCommand;
 
     // ── Notification callbacks ───────────────────────────────────────
 
@@ -152,9 +167,6 @@ class ProjectPanel : public EditorPanel
 
     /// Invalidate asset inspector cache
     std::function<void(const std::string &)> invalidateAssetInspector;
-
-    /// True when object selection in Hierarchy is empty. Project clipboard shortcuts yield to Hierarchy when false.
-    std::function<bool()> isHierarchySelectionEmpty;
 
     // ── Translation ──────────────────────────────────────────────────
 
@@ -431,7 +443,6 @@ class ProjectPanel : public EditorPanel
 
     // ── Click & keyboard handling ────────────────────────────────────
     void HandleItemClick(const FileItem &item, InxGUIContext *ctx);
-    void HandleKeyboardShortcuts(InxGUIContext *ctx);
     void HandleExternalFileDrops();
 
     [[nodiscard]] bool IsCtrl(InxGUIContext *ctx) const;
@@ -441,7 +452,7 @@ class ProjectPanel : public EditorPanel
     void BeginRename(const std::string &path);
     void CommitRename();
     void CancelRename();
-    void CreateAndRename(const std::string &baseName, const std::string &extension,
+    bool CreateAndRename(const std::string &baseName, const std::string &extension,
                          std::function<std::pair<bool, std::string>(const std::string &)> createFn);
     /// Immediately clear directory caches. Prefer InvalidateDirCache() which defers
     /// until the next OnRenderContent so mid-frame item pointers stay valid.
@@ -452,6 +463,9 @@ class ProjectPanel : public EditorPanel
     void ClipboardCut(const std::vector<std::string> &paths);
     void ClipboardPaste();
     bool HasClipboardItems() const;
+
+    bool ExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;
+    bool CanExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;
 
     // ── Move helpers ─────────────────────────────────────────────────
     std::vector<std::string> GetDragMoveSources(const std::string &draggedPath) const;

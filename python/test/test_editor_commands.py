@@ -185,3 +185,51 @@ def test_hierarchy_and_scene_edit_shortcuts_share_command_handlers():
     pasted = core.shortcuts.route(ShortcutEvent(KeyChord.parse("Ctrl+V")))
     assert pasted.status is ShortcutRouteStatus.EXECUTED
     assert calls[-1] == "paste"
+
+
+def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
+    class BootstrapHarness(BootstrapWiringMixin):
+        pass
+
+    calls = []
+    bootstrap = BootstrapHarness()
+    bootstrap.interaction_core = EditorInteractionCore()
+    bootstrap.engine = SimpleNamespace(_play_mode_manager=None)
+    bootstrap.hierarchy = None
+    bootstrap.project_panel = SimpleNamespace(
+        has_selected_assets=lambda: True,
+        copy_selected_assets=lambda cut: calls.append(("copy_asset", cut)) or True,
+        paste_assets=lambda: calls.append("paste_asset") or True,
+        request_delete_selected_assets=lambda: calls.append("delete_asset") or True,
+        begin_rename_selected_asset=lambda path="": calls.append(("rename_asset", path)) or True,
+        can_rename_selected_asset=lambda path="": True,
+        can_paste_assets=lambda: True,
+        create_folder_from_command=lambda: calls.append("create_folder") or True,
+        get_current_path=lambda: "C:/Project/Assets",
+    )
+    windows = SimpleNamespace(get_registered_types=lambda: {}, reset_layout=lambda: None)
+    BootstrapWiringMixin._register_core_editor_commands(
+        bootstrap,
+        windows,
+        SimpleNamespace(),
+    )
+    core = bootstrap.interaction_core
+    core.focus.activate_panel("project", view_id="project")
+    core.selection.select(
+        SelectionTarget.asset("C:/Project/Assets/Smoke.mat"),
+        owner_id="project",
+    )
+
+    for chord in ("Ctrl+C", "Ctrl+X", "Ctrl+V", "Delete", "F2", "Ctrl+Shift+N"):
+        assert core.shortcuts.route(
+            ShortcutEvent(KeyChord.parse(chord))
+        ).status is ShortcutRouteStatus.EXECUTED
+
+    assert calls == [
+        ("copy_asset", False),
+        ("copy_asset", True),
+        "paste_asset",
+        "delete_asset",
+        ("rename_asset", ""),
+        "create_folder",
+    ]

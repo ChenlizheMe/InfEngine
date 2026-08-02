@@ -141,14 +141,8 @@ static constexpr int kKeyLeftCtrl = ImGuiKey_LeftCtrl;
 static constexpr int kKeyRightCtrl = ImGuiKey_RightCtrl;
 static constexpr int kKeyLeftShift = ImGuiKey_LeftShift;
 static constexpr int kKeyRightShift = ImGuiKey_RightShift;
-static constexpr int kKeyF2 = ImGuiKey_F2;
-static constexpr int kKeyDelete = ImGuiKey_Delete;
 static constexpr int kKeyEnter = ImGuiKey_Enter;
 static constexpr int kKeyEscape = ImGuiKey_Escape;
-static constexpr int kKeyC = ImGuiKey_C;
-static constexpr int kKeyV = ImGuiKey_V;
-static constexpr int kKeyX = ImGuiKey_X;
-static constexpr int kKeyN = ImGuiKey_N;
 
 namespace infernux
 {
@@ -1695,77 +1689,85 @@ void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
     }
 }
 
-void ProjectPanel::HandleKeyboardShortcuts(InxGUIContext *ctx)
+bool ProjectPanel::HasSelectedAssets() const
 {
-    if (!m_renamingPath.empty())
-        return;
-    // From FileGrid child: RootAndChildWindows still treats FolderTree focus as
-    // Project focus, so F2 works with a file selected even if the tree has KB focus.
-    if (!ctx->IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
-        return;
-    // WantTextInput is global and may remain set for a frame after another field
-    // loses focus. Only suppress shortcuts while an editor is actually active.
-    if (ctx->WantTextInput() && ctx->IsAnyItemActive())
-        return;
+    return !GetSelectedPaths().empty();
+}
 
-    bool ctrl = IsCtrl(ctx);
-    bool shift = IsShift(ctx);
-    const bool renamePressed = ctx->IsKeyPressed(kKeyF2);
+bool ProjectPanel::CanRenameSelectedAsset(const std::string &path) const
+{
+    const std::string target = path.empty() ? m_selectedFile : path;
+    if (target.empty() || IsVirtualSubAssetPath(target))
+        return false;
+    const auto selected = GetSelectedPaths();
+    return selected.size() == 1 && FilesystemPathKey(selected.front()) == FilesystemPathKey(target);
+}
 
-    // Ctrl+Shift+N: create new folder (no selection required)
-    if (ctrl && shift && ctx->IsKeyPressed(kKeyN)) {
-        CreateAndRename("NewFolder", "", [this](const std::string &name) {
-            if (createFolder)
-                return createFolder(m_currentPath, name);
-            return std::make_pair(false, std::string("No callback"));
-        });
-        return;
-    }
+bool ProjectPanel::CanPasteAssets() const
+{
+    // The OS clipboard may contain files even when the internal clipboard is
+    // empty. Keep Paste enabled while Project owns focus and let PasteAssets
+    // report a no-op when neither source has data.
+    return !m_currentPath.empty();
+}
 
-    // Early out: avoid GetSelectedPaths() syscalls when no key is pressed
-    const bool copyPressed = ctrl && ctx->IsKeyPressed(kKeyC);
-    const bool cutPressed = ctrl && ctx->IsKeyPressed(kKeyX);
-    const bool pastePressed = ctrl && ctx->IsKeyPressed(kKeyV);
-    if ((copyPressed || cutPressed || pastePressed) && isHierarchySelectionEmpty && !isHierarchySelectionEmpty())
-        return;
+bool ProjectPanel::CopySelectedAssets(bool cut)
+{
+    const auto selected = GetSelectedPaths();
+    if (selected.empty())
+        return false;
+    if (cut)
+        ClipboardCut(selected);
+    else
+        ClipboardCopy(selected);
+    return HasClipboardItems();
+}
 
-    const bool deletePressed = ctx->IsKeyPressed(kKeyDelete);
-    bool anyRelevantKey = renamePressed || deletePressed || copyPressed || cutPressed || pastePressed;
-    if (!anyRelevantKey)
-        return;
+bool ProjectPanel::PasteAssets()
+{
+    if (m_currentPath.empty())
+        return false;
+    const auto beforeSelection = m_selectedFiles;
+    ClipboardPaste();
+    return beforeSelection != m_selectedFiles;
+}
 
-    // Rename uses the logical selection rather than a fresh filesystem-filtered
-    // snapshot. Atomic asset saves can make the selected path briefly disappear.
-    if (renamePressed) {
-        const bool singleSelection =
-            m_selectedFiles.size() == 1 && !m_selectedFile.empty() && !IsVirtualSubAssetPath(m_selectedFile);
-        if (singleSelection)
-            BeginRename(m_selectedFile);
-        return;
-    }
+bool ProjectPanel::RequestDeleteSelectedAssets()
+{
+    const auto selected = GetSelectedPaths();
+    if (selected.empty() || !deleteItems)
+        return false;
+    // Selection is retained while the confirmation modal is pending. The
+    // confirmed callback owns deletion and the final selection transition.
+    deleteItems(selected);
+    return true;
+}
 
-    auto selected = GetSelectedPaths();
-    bool hasSel = !selected.empty();
+bool ProjectPanel::BeginRenameSelectedAsset(const std::string &path)
+{
+    const std::string target = path.empty() ? m_selectedFile : path;
+    if (!CanRenameSelectedAsset(target))
+        return false;
+    BeginRename(target);
+    return true;
+}
 
-    if (hasSel) {
-        if (deletePressed) {
-            if (deleteItems)
-                deleteItems(selected);
-            m_pendingCacheInvalidation = true;
-            m_selectedFile.clear();
-            m_selectedFiles.clear();
-            m_selectedSet.clear();
-            NotifySelectionChanged();
-        } else if (copyPressed)
-            ClipboardCopy(selected);
-        else if (cutPressed)
-            ClipboardCut(selected);
-        else if (pastePressed)
-            ClipboardPaste();
-    } else {
-        if (pastePressed)
-            ClipboardPaste();
-    }
+bool ProjectPanel::CreateFolderFromCommand()
+{
+    if (m_currentPath.empty() || !createFolder || !getUniqueName)
+        return false;
+    return CreateAndRename("NewFolder", "",
+                           [this](const std::string &name) { return createFolder(m_currentPath, name); });
+}
+
+bool ProjectPanel::ExecuteEditorCommand(const std::string &commandId, const std::string &argument) const
+{
+    return executeCommand && executeCommand(commandId, "context_menu", argument);
+}
+
+bool ProjectPanel::CanExecuteEditorCommand(const std::string &commandId, const std::string &argument) const
+{
+    return canExecuteCommand && canExecuteCommand(commandId, argument);
 }
 
 void ProjectPanel::HandleExternalFileDrops()
@@ -1885,6 +1887,7 @@ void ProjectPanel::CommitRename()
         }
         if (m_currentPath == m_renamingPath)
             AssignCurrentPath(newPath);
+        NotifySelectionChanged();
     }
     m_renamingPath.clear();
     m_renameSkipDeactivateFrames = 0;
@@ -1896,16 +1899,16 @@ void ProjectPanel::CancelRename()
     m_renameSkipDeactivateFrames = 0;
 }
 
-void ProjectPanel::CreateAndRename(const std::string &baseName, const std::string &extension,
+bool ProjectPanel::CreateAndRename(const std::string &baseName, const std::string &extension,
                                    std::function<std::pair<bool, std::string>(const std::string &)> createFn)
 {
     if (!getUniqueName || !createFn)
-        return;
+        return false;
 
     std::string name = getUniqueName(m_currentPath, baseName, extension);
     auto [ok, result] = createFn(name);
     if (!ok)
-        return;
+        return false;
 
     std::string fileName = name;
     if (!extension.empty() && fileName.find(extension) == std::string::npos)
@@ -1919,6 +1922,7 @@ void ProjectPanel::CreateAndRename(const std::string &baseName, const std::strin
 
     BeginRename(newPath);
     InvalidateDirCache();
+    return true;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -2662,9 +2666,6 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
         ctx->Label(Tr("project.right_click_hint"));
     }
 
-    // Keyboard shortcuts (same frame as grid so F2 can open inline rename immediately)
-    HandleKeyboardShortcuts(ctx);
-
     // Virtual scrolling
     float gridStartX = ctx->GetCursorPosX();
     float gridStartY = ctx->GetCursorPosY();
@@ -3073,13 +3074,9 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
         return;
 
     if (ctx->BeginMenu(Tr("project.create_menu"))) {
-        if (ctx->Selectable(Tr("project.create_folder"), false)) {
-            CreateAndRename("NewFolder", "", [this](const std::string &name) {
-                if (createFolder)
-                    return createFolder(m_currentPath, name);
-                return std::make_pair(false, std::string("No callback"));
-            });
-        }
+        const bool canCreateFolder = CanExecuteEditorCommand("project.create_folder");
+        if (ctx->Selectable(Tr("project.create_folder"), false, canCreateFolder ? 0 : ImGuiSelectableFlags_Disabled))
+            ExecuteEditorCommand("project.create_folder");
         ctx->Separator();
         if (ctx->Selectable(Tr("project.create_script"), false)) {
             CreateAndRename("NewComponent", ".py", [this](const std::string &name) {
@@ -3178,41 +3175,35 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
                 revealInExplorer(selectedReal);
         }
         ctx->Separator();
-        auto selectedPaths = GetSelectedPaths();
-        if (ctx->Selectable(Tr("project.copy"), false))
-            ClipboardCopy(selectedPaths);
-        if (ctx->Selectable(Tr("project.cut"), false))
-            ClipboardCut(selectedPaths);
-        if (HasClipboardItems()) {
-            if (ctx->Selectable(Tr("project.paste"), false))
-                ClipboardPaste();
-        }
+        const bool canCopy = CanExecuteEditorCommand("edit.copy");
+        if (ctx->Selectable(Tr("project.copy"), false, canCopy ? 0 : ImGuiSelectableFlags_Disabled))
+            ExecuteEditorCommand("edit.copy");
+        const bool canCut = CanExecuteEditorCommand("edit.cut");
+        if (ctx->Selectable(Tr("project.cut"), false, canCut ? 0 : ImGuiSelectableFlags_Disabled))
+            ExecuteEditorCommand("edit.cut");
+        const bool canPaste = CanExecuteEditorCommand("edit.paste");
+        if (ctx->Selectable(Tr("project.paste"), false, canPaste ? 0 : ImGuiSelectableFlags_Disabled))
+            ExecuteEditorCommand("edit.paste");
         ctx->Separator();
-        bool canRename = (selectedPaths.size() == 1) && !IsVirtualSubAssetPath(m_selectedFile);
-        if (!canRename)
-            ctx->BeginDisabled();
+        const bool canRename = CanExecuteEditorCommand("edit.rename", m_selectedFile);
         const std::string renameLabel = Tr("project.rename");
-        if (ctx->Selectable(renameLabel, false))
-            BeginRename(m_selectedFile);
+        if (ctx->Selectable(renameLabel, false, canRename ? 0 : ImGuiSelectableFlags_Disabled))
+            ExecuteEditorCommand("edit.rename", m_selectedFile);
         ctx->RecordSemanticItem("menu_item", renameLabel, canRename, "project.context.rename");
-        if (!canRename)
-            ctx->EndDisabled();
+        const bool canDelete = CanExecuteEditorCommand("edit.delete");
         const std::string deleteLabel = Tr("project.delete");
-        if (ctx->Selectable(deleteLabel, false)) {
-            if (deleteItems)
-                deleteItems(selectedPaths);
-        }
-        ctx->RecordSemanticItem("menu_item", deleteLabel, true, "project.context.delete");
+        if (ctx->Selectable(deleteLabel, false, canDelete ? 0 : ImGuiSelectableFlags_Disabled))
+            ExecuteEditorCommand("edit.delete");
+        ctx->RecordSemanticItem("menu_item", deleteLabel, canDelete, "project.context.delete");
     } else {
         ctx->Separator();
         if (ctx->Selectable(Tr("project.reveal_in_explorer"), false)) {
             if (revealInExplorer)
                 revealInExplorer(m_currentPath);
         }
-        if (HasClipboardItems()) {
-            if (ctx->Selectable(Tr("project.paste"), false))
-                ClipboardPaste();
-        }
+        const bool canPaste = CanExecuteEditorCommand("edit.paste");
+        if (ctx->Selectable(Tr("project.paste"), false, canPaste ? 0 : ImGuiSelectableFlags_Disabled))
+            ExecuteEditorCommand("edit.paste");
     }
 
     ctx->EndPopup();

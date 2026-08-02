@@ -123,8 +123,8 @@ void MenuBarPanel::HandleShortcuts(InxGUIContext *ctx)
         if (pressedOnce(ImGuiKey_S))
             dispatch(shift ? "Ctrl+Shift+S" : "Ctrl+S");
 
-        if (!shift && pressedOnce(ImGuiKey_N))
-            dispatch("Ctrl+N");
+        if (pressedOnce(ImGuiKey_N))
+            dispatch(shift ? "Ctrl+Shift+N" : "Ctrl+N");
 
         if (pressedOnce(ImGuiKey_Z))
             dispatch(shift ? "Ctrl+Shift+Z" : "Ctrl+Z");
