@@ -103,10 +103,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.game_view: Optional[GameViewPanel] = None
         self.ui_editor: Optional[UIEditorPanel] = None
 
-        # Selection state
-        self._prev_selection = [0]  # kept for scene-change cleanup
-        self._prev_selection_ids: list = []  # for undo recording
-        self._prev_selected_file: str = ""
+        # Last authoritative typed selection published to the journal.
         self._prev_selection_snapshot = None
 
         # Progress tracking for launcher splash
@@ -441,19 +438,12 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         else:
             self.inspector_panel.clear_selected_file()
 
-    # ── Selection undo helpers ─────────────────────────────────────────
-
-    # Structural command types whose associated selection changes should
-    # not be recorded as separate undo entries.
-    _STRUCTURAL_CMD_TYPES = None  # lazily populated
-
     def _setup_scene_change_cleanup(self):
         def on_scene_changed():
             document_id = self.scene_file_manager.document_id
             if document_id:
                 self.scene_view.bind_document(document_id)
                 self.game_view.bind_document(document_id)
-            self._prev_selection[0] = 0
             from Infernux.engine.interaction import SelectionService
             SelectionService.instance().clear(
                 reason="scene_changed",

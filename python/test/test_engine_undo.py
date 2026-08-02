@@ -94,8 +94,7 @@ ReparentCommand = _undo_mod.ReparentCommand
 MoveGameObjectCommand = _undo_mod.MoveGameObjectCommand
 MaterialDocumentCommand = _undo_mod.MaterialDocumentCommand
 CompoundCommand = _undo_mod.CompoundCommand
-SelectionCommand = _undo_mod.SelectionCommand
-EditorSelectionCommand = _undo_mod.EditorSelectionCommand
+GlobalSelectionCommand = _undo_mod.GlobalSelectionCommand
 PrefabModeCommand = _undo_mod.PrefabModeCommand
 PrefabUnpackCommand = _undo_mod.PrefabUnpackCommand
 PrefabRevertCommand = _undo_mod.PrefabRevertCommand
@@ -623,56 +622,47 @@ class TestUndoCommandBase:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# SelectionCommand
+# GlobalSelectionCommand
 # ══════════════════════════════════════════════════════════════════════
 
-class TestSelectionCommand:
-    def test_undo_calls_apply_with_old_ids(self):
+class TestGlobalSelectionCommand:
+    def test_undo_redo_replay_typed_snapshots(self):
         applied = []
-        cmd = SelectionCommand([1, 2], [3], apply_fn=lambda ids: applied.append(list(ids)))
+        old = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(1), SelectionTarget.scene_object(2)),
+            owner_id="hierarchy",
+        )
+        new = SelectionSnapshot.create(
+            (SelectionTarget.asset("Assets/test.mat"),),
+            owner_id="project",
+        )
+        cmd = GlobalSelectionCommand(old, new, applied.append)
         cmd.undo()
-        assert applied == [[1, 2]]
-
-    def test_redo_calls_apply_with_new_ids(self):
-        applied = []
-        cmd = SelectionCommand([1], [2, 3], apply_fn=lambda ids: applied.append(list(ids)))
         cmd.redo()
-        assert applied == [[2, 3]]
+        assert applied == [old, new]
 
     def test_execute_is_noop(self):
         applied = []
-        cmd = SelectionCommand([], [1], apply_fn=lambda ids: applied.append(ids))
+        empty = SelectionSnapshot()
+        selected = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(1),),
+            owner_id="hierarchy",
+        )
+        cmd = GlobalSelectionCommand(empty, selected, applied.append)
         cmd.execute()
         assert applied == []
 
-    def test_marks_dirty_false(self):
-        cmd = SelectionCommand([], [], apply_fn=lambda ids: None)
-        assert cmd.marks_dirty is False
-
-    def test_default_description(self):
-        cmd = SelectionCommand([], [], apply_fn=lambda ids: None)
-        assert cmd.description == "Change Selection"
-
-    def test_custom_description(self):
-        cmd = SelectionCommand([], [], apply_fn=lambda ids: None, description="Pick Object")
-        assert cmd.description == "Pick Object"
-
-    def test_supports_redo(self):
-        cmd = SelectionCommand([], [1], apply_fn=lambda ids: None)
-        assert cmd.supports_redo is True
-
-
-class TestEditorSelectionCommand:
-    def test_undo_redo_restore_object_and_file_state(self):
-        applied = []
-        cmd = EditorSelectionCommand(
-            [1], "",
-            [], "Assets/test.mat",
-            apply_fn=lambda ids, path: applied.append((list(ids), path)),
+    def test_is_non_dirty_and_exposes_explicit_context(self):
+        old = SelectionSnapshot()
+        new = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(1),),
+            owner_id="hierarchy",
         )
-        cmd.undo()
-        cmd.redo()
-        assert applied == [([1], ""), ([], "Assets/test.mat")]
+        cmd = GlobalSelectionCommand(old, new, lambda _snapshot: None)
+        assert cmd.marks_dirty is False
+        assert cmd.description == "Change Selection"
+        assert cmd.before_selection_snapshot == old
+        assert cmd.after_selection_snapshot == new
 
 
 class TestPrefabUnpackCommand:
@@ -1080,9 +1070,17 @@ class TestUndoManagerSavePoint:
 
     def test_selection_command_does_not_dirty(self, _reset_undo_manager):
         mgr = _reset_undo_manager
-        cmd = SelectionCommand([1], [2], apply_fn=lambda ids: None)
+        old = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(1),),
+            owner_id="hierarchy",
+        )
+        new = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(2),),
+            owner_id="hierarchy",
+        )
+        cmd = GlobalSelectionCommand(old, new, lambda _snapshot: None)
         mgr.record(cmd)
-        # SelectionCommand has marks_dirty=False, so save point unchanged
+        # Selection navigation has marks_dirty=False, so save point unchanged.
         assert mgr.is_at_save_point
 
 
@@ -1310,24 +1308,23 @@ class TestSelectionUndoIntegration:
         yield
         SelectionManager._instance = old
 
-    def _apply_fn(self, ids):
-        self.sel.set_ids(ids)
-
-    def test_editor_navigation_pushes_non_dirty_undo(self, _reset_undo_manager):
+    @staticmethod
+    def _install_recording_listener():
         module = _direct_import(
             "Infernux.engine._bootstrap_selection",
             "engine/_bootstrap_selection.py",
         )
-
         selection = module.BootstrapSelectionMixin()
         selection.window_manager = None
         selection._present_selection_snapshot = lambda _snapshot: None
         selection._prev_selection_snapshot = SelectionService.instance().snapshot
-        selection._prev_selection_ids = []
-        selection._prev_selected_file = ""
         SelectionService.instance().add_listener(
             selection._on_global_selection_changed
         )
+        return selection
+
+    def test_editor_navigation_pushes_non_dirty_undo(self, _reset_undo_manager):
+        self._install_recording_listener()
         SelectionService.instance().select(
             SelectionTarget.scene_object(42),
             owner_id="hierarchy",
@@ -1335,9 +1332,8 @@ class TestSelectionUndoIntegration:
         )
 
         assert len(_reset_undo_manager._undo_stack) == 1
-        assert isinstance(_reset_undo_manager._undo_stack[0], EditorSelectionCommand)
+        assert isinstance(_reset_undo_manager._undo_stack[0], GlobalSelectionCommand)
         assert not _reset_undo_manager._undo_stack[0].marks_dirty
-        assert selection._prev_selection_ids == [42]
 
         _reset_undo_manager.undo()
         assert SelectionService.instance().snapshot.is_empty
@@ -1348,53 +1344,30 @@ class TestSelectionUndoIntegration:
             == SelectionTarget.scene_object(42)
         )
 
-    def test_select_undo_redo_cycle(self, _reset_undo_manager, _fresh_selection):
+    def test_chained_typed_selection_uses_one_global_cursor(self, _reset_undo_manager):
         mgr = _reset_undo_manager
-        sel = self.sel
-        # Simulate: nothing selected → select [1]
-        mgr.record(SelectionCommand([], [1], self._apply_fn))
-        sel.set_ids([1])
-        assert sel.get_primary() == 1
+        self._install_recording_listener()
+        service = SelectionService.instance()
+        service.select(
+            SelectionTarget.scene_object(1),
+            owner_id="hierarchy",
+            record_history=True,
+        )
+        service.select(
+            SelectionTarget.scene_object(2),
+            owner_id="scene_view",
+            record_history=True,
+        )
+        assert len(mgr.action_journal.entries) == 2
 
         mgr.undo()
-        assert sel.get_ids() == []
+        assert service.snapshot.primary == SelectionTarget.scene_object(1)
+
+        mgr.undo()
+        assert service.snapshot == SelectionSnapshot()
 
         mgr.redo()
-        assert sel.get_ids() == [1]
-
-    def test_multi_selection_undo(self, _reset_undo_manager, _fresh_selection):
-        mgr = _reset_undo_manager
-        sel = self.sel
-
-        mgr.record(SelectionCommand([], [1, 2, 3], self._apply_fn))
-        sel.set_ids([1, 2, 3])
-
-        mgr.undo()
-        assert sel.get_ids() == []
-
-    def test_chained_selection_undo(self, _reset_undo_manager, _fresh_selection):
-        mgr = _reset_undo_manager
-        sel = self.sel
-
-        # Step 1: select [1]
-        c1 = SelectionCommand([], [1], self._apply_fn)
-        c1.timestamp = 0.0
-        mgr.record(c1)
-        sel.set_ids([1])
-
-        # Step 2: select [2]
-        c2 = SelectionCommand([1], [2], self._apply_fn)
-        c2.timestamp = 10.0
-        mgr.record(c2)
-        sel.set_ids([2])
-
-        # Undo step 2 → back to [1]
-        mgr.undo()
-        assert sel.get_ids() == [1]
-
-        # Undo step 1 → back to []
-        mgr.undo()
-        assert sel.get_ids() == []
+        assert service.snapshot.primary == SelectionTarget.scene_object(1)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1498,10 +1471,77 @@ class TestStructuralCommandSelectionContext:
         assert scene.object is None
         assert len(manager.action_journal.entries) == 1
 
-    def test_create_undo_clears_selection_without_private_callback(self):
-        self.sel.set_ids([99])
+    def test_create_undo_prunes_only_destroyed_selection(self, monkeypatch):
+        class _Transform:
+            @staticmethod
+            def get_sibling_index():
+                return 0
+
+        class _Object:
+            id = 99
+            transform = _Transform()
+
+            @staticmethod
+            def get_parent():
+                return None
+
+            @staticmethod
+            def get_children():
+                return []
+
+        class _Scene:
+            @staticmethod
+            def find_by_id(object_id):
+                return _Object() if object_id == 99 else None
+
+        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: _Scene())
+        monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 99})
+        monkeypatch.setattr(
+            _structural_mod,
+            "_destroy_game_object_immediately",
+            lambda _scene, _obj: None,
+        )
+        self.sel.set_ids([7, 99])
+
         CreateGameObjectCommand(99, "Create").undo()
-        assert SelectionService.instance().snapshot == SelectionSnapshot()
+
+        assert self.sel.get_ids() == [7]
+
+    def test_deleting_unselected_object_preserves_selection(self, monkeypatch):
+        class _Transform:
+            @staticmethod
+            def get_sibling_index():
+                return 0
+
+        class _Object:
+            id = 42
+            transform = _Transform()
+
+            @staticmethod
+            def get_parent():
+                return None
+
+            @staticmethod
+            def get_children():
+                return []
+
+        class _Scene:
+            @staticmethod
+            def find_by_id(object_id):
+                return _Object() if object_id == 42 else None
+
+        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: _Scene())
+        monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 42})
+        monkeypatch.setattr(
+            _structural_mod,
+            "_destroy_game_object_immediately",
+            lambda _scene, _obj: None,
+        )
+        self.sel.set_ids([7])
+
+        DeleteGameObjectCommand(42, "Delete").execute()
+
+        assert self.sel.get_ids() == [7]
 
 
 class TestDeleteGameObjectsCommand:

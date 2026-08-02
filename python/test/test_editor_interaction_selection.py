@@ -315,8 +315,6 @@ def test_typed_selection_undo_replays_without_legacy_domain_loss():
     bootstrap = BootstrapSelectionMixin()
     bootstrap.window_manager = None
     bootstrap._prev_selection_snapshot = SelectionSnapshot()
-    bootstrap._prev_selection_ids = []
-    bootstrap._prev_selected_file = ""
 
     graph = SelectionSnapshot.create(
         (SelectionTarget.graph_element("graph:smoke", "node:7", sub_kind="node"),),
@@ -333,7 +331,7 @@ def test_typed_selection_undo_replays_without_legacy_domain_loss():
     )
     bootstrap._apply_selection_snapshot(component)
     assert service.snapshot == component
-    assert bootstrap._prev_selection_ids == [42]
+    assert bootstrap._prev_selection_snapshot == component
 
     subresource = SelectionSnapshot.create(
         (
@@ -345,7 +343,7 @@ def test_typed_selection_undo_replays_without_legacy_domain_loss():
     )
     bootstrap._apply_selection_snapshot(subresource)
     assert service.snapshot == subresource
-    assert bootstrap._prev_selected_file == subresource.primary.document_id
+    assert bootstrap._prev_selection_snapshot == subresource
 
 
 def test_scene_box_selection_preserves_primary_and_anchor():

@@ -256,66 +256,16 @@ class BootstrapSelectionMixin:
         record: bool = True,
     ):
         from Infernux.engine.ui.asset_resource_preview import release_all_preview_authoring
-        from Infernux.engine.interaction import (
-            SelectionDomain,
-            SelectionSnapshot,
-            SelectionTarget,
-        )
+        from Infernux.engine.interaction import SelectionSnapshot
         from Infernux.engine.undo import GlobalSelectionCommand, UndoManager
 
         release_all_preview_authoring()
 
-        primary = next_snapshot.primary
-        next_file = (
-            (
-                primary.target_id
-                if primary.domain is SelectionDomain.ASSET
-                else primary.document_id
-            )
-            if primary is not None
-            and primary.domain in (
-                SelectionDomain.ASSET,
-                SelectionDomain.ASSET_SUBRESOURCE,
-            )
-            else ""
-        )
-        if next_snapshot.domain is SelectionDomain.COMPONENT:
-            next_ids = list(dict.fromkeys(
-                object_id
-                for object_id, _component_id in (
-                    target.component_ids() for target in next_snapshot.targets
-                )
-                if object_id
-            ))
-        else:
-            next_ids = [
-                target.scene_object_id()
-                for target in next_snapshot.targets
-                if target.domain is SelectionDomain.SCENE_OBJECT
-            ]
         if previous_snapshot is None:
             previous_snapshot = getattr(self, "_prev_selection_snapshot", None)
         if previous_snapshot is None:
-            previous_file = getattr(self, "_prev_selected_file", "") or ""
-            previous_ids = list(getattr(self, "_prev_selection_ids", []) or [])
-            if previous_file:
-                previous_snapshot = SelectionSnapshot.create(
-                    (SelectionTarget.asset(previous_file),),
-                    owner_id="project",
-                )
-            else:
-                previous_targets = tuple(
-                    SelectionTarget.scene_object(object_id)
-                    for object_id in previous_ids
-                    if int(object_id) > 0
-                )
-                previous_snapshot = SelectionSnapshot.create(
-                    previous_targets,
-                    owner_id="hierarchy" if previous_targets else "",
-                )
+            previous_snapshot = SelectionSnapshot()
         self._prev_selection_snapshot = next_snapshot
-        self._prev_selection_ids = next_ids
-        self._prev_selected_file = next_file
 
         if not record or previous_snapshot == next_snapshot:
             return
@@ -328,66 +278,13 @@ class BootstrapSelectionMixin:
             self._apply_selection_snapshot,
         ))
 
-    def _apply_editor_selection_undo(self, ids: list, file_path: str):
-        from Infernux.engine.interaction import SelectionSnapshot, SelectionTarget
-
-        file_path = file_path or ""
-        if file_path:
-            snapshot = SelectionSnapshot.create(
-                (SelectionTarget.asset(file_path),),
-                owner_id="project",
-            )
-        else:
-            targets = tuple(
-                SelectionTarget.scene_object(object_id)
-                for object_id in ids
-                if int(object_id) > 0
-            )
-            snapshot = SelectionSnapshot.create(
-                targets,
-                owner_id="hierarchy" if targets else "",
-            )
-        self._apply_selection_snapshot(snapshot)
-
     def _apply_selection_snapshot(self, snapshot):
-        from Infernux.engine.interaction import SelectionDomain, SelectionService
+        from Infernux.engine.interaction import SelectionService
 
         service = SelectionService.instance()
         service.apply_snapshot(snapshot, reason="undo", record_history=False)
         self._prev_selection_snapshot = snapshot
-        primary = snapshot.primary
-        self._prev_selected_file = (
-            (
-                primary.target_id
-                if primary.domain is SelectionDomain.ASSET
-                else primary.document_id
-            )
-            if primary is not None
-            and primary.domain in (
-                SelectionDomain.ASSET,
-                SelectionDomain.ASSET_SUBRESOURCE,
-            )
-            else ""
-        )
-        if snapshot.domain is SelectionDomain.COMPONENT:
-            self._prev_selection_ids = list(dict.fromkeys(
-                object_id
-                for object_id, _component_id in (
-                    target.component_ids() for target in snapshot.targets
-                )
-                if object_id
-            ))
-        else:
-            self._prev_selection_ids = [
-                target.scene_object_id()
-                for target in snapshot.targets
-                if target.domain is SelectionDomain.SCENE_OBJECT
-            ]
         window_manager = getattr(self, "window_manager", None)
         if window_manager is not None and snapshot.owner_id:
             window_manager.focus_window(snapshot.owner_id)
-
-    def _apply_selection_undo(self, ids: list):
-        """Restore a selection state during undo/redo."""
-        self._apply_editor_selection_undo(ids, "")
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, List, Optional
+from typing import List, Optional
 
 from Infernux.engine.undo._base import UndoCommand
 from Infernux.engine.undo._helpers import (
@@ -13,10 +13,56 @@ from Infernux.engine.undo._helpers import (
 )
 
 
-def _clear_selection_after_structure_change(reason: str) -> None:
-    from Infernux.engine.interaction import SelectionService
+def _object_tree_ids(root) -> set[int]:
+    result: set[int] = set()
+    pending = [root] if root is not None else []
+    while pending:
+        obj = pending.pop()
+        object_id = int(getattr(obj, "id", 0) or 0)
+        if object_id <= 0 or object_id in result:
+            continue
+        result.add(object_id)
+        try:
+            pending.extend(obj.get_children())
+        except (AttributeError, ReferenceError, RuntimeError):
+            pass
+    return result
 
-    SelectionService.instance().clear(
+
+def _prune_destroyed_selection(object_ids: set[int], reason: str) -> None:
+    if not object_ids:
+        return
+    from Infernux.engine.interaction import (
+        SelectionDomain,
+        SelectionService,
+        SelectionSnapshot,
+    )
+
+    selection = SelectionService.instance()
+    before = selection.snapshot
+    kept = []
+    for target in before.targets:
+        if (
+            target.domain is SelectionDomain.SCENE_OBJECT
+            and target.scene_object_id() in object_ids
+        ):
+            continue
+        if (
+            target.domain is SelectionDomain.COMPONENT
+            and target.component_ids()[0] in object_ids
+        ):
+            continue
+        kept.append(target)
+    if len(kept) == len(before.targets):
+        return
+    snapshot = SelectionSnapshot.create(
+        kept,
+        owner_id=before.owner_id if kept else "",
+        primary=before.primary if before.primary in kept else None,
+        anchor=before.anchor if before.anchor in kept else None,
+    )
+    selection.apply_snapshot(
+        snapshot,
         reason=reason,
         record_history=False,
     )
@@ -58,13 +104,17 @@ class CreateGameObjectCommand(UndoCommand):
         if scene:
             obj = scene.find_by_id(self._object_id)
             if obj:
+                destroyed_ids = _object_tree_ids(obj)
                 self._document = _snapshot_object(obj)
                 parent = obj.get_parent()
                 self._parent_id = parent.id if parent else None
                 t = getattr(obj, "transform", None)
                 self._sibling_index = t.get_sibling_index() if t else 0
                 _destroy_game_object_immediately(scene, obj)
-        _clear_selection_after_structure_change("undo_create_game_object")
+                _prune_destroyed_selection(
+                    destroyed_ids,
+                    "undo_create_game_object",
+                )
 
     def redo(self) -> None:
         if self._document is not None:
@@ -100,8 +150,9 @@ class DeleteGameObjectCommand(UndoCommand):
         if scene:
             obj = scene.find_by_id(self._object_id)
             if obj:
+                destroyed_ids = _object_tree_ids(obj)
                 _destroy_game_object_immediately(scene, obj)
-        _clear_selection_after_structure_change("delete_game_object")
+                _prune_destroyed_selection(destroyed_ids, "delete_game_object")
 
     def undo(self) -> None:
         if self._document is not None:
@@ -170,15 +221,16 @@ class DeleteGameObjectsCommand(UndoCommand):
     def execute(self) -> None:
         scene = _get_active_scene()
         if not scene:
-            _clear_selection_after_structure_change("delete_game_objects")
             return
         # Destroy from the end of each sibling list so earlier indices do not
         # shift while the transaction is being applied.
+        destroyed_ids: set[int] = set()
         for entry in sorted(self._entries, key=self._entry_order, reverse=True):
             obj = scene.find_by_id(entry["object_id"])
             if obj is not None:
+                destroyed_ids.update(_object_tree_ids(obj))
                 _destroy_game_object_immediately(scene, obj)
-        _clear_selection_after_structure_change("delete_game_objects")
+        _prune_destroyed_selection(destroyed_ids, "delete_game_objects")
 
     def undo(self) -> None:
         from Infernux.engine.undo._recreate import _recreate_game_object_from_document
@@ -272,57 +324,7 @@ class MoveGameObjectCommand(UndoCommand):
             transform.set_sibling_index(max(0, int(sibling_index)))
 
 
-class SelectionCommand(UndoCommand):
-    """Record a selection change.  Does not mark the scene dirty."""
-
-    marks_dirty: bool = False
-
-    def __init__(self, old_ids: List[int], new_ids: List[int],
-                 apply_fn: Callable[[List[int]], None],
-                 description: str = ""):
-        super().__init__(description or "Change Selection")
-        self._old_ids = list(old_ids)
-        self._new_ids = list(new_ids)
-        self._apply_fn = apply_fn
-
-    def execute(self) -> None:
-        pass
-
-    def undo(self) -> None:
-        self._apply_fn(self._old_ids)
-
-    def redo(self) -> None:
-        self._apply_fn(self._new_ids)
-
-
-class EditorSelectionCommand(UndoCommand):
-    """Record editor selection state across hierarchy and project panels."""
-
-    marks_dirty: bool = False
-
-    def __init__(self,
-                 old_object_ids: List[int], old_file_path: str,
-                 new_object_ids: List[int], new_file_path: str,
-                 apply_fn: Callable[[List[int], str], None],
-                 description: str = ""):
-        super().__init__(description or "Change Selection")
-        self._old_object_ids = list(old_object_ids)
-        self._old_file_path = old_file_path or ""
-        self._new_object_ids = list(new_object_ids)
-        self._new_file_path = new_file_path or ""
-        self._apply_fn = apply_fn
-
-    def execute(self) -> None:
-        pass
-
-    def undo(self) -> None:
-        self._apply_fn(self._old_object_ids, self._old_file_path)
-
-    def redo(self) -> None:
-        self._apply_fn(self._new_object_ids, self._new_file_path)
-
-
-class GlobalSelectionCommand(EditorSelectionCommand):
+class GlobalSelectionCommand(UndoCommand):
     """Replay a typed global selection without dirtying its document."""
 
     marks_dirty: bool = False

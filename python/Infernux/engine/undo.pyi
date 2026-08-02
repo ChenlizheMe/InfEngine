@@ -346,24 +346,6 @@ class RemovePyComponentCommand(UndoCommand):
     def undo(self) -> None: ...
 
 
-# ── Selection / Compound commands ─────────────────────────────────────
-
-class SelectionCommand(UndoCommand):
-    """Records a selection state change for undo/redo."""
-
-    marks_dirty: bool
-
-    def __init__(
-        self,
-        old_ids: List[int],
-        new_ids: List[int],
-        restore_fn: Callable[[list[int]], None],
-    ) -> None: ...
-    def execute(self) -> None: ...
-    def undo(self) -> None: ...
-    def redo(self) -> None: ...
-
-
 class ProjectAssetRenameCommand(UndoCommand):
     """Records a GUID-stable rename in the global editor history."""
 
