@@ -12,10 +12,13 @@ class SelectionDomain(str, Enum):
 
     SCENE_OBJECT = "scene_object"
     ASSET = "asset"
+    ASSET_SUBRESOURCE = "asset_subresource"
     COMPONENT = "component"
     GRAPH_ELEMENT = "graph_element"
     TIMELINE_ELEMENT = "timeline_element"
     UI_ELEMENT = "ui_element"
+    DIAGNOSTIC_ENTRY = "diagnostic_entry"
+    SETTINGS_ELEMENT = "settings_element"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +58,154 @@ class SelectionTarget:
             raise ValueError("asset selection requires a path")
         return cls(SelectionDomain.ASSET, normalized)
 
+    @classmethod
+    def asset_subresource(
+        cls,
+        asset_path: str,
+        subresource_id: str,
+        *,
+        sub_kind: str,
+    ) -> "SelectionTarget":
+        from Infernux.engine.path_utils import lexical_path
+
+        normalized = lexical_path(asset_path)
+        identifier = str(subresource_id or "").strip()
+        kind = str(sub_kind or "").strip()
+        if not normalized or not identifier or not kind:
+            raise ValueError(
+                "asset subresource selection requires asset path, id, and kind"
+            )
+        return cls(
+            SelectionDomain.ASSET_SUBRESOURCE,
+            identifier,
+            document_id=normalized,
+            sub_kind=kind,
+        )
+
+    @classmethod
+    def component(
+        cls,
+        object_id: int,
+        component_id: int,
+        *,
+        document_id: str = "",
+        sub_kind: str = "",
+    ) -> "SelectionTarget":
+        object_id = int(object_id)
+        component_id = int(component_id)
+        if object_id <= 0 or component_id <= 0:
+            raise ValueError(
+                "component selection requires positive object and component ids"
+            )
+        return cls(
+            SelectionDomain.COMPONENT,
+            f"{object_id}:{component_id}",
+            document_id=document_id,
+            sub_kind=sub_kind,
+        )
+
+    @classmethod
+    def graph_element(
+        cls,
+        document_id: str,
+        element_id: str,
+        *,
+        sub_kind: str,
+    ) -> "SelectionTarget":
+        return cls._document_element(
+            SelectionDomain.GRAPH_ELEMENT,
+            document_id,
+            element_id,
+            sub_kind,
+            "graph",
+        )
+
+    @classmethod
+    def timeline_element(
+        cls,
+        document_id: str,
+        element_id: str,
+        *,
+        sub_kind: str,
+    ) -> "SelectionTarget":
+        return cls._document_element(
+            SelectionDomain.TIMELINE_ELEMENT,
+            document_id,
+            element_id,
+            sub_kind,
+            "timeline",
+        )
+
+    @classmethod
+    def ui_element(
+        cls,
+        document_id: str,
+        element_id: str,
+        *,
+        sub_kind: str = "",
+    ) -> "SelectionTarget":
+        return cls._document_element(
+            SelectionDomain.UI_ELEMENT,
+            document_id,
+            element_id,
+            sub_kind,
+            "UI",
+            require_kind=False,
+        )
+
+    @classmethod
+    def diagnostic_entry(
+        cls,
+        owner_id: str,
+        entry_id: str,
+        *,
+        sub_kind: str = "log",
+    ) -> "SelectionTarget":
+        return cls._document_element(
+            SelectionDomain.DIAGNOSTIC_ENTRY,
+            owner_id,
+            entry_id,
+            sub_kind,
+            "diagnostic",
+        )
+
+    @classmethod
+    def settings_element(
+        cls,
+        document_id: str,
+        element_id: str,
+        *,
+        sub_kind: str,
+    ) -> "SelectionTarget":
+        return cls._document_element(
+            SelectionDomain.SETTINGS_ELEMENT,
+            document_id,
+            element_id,
+            sub_kind,
+            "settings",
+        )
+
+    @classmethod
+    def _document_element(
+        cls,
+        domain: SelectionDomain,
+        document_id: str,
+        element_id: str,
+        sub_kind: str,
+        label: str,
+        *,
+        require_kind: bool = True,
+    ) -> "SelectionTarget":
+        document = str(document_id or "").strip()
+        identifier = str(element_id or "").strip()
+        kind = str(sub_kind or "").strip()
+        if not document or not identifier or (require_kind and not kind):
+            suffix = ", and kind" if require_kind else ""
+            raise ValueError(
+                f"{label} element selection requires document, id{suffix}"
+            )
+        return cls(domain, identifier, document_id=document, sub_kind=kind)
+
     def scene_object_id(self) -> int:
         if self.domain is not SelectionDomain.SCENE_OBJECT:
             return 0
@@ -62,6 +213,15 @@ class SelectionTarget:
             return int(self.target_id)
         except (TypeError, ValueError):
             return 0
+
+    def component_ids(self) -> tuple[int, int]:
+        if self.domain is not SelectionDomain.COMPONENT:
+            return 0, 0
+        try:
+            object_id, component_id = self.target_id.split(":", 1)
+            return int(object_id), int(component_id)
+        except (TypeError, ValueError):
+            return 0, 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,9 +234,29 @@ class SelectionSnapshot:
     anchor_index: int = -1
 
     def __post_init__(self) -> None:
-        unique = tuple(dict.fromkeys(self.targets))
-        if unique != self.targets:
-            object.__setattr__(self, "targets", unique)
+        owner_id = str(self.owner_id or "").strip()
+        object.__setattr__(self, "owner_id", owner_id)
+        original = tuple(self.targets)
+        if any(not isinstance(target, SelectionTarget) for target in original):
+            raise TypeError("selection snapshot targets must be SelectionTarget values")
+        if original and not owner_id:
+            raise ValueError("non-empty selection snapshot requires an owner")
+        domains = {target.domain for target in original}
+        if len(domains) > 1:
+            raise ValueError("selection snapshot cannot mix selection domains")
+
+        original_primary = (
+            original[self.primary_index]
+            if 0 <= self.primary_index < len(original)
+            else None
+        )
+        original_anchor = (
+            original[self.anchor_index]
+            if 0 <= self.anchor_index < len(original)
+            else None
+        )
+        unique = tuple(dict.fromkeys(original))
+        object.__setattr__(self, "targets", unique)
 
         count = len(unique)
         if count == 0:
@@ -84,10 +264,18 @@ class SelectionSnapshot:
             object.__setattr__(self, "anchor_index", -1)
             return
 
-        if not 0 <= self.primary_index < count:
-            object.__setattr__(self, "primary_index", count - 1)
-        if not 0 <= self.anchor_index < count:
-            object.__setattr__(self, "anchor_index", self.primary_index)
+        primary_index = (
+            unique.index(original_primary)
+            if original_primary in unique
+            else count - 1
+        )
+        anchor_index = (
+            unique.index(original_anchor)
+            if original_anchor in unique
+            else primary_index
+        )
+        object.__setattr__(self, "primary_index", primary_index)
+        object.__setattr__(self, "anchor_index", anchor_index)
 
     @classmethod
     def create(

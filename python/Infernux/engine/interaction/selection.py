@@ -64,7 +64,12 @@ class SelectionService:
         targets: Sequence[SelectionTarget],
     ) -> None:
         owner_id = str(owner_id or "")
-        self._ordered_targets[owner_id] = tuple(dict.fromkeys(targets))
+        ordered = tuple(dict.fromkeys(targets))
+        if ordered and not owner_id:
+            raise ValueError("ordered selection targets require an owner")
+        if len({target.domain for target in ordered}) > 1:
+            raise ValueError("ordered selection targets cannot mix domains")
+        self._ordered_targets[owner_id] = ordered
 
     def replace(
         self,

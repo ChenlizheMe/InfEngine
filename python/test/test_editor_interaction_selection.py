@@ -8,6 +8,8 @@ from Infernux.engine.interaction import (
 )
 from Infernux.engine.ui.selection_manager import SelectionManager
 
+import pytest
+
 
 def test_selection_service_has_one_active_domain():
     service = SelectionService()
@@ -17,6 +19,68 @@ def test_selection_service_has_one_active_domain():
 
     assert service.snapshot.domain is SelectionDomain.ASSET
     assert service.snapshot.primary == SelectionTarget.asset("Assets/Test.mat")
+
+
+def test_selection_snapshot_rejects_mixed_domains():
+    with pytest.raises(ValueError, match="cannot mix"):
+        SelectionSnapshot.create(
+            (
+                SelectionTarget.scene_object(7),
+                SelectionTarget.asset("Assets/Test.mat"),
+            ),
+            owner_id="invalid",
+        )
+
+    with pytest.raises(ValueError, match="requires an owner"):
+        SelectionSnapshot.create(
+            (SelectionTarget.scene_object(7),),
+            owner_id="",
+        )
+
+
+def test_selection_targets_cover_every_planned_editor_domain():
+    targets = (
+        SelectionTarget.asset_subresource(
+            "Assets/Robot.fbx", "mesh:body", sub_kind="submesh"
+        ),
+        SelectionTarget.component(42, 7, document_id="scene:main"),
+        SelectionTarget.graph_element("graph:smoke", "node:1", sub_kind="node"),
+        SelectionTarget.timeline_element(
+            "timeline:intro", "key:8", sub_kind="keyframe"
+        ),
+        SelectionTarget.ui_element("scene:main", "button:play"),
+        SelectionTarget.diagnostic_entry("console", "log:91"),
+        SelectionTarget.settings_element(
+            "settings:build", "scene:main", sub_kind="build_scene"
+        ),
+    )
+
+    assert [target.domain for target in targets] == [
+        SelectionDomain.ASSET_SUBRESOURCE,
+        SelectionDomain.COMPONENT,
+        SelectionDomain.GRAPH_ELEMENT,
+        SelectionDomain.TIMELINE_ELEMENT,
+        SelectionDomain.UI_ELEMENT,
+        SelectionDomain.DIAGNOSTIC_ENTRY,
+        SelectionDomain.SETTINGS_ELEMENT,
+    ]
+    assert targets[1].component_ids() == (42, 7)
+
+
+def test_selection_snapshot_deduplication_preserves_anchor_identity():
+    first = SelectionTarget.scene_object(1)
+    second = SelectionTarget.scene_object(2)
+
+    snapshot = SelectionSnapshot(
+        "hierarchy",
+        (first, first, second),
+        primary_index=2,
+        anchor_index=1,
+    )
+
+    assert snapshot.targets == (first, second)
+    assert snapshot.primary == second
+    assert snapshot.anchor == first
 
 
 def test_selection_range_keeps_stable_anchor_and_clicked_primary():

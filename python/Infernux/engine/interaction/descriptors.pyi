@@ -4,10 +4,13 @@ from typing import Iterable, Optional
 class SelectionDomain(str, Enum):
     SCENE_OBJECT: SelectionDomain
     ASSET: SelectionDomain
+    ASSET_SUBRESOURCE: SelectionDomain
     COMPONENT: SelectionDomain
     GRAPH_ELEMENT: SelectionDomain
     TIMELINE_ELEMENT: SelectionDomain
     UI_ELEMENT: SelectionDomain
+    DIAGNOSTIC_ENTRY: SelectionDomain
+    SETTINGS_ELEMENT: SelectionDomain
 
 class SelectionTarget:
     domain: SelectionDomain
@@ -19,7 +22,22 @@ class SelectionTarget:
     def scene_object(cls, object_id: int) -> SelectionTarget: ...
     @classmethod
     def asset(cls, path: str) -> SelectionTarget: ...
+    @classmethod
+    def asset_subresource(cls, asset_path: str, subresource_id: str, *, sub_kind: str) -> SelectionTarget: ...
+    @classmethod
+    def component(cls, object_id: int, component_id: int, *, document_id: str = "", sub_kind: str = "") -> SelectionTarget: ...
+    @classmethod
+    def graph_element(cls, document_id: str, element_id: str, *, sub_kind: str) -> SelectionTarget: ...
+    @classmethod
+    def timeline_element(cls, document_id: str, element_id: str, *, sub_kind: str) -> SelectionTarget: ...
+    @classmethod
+    def ui_element(cls, document_id: str, element_id: str, *, sub_kind: str = "") -> SelectionTarget: ...
+    @classmethod
+    def diagnostic_entry(cls, owner_id: str, entry_id: str, *, sub_kind: str = "log") -> SelectionTarget: ...
+    @classmethod
+    def settings_element(cls, document_id: str, element_id: str, *, sub_kind: str) -> SelectionTarget: ...
     def scene_object_id(self) -> int: ...
+    def component_ids(self) -> tuple[int, int]: ...
 
 class SelectionSnapshot:
     owner_id: str
