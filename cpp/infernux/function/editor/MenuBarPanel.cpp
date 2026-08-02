@@ -146,6 +146,8 @@ void MenuBarPanel::HandleShortcuts(InxGUIContext *ctx)
             dispatch("F2");
         if (pressedOnce(ImGuiKey_Delete))
             dispatch("Delete");
+        if (pressedOnce(ImGuiKey_Space))
+            dispatch("Space");
     }
 }
 

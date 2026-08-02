@@ -5,7 +5,8 @@ timeline bar (like a video scrubber) shows keyframes as diamonds and a draggable
 playhead.  Add a keyframe at the playhead, select a keyframe to edit its
 transform and the transition curve used to reach it (from the previous keyframe).
 
-Shortcuts: Space play/pause. Global document shortcuts are routed by the editor.
+Timeline commands, including Space play/pause, are routed by the editor-wide
+command and shortcut services.
 
 Opened from Window menu → Timeline Editor, or by double-clicking a
 ``.animtimeline`` asset in the Project panel.
@@ -33,7 +34,6 @@ from Infernux.core.animation_timeline import (
 from .editor_panel import EditorPanel
 from .asset_save_dialog import AssetSaveAsDialog
 from .panel_registry import editor_panel
-from .imgui_keys import KEY_SPACE
 from .theme import ImGuiCol, Theme
 
 
@@ -755,7 +755,7 @@ class AnimTimelineEditorPanel(EditorPanel):
 
         document = self._timeline_document()
         if document is None:
-            return
+            return False
         registry = DocumentRegistry.instance()
         command = TimelineInsertKeyframeCommand(
             self._timeline,
@@ -786,12 +786,13 @@ class AnimTimelineEditorPanel(EditorPanel):
             if inserted is not None:
                 self._select_key(inserted, record_history=False)
         self._on_timeline_command_applied()
+        return bool(applied)
 
     def _delete_selected_key(self):
         self._commit_live_property_edits()
         k = self._current_sel_key()
         if k is None:
-            return
+            return False
         from Infernux.engine.interaction import (
             DocumentRegistry,
             SelectionService,
@@ -801,7 +802,7 @@ class AnimTimelineEditorPanel(EditorPanel):
 
         document = self._timeline_document()
         if document is None:
-            return
+            return False
         registry = DocumentRegistry.instance()
         command = TimelineRemoveKeyframeCommand(
             self._timeline,
@@ -822,6 +823,7 @@ class AnimTimelineEditorPanel(EditorPanel):
             self._clear_key_selection(record_history=False)
             self._drag_key_id = ""
         self._on_timeline_command_applied()
+        return bool(applied)
 
     # ── Playback ───────────────────────────────────────────────────────
     def _advance_playback(self):
@@ -870,7 +872,6 @@ class AnimTimelineEditorPanel(EditorPanel):
                     self._panel_state_restored_once = True
             self._apply_pending_panel_restore()
 
-        self._handle_shortcuts(ctx)
         self._advance_playback()
 
         self._render_toolbar(ctx)
@@ -922,21 +923,6 @@ class AnimTimelineEditorPanel(EditorPanel):
         except Exception:
             pass
 
-    def _is_focused(self, ctx: InxGUIContext) -> bool:
-        # RootAndChildWindows = RootWindow(1<<1) | ChildWindows(1<<0) = 3
-        try:
-            return ctx.is_window_focused(3)
-        except Exception:
-            return True
-
-    def _handle_shortcuts(self, ctx: InxGUIContext):
-        # Only the focused editor window reacts to its shortcuts.
-        if not self._is_focused(ctx):
-            return
-        # Space toggles playback only when no widget (e.g. a text field) is focused.
-        if ctx.is_key_pressed(KEY_SPACE) and not ctx.is_any_item_active():
-            self._toggle_play()
-
     def _toggle_play(self):
         # Replaying from the end restarts (the preview plays once, no auto-loop).
         if not self._playing and self._playhead >= float(self._timeline.duration) - 1e-4:
@@ -947,23 +933,54 @@ class AnimTimelineEditorPanel(EditorPanel):
         self._playing = not self._playing
         self._last_tick = time.perf_counter()
 
+    def _execute_timeline_command(self, command_id: str) -> bool:
+        registry = self.services.command_registry
+        if registry is None:
+            return False
+        from Infernux.engine.interaction import CommandSource
+
+        return registry.execute(command_id, source=CommandSource.TOOLBAR).accepted
+
+    def command_new_timeline(self) -> bool:
+        self._new_timeline()
+        return True
+
+    def command_toggle_playback(self) -> bool:
+        self._toggle_play()
+        return True
+
+    def command_stop_playback(self) -> bool:
+        changed = bool(self._playing or self._playhead != 0.0)
+        self._playing = False
+        self._playhead = 0.0
+        return changed
+
+    def command_add_keyframe(self) -> bool:
+        return self._add_keyframe_at_playhead()
+
+    def can_delete_selected_keyframe(self) -> bool:
+        return self._current_sel_key() is not None
+
+    def command_delete_selected_keyframe(self) -> bool:
+        return self._delete_selected_key()
+
     def _render_toolbar(self, ctx: InxGUIContext):
         capture_semantics = _semantic_capture_enabled(ctx)
         new_label = t("animtimeline_editor.new")
         if ctx.button(new_label):
-            self._new_timeline()
+            self._execute_timeline_command("timeline.new")
         if capture_semantics:
             ctx.record_semantic_item("button", new_label, True, "animtimeline.toolbar.new")
         ctx.same_line()
         save_label = t("animtimeline_editor.save")
         if ctx.button(save_label):
-            self._do_save()
+            self._execute_timeline_command("file.save")
         if capture_semantics:
             ctx.record_semantic_item("button", save_label, True, "animtimeline.toolbar.save")
         ctx.same_line()
         save_as_label = t("animtimeline_editor.save_as")
         if ctx.button(save_as_label):
-            self._request_document_save(save_as=True)
+            self._execute_timeline_command("file.save_as")
         if capture_semantics:
             ctx.record_semantic_item("button", save_as_label, True, "animtimeline.toolbar.save_as")
         ctx.same_line()
@@ -1029,7 +1046,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         capture_semantics = _semantic_capture_enabled(ctx)
         play_label = t("animtimeline_editor.pause") if self._playing else t("animtimeline_editor.play")
         if ctx.button(play_label):
-            self._toggle_play()
+            self._execute_timeline_command("timeline.play_pause")
         if capture_semantics:
             ctx.record_semantic_item(
                 "button", play_label, True, "animtimeline.transport.play_pause"
@@ -1037,14 +1054,13 @@ class AnimTimelineEditorPanel(EditorPanel):
         ctx.same_line()
         stop_label = t("animtimeline_editor.stop")
         if ctx.button(stop_label):
-            self._playing = False
-            self._playhead = 0.0
+            self._execute_timeline_command("timeline.stop")
         if capture_semantics:
             ctx.record_semantic_item("button", stop_label, True, "animtimeline.transport.stop")
         ctx.same_line()
         add_key_label = t("animtimeline_editor.add_key")
         if ctx.button(add_key_label):
-            self._add_keyframe_at_playhead()
+            self._execute_timeline_command("timeline.add_keyframe")
         if capture_semantics:
             ctx.record_semantic_item(
                 "button", add_key_label, True, "animtimeline.transport.add_key"
@@ -1052,7 +1068,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         ctx.same_line()
         delete_key_label = t("animtimeline_editor.delete_key")
         if ctx.button(delete_key_label):
-            self._delete_selected_key()
+            self._execute_timeline_command("edit.delete")
         if capture_semantics:
             ctx.record_semantic_item(
                 "button", delete_key_label, True, "animtimeline.transport.delete_key"

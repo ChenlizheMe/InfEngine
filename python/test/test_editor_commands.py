@@ -233,3 +233,79 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
         ("rename_asset", ""),
         "create_folder",
     ]
+
+
+def test_timeline_toolbar_and_shortcuts_share_command_handlers():
+    class BootstrapHarness(BootstrapWiringMixin):
+        pass
+
+    calls = []
+    panel = SimpleNamespace(
+        command_new_timeline=lambda: calls.append("new_timeline") or True,
+        command_toggle_playback=lambda: calls.append("play_pause") or True,
+        command_stop_playback=lambda: calls.append("stop") or True,
+        command_add_keyframe=lambda: calls.append("add_keyframe") or True,
+        command_delete_selected_keyframe=lambda: calls.append("delete_keyframe") or True,
+        can_delete_selected_keyframe=lambda: True,
+    )
+    windows = SimpleNamespace(
+        get_window_instance=lambda panel_id: (
+            panel if panel_id == "animtimeline_editor" else None
+        ),
+        get_registered_types=lambda: {},
+        reset_layout=lambda: None,
+    )
+    bootstrap = BootstrapHarness()
+    bootstrap.interaction_core = EditorInteractionCore()
+    bootstrap.engine = SimpleNamespace(_play_mode_manager=None)
+    bootstrap.hierarchy = None
+    bootstrap.project_panel = None
+    BootstrapWiringMixin._register_core_editor_commands(
+        bootstrap,
+        windows,
+        SimpleNamespace(),
+    )
+
+    core = bootstrap.interaction_core
+    core.focus.activate_panel(
+        "animtimeline_editor",
+        view_id="animtimeline_editor",
+        document_id="timeline:test",
+    )
+    core.selection.select(
+        SelectionTarget.timeline_element(
+            "timeline:test",
+            "keyframe:test",
+            sub_kind="keyframe",
+        ),
+        owner_id="animtimeline_editor",
+    )
+
+    assert core.commands.execute(
+        "timeline.new", source=CommandSource.TOOLBAR
+    ).accepted
+    assert core.commands.execute(
+        "timeline.add_keyframe", source=CommandSource.TOOLBAR
+    ).accepted
+    assert core.commands.execute(
+        "timeline.stop", source=CommandSource.TOOLBAR
+    ).accepted
+    assert core.shortcuts.route(
+        ShortcutEvent(KeyChord.parse("Space"))
+    ).status is ShortcutRouteStatus.EXECUTED
+    assert core.shortcuts.route(
+        ShortcutEvent(KeyChord.parse("Delete"))
+    ).status is ShortcutRouteStatus.EXECUTED
+
+    assert calls == [
+        "new_timeline",
+        "add_keyframe",
+        "stop",
+        "play_pause",
+        "delete_keyframe",
+    ]
+
+    blocked = core.shortcuts.route(
+        ShortcutEvent(KeyChord.parse("Space"), text_input_active=True)
+    )
+    assert blocked.status is ShortcutRouteStatus.BLOCKED

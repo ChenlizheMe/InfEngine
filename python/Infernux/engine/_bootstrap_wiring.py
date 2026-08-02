@@ -153,6 +153,12 @@ class BootstrapWiringMixin:
         def _project_panel():
             return getattr(self, "project_panel", None)
 
+        def _timeline_panel():
+            getter = getattr(wm, "get_window_instance", None)
+            if not callable(getter):
+                return None
+            return getter("animtimeline_editor")
+
         def _is_scene_edit_context(context, *, hierarchy_only: bool = False) -> bool:
             active_panel = context.focus.active_panel_id
             if hierarchy_only:
@@ -169,6 +175,9 @@ class BootstrapWiringMixin:
         def _is_project_edit_context(context) -> bool:
             return context.focus.active_panel_id == "project"
 
+        def _is_timeline_edit_context(context) -> bool:
+            return context.focus.active_panel_id == "animtimeline_editor"
+
         def _has_project_selection(context) -> bool:
             return bool(
                 _is_project_edit_context(context)
@@ -176,6 +185,16 @@ class BootstrapWiringMixin:
                 and context.selection.targets
                 and _project_panel() is not None
                 and _project_panel().has_selected_assets()
+            )
+
+        def _has_timeline_selection(context) -> bool:
+            panel = _timeline_panel()
+            return bool(
+                _is_timeline_edit_context(context)
+                and context.selection.domain is SelectionDomain.TIMELINE_ELEMENT
+                and context.selection.targets
+                and panel is not None
+                and panel.can_delete_selected_keyframe()
             )
 
         def _copy_scene_selection(_context, *, cut: bool):
@@ -235,6 +254,9 @@ class BootstrapWiringMixin:
             return _paste_scene_selection(context)
 
         def _delete_edit_selection(context):
+            if _is_timeline_edit_context(context):
+                panel = _timeline_panel()
+                return bool(panel and panel.command_delete_selected_keyframe())
             if _is_project_edit_context(context):
                 panel = _project_panel()
                 return bool(panel and panel.request_delete_selected_assets())
@@ -251,6 +273,9 @@ class BootstrapWiringMixin:
 
         def _can_copy_edit_selection(context) -> bool:
             return _has_project_selection(context) or _has_scene_selection(context)
+
+        def _can_delete_edit_selection(context) -> bool:
+            return _can_copy_edit_selection(context) or _has_timeline_selection(context)
 
         def _can_paste_edit_selection(context) -> bool:
             if _is_project_edit_context(context):
@@ -276,6 +301,16 @@ class BootstrapWiringMixin:
             if not _is_project_edit_context(context) or panel is None:
                 return False
             return bool(panel.create_folder_from_command())
+
+        def _invoke_timeline_command(context, method_name: str) -> bool:
+            if not _is_timeline_edit_context(context):
+                return False
+            panel = _timeline_panel()
+            method = getattr(panel, method_name, None) if panel is not None else None
+            return bool(method and method())
+
+        def _can_invoke_timeline_command(context) -> bool:
+            return bool(_is_timeline_edit_context(context) and _timeline_panel() is not None)
 
         commands = (
             EditorCommand(
@@ -348,7 +383,7 @@ class BootstrapWiringMixin:
                 _delete_edit_selection,
                 display_name="Delete",
                 category="Edit",
-                can_execute=_can_copy_edit_selection,
+                can_execute=_can_delete_edit_selection,
                 default_shortcut="Delete",
             ),
             EditorCommand(
@@ -370,6 +405,35 @@ class BootstrapWiringMixin:
                     and _project_panel().get_current_path()
                 ),
                 default_shortcut="Ctrl+Shift+N",
+            ),
+            EditorCommand(
+                "timeline.new",
+                lambda context: _invoke_timeline_command(context, "command_new_timeline"),
+                display_name="New Timeline",
+                category="Timeline",
+                can_execute=_can_invoke_timeline_command,
+            ),
+            EditorCommand(
+                "timeline.play_pause",
+                lambda context: _invoke_timeline_command(context, "command_toggle_playback"),
+                display_name="Play / Pause Timeline",
+                category="Timeline",
+                can_execute=_can_invoke_timeline_command,
+                default_shortcut="Space",
+            ),
+            EditorCommand(
+                "timeline.stop",
+                lambda context: _invoke_timeline_command(context, "command_stop_playback"),
+                display_name="Stop Timeline",
+                category="Timeline",
+                can_execute=_can_invoke_timeline_command,
+            ),
+            EditorCommand(
+                "timeline.add_keyframe",
+                lambda context: _invoke_timeline_command(context, "command_add_keyframe"),
+                display_name="Add Timeline Keyframe",
+                category="Timeline",
+                can_execute=_can_invoke_timeline_command,
             ),
             EditorCommand(
                 "play.toggle",
@@ -470,6 +534,21 @@ class BootstrapWiringMixin:
                     ShortcutScope.PANEL,
                     "project",
                     binding_id=f"default.project.{command_id}",
+                ),
+                replace=True,
+            )
+
+        for command_id, chord in (
+            ("timeline.play_pause", "Space"),
+            ("edit.delete", "Delete"),
+        ):
+            shortcuts.register(
+                ShortcutBinding(
+                    command_id,
+                    KeyChord.parse(chord),
+                    ShortcutScope.PANEL,
+                    "animtimeline_editor",
+                    binding_id=f"default.animtimeline_editor.{command_id}",
                 ),
                 replace=True,
             )
