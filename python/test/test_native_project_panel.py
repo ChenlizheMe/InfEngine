@@ -272,12 +272,6 @@ class TestProjectPanelCallbacks:
 
         assert received == [([str(first), str(second)], str(first))]
 
-    def test_on_empty_area_clicked_callback(self):
-        pp = ProjectPanel()
-        called = []
-        pp.on_empty_area_clicked = lambda: called.append(True)
-        assert pp.on_empty_area_clicked is not None
-
     def test_on_state_changed_callback(self):
         pp = ProjectPanel()
         called = []

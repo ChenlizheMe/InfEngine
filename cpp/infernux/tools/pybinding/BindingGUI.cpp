@@ -1318,7 +1318,6 @@ void RegisterGUIBindings(py::module_ &m)
         // Notification callbacks
         .def_readwrite("on_file_selected", &ProjectPanel::onFileSelected)
         .def_readwrite("on_selection_changed", &ProjectPanel::onSelectionChanged)
-        .def_readwrite("on_empty_area_clicked", &ProjectPanel::onEmptyAreaClicked)
         .def_readwrite("on_state_changed", &ProjectPanel::onStateChanged)
         // File operation callbacks
         .def_readwrite("create_folder", &ProjectPanel::createFolder)

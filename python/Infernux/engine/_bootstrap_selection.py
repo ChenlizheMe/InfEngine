@@ -20,15 +20,12 @@ class BootstrapSelectionMixin:
         from Infernux.engine.interaction import SelectionService
 
         hierarchy = self.hierarchy
-        inspector = self.inspector_panel
         project = self.project_panel
         scene_view = self.scene_view
-        event_bus = self.event_bus
 
         hierarchy.on_selection_changed = self._on_hierarchy_selected
         project.on_file_selected = None
         project.on_selection_changed = self._on_project_selection_changed
-        project.on_empty_area_clicked = self._on_project_panel_empty_clicked
         scene_view.set_on_object_picked(self._on_scene_view_picked)
         scene_view.set_on_box_select(self._on_box_select_done)
         hierarchy.on_double_click_focus = (
@@ -45,7 +42,16 @@ class BootstrapSelectionMixin:
         CreateGameObjectCommand._selection_restore_fn = self._apply_selection_undo
         DeleteGameObjectCommand._selection_restore_fn = self._apply_selection_undo
         DeleteGameObjectsCommand._selection_restore_fn = self._apply_selection_undo
-        self._prev_selection_snapshot = SelectionService.instance().snapshot
+        selection = SelectionService.instance()
+        previous_service = getattr(self, "_selection_projection_service", None)
+        previous_listener = getattr(self, "_selection_projection_listener", None)
+        if previous_service is not None and callable(previous_listener):
+            previous_service.remove_listener(previous_listener)
+        self._selection_projection_service = selection
+        self._selection_projection_listener = self._on_global_selection_changed
+        selection.add_listener(self._selection_projection_listener)
+        self._prev_selection_snapshot = selection.snapshot
+        self._present_selection_snapshot(selection.snapshot)
         self.undo_manager.set_context_hooks(
             self.interaction_core.capture_context,
             self._restore_editor_context,
@@ -84,6 +90,80 @@ class BootstrapSelectionMixin:
         else:
             native.clear_selection_outline()
 
+    def _on_global_selection_changed(self, change) -> None:
+        self._present_selection_snapshot(change.after)
+
+    def _present_selection_snapshot(self, snapshot) -> None:
+        """Project the one authoritative selection into editor views."""
+        from Infernux.engine.interaction import SelectionDomain
+
+        primary = snapshot.primary
+        domain = snapshot.domain
+        if domain in (SelectionDomain.ASSET, SelectionDomain.ASSET_SUBRESOURCE):
+            paths = [
+                (
+                    target.target_id
+                    if target.domain is SelectionDomain.ASSET
+                    else target.document_id
+                )
+                for target in snapshot.targets
+                if target.domain in (
+                    SelectionDomain.ASSET,
+                    SelectionDomain.ASSET_SUBRESOURCE,
+                )
+            ]
+            paths = list(dict.fromkeys(path for path in paths if path))
+            primary_path = ""
+            if primary is not None:
+                primary_path = (
+                    primary.target_id
+                    if primary.domain is SelectionDomain.ASSET
+                    else primary.document_id
+                )
+            self.project_panel.set_selected_files(paths, primary_path, False)
+            self._inspector_set_selected_file(primary_path)
+            self._set_outline(0, [])
+            self.event_bus.emit(EditorEvent.FILE_SELECTED, primary_path)
+            return
+
+        if domain in (SelectionDomain.SCENE_OBJECT, SelectionDomain.COMPONENT):
+            if domain is SelectionDomain.COMPONENT:
+                object_ids = list(dict.fromkeys(
+                    object_id
+                    for object_id, _component_id in (
+                        target.component_ids() for target in snapshot.targets
+                    )
+                    if object_id
+                ))
+                primary_id = (
+                    primary.component_ids()[0] if primary is not None else 0
+                )
+            else:
+                object_ids = [
+                    target.scene_object_id()
+                    for target in snapshot.targets
+                    if target.domain is SelectionDomain.SCENE_OBJECT
+                ]
+                primary_id = primary.scene_object_id() if primary is not None else 0
+
+            obj = None
+            if primary_id:
+                from Infernux.lib import SceneManager
+
+                scene = SceneManager.instance().get_active_scene()
+                obj = scene.find_by_id(primary_id) if scene else None
+            self.inspector_panel.set_selected_object_id(primary_id or 0)
+            self.project_panel.clear_selection(False)
+            self._set_outline(primary_id, object_ids)
+            self.event_bus.emit(EditorEvent.SELECTION_CHANGED, obj)
+            return
+
+        self.project_panel.clear_selection(False)
+        self.inspector_panel.clear_selected_object()
+        self._inspector_set_selected_file("")
+        self._set_outline(0, [])
+        self.event_bus.emit(EditorEvent.SELECTION_CHANGED, None)
+
     def _fly_to_object_by_id(self, object_id: int):
         """Resolve object ID and fly scene view to it."""
         if not object_id:
@@ -105,7 +185,7 @@ class BootstrapSelectionMixin:
         reveal_primary: bool = False,
         owner_id: str = "hierarchy",
     ):
-        """Publish the global object selection to every editor surface."""
+        """Record the already-published object selection and reveal its primary."""
         from Infernux.engine.ui.selection_manager import SelectionManager
         sel = SelectionManager.instance()
         new_ids = sel.get_ids()
@@ -117,39 +197,13 @@ class BootstrapSelectionMixin:
             self._prev_selection_ids = list(new_ids)
             self._prev_selected_file = ""
 
-        # Resolve ID → game object for inspector & event bus
-        obj = None
-        if primary_id:
+        if reveal_primary and primary_id:
             from Infernux.lib import SceneManager
+
             scene = SceneManager.instance().get_active_scene()
             obj = scene.find_by_id(primary_id) if scene else None
-
-        self.inspector_panel.set_selected_object_id(primary_id or 0)
-        self.project_panel.clear_selection(False)
-        self._set_outline(primary_id, new_ids)
-        if reveal_primary and obj:
-            self.hierarchy.expand_to_object(obj.id)
-        self.event_bus.emit(EditorEvent.SELECTION_CHANGED, obj)
-
-    def _on_project_selected(self, path):
-        from Infernux.engine.interaction import SelectionService, SelectionTarget
-
-        if path:
-            SelectionService.instance().select(
-                SelectionTarget.asset(path),
-                owner_id="project",
-                reason="project_select",
-                record_history=False,
-            )
-        else:
-            SelectionService.instance().clear(
-                reason="project_clear",
-                record_history=False,
-            )
-        self._record_editor_selection_change([], path or "")
-        self._set_outline(0, [])
-        self._inspector_set_selected_file(path)
-        self.event_bus.emit(EditorEvent.FILE_SELECTED, path)
+            if obj:
+                self.hierarchy.expand_to_object(obj.id)
 
     def _on_project_selection_changed(self, paths, primary_path):
         from Infernux.engine.interaction import (
@@ -171,39 +225,52 @@ class BootstrapSelectionMixin:
             record_history=False,
         )
         self._record_selection_snapshot(snapshot)
-        self._set_outline(0, [])
-        self._inspector_set_selected_file(primary_path or "")
-        self.event_bus.emit(EditorEvent.FILE_SELECTED, primary_path or "")
-
-    def _on_project_panel_empty_clicked(self):
-        from Infernux.engine.ui.selection_manager import SelectionManager
-
-        SelectionManager.instance().clear()
-        self._synchronize_object_selection(record=True, owner_id="project")
 
     def _on_scene_view_picked(self, object_id: int, ctrl: bool = False):
-        from Infernux.engine.ui.selection_manager import SelectionManager
-        sel = SelectionManager.instance()
+        from Infernux.engine.interaction import SelectionService, SelectionTarget
+
+        selection = SelectionService.instance()
 
         if ctrl and object_id:
-            sel.toggle(object_id)
+            selection.toggle(
+                SelectionTarget.scene_object(object_id),
+                owner_id="scene_view",
+                record_history=False,
+            )
         elif object_id:
-            sel.select(object_id)
+            selection.select(
+                SelectionTarget.scene_object(object_id),
+                owner_id="scene_view",
+                record_history=False,
+            )
         elif not ctrl:
-            sel.clear()
+            selection.clear(record_history=False)
 
-        self._synchronize_object_selection(
-            record=True,
-            reveal_primary=True,
-            owner_id="scene_view",
-        )
+        self._record_selection_snapshot(selection.snapshot)
+        primary = selection.snapshot.primary
+        if primary is not None:
+            self.hierarchy.expand_to_object(primary.scene_object_id())
 
-    def _on_box_select_done(self, primary_obj):
-        self._synchronize_object_selection(
-            record=True,
-            reveal_primary=True,
-            owner_id="scene_view",
+    def _on_box_select_done(self, _primary_obj):
+        from Infernux.engine.interaction import SelectionService, SelectionSnapshot
+
+        selection = SelectionService.instance()
+        current = selection.snapshot
+        snapshot = SelectionSnapshot.create(
+            current.targets,
+            owner_id="scene_view" if current.targets else "",
+            primary=current.primary,
+            anchor=current.anchor,
         )
+        selection.apply_snapshot(
+            snapshot,
+            reason="scene_box_select",
+            record_history=False,
+        )
+        self._record_selection_snapshot(snapshot)
+        primary = snapshot.primary
+        if primary is not None:
+            self.hierarchy.expand_to_object(primary.scene_object_id())
 
     def _navigate_console_entry_to_object(self, object_id: int) -> bool:
         """Reveal a console-targeted scene object in Hierarchy and Inspector."""
@@ -285,15 +352,32 @@ class BootstrapSelectionMixin:
 
         primary = next_snapshot.primary
         next_file = (
-            primary.target_id
-            if primary is not None and primary.domain is SelectionDomain.ASSET
+            (
+                primary.target_id
+                if primary.domain is SelectionDomain.ASSET
+                else primary.document_id
+            )
+            if primary is not None
+            and primary.domain in (
+                SelectionDomain.ASSET,
+                SelectionDomain.ASSET_SUBRESOURCE,
+            )
             else ""
         )
-        next_ids = [
-            target.scene_object_id()
-            for target in next_snapshot.targets
-            if target.domain is SelectionDomain.SCENE_OBJECT
-        ]
+        if next_snapshot.domain is SelectionDomain.COMPONENT:
+            next_ids = list(dict.fromkeys(
+                object_id
+                for object_id, _component_id in (
+                    target.component_ids() for target in next_snapshot.targets
+                )
+                if object_id
+            ))
+        else:
+            next_ids = [
+                target.scene_object_id()
+                for target in next_snapshot.targets
+                if target.domain is SelectionDomain.SCENE_OBJECT
+            ]
         previous_snapshot = getattr(self, "_prev_selection_snapshot", None)
         if previous_snapshot is None:
             previous_file = getattr(self, "_prev_selected_file", "") or ""
@@ -325,7 +409,7 @@ class BootstrapSelectionMixin:
         manager.record(GlobalSelectionCommand(
             previous_snapshot,
             next_snapshot,
-            self._apply_selection_snapshot_compat,
+            self._apply_selection_snapshot,
         ))
 
     def _record_selection_change(self, new_ids: list):
@@ -352,20 +436,6 @@ class BootstrapSelectionMixin:
             )
         self._apply_selection_snapshot(snapshot)
 
-    def _apply_selection_snapshot_compat(self, snapshot):
-        from Infernux.engine.interaction import SelectionDomain
-
-        primary = snapshot.primary
-        if primary is not None and primary.domain is SelectionDomain.ASSET:
-            self._apply_editor_selection_undo([], primary.target_id)
-            return
-        ids = [
-            target.scene_object_id()
-            for target in snapshot.targets
-            if target.domain is SelectionDomain.SCENE_OBJECT
-        ]
-        self._apply_editor_selection_undo(ids, "")
-
     def _apply_selection_snapshot(self, snapshot):
         from Infernux.engine.interaction import SelectionDomain, SelectionService
 
@@ -373,31 +443,36 @@ class BootstrapSelectionMixin:
         service.apply_snapshot(snapshot, reason="undo", record_history=False)
         self._prev_selection_snapshot = snapshot
         primary = snapshot.primary
-
-        if primary is not None and primary.domain is SelectionDomain.ASSET:
-            file_path = primary.target_id
-            self._prev_selection_ids = []
-            self._prev_selected_file = file_path
-            self._set_outline(0, [])
-            self.project_panel.set_selected_file(file_path, False)
-            self._inspector_set_selected_file(file_path)
-            self.event_bus.emit(EditorEvent.FILE_SELECTED, file_path)
-            if self.window_manager is not None:
-                self.window_manager.focus_window("project")
-            return
-
-        ids = [
-            target.scene_object_id()
-            for target in snapshot.targets
-            if target.domain is SelectionDomain.SCENE_OBJECT
-        ]
-        self._prev_selection_ids = list(ids)
-        self._prev_selected_file = ""
-
-        self._inspector_set_selected_file("")
-        self._synchronize_object_selection(record=False, reveal_primary=True)
-        if self.window_manager is not None and snapshot.owner_id:
-            self.window_manager.focus_window(snapshot.owner_id)
+        self._prev_selected_file = (
+            (
+                primary.target_id
+                if primary.domain is SelectionDomain.ASSET
+                else primary.document_id
+            )
+            if primary is not None
+            and primary.domain in (
+                SelectionDomain.ASSET,
+                SelectionDomain.ASSET_SUBRESOURCE,
+            )
+            else ""
+        )
+        if snapshot.domain is SelectionDomain.COMPONENT:
+            self._prev_selection_ids = list(dict.fromkeys(
+                object_id
+                for object_id, _component_id in (
+                    target.component_ids() for target in snapshot.targets
+                )
+                if object_id
+            ))
+        else:
+            self._prev_selection_ids = [
+                target.scene_object_id()
+                for target in snapshot.targets
+                if target.domain is SelectionDomain.SCENE_OBJECT
+            ]
+        window_manager = getattr(self, "window_manager", None)
+        if window_manager is not None and snapshot.owner_id:
+            window_manager.focus_window(snapshot.owner_id)
 
     def _apply_selection_undo(self, ids: list):
         """Restore a selection state during undo/redo."""

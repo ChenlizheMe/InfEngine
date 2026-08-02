@@ -153,3 +153,228 @@ def test_input_context_stack_honors_priority_and_modal_barrier():
         "hierarchy",
         "global",
     ]
+
+
+def test_bootstrap_selection_projection_is_the_single_cross_panel_writer(monkeypatch):
+    from types import SimpleNamespace
+
+    import Infernux.lib as native
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.ui.event_bus import EditorEvent
+
+    selected_object = SimpleNamespace(id=42)
+
+    class _Scene:
+        @staticmethod
+        def find_by_id(object_id):
+            return selected_object if object_id == 42 else None
+
+    class _SceneManager:
+        @staticmethod
+        def instance():
+            return _SceneManager()
+
+        @staticmethod
+        def get_active_scene():
+            return _Scene()
+
+    monkeypatch.setattr(native, "SceneManager", _SceneManager)
+
+    project_calls = []
+    inspector_calls = []
+    outlines = []
+    events = []
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.project_panel = SimpleNamespace(
+        set_selected_files=lambda paths, primary, notify: project_calls.append(
+            ("set", list(paths), primary, notify)
+        ),
+        clear_selection=lambda notify: project_calls.append(("clear", notify)),
+    )
+    bootstrap.inspector_panel = SimpleNamespace(
+        set_selected_object_id=lambda object_id: inspector_calls.append(
+            ("object", object_id)
+        ),
+        clear_selected_object=lambda: inspector_calls.append(("clear_object",)),
+    )
+    bootstrap._inspector_set_selected_file = (
+        lambda path: inspector_calls.append(("file", path))
+    )
+    bootstrap._set_outline = (
+        lambda primary, selected: outlines.append((primary, list(selected)))
+    )
+    bootstrap.event_bus = SimpleNamespace(
+        emit=lambda event, value: events.append((event, value))
+    )
+
+    asset = SelectionSnapshot.create(
+        (SelectionTarget.asset("Assets/Smoke.mat"),),
+        owner_id="project",
+    )
+    bootstrap._present_selection_snapshot(asset)
+
+    asset_path = asset.primary.target_id
+    assert project_calls == [("set", [asset_path], asset_path, False)]
+    assert inspector_calls == [("file", asset_path)]
+    assert outlines == [(0, [])]
+    assert events == [(EditorEvent.FILE_SELECTED, asset_path)]
+
+    project_calls.clear()
+    inspector_calls.clear()
+    outlines.clear()
+    events.clear()
+    scene = SelectionSnapshot.create(
+        (SelectionTarget.scene_object(42),),
+        owner_id="hierarchy",
+    )
+    bootstrap._present_selection_snapshot(scene)
+
+    assert project_calls == [("clear", False)]
+    assert inspector_calls == [("object", 42)]
+    assert outlines == [(42, [42])]
+    assert events == [(EditorEvent.SELECTION_CHANGED, selected_object)]
+
+
+def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch):
+    from types import SimpleNamespace
+
+    import Infernux.lib as native
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+
+    objects = {value: SimpleNamespace(id=value) for value in (41, 42)}
+
+    class _Scene:
+        @staticmethod
+        def find_by_id(object_id):
+            return objects.get(object_id)
+
+    class _SceneManager:
+        @staticmethod
+        def instance():
+            return _SceneManager()
+
+        @staticmethod
+        def get_active_scene():
+            return _Scene()
+
+    monkeypatch.setattr(native, "SceneManager", _SceneManager)
+
+    project_calls = []
+    inspector_calls = []
+    outlines = []
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.project_panel = SimpleNamespace(
+        set_selected_files=lambda paths, primary, notify: project_calls.append(
+            (list(paths), primary, notify)
+        ),
+        clear_selection=lambda notify: project_calls.append(("clear", notify)),
+    )
+    bootstrap.inspector_panel = SimpleNamespace(
+        set_selected_object_id=lambda object_id: inspector_calls.append(object_id),
+        clear_selected_object=lambda: None,
+    )
+    bootstrap._inspector_set_selected_file = inspector_calls.append
+    bootstrap._set_outline = (
+        lambda primary, selected: outlines.append((primary, list(selected)))
+    )
+    bootstrap.event_bus = SimpleNamespace(emit=lambda *_args: None)
+
+    subresource = SelectionSnapshot.create(
+        (
+            SelectionTarget.asset_subresource(
+                "Assets/Robot.fbx", "mesh:body", sub_kind="submesh"
+            ),
+        ),
+        owner_id="project",
+    )
+    bootstrap._present_selection_snapshot(subresource)
+    asset_path = subresource.primary.document_id
+    assert project_calls == [([asset_path], asset_path, False)]
+    assert inspector_calls == [asset_path]
+
+    project_calls.clear()
+    inspector_calls.clear()
+    components = SelectionSnapshot.create(
+        (
+            SelectionTarget.component(41, 1),
+            SelectionTarget.component(42, 2),
+        ),
+        owner_id="inspector",
+        primary=SelectionTarget.component(42, 2),
+    )
+    bootstrap._present_selection_snapshot(components)
+    assert project_calls == [("clear", False)]
+    assert inspector_calls == [42]
+    assert outlines[-1] == (42, [41, 42])
+
+
+def test_typed_selection_undo_replays_without_legacy_domain_loss():
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+
+    service = SelectionService()
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.window_manager = None
+    bootstrap._prev_selection_snapshot = SelectionSnapshot()
+    bootstrap._prev_selection_ids = []
+    bootstrap._prev_selected_file = ""
+
+    graph = SelectionSnapshot.create(
+        (SelectionTarget.graph_element("graph:smoke", "node:7", sub_kind="node"),),
+        owner_id="particle_graph",
+    )
+    bootstrap._apply_selection_snapshot(graph)
+
+    assert service.snapshot == graph
+    assert bootstrap._prev_selection_snapshot == graph
+
+    component = SelectionSnapshot.create(
+        (SelectionTarget.component(42, 7),),
+        owner_id="inspector",
+    )
+    bootstrap._apply_selection_snapshot(component)
+    assert service.snapshot == component
+    assert bootstrap._prev_selection_ids == [42]
+
+    subresource = SelectionSnapshot.create(
+        (
+            SelectionTarget.asset_subresource(
+                "Assets/Robot.fbx", "mesh:body", sub_kind="submesh"
+            ),
+        ),
+        owner_id="project",
+    )
+    bootstrap._apply_selection_snapshot(subresource)
+    assert service.snapshot == subresource
+    assert bootstrap._prev_selected_file == subresource.primary.document_id
+
+
+def test_scene_box_selection_preserves_primary_and_anchor():
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+
+    service = SelectionService()
+    first = SelectionTarget.scene_object(41)
+    second = SelectionTarget.scene_object(42)
+    hierarchy_snapshot = SelectionSnapshot.create(
+        (first, second),
+        owner_id="hierarchy",
+        primary=first,
+        anchor=second,
+    )
+    service.apply_snapshot(hierarchy_snapshot, record_history=False)
+
+    recorded = []
+    revealed = []
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap._record_selection_snapshot = recorded.append
+    bootstrap.hierarchy = SimpleNamespace(expand_to_object=revealed.append)
+
+    bootstrap._on_box_select_done(None)
+
+    assert service.snapshot.owner_id == "scene_view"
+    assert service.snapshot.targets == (first, second)
+    assert service.snapshot.primary == first
+    assert service.snapshot.anchor == second
+    assert recorded == [service.snapshot]
+    assert revealed == [41]

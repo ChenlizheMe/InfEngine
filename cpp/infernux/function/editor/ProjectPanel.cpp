@@ -788,12 +788,6 @@ void ProjectPanel::NotifySelectionChanged()
     }
 }
 
-void ProjectPanel::NotifyEmptyAreaClicked()
-{
-    if (onEmptyAreaClicked)
-        onEmptyAreaClicked();
-}
-
 std::vector<std::string> ProjectPanel::GetSelectedPaths() const
 {
     std::vector<std::string> result;
@@ -2485,8 +2479,8 @@ void ProjectPanel::RenderFolderTree(InxGUIContext *ctx)
     if (remainH > 4.0f) {
         ctx->InvisibleButton("##folder_tree_empty_area", ctx->GetContentRegionAvailWidth(), remainH);
         if (ctx->IsItemClicked(0)) {
-            ClearSelection();
-            NotifyEmptyAreaClicked();
+            ClearSelection(false);
+            NotifySelectionChanged();
         }
     }
 }
@@ -2962,8 +2956,8 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             ctx->EndDragDropTarget();
         }
         if (ctx->IsItemClicked(0)) {
-            ClearSelection();
-            NotifyEmptyAreaClicked();
+            ClearSelection(false);
+            NotifySelectionChanged();
         }
     } else if (captureSemantics && semanticBackgroundMax.x > semanticBackgroundMin.x &&
                semanticBackgroundMax.y > semanticBackgroundMin.y) {

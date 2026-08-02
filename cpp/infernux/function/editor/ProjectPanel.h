@@ -94,8 +94,6 @@ class ProjectPanel : public EditorPanel
     std::function<void(const std::string &)> onFileSelected;
     /// Authoritative Project selection snapshot: ordered paths and primary path.
     std::function<void(const std::vector<std::string> &, const std::string &)> onSelectionChanged;
-    /// Called when empty area is clicked.
-    std::function<void()> onEmptyAreaClicked;
     /// Called when current_path changes between frames.
     std::function<void()> onStateChanged;
 
@@ -387,7 +385,6 @@ class ProjectPanel : public EditorPanel
     std::unordered_set<std::string> m_selectedSet; // for O(1) lookup
 
     void NotifySelectionChanged();
-    void NotifyEmptyAreaClicked();
     std::vector<std::string> GetSelectedPaths() const;
 
     // Double-click detection
