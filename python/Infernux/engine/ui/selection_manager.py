@@ -17,12 +17,22 @@ Usage
 """
 from __future__ import annotations
 
-from typing import Callable, List, Optional, Sequence
-from Infernux.debug import Debug
+from typing import Callable, Optional, Sequence
+
+from Infernux.engine.interaction import (
+    SelectionChange,
+    SelectionDomain,
+    SelectionService,
+    SelectionTarget,
+)
 
 
 class SelectionManager:
-    """Singleton that owns the set of selected GameObject IDs."""
+    """Compatibility adapter for legacy GameObject-only callers.
+
+    The authoritative state lives in :class:`SelectionService`. New editor
+    surfaces must use that typed service directly.
+    """
 
     _instance: Optional["SelectionManager"] = None
 
@@ -33,12 +43,19 @@ class SelectionManager:
         return cls._instance
 
     def __init__(self) -> None:
-        self._ids: list[int] = []          # ordered; last = primary
-        self._primary: int = 0             # shortcut for the "main" selection
-        self._callbacks: list[Callable] = []
-        # Ordered ID list used for shift-range selection.
-        # Set by the panel that owns display order (hierarchy / project).
-        self._ordered_ids: list[int] = []
+        self._callbacks: list[Callable[[], None]] = []
+        self._selection = SelectionService.instance()
+        self._selection.add_listener(self._on_selection_changed)
+        SelectionManager._instance = self
+
+    def _on_selection_changed(self, _change: SelectionChange) -> None:
+        for callback in tuple(self._callbacks):
+            try:
+                callback()
+            except Exception as exc:
+                from Infernux.debug import Debug
+
+                Debug.log_suppressed("SelectionManager.listener", exc)
 
     # ── Registration ──────────────────────────────────────────────────
 
@@ -53,124 +70,125 @@ class SelectionManager:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
 
-    def _notify(self) -> None:
-        for cb in tuple(self._callbacks):
-            try:
-                cb()
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
-
     # ── Ordered-ID hint (for shift-range) ─────────────────────────────
 
     def set_ordered_ids(self, ids: Sequence[int]) -> None:
         """Provide the visible ordering so shift-select can compute ranges."""
-        self._ordered_ids = list(ids)
+        self._selection.set_ordered_targets(
+            "hierarchy",
+            [SelectionTarget.scene_object(obj_id) for obj_id in ids if int(obj_id) > 0],
+        )
 
     # ── Mutation ──────────────────────────────────────────────────────
 
     def select(self, obj_id: int) -> None:
         """Replace selection with a single object."""
-        if obj_id == 0:
+        obj_id = int(obj_id)
+        if obj_id <= 0:
             self.clear()
             return
-        if self._ids == [obj_id]:
-            return
-        self._ids = [obj_id]
-        self._primary = obj_id
-        self._notify()
+        self._selection.select(
+            SelectionTarget.scene_object(obj_id),
+            owner_id="hierarchy",
+            record_history=False,
+        )
 
     def toggle(self, obj_id: int) -> None:
         """Ctrl+click: add or remove *obj_id* from the selection."""
-        if obj_id == 0:
+        obj_id = int(obj_id)
+        if obj_id <= 0:
             return
-        if obj_id in self._ids:
-            self._ids.remove(obj_id)
-            self._primary = self._ids[-1] if self._ids else 0
-        else:
-            self._ids.append(obj_id)
-            self._primary = obj_id
-        self._notify()
+        self._selection.toggle(
+            SelectionTarget.scene_object(obj_id),
+            owner_id="hierarchy",
+            record_history=False,
+        )
 
     def range_select(self, obj_id: int) -> None:
         """Shift+click: select contiguous range from primary → *obj_id*
         using the ordered-ID list provided by the panel."""
-        if obj_id == 0 or not self._ordered_ids:
-            self.select(obj_id)
+        obj_id = int(obj_id)
+        if obj_id <= 0:
+            self.clear()
             return
-        anchor = self._primary or obj_id
-        try:
-            idx_a = self._ordered_ids.index(anchor)
-        except ValueError:
-            self.select(obj_id)
-            return
-        try:
-            idx_b = self._ordered_ids.index(obj_id)
-        except ValueError:
-            self.select(obj_id)
-            return
-        lo, hi = min(idx_a, idx_b), max(idx_a, idx_b)
-        new_ids = self._ordered_ids[lo : hi + 1]
-        if self._ids == new_ids and self._primary == anchor:
-            return
-        self._ids = new_ids
-        self._primary = anchor
-        self._notify()
+        self._selection.range_select(
+            SelectionTarget.scene_object(obj_id),
+            owner_id="hierarchy",
+            record_history=False,
+        )
 
     def box_select(self, ids: Sequence[int], *, additive: bool = False) -> None:
         """Replace (or union) selection with the result of a box/lasso drag."""
-        new = list(dict.fromkeys(ids))  # dedupe, preserve order
+        targets = [
+            SelectionTarget.scene_object(obj_id)
+            for obj_id in dict.fromkeys(int(value) for value in ids)
+            if obj_id > 0
+        ]
         if additive:
-            combined = list(dict.fromkeys(self._ids + new))
-            if combined == self._ids:
-                return
-            self._ids = combined
-        else:
-            if self._ids == new:
-                return
-            self._ids = new
-        self._primary = self._ids[-1] if self._ids else 0
-        self._notify()
+            existing = [
+                target
+                for target in self._selection.snapshot.targets
+                if target.domain is SelectionDomain.SCENE_OBJECT
+            ]
+            combined = list(dict.fromkeys(existing + targets))
+            self._selection.replace(
+                combined,
+                owner_id="hierarchy" if combined else "",
+                primary=combined[-1] if combined else None,
+                anchor=self._selection.snapshot.anchor,
+                record_history=False,
+            )
+            return
+        self._selection.replace(
+            targets,
+            owner_id="hierarchy" if targets else "",
+            record_history=False,
+        )
 
     def clear(self) -> None:
-        if not self._ids:
-            return
-        self._ids.clear()
-        self._primary = 0
-        self._notify()
+        self._selection.clear(record_history=False)
 
     def set_ids(self, ids: Sequence[int]) -> None:
         """Replace the entire selection with *ids* (last element = primary).
 
         Used by undo/redo to restore a previous selection state.
         """
-        new = list(ids)
-        if new == self._ids:
-            return
-        self._ids = new
-        self._primary = new[-1] if new else 0
-        self._notify()
+        targets = [
+            SelectionTarget.scene_object(obj_id)
+            for obj_id in dict.fromkeys(int(value) for value in ids)
+            if obj_id > 0
+        ]
+        self._selection.replace(
+            targets,
+            owner_id="hierarchy" if targets else "",
+            record_history=False,
+        )
 
     # ── Queries ───────────────────────────────────────────────────────
 
     def get_ids(self) -> list[int]:
         """Ordered list of selected IDs (last = most recently added)."""
-        return list(self._ids)
+        return [
+            target.scene_object_id()
+            for target in self._selection.snapshot.targets
+            if target.domain is SelectionDomain.SCENE_OBJECT
+        ]
 
     def get_primary(self) -> int:
-        return self._primary
+        primary = self._selection.snapshot.primary
+        return primary.scene_object_id() if primary is not None else 0
 
     def is_selected(self, obj_id: int) -> bool:
-        return obj_id in self._ids
+        return SelectionTarget.scene_object(obj_id) in self._selection.snapshot.targets
 
     def count(self) -> int:
-        return len(self._ids)
+        return len(self.get_ids())
 
     def is_empty(self) -> bool:
-        return len(self._ids) == 0
+        return self.count() == 0
 
     def is_single(self) -> bool:
-        return len(self._ids) == 1
+        return self.count() == 1
 
     def is_multi(self) -> bool:
-        return len(self._ids) > 1
+        return self.count() > 1

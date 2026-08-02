@@ -156,6 +156,9 @@ class WindowManager:
     def note_panel_focus(self, panel_id: str):
         if panel_id not in self._window_states:
             raise KeyError(f"Unknown window id: {panel_id}")
+        from Infernux.engine.interaction import FocusService
+
+        FocusService.instance().activate_panel(panel_id)
         for window_id, state in list(self._window_states.items()):
             if state is WindowState.FOCUSED and window_id != panel_id:
                 self._window_states[window_id] = WindowState.OPEN
@@ -165,7 +168,10 @@ class WindowManager:
         self._notify_state_changed()
 
     def _request_focus(self, window_id: str) -> None:
+        from Infernux.engine.interaction import FocusService
+
         self._window_states[window_id] = WindowState.FOCUS_REQUESTED
+        FocusService.instance().request_panel_focus(window_id)
 
         def focus(target_id=window_id):
             if self._window_states.get(target_id) is not WindowState.FOCUS_REQUESTED:
@@ -294,6 +300,9 @@ class WindowManager:
         if callable(request_close) and not bool(request_close()):
             return
         self._set_instance_open(instance, False)
+        from Infernux.engine.interaction import FocusService
+
+        FocusService.instance().deactivate_panel(window_id)
         try:
             from Infernux.engine.project_context import clear_panel_tracking
 

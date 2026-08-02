@@ -330,6 +330,33 @@ class EditorSelectionCommand(UndoCommand):
         self._apply_fn(self._new_object_ids, self._new_file_path)
 
 
+class GlobalSelectionCommand(EditorSelectionCommand):
+    """Replay a typed global selection without dirtying its document."""
+
+    marks_dirty: bool = False
+
+    def __init__(self, old_snapshot, new_snapshot, apply_fn, description: str = ""):
+        from Infernux.engine.interaction import SelectionSnapshot
+
+        if not isinstance(old_snapshot, SelectionSnapshot):
+            raise TypeError("old_snapshot must be a SelectionSnapshot")
+        if not isinstance(new_snapshot, SelectionSnapshot):
+            raise TypeError("new_snapshot must be a SelectionSnapshot")
+        UndoCommand.__init__(self, description or "Change Selection")
+        self._old_snapshot = old_snapshot
+        self._new_snapshot = new_snapshot
+        self._apply_fn = apply_fn
+
+    def execute(self) -> None:
+        pass
+
+    def undo(self) -> None:
+        self._apply_fn(self._old_snapshot)
+
+    def redo(self) -> None:
+        self._apply_fn(self._new_snapshot)
+
+
 class PrefabModeCommand(UndoCommand):
     """Undoable enter/exit transition for Prefab Mode."""
 

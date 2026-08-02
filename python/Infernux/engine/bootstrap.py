@@ -107,6 +107,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._prev_selection = [0]  # kept for scene-change cleanup
         self._prev_selection_ids: list = []  # for undo recording
         self._prev_selected_file: str = ""
+        self._prev_selection_snapshot = None
 
         # Progress tracking for launcher splash
         self._progress_step = 0
@@ -283,8 +284,10 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         Debug.log_internal(f"Material preview prewarm: {warmed}/{len(material_paths)}")
 
     def _create_managers(self):
+        from Infernux.engine.interaction import EditorInteractionCore
         from Infernux.engine.undo import UndoManager
 
+        self.interaction_core = EditorInteractionCore()
         self.undo_manager = UndoManager()
 
         self.scene_file_manager = SceneFileManager()
@@ -299,6 +302,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.services._scene_file_manager = self.scene_file_manager
         self.services._play_mode_manager = self.engine._play_mode_manager
         self.services._window_manager = self.window_manager
+        self.services._interaction_core = self.interaction_core
         self.services._asset_database = self.engine.get_asset_database()
         self.services._project_path = self.project_path
 

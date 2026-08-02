@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from Infernux.engine.undo import UndoManager
     from Infernux.engine.scene_manager import SceneFileManager
     from Infernux.engine.play_mode import PlayModeManager
+    from Infernux.engine.interaction import EditorInteractionCore
     from Infernux.engine.ui.window_manager import WindowManager
 
 
@@ -42,6 +43,7 @@ class EditorServices:
         self._scene_file_manager: Optional[SceneFileManager] = None
         self._play_mode_manager: Optional[PlayModeManager] = None
         self._window_manager: Optional[WindowManager] = None
+        self._interaction_core: Optional[EditorInteractionCore] = None
         self._asset_database = None  # C++ AssetDatabase
         self._project_path: Optional[str] = None
         EditorServices._instance = self
@@ -86,6 +88,10 @@ class EditorServices:
     @property
     def window_manager(self) -> Optional[WindowManager]:
         return self._window_manager
+
+    @property
+    def interaction_core(self) -> Optional[EditorInteractionCore]:
+        return self._interaction_core
 
     @property
     def asset_database(self):

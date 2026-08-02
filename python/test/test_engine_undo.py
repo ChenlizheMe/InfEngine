@@ -105,6 +105,7 @@ HierarchyUndoTracker = _undo_mod.HierarchyUndoTracker
 RenderStackFieldCommand = _undo_mod.RenderStackFieldCommand
 _snapshot_value = _undo_mod._snapshot_value
 SelectionManager = _sel_mod.SelectionManager
+SelectionService = sys.modules["Infernux.engine.interaction"].SelectionService
 _helpers_mod = sys.modules["Infernux.engine.undo._helpers"]
 _property_mod = sys.modules["Infernux.engine.undo._property_commands"]
 _structural_mod = sys.modules["Infernux.engine.undo._structural_commands"]
@@ -1202,6 +1203,7 @@ class TestSelectionManagerSetIds:
     @pytest.fixture(autouse=True)
     def _fresh_selection(self):
         old = SelectionManager._instance
+        SelectionService()
         sel = SelectionManager()
         yield sel
         SelectionManager._instance = old
@@ -1258,6 +1260,7 @@ class TestSelectionUndoIntegration:
     @pytest.fixture(autouse=True)
     def _fresh_selection(self):
         old = SelectionManager._instance
+        SelectionService()
         self.sel = SelectionManager()
         yield
         SelectionManager._instance = old
@@ -1364,6 +1367,7 @@ class TestDeleteCommandSelectionRestore:
     @pytest.fixture(autouse=True)
     def _fresh_sel(self):
         old = SelectionManager._instance
+        SelectionService()
         self.sel = SelectionManager()
         SelectionManager._instance = self.sel
         yield

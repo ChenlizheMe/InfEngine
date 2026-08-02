@@ -672,20 +672,21 @@ void ProjectPanel::SetCurrentPath(const std::string &path)
     AssignCurrentPath(path);
 }
 
-void ProjectPanel::ClearSelection()
+void ProjectPanel::ClearSelection(bool notify)
 {
     if (!m_selectedFile.empty() || !m_selectedFiles.empty()) {
         m_selectedFile.clear();
         m_selectedFiles.clear();
         m_selectedSet.clear();
-        NotifySelectionChanged();
+        if (notify)
+            NotifySelectionChanged();
     }
 }
 
-void ProjectPanel::SetSelectedFile(const std::string &path)
+void ProjectPanel::SetSelectedFile(const std::string &path, bool notify)
 {
     if (path.empty()) {
-        ClearSelection();
+        ClearSelection(notify);
         return;
     }
 
@@ -699,7 +700,8 @@ void ProjectPanel::SetSelectedFile(const std::string &path)
     m_selectedFiles = {path};
     m_selectedSet.clear();
     m_selectedSet.insert(path);
-    NotifySelectionChanged();
+    if (notify)
+        NotifySelectionChanged();
 }
 
 void ProjectPanel::InvalidateMaterialThumbnail(const std::string &filePath)
@@ -738,12 +740,21 @@ void ProjectPanel::InvalidateTextureThumbnail(const std::string &filePath)
 
 void ProjectPanel::NotifySelectionChanged()
 {
-    if (!onFileSelected)
-        return;
-    if (m_selectedFiles.size() == 1)
-        onFileSelected(SelectionPathForInspector(m_selectedFiles[0]));
-    else
-        onFileSelected("");
+    std::vector<std::string> selectedPaths;
+    selectedPaths.reserve(m_selectedFiles.size());
+    for (const auto &path : m_selectedFiles)
+        selectedPaths.push_back(SelectionPathForInspector(path));
+
+    const std::string primaryPath = m_selectedFile.empty() ? "" : SelectionPathForInspector(m_selectedFile);
+    if (onSelectionChanged)
+        onSelectionChanged(selectedPaths, primaryPath);
+
+    if (onFileSelected) {
+        if (selectedPaths.size() == 1)
+            onFileSelected(selectedPaths[0]);
+        else
+            onFileSelected("");
+    }
 }
 
 void ProjectPanel::NotifyEmptyAreaClicked()

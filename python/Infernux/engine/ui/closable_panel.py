@@ -25,9 +25,6 @@ class ClosablePanel(InxGUIRenderable):
     WINDOW_DISPLAY_NAME: Optional[str] = None
     WINDOW_TITLE_KEY: Optional[str] = None
 
-    # ── Class-level focus tracking ──
-    _active_panel_id: Optional[str] = None
-    
     def __init__(self, title: str, window_id: Optional[str] = None):
         super().__init__()
         self._title = title
@@ -221,13 +218,13 @@ class ClosablePanel(InxGUIRenderable):
         ctx.set_next_window_focus()
 
     def _activate_panel(self, ctx: InxGUIContext, *, focus_window: bool = False):
+        from Infernux.engine.interaction import FocusService
+
         if focus_window:
             ctx.set_window_focus()
 
-        if ClosablePanel._active_panel_id == self._window_id:
+        if not FocusService.instance().activate_panel(self._window_id):
             return
-
-        ClosablePanel._active_panel_id = self._window_id
 
         from .event_bus import EditorEvent, EditorEventBus
         EditorEventBus.instance().emit(EditorEvent.PANEL_FOCUSED, self._window_id)
@@ -239,7 +236,9 @@ class ClosablePanel(InxGUIRenderable):
 
     @classmethod
     def get_active_panel_id(cls) -> Optional[str]:
-        return cls._active_panel_id
+        from Infernux.engine.interaction import FocusService
+
+        return FocusService.instance().snapshot.active_panel_id or None
 
     def _window_title_suffix(self) -> str:
         """Return a suffix appended to the window title (e.g. ' *' for dirty)."""
@@ -248,10 +247,9 @@ class ClosablePanel(InxGUIRenderable):
     @classmethod
     def focus_panel_by_id(cls, panel_id: str):
         """Mark *panel_id* as active (used by undo replay to set focus target)."""
-        cls._pending_focus_panel_id = panel_id
+        from Infernux.engine.interaction import FocusService
 
-    # Request that the NEXT on_render cycle focuses this panel
-    _pending_focus_panel_id: Optional[str] = None
+        FocusService.instance().request_panel_focus(panel_id)
     
     def _begin_closable_window(self, ctx: InxGUIContext, flags: int = 0) -> bool:
         """
@@ -259,9 +257,10 @@ class ClosablePanel(InxGUIRenderable):
         Handles close button automatically.
         """
         # If this panel was requested to be focused, do it before begin
-        if ClosablePanel._pending_focus_panel_id == self._window_id:
+        from Infernux.engine.interaction import FocusService
+
+        if FocusService.instance().consume_panel_focus_request(self._window_id):
             ctx.set_next_window_focus()
-            ClosablePanel._pending_focus_panel_id = None
 
         # Resolve title via i18n if a title_key is set
         if self._title_key:
@@ -317,8 +316,7 @@ class ClosablePanel(InxGUIRenderable):
                 self._activate_panel(ctx)
             # Focus lost
             elif not focused and self._panel_was_focused:
-                if ClosablePanel._active_panel_id == self._window_id:
-                    ClosablePanel._active_panel_id = None
+                FocusService.instance().deactivate_panel(self._window_id)
             self._panel_was_focused = focused
         
         return visible and self._is_open

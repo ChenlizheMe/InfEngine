@@ -40,8 +40,8 @@ class ProjectPanel : public EditorPanel
     void SetAssetDatabase(AssetDatabase *adb);
     void SetIconsDirectory(const std::string &dir);
 
-    void ClearSelection();
-    void SetSelectedFile(const std::string &path);
+    void ClearSelection(bool notify = true);
+    void SetSelectedFile(const std::string &path, bool notify = true);
 
     void InvalidateMaterialThumbnail(const std::string &filePath);
     void InvalidateTextureThumbnail(const std::string &filePath);
@@ -68,6 +68,8 @@ class ProjectPanel : public EditorPanel
 
     /// Called when file selection changes (receives single path or empty).
     std::function<void(const std::string &)> onFileSelected;
+    /// Authoritative Project selection snapshot: ordered paths and primary path.
+    std::function<void(const std::vector<std::string> &, const std::string &)> onSelectionChanged;
     /// Called when empty area is clicked.
     std::function<void()> onEmptyAreaClicked;
     /// Called when current_path changes between frames.

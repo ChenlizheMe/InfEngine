@@ -238,6 +238,24 @@ class TestProjectPanelCallbacks:
         pp.on_file_selected = lambda path: received.append(path)
         assert pp.on_file_selected is not None
 
+    def test_selection_snapshot_reports_all_paths_and_supports_silent_sync(self, tmp_path):
+        first = tmp_path / "First.mat"
+        second = tmp_path / "Second.mat"
+        first.write_text("{}", encoding="utf-8")
+        second.write_text("{}", encoding="utf-8")
+        pp = ProjectPanel()
+        pp.set_root_path(str(tmp_path))
+        received = []
+        pp.on_selection_changed = (
+            lambda paths, primary: received.append((list(paths), primary))
+        )
+
+        pp.set_selected_file(str(first))
+        pp.clear_selection(False)
+        pp.set_selected_file(str(second), False)
+
+        assert received == [([str(first)], str(first))]
+
     def test_on_empty_area_clicked_callback(self):
         pp = ProjectPanel()
         called = []

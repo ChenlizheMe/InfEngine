@@ -1302,8 +1302,8 @@ void RegisterGUIBindings(py::module_ &m)
             },
             py::arg("engine"))
         .def("set_icons_directory", &ProjectPanel::SetIconsDirectory, py::arg("dir"))
-        .def("clear_selection", &ProjectPanel::ClearSelection)
-        .def("set_selected_file", &ProjectPanel::SetSelectedFile, py::arg("path"))
+        .def("clear_selection", &ProjectPanel::ClearSelection, py::arg("notify") = true)
+        .def("set_selected_file", &ProjectPanel::SetSelectedFile, py::arg("path"), py::arg("notify") = true)
         .def("invalidate_material_thumbnail", &ProjectPanel::InvalidateMaterialThumbnail, py::arg("file_path"))
         .def("invalidate_texture_thumbnail", &ProjectPanel::InvalidateTextureThumbnail, py::arg("file_path"))
         .def("invalidate_dir_cache", &ProjectPanel::InvalidateDirCache)
@@ -1314,6 +1314,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("on_project_panel_focused", &ProjectPanel::onProjectPanelFocused)
         // Notification callbacks
         .def_readwrite("on_file_selected", &ProjectPanel::onFileSelected)
+        .def_readwrite("on_selection_changed", &ProjectPanel::onSelectionChanged)
         .def_readwrite("on_empty_area_clicked", &ProjectPanel::onEmptyAreaClicked)
         .def_readwrite("on_state_changed", &ProjectPanel::onStateChanged)
         // File operation callbacks
