@@ -373,3 +373,68 @@ def test_scene_box_selection_preserves_primary_and_anchor():
     assert service.snapshot.primary == first
     assert service.snapshot.anchor == second
     assert revealed == [41]
+
+
+def test_ui_editor_projects_directly_from_typed_selection(monkeypatch):
+    from types import SimpleNamespace
+
+    import Infernux.lib as native
+    from Infernux.engine._bootstrap_wiring import BootstrapWiringMixin
+
+    selected_object = SimpleNamespace(id=42)
+
+    class _Scene:
+        @staticmethod
+        def find_by_id(object_id):
+            return selected_object if object_id == 42 else None
+
+    class _SceneManager:
+        @staticmethod
+        def instance():
+            return _SceneManager()
+
+        @staticmethod
+        def get_active_scene():
+            return _Scene()
+
+    monkeypatch.setattr(native, "SceneManager", _SceneManager)
+
+    projected = []
+    callbacks = {}
+    ui_editor = SimpleNamespace(
+        set_on_request_ui_mode=lambda callback: callbacks.__setitem__(
+            "mode", callback
+        ),
+        set_on_selection_changed=lambda callback: callbacks.__setitem__(
+            "selection", callback
+        ),
+        notify_hierarchy_selection=projected.append,
+    )
+    bootstrap = BootstrapWiringMixin()
+    bootstrap.ui_editor = ui_editor
+    bootstrap.hierarchy = SimpleNamespace(set_ui_mode=lambda _enabled: None)
+    bootstrap.scene_view = SimpleNamespace()
+    bootstrap.game_view = SimpleNamespace()
+    bootstrap.window_manager = None
+
+    service = SelectionService()
+    bootstrap._wire_ui_editor()
+    assert projected == [None]
+
+    service.select(
+        SelectionTarget.scene_object(42),
+        owner_id="scene_view",
+        record_history=False,
+    )
+    assert projected[-1] is selected_object
+
+    service.select(
+        SelectionTarget.asset("Assets/Test.mat"),
+        owner_id="project",
+        record_history=False,
+    )
+    assert projected[-1] is None
+
+    callbacks["selection"](selected_object)
+    assert service.snapshot.owner_id == "ui_editor"
+    assert service.snapshot.primary == SelectionTarget.scene_object(42)

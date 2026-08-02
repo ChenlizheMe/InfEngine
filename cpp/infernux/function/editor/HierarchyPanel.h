@@ -80,8 +80,6 @@ class HierarchyPanel : public EditorPanel
 
     /// Called on double-click (receives object ID to focus camera on).
     std::function<void(uint64_t)> onDoubleClickFocus;
-    /// Extra callback for UI-editor sync.
-    std::function<void(uint64_t)> onSelectionChangedUiEditor;
 
     // ── Undo callbacks ───────────────────────────────────────────────
 
@@ -314,7 +312,6 @@ class HierarchyPanel : public EditorPanel
     void RenderMultiDropTarget(InxGUIContext *ctx, uint64_t parentId);
 
     // Selection
-    void NotifySelectionChanged();
     [[nodiscard]] bool IsCtrl(InxGUIContext *ctx) const;
     [[nodiscard]] bool IsShift(InxGUIContext *ctx) const;
 

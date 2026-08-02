@@ -731,16 +731,21 @@ class BootstrapWiringMixin:
 
         ui_editor.set_on_selection_changed(on_ui_editor_selected)
 
-        def on_hierarchy_ui_sync(oid):
-            """C++ sends uint64_t; resolve to object for UIEditorPanel."""
-            obj = None
-            if oid:
-                from Infernux.lib import SceneManager
-                scene = SceneManager.instance().get_active_scene()
-                obj = scene.find_by_id(oid) if scene else None
-            ui_editor.notify_hierarchy_selection(obj)
+        from Infernux.engine.interaction import SelectionService
 
-        hierarchy.on_selection_changed_ui_editor = on_hierarchy_ui_sync
+        selection = SelectionService.instance()
+        previous_service = getattr(self, "_ui_editor_selection_service", None)
+        previous_listener = getattr(self, "_ui_editor_selection_listener", None)
+        if previous_service is not None and callable(previous_listener):
+            previous_service.remove_listener(previous_listener)
+
+        def on_global_selection_changed(change):
+            self._project_ui_editor_selection(change.after)
+
+        self._ui_editor_selection_service = selection
+        self._ui_editor_selection_listener = on_global_selection_changed
+        selection.add_listener(on_global_selection_changed)
+        self._project_ui_editor_selection(selection.snapshot)
 
         def on_panel_focused(panel_id: str):
             if self.window_manager is not None:
@@ -752,4 +757,23 @@ class BootstrapWiringMixin:
             bus.unsubscribe(EditorEvent.PANEL_FOCUSED, previous)
         self._panel_focus_event_handler = on_panel_focused
         bus.subscribe(EditorEvent.PANEL_FOCUSED, on_panel_focused)
+
+    def _project_ui_editor_selection(self, snapshot) -> None:
+        from Infernux.engine.interaction import SelectionDomain
+
+        primary = snapshot.primary
+        object_id = 0
+        if primary is not None:
+            if primary.domain is SelectionDomain.SCENE_OBJECT:
+                object_id = primary.scene_object_id()
+            elif primary.domain is SelectionDomain.COMPONENT:
+                object_id = primary.component_ids()[0]
+
+        obj = None
+        if object_id:
+            from Infernux.lib import SceneManager
+
+            scene = SceneManager.instance().get_active_scene()
+            obj = scene.find_by_id(object_id) if scene else None
+        self.ui_editor.notify_hierarchy_selection(obj)
 

@@ -1222,7 +1222,6 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("set_ordered_ids", &HierarchyPanel::setOrderedIds)
         // Notification callbacks
         .def_readwrite("on_double_click_focus", &HierarchyPanel::onDoubleClickFocus)
-        .def_readwrite("on_selection_changed_ui_editor", &HierarchyPanel::onSelectionChangedUiEditor)
         // Undo callbacks
         .def_readwrite("undo_record_create", &HierarchyPanel::undoRecordCreate)
         .def_readwrite("undo_record_delete", &HierarchyPanel::undoRecordDelete)

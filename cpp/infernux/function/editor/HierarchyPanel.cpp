@@ -125,7 +125,6 @@ void HierarchyPanel::ClearSelectionAndNotify()
     if (clearSelection)
         clearSelection();
     SyncSelectionCache();
-    NotifySelectionChanged();
 }
 
 void HierarchyPanel::SetSelectedObjectById(uint64_t id, bool clearSearchFirst)
@@ -178,8 +177,6 @@ void HierarchyPanel::SetSelectedObjectById(uint64_t id, bool clearSearchFirst)
         }
     }
 
-    if (changed)
-        NotifySelectionChanged();
 }
 
 void HierarchyPanel::ExpandToObject(uint64_t objId)
@@ -259,29 +256,6 @@ std::string HierarchyPanel::SceneDisplayName() const
 std::string HierarchyPanel::PrefabDisplayName() const
 {
     return m_sceneHeaderPushMode ? m_prefabDisplayName : (getPrefabDisplayName ? getPrefabDisplayName() : "Prefab");
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Notification
-// ════════════════════════════════════════════════════════════════════
-
-void HierarchyPanel::NotifySelectionChanged()
-{
-    uint64_t primary = getPrimary ? getPrimary() : 0;
-
-    // In UI mode, skip inspector for non-canvas objects
-    if (m_uiMode && primary != 0) {
-        Scene *scene = SceneManager::Instance().GetActiveScene();
-        GameObject *go = scene ? scene->FindByID(primary) : nullptr;
-        if (go && !IsInCanvasTree(go)) {
-            if (onSelectionChangedUiEditor)
-                onSelectionChangedUiEditor(primary);
-            return;
-        }
-    }
-
-    if (onSelectionChangedUiEditor)
-        onSelectionChangedUiEditor(primary);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1375,7 +1349,6 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
             if (selectId)
                 selectId(objId);
             SyncSelectionCache();
-            NotifySelectionChanged();
         }
         m_rightClickedObjId = objId;
         // The shared popup is rendered after the flat rows, outside this
@@ -1494,7 +1467,6 @@ void HierarchyPanel::RenderGameObjectTree(InxGUIContext *ctx, GameObject *obj)
             if (selectId)
                 selectId(objId);
             SyncSelectionCache();
-            NotifySelectionChanged();
         }
     }
 
@@ -1626,7 +1598,6 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
                         selectId(pid);
                 }
                 SyncSelectionCache();
-                NotifySelectionChanged();
             }
             m_pendingSelectId = 0;
             m_pendingCtrl = false;
