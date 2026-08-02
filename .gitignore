@@ -87,6 +87,7 @@ ipch/
 .vscode/
 .idea/
 .codex/
+.agents/
 *.swp
 *.swo
 *~
