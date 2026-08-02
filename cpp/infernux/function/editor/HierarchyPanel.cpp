@@ -1701,8 +1701,7 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
 
     // Keyboard shortcuts (F2 rename, Delete)
     auto shortcutStart = Clock::now();
-    const bool hierarchyFocused =
-        ctx->IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    const bool hierarchyFocused = ctx->IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     if (hierarchyFocused && !ctx->WantTextInput() && m_selCount > 0) {
         if (ctx->IsKeyPressed(kKeyF2) && m_renameId == 0) {
             if (m_selPrimary)

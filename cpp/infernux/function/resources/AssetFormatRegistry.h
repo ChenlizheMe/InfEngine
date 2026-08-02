@@ -14,18 +14,17 @@ namespace infernux::asset_formats
 {
 
 inline constexpr std::array<std::string_view, 15> kTextureExtensions = {
-    ".png", ".jpg", ".jpeg", ".jpe", ".bmp", ".tga", ".gif", ".psd", ".hdr",
-    ".pic", ".pnm", ".pgm", ".ppm", ".inxvfield", ".inxsdf",
+    ".png", ".jpg", ".jpeg", ".jpe", ".bmp", ".tga",       ".gif",    ".psd",
+    ".hdr", ".pic", ".pnm",  ".pgm", ".ppm", ".inxvfield", ".inxsdf",
 };
 
 // Assimp is the importer for these formats.  The list intentionally contains
 // formats implemented by the vendored Assimp build, not merely file suffixes
 // that a UI could display.
 inline constexpr std::array<std::string_view, 35> kMeshExtensions = {
-    ".fbx",     ".obj",     ".gltf",   ".glb",    ".dae",    ".3ds",    ".ply",    ".stl",    ".x",
-    ".b3d",     ".ase",     ".blend",  ".bvh",    ".cob",    ".c4d",    ".csm",    ".dxf",    ".hmp",
-    ".ifc",     ".iqm",     ".irrmesh", ".lwo",    ".lws",    ".m3d",    ".md2",    ".md3",    ".md4",
-    ".md5mesh", ".mdc",     ".mmd",    ".ms3d",   ".nff",    ".off",    ".ogex",   ".x3d",
+    ".fbx", ".obj", ".gltf", ".glb",     ".dae", ".3ds", ".ply",  ".stl", ".x",       ".b3d",  ".ase", ".blend",
+    ".bvh", ".cob", ".c4d",  ".csm",     ".dxf", ".hmp", ".ifc",  ".iqm", ".irrmesh", ".lwo",  ".lws", ".m3d",
+    ".md2", ".md3", ".md4",  ".md5mesh", ".mdc", ".mmd", ".ms3d", ".nff", ".off",     ".ogex", ".x3d",
 };
 
 // stb_vorbis is compiled into the runtime for OGG/Vorbis.  Other compressed

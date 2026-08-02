@@ -328,9 +328,8 @@ bool ParticleGpuContinuationRuntime::IsValid() const noexcept
     return m_device && m_storage && m_revision && m_storage->capacity > 0 && m_storage->resources.IsValid() &&
            m_revision->layout.IsValid() && m_revision->group.IsValid() && m_revision->ownerGroup.IsValid() &&
            m_revision->collisionSceneGroup.IsValid() && m_revision->contactGroup.IsValid() &&
-           m_revision->preparePipeline.IsValid() &&
-           m_revision->classifyPipeline.IsValid() && m_revision->dispatchPipeline.IsValid() &&
-           m_programGeneration != 0 && m_resetSerial != 0;
+           m_revision->preparePipeline.IsValid() && m_revision->classifyPipeline.IsValid() &&
+           m_revision->dispatchPipeline.IsValid() && m_programGeneration != 0 && m_resetSerial != 0;
 }
 
 bool ParticleGpuContinuationRuntime::SharesStorageWith(const ParticleGpuContinuationRuntime &other) const noexcept

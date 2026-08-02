@@ -250,8 +250,8 @@ bool ParticleGpuRibbonTopology::Create(rhi::Device &device, const GpuParticleRib
 {
     Destroy();
     if (desc.capacity == 0 || desc.capacity > std::numeric_limits<uint32_t>::max() / 6u || !desc.instances.IsValid() ||
-        !desc.sourceIndices.IsValid() || !desc.sourceIndirectArguments.IsValid() ||
-        !desc.simulationControl.IsValid() || !desc.program.IsValid())
+        !desc.sourceIndices.IsValid() || !desc.sourceIndirectArguments.IsValid() || !desc.simulationControl.IsValid() ||
+        !desc.program.IsValid())
         return false;
 
     m_device = &device;
@@ -298,8 +298,16 @@ bool ParticleGpuRibbonTopology::Create(rhi::Device &device, const GpuParticleRib
 
     for (uint32_t pingPong = 0; pingPong < m_groups.size(); ++pingPong) {
         const std::array<rhi::BufferHandle, 11> buffers = {
-            m_instances,  m_sourceIndices, m_sourceIndirectArguments, m_indices[pingPong], m_indices[1u - pingPong],
-            m_histograms, m_blockOffsets,  m_globalOffsets,           m_dispatchArguments, m_drawIndirectArguments,
+            m_instances,
+            m_sourceIndices,
+            m_sourceIndirectArguments,
+            m_indices[pingPong],
+            m_indices[1u - pingPong],
+            m_histograms,
+            m_blockOffsets,
+            m_globalOffsets,
+            m_dispatchArguments,
+            m_drawIndirectArguments,
             m_simulationControl,
         };
         rhi::BindGroupDesc group;
@@ -384,11 +392,11 @@ bool ParticleGpuRibbonTopology::IsValid() const noexcept
 {
     return m_device && m_capacity > 0 && m_blockCount > 0 && m_instances.IsValid() && m_sourceIndices.IsValid() &&
            m_sourceIndirectArguments.IsValid() && m_simulationControl.IsValid() && m_indices[0].IsValid() &&
-           m_indices[1].IsValid() &&
-           m_drawIndirectArguments.IsValid() && m_dispatchArguments.IsValid() && m_histograms.IsValid() &&
-           m_blockOffsets.IsValid() && m_globalOffsets.IsValid() && m_layout.IsValid() && m_groups[0].IsValid() &&
-           m_groups[1].IsValid() && m_resetPipeline.IsValid() && m_initializePipeline.IsValid() &&
-           m_histogramPipeline.IsValid() && m_scanPipeline.IsValid() && m_scatterPipeline.IsValid();
+           m_indices[1].IsValid() && m_drawIndirectArguments.IsValid() && m_dispatchArguments.IsValid() &&
+           m_histograms.IsValid() && m_blockOffsets.IsValid() && m_globalOffsets.IsValid() && m_layout.IsValid() &&
+           m_groups[0].IsValid() && m_groups[1].IsValid() && m_resetPipeline.IsValid() &&
+           m_initializePipeline.IsValid() && m_histogramPipeline.IsValid() && m_scanPipeline.IsValid() &&
+           m_scatterPipeline.IsValid();
 }
 
 GpuParticleRibbonConstants ParticleGpuRibbonTopology::Constants(uint32_t passIndex) const noexcept

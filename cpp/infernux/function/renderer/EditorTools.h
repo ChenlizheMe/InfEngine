@@ -174,7 +174,7 @@ class EditorTools
     ToolMode m_mode = ToolMode::Translate;
     HandleAxis m_highlightedAxis = HandleAxis::None;
     float m_handleSize = 1.3125f; // Base size multiplier (1.75 * 0.75)
-    bool m_localMode = false;  // true = align gizmo to object's local rotation
+    bool m_localMode = false;     // true = align gizmo to object's local rotation
 
     // ---- Cached per-axis geometry (in local space) ----
     // Shared across all modes: X/Y/Z per-axis vertex & index arrays.

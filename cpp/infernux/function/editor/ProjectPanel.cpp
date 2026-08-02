@@ -221,8 +221,8 @@ static const std::unordered_set<std::string> sModelExtensions = [] {
     return result;
 }();
 
-static const std::unordered_set<std::string> sHiddenExtensions = {
-    ".meta", ".pyc", ".pyo", ".tmp", ".inxparticle", ".inxtex", ".inxvfield", ".inxsdf"};
+static const std::unordered_set<std::string> sHiddenExtensions = {".meta",        ".pyc",    ".pyo",       ".tmp",
+                                                                  ".inxparticle", ".inxtex", ".inxvfield", ".inxsdf"};
 
 static const std::unordered_set<std::string> sHiddenFiles = {"imgui.ini"};
 

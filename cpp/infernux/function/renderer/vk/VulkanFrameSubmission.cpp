@@ -25,25 +25,24 @@ uint32_t VulkanFrameSubmission::AddWork(rhi::DeviceId device, rhi::QueueRole que
     return workItem;
 }
 
-rhi::ComposedSubmissionRange
-VulkanFrameSubmission::AppendRenderGraph(RenderGraph &graph, const std::vector<uint32_t> &externalDependencies,
-                                         BatchHook beforeBatch, GraphHook afterGraph)
+rhi::ComposedSubmissionRange VulkanFrameSubmission::AppendRenderGraph(RenderGraph &graph,
+                                                                      const std::vector<uint32_t> &externalDependencies,
+                                                                      BatchHook beforeBatch, GraphHook afterGraph)
 {
     const auto &source = graph.GetSubmissionPlan();
     rhi::ComposedSubmissionRange range = m_composer.Append(source, externalDependencies);
     for (size_t batchIndex = 0; batchIndex < range.workItems.size(); ++batchIndex) {
         const uint32_t workItem = range.workItems[batchIndex];
-        m_recorders.emplace(
-            workItem,
-            [&graph, batchIndex, batchCount = range.workItems.size(), beforeBatch, afterGraph](VkCommandBuffer cmd) {
-                if (beforeBatch && !beforeBatch(static_cast<uint32_t>(batchIndex), cmd))
-                    return false;
-                if (batchIndex == 0)
-                    graph.BeginExecution();
-                if (!graph.RecordSubmissionBatch(static_cast<uint32_t>(batchIndex), cmd))
-                    return false;
-                return batchIndex + 1 != batchCount || !afterGraph || afterGraph(cmd);
-            });
+        m_recorders.emplace(workItem, [&graph, batchIndex, batchCount = range.workItems.size(), beforeBatch,
+                                       afterGraph](VkCommandBuffer cmd) {
+            if (beforeBatch && !beforeBatch(static_cast<uint32_t>(batchIndex), cmd))
+                return false;
+            if (batchIndex == 0)
+                graph.BeginExecution();
+            if (!graph.RecordSubmissionBatch(static_cast<uint32_t>(batchIndex), cmd))
+                return false;
+            return batchIndex + 1 != batchCount || !afterGraph || afterGraph(cmd);
+        });
         const auto queue = source.batches[batchIndex].queue;
         if (queue != rhi::QueueRole::Count)
             m_lastWork[static_cast<size_t>(queue)] = workItem;

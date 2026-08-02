@@ -548,8 +548,8 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
                 bufferInfo.offset = 0;
                 bufferInfo.range = matDescSet.materialUBO->GetSize();
             } else {
-                INXLOG_ERROR("Material shader ABI violation: set 0 uniform buffer '", binding.name,
-                             "' at binding ", binding.binding,
+                INXLOG_ERROR("Material shader ABI violation: set 0 uniform buffer '", binding.name, "' at binding ",
+                             binding.binding,
                              " is not a reflected material Properties block. Camera and lighting uniforms must use "
                              "the engine-owned RenderView set 1 contract.");
                 return false;
@@ -861,7 +861,7 @@ void MaterialDescriptorManager::Clear()
 }
 
 void MaterialDescriptorManager::SetDefaultTexture(VkImageView imageView, VkSampler sampler,
-                                                   std::shared_ptr<const rhi::TextureGpuView> gpuView)
+                                                  std::shared_ptr<const rhi::TextureGpuView> gpuView)
 {
     m_defaultImageView = imageView;
     m_defaultSampler = sampler;
@@ -869,7 +869,7 @@ void MaterialDescriptorManager::SetDefaultTexture(VkImageView imageView, VkSampl
 }
 
 void MaterialDescriptorManager::SetDefaultNormalTexture(VkImageView imageView, VkSampler sampler,
-                                                         std::shared_ptr<const rhi::TextureGpuView> gpuView)
+                                                        std::shared_ptr<const rhi::TextureGpuView> gpuView)
 {
     m_defaultNormalImageView = imageView;
     m_defaultNormalSampler = sampler;

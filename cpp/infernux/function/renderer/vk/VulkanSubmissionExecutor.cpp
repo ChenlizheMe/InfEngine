@@ -47,8 +47,8 @@ bool VulkanSubmissionExecutor::Initialize(VkDeviceContext &device, VulkanQueueMa
 
     if (device.IsTimelineSemaphoreEnabled()) {
         uint32_t maxLane = 0;
-        for (const rhi::QueueRole role : {rhi::QueueRole::Graphics, rhi::QueueRole::Compute,
-                                          rhi::QueueRole::Transfer, rhi::QueueRole::Present}) {
+        for (const rhi::QueueRole role :
+             {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer, rhi::QueueRole::Present}) {
             const uint32_t lane = queues.GetSnapshot(role).nativeLane;
             if (lane != UINT32_MAX)
                 maxLane = (std::max)(maxLane, lane);
@@ -197,9 +197,8 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     ExecuteResult output{};
     if (!m_deviceContext || !m_queues || frameSlot >= m_frames.size() || plan.batches.empty() || !recorder)
         return output;
-    const auto firstGraphics = std::find_if(plan.batches.begin(), plan.batches.end(), [](const auto &batch) {
-        return batch.queue == rhi::QueueRole::Graphics;
-    });
+    const auto firstGraphics = std::find_if(plan.batches.begin(), plan.batches.end(),
+                                            [](const auto &batch) { return batch.queue == rhi::QueueRole::Graphics; });
     if (firstGraphics == plan.batches.end() || sync.completionFence == VK_NULL_HANDLE ||
         sync.completionEpoch == rhi::InvalidSubmissionSerial) {
         INXLOG_ERROR("VulkanSubmissionExecutor requires Graphics work, a completion fence, and a completion epoch");
@@ -400,8 +399,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             if (laneWaitValues[lane] == 0)
                 continue;
             waits.push_back(m_laneTimelines[lane].semaphore);
-            waitStages.push_back(laneWaitStages[lane] != 0 ? laneWaitStages[lane]
-                                                           : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            waitStages.push_back(laneWaitStages[lane] != 0 ? laneWaitStages[lane] : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
             waitValues.push_back(laneWaitValues[lane]);
             usesTimeline = true;
         }

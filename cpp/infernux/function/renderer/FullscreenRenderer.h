@@ -66,8 +66,7 @@ class FullscreenRenderer
     void InvalidateShader(const std::string &shaderName);
 
     rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout, const FullscreenTextureInput *inputs,
-                                           uint32_t inputCount,
-                                           rhi::SamplerHandle colorSampler);
+                                           uint32_t inputCount, rhi::SamplerHandle colorSampler);
 
     void Draw(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
               rhi::BindGroupHandle inputGroup, rhi::BindGroupHandle perViewGroup,

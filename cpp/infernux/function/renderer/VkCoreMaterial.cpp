@@ -264,8 +264,7 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
             throw std::logic_error("GPU texture cache published an invalid view");
         m_pendingTextureGpuUploads.erase(pendingGpu);
         ++m_completedTextureUploadCount;
-        return {TextureResolveStatus::Ready,
-                {view, nativeSampler, std::move(residentSlot), std::move(resident)}};
+        return {TextureResolveStatus::Ready, {view, nativeSampler, std::move(residentSlot), std::move(resident)}};
     } catch (const std::exception &exception) {
         INXLOG_ERROR("TextureResolver: GPU upload failed for '", textureGuid, "': ", exception.what());
         m_pendingTextureGpuUploads.erase(pendingGpu);
@@ -529,7 +528,7 @@ void InxVkCoreModular::InitializeMaterialSystem()
         if (whiteTex) {
             auto &rhiDevice = m_backend.Device().GetRhiDevice();
             m_materialPipelineManager.SetDefaultTexture(rhiDevice.Resolve(whiteTex->GetView()),
-                                                         rhiDevice.Resolve(whiteTex->GetSampler()), whiteTex);
+                                                        rhiDevice.Resolve(whiteTex->GetSampler()), whiteTex);
         }
 
         auto normalSlot = m_textureCache.Find("_default_normal", m_ensureFrameCounter);
@@ -537,7 +536,7 @@ void InxVkCoreModular::InitializeMaterialSystem()
         if (normalTex) {
             auto &rhiDevice = m_backend.Device().GetRhiDevice();
             m_materialPipelineManager.SetDefaultNormalTexture(rhiDevice.Resolve(normalTex->GetView()),
-                                                               rhiDevice.Resolve(normalTex->GetSampler()), normalTex);
+                                                              rhiDevice.Resolve(normalTex->GetSampler()), normalTex);
         }
 
         // Set up texture resolver for material Texture2D properties

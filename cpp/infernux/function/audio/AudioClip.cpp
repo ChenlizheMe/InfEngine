@@ -16,7 +16,7 @@
 #include <utility>
 
 extern "C" int stb_vorbis_decode_memory(const unsigned char *mem, int len, int *channels, int *sample_rate,
-                                         short **output);
+                                        short **output);
 
 namespace infernux
 {
@@ -67,8 +67,8 @@ bool DecodeOggFile(const std::string &filePath, SDL_AudioSpec &spec, std::vector
     int channels = 0;
     int sampleRate = 0;
     short *samples = nullptr;
-    const int sampleFrames = stb_vorbis_decode_memory(encoded.data(), static_cast<int>(encoded.size()), &channels,
-                                                      &sampleRate, &samples);
+    const int sampleFrames =
+        stb_vorbis_decode_memory(encoded.data(), static_cast<int>(encoded.size()), &channels, &sampleRate, &samples);
     if (sampleFrames <= 0 || channels <= 0 || sampleRate <= 0 || !samples) {
         INXLOG_ERROR("Failed to decode OGG/Vorbis file '", filePath, "'");
         if (samples)

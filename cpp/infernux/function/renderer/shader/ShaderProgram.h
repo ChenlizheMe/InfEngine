@@ -297,12 +297,10 @@ class ShaderProgramCache
     /**
      * @brief Get or create a shader program
      */
-    ShaderProgramPublication GetOrCreateProgram(const ShaderProgramKey &programKey,
-                                                const std::vector<char> &vertSpirv,
+    ShaderProgramPublication GetOrCreateProgram(const ShaderProgramKey &programKey, const std::vector<char> &vertSpirv,
                                                 const std::vector<char> &fragSpirv);
     ShaderProgramPublication GetOrCreateProgram(const ShaderProgramVariantKey &variantKey,
-                                                const std::vector<char> &vertSpirv,
-                                                const std::vector<char> &fragSpirv);
+                                                const std::vector<char> &vertSpirv, const std::vector<char> &fragSpirv);
 
     /**
      * @brief Get existing program

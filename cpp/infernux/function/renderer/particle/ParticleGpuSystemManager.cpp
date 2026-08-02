@@ -408,8 +408,8 @@ struct ParticleGpuSystemManager::Impl
             uint64_t totalBytes = 0;
             for (const auto &capture : emitterCaptures)
                 totalBytes += capture.counterBytes + ParticleGpuBounds::BoundsBufferBytes +
-                              sizeof(GpuParticleSpawnMetadata) + sizeof(uint32_t) * 4u +
-                              capture.contactCounterBytes + capture.stateBytes;
+                              sizeof(GpuParticleSpawnMetadata) + sizeof(uint32_t) * 4u + capture.contactCounterBytes +
+                              capture.stateBytes;
             constexpr uint64_t MaxDiagnosticStateReadbackBytes = 16ull * 1024ull * 1024ull;
             const uint64_t stateReadbackBytes =
                 std::accumulate(emitterCaptures.begin(), emitterCaptures.end(), uint64_t{0},

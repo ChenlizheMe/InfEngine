@@ -546,9 +546,8 @@ void InxVkCoreModular::InvalidateTextureCache(const std::string &textureGuid)
     // particle consumers to resolve the requested revision, while material
     // descriptors immediately enter their existing pending-refresh path.
     const size_t requestedSlots = m_textureCache.RequestAssetRevision(textureGuid, runtimeVersion);
-    const uint32_t refreshedMaterials = m_materialPipelineManagerInitialized
-                                            ? m_materialPipelineManager.RefreshMaterialsUsingTexture(textureGuid)
-                                            : 0;
+    const uint32_t refreshedMaterials =
+        m_materialPipelineManagerInitialized ? m_materialPipelineManager.RefreshMaterialsUsingTexture(textureGuid) : 0;
 
     INXLOG_INFO("Texture revision requested for GUID: ", textureGuid, " revision=", runtimeVersion,
                 " slots=", requestedSlots, " materials=", refreshedMaterials);

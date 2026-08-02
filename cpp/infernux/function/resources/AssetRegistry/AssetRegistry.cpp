@@ -293,8 +293,8 @@ bool AssetRegistry::TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &t
         std::rethrow_exception(ticket->m_failure);
     }
     const bool staleAfterMutation = m_assetMutationGenerations[ticket->m_guid] != ticket->m_expectedMutationGeneration;
-    const bool canUseStaleUnloadedPayload = allowStaleIfUnloaded &&
-                                            m_loadedAssets.find(ticket->m_guid) == m_loadedAssets.end();
+    const bool canUseStaleUnloadedPayload =
+        allowStaleIfUnloaded && m_loadedAssets.find(ticket->m_guid) == m_loadedAssets.end();
     if (staleAfterMutation && !canUseStaleUnloadedPayload) {
         ticket->m_rejected = true;
         throw std::logic_error("Asset load ticket is stale after a newer registry mutation");

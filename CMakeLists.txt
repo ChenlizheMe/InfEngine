@@ -1211,15 +1211,19 @@ include("${CMAKE_SOURCE_DIR}/cmake/InfernuxHub.cmake")
 # ------------------------------------------------------------------------------
 # Code Formatting Target (clang-format)
 # ------------------------------------------------------------------------------
-file(GLOB_RECURSE ALL_CXX_SOURCE_FILES 
-    "${CMAKE_SOURCE_DIR}/cpp/*.cpp"
-    "${CMAKE_SOURCE_DIR}/cpp/*.h"
-    "${CMAKE_SOURCE_DIR}/cpp/*.hpp"
+find_program(INFERNUX_CLANG_FORMAT_EXECUTABLE
+    NAMES clang-format clang-format-22
+    REQUIRED
 )
 
 add_custom_target(clang_format
-    COMMAND clang-format -i ${ALL_CXX_SOURCE_FILES}
+    COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_SOURCE_DIR}/cmake/run_clang_format.py"
+        --clang-format "${INFERNUX_CLANG_FORMAT_EXECUTABLE}"
+        --source-root "${CMAKE_SOURCE_DIR}/cpp"
+    DEPENDS "${CMAKE_SOURCE_DIR}/cmake/run_clang_format.py"
     COMMENT "Running clang-format on source files"
+    VERBATIM
 )
 
 # ------------------------------------------------------------------------------

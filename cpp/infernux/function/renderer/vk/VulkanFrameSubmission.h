@@ -29,9 +29,9 @@ class VulkanFrameSubmission
                                    rhi::RenderViewId view, rhi::PipelineStage waitStages,
                                    std::vector<uint32_t> dependencies, Recorder recorder);
 
-    [[nodiscard]] rhi::ComposedSubmissionRange
-    AppendRenderGraph(RenderGraph &graph, const std::vector<uint32_t> &externalDependencies = {},
-                      BatchHook beforeBatch = {}, GraphHook afterGraph = {});
+    [[nodiscard]] rhi::ComposedSubmissionRange AppendRenderGraph(RenderGraph &graph,
+                                                                 const std::vector<uint32_t> &externalDependencies = {},
+                                                                 BatchHook beforeBatch = {}, GraphHook afterGraph = {});
 
     [[nodiscard]] bool Build(rhi::SubmissionPlan &output, std::string &error) const;
     [[nodiscard]] bool RecordBatch(const rhi::SubmissionPlan &plan, uint32_t batchIndex,

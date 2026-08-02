@@ -82,9 +82,8 @@ std::string ResolveEngineTextureGuid(const std::string &textureRef)
     throw std::invalid_argument("engine texture cannot be resolved: " + textureRef);
 }
 
-std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std::string &name,
-                                                                      const std::string &textureRef,
-                                                                      bool hardAlpha = false)
+std::shared_ptr<InxMaterial>
+CreateTexturedComponentGizmoIconMaterial(const std::string &name, const std::string &textureRef, bool hardAlpha = false)
 {
     auto material = std::make_shared<InxMaterial>(name);
     material->SetShader("Gizmo Icon");
@@ -1304,8 +1303,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoCameraIconMaterial
 
 std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoLightIconMaterial()
 {
-    return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoLightIconMaterial", "icons/gizmo_light.png",
-                                                   true);
+    return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoLightIconMaterial", "icons/gizmo_light.png", true);
 }
 
 std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoParticleIconMaterial()

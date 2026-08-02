@@ -1,8 +1,8 @@
 #pragma once
 
 #include "AssetImporter.h"
-#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/AssetDependencyGraph.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 
 #include <fstream>

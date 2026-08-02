@@ -50,9 +50,10 @@ class VkTextureCache
     // ── Cache Operations ───────────────────────────────────────────────────
 
     /// Insert a pre-loaded texture into the cache (thread-safe, shares ownership).
-    [[nodiscard]] std::shared_ptr<rhi::TextureGpuViewSlot>
-    Insert(const std::string &key, std::shared_ptr<rhi::TextureResource> texture, uint64_t lastUsedFrame,
-           bool permanentlyPinned, std::string assetGuid, uint64_t runtimeVersion);
+    [[nodiscard]] std::shared_ptr<rhi::TextureGpuViewSlot> Insert(const std::string &key,
+                                                                  std::shared_ptr<rhi::TextureResource> texture,
+                                                                  uint64_t lastUsedFrame, bool permanentlyPinned,
+                                                                  std::string assetGuid, uint64_t runtimeVersion);
 
     /// Look up and lease a cached texture; returns nullptr if not found.
     [[nodiscard]] std::shared_ptr<rhi::TextureGpuViewSlot> Find(const std::string &key, uint64_t frame = 0);

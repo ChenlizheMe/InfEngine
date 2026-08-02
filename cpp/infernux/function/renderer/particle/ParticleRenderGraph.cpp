@@ -166,8 +166,8 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
 {
     Destroy();
     if (graphInstanceId == 0 || slotCount == 0 || !program.IsValid() ||
-        uint64_t(slotCount) > std::numeric_limits<uint64_t>::max() / MetadataStride ||
-        parameterWords.size() % 4 != 0 || parameterWords.size() > std::numeric_limits<uint32_t>::max())
+        uint64_t(slotCount) > std::numeric_limits<uint64_t>::max() / MetadataStride || parameterWords.size() % 4 != 0 ||
+        parameterWords.size() > std::numeric_limits<uint32_t>::max())
         return false;
 
     m_device = &device;
@@ -181,8 +181,7 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
         rhi::BufferDesc desc;
         desc.byteSize = bytes;
         desc.usage = usage;
-        desc.queueAccess =
-            rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
+        desc.queueAccess = rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
         return device.CreateBuffer(desc);
     };
     m_burstRequestCounts = createDeviceLocal(uint64_t(slotCount) * sizeof(uint32_t), readableStorage);
@@ -192,8 +191,7 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
     activeDesc.byteSize = uint64_t(slotCount) * sizeof(uint32_t);
     activeDesc.usage = readableStorage;
     activeDesc.memory = rhi::BufferMemory::Upload;
-    activeDesc.queueAccess =
-        rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
+    activeDesc.queueAccess = rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
     activeDesc.initialData = zeroCounts.data();
     activeDesc.initialDataBytes = activeDesc.byteSize;
     m_acceptingRequestSlots = device.CreateBuffer(activeDesc);
@@ -373,10 +371,10 @@ bool ParticleGpuGraphSpawnDomain::Attach(vk::RenderGraph &graph, const std::stri
                                                   uint64_t(m_slotCount) * MetadataStride);
         m_parameterResource = builder.ImportBuffer(StageName(namePrefix, "GraphParameters"), m_parameterBuffer,
                                                    uint64_t(m_parameterWordCount) * sizeof(uint32_t));
-        m_emitterPlayingRequestResource = builder.ImportBuffer(StageName(namePrefix, "EmitterPlayingRequests"),
-                                                               m_emitterPlayingRequests, countBytes);
-        m_emitterPlayingStateResource = builder.ImportBuffer(StageName(namePrefix, "EmitterPlayingStates"),
-                                                             m_emitterPlayingStates, countBytes);
+        m_emitterPlayingRequestResource =
+            builder.ImportBuffer(StageName(namePrefix, "EmitterPlayingRequests"), m_emitterPlayingRequests, countBytes);
+        m_emitterPlayingStateResource =
+            builder.ImportBuffer(StageName(namePrefix, "EmitterPlayingStates"), m_emitterPlayingStates, countBytes);
         if (!m_burstRequestResource.IsValid() || !m_consumingResource.IsValid() || !acceptanceResource.IsValid() ||
             !m_metadataResource.IsValid() || !m_parameterResource.IsValid() ||
             !m_emitterPlayingRequestResource.IsValid() || !m_emitterPlayingStateResource.IsValid())
@@ -463,9 +461,8 @@ bool ParticleGpuGraphSpawnDomain::IsValid() const noexcept
     return m_device && m_graphInstanceId != 0 && m_slotCount != 0 && m_burstRequestCounts.IsValid() &&
            m_consumingCounts.IsValid() && m_acceptingRequestSlots.IsValid() && m_spawnMetadata.IsValid() &&
            m_emitterPlayingRequests.IsValid() && m_emitterPlayingStates.IsValid() && m_parameterBuffer.IsValid() &&
-           m_parameterWordCount != 0 && m_domainLayout.IsValid() &&
-           m_advanceGroup.IsValid() && m_prepareGroup.IsValid() && m_advancePipeline.IsValid() &&
-           m_preparePipeline.IsValid();
+           m_parameterWordCount != 0 && m_domainLayout.IsValid() && m_advanceGroup.IsValid() &&
+           m_prepareGroup.IsValid() && m_advancePipeline.IsValid() && m_preparePipeline.IsValid();
 }
 
 rhi::BindGroupHandle ParticleGpuGraphSpawnDomain::RuntimeGroup(uint32_t targetSlot) const noexcept

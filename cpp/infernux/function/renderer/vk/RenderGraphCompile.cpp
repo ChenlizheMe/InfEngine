@@ -510,8 +510,8 @@ bool RenderGraph::CompileQueueOwnershipTransfers()
                 }
                 m_batchOutgoingOwnershipTransfers[sourceBatch].push_back(transferIndex);
             } else if (transfer.sourceState.queue != rhi::QueueRole::Count) {
-                m_externalOutgoingOwnershipTransfers[static_cast<size_t>(transfer.sourceState.queue)]
-                    .push_back(transferIndex);
+                m_externalOutgoingOwnershipTransfers[static_cast<size_t>(transfer.sourceState.queue)].push_back(
+                    transferIndex);
             }
         }
 

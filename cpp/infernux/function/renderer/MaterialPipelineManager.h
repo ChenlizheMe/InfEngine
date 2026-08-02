@@ -123,7 +123,7 @@ class MaterialPipelineManager
      * resident. Replaced
      * Vulkan objects are retired through the GPU completion
      * epoch rather than forcing a device/queue idle.
- */
+     */
     [[nodiscard]] bool ReconfigureSampleCount(VkSampleCountFlagBits sampleCount);
 
     /**

@@ -602,7 +602,8 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         centerDc.worldMatrix = baseTransform;
         centerDc.material = material;
         centerDc.objectId = CENTER_ID;
-        centerDc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, centerDc.objectId).MakeDrawIdentity();
+        centerDc.identity =
+            RenderProxyHandle::Synthetic(RenderDomain::EditorTool, centerDc.objectId).MakeDrawIdentity();
         centerDc.meshVertices = &m_centerCubeVerts;
         centerDc.meshIndices = &m_centerCubeInds;
         centerDc.forceBufferUpdate = dirty;

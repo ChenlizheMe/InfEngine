@@ -46,9 +46,10 @@ void VkTextureCache::CreateSolidColorTexture(const std::string &name, uint8_t r,
 // Cache Operations
 // ============================================================================
 
-std::shared_ptr<rhi::TextureGpuViewSlot>
-VkTextureCache::Insert(const std::string &key, std::shared_ptr<rhi::TextureResource> texture, uint64_t lastUsedFrame,
-                       bool permanentlyPinned, std::string assetGuid, uint64_t runtimeVersion)
+std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::Insert(const std::string &key,
+                                                                std::shared_ptr<rhi::TextureResource> texture,
+                                                                uint64_t lastUsedFrame, bool permanentlyPinned,
+                                                                std::string assetGuid, uint64_t runtimeVersion)
 {
     if (key.empty() || !texture || !texture->IsValid() || texture->GetResidentBytes() == 0)
         throw std::invalid_argument("VkTextureCache requires a valid keyed texture with resident bytes");
@@ -96,8 +97,8 @@ VkTextureCache::Insert(const std::string &key, std::shared_ptr<rhi::TextureResou
     return slot;
 }
 
-std::shared_ptr<rhi::TextureGpuViewSlot>
-VkTextureCache::FindAsset(const std::string &key, const std::string &assetGuid, uint64_t runtimeVersion, uint64_t frame)
+std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::FindAsset(const std::string &key, const std::string &assetGuid,
+                                                                   uint64_t runtimeVersion, uint64_t frame)
 {
     if (assetGuid.empty() || runtimeVersion == 0)
         throw std::invalid_argument("GPU texture lookup requires a published asset identity");
@@ -293,8 +294,7 @@ std::vector<GpuAssetResidencyRecord> VkTextureCache::GetAssetResidency() const
         if (entry.assetGuid.empty())
             continue;
         records.push_back({entry.assetGuid, entry.runtimeVersion, GpuAssetDomain::Texture, entry.residentBytes,
-                           entry.lastUsedFrame, false,
-                           entry.permanentlyPinned || entry.slot.use_count() != 1});
+                           entry.lastUsedFrame, false, entry.permanentlyPinned || entry.slot.use_count() != 1});
     }
     return records;
 }
