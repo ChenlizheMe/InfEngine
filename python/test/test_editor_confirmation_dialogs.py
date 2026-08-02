@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 from Infernux.engine.project_context import clear_panel_tracking, set_panel_dirty
@@ -540,59 +541,10 @@ def test_project_delete_modal_confirms_deduplicated_existing_paths(tmp_path):
     assert ctx.closed is True
 
 
-def test_prefab_asset_detach_marks_scene_dirty(monkeypatch, tmp_path):
-    prefab = tmp_path / "Checkpoint.prefab"
-    prefab.write_text("prefab", encoding="utf-8")
-
-    class _Object:
-        def __init__(self, guid: str, children=None):
-            self.prefab_guid = guid
-            self.prefab_root = True
-            self._children = list(children or [])
-
-        def get_children(self):
-            return list(self._children)
-
-    child = _Object("prefab-guid")
-    root = _Object("prefab-guid", [child])
-
-    class _Scene:
-        @staticmethod
-        def get_root_objects():
-            return [root]
-
-    class _SceneManager:
-        @staticmethod
-        def instance():
-            return _SceneManager()
-
-        @staticmethod
-        def get_active_scene():
-            return _Scene()
-
-    dirty: list[bool] = []
-
-    class _FileManager:
-        @staticmethod
-        def mark_dirty():
-            dirty.append(True)
-
-    class _Database:
-        @staticmethod
-        def get_guid_from_path(_path):
-            return "prefab-guid"
-
-    monkeypatch.setattr(native, "SceneManager", _SceneManager)
-    from Infernux.engine import scene_manager as scene_manager_module
-
-    monkeypatch.setattr(scene_manager_module.SceneFileManager, "instance", lambda: _FileManager())
-
-    assert project_file_ops._detach_prefab_instances(str(prefab), _Database()) == 2
-    assert root.prefab_guid == ""
-    assert child.prefab_guid == ""
-    assert root.prefab_root is False
-    assert child.prefab_root is False
-    assert dirty == [True]
+def test_prefab_delete_preserves_missing_linkage_for_undo():
+    source = inspect.getsource(project_file_ops.delete_item)
+    assert "prefab_guid" not in source
+    assert "detach_prefab" not in source
 
 
 def test_project_delete_uses_editor_modal_not_platform_message_box():

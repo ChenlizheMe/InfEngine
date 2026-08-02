@@ -969,52 +969,6 @@ def create_timelinefsm(current_path: str, fsm_name: str, asset_database=None):
 # Delete & Rename
 # ---------------------------------------------------------------------------
 
-def _detach_prefab_instances(prefab_path: str, asset_database=None):
-    """Clear prefab linkage for live instances and return the changed count."""
-    guid = ""
-    if asset_database:
-        try:
-            guid = asset_database.get_guid_from_path(prefab_path)
-        except Exception:
-            pass
-    if not guid:
-        return 0
-
-    from Infernux.lib import SceneManager
-    scene = SceneManager.instance().get_active_scene()
-    if scene is None:
-        return 0
-
-    detached = 0
-
-    def _walk(objects):
-        nonlocal detached
-        for obj in objects:
-            try:
-                obj_guid = getattr(obj, 'prefab_guid', '')
-                if obj_guid == guid:
-                    obj.prefab_guid = ""
-                    obj.prefab_root = False
-                    detached += 1
-                children = list(obj.get_children()) if hasattr(obj, 'get_children') else []
-                _walk(children)
-            except Exception:
-                pass
-
-    try:
-        roots = list(scene.get_root_objects())
-        _walk(roots)
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-    if detached:
-        from Infernux.engine.scene_manager import SceneFileManager
-
-        manager = SceneFileManager.instance()
-        if manager is not None:
-            manager.mark_dirty()
-    return detached
-
-
 def delete_item(item_path: str, asset_database=None):
     """Delete a file or directory from the filesystem and notify AssetDatabase."""
     if not item_path or not os.path.exists(item_path):
@@ -1031,12 +985,6 @@ def delete_item(item_path: str, asset_database=None):
         if not deleted_script_guid:
             from Infernux.core.asset_types import read_meta_guid
             deleted_script_guid = read_meta_guid(item_path)
-
-    # For .prefab files, detach all scene instances BEFORE deleting the asset.
-    # This turns prefab instances into regular scene objects instead of leaving
-    # them orphaned with a dangling prefab_guid.
-    if not is_dir and item_path.lower().endswith('.prefab'):
-        _detach_prefab_instances(item_path, asset_database)
 
     # Notify BEFORE removing the file — GUID is still resolvable at this point
     if not is_dir:

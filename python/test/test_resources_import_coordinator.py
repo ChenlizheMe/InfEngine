@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 from pathlib import Path
@@ -177,7 +178,7 @@ def test_reimport_meta_write_suppresses_meta_deleted_echo(monkeypatch, tmp_path)
     assert [entry[0] for entry in database.mutations] == ["modified"]
 
 
-def test_asset_manager_delete_clears_live_python_references_after_database_commit(monkeypatch, tmp_path):
+def test_asset_manager_delete_preserves_serialized_reference_identity(monkeypatch, tmp_path):
     database = _AssetDatabaseProbe()
     calls = []
     _patch_asset_manager(monkeypatch, calls)
@@ -185,17 +186,11 @@ def test_asset_manager_delete_clears_live_python_references_after_database_commi
     asset.write_text("{}", encoding="utf-8")
     path = str(asset.resolve())
     database.guid_by_path[path] = "race-dust-guid"
-    cleanup_calls = []
-    monkeypatch.setattr(
-        AssetManager,
-        "_clear_deleted_live_references",
-        classmethod(lambda _cls, guid, deleted_path: cleanup_calls.append((guid, deleted_path))),
-    )
-
     assert AssetManager.delete_asset(path, database=database)
 
     assert [entry[0] for entry in database.mutations] == ["deleted"]
-    assert cleanup_calls == [("race-dust-guid", path)]
+    source = inspect.getsource(AssetManager.delete_asset)
+    assert "_clear_deleted_live_references" not in source
 
 
 def test_missing_meta_rebuild_imports_unregistered_owner(monkeypatch, tmp_path):

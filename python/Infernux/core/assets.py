@@ -562,7 +562,12 @@ class AssetManager:
         suppress_watcher_echo: bool = True,
         guid_hint: str = "",
     ):
-        """Evict loaded state before deleting the database record and metadata."""
+        """Evict loaded state while preserving serialized references by GUID.
+
+        A deleted asset becomes a missing reference in live documents. Keeping
+        that identity intact lets Undo or a later reimport reconnect it without
+        silently rewriting user data.
+        """
         from Infernux.core.asset_types import MATERIAL_EXTENSIONS
 
         asset_database = cls._mutation_database(database)
@@ -593,23 +598,12 @@ class AssetManager:
             play_mode = PlayModeManager.instance()
             if play_mode is not None:
                 play_mode.mark_components_missing_for_script(guid, path)
-        cls._clear_deleted_live_references(guid, path)
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("deleted", path)
         cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._emit_editor_asset_changed(path, "deleted")
         return result
-
-    @classmethod
-    def _clear_deleted_live_references(cls, guid: str, path: str) -> dict:
-        from Infernux.engine.asset_reference_cleanup import clear_deleted_asset_references
-
-        try:
-            return clear_deleted_asset_references(guid, path)
-        except Exception as exc:
-            Debug.log_error(f"Failed to clear live references for deleted asset '{path}': {exc}")
-            return {"references_cleared": 0, "components_changed": 0, "fields": []}
 
     @classmethod
     def schedule_save(cls, key: str, save_fn: Callable[[], object], debounce_sec: float = _DEFAULT_DEBOUNCE_SEC):
