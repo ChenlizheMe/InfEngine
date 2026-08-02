@@ -834,10 +834,18 @@ class TestInstantiate:
 
         from Infernux.engine.bootstrap_inspector._wire import (
             _apply_python_component_clipboard_document,
-            _python_component_clipboard_document,
+            _component_clipboard_data,
+            _publish_component_clipboard,
         )
 
-        payload = _python_component_clipboard_document(source)
+        assert _publish_component_clipboard(
+            source,
+            type(source).__name__,
+            False,
+        )
+        clipboard_data = _component_clipboard_data()
+        assert clipboard_data is not None
+        payload = clipboard_data["document"]
         assert "__component_id__" not in payload
         _apply_python_component_clipboard_document(target, payload)
 

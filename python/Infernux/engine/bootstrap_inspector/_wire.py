@@ -560,6 +560,162 @@ def _apply_python_component_clipboard_document(
         _skip_on_after_deserialize=not invoke_after_deserialize,
     )
 
+
+def _component_clipboard_data() -> dict | None:
+    from Infernux.engine.interaction import ClipboardDomain, ClipboardService
+
+    payload = ClipboardService.instance().peek(ClipboardDomain.COMPONENT)
+    if payload is None or len(payload.items) != 1:
+        return None
+    data = payload.items[0].data
+    if not isinstance(data, dict) or data.get("schema") != "component_document":
+        return None
+    if not isinstance(data.get("type_name"), str) or not data["type_name"]:
+        return None
+    if not isinstance(data.get("is_native"), bool):
+        return None
+    if not isinstance(data.get("script_guid"), str):
+        return None
+    if not isinstance(data.get("type_guid"), str):
+        return None
+    document = data.get("document")
+    if not isinstance(document, dict):
+        return None
+    return data
+
+
+def _publish_component_clipboard(comp, type_name: str, is_native: bool) -> bool:
+    try:
+        if is_native and hasattr(comp, "serialize_document"):
+            document = comp.serialize_document()
+            document.pop("component_id", None)
+        elif hasattr(comp, "_serialize_fields_document"):
+            document = _python_component_clipboard_document(comp)
+        else:
+            return False
+    except Exception as exc:
+        Debug.log_error(f"Cannot copy component properties: {exc}")
+        return False
+
+    from Infernux.engine.interaction import (
+        ClipboardDomain,
+        ClipboardItem,
+        ClipboardOperation,
+        ClipboardService,
+    )
+
+    component_id = int(getattr(comp, "component_id", 0) or 0)
+    ClipboardService.instance().write(
+        ClipboardDomain.COMPONENT,
+        (
+            ClipboardItem(
+                str(component_id or type_name),
+                sub_kind=str(type_name),
+                data={
+                    "schema": "component_document",
+                    "type_name": str(type_name),
+                    "is_native": bool(is_native),
+                    "script_guid": getattr(comp, "_script_guid", "") or "",
+                    "type_guid": (
+                        "" if is_native else comp.__class__._get_type_guid()
+                    ),
+                    "document": copy.deepcopy(document),
+                },
+            ),
+        ),
+        operation=ClipboardOperation.COPY,
+        source_owner_id="inspector",
+        reason="copy_component_properties",
+    )
+    return True
+
+
+def _restore_native_components_after_failed_paste(
+    obj,
+    before_ids: set[int],
+    before_documents: dict,
+) -> None:
+    for component in reversed(list(obj.get_components() or ())):
+        component_id = int(getattr(component, "component_id", 0) or 0)
+        if component_id and component_id not in before_ids:
+            obj.remove_component(component)
+    for component_id, (component, document) in before_documents.items():
+        if component_id not in before_ids:
+            continue
+        if not component.deserialize_document(copy.deepcopy(document)):
+            raise RuntimeError(
+                f"Failed to roll back native component {component_id}"
+            )
+
+
+def _paste_native_component_as_new(obj, type_name: str, document: dict) -> bool:
+    from Infernux.engine.ui._inspector_undo import (
+        _get_component_ids,
+        _get_native_component_documents,
+        _record_add_component_compound,
+    )
+
+    before_ids = _get_component_ids(obj)
+    before_documents = _get_native_component_documents(obj)
+    try:
+        result = obj.add_component(type_name)
+        if result is None:
+            raise RuntimeError(f"Failed to add native component '{type_name}'")
+        if int(getattr(result, "component_id", 0) or 0) in before_ids:
+            raise RuntimeError(
+                f"Native component '{type_name}' does not allow another instance"
+            )
+        if not result.deserialize_document(copy.deepcopy(document)):
+            raise RuntimeError(f"Failed to paste native component '{type_name}'")
+    except Exception as exc:
+        try:
+            _restore_native_components_after_failed_paste(
+                obj,
+                before_ids,
+                before_documents,
+            )
+        except Exception as rollback_exc:
+            Debug.log_error(
+                f"Cannot roll back failed component paste '{type_name}': {rollback_exc}"
+            )
+        Debug.log_error(f"Cannot paste native component '{type_name}': {exc}")
+        return False
+
+    _record_add_component_compound(
+        obj,
+        type_name,
+        result,
+        before_ids,
+        before_documents=before_documents,
+    )
+    return True
+
+
+def _paste_native_component_values(comp, document: dict) -> bool:
+    old_document = comp.serialize_document()
+    new_document = copy.deepcopy(document)
+    if old_document == new_document:
+        return False
+    from Infernux.engine.undo import GenericComponentCommand, UndoManager
+
+    manager = UndoManager.instance()
+    if manager is not None:
+        return manager.execute(
+            GenericComponentCommand(
+                comp,
+                old_document,
+                new_document,
+                f"Paste {getattr(comp, 'type_name', 'Component')} Properties",
+                mergeable=False,
+            )
+        )
+    if not comp.deserialize_document(new_document):
+        return False
+    from Infernux.engine.ui._inspector_undo import _notify_scene_modified
+
+    _notify_scene_modified()
+    return True
+
 def _wire_clipboard_and_context(ctx):
     """Wire clipboard operations and component context menu."""
     ip = ctx.ip
@@ -570,55 +726,38 @@ def _wire_clipboard_and_context(ctx):
     _t = ctx._t
     SceneManager = ctx.SceneManager
 
-    _comp_clipboard = {
-        "type_name": "", "is_native": True, "script_guid": "", "type_guid": "", "payload": None,
-    }
-
     def _copy_to_clipboard(comp, type_name, is_native):
-        _comp_clipboard["type_name"] = type_name
-        _comp_clipboard["is_native"] = is_native
-        _comp_clipboard["script_guid"] = getattr(comp, '_script_guid', '') or ''
-        _comp_clipboard["type_guid"] = comp.__class__._get_type_guid() if not is_native else ""
-        try:
-            if is_native and hasattr(comp, "serialize_document"):
-                _comp_clipboard["payload"] = comp.serialize_document()
-            elif hasattr(comp, "_serialize_fields_document"):
-                _comp_clipboard["payload"] = _python_component_clipboard_document(comp)
-            else:
-                _comp_clipboard["payload"] = None
-        except Exception:
-            _comp_clipboard["payload"] = None
+        return _publish_component_clipboard(comp, type_name, is_native)
 
     def _has_clip():
-        return bool(_comp_clipboard["type_name"] and _comp_clipboard["payload"] is not None)
+        return _component_clipboard_data() is not None
 
     def _can_paste_values(comp, type_name, is_native):
-        if not _has_clip():
+        data = _component_clipboard_data()
+        if data is None:
             return False
-        if not (_comp_clipboard["type_name"] == type_name and
-                _comp_clipboard["is_native"] == is_native):
+        if not (data["type_name"] == type_name and
+                data["is_native"] == is_native):
             return False
         if is_native:
             return True
         return (
-            _comp_clipboard["script_guid"] == (getattr(comp, "_script_guid", "") or "")
-            and _comp_clipboard["type_guid"] == comp.__class__._get_type_guid()
+            data["script_guid"] == (getattr(comp, "_script_guid", "") or "")
+            and data["type_guid"] == comp.__class__._get_type_guid()
         )
 
     def _paste_as_new(obj):
-        tn = _comp_clipboard["type_name"]
-        native = _comp_clipboard["is_native"]
-        payload = _comp_clipboard["payload"]
-        guid = _comp_clipboard["script_guid"]
-        type_guid = _comp_clipboard["type_guid"]
+        data = _component_clipboard_data()
+        if data is None:
+            return False
+        tn = data["type_name"]
+        native = data["is_native"]
+        payload = data["document"]
+        guid = data["script_guid"]
+        type_guid = data["type_guid"]
         if native:
-            result = obj.add_component(tn)
-            if result and payload is not None and hasattr(result, "deserialize_document"):
-                try:
-                    if not result.deserialize_document(payload):
-                        raise RuntimeError(f"Failed to paste native component '{tn}'")
-                except Exception as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            if not _paste_native_component_as_new(obj, tn, payload):
+                return False
         else:
             from Infernux.engine.component_restore import create_component_instance
             from Infernux.engine.scene_manager import SceneFileManager
@@ -650,34 +789,65 @@ def _wire_clipboard_and_context(ctx):
                     instance._script_guid = guid
                 except Exception as _exc:
                     Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            before_ids = {getattr(item, "component_id", 0) for item in obj.get_components()}
+            from Infernux.engine.ui._inspector_undo import (
+                _get_component_ids,
+                _get_native_component_documents,
+                _record_add_component_compound,
+            )
+            before_ids = _get_component_ids(obj)
+            before_documents = _get_native_component_documents(obj)
             attached = obj.add_py_component(instance)
             if attached is None:
                 instance._call_on_destroy()
+                try:
+                    _restore_native_components_after_failed_paste(
+                        obj,
+                        before_ids,
+                        before_documents,
+                    )
+                except Exception as rollback_exc:
+                    Debug.log_error(
+                        f"Cannot roll back failed component paste '{tn}': "
+                        f"{rollback_exc}"
+                    )
                 Debug.log_error(f"Cannot paste: failed to attach '{tn}'")
                 return False
-            attached._call_on_after_deserialize()
-            from Infernux.engine.ui._inspector_undo import _record_add_component_compound
+            try:
+                attached._call_on_after_deserialize()
+            except Exception as exc:
+                obj.remove_py_component(attached)
+                try:
+                    _restore_native_components_after_failed_paste(
+                        obj,
+                        before_ids,
+                        before_documents,
+                    )
+                except Exception as rollback_exc:
+                    Debug.log_error(
+                        f"Cannot roll back failed component paste '{tn}': "
+                        f"{rollback_exc}"
+                    )
+                Debug.log_error(f"Cannot finish pasting '{tn}': {exc}")
+                return False
             _record_add_component_compound(
                 obj,
                 tn,
                 attached,
                 before_ids,
                 is_py=True,
+                before_documents=before_documents,
             )
         _invalidate()
         return True
 
     def _paste_values(comp, is_native):
-        payload = _comp_clipboard["payload"]
-        if payload is None:
-            return
+        data = _component_clipboard_data()
+        if data is None:
+            return False
+        payload = data["document"]
         if is_native and hasattr(comp, "deserialize_document"):
-            try:
-                if not comp.deserialize_document(payload):
-                    raise RuntimeError("Failed to paste native component values")
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            if not _paste_native_component_values(comp, payload):
+                return False
         elif hasattr(comp, "_deserialize_fields_document"):
             try:
                 old_document = _python_component_clipboard_document(comp)
@@ -689,12 +859,15 @@ def _wire_clipboard_and_context(ctx):
                 )
                 manager = UndoManager.instance()
                 if manager:
-                    manager.execute(PythonComponentDocumentCommand(
+                    command = PythonComponentDocumentCommand(
                         comp,
                         old_document,
                         new_document,
                         f"Paste {type(comp).__name__} Properties",
-                    ))
+                        edit_key=f"paste_component:{_time.time_ns()}",
+                    )
+                    if not manager.execute(command):
+                        return False
                 else:
                     _apply_python_component_clipboard_document(comp, new_document)
                     from Infernux.engine.ui._inspector_undo import _notify_scene_modified

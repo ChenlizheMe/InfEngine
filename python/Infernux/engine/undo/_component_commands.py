@@ -112,12 +112,24 @@ def _instantiate_py_snapshot(type_name: str, script_guid: str, type_guid: str,
     return instance
 
 
+def _find_native_component(obj, type_name: str, component_id: int = 0):
+    if component_id:
+        for component in obj.get_components() or ():
+            if int(getattr(component, "component_id", 0) or 0) == int(component_id):
+                return component
+        return None
+    return _find_live_native_component(obj, type_name)
+
+
 def _snapshot_and_remove_native(object_id: int, type_name: str,
-                                label: str) -> dict:
+                                label: str, component_id: int = 0) -> dict:
     _scene, obj = _require_scene_object(object_id, label)
-    live = _find_live_native_component(obj, type_name)
+    live = _find_native_component(obj, type_name, component_id)
     if live is None:
-        raise RuntimeError(f"[Undo] {label}: component '{type_name}' not found")
+        identity = f" id={component_id}" if component_id else ""
+        raise RuntimeError(
+            f"[Undo] {label}: component '{type_name}'{identity} not found"
+        )
     document = live.serialize_document()
     obj.remove_component(live)
     _invalidate_builtin_wrapper(live)
@@ -128,7 +140,7 @@ def _snapshot_and_remove_native(object_id: int, type_name: str,
 
 def _add_native_from_snapshot(object_id: int, type_name: str,
                               document: Optional[dict],
-                              label: str) -> None:
+                              label: str):
     _scene, obj = _require_scene_object(object_id, label)
     result = obj.add_component(type_name)
     if not result:
@@ -138,6 +150,7 @@ def _add_native_from_snapshot(object_id: int, type_name: str,
         raise RuntimeError(f"[Undo] {label}: component document restore failed")
     _bump_inspector_structure()
     _notify_gizmos_scene_changed()
+    return result
 
 
 def _snapshot_and_remove_py(object_id: int, type_name: str, script_guid: str, type_guid: str,
@@ -181,6 +194,8 @@ class AddNativeComponentCommand(UndoCommand):
         self._object_id = object_id
         self._type_name = type_name
         self._document: Optional[dict] = None
+        self._component_ref = comp_ref
+        self._component_id = int(getattr(comp_ref, "component_id", 0) or 0)
 
     def execute(self) -> None:
         pass
@@ -188,12 +203,19 @@ class AddNativeComponentCommand(UndoCommand):
     def undo(self) -> None:
         self._document = _snapshot_and_remove_native(
             self._object_id, self._type_name,
-            f"AddNative('{self._type_name}').undo")
+            f"AddNative('{self._type_name}').undo",
+            self._component_id,
+        )
+        self._component_ref = None
+        self._component_id = 0
 
     def redo(self) -> None:
-        _add_native_from_snapshot(
+        self._component_ref = _add_native_from_snapshot(
             self._object_id, self._type_name, self._document,
             f"AddNative('{self._type_name}').redo")
+        self._component_id = int(
+            getattr(self._component_ref, "component_id", 0) or 0
+        )
 
 
 class RemoveNativeComponentCommand(UndoCommand):
@@ -205,14 +227,19 @@ class RemoveNativeComponentCommand(UndoCommand):
         self._object_id = object_id
         self._type_name = type_name
         self._document: Optional[dict] = comp_ref.serialize_document() if comp_ref is not None else None
+        self._component_ref = comp_ref
+        self._component_id = int(getattr(comp_ref, "component_id", 0) or 0)
 
     def execute(self) -> None:
         self._do_remove()
 
     def undo(self) -> None:
-        _add_native_from_snapshot(
+        self._component_ref = _add_native_from_snapshot(
             self._object_id, self._type_name, self._document,
             f"RemoveNative('{self._type_name}').undo")
+        self._component_id = int(
+            getattr(self._component_ref, "component_id", 0) or 0
+        )
 
     def redo(self) -> None:
         self._do_remove()
@@ -220,7 +247,11 @@ class RemoveNativeComponentCommand(UndoCommand):
     def _do_remove(self) -> None:
         self._document = _snapshot_and_remove_native(
             self._object_id, self._type_name,
-            f"RemoveNative('{self._type_name}')")
+            f"RemoveNative('{self._type_name}')",
+            self._component_id,
+        )
+        self._component_ref = None
+        self._component_id = 0
 
 
 class AddPyComponentCommand(UndoCommand):

@@ -98,7 +98,7 @@ class GenericComponentCommand(UndoCommand):
     MERGE_WINDOW: float = 0.3
 
     def __init__(self, comp: Any, old_document: dict, new_document: dict,
-                 description: str = ""):
+                 description: str = "", *, mergeable: bool = True):
         super().__init__(description or f"Edit {getattr(comp, 'type_name', 'Component')}")
         self._comp = comp
         self._old_document = copy.deepcopy(old_document)
@@ -106,6 +106,7 @@ class GenericComponentCommand(UndoCommand):
         self._comp_id: int = getattr(comp, "component_id", id(comp))
         self._game_object_id: int = _game_object_id_of(comp)
         self._comp_type_name: str = _comp_type_name_of(comp)
+        self._mergeable = bool(mergeable)
 
     def _live(self):
         return _resolve_target(self._comp, self._game_object_id, self._comp_type_name)
@@ -136,7 +137,9 @@ class GenericComponentCommand(UndoCommand):
     def can_merge(self, other: UndoCommand) -> bool:
         if not isinstance(other, GenericComponentCommand):
             return False
-        return (self._comp_id == other._comp_id
+        return (self._mergeable
+                and other._mergeable
+                and self._comp_id == other._comp_id
                 and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW)
 
     def merge(self, other: GenericComponentCommand) -> None:

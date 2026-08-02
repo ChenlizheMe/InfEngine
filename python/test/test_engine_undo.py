@@ -384,6 +384,20 @@ class TestGenericComponentCommand:
         cmd.undo()
         assert comp._document == {"value": [1]}
 
+    def test_explicit_component_actions_do_not_merge(self):
+        comp = _FakeComp()
+        continuous = GenericComponentCommand(comp, {}, {"a": 1})
+        discrete = GenericComponentCommand(
+            comp,
+            {"a": 1},
+            {"a": 2},
+            mergeable=False,
+        )
+        discrete.timestamp = continuous.timestamp + 0.1
+
+        assert not continuous.can_merge(discrete)
+        assert not discrete.can_merge(continuous)
+
 
 # ══════════════════════════════════════════════════════════════════════
 # BuiltinPropertyCommand

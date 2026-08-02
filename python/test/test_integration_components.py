@@ -648,6 +648,91 @@ class TestComponentLifecycle:
         finally:
             UndoManager._instance = previous_manager
 
+    def test_native_component_clipboard_uses_global_payload_and_precise_undo(self, scene):
+        from Infernux.engine.bootstrap_inspector._wire import (
+            _component_clipboard_data,
+            _paste_native_component_as_new,
+            _paste_native_component_values,
+            _publish_component_clipboard,
+        )
+        from Infernux.engine.interaction import ClipboardDomain, ClipboardService
+        from Infernux.engine.undo import UndoManager
+
+        source = scene.create_game_object("ClipboardSource").add_component("BoxCollider")
+        source.size = Vector3(2.0, 3.0, 4.0)
+        source.center = Vector3(0.25, 0.5, 0.75)
+        assert _publish_component_clipboard(source, "BoxCollider", True)
+
+        clipboard = ClipboardService.instance().peek(ClipboardDomain.COMPONENT)
+        assert clipboard is not None
+        assert clipboard.source_owner_id == "inspector"
+        data = _component_clipboard_data()
+        assert data is not None
+        assert "component_id" not in data["document"]
+
+        previous_manager = UndoManager.instance()
+        manager = UndoManager()
+        try:
+            target_owner = scene.create_game_object("ClipboardValuesTarget")
+            target = target_owner.add_component("BoxCollider")
+            original = target.serialize_document()
+
+            assert _paste_native_component_values(target, data["document"])
+            assert target.serialize_document()["size"] == pytest.approx([2.0, 3.0, 4.0])
+            assert target.component_id == original["component_id"]
+            manager.undo()
+            assert target.serialize_document() == original
+            manager.redo()
+            assert target.serialize_document()["center"] == pytest.approx([0.25, 0.5, 0.75])
+
+            new_owner = scene.create_game_object("ClipboardNewTarget")
+            assert _paste_native_component_as_new(
+                new_owner,
+                "BoxCollider",
+                data["document"],
+            )
+            pasted = new_owner.get_component("BoxCollider")
+            assert pasted is not None
+            pasted_id = pasted.component_id
+            assert pasted.serialize_document()["size"] == pytest.approx([2.0, 3.0, 4.0])
+
+            manager.undo()
+            assert new_owner.get_component("BoxCollider") is None
+            manager.redo()
+            restored = new_owner.get_component("BoxCollider")
+            assert restored is not None
+            assert restored.component_id == pasted_id
+            assert restored.serialize_document()["size"] == pytest.approx([2.0, 3.0, 4.0])
+        finally:
+            UndoManager._instance = previous_manager
+
+    def test_failed_native_component_paste_rolls_back_without_history(self, scene):
+        from Infernux.engine.bootstrap_inspector._wire import (
+            _paste_native_component_as_new,
+        )
+        from Infernux.engine.undo import UndoManager
+
+        source = scene.create_game_object("InvalidClipboardSource").add_component(
+            "BoxCollider"
+        )
+        invalid_document = source.serialize_document()
+        invalid_document.pop("component_id", None)
+        invalid_document["size"] = [0.0, 1.0, 1.0]
+        owner = scene.create_game_object("InvalidClipboardTarget")
+
+        previous_manager = UndoManager.instance()
+        manager = UndoManager()
+        try:
+            assert not _paste_native_component_as_new(
+                owner,
+                "BoxCollider",
+                invalid_document,
+            )
+            assert owner.get_component("BoxCollider") is None
+            assert not manager.can_undo
+        finally:
+            UndoManager._instance = previous_manager
+
     def test_dynamic_mesh_collider_survives_play_mode_document_rebuild(self, scene):
         from Infernux.engine.play_mode import PlayModeManager
 

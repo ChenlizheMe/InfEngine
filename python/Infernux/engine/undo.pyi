@@ -115,6 +115,8 @@ class GenericComponentCommand(UndoCommand):
         old_document: dict[str, Any],
         new_document: dict[str, Any],
         description: str = "",
+        *,
+        mergeable: bool = True,
     ) -> None: ...
 
     def execute(self) -> None: ...
