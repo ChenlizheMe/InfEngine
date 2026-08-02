@@ -358,6 +358,27 @@ class SelectionCommand(UndoCommand):
     def undo(self) -> None: ...
     def redo(self) -> None: ...
 
+
+class ProjectAssetRenameCommand(UndoCommand):
+    """Records a GUID-stable rename in the global editor history."""
+
+    marks_dirty: bool
+
+    def __init__(
+        self,
+        old_path: str,
+        new_path: str,
+        *,
+        asset_database: Any = None,
+        on_changed: Optional[Callable[[], None]] = None,
+        move_fn: Optional[Callable[[str, str, Any], Optional[str]]] = None,
+        description: str = "Rename Asset",
+    ) -> None: ...
+
+    def execute(self) -> None: ...
+    def undo(self) -> None: ...
+    def redo(self) -> None: ...
+
 class GlobalSelectionCommand(UndoCommand):
     """Records a typed global editor selection change."""
 

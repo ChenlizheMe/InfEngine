@@ -49,6 +49,8 @@ from Infernux.engine.undo._structural_commands import (
     PrefabRevertCommand,
 )
 
+from Infernux.engine.undo._asset_commands import ProjectAssetRenameCommand
+
 # -- Component commands --
 from Infernux.engine.undo._component_commands import (
     AddNativeComponentCommand,
@@ -115,6 +117,7 @@ __all__ = [
     "ReparentCommand", "MoveGameObjectCommand",
     "SelectionCommand", "EditorSelectionCommand", "GlobalSelectionCommand", "PrefabModeCommand", "PrefabUnpackCommand",
     "PrefabRevertCommand",
+    "ProjectAssetRenameCommand",
     "AddNativeComponentCommand", "RemoveNativeComponentCommand",
     "AddPyComponentCommand", "RemovePyComponentCommand",
     "UndoManager",

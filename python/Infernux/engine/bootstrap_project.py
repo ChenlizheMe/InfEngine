@@ -120,8 +120,57 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         file_ops.create_animtimeline, cur, name, adb)
     pp.create_timelinefsm = lambda cur, name: _safe_project_create(
         file_ops.create_timelinefsm, cur, name, adb)
-    pp.do_rename = lambda old, new_name: _safe_project_path(
-        file_ops.do_rename, old, new_name, adb)
+    def _rename_asset(old_path: str, new_name: str) -> str:
+        from Infernux.engine.interaction import (
+            SelectionService,
+            SelectionSnapshot,
+            SelectionTarget,
+        )
+        from Infernux.engine.path_utils import same_path
+        from Infernux.engine.undo import ProjectAssetRenameCommand, UndoManager
+
+        before_context = bs.interaction_core.capture_context()
+        new_path = _safe_project_path(
+            file_ops.do_rename,
+            old_path,
+            new_name,
+            adb,
+        )
+        if not new_path or same_path(old_path, new_path):
+            return new_path
+
+        manager = UndoManager.instance()
+        if manager is None or manager.is_executing:
+            return new_path
+
+        next_snapshot = SelectionSnapshot.create(
+            (SelectionTarget.asset(new_path),),
+            owner_id="project",
+        )
+        SelectionService.instance().apply_snapshot(
+            next_snapshot,
+            reason="project_asset_rename",
+            record_history=False,
+        )
+        # The native panel publishes the same selection after CommitRename.
+        # Advance the compatibility snapshot now so that publication is a no-op
+        # instead of a second selection-only history entry.
+        with manager.suppress():
+            bs._record_selection_snapshot(next_snapshot)
+
+        manager.record(
+            ProjectAssetRenameCommand(
+                old_path,
+                new_path,
+                asset_database=adb,
+                on_changed=pp.invalidate_dir_cache,
+            ),
+            before_context=before_context,
+            after_context=bs.interaction_core.capture_context(),
+        )
+        return new_path
+
+    pp.do_rename = _rename_asset
     pp.get_unique_name = lambda cur, base, ext: (
         file_ops.get_unique_name(cur, base, ext)
     )
