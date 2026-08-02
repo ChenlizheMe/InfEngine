@@ -92,7 +92,10 @@ class PlayModeManager(PlayModeSerializationMixin):
         self._scene_backup: Optional[Any] = None
         # Original scene file path (to restore correct scene on Stop)
         self._scene_path_backup: Optional[str] = None
-        self._scene_dirty_backup: bool = False
+        self._scene_document_id_backup: str = ""
+        self._scene_revision_backup: int = 0
+        self._scene_saved_revision_backup: int = 0
+        self._scene_document_state_backup = None
         
         # Event listeners
         self._state_change_listeners: List[Callable[[PlayModeEvent], None]] = []
@@ -1032,16 +1035,23 @@ class PlayModeManager(PlayModeSerializationMixin):
             sfm = SceneFileManager.instance()
             if sfm:
                 self._scene_path_backup = sfm.current_scene_path
-                self._scene_dirty_backup = sfm.is_dirty
+                self._scene_document_id_backup = sfm.document_id
+                from Infernux.engine.interaction import DocumentRegistry
+
+                document = DocumentRegistry.instance().get(sfm.document_id)
+                if document is not None:
+                    self._scene_revision_backup = document.revision
+                    self._scene_saved_revision_backup = document.saved_revision
+                    self._scene_document_state_backup = document.state
             else:
-                self._scene_dirty_backup = False
+                self._scene_document_id_backup = ""
             Debug.log_internal("Scene state saved (typed C++ document)")
         else:
             Debug.log_warning("No active scene to save")
 
     def _restore_scene_file_path(self):
-        """Restore SceneFileManager's current path and camera to the pre-play scene."""
-        if self._scene_path_backup is None:
+        """Restore the exact editor Scene document identity after Play Mode."""
+        if not self._scene_document_id_backup:
             return
         from Infernux.engine.scene_manager import SceneFileManager
         sfm = SceneFileManager.instance()
@@ -1051,18 +1061,31 @@ class PlayModeManager(PlayModeSerializationMixin):
         if path_changed:
             Debug.log_internal(
                 f"Restoring editor scene path: "
-                f"{os.path.basename(self._scene_path_backup)}"
+                f"{os.path.basename(self._scene_path_backup or 'Untitled')}"
             )
         sfm._current_scene_path = self._scene_path_backup
-        sfm._dirty = self._scene_dirty_backup
+        from Infernux.engine.interaction import DocumentRegistry, DocumentState
+
+        registry = DocumentRegistry.instance()
+        document = registry.get(self._scene_document_id_backup)
+        if document is not None:
+            sfm._scene_document_id = document.document_id
+            registry.restore_revision_state(
+                document.document_id,
+                revision=self._scene_revision_backup,
+                saved_revision=self._scene_saved_revision_backup,
+                state=self._scene_document_state_backup or DocumentState.READY,
+            )
         if path_changed:
-            sfm._restore_camera_state(self._scene_path_backup)
+            if self._scene_path_backup:
+                sfm._restore_camera_state(self._scene_path_backup)
             if sfm._on_scene_changed:
                 sfm._on_scene_changed()
         # A runtime transition from an older engine may already have persisted
         # its destination. Always reassert the authored scene at the Stop
         # boundary so the next Editor launch returns to the pre-play document.
-        sfm._remember_last_scene(self._scene_path_backup)
+        if self._scene_path_backup:
+            sfm._remember_last_scene(self._scene_path_backup)
     
     # ========================================================================
     # Event System

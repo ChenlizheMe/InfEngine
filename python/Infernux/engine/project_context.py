@@ -33,7 +33,8 @@ class _LegacyPanelDocumentController:
             return DocumentActionResult(DocumentActionStatus.PENDING)
         return result
 
-    def discard(self) -> Any:
+    def discard(self, *, document_id: str) -> Any:
+        del document_id
         if not callable(self.discard_handler):
             return False
         return self.discard_handler()

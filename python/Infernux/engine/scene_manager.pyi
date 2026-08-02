@@ -120,7 +120,7 @@ class SceneFileManager:
         """Enter prefab editing mode for *prefab_path*."""
         ...
 
-    def exit_prefab_mode(self) -> None:
+    def exit_prefab_mode(self) -> bool:
         """Leave prefab editing mode and return to the previous scene."""
         ...
 

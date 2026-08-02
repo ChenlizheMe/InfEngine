@@ -27,15 +27,21 @@ class _Controller:
             return DocumentActionResult(DocumentActionStatus.PENDING)
         return True
 
-    def discard(self):
+    def discard(self, *, document_id: str):
+        assert document_id == self.document_id
         self.discard_calls += 1
         self.registry.mark_saved(self.document_id)
         return True
 
 
-def _dirty_document(registry: DocumentRegistry, document_id: str):
+def _dirty_document(
+    registry: DocumentRegistry,
+    document_id: str,
+    *,
+    kind: DocumentKind = DocumentKind.GENERIC,
+):
     document = registry.create(
-        DocumentKind.GENERIC,
+        kind,
         document_id,
         document_id=document_id,
         revision=1,
@@ -107,6 +113,27 @@ def test_exit_discard_defers_mutation_and_visits_each_document_once():
     assert first_controller.discard_calls == 0
     assert second_controller.discard_calls == 0
     assert first.is_dirty and second.is_dirty
+
+
+def test_exit_orders_prefab_before_suspended_scene():
+    registry = DocumentRegistry()
+    scene, _scene_controller = _dirty_document(
+        registry,
+        "scene",
+        kind=DocumentKind.SCENE,
+    )
+    prefab, _prefab_controller = _dirty_document(
+        registry,
+        "prefab",
+        kind=DocumentKind.PREFAB,
+    )
+    close = CloseCoordinator(registry)
+
+    close.request(CloseIntent(CloseIntentKind.EXIT_EDITOR), lambda: None)
+
+    assert close.active_document is prefab
+    close.decide_discard()
+    assert close.active_document is scene
 
 
 def test_replace_document_discard_approves_replacement_without_reloading_source():

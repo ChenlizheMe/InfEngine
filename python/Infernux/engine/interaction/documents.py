@@ -127,7 +127,7 @@ class SaveTicket:
 class DocumentController(Protocol):
     def save(self, *, ticket: SaveTicket, save_as: bool = False) -> Any: ...
 
-    def discard(self) -> Any: ...
+    def discard(self, *, document_id: str) -> Any: ...
 
 
 @dataclass(slots=True)
@@ -410,6 +410,34 @@ class DocumentRegistry:
         document.state = DocumentState.CONFLICT
         self._touch()
 
+    def restore_revision_state(
+        self,
+        document_id: str,
+        *,
+        revision: int,
+        saved_revision: int,
+        state: DocumentState = DocumentState.READY,
+    ) -> None:
+        """Restore editor-only revision state after a transient runtime session."""
+        document = self.require(document_id)
+        current_revision = max(0, int(revision))
+        clean_revision = max(0, int(saved_revision))
+        if clean_revision > current_revision:
+            raise ValueError("saved_revision cannot exceed revision")
+        restored_state = DocumentState(state)
+        if restored_state is DocumentState.CLOSED:
+            raise ValueError("an open document cannot restore CLOSED state")
+        if (
+            document.revision == current_revision
+            and document.saved_revision == clean_revision
+            and document.state is restored_state
+        ):
+            return
+        document.revision = current_revision
+        document.saved_revision = clean_revision
+        document.state = restored_state
+        self._touch()
+
     def dirty_documents(self) -> tuple[EditorDocument, ...]:
         return tuple(document for document in self._documents.values() if document.is_dirty)
 
@@ -563,7 +591,7 @@ class DocumentRegistry:
         if controller is None:
             return DocumentActionResult(DocumentActionStatus.REJECTED, "document has no controller")
         try:
-            result = controller.discard()
+            result = controller.discard(document_id=document.document_id)
         except Exception as exc:
             return DocumentActionResult(DocumentActionStatus.FAILED, str(exc))
         if not document.is_dirty:

@@ -30,7 +30,8 @@ class _Controller:
             ticket.captured_revision = self.saved_revision
         return True
 
-    def discard(self):
+    def discard(self, *, document_id: str):
+        assert document_id == self.document_id
         self.discarded = True
         self.registry.mark_saved(self.document_id)
         return True

@@ -59,10 +59,6 @@ class SceneSaveMixin:
             Debug.log_warning("Cannot save scene while in Play mode.")
             return False
 
-        # In Prefab Mode, Ctrl+S is ignored — prefab auto-saves on exit.
-        if self.is_prefab_mode:
-            return False
-
         from Infernux.engine.interaction import (
             DocumentActionStatus,
             DocumentRegistry,
@@ -138,10 +134,26 @@ class SceneSaveMixin:
             ticket_id=ticket.ticket_id,
         )
 
-    def discard(self) -> bool:
+    def discard(self, *, document_id: str) -> bool:
+        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+
+        registry = DocumentRegistry.instance()
+        document = registry.get(document_id)
+        if document is None:
+            return False
+        if document.document_id != self.document_id:
+            # Suspended scenes are resolved by replace/exit transactions; a
+            # view-level discard must never mutate whichever scene is active.
+            return False
+        if document.kind is DocumentKind.PREFAB:
+            # Prefab replacement uses CloseCoordinator's explicit discard
+            # authorization and then exits to the suspended Scene. Reloading
+            # a live Prefab in-place requires its own command transaction.
+            return False
         if self._current_scene_path:
             return bool(self._do_open_scene(self._current_scene_path))
-        self.clear_dirty()
+        if document.is_dirty:
+            registry.mark_saved(document.document_id)
         return True
 
     def _save_prefab(self, *, ticket_id: str = "") -> bool:
@@ -439,7 +451,6 @@ class SceneSaveMixin:
             if not self._save_as_path(path):
                 return
             self._close_save_as_popup(ctx)
-            self._run_post_save_callback()
 
         def _cancel() -> None:
             self._close_save_as_popup(ctx)
@@ -506,11 +517,13 @@ class SceneSaveMixin:
         path, error = self._resolve_native_save_as_path(path)
         if error:
             Debug.log_warning(error)
+            self._cancel_save_as(message=error)
             return
         if not self._save_as_path(path):
-            Debug.log_warning(self._save_as_error or "The scene could not be saved. Check the Console for details.")
+            message = self._save_as_error or "The scene could not be saved. Check the Console for details."
+            Debug.log_warning(message)
+            self._cancel_save_as(message=message)
             return
-        self._run_post_save_callback()
 
     def _save_as_path(self, path: str) -> bool:
         from Infernux.engine.interaction import DocumentRegistry
@@ -594,13 +607,7 @@ class SceneSaveMixin:
         self._pending_save_document_id = ""
         return True
 
-    def _run_post_save_callback(self) -> None:
-        if self._post_save_callback:
-            callback = self._post_save_callback
-            self._post_save_callback = None
-            callback()
-
-    def _cancel_save_as(self) -> None:
+    def _cancel_save_as(self, *, message: str = "save was cancelled") -> None:
         self._save_as_popup_open = False
         self._save_as_popup_requested = False
         self._save_as_focus_name = False
@@ -617,14 +624,8 @@ class SceneSaveMixin:
                 ticket_id,
                 success=False,
                 cancelled=True,
-                message="save was cancelled",
+                message=message,
             )
-        if self._post_save_callback is not None:
-            if self._pending_action == "close" and self._engine:
-                self._engine.cancel_close()
-            self._close_in_progress = False
-            self._clear_pending_action()
-            self._post_save_callback = None
 
     def _close_save_as_popup(self, ctx) -> None:
         self._save_as_popup_open = False

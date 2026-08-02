@@ -385,7 +385,9 @@ class AnimTimelineEditorPanel(EditorPanel):
             )
         return self._save_to(self._file_path, ticket_id=ticket.ticket_id)
 
-    def discard(self) -> bool:
+    def discard(self, *, document_id: str) -> bool:
+        if document_id != self.document_id:
+            return False
         return self._discard_unsaved_changes()
 
     def handle_save_command(self, save_as: bool = False) -> bool:

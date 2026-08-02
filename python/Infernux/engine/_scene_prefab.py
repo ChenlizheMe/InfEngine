@@ -167,6 +167,27 @@ class ScenePrefabMixin:
         return bool(self.open_prefab_mode(prefab_path))
 
     def exit_prefab_mode(self):
+        """Resolve the Prefab document, then schedule its deferred exit."""
+        return self._request_prefab_exit()
+
+    def _request_prefab_exit(self, on_complete: Optional[Callable[[], None]] = None) -> bool:
+        """Route every Prefab replacement through the shared close transaction."""
+        if not self.is_prefab_mode:
+            return False
+
+        from Infernux.engine.ui.dirty_panel_confirmation import (
+            DirtyPanelConfirmationCoordinator,
+        )
+
+        return DirtyPanelConfirmationCoordinator.instance().request_document_replace(
+            self.document_id,
+            on_complete=lambda: self._schedule_prefab_exit(on_complete),
+        )
+
+    def _schedule_prefab_exit(
+        self,
+        on_complete: Optional[Callable[[], None]] = None,
+    ) -> bool:
         """Schedule exit from Prefab Mode on a later frame.
 
         Uses ``DeferredTaskRunner`` instead of ``poll_deferred_load`` so the
@@ -177,7 +198,7 @@ class ScenePrefabMixin:
         if not self.is_prefab_mode:
             return False
         if self._deferred_exit_prefab:
-            return True
+            return False
 
         from Infernux.engine.deferred_task import DeferredTaskRunner
 
@@ -187,6 +208,7 @@ class ScenePrefabMixin:
             return False
 
         self._deferred_exit_prefab = True
+        self._post_prefab_exit_callback = on_complete
         runner.submit(
             "Exit Prefab Mode",
             [("Exiting Prefab Mode...", 0.6, self._run_deferred_exit_prefab_task)],
@@ -196,18 +218,19 @@ class ScenePrefabMixin:
     def exit_prefab_mode_with_undo(self) -> bool:
         if not self.is_prefab_mode:
             return False
-        from Infernux.engine.undo import UndoManager, PrefabModeCommand
-        mgr = UndoManager.instance()
-        prefab_path = self.prefab_mode_path or ""
-        if mgr and mgr.enabled and not mgr.is_executing:
-            mgr.execute(PrefabModeCommand(prefab_path, enter_mode=False))
-            return True
-        return bool(self._do_exit_prefab_mode())
+        # Exiting can require an asynchronous Save/Discard/Cancel decision.
+        # It cannot be represented by the legacy synchronous UndoCommand.
+        return self.exit_prefab_mode()
 
     def _run_deferred_exit_prefab_task(self):
         """DeferredTaskRunner step wrapper for prefab-mode exit."""
         self._deferred_exit_prefab = False
-        return self._do_exit_prefab_mode()
+        callback = self._post_prefab_exit_callback
+        self._post_prefab_exit_callback = None
+        succeeded = bool(self._do_exit_prefab_mode())
+        if succeeded and callable(callback):
+            callback()
+        return succeeded
 
     def _do_exit_prefab_mode(self, preserve_undo_history: bool = False):
         """Internal: perform the actual Prefab Mode exit (called by poll_deferred_load)."""
@@ -217,12 +240,8 @@ class ScenePrefabMixin:
         from Infernux.lib import SceneManager
         from Infernux.engine.component_restore import deserialize_scene_document_transactionally
 
-        # Always save the prefab on exit
-        if self.prefab_mode_path:
-            self._save_prefab()
-
-        # Always resolve the prefab GUID so instances can be refreshed,
-        # regardless of whether the save happened now or earlier via Ctrl+S.
+        # Resolve the prefab GUID so instances are refreshed from whichever
+        # on-disk state the user explicitly chose (Save or Discard).
         saved_prefab_guid = None
         if self.prefab_mode_path and self._asset_database:
             try:

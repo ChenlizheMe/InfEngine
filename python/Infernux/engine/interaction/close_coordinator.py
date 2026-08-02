@@ -217,8 +217,10 @@ class CloseCoordinator:
         else:
             documents = sorted(
                 self.registry.dirty_documents(),
-                key=lambda document: document.kind
-                in {DocumentKind.SCENE, DocumentKind.PREFAB},
+                key=lambda document: {
+                    DocumentKind.PREFAB: 1,
+                    DocumentKind.SCENE: 2,
+                }.get(document.kind, 0),
             )
             candidates = (document.document_id for document in documents)
         result: list[str] = []

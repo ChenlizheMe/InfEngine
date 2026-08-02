@@ -118,10 +118,9 @@ def _save_editor_settings(settings: dict):
 
 from ._scene_prefab import ScenePrefabMixin
 from ._scene_save import SceneSaveMixin
-from ._scene_confirmation import SceneConfirmationMixin
 
 
-class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin):
+class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
     """Manages the mapping between the active C++ Scene and its file on disk.
 
     Typical usage (wired in ``release_engine``):
@@ -159,18 +158,13 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
         self._asset_database = None  # Set via set_asset_database()
         self._engine = None  # set via set_engine()
 
-        # Confirmation-dialog state
-        self._pending_action: Optional[str] = None   # 'new' | 'open' | 'close'
-        self._pending_open_path: Optional[str] = None
-        self._show_confirm: bool = False
-        self._post_save_callback: Optional[Callable[[], None]] = None
-
         # Deferred scene loading — actual load runs on the NEXT frame so
         # the scene view has one frame to stop rendering old 3D content,
         # preventing in-flight GPU resources from being destroyed mid-use.
         self._deferred_load_path: Optional[str] = None   # non-None → load pending
         self._deferred_new_scene: bool = False            # True → new scene pending
         self._deferred_exit_prefab: bool = False           # True → exit prefab mode task pending
+        self._post_prefab_exit_callback: Optional[Callable[[], None]] = None
         self._scene_transaction = None
         self._scene_transaction_path: Optional[str] = None
 
@@ -178,11 +172,8 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
         # Prevents stacking deferred loads from rapid user clicks.
         self._load_in_progress: bool = False
 
-        # Guard against repeated request_close() calls while a close
-        # confirmation dialog is already visible.  Without this,
-        # is_close_requested() being True every frame would re-trigger
-        # _request_save_confirmation() and re-open the ImGui popup every
-        # frame, making the buttons unclickable.
+        # Guard against repeated request_close() calls while the shared
+        # document close transaction is active.
         self._close_in_progress: bool = False
 
         # Prefab Mode state
@@ -352,12 +343,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
             if previous is not None and not previous.view_ids:
                 registry.unregister(previous_id)
 
-    def _previous_scene_is_dirty(self) -> bool:
-        from Infernux.engine.interaction import DocumentRegistry
-
-        document = DocumentRegistry.instance().get(self._previous_scene_document_id)
-        return bool(document and document.is_dirty)
-
     def save_session_state(self) -> dict:
         """Capture a recoverable editor-session draft for an unsaved scene."""
         if not self._dirty or self.is_prefab_mode or self._is_play_mode():
@@ -453,19 +438,16 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
             Debug.log_warning("Scene load already pending or in progress — ignoring open_scene()")
             return False
         if self.is_prefab_mode:
-            # Auto-save prefab and schedule exit.  The deferred exit runs
-            # before the deferred open in poll_deferred_load, so the
-            # original scene is restored first.
-            if self.prefab_mode_path:
-                self._save_prefab()
-            self.exit_prefab_mode()
-            if self._previous_scene_path:
-                self._save_camera_state(self._previous_scene_path)
-            if self._previous_scene_is_dirty():
-                self._request_save_confirmation('open', path)
-                return False
-            self._begin_deferred_open(path)
-            return True
+            return self._request_prefab_exit(
+                on_complete=lambda: self._continue_open_scene(path),
+            )
+
+        return self._continue_open_scene(path)
+
+    def _continue_open_scene(self, path: str) -> bool:
+        """Resolve the active Scene document before scheduling a replacement."""
+        if self.is_prefab_mode:
+            return False
 
         # Save current camera state before switching
         if self._current_scene_path:
@@ -490,15 +472,14 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
         The actual creation is deferred to the next frame.
         """
         if self.is_prefab_mode:
-            if self.prefab_mode_path:
-                self._save_prefab()
-            self.exit_prefab_mode()
-            if self._previous_scene_path:
-                self._save_camera_state(self._previous_scene_path)
-            if self._previous_scene_is_dirty():
-                self._request_save_confirmation('new')
-                return
-            self._begin_deferred_new()
+            self._request_prefab_exit(on_complete=self._continue_new_scene)
+            return
+
+        self._continue_new_scene()
+
+    def _continue_new_scene(self) -> None:
+        """Resolve the active Scene document before creating a replacement."""
+        if self.is_prefab_mode:
             return
 
         # Persist camera state before switching away
@@ -558,11 +539,9 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
                 native.confirm_close()
             return
 
-        # In Prefab Mode: auto-save the prefab, schedule the deferred exit
-        # back to the original scene, then decide based on the *original*
-        # scene's dirty state.  By the time the user interacts with the
-        # save dialog (next frame), _do_exit_prefab_mode has already
-        # restored the original scene so _do_save operates on it.
+        # The global close transaction has already visited the active Prefab
+        # and its suspended Scene as separate documents. Closing the process
+        # needs no scene swap and must not perform another implicit save.
         if self.is_prefab_mode:
             native = self._native_engine_for_close()
             if native:

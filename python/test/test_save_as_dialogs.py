@@ -523,8 +523,6 @@ def test_dirty_scene_close_uses_editor_owned_confirmation(tmp_path, monkeypatch)
 
         assert manager._close_in_progress is True
         assert coordinator.active_document_id == manager.document_id
-        assert manager._pending_action is None
-        assert manager._show_confirm is False
         assert camera_paths == []
         assert native.calls == []
         coordinator.choose_discard()
@@ -567,14 +565,10 @@ def test_dirty_panel_confirmation_precedes_dirty_scene_confirmation(tmp_path, mo
         manager.request_close()
 
         assert coordinator.active_panel_id == panel_id
-        assert manager._pending_action is None
-        assert manager._show_confirm is False
         assert native.calls == []
         coordinator.choose_discard()
         assert coordinator.is_active is True
         assert coordinator.active_document_id == manager.document_id
-        assert manager._pending_action is None
-        assert manager._show_confirm is False
         assert native.calls == []
         coordinator.choose_discard()
         assert coordinator.is_active is False
@@ -605,7 +599,128 @@ def test_dirty_scene_open_uses_replace_document_transaction(monkeypatch):
 
         assert coordinator.is_active is False
         assert manager._deferred_load_path == "next.scene"
-        assert manager._pending_action is None
+    finally:
+        if coordinator.is_active:
+            coordinator.choose_cancel()
+        _restore_scene_manager(manager)
+
+
+def _enter_fake_prefab_mode(manager: SceneFileManager, prefab_path: str) -> tuple[str, str]:
+    previous_document_id = manager.document_id
+    manager._previous_scene_document_id = previous_document_id
+    manager._previous_scene_path = manager._current_scene_path
+    manager.is_prefab_mode = True
+    manager.prefab_mode_path = prefab_path
+    manager._current_scene_path = prefab_path
+    manager._replace_scene_document(
+        kind="prefab",
+        resource_path=prefab_path,
+        title="InteractionPrefab",
+        dirty=True,
+        preserve_previous=True,
+    )
+    return previous_document_id, manager.document_id
+
+
+def test_dirty_prefab_exit_waits_for_explicit_close_decision(tmp_path, monkeypatch):
+    manager = _scene_manager()
+    coordinator = DirtyPanelConfirmationCoordinator.instance()
+    scheduled: list[object] = []
+    saved: list[str] = []
+    try:
+        if coordinator.is_active:
+            coordinator.choose_cancel()
+        prefab_path = str(tmp_path / "Assets" / "Interaction.prefab")
+        _previous_id, prefab_id = _enter_fake_prefab_mode(manager, prefab_path)
+        monkeypatch.setattr(
+            manager,
+            "_schedule_prefab_exit",
+            lambda callback=None: scheduled.append(callback) or True,
+        )
+        monkeypatch.setattr(
+            manager,
+            "_save_prefab",
+            lambda *, ticket_id="": saved.append(ticket_id) or True,
+        )
+
+        assert manager.exit_prefab_mode() is True
+        assert coordinator.active_document_id == prefab_id
+        assert scheduled == []
+        assert saved == []
+
+        coordinator.choose_cancel()
+        assert coordinator.is_active is False
+        assert scheduled == []
+        assert saved == []
+
+        assert manager.exit_prefab_mode() is True
+        coordinator.choose_discard()
+        assert coordinator.is_active is False
+        assert len(scheduled) == 1
+        assert saved == []
+
+        scheduled.clear()
+        assert manager.exit_prefab_mode() is True
+        coordinator.choose_save()
+        assert coordinator.is_active is False
+        assert len(saved) == 1
+        assert len(scheduled) == 1
+    finally:
+        if coordinator.is_active:
+            coordinator.choose_cancel()
+        _restore_scene_manager(manager)
+
+
+def test_open_from_prefab_resolves_prefab_then_previous_scene(tmp_path, monkeypatch):
+    manager = _scene_manager()
+    coordinator = DirtyPanelConfirmationCoordinator.instance()
+    scheduled: list[object] = []
+    saved: list[str] = []
+    try:
+        if coordinator.is_active:
+            coordinator.choose_cancel()
+        manager._current_scene_path = str(tmp_path / "Assets" / "Current.scene")
+        manager._dirty = True
+        previous_id, prefab_id = _enter_fake_prefab_mode(
+            manager,
+            str(tmp_path / "Assets" / "Interaction.prefab"),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_schedule_prefab_exit",
+            lambda callback=None: scheduled.append(callback) or True,
+        )
+        monkeypatch.setattr(
+            manager,
+            "_save_prefab",
+            lambda *, ticket_id="": saved.append(ticket_id) or True,
+        )
+        monkeypatch.setattr(manager, "_save_camera_state", lambda _path: None)
+
+        assert manager.open_scene("next.scene") is True
+        assert coordinator.active_document_id == prefab_id
+        assert manager._deferred_load_path is None
+        assert saved == []
+
+        coordinator.choose_discard()
+        assert coordinator.is_active is False
+        assert len(scheduled) == 1
+        assert manager._deferred_load_path is None
+
+        # The deferred Prefab swap restores the previous Scene before running
+        # the continuation. The previous Scene must then get its own decision.
+        manager.is_prefab_mode = False
+        manager._scene_document_id = previous_id
+        manager._current_scene_path = manager._previous_scene_path
+        callback = scheduled[0]
+        assert callable(callback)
+        callback()
+
+        assert coordinator.active_document_id == previous_id
+        assert manager._deferred_load_path is None
+        coordinator.choose_cancel()
+        assert manager._deferred_load_path is None
+        assert saved == []
     finally:
         if coordinator.is_active:
             coordinator.choose_cancel()

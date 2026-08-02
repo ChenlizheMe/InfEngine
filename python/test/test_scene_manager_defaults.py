@@ -89,7 +89,6 @@ def _load_scene_manager_module(monkeypatch):
     for mod_name, cls_name in [
         ("Infernux.engine._scene_prefab", "ScenePrefabMixin"),
         ("Infernux.engine._scene_save", "SceneSaveMixin"),
-        ("Infernux.engine._scene_confirmation", "SceneConfirmationMixin"),
     ]:
         fake_mod = types.ModuleType(mod_name)
         setattr(fake_mod, cls_name, type(cls_name, (), {}))

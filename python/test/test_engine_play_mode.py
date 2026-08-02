@@ -179,7 +179,15 @@ class TestPlayModeManager:
 
         mgr = PlayModeManager()
         mgr._scene_path_backup = authored
-        mgr._scene_dirty_backup = True
+        mgr._scene_document_id_backup = manager.document_id
+        from Infernux.engine.interaction import DocumentRegistry
+
+        document = DocumentRegistry.instance().require(manager.document_id)
+        manager._dirty = True
+        mgr._scene_revision_backup = document.revision
+        mgr._scene_saved_revision_backup = document.saved_revision
+        mgr._scene_document_state_backup = document.state
+        manager._dirty = False
         mgr._restore_scene_file_path()
 
         assert manager.current_scene_path == authored
@@ -187,6 +195,37 @@ class TestPlayModeManager:
         assert restored_cameras == [authored]
         assert remembered_paths == [authored]
         assert scene_changed == [True]
+
+    def test_restore_unsaved_scene_preserves_document_identity_and_revision(self):
+        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.scene_manager import SceneFileManager
+
+        manager = SceneFileManager()
+        original_document_id = manager.document_id
+        manager._dirty = True
+        document = DocumentRegistry.instance().require(original_document_id)
+        original_revision = document.revision
+        original_saved_revision = document.saved_revision
+        manager._current_scene_path = "runtime.scene"
+        manager._dirty = False
+        scene_changed = []
+        remembered_paths = []
+        manager._on_scene_changed = lambda: scene_changed.append(True)
+        manager._remember_last_scene = remembered_paths.append
+
+        mgr = PlayModeManager()
+        mgr._scene_path_backup = None
+        mgr._scene_document_id_backup = original_document_id
+        mgr._scene_revision_backup = original_revision
+        mgr._scene_saved_revision_backup = original_saved_revision
+        mgr._scene_document_state_backup = document.state
+        mgr._restore_scene_file_path()
+
+        assert manager.current_scene_path is None
+        assert manager.document_id == original_document_id
+        assert manager.is_dirty is True
+        assert scene_changed == [True]
+        assert remembered_paths == []
 
     def test_listener_list_empty(self):
         mgr = PlayModeManager()
