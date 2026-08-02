@@ -494,6 +494,22 @@ class HierarchyUndoTracker:
     def record_move(self, object_id: int, old_parent_id: Optional[int], new_parent_id: Optional[int], old_index: int, new_index: int, description: str = "Move") -> None: ...
 
 
+class TimelinePropertyCommand(UndoCommand):
+    def __init__(self, timeline: Any, document_id: str, target_id: str, field_name: str, old_value: Any, new_value: Any, before_revision: int, after_revision: int, description: str = "Edit Timeline") -> None: ...
+
+
+class TimelineInsertKeyframeCommand(UndoCommand):
+    def __init__(self, timeline: Any, document_id: str, keyframe: Any, index: int, before_revision: int, after_revision: int, description: str = "Add Timeline Keyframe") -> None: ...
+    @property
+    def stable_id(self) -> str: ...
+
+
+class TimelineRemoveKeyframeCommand(UndoCommand):
+    def __init__(self, timeline: Any, document_id: str, keyframe: Any, index: int, before_revision: int, after_revision: int, description: str = "Delete Timeline Keyframe") -> None: ...
+    @property
+    def stable_id(self) -> str: ...
+
+
 # ── RenderStack snapshot helpers ──────────────────────────────────────
 
 def snapshot_renderstack(stack: Any) -> dict[str, Any]:

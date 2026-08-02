@@ -172,10 +172,17 @@ class UndoManager:
             cmd.dispose()
             return True
 
+        after_context = self._capture_context()
+        before_selection = cmd.before_selection_snapshot
+        after_selection = cmd.after_selection_snapshot
+        if before_context is not None and before_selection is not None:
+            before_context = before_context.with_selection(before_selection)
+        if after_context is not None and after_selection is not None:
+            after_context = after_context.with_selection(after_selection)
         self._push(
             cmd,
             before_context=before_context,
-            after_context=self._capture_context(),
+            after_context=after_context,
             origin=origin,
             transaction_id=transaction_id,
         )

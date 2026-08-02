@@ -55,6 +55,12 @@ from Infernux.engine.undo._asset_commands import (
     ProjectAssetRenameCommand,
 )
 
+from Infernux.engine.undo._timeline_commands import (
+    TimelineInsertKeyframeCommand,
+    TimelinePropertyCommand,
+    TimelineRemoveKeyframeCommand,
+)
+
 # -- Component commands --
 from Infernux.engine.undo._component_commands import (
     AddNativeComponentCommand,
@@ -126,6 +132,9 @@ __all__ = [
     "ProjectAssetCopyCommand",
     "ProjectAssetMoveCommand",
     "ProjectAssetPasteCommand",
+    "TimelineInsertKeyframeCommand",
+    "TimelinePropertyCommand",
+    "TimelineRemoveKeyframeCommand",
     "AddNativeComponentCommand", "RemoveNativeComponentCommand",
     "AddPyComponentCommand", "RemovePyComponentCommand",
     "UndoManager",

@@ -386,8 +386,7 @@ class DocumentRegistry:
 
     def mark_changed(self, document_id: str) -> int:
         document = self.require(document_id)
-        document._revision_high_watermark += 1
-        document.revision = document._revision_high_watermark
+        document.revision = self.reserve_content_revision(document_id)
         if (
             document.state is not DocumentState.CONFLICT
             and self.active_save_ticket(document_id) is None
@@ -395,6 +394,12 @@ class DocumentRegistry:
             document.state = DocumentState.READY
         self._touch()
         return document.revision
+
+    def reserve_content_revision(self, document_id: str) -> int:
+        """Allocate a future content token without changing the visible document state."""
+        document = self.require(document_id)
+        document._revision_high_watermark += 1
+        return document._revision_high_watermark
 
     def mark_saved(self, document_id: str, revision: Optional[int] = None) -> int:
         document = self.require(document_id)
