@@ -8,7 +8,9 @@ from .contexts import FocusService
 from .action_journal import EditorActionJournal, EditorContextSnapshot
 from .documents import DocumentRegistry
 from .close_coordinator import CloseCoordinator
+from .commands import EditorCommandRegistry
 from .selection import SelectionService
+from .shortcuts import ShortcutRouter
 
 
 class EditorInteractionCore:
@@ -22,6 +24,11 @@ class EditorInteractionCore:
         self.documents = DocumentRegistry()
         self.close_coordinator = CloseCoordinator(self.documents)
         self.action_journal = EditorActionJournal()
+        self.commands = EditorCommandRegistry(
+            focus=self.focus,
+            selection=self.selection,
+        )
+        self.shortcuts = ShortcutRouter(self.commands, self.focus)
         EditorInteractionCore._instance = self
 
     @classmethod
@@ -33,6 +40,8 @@ class EditorInteractionCore:
         self.selection.clear(reason="session_shutdown", record_history=False)
         self.documents.clear()
         self.action_journal.clear()
+        self.shortcuts.clear()
+        self.commands.clear()
         active_panel_id = self.focus.snapshot.active_panel_id
         if active_panel_id:
             self.focus.deactivate_panel(active_panel_id)

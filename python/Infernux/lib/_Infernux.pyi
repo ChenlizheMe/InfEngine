@@ -2465,9 +2465,8 @@ class ToolbarPanel(EditorPanel):
 
     def __init__(self) -> None: ...
 
-    on_play: Any
-    on_pause: Any
-    on_step: Any
+    execute_command: Any
+    can_execute_command: Any
     get_play_state: Any
     get_play_time_str: Any
     is_show_grid: Any
@@ -2487,16 +2486,10 @@ class MenuBarPanel(InxGUIRenderable):
     def __init__(self) -> None: ...
     def invalidate_window_type_cache(self) -> None: ...
 
-    on_save: Any
-    on_save_as: Any
-    on_save_focused: Any
-    on_save_focused_as: Any
-    on_new_scene: Any
+    execute_command: Any
+    can_execute_command: Any
+    route_shortcut: Any
     on_request_close: Any
-    on_undo: Any
-    on_redo: Any
-    can_undo: Any
-    can_redo: Any
     get_registered_types: Any
     get_open_windows: Any
     open_window: Any

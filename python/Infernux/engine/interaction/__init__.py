@@ -31,11 +31,36 @@ from .action_journal import (
     JournalPushResult,
 )
 from .selection import SelectionChange, SelectionService
+from .commands import (
+    CommandContext,
+    CommandResult,
+    CommandSource,
+    CommandStatus,
+    EditorCommand,
+    EditorCommandRegistry,
+)
+from .shortcuts import (
+    KeyChord,
+    ShortcutBinding,
+    ShortcutEvent,
+    ShortcutModifier,
+    ShortcutPhase,
+    ShortcutRouteResult,
+    ShortcutRouteStatus,
+    ShortcutRouter,
+    ShortcutScope,
+)
 from .session import EditorInteractionCore
 from .transactions import EditorTransaction
 
 __all__ = [
     "EditorInteractionCore",
+    "EditorCommand",
+    "EditorCommandRegistry",
+    "CommandContext",
+    "CommandResult",
+    "CommandSource",
+    "CommandStatus",
     "EditorTransaction",
     "CloseCoordinator",
     "CloseIntent",
@@ -68,4 +93,13 @@ __all__ = [
     "SelectionService",
     "SelectionSnapshot",
     "SelectionTarget",
+    "KeyChord",
+    "ShortcutBinding",
+    "ShortcutEvent",
+    "ShortcutModifier",
+    "ShortcutPhase",
+    "ShortcutRouteResult",
+    "ShortcutRouteStatus",
+    "ShortcutRouter",
+    "ShortcutScope",
 ]

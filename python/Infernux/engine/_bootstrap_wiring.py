@@ -42,7 +42,7 @@ class BootstrapWiringMixin:
     """BootstrapWiringMixin method group for EditorBootstrap."""
 
     @staticmethod
-    def _save_focused_document(wm, sfm, *, save_as: bool = False) -> None:
+    def _save_focused_document(wm, sfm, *, save_as: bool = False) -> bool:
         from Infernux.engine.interaction import (
             DocumentActionStatus,
             DocumentRegistry,
@@ -67,7 +67,7 @@ class BootstrapWiringMixin:
                         f"Could not save focused document '{document.title}': "
                         f"{result.message or result.status.value}"
                     )
-                return
+                return result.accepted
 
         from Infernux.engine.ui.closable_panel import ClosablePanel
 
@@ -75,11 +75,143 @@ class BootstrapWiringMixin:
         panel = wm.get_window_instance(panel_id) if panel_id else None
         handler = getattr(panel, "handle_save_command", None)
         if callable(handler) and bool(handler(save_as=save_as)):
-            return
+            return True
         if save_as:
-            sfm.save_scene_as()
-        else:
-            sfm.save_current_scene()
+            return bool(sfm.save_scene_as())
+        return bool(sfm.save_current_scene())
+
+    def _register_core_editor_commands(self, wm, sfm) -> None:
+        from Infernux.engine.interaction import (
+            EditorCommand,
+            KeyChord,
+            ShortcutBinding,
+        )
+        from Infernux.engine.undo import UndoManager
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        registry = self.interaction_core.commands
+        shortcuts = self.interaction_core.shortcuts
+        pmm = self.engine._play_mode_manager if self.engine else None
+
+        def _undo(_context):
+            manager = UndoManager.instance()
+            if not manager or not manager.can_undo:
+                return False
+            manager.undo()
+            return True
+
+        def _redo(_context):
+            manager = UndoManager.instance()
+            if not manager or not manager.can_redo:
+                return False
+            manager.redo()
+            return True
+
+        def _toggle_play(_context):
+            if not pmm:
+                return False
+            if pmm.is_playing:
+                pmm.exit_play_mode()
+                return True
+            if not pmm.enter_play_mode():
+                return False
+            ClosablePanel.focus_panel_by_id("game_view")
+            if self.engine:
+                self.engine.select_docked_window("game_view")
+            return True
+
+        def _new_scene(_context):
+            sfm.new_scene()
+            return True
+
+        def _pause(_context):
+            pmm.toggle_pause()
+            return True
+
+        def _step(_context):
+            pmm.step_frame()
+            return True
+
+        commands = (
+            EditorCommand(
+                "file.new_scene",
+                _new_scene,
+                display_name="New Scene",
+                category="File",
+                default_shortcut="Ctrl+N",
+            ),
+            EditorCommand(
+                "file.save",
+                lambda _context: self._save_focused_document(wm, sfm),
+                display_name="Save",
+                category="File",
+                default_shortcut="Ctrl+S",
+            ),
+            EditorCommand(
+                "file.save_as",
+                lambda _context: self._save_focused_document(wm, sfm, save_as=True),
+                display_name="Save As",
+                category="File",
+                default_shortcut="Ctrl+Shift+S",
+            ),
+            EditorCommand(
+                "edit.undo",
+                _undo,
+                display_name="Undo",
+                category="Edit",
+                can_execute=lambda _context: bool(
+                    UndoManager.instance() and UndoManager.instance().can_undo
+                ),
+                default_shortcut="Ctrl+Z",
+            ),
+            EditorCommand(
+                "edit.redo",
+                _redo,
+                display_name="Redo",
+                category="Edit",
+                can_execute=lambda _context: bool(
+                    UndoManager.instance() and UndoManager.instance().can_redo
+                ),
+                default_shortcut="Ctrl+Shift+Z",
+            ),
+            EditorCommand(
+                "play.toggle",
+                _toggle_play,
+                display_name="Play / Stop",
+                category="Play",
+                can_execute=lambda _context: pmm is not None,
+            ),
+            EditorCommand(
+                "play.pause",
+                _pause,
+                display_name="Pause / Resume",
+                category="Play",
+                can_execute=lambda _context: bool(pmm and pmm.is_playing),
+            ),
+            EditorCommand(
+                "play.step",
+                _step,
+                display_name="Step",
+                category="Play",
+                can_execute=lambda _context: bool(pmm and pmm.is_paused),
+            ),
+        )
+        for command in commands:
+            registry.register(command, replace=True)
+
+        bindings = (
+            ("file.new_scene", "Ctrl+N", "default.file.new_scene"),
+            ("file.save", "Ctrl+S", "default.file.save"),
+            ("file.save_as", "Ctrl+Shift+S", "default.file.save_as"),
+            ("edit.undo", "Ctrl+Z", "default.edit.undo"),
+            ("edit.redo", "Ctrl+Shift+Z", "default.edit.redo.shift"),
+            ("edit.redo", "Ctrl+Y", "default.edit.redo.y"),
+        )
+        for command_id, chord, binding_id in bindings:
+            shortcuts.register(
+                ShortcutBinding(command_id, KeyChord.parse(chord), binding_id=binding_id),
+                replace=True,
+            )
 
     def _wire_menu_bar_callbacks(self, wm):
         """Wire C++ MenuBarPanel callbacks to Python managers."""
@@ -87,42 +219,31 @@ class BootstrapWiringMixin:
         sfm = self.scene_file_manager
         engine = self.engine
 
+        self._register_core_editor_commands(wm, sfm)
+        command_registry = self.interaction_core.commands
+        shortcut_router = self.interaction_core.shortcuts
+        from Infernux.engine.interaction import (
+            CommandSource,
+            KeyChord,
+            ShortcutEvent,
+        )
+
+        mb.execute_command = lambda command_id, source: command_registry.execute(
+            command_id,
+            source=CommandSource(source),
+        ).accepted
+        mb.can_execute_command = command_registry.can_execute
+        mb.route_shortcut = lambda chord, text_input, modal: shortcut_router.route(
+            ShortcutEvent(
+                KeyChord.parse(chord),
+                text_input_active=bool(text_input),
+                modal_active=bool(modal),
+            )
+        ).consumed
+
         # Scene file operations
         if sfm:
-            mb.on_save = lambda: sfm.save_current_scene()
-            mb.on_save_as = lambda: sfm.save_scene_as()
-            mb.on_new_scene = lambda: sfm.new_scene()
             mb.on_request_close = lambda: sfm.request_close()
-
-            mb.on_save_focused = lambda: self._save_focused_document(wm, sfm)
-            mb.on_save_focused_as = lambda: self._save_focused_document(
-                wm, sfm, save_as=True
-            )
-
-        # Undo
-        def _undo():
-            from Infernux.engine.undo import UndoManager
-            mgr = UndoManager.instance()
-            if mgr and mgr.can_undo:
-                mgr.undo()
-        def _redo():
-            from Infernux.engine.undo import UndoManager
-            mgr = UndoManager.instance()
-            if mgr and mgr.can_redo:
-                mgr.redo()
-        def _can_undo():
-            from Infernux.engine.undo import UndoManager
-            mgr = UndoManager.instance()
-            return bool(mgr and mgr.can_undo)
-        def _can_redo():
-            from Infernux.engine.undo import UndoManager
-            mgr = UndoManager.instance()
-            return bool(mgr and mgr.can_redo)
-
-        mb.on_undo = _undo
-        mb.on_redo = _redo
-        mb.can_undo = _can_undo
-        mb.can_redo = _can_redo
 
         # Window management
         from Infernux.lib import WindowTypeInfo
@@ -234,7 +355,6 @@ class BootstrapWiringMixin:
                 _dirty_panels.render(ctx)
                 _project_delete.render(ctx)
                 if _sfm:
-                    _sfm.render_confirmation_popup(ctx)
                     _sfm.render_save_as_popup(ctx)
 
         self._menu_bar_floats = _MenuBarFloatingPanels()

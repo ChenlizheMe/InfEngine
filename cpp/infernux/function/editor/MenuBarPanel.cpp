@@ -80,6 +80,7 @@ void MenuBarPanel::OnRender(InxGUIContext *ctx)
         if (InxGUISemantics::IsCaptureEnabled())
             ctx->RecordSemanticWindow("menu_bar", "Main Menu", "menu_bar");
         RenderProjectMenu(ctx);
+        RenderEditMenu(ctx);
         RenderSceneMenu(ctx);
         RenderDynamicMenus(ctx);
         RenderWindowMenu(ctx);
@@ -104,35 +105,32 @@ void MenuBarPanel::HandleShortcuts(InxGUIContext *ctx)
         return;
     m_lastShortcutFrame = frame;
 
-    bool ctrl = ctx->IsKeyDown(KEY_LEFT_CTRL) || ctx->IsKeyDown(KEY_RIGHT_CTRL);
+    const auto isDown = [ctx](ImGuiKey key) { return ctx->IsKeyDown(static_cast<int>(key)); };
+    const bool ctrl = isDown(ImGuiKey_LeftCtrl) || isDown(ImGuiKey_RightCtrl);
     if (!ctrl)
         return;
-    const bool shift = ctx->IsKeyDown(KEY_LEFT_SHIFT) || ctx->IsKeyDown(KEY_RIGHT_SHIFT);
-    const auto pressedOnce = [](int key) { return ImGui::IsKeyPressed(static_cast<ImGuiKey>(key), false); };
+    const bool shift = isDown(ImGuiKey_LeftShift) || isDown(ImGuiKey_RightShift);
+    const auto pressedOnce = [](ImGuiKey key) { return ImGui::IsKeyPressed(key, false); };
+    const bool textInputActive = ImGui::GetIO().WantTextInput;
+    const bool popupActive = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+    const auto dispatch = [&](const char *chord) {
+        if (routeShortcut)
+            routeShortcut(chord, textInputActive, popupActive);
+    };
 
-    if (pressedOnce(KEY_S)) {
-        if (shift && onSaveFocusedAs)
-            onSaveFocusedAs();
-        else if (!shift && onSaveFocused)
-            onSaveFocused();
+    if (pressedOnce(ImGuiKey_S)) {
+        dispatch(shift ? "Ctrl+Shift+S" : "Ctrl+S");
     }
 
-    if (!shift && pressedOnce(KEY_N) && onNewScene)
-        onNewScene();
+    if (!shift && pressedOnce(ImGuiKey_N))
+        dispatch("Ctrl+N");
 
-    if (pressedOnce(KEY_Z)) {
-        if (shift) {
-            if (canRedo && canRedo() && onRedo)
-                onRedo();
-        } else if (canUndo && canUndo() && onUndo) {
-            onUndo();
-        }
+    if (pressedOnce(ImGuiKey_Z)) {
+        dispatch(shift ? "Ctrl+Shift+Z" : "Ctrl+Z");
     }
 
-    if (!shift && pressedOnce(KEY_Y)) {
-        if (canRedo && canRedo() && onRedo)
-            onRedo();
-    }
+    if (!shift && pressedOnce(ImGuiKey_Y))
+        dispatch("Ctrl+Y");
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -144,18 +142,15 @@ void MenuBarPanel::RenderProjectMenu(InxGUIContext *ctx)
     if (!BeginSemanticMenu(ctx, T("menu.project"), "menu.project"))
         return;
 
-    if (SemanticMenuItem(ctx, T("menu.new_scene"), "Ctrl+N", false, true, "menu.project.new_scene")) {
-        if (onNewScene)
-            onNewScene();
-    }
-    if (SemanticMenuItem(ctx, T("menu.save_scene"), "Ctrl+S", false, true, "menu.project.save_scene")) {
-        if (onSaveFocused)
-            onSaveFocused();
-    }
-    if (SemanticMenuItem(ctx, T("menu.save_scene_as"), "Ctrl+Shift+S", false, true, "menu.project.save_scene_as")) {
-        if (onSaveFocusedAs)
-            onSaveFocusedAs();
-    }
+    const bool canNew = CanExecuteCommand("file.new_scene");
+    if (SemanticMenuItem(ctx, T("menu.new_scene"), "Ctrl+N", false, canNew, "menu.project.new_scene"))
+        ExecuteCommand("file.new_scene", "menu");
+    const bool canSave = CanExecuteCommand("file.save");
+    if (SemanticMenuItem(ctx, T("menu.save_scene"), "Ctrl+S", false, canSave, "menu.project.save_scene"))
+        ExecuteCommand("file.save", "menu");
+    const bool canSaveAs = CanExecuteCommand("file.save_as");
+    if (SemanticMenuItem(ctx, T("menu.save_scene_as"), "Ctrl+Shift+S", false, canSaveAs, "menu.project.save_scene_as"))
+        ExecuteCommand("file.save_as", "menu");
 
     ImGui::Separator();
 
@@ -183,6 +178,31 @@ void MenuBarPanel::RenderProjectMenu(InxGUIContext *ctx)
     }
 
     ImGui::EndMenu();
+}
+
+void MenuBarPanel::RenderEditMenu(InxGUIContext *ctx)
+{
+    if (!BeginSemanticMenu(ctx, T("menu.edit"), "menu.edit"))
+        return;
+
+    const bool canUndoCommand = CanExecuteCommand("edit.undo");
+    if (SemanticMenuItem(ctx, T("menu.undo"), "Ctrl+Z", false, canUndoCommand, "menu.edit.undo"))
+        ExecuteCommand("edit.undo", "menu");
+    const bool canRedoCommand = CanExecuteCommand("edit.redo");
+    if (SemanticMenuItem(ctx, T("menu.redo"), "Ctrl+Shift+Z", false, canRedoCommand, "menu.edit.redo"))
+        ExecuteCommand("edit.redo", "menu");
+
+    ImGui::EndMenu();
+}
+
+bool MenuBarPanel::ExecuteCommand(const std::string &commandId, const std::string &source) const
+{
+    return executeCommand && executeCommand(commandId, source);
+}
+
+bool MenuBarPanel::CanExecuteCommand(const std::string &commandId) const
+{
+    return canExecuteCommand && canExecuteCommand(commandId);
 }
 
 // ════════════════════════════════════════════════════════════════════

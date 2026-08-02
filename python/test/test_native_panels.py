@@ -100,19 +100,15 @@ class TestToolbarPanel:
         tb.set_open(False)
         assert not tb.is_open()
 
-    def test_play_callbacks(self):
+    def test_command_callbacks(self):
         tb = ToolbarPanel()
-        called = {"play": False, "pause": False, "step": False}
+        calls = []
+        tb.execute_command = lambda command_id, source: calls.append((command_id, source)) or True
+        tb.can_execute_command = lambda command_id: command_id == "play.toggle"
 
-        tb.on_play = lambda: called.__setitem__("play", True)
-        tb.on_pause = lambda: called.__setitem__("pause", True)
-        tb.on_step = lambda: called.__setitem__("step", True)
-
-        # Invoking from C++ side requires render context, but we can
-        # at least verify callbacks are set without crash
-        assert tb.on_play is not None
-        assert tb.on_pause is not None
-        assert tb.on_step is not None
+        assert tb.execute_command("play.toggle", "toolbar") is True
+        assert tb.can_execute_command("play.toggle") is True
+        assert calls == [("play.toggle", "toolbar")]
 
     def test_get_play_state_callback(self):
         tb = ToolbarPanel()
@@ -206,39 +202,23 @@ class TestMenuBarPanel:
         mb = MenuBarPanel()
         assert mb is not None
 
-    def test_scene_file_callbacks(self):
+    def test_command_callbacks(self):
         mb = MenuBarPanel()
         calls = []
-        mb.on_save = lambda: calls.append("save")
-        mb.on_save_as = lambda: calls.append("save_as")
-        mb.on_save_focused = lambda: calls.append("save_focused")
-        mb.on_save_focused_as = lambda: calls.append("save_focused_as")
-        mb.on_new_scene = lambda: calls.append("new")
+        mb.execute_command = lambda command_id, source: calls.append((command_id, source)) or True
+        mb.can_execute_command = lambda command_id: command_id == "file.save"
+        mb.route_shortcut = lambda chord, text_input, modal: calls.append(
+            (chord, text_input, modal)
+        ) or True
         mb.on_request_close = lambda: calls.append("close")
 
-        mb.on_save()
-        mb.on_save_as()
-        mb.on_save_focused()
-        mb.on_save_focused_as()
-        mb.on_new_scene()
+        assert mb.execute_command("file.save", "menu") is True
+        assert mb.can_execute_command("file.save") is True
+        assert mb.route_shortcut("Ctrl+S", False, False) is True
         mb.on_request_close()
         assert calls == [
-            "save", "save_as", "save_focused", "save_focused_as", "new", "close"
+            ("file.save", "menu"), ("Ctrl+S", False, False), "close"
         ]
-
-    def test_undo_callbacks(self):
-        mb = MenuBarPanel()
-        mb.can_undo = lambda: True
-        mb.can_redo = lambda: False
-        assert mb.can_undo()
-        assert not mb.can_redo()
-
-        calls = []
-        mb.on_undo = lambda: calls.append("undo")
-        mb.on_redo = lambda: calls.append("redo")
-        mb.on_undo()
-        mb.on_redo()
-        assert calls == ["undo", "redo"]
 
     def test_window_management_callbacks(self):
         mb = MenuBarPanel()

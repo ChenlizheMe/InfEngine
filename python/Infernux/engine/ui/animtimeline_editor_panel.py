@@ -5,7 +5,7 @@ timeline bar (like a video scrubber) shows keyframes as diamonds and a draggable
 playhead.  Add a keyframe at the playhead, select a keyframe to edit its
 transform and the transition curve used to reach it (from the previous keyframe).
 
-Shortcuts: Space play/pause, Ctrl+S save, Ctrl+Shift+S save-as, Ctrl+N new.
+Shortcuts: Space play/pause. Global document shortcuts are routed by the editor.
 
 Opened from Window menu → Timeline Editor, or by double-clicking a
 ``.animtimeline`` asset in the Project panel.
@@ -31,10 +31,9 @@ from Infernux.core.animation_timeline import (
 from .editor_panel import EditorPanel
 from .asset_save_dialog import AssetSaveAsDialog
 from .panel_registry import editor_panel
-from .imgui_keys import KEY_N, KEY_SPACE
+from .imgui_keys import KEY_SPACE
 from .theme import ImGuiCol, Theme
 
-_MOD_CTRL = 1 << 12
 
 # Combo label i18n keys (order matches INTERP_MODES / APPLY_MODES).
 _INTERP_LABEL_KEYS = ("interp_constant", "interp_linear", "interp_ease_in", "interp_ease_out", "interp_ease_inout")
@@ -633,9 +632,6 @@ class AnimTimelineEditorPanel(EditorPanel):
         # Only the focused editor window reacts to its shortcuts.
         if not self._is_focused(ctx):
             return
-        ctrl = ctx.is_key_down(_MOD_CTRL)
-        if ctrl and ctx.is_key_pressed(KEY_N):
-            self._new_timeline()
         # Space toggles playback only when no widget (e.g. a text field) is focused.
         if ctx.is_key_pressed(KEY_SPACE) and not ctx.is_any_item_active():
             self._toggle_play()

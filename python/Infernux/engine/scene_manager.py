@@ -35,11 +35,6 @@ DEFAULT_SCENE_FILE_BASE = "UntitledScene"
 PREFAB_MODE_SCENE_NAME = "__PrefabMode__"
 PREFAB_RESTORE_SCENE_NAME = "__PrefabRestore__"
 
-# ImGuiKey enum values (matches imgui.h)
-KEY_S = 564          # S
-KEY_LEFT_CTRL = 527  # Left Ctrl
-KEY_RIGHT_CTRL = 531 # Right Ctrl
-
 
 def _empty_scene_document(name: str) -> dict:
     return {
@@ -570,18 +565,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
         # Fallback to default (immediate — no rendering loop yet)
         self._do_new_scene()
-
-    # ------------------------------------------------------------------
-    # Ctrl+S handler  (called from menu bar / toolbar every frame)
-    # ------------------------------------------------------------------
-
-    def handle_shortcut(self, ctx) -> bool:
-        """Check for Ctrl+S and save. Returns True if a save was triggered."""
-        ctrl = ctx.is_key_down(KEY_LEFT_CTRL) or ctx.is_key_down(KEY_RIGHT_CTRL)
-        if ctrl and ctx.is_key_pressed(KEY_S):
-            self.save_current_scene()
-            return True
-        return False
 
     # ------------------------------------------------------------------
     # Deferred scene loading (called from menu_bar every frame)

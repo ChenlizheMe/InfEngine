@@ -356,24 +356,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         pmm = engine._play_mode_manager if engine else None
         from Infernux.lib import PlayState
         from Infernux.engine.play_mode import PlayModeState
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-
-        def _on_play():
-            if not pmm:
-                return
-            if pmm.is_playing:
-                pmm.exit_play_mode()
-            else:
-                if pmm.enter_play_mode():
-                    ClosablePanel.focus_panel_by_id("game_view")
-                    if engine:
-                        engine.select_docked_window("game_view")
-        def _on_pause():
-            if pmm:
-                pmm.toggle_pause()
-        def _on_step():
-            if pmm:
-                pmm.step_frame()
         def _get_play_state():
             if not pmm:
                 return PlayState.Edit
@@ -389,9 +371,14 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             t = pmm.total_play_time
             return f"{int(t//60):02d}:{t%60:06.3f}"
 
-        tb.on_play = _on_play
-        tb.on_pause = _on_pause
-        tb.on_step = _on_step
+        from Infernux.engine.interaction import CommandSource
+
+        command_registry = self.interaction_core.commands
+        tb.execute_command = lambda command_id, source: command_registry.execute(
+            command_id,
+            source=CommandSource(source),
+        ).accepted
+        tb.can_execute_command = command_registry.can_execute
         tb.get_play_state = _get_play_state
         tb.get_play_time_str = _get_play_time_str
 

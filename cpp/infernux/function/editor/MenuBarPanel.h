@@ -44,19 +44,11 @@ class MenuBarPanel : public InxGUIRenderable
 
     // ── Callbacks set from Python ────────────────────────────────────
 
-    // Scene file operations
-    std::function<void()> onSave;
-    std::function<void()> onSaveAs;
-    std::function<void()> onSaveFocused;
-    std::function<void()> onSaveFocusedAs;
-    std::function<void()> onNewScene;
+    // Unified editor command and shortcut entry points.
+    std::function<bool(const std::string &, const std::string &)> executeCommand;
+    std::function<bool(const std::string &)> canExecuteCommand;
+    std::function<bool(const std::string &, bool, bool)> routeShortcut;
     std::function<void()> onRequestClose;
-
-    // Undo
-    std::function<void()> onUndo;
-    std::function<void()> onRedo;
-    std::function<bool()> canUndo;
-    std::function<bool()> canRedo;
 
     // Window management
     std::function<std::vector<WindowTypeInfo>()> getRegisteredTypes;
@@ -87,6 +79,7 @@ class MenuBarPanel : public InxGUIRenderable
   private:
     void HandleShortcuts(InxGUIContext *ctx);
     void RenderProjectMenu(InxGUIContext *ctx);
+    void RenderEditMenu(InxGUIContext *ctx);
     void RenderSceneMenu(InxGUIContext *ctx);
     void RenderDynamicMenus(InxGUIContext *ctx);
     void RefreshWindowTypeCache();
@@ -99,16 +92,8 @@ class MenuBarPanel : public InxGUIRenderable
                          const std::vector<WindowTypeInfo> &types);
 
     std::string T(const std::string &key) const;
-
-    // ImGuiKey constants
-    static constexpr int KEY_S = 564;
-    static constexpr int KEY_N = 559;
-    static constexpr int KEY_Z = 571;
-    static constexpr int KEY_Y = 570;
-    static constexpr int KEY_LEFT_CTRL = 527;
-    static constexpr int KEY_RIGHT_CTRL = 531;
-    static constexpr int KEY_LEFT_SHIFT = ImGuiKey_LeftShift;
-    static constexpr int KEY_RIGHT_SHIFT = ImGuiKey_RightShift;
+    bool ExecuteCommand(const std::string &commandId, const std::string &source) const;
+    bool CanExecuteCommand(const std::string &commandId) const;
 
     int m_lastShortcutFrame = -1;
     std::vector<WindowTypeInfo> m_cachedWindowTypes;

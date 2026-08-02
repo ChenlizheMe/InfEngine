@@ -91,6 +91,9 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
     PlayState state = getPlayState ? getPlayState() : PlayState::Edit;
     bool isPlaying = (state == PlayState::Playing || state == PlayState::Paused);
     bool isPaused = (state == PlayState::Paused);
+    const bool canTogglePlay = canExecuteCommand && canExecuteCommand("play.toggle");
+    const bool canTogglePause = canExecuteCommand && canExecuteCommand("play.pause");
+    const bool canStep = canExecuteCommand && canExecuteCommand("play.step");
 
     float btnW = 160.0f;
     float cx = (winW - btnW) * 0.5f;
@@ -107,11 +110,9 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
     std::string playLabel = isPlaying ? T("toolbar.stop") : T("toolbar.play");
     const bool playClicked = ImGui::Button(playLabel.c_str());
     if (captureSemantics)
-        ctx->RecordSemanticItem("toolbar_play_stop", playLabel, true, "toolbar.play_stop");
-    if (playClicked) {
-        if (onPlay)
-            onPlay();
-    }
+        ctx->RecordSemanticItem("toolbar_play_stop", playLabel, canTogglePlay, "toolbar.play_stop");
+    if (playClicked && canTogglePlay && executeCommand)
+        executeCommand("play.toggle", "toolbar");
     ImGui::PopStyleColor(3);
 
     ImGui::SameLine(0.0f, 2.0f);
@@ -127,11 +128,9 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
     std::string pauseLabel = isPaused ? T("toolbar.resume") : T("toolbar.pause");
     const bool pauseClicked = ImGui::Button(pauseLabel.c_str());
     if (captureSemantics)
-        ctx->RecordSemanticItem("toolbar_pause_resume", pauseLabel, isPlaying, "toolbar.pause_resume");
-    if (pauseClicked) {
-        if (isPlaying && onPause)
-            onPause();
-    }
+        ctx->RecordSemanticItem("toolbar_pause_resume", pauseLabel, canTogglePause, "toolbar.pause_resume");
+    if (pauseClicked && canTogglePause && executeCommand)
+        executeCommand("play.pause", "toolbar");
     ImGui::PopStyleColor(3);
 
     ImGui::SameLine(0.0f, 2.0f);
@@ -145,11 +144,9 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
     std::string stepLabel = T("toolbar.step");
     const bool stepClicked = ImGui::Button(stepLabel.c_str());
     if (captureSemantics)
-        ctx->RecordSemanticItem("toolbar_step", stepLabel, isPaused, "toolbar.step");
-    if (stepClicked) {
-        if (isPaused && onStep)
-            onStep();
-    }
+        ctx->RecordSemanticItem("toolbar_step", stepLabel, canStep, "toolbar.step");
+    if (stepClicked && canStep && executeCommand)
+        executeCommand("play.step", "toolbar");
     ImGui::PopStyleColor(3);
 
     // ── Time label while playing ─────────────────────────────────

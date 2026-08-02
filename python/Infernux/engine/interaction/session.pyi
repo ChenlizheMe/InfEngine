@@ -3,7 +3,9 @@ from .contexts import FocusService
 from .action_journal import EditorActionJournal, EditorContextSnapshot
 from .documents import DocumentRegistry
 from .close_coordinator import CloseCoordinator
+from .commands import EditorCommandRegistry
 from .selection import SelectionService
+from .shortcuts import ShortcutRouter
 
 class EditorInteractionCore:
     selection: SelectionService
@@ -11,6 +13,8 @@ class EditorInteractionCore:
     documents: DocumentRegistry
     close_coordinator: CloseCoordinator
     action_journal: EditorActionJournal
+    commands: EditorCommandRegistry
+    shortcuts: ShortcutRouter
     def __init__(self) -> None: ...
     @classmethod
     def instance(cls) -> Optional[EditorInteractionCore]: ...

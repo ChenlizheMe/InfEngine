@@ -31,14 +31,9 @@ class ToolbarPanel : public EditorPanel
 
     // ── Callbacks set from Python ────────────────────────────────────
 
-    /// Called when user clicks Play/Stop.
-    std::function<void()> onPlay;
-
-    /// Called when user clicks Pause.
-    std::function<void()> onPause;
-
-    /// Called when user clicks Step.
-    std::function<void()> onStep;
+    /// Unified command entry used by toolbar buttons.
+    std::function<bool(const std::string &, const std::string &)> executeCommand;
+    std::function<bool(const std::string &)> canExecuteCommand;
 
     /// Query current play state.
     std::function<PlayState()> getPlayState;

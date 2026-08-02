@@ -1,5 +1,8 @@
 {
   "menu.project": "Project",
+  "menu.edit": "Edit",
+  "menu.undo": "Undo",
+  "menu.redo": "Redo",
   "menu.scene": "Scene",
   "menu.animation": "Animation",
   "menu.rendering": "Rendering",

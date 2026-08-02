@@ -92,14 +92,6 @@ class SceneFileManager:
         """Load the most recently opened scene, or create a default."""
         ...
 
-    def handle_shortcut(self, ctx: object) -> bool:
-        """Process Ctrl+S / Ctrl+Shift+S shortcuts.
-
-        Returns:
-            ``True`` if a shortcut was consumed.
-        """
-        ...
-
     def poll_pending_save(self) -> None:
         """Tick the save-confirmation popup state machine (per frame)."""
         ...
@@ -112,7 +104,6 @@ class SceneFileManager:
         """Human-readable name for the current scene (filename sans extension)."""
         ...
 
-    def render_confirmation_popup(self, ctx: object) -> None:
         """Render the "Save changes?" confirmation modal if active."""
         ...
 
