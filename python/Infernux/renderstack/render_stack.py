@@ -273,7 +273,14 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             data = _json.loads(self.pipeline_params_json)
             if type(data) is not dict:
                 raise TypeError("RenderStack pipeline parameters must be an object")
+            # Screen UI is part of the canonical render tail, not a pipeline
+            # option. Strip the removed field at the serialization boundary so
+            # old editor state cannot silently produce a different graph.
+            for params in data.values():
+                if isinstance(params, dict):
+                    params.pop("enable_screen_ui", None)
             self._pipeline_param_store = data
+            self.pipeline_params_json = _json.dumps(data)
 
         # Deserialization may be repeated on an existing editor component.
         # Recreate the selected pipeline only after its parameter store exists.

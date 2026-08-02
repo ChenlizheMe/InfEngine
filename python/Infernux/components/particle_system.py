@@ -2502,6 +2502,40 @@ class ParticleSystem(InxComponent):
         )
         return value or 1
 
+    @staticmethod
+    def _particle_texture_guid(value) -> str:
+        """Return a native texture identity without treating a path as a GUID."""
+        if isinstance(value, AssetReference):
+            reference = value
+        elif isinstance(value, dict):
+            reference = AssetReference.from_dict(value)
+        else:
+            token = str(value or "").strip()
+            return token if token in {"white", "black", "normal"} else "white"
+
+        guid = str(reference.guid or "").strip()
+        if guid:
+            return guid
+        path_hint = str(reference.path_hint or "").strip()
+        if not path_hint:
+            return "white"
+        try:
+            from Infernux.core.asset_ref import _get_asset_database
+            from Infernux.engine.path_utils import resolved_path
+            from Infernux.engine.project_context import get_project_root
+
+            path = path_hint
+            if not os.path.isabs(path):
+                project_root = get_project_root()
+                if project_root:
+                    path = os.path.join(project_root, path)
+            database = _get_asset_database()
+            if database:
+                return database.get_guid_from_path(resolved_path(path)) or "white"
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            pass
+        return "white"
+
     def _gpu_material_binding(self, output, emitter_id: str = "") -> dict[str, object]:
         is_mesh = output.output_type == "mesh"
         state: dict[str, object] = {
@@ -2536,9 +2570,9 @@ class ParticleSystem(InxComponent):
                 )
                 kind = binding.value_type.value_type
                 if kind is ValueType.TEXTURE2D:
-                    if isinstance(value, dict):
-                        value = value.get("guid") or value.get("path_hint") or ""
-                    material.native.set_texture_guid(binding.name, str(value or "white"))
+                    material.native.set_texture_guid(
+                        binding.name, self._particle_texture_guid(value)
+                    )
                 elif kind is ValueType.F32:
                     material.native.set_float(binding.name, float(value))
                 elif kind is ValueType.I32:

@@ -987,6 +987,20 @@ def test_node_graph_center_view_fits_full_node_bounds_inside_canvas():
     assert right <= 469.0
 
 
+def test_node_graph_width_expands_for_long_input_labels():
+    typedef = SimpleNamespace(
+        label="Sprite Output: Particle Six-Way Smoke",
+        min_width=210.0,
+        show_header_color_swatch=True,
+        input_pins=lambda: [SimpleNamespace(label="positiveAxesMap")],
+        output_pins=lambda: [],
+    )
+    node = SimpleNamespace(data={}, type_id="output")
+    view = NodeGraphView()
+
+    assert view._natural_node_width(node, typedef) > typedef.min_width
+
+
 def test_node_graph_exports_drawn_nodes_as_explicit_semantic_rects():
     view = NodeGraphView()
     view.semantic_namespace = "animfsm.graph"

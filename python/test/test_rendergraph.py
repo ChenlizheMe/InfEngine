@@ -525,6 +525,11 @@ class TestInjectionPointCallback:
         graph.screen_ui_section()
         assert "before_post_process" in fired
         assert "after_post_process" in fired
+        assert [stage.stable_id for stage in graph.effect_stages] == [
+            "after_camera_ui",
+            "final",
+            "after_screen_ui",
+        ]
 
     def test_auto_inject_does_not_fire_callback(self):
         graph = _make_graph()

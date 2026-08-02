@@ -34,6 +34,10 @@ from . import inspector_shader_utils as shader_utils
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import resolved_path
 import logging
+from ._inspector_references import (
+    _picker_texture_assets,
+    _project_texture_guid_and_path,
+)
 
 
 _PROFILE_ENABLED = _inspector_support.is_inspector_profile_enabled()
@@ -260,22 +264,20 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
 
     def _on_tex_drop(payload):
         nonlocal changed
-        dropped = str(payload).replace("\\", "/")
-        guid = _resolve_path_to_guid(dropped)
+        guid, dropped = _project_texture_guid_and_path(payload)
         if not guid:
             logging.getLogger(__name__).warning(
-                "Cannot resolve dropped texture path to GUID: %s", dropped)
+                "Texture must belong to the current project's Assets folder: %s", payload)
             return
         prop["guid"] = guid
         changed = True
 
     def _on_tex_pick(picked_path):
         nonlocal changed
-        picked = str(picked_path).replace("\\", "/")
-        guid = _resolve_path_to_guid(picked)
+        guid, picked = _project_texture_guid_and_path(picked_path)
         if not guid:
             logging.getLogger(__name__).warning(
-                "Cannot resolve picked texture path to GUID: %s", picked)
+                "Texture must belong to the current project's Assets folder: %s", picked_path)
             return
         prop["guid"] = guid
         changed = True
@@ -286,8 +288,7 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
         changed = True
 
     def _tex_asset_items(filt):
-        from .inspector_components import _picker_assets
-        return _picker_assets(filt, "*.png", assets_only=True) + _picker_assets(filt, "*.jpg", assets_only=True)
+        return _picker_texture_assets(filt)
 
     IGUI.object_field(
         ctx,

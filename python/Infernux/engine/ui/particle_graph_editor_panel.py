@@ -88,7 +88,10 @@ from .theme import Theme
 from ._inspector_references import (
     _asset_guid_from_path,
     _picker_assets,
+    _picker_texture_assets,
     _portable_asset_path_hint,
+    _project_texture_guid_and_path,
+    _resolve_project_asset_path,
     render_object_field,
 )
 
@@ -3359,14 +3362,22 @@ class ParticleGraphEditorPanel(EditorPanel):
                 if is_mesh and (builtin := _selected_builtin_mesh(path)) is not None:
                     selected_references.append(builtin)
                     return
-                target = resolved_path(str(path))
+                target = resolved_path(str(path)) if is_mesh else ""
+                texture_guid = ""
+                if not is_mesh:
+                    texture_guid, target = _project_texture_guid_and_path(path)
                 extensions = mesh_extensions if is_mesh else IMAGE_EXTENSIONS
                 if os.path.splitext(target)[1].lower() not in extensions:
                     Debug.log_warning(
                         f"Particle {kind.value} parameter received an incompatible asset: {path}"
                     )
                     return
-                guid = _asset_guid_from_path(target)
+                if not is_mesh and not texture_guid:
+                    Debug.log_warning(
+                        f"Particle texture parameter must use a project asset: {path}"
+                    )
+                    return
+                guid = _asset_guid_from_path(target) if is_mesh else texture_guid
                 if not guid:
                     Debug.log_warning(
                         f"Particle {kind.value} parameter asset is not imported: {path}"
@@ -3383,8 +3394,11 @@ class ParticleGraphEditorPanel(EditorPanel):
                 extensions = mesh_extensions if is_mesh else IMAGE_EXTENSIONS
                 if is_mesh:
                     items.extend(_builtin_mesh_picker_items(query))
-                for extension in sorted(extensions):
-                    items.extend(_picker_assets(query, f"*{extension}"))
+                if is_mesh:
+                    for extension in sorted(extensions):
+                        items.extend(_picker_assets(query, f"*{extension}"))
+                else:
+                    items.extend(_picker_texture_assets(query))
                 return items
 
             ping_path = str(reference.path_hint or "").strip()
@@ -4329,31 +4343,23 @@ class ParticleGraphEditorPanel(EditorPanel):
                 def _select_texture(path):
                     from Infernux.core.asset_types import IMAGE_EXTENSIONS
 
-                    target = resolved_path(str(path))
-                    if os.path.splitext(target)[1].lower() not in IMAGE_EXTENSIONS:
+                    guid, target = _project_texture_guid_and_path(path)
+                    if not guid:
                         Debug.log_warning(
-                            f"Particle Output shader property requires an image asset: {path}"
+                            f"Particle Output texture must use a project asset: {path}"
                         )
                         return
-                    guid = _asset_guid_from_path(target)
-                    if guid:
-                        selected_references.append(
-                            AssetReference(guid, _portable_asset_path_hint(target))
-                        )
+                    selected_references.append(
+                        AssetReference(guid, _portable_asset_path_hint(target))
+                    )
 
                 def _texture_picker(query):
-                    from Infernux.core.asset_types import IMAGE_EXTENSIONS
-
-                    return [
-                        item
-                        for extension in sorted(IMAGE_EXTENSIONS)
-                        for item in _picker_assets(query, f"*{extension}")
-                    ]
+                    return _picker_texture_assets(query)
 
                 ping_path = str(reference.path_hint or "").strip()
                 if ping_path:
                     try:
-                        ping_path = resolved_path(ping_path) or ping_path
+                        ping_path = _resolve_project_asset_path(ping_path) or ping_path
                     except Exception:
                         pass
                 render_object_field(

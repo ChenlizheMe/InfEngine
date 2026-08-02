@@ -31,7 +31,7 @@ def _portable_asset_path_hint(file_path: str) -> str:
     from Infernux.engine.path_utils import portable_path, relative_path
     from Infernux.engine.project_context import get_project_root
 
-    path = str(file_path or "")
+    path = _resolve_project_asset_path(file_path)
     if not path:
         return ""
     project_root = get_project_root()
@@ -43,11 +43,43 @@ def _portable_asset_path_hint(file_path: str) -> str:
     return portable_path(path)
 
 
+def _resolve_project_asset_path(file_path: str) -> str:
+    """Resolve an asset path against the active project, never the process cwd."""
+    import os
+    from Infernux.engine.path_utils import resolved_path
+    from Infernux.engine.project_context import get_project_root
+
+    path = str(file_path or "").strip()
+    if not path:
+        return ""
+    if not os.path.isabs(path):
+        project_root = get_project_root()
+        if project_root:
+            path = os.path.join(project_root, path)
+    return resolved_path(path)
+
+
+def _is_project_asset_path(file_path: str) -> bool:
+    """Return whether *file_path* belongs to the active project's Assets tree."""
+    import os
+    from Infernux.engine.path_utils import is_path_within
+    from Infernux.engine.project_context import get_project_root
+
+    project_root = get_project_root()
+    if not project_root:
+        return False
+    return is_path_within(
+        _resolve_project_asset_path(file_path),
+        os.path.join(project_root, "Assets"),
+    )
+
+
 def _asset_guid_from_path(file_path: str) -> str:
     from Infernux.debug import Debug
     from Infernux.core.asset_types import read_meta_guid
     from Infernux.core.assets import AssetManager
 
+    file_path = _resolve_project_asset_path(file_path)
     guid = ""
     adb = getattr(AssetManager, '_asset_database', None)
     if adb:
@@ -654,6 +686,66 @@ def _picker_assets(filter_text: str, pattern: str, *, assets_only: bool = False)
             continue
         items.append((name, p))
     return items
+
+
+def _picker_texture_assets(filter_text: str):
+    """Return only user-owned image assets supported by the texture importer."""
+    from Infernux.core.asset_types import IMAGE_EXTENSIONS
+
+    items = []
+    seen = set()
+    for extension in sorted(
+        item for item in IMAGE_EXTENSIONS if not item.startswith(".inx")
+    ):
+        for name, path in _picker_assets(
+            filter_text, f"*{extension}", assets_only=True
+        ):
+            key = str(path).replace("\\", "/").casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append((name, path))
+    return items
+
+
+def _project_texture_guid_and_path(payload) -> tuple[str, str]:
+    """Resolve a picker/drop payload to a project-owned texture GUID and path."""
+    import os
+    from Infernux.core.asset_types import IMAGE_EXTENSIONS
+    from Infernux.core.assets import AssetManager
+
+    supplied_guid = ""
+    supplied_path = ""
+    if isinstance(payload, dict):
+        supplied_guid = str(payload.get("guid", "") or "").strip()
+        supplied_path = str(payload.get("path_hint", "") or "").strip()
+    else:
+        token = str(payload or "").strip()
+        if os.path.splitext(token)[1].lower() in IMAGE_EXTENSIONS:
+            supplied_path = token
+        else:
+            supplied_guid = token
+
+    path = _resolve_project_asset_path(supplied_path) if supplied_path else ""
+    database = getattr(AssetManager, "_asset_database", None)
+    if not path and supplied_guid and database is not None:
+        try:
+            path = _resolve_project_asset_path(
+                database.get_path_from_guid(supplied_guid) or ""
+            )
+        except RuntimeError:
+            path = ""
+
+    extension = os.path.splitext(path)[1].lower()
+    if (
+        not path
+        or extension not in IMAGE_EXTENSIONS
+        or extension.startswith(".inx")
+        or not _is_project_asset_path(path)
+    ):
+        return "", ""
+    guid = supplied_guid or _asset_guid_from_path(path)
+    return (guid, path) if guid else ("", "")
 
 
 # ── Object field wrapper ──

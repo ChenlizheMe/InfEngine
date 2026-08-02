@@ -14,18 +14,16 @@ ShaderInfo {
         Color baseColor = [0.66, 0.66, 0.66, 1.0]
         Color emissionColor = [1.0, 0.28, 0.04, 1.0] HDR
         Float lightingIntensity = 1.0 Range(0.0, 8.0)
-        Float ambientIntensity = 0.0 Range(0.0, 0.002)
-        Float ambientSaturation = 0.0 Range(0.0, 1.0)
+        Float ambientIntensity = 0.0 Range(0.0, 0.002) Internal
+        Float ambientSaturation = 0.0 Range(0.0, 1.0) Internal
         Float emissionIntensity = 0.0 Range(0.0, 32.0)
         Float absorption = 0.5 Range(0.0, 1.0)
         Float alphaScale = 1.0 Range(0.0, 4.0)
-        Float flipbookColumns = 8.0 Range(1.0, 32.0)
-        Float flipbookRows = 8.0 Range(1.0, 32.0)
-        Float flipbookFrameJitter = 3.0 Range(0.0, 16.0)
-        Float flipbookFrameOffset = 0.0 Range(0.0, 1024.0)
-        Float fadeInFraction = 0.08 Range(0.0, 0.5)
-        Float fadeOutStart = 0.68 Range(0.5, 1.0)
-        Float densityClipThreshold = 0.025 Range(0.0, 0.5)
+        Float flipbookFrameJitter = 3.0 Range(0.0, 16.0) Internal
+        Float flipbookFrameOffset = 0.0 Range(0.0, 1024.0) Internal
+        Float fadeInFraction = 0.08 Range(0.0, 0.5) Internal
+        Float fadeOutStart = 0.68 Range(0.5, 1.0) Internal
+        Float densityClipThreshold = 0.025 Range(0.0, 0.5) Internal
         Texture2D positiveAxesMap = white
         Texture2D negativeAxesMap = black
     }
@@ -44,7 +42,7 @@ float inxParticleHash(uint value) {
 }
 
 vec2 inxFlipbookUv(vec2 uv, float frame) {
-    vec2 grid = max(vec2(material.flipbookColumns, material.flipbookRows), vec2(1.0));
+    vec2 grid = max(particleView.rendering_control.zw, vec2(1.0));
     float frameCount = grid.x * grid.y;
     frame = clamp(frame, 0.0, frameCount - 1.0);
     vec2 cell = vec2(mod(frame, grid.x), floor(frame / grid.x));
@@ -57,7 +55,7 @@ vec2 inxFlipbookUv(vec2 uv, float frame) {
 void surface(out SurfaceData s) {
     s = InitSurfaceData();
 
-    vec2 grid = max(vec2(material.flipbookColumns, material.flipbookRows), vec2(1.0));
+    vec2 grid = max(particleView.rendering_control.zw, vec2(1.0));
     float frameCount = grid.x * grid.y;
     float frameJitter = (inxParticleHash(v_ParticleId) - 0.5) * material.flipbookFrameJitter;
     float framePosition = clamp(
@@ -67,11 +65,11 @@ void surface(out SurfaceData s) {
     float firstFrame = floor(framePosition);
     float secondFrame = min(firstFrame + 1.0, frameCount - 1.0);
     float frameBlend = fract(framePosition);
-    vec2 atlasGradientX = dFdx(v_TexCoord) / grid;
-    vec2 atlasGradientY = dFdy(v_TexCoord) / grid;
+    vec2 atlasGradientX = dFdx(v_ParticleLocalTexCoord) / grid;
+    vec2 atlasGradientY = dFdy(v_ParticleLocalTexCoord) / grid;
     vec4 positiveAxes = mix(
-        textureGrad(positiveAxesMap, inxFlipbookUv(v_TexCoord, firstFrame), atlasGradientX, atlasGradientY),
-        textureGrad(positiveAxesMap, inxFlipbookUv(v_TexCoord, secondFrame), atlasGradientX, atlasGradientY),
+        textureGrad(positiveAxesMap, inxFlipbookUv(v_ParticleLocalTexCoord, firstFrame), atlasGradientX, atlasGradientY),
+        textureGrad(positiveAxesMap, inxFlipbookUv(v_ParticleLocalTexCoord, secondFrame), atlasGradientX, atlasGradientY),
         frameBlend);
     // The positive six-way map stores opacity directly in A. Absorption only
     // changes how colored light traverses the smoke; applying it here would
@@ -82,8 +80,8 @@ void surface(out SurfaceData s) {
     float densityAlpha = max(positiveAxes.a, 0.0) * material.alphaScale * lifetimeFade;
     if (densityAlpha < material.densityClipThreshold) discard;
     vec4 negativeAxes = mix(
-        textureGrad(negativeAxesMap, inxFlipbookUv(v_TexCoord, firstFrame), atlasGradientX, atlasGradientY),
-        textureGrad(negativeAxesMap, inxFlipbookUv(v_TexCoord, secondFrame), atlasGradientX, atlasGradientY),
+        textureGrad(negativeAxesMap, inxFlipbookUv(v_ParticleLocalTexCoord, firstFrame), atlasGradientX, atlasGradientY),
+        textureGrad(negativeAxesMap, inxFlipbookUv(v_ParticleLocalTexCoord, secondFrame), atlasGradientX, atlasGradientY),
         frameBlend);
     const float inversePi = 0.31830988618;
     // The six-way maps are authored premultiplied by their own density. The

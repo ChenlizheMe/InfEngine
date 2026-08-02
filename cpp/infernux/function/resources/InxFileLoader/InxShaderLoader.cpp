@@ -439,6 +439,7 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
             {"type", prop.type},
             {"default", std::move(defaultValue)},
             {"hdr", prop.hdr},
+            {"internal", prop.internal},
             {"line", prop.source.begin.line},
             {"column", prop.source.begin.column},
         };
@@ -586,6 +587,7 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
             property.type = infoProperty.type;
             property.defaultValue = infoProperty.defaultValue;
             property.hdr = infoProperty.hdr;
+            property.internal = infoProperty.internal;
             property.source = infoProperty.source;
             if (infoProperty.range)
                 property.range = std::array<double, 2>{infoProperty.range->minimum, infoProperty.range->maximum};

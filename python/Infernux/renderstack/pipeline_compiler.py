@@ -184,6 +184,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
     pending_scene_overlays: list[tuple[str, _RouteContribution]] = []
     domains = {domain.domain_id: domain for domain in definition.domains}
     stages = {stage.stable_id: stage for stage in definition.effect_stages}
+    deferred_final = stages.get("final") if definition.has_screen_ui else None
 
     for operation, stable_id in definition.operations:
         if operation in {"frame", "shadows", "lighting"}:
@@ -215,6 +216,10 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
             continue
         if operation == "effect":
             stage = stages[stable_id]
+            # Camera-space UI is post-processed with the scene. Defer the
+            # conventional final stage until that UI has been composited.
+            if deferred_final is stage:
+                continue
             if _effect_stage_is_active(graph, stage):
                 _flush_route_contributions(scene, pending_scene_overlays)
             _declare_effect(graph, stage, scene.effect_resources())
@@ -231,7 +236,19 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
         if operation == "screen_ui":
             _flush_route_contributions(scene, pending_scene_overlays)
             _commit_scene_to_camera(graph, scene, camera_color)
-            graph.screen_ui_section(resources={"color", "depth", "motion"})
+            resources = {"color", "depth", "motion"}
+            graph.camera_ui_section(resources=resources)
+            if not graph.has_injection_point("before_post_process"):
+                graph.injection_point("before_post_process", resources=resources)
+            if deferred_final is not None:
+                _declare_effect(
+                    graph,
+                    deferred_final,
+                    {"color": camera_color, "depth": depth, "motion": motion},
+                )
+            if not graph.has_injection_point("after_post_process"):
+                graph.injection_point("after_post_process", resources=resources)
+            graph.screen_ui_overlay_section(resources=resources)
             continue
         raise ValueError(f"unknown pipeline operation: {operation!r}")
 

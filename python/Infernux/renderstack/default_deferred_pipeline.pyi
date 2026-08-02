@@ -45,11 +45,9 @@ class DefaultDeferredPipeline(RenderPipeline):
     Attributes:
         shadow_resolution: Shadow map resolution (default 4096).
         msaa_samples: Always OFF for deferred.
-        enable_screen_ui: Enable screen-space UI rendering.
     """
 
     name: str
     shadow_resolution: int
-    enable_screen_ui: bool
 
     def define_topology(self, graph: RenderGraph) -> None: ...

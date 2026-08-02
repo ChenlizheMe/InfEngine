@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import struct
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -1465,6 +1466,64 @@ def test_particle_output_shader_switch_preserves_compatible_ports_and_links():
         and link.target_pin == "shader.baseColor"
         for link in panel._model.links
     )
+
+
+def test_six_way_output_exposes_texture_ports_but_not_internal_controls():
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        ParticleGraphEditorPanel,
+    )
+
+    panel = ParticleGraphEditorPanel()
+    output = panel._model.find_node("rendering::output.sprite")
+    panel.set_node_property(output.uid, "shader", "Particle Six-Way Smoke")
+    definition = panel._definition_for_node(output)
+    shader_ports = {
+        item.id for item in definition.ports if item.id.startswith("shader.")
+    }
+
+    assert {"shader.positiveAxesMap", "shader.negativeAxesMap"} <= shader_ports
+    assert "shader.flipbookColumns" not in shader_ports
+    assert "shader.densityClipThreshold" not in shader_ports
+
+
+def test_particle_output_compiler_strips_stale_internal_shader_properties():
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        ParticleGraphEditorPanel,
+    )
+    from Infernux.particle import ParticleGraphCompiler
+
+    panel = ParticleGraphEditorPanel()
+    panel.set_node_property(
+        "rendering::output.sprite", "shader", "Particle Six-Way Smoke"
+    )
+    panel._sync_model_to_asset()
+    emitter = panel.asset.emitters[0]
+    rendering = emitter.rendering
+    nodes = tuple(
+        replace(
+            node,
+            properties={
+                **node.properties,
+                "shader.densityClipThreshold": 0.4,
+                "shader.fadeOutStart": 0.9,
+            },
+        )
+        if node.uid == "output.sprite"
+        else node
+        for node in rendering.nodes
+    )
+    asset = replace(
+        panel.asset,
+        emitters=(
+            replace(emitter, rendering=replace(rendering, nodes=nodes)),
+        ),
+    )
+
+    output = ParticleGraphCompiler().compile(asset).emitters[0].render_plan.outputs[0]
+
+    names = {item.name for item in output.shader_properties}
+    assert "densityClipThreshold" not in names
+    assert "fadeOutStart" not in names
 
 
 def test_particle_graph_parameter_connects_directly_to_output_shader_property():

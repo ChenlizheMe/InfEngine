@@ -63,7 +63,16 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
     pipeline_names = (default_pipeline_name,) + tuple(
         name for name in catalog_signature if name != default_pipeline_name
     )
-    cache_key = (id(topology), pipeline_names)
+    stage_signature = tuple(
+        (stage.stable_id, stage.display_name, stage.scope.value)
+        for stage in topology.effect_stages
+    )
+    cache_key = (
+        type(stack.pipeline).__module__,
+        type(stack.pipeline).__qualname__,
+        stage_signature,
+        pipeline_names,
+    )
     cached = getattr(stack, "_inspector_declarative_model", None)
     if isinstance(cached, tuple) and cached[0] == cache_key:
         return cached[1]

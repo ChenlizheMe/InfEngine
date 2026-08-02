@@ -1001,18 +1001,59 @@ class RenderGraph:
         """Pipeline-author shorthand for :meth:`effect_stage`."""
         return self.effect_stage(stable_id, **kwargs)
 
-    # ---- Convenience: ScreenUI + post-process section ----
+    # ---- Convenience: Camera UI + post-process + Screen UI sections ----
+
+    def camera_ui_section(self, *, resources: "set | None" = None) -> None:
+        """Draw Camera UI and expose the composite immediately afterwards."""
+        res = resources or {"color"}
+        if not self.has_pass("_ScreenUI_Camera"):
+            with self.add_pass("_ScreenUI_Camera") as p:
+                p.write_color("color")
+                p.draw_screen_ui(list="camera")
+
+        if not self.has_effect_stage("after_camera_ui"):
+            self.effects(
+                "after_camera_ui",
+                scope="composite",
+                display_name="After Camera UI",
+                inputs=res,
+                outputs={"color"},
+                capabilities={"fullscreen"},
+            )
+
+    def screen_ui_overlay_section(self, *, resources: "set | None" = None) -> None:
+        """Encode the scene for display, draw Screen UI, then expose it."""
+        res = resources or {"color"}
+        self.display_encode_section()
+
+        if not self.has_pass("_ScreenUI_Overlay"):
+            with self.add_pass("_ScreenUI_Overlay") as p:
+                p.write_color("color")
+                p.draw_screen_ui(list="overlay")
+
+        if not self.has_effect_stage("after_screen_ui"):
+            self.effects(
+                "after_screen_ui",
+                scope="composite",
+                display_name="After Screen UI",
+                inputs=res,
+                outputs={"color"},
+                capabilities={"fullscreen", "display_space"},
+            )
 
     def screen_ui_section(self, *, resources: "set | None" = None) -> None:
-        """Insert the standard ScreenUI + post-process injection points.
+        """Insert the canonical Camera UI, post-process and Screen UI tail.
 
         This is a convenience shortcut that emits::
 
             _ScreenUI_Camera          (draw_screen_ui list="camera")
-            before_post_process       (injection point)
-            after_post_process        (injection point)
+            after_camera_ui           (effect stage)
+            before_post_process       (legacy injection point)
+            final                     (effect stage)
+            after_post_process        (legacy injection point)
+            _DisplayEncode            (linear to display encoding)
             _ScreenUI_Overlay         (draw_screen_ui list="overlay")
-            after_screen_ui           (effect stage)
+            after_screen_ui           (effect stage, display space)
 
         Custom pipelines can call this at the desired topology position.
         This method is **explicit opt-in**: if a pipeline does not call
@@ -1028,35 +1069,23 @@ class RenderGraph:
         """
         res = resources or {"color"}
 
-        if not self.has_pass("_ScreenUI_Camera"):
-            with self.add_pass("_ScreenUI_Camera") as p:
-                p.write_color("color")
-                p.draw_screen_ui(list="camera")
+        self.camera_ui_section(resources=res)
 
         if not self.has_injection_point("before_post_process"):
             self.injection_point("before_post_process", resources=res)
+        if not self.has_effect_stage("final"):
+            self.effects(
+                "final",
+                scope="composite",
+                display_name="Final Post Processing",
+                inputs=res,
+                outputs={"color"},
+                capabilities={"fullscreen", "hdr_to_display"},
+            )
         if not self.has_injection_point("after_post_process"):
             self.injection_point("after_post_process", resources=res)
 
-        # Display encode sits between scene post-processing and the overlay
-        # UI: scene color is linear, while ScreenUI colors are authored in
-        # display (sRGB) space and must not be re-encoded.
-        self.display_encode_section()
-
-        if not self.has_pass("_ScreenUI_Overlay"):
-            with self.add_pass("_ScreenUI_Overlay") as p:
-                p.write_color("color")
-                p.draw_screen_ui(list="overlay")
-
-        if not self.has_effect_stage("after_screen_ui"):
-            self.effects(
-                "after_screen_ui",
-                scope="composite",
-                display_name="After Screen UI",
-                inputs=res,
-                outputs={"color"},
-                capabilities={"fullscreen"},
-            )
+        self.screen_ui_overlay_section(resources=res)
 
     def display_encode_section(self) -> None:
         """Insert the built-in linear → sRGB display-encode passes.

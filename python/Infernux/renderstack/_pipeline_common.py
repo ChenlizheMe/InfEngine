@@ -204,14 +204,15 @@ def add_motion_vector_pass(
 
 def add_standard_post_process_section(
     graph: "RenderGraph",
-    *,
-    enable_screen_ui: bool,
 ) -> None:
-    if enable_screen_ui:
-        graph.screen_ui_section(resources=POST_PROCESS_RESOURCES)
-        return
+    """Append the canonical camera-UI, post-process, and screen-UI tail.
 
-    ensure_standard_post_process_points(graph)
+    Screen UI is part of the standard camera output contract, not an optional
+    RenderStack feature.  Keeping this tail unconditional also guarantees that
+    a scene without RenderStack and an empty default RenderStack compile the
+    same visible pipeline.
+    """
+    graph.screen_ui_section(resources=POST_PROCESS_RESOURCES)
 
 
 def ensure_standard_post_process_points(graph: "RenderGraph") -> None:

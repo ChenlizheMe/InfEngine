@@ -71,7 +71,7 @@ ShaderInfo
     {
         Float amplitude = 0.35 Range(0.0, 4.0)
         Color crestColor = [0.2, 0.75, 0.9, 1.0] HDR
-        Texture2D normalMap = Normal
+        Texture2D normalMap = Normal Internal
     }
 
     Inputs
@@ -99,6 +99,7 @@ void surface (out SurfaceData surface) { }
     assert(info.properties[0].range.has_value());
     assert(info.properties[0].range->minimum == 0.0);
     assert(info.properties[1].hdr);
+    assert(info.properties[2].internal);
     assert(info.properties[1].defaultValue == "[0.2, 0.75, 0.9, 1.0]");
     assert(info.inputs.size() == 2);
     assert(info.inputs[0].semantic == "TexCoord0");
@@ -344,6 +345,7 @@ VertexOutput vertex(inout VertexInput value) { return VertexOutput(); }
     assert(propertySchema[0]["default"] == 0.35);
     assert(propertySchema[0]["range"] == nlohmann::json::array({0.0, 4.0}));
     assert(propertySchema[1]["hdr"] == true);
+    assert(propertySchema[2]["internal"] == true);
 
     const std::string vertexSource = R"(
 #version 450

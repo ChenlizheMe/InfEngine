@@ -249,12 +249,45 @@ def test_renderstack_inspector_exposes_only_effect_mount_points_with_inline_slot
         "stage_after_opaque",
         "stage_after_sky",
         "stage_after_transparent",
+        "stage_after_camera_ui",
         "stage_final",
         "stage_after_screen_ui",
     ]
     assert all(control.accept_drop == "RENDER_EFFECT_FILE" for control in lists)
     assert all(control.item_label is not None for control in lists)
     assert all(control.item_renderer is not None for control in lists)
+
+
+def test_screen_ui_is_not_an_optional_pipeline_parameter():
+    assert "enable_screen_ui" not in get_serialized_fields(DefaultForwardPipeline)
+    assert "enable_screen_ui" not in get_serialized_fields(DefaultDeferredPipeline)
+
+
+def test_default_pipeline_ui_and_effect_tail_has_canonical_order():
+    from Infernux.rendergraph.graph import RenderGraph
+
+    graph = RenderGraph("Default Forward")
+    DefaultForwardPipeline().define_topology(graph)
+    sequence = list(graph.topology_sequence)
+
+    def position(kind, name):
+        return sequence.index((kind, name))
+
+    assert position("pass", "_ScreenUI_Camera") < position(
+        "effect_stage", "after_camera_ui"
+    )
+    assert position("effect_stage", "after_camera_ui") < position(
+        "effect_stage", "final"
+    )
+    assert position("effect_stage", "final") < position(
+        "pass", "_DisplayEncode"
+    )
+    assert position("pass", "_DisplayEncode_Commit") < position(
+        "pass", "_ScreenUI_Overlay"
+    )
+    assert position("pass", "_ScreenUI_Overlay") < position(
+        "effect_stage", "after_screen_ui"
+    )
 
 
 def test_switching_pipeline_rebuilds_stage_model_without_stale_stage_access():

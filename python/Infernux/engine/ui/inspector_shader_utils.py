@@ -175,15 +175,24 @@ def _read_source_shader_metadata(filepath: str) -> dict[str, object]:
                 r"^\s*(Float|Float2|Float3|Float4|Color|Int|Mat4|Texture2D)\s+"
                 r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
                 r"(\[[^\]]*\]|\"(?:\\.|[^\"\\])*\"|[^\s]+)"
-                r"(?:\s+Range\(\s*([^,]+)\s*,\s*([^\)]+)\s*\))?"
-                r"(?:\s+(HDR))?\s*$",
+                r"(.*?)\s*$",
                 re.IGNORECASE,
             )
             for line in body[property_start:property_end].splitlines():
                 match = declaration_pattern.match(line)
                 if match is None:
                     continue
-                prop_type, name, encoded_default, minimum, maximum, hdr = match.groups()
+                prop_type, name, encoded_default, attributes = match.groups()
+                range_match = re.search(
+                    r"\bRange\(\s*([^,]+)\s*,\s*([^\)]+)\s*\)",
+                    attributes,
+                    re.IGNORECASE,
+                )
+                minimum, maximum = (
+                    range_match.groups() if range_match is not None else (None, None)
+                )
+                hdr = re.search(r"\bHDR\b", attributes, re.IGNORECASE)
+                internal = re.search(r"\bInternal\b", attributes, re.IGNORECASE)
                 if prop_type == "Texture2D":
                     default: object = encoded_default.strip('"')
                 else:
@@ -197,6 +206,8 @@ def _read_source_shader_metadata(filepath: str) -> dict[str, object]:
                     "default": default,
                     "hdr": bool(hdr),
                 }
+                if internal:
+                    item["internal"] = True
                 if minimum is not None and maximum is not None:
                     try:
                         item["range"] = [float(minimum), float(maximum)]
@@ -543,6 +554,7 @@ def _apply_shader_props_to_mat(mat_data: dict, all_props: list[dict],
         ptype_str = sp.get('type', 'Float')
         default = sp.get('default')
         hdr = sp.get('hdr', False)
+        internal = bool(sp.get('internal', False))
         authored_range = sp.get('range')
 
         if not name:
@@ -558,6 +570,10 @@ def _apply_shader_props_to_mat(mat_data: dict, all_props: list[dict],
 
         existing['type'] = ptype
         existing['hdr'] = hdr
+        if internal:
+            existing['internal'] = True
+        else:
+            existing.pop('internal', None)
         if ptype == 6:
             guid = existing.get('guid', '')
             existing['guid'] = guid if isinstance(guid, str) else ''
@@ -652,7 +668,11 @@ def get_material_property_display_order(mat_data: dict) -> list[str]:
     ordered = []
     seen = set()
     for name in shader_order:
-        if name in props and name not in seen:
+        if (
+            name in props
+            and name not in seen
+            and not bool(props[name].get("internal", False))
+        ):
             ordered.append(name)
             seen.add(name)
 

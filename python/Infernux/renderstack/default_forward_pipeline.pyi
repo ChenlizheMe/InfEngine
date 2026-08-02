@@ -40,12 +40,10 @@ class DefaultForwardPipeline(RenderPipeline):
     Attributes:
         shadow_resolution: Shadow map resolution (default 4096).
         msaa_samples: Anti-aliasing sample count (X1/Off, X2, X4, or X8; default X4).
-        enable_screen_ui: Enable screen-space UI rendering.
     """
 
     name: str
     shadow_resolution: int
     msaa_samples: MSAASamples
-    enable_screen_ui: bool
 
     def define_topology(self, graph: RenderGraph) -> None: ...

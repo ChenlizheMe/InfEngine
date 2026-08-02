@@ -31,7 +31,6 @@ from Infernux.renderstack.render_pipeline import RenderPipeline
 from Infernux.components.serialized_field import serialized_field
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
-    POST_PROCESS_RESOURCES,
     SCENE_RESOURCES,
     add_forward_opaque_pass,
     add_motion_vector_pass,
@@ -93,12 +92,6 @@ class DefaultForwardPipeline(RenderPipeline):
         enum_labels=["X1 (Off)", "X2", "X4", "X8"],
         tooltip="Anti-aliasing sample count (X1 disables multisample anti-aliasing)",
         header="Anti-Aliasing",
-    )
-
-    enable_screen_ui: bool = serialized_field(
-        default=True,
-        tooltip="Enable screen-space UI rendering (Canvas Overlay / Camera)",
-        header="Screen UI",
     )
 
     # ------------------------------------------------------------------
@@ -183,16 +176,8 @@ class DefaultForwardPipeline(RenderPipeline):
             capabilities={"fullscreen"},
         )
 
-        graph.effects(
-            "final",
-            scope="composite",
-            display_name="Final Post Processing",
-            inputs=POST_PROCESS_RESOURCES,
-            outputs={"color"},
-            capabilities={"fullscreen", "hdr_to_display"},
-        )
-
-        # Post-process + ScreenUI injection points
-        add_standard_post_process_section(graph, enable_screen_ui=self.enable_screen_ui)
+        # Camera UI, final post-processing, display encoding and Screen UI use
+        # one canonical tail in every built-in pipeline.
+        add_standard_post_process_section(graph)
 
         graph.set_output(COLOR_TEXTURE)

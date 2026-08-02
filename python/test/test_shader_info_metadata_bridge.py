@@ -266,6 +266,25 @@ def test_inspector_reads_structured_properties_without_meta(tmp_path):
     assert inspector_shader_utils.is_shader_hidden(str(shader)) is False
 
 
+def test_inspector_preserves_internal_shader_property_metadata(tmp_path):
+    shader = tmp_path / "internal_property.frag"
+    shader.write_text(
+        'ShaderInfo {\n'
+        '    Name "Structured/InternalProperty"\n'
+        '    Properties {\n'
+        '        Float authored = 1.0\n'
+        '        Texture2D implementationMap = white Internal\n'
+        '    }\n'
+        '}\n',
+        encoding="utf-8",
+    )
+
+    properties = inspector_shader_utils.parse_shader_properties(str(shader))
+
+    assert properties[0].get("internal", False) is False
+    assert properties[1]["internal"] is True
+
+
 def test_inspector_catalog_reads_structured_shader_without_meta(tmp_path):
     shader = tmp_path / "particle_sprite.vert"
     shader.write_text(

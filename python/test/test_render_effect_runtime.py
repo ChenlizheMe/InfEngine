@@ -569,17 +569,87 @@ def test_default_pipeline_declares_effect_stages_in_topology_order():
         "after_opaque",
         "after_sky",
         "after_transparent",
+        "after_camera_ui",
         "final",
         "after_screen_ui",
     ]
 
     topology = stack._build_full_topology_probe().topology_sequence
-    assert topology.index(("effect_stage", "final")) < topology.index(
-        ("pass", "_ScreenUI_Camera")
+    assert topology.index(("pass", "_ScreenUI_Camera")) < topology.index(
+        ("effect_stage", "after_camera_ui")
+    )
+    assert topology.index(("effect_stage", "after_camera_ui")) < topology.index(
+        ("effect_stage", "final")
     )
     assert topology.index(("pass", "_ScreenUI_Overlay")) < topology.index(
         ("effect_stage", "after_screen_ui")
     )
+
+
+def test_render_stack_removes_obsolete_screen_ui_parameter_on_deserialize():
+    stack = RenderStack()
+    stack.pipeline_params_json = json.dumps(
+        {
+            "__default__": {
+                "shadow_resolution": 4096,
+                "enable_screen_ui": False,
+            },
+            "Default Deferred": {"enable_screen_ui": True},
+        }
+    )
+
+    stack.on_after_deserialize()
+
+    restored = json.loads(stack.pipeline_params_json)
+    assert restored == {
+        "__default__": {"shadow_resolution": 4096},
+        "Default Deferred": {},
+    }
+
+
+def test_empty_render_stack_matches_no_stack_default_graph():
+    from Infernux.rendergraph.graph import RenderGraph
+    from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+
+    fallback_graph = RenderGraph("Fallback")
+    DefaultForwardPipeline().define_topology(fallback_graph)
+    fallback_graph.set_output("color")
+    fallback = fallback_graph.build()
+
+    stacked = RenderStack().build_graph()
+
+    texture_signature = lambda description: [
+        (
+            texture.name,
+            texture.format,
+            texture.is_backbuffer,
+            texture.is_depth,
+            texture.width,
+            texture.height,
+            texture.size_divisor,
+            texture.samples,
+        )
+        for texture in description.textures
+    ]
+    pass_signature = lambda description: [
+        (
+            render_pass.name,
+            render_pass.type,
+            tuple(render_pass.read_textures),
+            tuple(render_pass.write_colors),
+            render_pass.write_depth,
+            render_pass.resolve_color,
+            render_pass.clear_color,
+            render_pass.clear_depth,
+            tuple(command.type for command in render_pass.commands),
+        )
+        for render_pass in description.passes
+    ]
+
+    assert stacked.output_texture == fallback.output_texture
+    assert stacked.msaa_samples == fallback.msaa_samples
+    assert texture_signature(stacked) == texture_signature(fallback)
+    assert pass_signature(stacked) == pass_signature(fallback)
 
 
 def test_render_stack_rejects_undeclared_stage_but_preserves_orphan_slots():

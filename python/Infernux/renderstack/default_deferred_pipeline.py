@@ -56,7 +56,6 @@ from Infernux.renderstack._pipeline_common import (
     GBUFFER_NORMAL_TEXTURE,
     GBUFFER_OBJECT_TEXTURE,
     GBUFFER_RESOURCES,
-    POST_PROCESS_RESOURCES,
     SCENE_RESOURCES,
     SHADOW_MAP_TEXTURE,
     add_shadow_caster_pass,
@@ -111,12 +110,6 @@ class DefaultDeferredPipeline(RenderPipeline):
         slider=False,
         tooltip="Shadow map resolution (width & height)",
         header="Shadows",
-    )
-
-    enable_screen_ui: bool = serialized_field(
-        default=True,
-        tooltip="Enable screen-space UI rendering",
-        header="Screen UI",
     )
 
     # ------------------------------------------------------------------
@@ -256,16 +249,7 @@ class DefaultDeferredPipeline(RenderPipeline):
             capabilities={"fullscreen"},
         )
 
-        graph.effects(
-            "final",
-            scope="composite",
-            display_name="Final Post Processing",
-            inputs=POST_PROCESS_RESOURCES,
-            outputs={"color"},
-            capabilities={"fullscreen", "hdr_to_display"},
-        )
-
-        # ---- Post-process + ScreenUI injection points ----
-        add_standard_post_process_section(graph, enable_screen_ui=self.enable_screen_ui)
+        # ---- Camera UI + post-process + Screen UI tail ----
+        add_standard_post_process_section(graph)
 
         graph.set_output(COLOR_TEXTURE)

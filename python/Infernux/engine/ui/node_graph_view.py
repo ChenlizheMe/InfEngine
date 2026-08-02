@@ -432,7 +432,7 @@ class NodeGraphView:
                 continue
             max_pins = max(len(typedef.input_pins()), len(typedef.output_pins()), 1)
             extra_pad = getattr(typedef, "body_bottom_pad", 0.0) or 0.0
-            width = float(typedef.min_width)
+            width = self._natural_node_width(node, typedef)
             height = (
                 self._header_height(typedef)
                 + max_pins * _NODE_PIN_ROW_H
@@ -519,6 +519,7 @@ class NodeGraphView:
             self._draw_grid(ctx, clip_x0, clip_y0, clip_x1, clip_y1)
 
         # Compute node layouts
+            self._layout_measure_context = ctx
             self._compute_layouts()
 
         # Detect hovered pin (for highlight ring)
@@ -660,6 +661,48 @@ class NodeGraphView:
             and not self._inline_field_is_hidden(node, field_def)
         )
 
+    def _natural_node_width(self, node: GraphNode, typedef: NodeTypeDef) -> float:
+        """Measure enough room for titles and pin labels without clipping them."""
+        ctx = getattr(self, "_layout_measure_context", None)
+        measure = getattr(ctx, "calc_text_width", None)
+
+        def text_width(value: object) -> float:
+            text = str(value or "")
+            if callable(measure):
+                try:
+                    return float(measure(text))
+                except (RuntimeError, TypeError, ValueError):
+                    pass
+            return float(len(text)) * (_NODE_FONT * 0.52)
+
+        node_data = getattr(node, "data", {})
+        title = str(node_data.get("label", getattr(typedef, "label", "")))
+        header_reserve = (
+            _HEADER_COLOR_SWATCH_SIZE + _HEADER_COLOR_SWATCH_PAD * 2.0
+            if getattr(typedef, "show_header_color_swatch", True)
+            else _NODE_PAD_X * 2.0
+        )
+        width = max(float(typedef.min_width), text_width(title) + header_reserve)
+
+        inputs = typedef.input_pins()
+        outputs = typedef.output_pins()
+        input_width = max(
+            (text_width(getattr(pin, "label", "")) for pin in inputs), default=0.0
+        )
+        output_width = max(
+            (text_width(getattr(pin, "label", "")) for pin in outputs), default=0.0
+        )
+        pin_reserve = _NODE_PAD_X + _PIN_RADIUS * 2.0 + 8.0
+
+        # Pin labels are clipped to their respective 45% side of the node.
+        if input_width:
+            width = max(width, (input_width + pin_reserve) / 0.45)
+        if output_width:
+            width = max(width, (output_width + pin_reserve) / 0.45)
+        if input_width and output_width:
+            width = max(width, input_width + output_width + pin_reserve * 2.0)
+        return width
+
     def _compute_layouts(self) -> None:
         self._layouts.clear()
         graph = self.graph
@@ -676,7 +719,7 @@ class NodeGraphView:
             out_pins = typedef.output_pins()
             max_pins = max(len(in_pins), len(out_pins), 1)
 
-            w = typedef.min_width * z
+            w = self._natural_node_width(node, typedef) * z
             if getattr(typedef, "inline_fields", ()):
                 # Reserve exactly the rows the inline pass will draw. The
                 # typedef's static pad also counts fields that visibility rules
