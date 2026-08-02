@@ -42,6 +42,7 @@ class ProjectPanel : public EditorPanel
 
     void ClearSelection(bool notify = true);
     void SetSelectedFile(const std::string &path, bool notify = true);
+    void SetSelectedFiles(const std::vector<std::string> &paths, const std::string &primary = "", bool notify = true);
 
     void InvalidateMaterialThumbnail(const std::string &filePath);
     void InvalidateTextureThumbnail(const std::string &filePath);
@@ -84,6 +85,7 @@ class ProjectPanel : public EditorPanel
     std::function<bool(const std::vector<std::string> &, bool)> writeAssetClipboard;
     std::function<std::pair<std::vector<std::string>, bool>()> readAssetClipboard;
     std::function<void()> consumeAssetClipboard;
+    std::function<bool(const std::vector<std::string> &, bool, const std::string &)> pasteAssetClipboard;
 
     // ── Notification callbacks ───────────────────────────────────────
 
@@ -459,9 +461,6 @@ class ProjectPanel : public EditorPanel
     /// Immediately clear directory caches. Prefer InvalidateDirCache() which defers
     /// until the next OnRenderContent so mid-frame item pointers stay valid.
     void ClearDirCachesNow();
-
-    // ── Clipboard helpers ────────────────────────────────────────────
-    bool ClipboardPaste(const std::vector<std::string> &paths, bool isCut);
 
     bool ExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;
     bool CanExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;

@@ -15,7 +15,7 @@ from Infernux.engine.path_utils import (
     resolved_path,
     same_path,
 )
-from Infernux.engine.undo._base import UndoCommand
+from Infernux.engine.undo._base import CompoundCommand, UndoCommand
 
 
 class ProjectAssetRenameCommand(UndoCommand):
@@ -336,3 +336,251 @@ class ProjectAssetDeleteCommand(UndoCommand):
             shutil.rmtree(self._backup_directory, ignore_errors=True)
         self._backup_directory = ""
         self._entries = ()
+
+
+class ProjectAssetMoveCommand(UndoCommand):
+    """Move one asset between exact paths while preserving its GUID."""
+
+    marks_dirty = False
+
+    def __init__(
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        asset_database: Any = None,
+        move_fn: Optional[Callable[[str, str, Any], Optional[str]]] = None,
+        description: str = "Move Asset",
+    ) -> None:
+        super().__init__(description)
+        self._source_path = resolved_path(source_path)
+        self._destination_path = resolved_path(destination_path)
+        if same_path(self._source_path, self._destination_path):
+            raise ValueError("asset move command requires two different paths")
+        self._asset_database = asset_database
+        self._move_fn = move_fn or self._move
+
+    @staticmethod
+    def _move(source: str, destination: str, asset_database: Any) -> Optional[str]:
+        from Infernux.engine.ui import project_file_ops
+
+        return project_file_ops.move_path(source, destination, asset_database)
+
+    def _apply(self, source: str, destination: str) -> None:
+        if not os.path.exists(source):
+            raise RuntimeError(f"asset move source no longer exists: {source}")
+        if os.path.exists(destination):
+            raise RuntimeError(
+                f"asset move destination is occupied by an external change: {destination}"
+            )
+        try:
+            result = self._move_fn(source, destination, self._asset_database)
+        except Exception as move_error:
+            self._rollback_partial_move(source, destination, move_error)
+            raise
+        if not result or not same_path(result, destination):
+            move_error = RuntimeError(f"asset move failed: {source} -> {destination}")
+            self._rollback_partial_move(source, destination, move_error)
+            raise move_error
+
+    def _rollback_partial_move(
+        self,
+        source: str,
+        destination: str,
+        move_error: Exception,
+    ) -> None:
+        if os.path.exists(source) or not os.path.exists(destination):
+            return
+        try:
+            result = self._move_fn(destination, source, self._asset_database)
+        except Exception as rollback_error:
+            raise RuntimeError(
+                "asset move failed and rollback also failed: "
+                f"{destination} -> {source}: {rollback_error}"
+            ) from move_error
+        if not result or not same_path(result, source):
+            raise RuntimeError(
+                "asset move failed and rollback did not restore the source: "
+                f"{destination} -> {source}"
+            ) from move_error
+
+    def execute(self) -> None:
+        self._apply(self._source_path, self._destination_path)
+
+    def undo(self) -> None:
+        self._apply(self._destination_path, self._source_path)
+
+    def redo(self) -> None:
+        self.execute()
+
+
+class ProjectAssetCopyCommand(UndoCommand):
+    """Copy one distinct asset and retain its generated identity for redo."""
+
+    marks_dirty = False
+
+    def __init__(
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        project_root: str = "",
+        backup_root: str = "",
+        asset_database: Any = None,
+        copy_fn: Optional[Callable[[str, str, Any], Optional[str]]] = None,
+        delete_fn: Optional[Callable[[str, Any], bool]] = None,
+        import_fn: Optional[Callable[[str, Any], bool]] = None,
+        description: str = "Copy Asset",
+    ) -> None:
+        super().__init__(description)
+        self._source_path = resolved_path(source_path)
+        self._destination_path = resolved_path(destination_path)
+        if same_path(self._source_path, self._destination_path):
+            raise ValueError("asset copy command requires two different paths")
+        self._project_root = resolved_path(project_root) if project_root else ""
+        self._backup_root = resolved_path(backup_root) if backup_root else ""
+        if self._project_root and not is_path_within(
+            self._destination_path,
+            self._project_root,
+            allow_root=False,
+        ):
+            raise ValueError(
+                "asset copy destination is outside the project: "
+                + self._destination_path
+            )
+        self._asset_database = asset_database
+        self._copy_fn = copy_fn or self._copy
+        self._delete_fn = delete_fn
+        self._import_fn = import_fn
+        self._delete_command: Optional[ProjectAssetDeleteCommand] = None
+        self._disposed = False
+
+    @staticmethod
+    def _copy(source: str, destination: str, asset_database: Any) -> Optional[str]:
+        from Infernux.engine.ui import project_file_ops
+
+        return project_file_ops.copy_path_as_new_asset(
+            source,
+            destination,
+            asset_database,
+        )
+
+    def execute(self) -> None:
+        if self._disposed:
+            raise RuntimeError("asset copy command has already been disposed")
+        if self._delete_command is not None:
+            self._delete_command.undo()
+            return
+        if not os.path.exists(self._source_path):
+            raise RuntimeError(f"asset copy source no longer exists: {self._source_path}")
+        if os.path.exists(self._destination_path):
+            raise RuntimeError(
+                "asset copy destination is occupied by an external change: "
+                + self._destination_path
+            )
+        delete_command = ProjectAssetDeleteCommand(
+            [self._destination_path],
+            project_root=self._project_root,
+            backup_root=self._backup_root,
+            asset_database=self._asset_database,
+            delete_fn=self._delete_fn,
+            import_fn=self._import_fn,
+            description="Remove Copied Asset",
+        )
+        try:
+            result = self._copy_fn(
+                self._source_path,
+                self._destination_path,
+                self._asset_database,
+            )
+        except Exception as copy_error:
+            self._rollback_initial_copy(delete_command, copy_error)
+            raise
+        if not result or not same_path(result, self._destination_path):
+            copy_error = RuntimeError(
+                f"asset copy failed: {self._source_path} -> {self._destination_path}"
+            )
+            self._rollback_initial_copy(delete_command, copy_error)
+            raise copy_error
+        self._delete_command = delete_command
+
+    def _rollback_initial_copy(
+        self,
+        delete_command: ProjectAssetDeleteCommand,
+        copy_error: Exception,
+    ) -> None:
+        try:
+            if os.path.exists(self._destination_path):
+                delete_command.execute()
+        except Exception as rollback_error:
+            raise RuntimeError(
+                "asset copy failed and rollback also failed: "
+                f"{self._destination_path}: {rollback_error}"
+            ) from copy_error
+        finally:
+            delete_command.dispose()
+
+    def undo(self) -> None:
+        if self._delete_command is None:
+            raise RuntimeError("asset copy has not been executed")
+        self._delete_command.execute()
+
+    def redo(self) -> None:
+        self.execute()
+
+    def dispose(self) -> None:
+        if self._disposed:
+            return
+        self._disposed = True
+        if self._delete_command is not None:
+            self._delete_command.dispose()
+
+
+class ProjectAssetPasteCommand(UndoCommand):
+    """Apply a planned multi-asset paste as one chronological action."""
+
+    marks_dirty = False
+
+    def __init__(
+        self,
+        commands: list[UndoCommand] | tuple[UndoCommand, ...],
+        result_paths: list[str] | tuple[str, ...],
+        *,
+        on_applied: Optional[Callable[[list[str]], None]] = None,
+        on_reverted: Optional[Callable[[], None]] = None,
+        description: str = "Paste Assets",
+    ) -> None:
+        super().__init__(description)
+        if not commands:
+            raise ValueError("asset paste command requires at least one mutation")
+        if len(commands) != len(result_paths):
+            raise ValueError("asset paste result paths must match its mutations")
+        self._compound = CompoundCommand(list(commands), description)
+        self._result_paths = [resolved_path(path) for path in result_paths]
+        self._on_applied = on_applied
+        self._on_reverted = on_reverted
+
+    def _notify_applied_or_rollback(self) -> None:
+        if self._on_applied is None:
+            return
+        try:
+            self._on_applied(list(self._result_paths))
+        except Exception:
+            self._compound.undo()
+            raise
+
+    def execute(self) -> None:
+        self._compound.execute()
+        self._notify_applied_or_rollback()
+
+    def undo(self) -> None:
+        self._compound.undo()
+        if self._on_reverted is not None:
+            self._on_reverted()
+
+    def redo(self) -> None:
+        self._compound.redo()
+        self._notify_applied_or_rollback()
+
+    def dispose(self) -> None:
+        self._compound.dispose()

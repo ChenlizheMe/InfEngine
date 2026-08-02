@@ -50,7 +50,10 @@ from Infernux.engine.undo._structural_commands import (
 )
 
 from Infernux.engine.undo._asset_commands import (
+    ProjectAssetCopyCommand,
     ProjectAssetDeleteCommand,
+    ProjectAssetMoveCommand,
+    ProjectAssetPasteCommand,
     ProjectAssetRenameCommand,
 )
 
@@ -122,6 +125,9 @@ __all__ = [
     "PrefabRevertCommand",
     "ProjectAssetRenameCommand",
     "ProjectAssetDeleteCommand",
+    "ProjectAssetCopyCommand",
+    "ProjectAssetMoveCommand",
+    "ProjectAssetPasteCommand",
     "AddNativeComponentCommand", "RemoveNativeComponentCommand",
     "AddPyComponentCommand", "RemovePyComponentCommand",
     "UndoManager",

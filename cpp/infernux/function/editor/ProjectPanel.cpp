@@ -147,6 +147,8 @@ static constexpr int kKeyEscape = ImGuiKey_Escape;
 namespace infernux
 {
 
+static std::vector<std::string> GetOSClipboardFiles();
+
 namespace
 {
 // All editor colors resolve through the runtime theme registry (active theme),
@@ -694,6 +696,41 @@ void ProjectPanel::SetSelectedFile(const std::string &path, bool notify)
     m_selectedFiles = {path};
     m_selectedSet.clear();
     m_selectedSet.insert(path);
+    if (notify)
+        NotifySelectionChanged();
+}
+
+void ProjectPanel::SetSelectedFiles(const std::vector<std::string> &paths, const std::string &primary, bool notify)
+{
+    std::vector<std::string> selected;
+    std::unordered_set<std::string> keys;
+    std::error_code ec;
+    selected.reserve(paths.size());
+    for (const auto &path : paths) {
+        const std::string key = FilesystemPathKey(path);
+        ec.clear();
+        if (path.empty() || key.empty() || keys.find(key) != keys.end() || !fs::exists(fs::u8path(path), ec))
+            continue;
+        keys.insert(key);
+        selected.push_back(path);
+    }
+    if (selected.empty()) {
+        ClearSelection(notify);
+        return;
+    }
+
+    auto primaryIt = std::find_if(selected.begin(), selected.end(), [&primary](const std::string &path) {
+        return !primary.empty() && FilesystemPathKey(path) == FilesystemPathKey(primary);
+    });
+    m_selectedFile = primaryIt != selected.end() ? *primaryIt : selected.back();
+    m_selectedFiles = std::move(selected);
+    m_selectedSet.clear();
+    m_selectedSet.insert(m_selectedFiles.begin(), m_selectedFiles.end());
+
+    fs::path parent = fs::u8path(m_selectedFile).parent_path();
+    ec.clear();
+    if (!parent.empty() && fs::is_directory(parent, ec))
+        SetCurrentPath(infernux::FromFsPath(parent));
     if (notify)
         NotifySelectionChanged();
 }
@@ -1721,10 +1758,25 @@ bool ProjectPanel::CopySelectedAssets(bool cut)
 
 bool ProjectPanel::PasteAssets()
 {
-    if (m_currentPath.empty())
+    if (m_currentPath.empty() || !pasteAssetClipboard)
         return false;
-    const auto payload = readAssetClipboard ? readAssetClipboard() : std::pair<std::vector<std::string>, bool>{};
-    return ClipboardPaste(payload.first, payload.second);
+    auto payload = readAssetClipboard ? readAssetClipboard() : std::pair<std::vector<std::string>, bool>{};
+    std::error_code ec;
+    payload.first.erase(std::remove_if(payload.first.begin(), payload.first.end(),
+                                       [&ec](const std::string &path) {
+                                           ec.clear();
+                                           return path.empty() || !fs::exists(fs::u8path(path), ec);
+                                       }),
+                        payload.first.end());
+    if (payload.first.empty()) {
+        payload.first = GetOSClipboardFiles();
+        payload.second = false;
+    }
+    if (payload.first.empty() || !pasteAssetClipboard(payload.first, payload.second, m_currentPath))
+        return false;
+    if (payload.second && consumeAssetClipboard)
+        consumeAssetClipboard();
+    return true;
 }
 
 bool ProjectPanel::RequestDeleteSelectedAssets()
@@ -1951,93 +2003,6 @@ static std::vector<std::string> GetOSClipboardFiles()
     CloseClipboard();
 #endif
     return result;
-}
-
-bool ProjectPanel::ClipboardPaste(const std::vector<std::string> &paths, bool isCut)
-{
-    std::error_code ec;
-    std::vector<std::string> sources;
-
-    // The shared clipboard only stores stable paths. Revalidate them at the
-    // execution boundary because an external filesystem mutation may have
-    // happened since Copy/Cut.
-    for (const auto &p : paths)
-        if (fs::exists(fs::u8path(p), ec))
-            sources.push_back(p);
-
-    // An OS file clipboard is an external copy source, never an Editor cut.
-    if (sources.empty()) {
-        sources = GetOSClipboardFiles();
-        isCut = false;
-    }
-
-    if (sources.empty())
-        return false;
-
-    std::vector<std::string> pastedPaths;
-    for (auto &src : sources) {
-        auto name = FromFsPath(fs::u8path(src).filename());
-        auto dst = FromFsPath(fs::u8path(m_currentPath) / fs::u8path(name));
-        bool samePath = (FilesystemPathKey(src) == FilesystemPathKey(dst));
-
-        if (samePath && isCut)
-            continue;
-
-        if (samePath || fs::exists(fs::u8path(dst), ec)) {
-            if (!getUniqueName)
-                continue;
-            auto stem = FromFsPath(fs::u8path(name).stem());
-            auto ext = FromFsPath(fs::u8path(name).extension());
-            if (fs::is_directory(fs::u8path(src), ec)) {
-                ext = "";
-                stem = name;
-            }
-            auto uniqueName = getUniqueName(m_currentPath, stem, ext);
-            dst = FromFsPath(fs::u8path(m_currentPath) / fs::u8path(uniqueName + ext));
-        }
-
-        try {
-            if (isCut) {
-                if (moveItemToDirectory) {
-                    auto result = moveItemToDirectory(src, m_currentPath);
-                    if (!result.empty())
-                        pastedPaths.push_back(result);
-                } else {
-                    fs::rename(fs::u8path(src), fs::u8path(dst), ec);
-                    if (!ec)
-                        pastedPaths.push_back(dst);
-                }
-            } else if (copyItemToPath) {
-                auto result = copyItemToPath(src, dst);
-                if (!result.empty())
-                    pastedPaths.push_back(result);
-            } else if (fs::is_directory(fs::u8path(src), ec)) {
-                fs::copy(fs::u8path(src), fs::u8path(dst), fs::copy_options::recursive, ec);
-                if (!ec)
-                    pastedPaths.push_back(dst);
-            } else {
-                fs::copy_file(fs::u8path(src), fs::u8path(dst), ec);
-                if (!ec)
-                    pastedPaths.push_back(dst);
-            }
-        } catch (...) {
-            continue;
-        }
-    }
-
-    if (pastedPaths.empty())
-        return false;
-
-    if (isCut && consumeAssetClipboard)
-        consumeAssetClipboard();
-
-    m_pendingCacheInvalidation = true;
-    m_selectedFiles = pastedPaths;
-    m_selectedFile = pastedPaths.back();
-    m_selectedSet.clear();
-    m_selectedSet.insert(pastedPaths.begin(), pastedPaths.end());
-    NotifySelectionChanged();
-    return true;
 }
 
 // ════════════════════════════════════════════════════════════════════

@@ -2467,9 +2467,6 @@ class ToolbarPanel(EditorPanel):
 
     execute_command: Any
     can_execute_command: Any
-    write_asset_clipboard: Any
-    read_asset_clipboard: Any
-    consume_asset_clipboard: Any
     get_play_state: Any
     get_play_time_str: Any
     is_show_grid: Any
@@ -2738,6 +2735,7 @@ class ProjectPanel(EditorPanel):
     def set_icons_directory(self, dir: str) -> None: ...
     def clear_selection(self, notify: bool = True) -> None: ...
     def set_selected_file(self, path: str, notify: bool = True) -> None: ...
+    def set_selected_files(self, paths: List[str], primary: str = "", notify: bool = True) -> None: ...
     def invalidate_material_thumbnail(self, file_path: str) -> None: ...
     def invalidate_texture_thumbnail(self, file_path: str) -> None: ...
     def invalidate_dir_cache(self) -> None: ...
@@ -2760,6 +2758,10 @@ class ProjectPanel(EditorPanel):
     on_state_changed: Any
     execute_command: Any
     can_execute_command: Any
+    write_asset_clipboard: Any
+    read_asset_clipboard: Any
+    consume_asset_clipboard: Any
+    paste_asset_clipboard: Any
 
     # File operation callbacks
     create_folder: Any

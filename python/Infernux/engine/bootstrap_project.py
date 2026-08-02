@@ -110,6 +110,68 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     pp.read_asset_clipboard = _read_asset_clipboard
     pp.consume_asset_clipboard = _consume_asset_clipboard
 
+    def _paste_asset_clipboard(paths, cut: bool, destination: str) -> bool:
+        from Infernux.debug import Debug
+        from Infernux.engine.undo import (
+            ProjectAssetCopyCommand,
+            ProjectAssetMoveCommand,
+            ProjectAssetPasteCommand,
+            UndoManager,
+        )
+
+        try:
+            planned = file_ops.plan_asset_paste(paths, destination, cut=cut)
+        except (OSError, RuntimeError, ValueError) as exc:
+            Debug.log_error(f"Project asset paste rejected: {exc}")
+            return False
+        if not planned:
+            return False
+
+        backup_root = os.path.join(bs.project_path, "Library", "EditorUndo")
+        commands = []
+        for source, target in planned:
+            if cut:
+                commands.append(
+                    ProjectAssetMoveCommand(
+                        source,
+                        target,
+                        asset_database=adb,
+                    )
+                )
+            else:
+                commands.append(
+                    ProjectAssetCopyCommand(
+                        source,
+                        target,
+                        project_root=bs.project_path,
+                        backup_root=backup_root,
+                        asset_database=adb,
+                    )
+                )
+        result_paths = [target for _source, target in planned]
+
+        def _on_applied(applied_paths: list[str]) -> None:
+            pp.invalidate_dir_cache()
+            pp.set_selected_files(applied_paths, applied_paths[-1])
+
+        command = ProjectAssetPasteCommand(
+            commands,
+            result_paths,
+            on_applied=_on_applied,
+            on_reverted=pp.invalidate_dir_cache,
+            description="Move Assets" if cut else "Paste Assets",
+        )
+        manager = UndoManager.instance()
+        if manager is not None:
+            return manager.execute(command)
+        try:
+            command.execute()
+            return True
+        finally:
+            command.dispose()
+
+    pp.paste_asset_clipboard = _paste_asset_clipboard
+
     # -- Asset database access (via engine) --
     adb = bs.engine.get_asset_database()
 

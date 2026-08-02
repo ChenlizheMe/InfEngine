@@ -209,6 +209,73 @@ def get_unique_name(current_path: str, base_name: str, extension: str = "") -> s
     return f"{base_name}{counter}"
 
 
+def plan_asset_paste(
+    sources: list[str] | tuple[str, ...],
+    destination_directory: str,
+    *,
+    cut: bool,
+) -> list[tuple[str, str]]:
+    """Plan exact non-conflicting paths for one atomic Project paste."""
+    destination = resolved_path(destination_directory)
+    if not destination or not os.path.isdir(destination):
+        raise ValueError("asset paste destination must be an existing directory")
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for value in sources or ():
+        source = resolved_path(str(value or ""))
+        key = path_key(source)
+        if not source or key in seen or not os.path.exists(source):
+            continue
+        seen.add(key)
+        candidates.append(source)
+    candidates.sort(key=lambda value: (len(path_key(value)), path_key(value)))
+
+    roots: list[str] = []
+    for candidate in candidates:
+        if any(is_path_within(candidate, root, allow_root=True) for root in roots):
+            continue
+        roots.append(candidate)
+
+    reserved: set[str] = set()
+    result: list[tuple[str, str]] = []
+    for source in roots:
+        if os.path.isdir(source) and is_path_within(destination, source, allow_root=True):
+            raise ValueError("cannot paste a directory into itself")
+
+        name = os.path.basename(source)
+        direct = os.path.join(destination, name)
+        if cut and same_path(source, direct):
+            continue
+
+        if os.path.isdir(source):
+            base, extension = name, ""
+        else:
+            base, extension = os.path.splitext(name)
+
+        counter = 0
+        while True:
+            candidate_base = base if counter == 0 else f"{base}{counter}"
+            candidate = os.path.join(destination, candidate_base + extension)
+            candidate_without_extension = os.path.join(destination, candidate_base)
+            candidate_key = path_key(candidate)
+            base_key = path_key(candidate_without_extension)
+            if (
+                candidate_key not in reserved
+                and base_key not in reserved
+                and not os.path.exists(candidate)
+                and not os.path.exists(candidate_without_extension)
+            ):
+                break
+            counter += 1
+            if counter > 9999:
+                raise RuntimeError("could not allocate a unique asset paste path")
+        reserved.add(candidate_key)
+        reserved.add(base_key)
+        result.append((source, resolved_path(candidate)))
+    return result
+
+
 def _iter_asset_move_pairs(old_path: str, new_path: str):
     if os.path.isdir(old_path):
         for dirpath, _dirnames, filenames in os.walk(old_path):
