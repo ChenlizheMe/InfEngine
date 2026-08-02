@@ -115,6 +115,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         self._preview_tex_cache: int = 0
         self._preview_request_signature = None
         self._save_as_dialog = AssetSaveAsDialog("animtimeline.save_as", "timeline")
+        self._pending_save_ticket_id: str = ""
         # Panel persistence: ``load_state`` may run from bootstrap or first render.
         self._panel_state_restored_once: bool = False
         self._panel_restore_data: Optional[dict] = None
@@ -138,6 +139,7 @@ class AnimTimelineEditorPanel(EditorPanel):
     def _replace_timeline_document(self, *, resource_path: str, dirty: bool) -> None:
         from Infernux.engine.interaction import (
             DocumentCapability,
+            DocumentKey,
             DocumentKind,
             DocumentRegistry,
         )
@@ -145,8 +147,11 @@ class AnimTimelineEditorPanel(EditorPanel):
         path = self._normalize_timeline_path(resource_path) if resource_path else ""
         title = os.path.splitext(os.path.basename(path))[0] if path else "Timeline"
         registry = DocumentRegistry.instance()
-        document = registry.create(
-            DocumentKind.TIMELINE,
+        key = self._timeline_document_key(path) if path else DocumentKey.session(
+            DocumentKind.TIMELINE
+        )
+        document, _created = registry.open_or_create(
+            key,
             title,
             resource_path=path,
             revision=1 if dirty else 0,
@@ -160,6 +165,21 @@ class AnimTimelineEditorPanel(EditorPanel):
         )
         self.bind_document(document.document_id)
         self._dirty = document.is_dirty
+
+    @staticmethod
+    def _timeline_document_key(path: str):
+        from Infernux.engine.interaction import DocumentKey, DocumentKind
+
+        normalized = resolved_path(path)
+        try:
+            from Infernux.core.asset_types import read_meta_guid
+
+            guid = read_meta_guid(normalized)
+        except Exception:
+            guid = ""
+        if guid:
+            return DocumentKey.asset(DocumentKind.TIMELINE, guid)
+        return DocumentKey.resource(DocumentKind.TIMELINE, normalized)
 
     # ── Lifecycle ──────────────────────────────────────────────────────
     def _initial_size(self):
@@ -335,53 +355,95 @@ class AnimTimelineEditorPanel(EditorPanel):
 
     # ── Save ───────────────────────────────────────────────────────────
     def _do_save(self):
-        if self._file_path:
-            return self._save_to(self._file_path)
-        self._show_save_as_dialog()
-        return False
+        return self._request_document_save(save_as=False)
 
-    def save(self, *, save_as: bool = False) -> bool:
-        if save_as:
-            self._show_save_as_dialog()
+    def _request_document_save(self, *, save_as: bool) -> bool:
+        from Infernux.engine.interaction import DocumentRegistry
+
+        document = self._timeline_document()
+        if document is None:
             return False
-        return bool(self._do_save())
+        return DocumentRegistry.instance().request_save(
+            document.document_id,
+            save_as=save_as,
+        ).accepted
+
+    def save(self, *, ticket, save_as: bool = False):
+        from Infernux.engine.interaction import (
+            DocumentActionResult,
+            DocumentActionStatus,
+        )
+
+        if save_as or not self._file_path:
+            self._pending_save_ticket_id = ticket.ticket_id
+            if self._show_save_as_dialog():
+                return DocumentActionResult(DocumentActionStatus.PENDING)
+            self._pending_save_ticket_id = ""
+            return DocumentActionResult(
+                DocumentActionStatus.REJECTED,
+                "no project root is available",
+            )
+        return self._save_to(self._file_path, ticket_id=ticket.ticket_id)
 
     def discard(self) -> bool:
         return self._discard_unsaved_changes()
 
-    def is_save_pending(self) -> bool:
-        return bool(self._save_as_dialog.is_open)
-
     def handle_save_command(self, save_as: bool = False) -> bool:
-        self.save(save_as=save_as)
-        return True
+        return self._request_document_save(save_as=save_as)
 
-    def _save_to(self, path: str) -> bool:
+    def _save_to(self, path: str, *, ticket_id: str = "") -> bool:
         self._timeline.name = os.path.splitext(os.path.basename(path))[0]
         if self._timeline.save(path):
             self._file_path = path
             from Infernux.engine.interaction import DocumentRegistry
 
-            document = self._timeline_document()
-            if document is not None:
-                DocumentRegistry.instance().update_metadata(
-                    document.document_id,
-                    title=os.path.splitext(os.path.basename(path))[0],
-                    resource_path=self._normalize_timeline_path(path),
-                )
             Debug.log(f"[TimelineEditor] Saved: {path}")
             try:
                 from Infernux.core.assets import AssetManager
                 AssetManager.reimport_asset(path)
             except Exception:
                 pass
-            self._set_dirty(False)
+            registry = DocumentRegistry.instance()
+            document = self._timeline_document()
+            normalized = self._normalize_timeline_path(path)
+            active_ticket_id = ticket_id or self._pending_save_ticket_id
+            if active_ticket_id:
+                registry.complete_save(
+                    active_ticket_id,
+                    success=True,
+                    key=self._timeline_document_key(normalized),
+                    resource_path=normalized,
+                    title=os.path.splitext(os.path.basename(path))[0],
+                )
+                self._pending_save_ticket_id = ""
+            elif document is not None:
+                registry.rekey(
+                    document.document_id,
+                    self._timeline_document_key(normalized),
+                    resource_path=normalized,
+                )
+                registry.update_metadata(
+                    document.document_id,
+                    title=os.path.splitext(os.path.basename(path))[0],
+                )
+                registry.mark_saved(document.document_id)
+            self._dirty = bool(document and document.is_dirty)
             return True
         else:
             Debug.log_warning(f"[TimelineEditor] Failed to save: {path}")
+            active_ticket_id = ticket_id or self._pending_save_ticket_id
+            if active_ticket_id:
+                from Infernux.engine.interaction import DocumentRegistry
+
+                DocumentRegistry.instance().complete_save(
+                    active_ticket_id,
+                    success=False,
+                    message=f"failed to save timeline: {path}",
+                )
+                self._pending_save_ticket_id = ""
             return False
 
-    def _show_save_as_dialog(self):
+    def _show_save_as_dialog(self) -> bool:
         safe = (self._timeline.name or "Timeline").replace(" ", "_")
         if not self._save_as_dialog.request(
             title="Save Timeline",
@@ -390,6 +452,22 @@ class AnimTimelineEditorPanel(EditorPanel):
             current_path=self._file_path,
         ):
             Debug.log_warning("[TimelineEditor] No project root set - cannot save timeline.")
+            return False
+        return True
+
+    def _cancel_pending_save(self) -> None:
+        ticket_id = self._pending_save_ticket_id
+        self._pending_save_ticket_id = ""
+        if not ticket_id:
+            return
+        from Infernux.engine.interaction import DocumentRegistry
+
+        DocumentRegistry.instance().complete_save(
+            ticket_id,
+            success=False,
+            cancelled=True,
+            message="save was cancelled",
+        )
 
     def _discard_unsaved_changes(self) -> bool:
         if self._file_path:
@@ -522,7 +600,11 @@ class AnimTimelineEditorPanel(EditorPanel):
                                           max(120.0, ctx.get_content_region_avail_height()))
         ctx.end_child()
 
-        self._save_as_dialog.render(ctx, self._save_to)
+        self._save_as_dialog.render(
+            ctx,
+            self._save_to,
+            self._cancel_pending_save,
+        )
 
         # Playback also needs continuous frames; wall-clock timing alone cannot
         # make an idle-throttled preview look smooth.
@@ -582,7 +664,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         ctx.same_line()
         save_as_label = t("animtimeline_editor.save_as")
         if ctx.button(save_as_label):
-            self._show_save_as_dialog()
+            self._request_document_save(save_as=True)
         if capture_semantics:
             ctx.record_semantic_item("button", save_as_label, True, "animtimeline.toolbar.save_as")
         ctx.same_line()

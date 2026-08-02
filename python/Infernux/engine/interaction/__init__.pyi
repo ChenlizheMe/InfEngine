@@ -1,6 +1,7 @@
 from .descriptors import SelectionDomain, SelectionSnapshot, SelectionTarget
 from .contexts import FocusService, FocusSnapshot, InputContext, InputContextStack
-from .documents import DocumentActionResult, DocumentActionStatus, DocumentCapability, DocumentController, DocumentKind, DocumentRegistry, DocumentState, EditorDocument
+from .close_coordinator import CloseCoordinator, CloseIntent, CloseIntentKind, CloseIssue, CloseState
+from .documents import DocumentActionResult, DocumentActionStatus, DocumentCapability, DocumentController, DocumentIdentityKind, DocumentKey, DocumentKind, DocumentRegistry, DocumentState, EditorDocument, SaveTicket, SaveTicketStatus
 from .action_journal import ActionOrigin, EditorActionJournal, EditorContextSnapshot, JournalEntry, JournalPushResult
 from .selection import SelectionChange, SelectionService
 from .session import EditorInteractionCore

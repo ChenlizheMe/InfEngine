@@ -2,15 +2,26 @@
 
 from .descriptors import SelectionDomain, SelectionSnapshot, SelectionTarget
 from .contexts import FocusService, FocusSnapshot, InputContext, InputContextStack
+from .close_coordinator import (
+    CloseCoordinator,
+    CloseIntent,
+    CloseIntentKind,
+    CloseIssue,
+    CloseState,
+)
 from .documents import (
     DocumentActionResult,
     DocumentActionStatus,
     DocumentCapability,
     DocumentController,
+    DocumentIdentityKind,
+    DocumentKey,
     DocumentKind,
     DocumentRegistry,
     DocumentState,
     EditorDocument,
+    SaveTicket,
+    SaveTicketStatus,
 )
 from .action_journal import (
     ActionOrigin,
@@ -26,14 +37,23 @@ from .transactions import EditorTransaction
 __all__ = [
     "EditorInteractionCore",
     "EditorTransaction",
+    "CloseCoordinator",
+    "CloseIntent",
+    "CloseIntentKind",
+    "CloseIssue",
+    "CloseState",
     "DocumentActionResult",
     "DocumentActionStatus",
     "DocumentCapability",
     "DocumentController",
+    "DocumentIdentityKind",
+    "DocumentKey",
     "DocumentKind",
     "DocumentRegistry",
     "DocumentState",
     "EditorDocument",
+    "SaveTicket",
+    "SaveTicketStatus",
     "ActionOrigin",
     "EditorActionJournal",
     "EditorContextSnapshot",

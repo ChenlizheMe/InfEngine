@@ -59,6 +59,9 @@ class EditorServices:
     def document_registry(self) -> object: ...
 
     @property
+    def close_coordinator(self) -> object: ...
+
+    @property
     def asset_database(self) -> object:
         """The C++ ``AssetDatabase`` instance (or ``None``)."""
         ...

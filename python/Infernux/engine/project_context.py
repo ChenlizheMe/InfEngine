@@ -20,20 +20,28 @@ class _LegacyPanelDocumentController:
         self.save_pending_handler: Optional[Callable[[], bool]] = None
         self.discard_handler: Optional[Callable[[], Any]] = None
 
-    def save(self, *, save_as: bool = False) -> Any:
+    def save(self, *, ticket, save_as: bool = False) -> Any:
         if not callable(self.save_handler):
             return False
-        return self.save_handler()
+        result = self.save_handler()
+        if callable(self.save_pending_handler) and self.save_pending_handler():
+            from Infernux.engine.interaction import (
+                DocumentActionResult,
+                DocumentActionStatus,
+            )
+
+            return DocumentActionResult(DocumentActionStatus.PENDING)
+        return result
 
     def discard(self) -> Any:
         if not callable(self.discard_handler):
             return False
         return self.discard_handler()
 
-    def is_save_pending(self) -> bool:
-        if not callable(self.save_pending_handler):
-            return False
-        return bool(self.save_pending_handler())
+    def poll_save(self, _ticket) -> Optional[bool]:
+        if callable(self.save_pending_handler) and self.save_pending_handler():
+            return None
+        return False
 
 
 def _legacy_document_id(panel_id: str) -> str:
@@ -113,7 +121,11 @@ def set_panel_dirty(
     if is_dirty and not document.is_dirty:
         registry.mark_changed(document.document_id)
     elif not is_dirty and document.is_dirty:
-        registry.mark_saved(document.document_id)
+        ticket = registry.active_save_ticket(document.document_id)
+        if ticket is not None:
+            registry.complete_save(ticket.ticket_id, success=True)
+        else:
+            registry.mark_saved(document.document_id)
 
 
 def is_panel_dirty(panel_id: str) -> bool:

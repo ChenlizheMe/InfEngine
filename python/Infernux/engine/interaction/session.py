@@ -7,6 +7,7 @@ from typing import Optional
 from .contexts import FocusService
 from .action_journal import EditorActionJournal, EditorContextSnapshot
 from .documents import DocumentRegistry
+from .close_coordinator import CloseCoordinator
 from .selection import SelectionService
 
 
@@ -19,6 +20,7 @@ class EditorInteractionCore:
         self.selection = SelectionService()
         self.focus = FocusService()
         self.documents = DocumentRegistry()
+        self.close_coordinator = CloseCoordinator(self.documents)
         self.action_journal = EditorActionJournal()
         EditorInteractionCore._instance = self
 
@@ -27,6 +29,7 @@ class EditorInteractionCore:
         return cls._instance
 
     def shutdown(self) -> None:
+        self.close_coordinator.cancel()
         self.selection.clear(reason="session_shutdown", record_history=False)
         self.documents.clear()
         self.action_journal.clear()

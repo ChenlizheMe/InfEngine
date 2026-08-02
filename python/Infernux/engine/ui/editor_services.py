@@ -99,6 +99,11 @@ class EditorServices:
         return core.documents if core is not None else None
 
     @property
+    def close_coordinator(self):
+        core = self._interaction_core
+        return core.close_coordinator if core is not None else None
+
+    @property
     def asset_database(self):
         """The C++ ``AssetDatabase`` instance (or *None*)."""
         return self._asset_database

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from Infernux.engine.interaction import (
+    DocumentActionResult,
     DocumentActionStatus,
     DocumentCapability,
+    DocumentKey,
     DocumentKind,
     DocumentRegistry,
+    SaveTicketStatus,
 )
 
 
@@ -16,22 +19,21 @@ class _Controller:
         self.saved_revision = None
         self.discarded = False
         self.save_calls = 0
+        self.ticket = None
 
-    def save(self, *, save_as: bool = False):
+    def save(self, *, ticket, save_as: bool = False):
         self.save_calls += 1
+        self.ticket = ticket
         if self.pending:
-            return False
-        self.registry.mark_saved(self.document_id, self.saved_revision)
+            return DocumentActionResult(DocumentActionStatus.PENDING)
+        if self.saved_revision is not None:
+            ticket.captured_revision = self.saved_revision
         return True
 
     def discard(self):
         self.discarded = True
         self.registry.mark_saved(self.document_id)
         return True
-
-    def is_save_pending(self) -> bool:
-        return self.pending
-
 
 def _document(registry: DocumentRegistry, *, dirty: bool = False):
     document = registry.create(
@@ -77,16 +79,16 @@ def test_clean_document_save_is_a_no_op():
 
 def test_saving_an_older_revision_does_not_clear_newer_edits():
     registry = DocumentRegistry()
-    document, controller = _document(registry, dirty=True)
-    controller.saved_revision = document.revision
+    document, _controller = _document(registry, dirty=True)
+    ticket = registry.begin_save(document.document_id)
     registry.mark_changed(document.document_id)
 
-    result = registry.request_save(document.document_id)
+    registry.complete_save(ticket.ticket_id, success=True)
 
-    assert result.status is DocumentActionStatus.APPLIED
     assert document.saved_revision == 1
     assert document.revision == 2
     assert document.is_dirty
+    assert ticket.status is SaveTicketStatus.SUCCEEDED
 
 
 def test_one_document_can_have_multiple_views_without_duplicate_dirty_entries():
@@ -114,6 +116,66 @@ def test_pending_save_is_explicit_and_keeps_document_dirty():
     assert result.status is DocumentActionStatus.PENDING
     assert document.is_dirty
     assert registry.is_save_pending(document.document_id)
+    assert controller.ticket is registry.active_save_ticket(document.document_id)
+
+
+def test_document_key_deduplicates_views_of_the_same_asset(tmp_path):
+    registry = DocumentRegistry()
+    asset_path = tmp_path / "Smoke.particlegraph"
+    key = DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, str(asset_path))
+
+    first, created = registry.open_or_create(key, "Smoke", resource_path=str(asset_path))
+    second, created_again = registry.open_or_create(
+        DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, str(asset_path)),
+        "Smoke",
+        resource_path=str(asset_path),
+    )
+
+    assert created
+    assert not created_again
+    assert second is first
+    assert registry.get_by_key(key) is first
+
+
+def test_save_as_rekeys_document_atomically_without_changing_document_id(tmp_path):
+    registry = DocumentRegistry()
+    document, _ = _document(registry, dirty=True)
+    old_key = document.key
+    new_path = tmp_path / "Saved.particlegraph"
+    new_key = DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, str(new_path))
+    ticket = registry.begin_save(document.document_id, save_as=True)
+
+    registry.complete_save(
+        ticket.ticket_id,
+        success=True,
+        key=new_key,
+        resource_path=str(new_path),
+        title="Saved",
+    )
+
+    assert document.document_id == "particle:smoke"
+    assert registry.get_by_key(old_key) is None
+    assert registry.get_by_key(new_key) is document
+    assert document.title == "Saved"
+    assert not document.is_dirty
+
+
+def test_save_as_key_collision_fails_without_rekeying_or_clearing_dirty(tmp_path):
+    registry = DocumentRegistry()
+    document, _ = _document(registry, dirty=True)
+    original_key = document.key
+    occupied_key = DocumentKey.resource(
+        DocumentKind.PARTICLE_GRAPH,
+        str(tmp_path / "Occupied.particlegraph"),
+    )
+    registry.create(DocumentKind.PARTICLE_GRAPH, "Occupied", key=occupied_key)
+    ticket = registry.begin_save(document.document_id, save_as=True)
+
+    registry.complete_save(ticket.ticket_id, success=True, key=occupied_key)
+
+    assert ticket.status is SaveTicketStatus.FAILED
+    assert registry.get_by_key(original_key) is document
+    assert document.is_dirty
 
 
 def test_discard_must_reconcile_the_authoritative_revision():

@@ -113,17 +113,12 @@ def test_exit_prompts_once_for_a_document_with_two_views():
     class _Controller:
         calls = 0
 
-        def save(self, *, save_as=False):
+        def save(self, *, ticket, save_as=False):
             self.calls += 1
-            registry.mark_saved("shared-document")
             return True
 
         @staticmethod
         def discard():
-            return False
-
-        @staticmethod
-        def is_save_pending():
             return False
 
     controller = _Controller()
