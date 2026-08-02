@@ -111,6 +111,62 @@ def test_selection_replay_does_not_request_another_history_entry():
     assert changes[0].record_history is False
 
 
+def test_timeline_editor_projects_stable_keyframe_selection():
+    from Infernux.core.animation_timeline import TimelineKeyframe
+    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+
+    previous = SelectionService._instance
+    service = SelectionService()
+    panel = AnimTimelineEditorPanel()
+    key = TimelineKeyframe(time=0.5)
+    panel._timeline.keyframes.append(key)
+    try:
+        panel.on_enable()
+        panel._select_key(key)
+
+        target = service.snapshot.primary
+        assert target == SelectionTarget.timeline_element(
+            panel.document_id,
+            key.stable_id,
+            sub_kind="keyframe",
+        )
+        assert panel._current_sel_key() is key
+
+        service.select(SelectionTarget.asset("Assets/Test.mat"), owner_id="project")
+        assert panel._current_sel_key() is None
+
+        service.select(target, owner_id=panel.window_id, record_history=False)
+        assert panel._current_sel_key() is key
+    finally:
+        panel.on_disable()
+        SelectionService._instance = previous
+
+
+def test_timeline_editor_drops_stale_keyframe_selection():
+    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+
+    previous = SelectionService._instance
+    service = SelectionService()
+    panel = AnimTimelineEditorPanel()
+    try:
+        panel.on_enable()
+        service.select(
+            SelectionTarget.timeline_element(
+                panel.document_id,
+                "missing-key",
+                sub_kind="keyframe",
+            ),
+            owner_id=panel.window_id,
+            record_history=False,
+        )
+
+        assert panel._current_sel_key() is None
+        assert service.snapshot.is_empty
+    finally:
+        panel.on_disable()
+        SelectionService._instance = previous
+
+
 def test_legacy_selection_manager_is_a_typed_service_adapter():
     service = SelectionService()
     SelectionService.install(service)

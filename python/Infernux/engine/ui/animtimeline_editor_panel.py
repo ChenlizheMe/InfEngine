@@ -99,8 +99,8 @@ class AnimTimelineEditorPanel(EditorPanel):
         self._last_tick: float = 0.0
         self._play_wall_start: float = 0.0
         self._playhead_at_play_start: float = 0.0
-        self._sel_key: Optional[TimelineKeyframe] = None
-        self._drag_key: Optional[TimelineKeyframe] = None
+        self._selected_key_id: str = ""
+        self._drag_key_id: str = ""
         self._drag_armed: bool = False
         self._press_x: float = 0.0
         self._bar_was_active: bool = False
@@ -115,14 +115,28 @@ class AnimTimelineEditorPanel(EditorPanel):
         self._preview_request_signature = None
         self._save_as_dialog = AssetSaveAsDialog("animtimeline.save_as", "timeline")
         self._pending_save_ticket_id: str = ""
+        self._selection_service = None
         # Panel persistence: ``load_state`` may run from bootstrap or first render.
         self._panel_state_restored_once: bool = False
         self._panel_restore_data: Optional[dict] = None
         self._replace_timeline_document(resource_path="", dirty=True)
 
+    def on_enable(self) -> None:
+        from Infernux.engine.interaction import SelectionService
+
+        selection = SelectionService.instance()
+        if self._selection_service is not None and self._selection_service is not selection:
+            self._selection_service.remove_listener(self._on_global_selection_changed)
+        self._selection_service = selection
+        selection.add_listener(self._on_global_selection_changed)
+        self._project_global_selection(selection.snapshot)
+
     def on_disable(self) -> None:
         # Always restore the editor idle setting if we suppressed it.
         self._set_engine_active(False)
+        if self._selection_service is not None:
+            self._selection_service.remove_listener(self._on_global_selection_changed)
+            self._selection_service = None
 
     # Unsaved marker in the window title (shared dirty/save/close handled by ClosablePanel).
     def _window_title_suffix(self) -> str:
@@ -193,8 +207,8 @@ class AnimTimelineEditorPanel(EditorPanel):
         self._file_path = path
         self._playhead = 0.0
         self._playing = False
-        self._sel_key = None
-        self._drag_key = None
+        self._clear_key_selection(record_history=False)
+        self._drag_key_id = ""
         self._replace_timeline_document(resource_path=path, dirty=False)
 
     def _new_timeline(self):
@@ -202,8 +216,8 @@ class AnimTimelineEditorPanel(EditorPanel):
         self._file_path = ""
         self._playhead = 0.0
         self._playing = False
-        self._sel_key = None
-        self._drag_key = None
+        self._clear_key_selection(record_history=False)
+        self._drag_key_id = ""
         self._replace_timeline_document(resource_path="", dirty=True)
 
     def _set_dirty(self, value: bool):
@@ -478,27 +492,81 @@ class AnimTimelineEditorPanel(EditorPanel):
             self._timeline = timeline
             self._playhead = 0.0
             self._playing = False
-            self._sel_key = None
-            self._drag_key = None
+            self._clear_key_selection(record_history=False)
+            self._drag_key_id = ""
         else:
             self._timeline = AnimationTimeline(name="Timeline")
             self._playhead = 0.0
             self._playing = False
-            self._sel_key = None
-            self._drag_key = None
+            self._clear_key_selection(record_history=False)
+            self._drag_key_id = ""
         self._set_dirty(False)
         return not self._dirty
 
     # ── Selection helpers ──────────────────────────────────────────────
+    def _on_global_selection_changed(self, change) -> None:
+        self._project_global_selection(change.after)
+
+    def _project_global_selection(self, snapshot) -> None:
+        from Infernux.engine.interaction import SelectionDomain
+
+        primary = snapshot.primary
+        if (
+            primary is not None
+            and primary.domain is SelectionDomain.TIMELINE_ELEMENT
+            and primary.document_id == self.document_id
+            and primary.sub_kind == "keyframe"
+        ):
+            if self._timeline.find_keyframe(primary.target_id) is not None:
+                self._selected_key_id = primary.target_id
+                return
+            selection = self._selection_service
+            if selection is not None and selection.snapshot == snapshot:
+                selection.clear(
+                    reason="timeline_drop_stale_keyframe",
+                    record_history=False,
+                )
+            return
+        self._selected_key_id = ""
+
+    def _select_key(self, key: TimelineKeyframe, *, record_history: bool = True) -> None:
+        from Infernux.engine.interaction import SelectionService, SelectionTarget
+
+        self._selected_key_id = key.stable_id
+        SelectionService.instance().select(
+            SelectionTarget.timeline_element(
+                self.document_id,
+                key.stable_id,
+                sub_kind="keyframe",
+            ),
+            owner_id=self.window_id,
+            reason="timeline_keyframe",
+            record_history=record_history,
+        )
+
+    def _clear_key_selection(self, *, record_history: bool = True) -> None:
+        from Infernux.engine.interaction import SelectionDomain, SelectionService
+
+        self._selected_key_id = ""
+        selection = SelectionService.instance()
+        snapshot = selection.snapshot
+        if (
+            snapshot.owner_id == self.window_id
+            and snapshot.domain is SelectionDomain.TIMELINE_ELEMENT
+        ):
+            selection.clear(
+                reason="timeline_clear_keyframe",
+                record_history=record_history,
+            )
+
     def _current_sel_key(self) -> Optional[TimelineKeyframe]:
-        """Return the selected keyframe if it is still in the list (by identity)."""
-        if self._sel_key is None:
+        """Resolve the selected keyframe through its persistent element identity."""
+        if not self._selected_key_id:
             return None
-        for k in self._timeline.keyframes:
-            if k is self._sel_key:
-                return k
-        self._sel_key = None
-        return None
+        key = self._timeline.find_keyframe(self._selected_key_id)
+        if key is None:
+            self._clear_key_selection(record_history=False)
+        return key
 
     def _add_keyframe_at_playhead(self):
         sampled = self._timeline.sample(self._playhead)
@@ -510,7 +578,7 @@ class AnimTimelineEditorPanel(EditorPanel):
             time=float(self._playhead), position=pos, rotation=rot, scale=scl,
         )
         self._timeline.keyframes.append(key)
-        self._sel_key = key
+        self._select_key(key, record_history=False)
         self._set_dirty(True)
 
     def _delete_selected_key(self):
@@ -518,8 +586,8 @@ class AnimTimelineEditorPanel(EditorPanel):
         if k is None:
             return
         self._timeline.keyframes = [x for x in self._timeline.keyframes if x is not k]
-        self._sel_key = None
-        self._drag_key = None
+        self._clear_key_selection(record_history=False)
+        self._drag_key_id = ""
         self._set_dirty(True)
 
     # ── Playback ───────────────────────────────────────────────────────
@@ -822,33 +890,35 @@ class AnimTimelineEditorPanel(EditorPanel):
         press_started = active and not self._bar_was_active
         if press_started:
             self._press_x = mx
-            self._drag_key = None
+            self._drag_key_id = ""
             self._drag_armed = False
             best_dx = max(9.0, ks + 2.0)
             for k in self._timeline.keyframes:
                 if abs(time_to_x(k.time) - mx) <= best_dx:
                     best_dx = abs(time_to_x(k.time) - mx)
-                    self._drag_key = k
-            if self._drag_key is not None:
-                self._sel_key = self._drag_key   # click selects immediately
+                    self._drag_key_id = k.stable_id
+            drag_key = self._timeline.find_keyframe(self._drag_key_id)
+            if drag_key is not None:
+                self._select_key(drag_key)
                 self._drag_armed = True          # but moving waits for the threshold
                 self._playing = False
             else:
                 self._playhead = x_to_time(mx)   # empty press scrubs right away
                 self._playing = False
         elif active:
-            if self._drag_key is not None:
+            drag_key = self._timeline.find_keyframe(self._drag_key_id)
+            if drag_key is not None:
                 if self._drag_armed and abs(mx - self._press_x) > _DRAG_THRESHOLD:
                     self._drag_armed = False
                 if not self._drag_armed:
-                    self._drag_key.time = x_to_time(mx)
-                    self._playhead = self._drag_key.time
+                    drag_key.time = x_to_time(mx)
+                    self._playhead = drag_key.time
                     self._set_dirty(True)
             else:
                 self._playhead = x_to_time(mx)
                 self._playing = False
         if not active:
-            self._drag_key = None
+            self._drag_key_id = ""
             self._drag_armed = False
         self._bar_was_active = active
 

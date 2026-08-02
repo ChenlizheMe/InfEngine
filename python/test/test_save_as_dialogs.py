@@ -119,7 +119,7 @@ def test_timeline_authoring_controls_publish_stable_semantics():
         scale=[1.0, 1.0, 1.0],
     )
     panel._timeline.keyframes.append(key)
-    panel._sel_key = key
+    panel._selected_key_id = key.stable_id
     ctx = _SemanticContext()
 
     panel._render_toolbar(ctx)
@@ -160,7 +160,7 @@ def test_timeline_authoring_skips_semantics_outside_requested_capture():
         scale=[1.0, 1.0, 1.0],
     )
     panel._timeline.keyframes.append(key)
-    panel._sel_key = key
+    panel._selected_key_id = key.stable_id
     ctx = _SemanticContext()
     ctx.semantic_capture_enabled = False
 
