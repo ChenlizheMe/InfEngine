@@ -13,8 +13,10 @@ Opened from Window menu → Timeline Editor, or by double-clicking a
 
 from __future__ import annotations
 
+import copy
 import os
 import time
+from dataclasses import dataclass
 from typing import Optional
 
 from Infernux.debug import Debug
@@ -78,6 +80,16 @@ def _semantic_capture_enabled(ctx: InxGUIContext) -> bool:
     return bool(getattr(ctx, "semantic_capture_enabled", True))
 
 
+@dataclass
+class _TimelinePropertyEditSession:
+    target_id: str
+    field_name: str
+    old_value: object
+    before_revision: int
+    after_revision: int
+    description: str
+
+
 @editor_panel(
     "Timeline Editor",
     type_id="animtimeline_editor",
@@ -116,6 +128,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         self._save_as_dialog = AssetSaveAsDialog("animtimeline.save_as", "timeline")
         self._pending_save_ticket_id: str = ""
         self._selection_service = None
+        self._property_edit_sessions: dict[str, _TimelinePropertyEditSession] = {}
         # Panel persistence: ``load_state`` may run from bootstrap or first render.
         self._panel_state_restored_once: bool = False
         self._panel_restore_data: Optional[dict] = None
@@ -132,6 +145,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         self._project_global_selection(selection.snapshot)
 
     def on_disable(self) -> None:
+        self._commit_live_property_edits()
         # Always restore the editor idle setting if we suppressed it.
         self._set_engine_active(False)
         if self._selection_service is not None:
@@ -199,6 +213,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         return (940, 560)
 
     def _open_timeline(self, path: str):
+        self._commit_live_property_edits()
         tl = AnimationTimeline.load(path)
         if tl is None:
             Debug.log_warning(f"[TimelineEditor] Failed to load: {path}")
@@ -212,6 +227,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         self._replace_timeline_document(resource_path=path, dirty=False)
 
     def _new_timeline(self):
+        self._commit_live_property_edits()
         self._timeline = AnimationTimeline(name="Timeline")
         self._file_path = ""
         self._playhead = 0.0
@@ -233,6 +249,155 @@ class AnimTimelineEditorPanel(EditorPanel):
         elif document.is_dirty:
             registry.mark_saved(document.document_id)
         self._dirty = document.is_dirty
+
+    def _timeline_edit_target(self, target_id: str):
+        if not target_id:
+            return self._timeline
+        target = self._timeline.find_keyframe(target_id)
+        if target is None:
+            raise RuntimeError(f"timeline keyframe no longer exists: {target_id}")
+        return target
+
+    def _set_live_property(
+        self,
+        edit_id: str,
+        target_id: str,
+        field_name: str,
+        old_value,
+        new_value,
+        description: str,
+    ) -> bool:
+        if new_value == old_value:
+            return False
+        session = self._property_edit_sessions.get(edit_id)
+        if session is None:
+            for pending_id in tuple(self._property_edit_sessions):
+                if pending_id != edit_id:
+                    self._finish_live_property_edit(pending_id)
+            from Infernux.engine.interaction import DocumentRegistry
+
+            document = self._timeline_document()
+            if document is None:
+                return False
+            before_revision = document.revision
+            after_revision = DocumentRegistry.instance().mark_changed(document.document_id)
+            session = _TimelinePropertyEditSession(
+                target_id=str(target_id or ""),
+                field_name=str(field_name),
+                old_value=copy.deepcopy(old_value),
+                before_revision=before_revision,
+                after_revision=after_revision,
+                description=str(description),
+            )
+            self._property_edit_sessions[edit_id] = session
+        elif session.target_id != target_id or session.field_name != field_name:
+            self._finish_live_property_edit(edit_id)
+            return self._set_live_property(
+                edit_id,
+                target_id,
+                field_name,
+                old_value,
+                new_value,
+                description,
+            )
+        setattr(
+            self._timeline_edit_target(session.target_id),
+            session.field_name,
+            copy.deepcopy(new_value),
+        )
+        document = self._timeline_document()
+        self._dirty = bool(document and document.is_dirty)
+        return True
+
+    def _finish_live_property_edit(self, edit_id: str) -> bool:
+        session = self._property_edit_sessions.pop(edit_id, None)
+        if session is None:
+            return False
+        from Infernux.engine.interaction import DocumentRegistry
+
+        target = self._timeline_edit_target(session.target_id)
+        current = copy.deepcopy(getattr(target, session.field_name))
+        registry = DocumentRegistry.instance()
+        if current == session.old_value:
+            registry.restore_content_revision(self.document_id, session.before_revision)
+            self._dirty = self._timeline_document().is_dirty
+            return False
+        from Infernux.engine.undo import TimelinePropertyCommand, UndoManager
+
+        command = TimelinePropertyCommand(
+            self._timeline,
+            self.document_id,
+            session.target_id,
+            session.field_name,
+            session.old_value,
+            current,
+            session.before_revision,
+            session.after_revision,
+            session.description,
+        )
+        manager = UndoManager.instance()
+        if manager is not None:
+            manager.record(command)
+        else:
+            command.dispose()
+        self._dirty = self._timeline_document().is_dirty
+        return True
+
+    def _finish_widget_property_edit(self, ctx, edit_id: str) -> None:
+        deactivated = getattr(ctx, "is_item_deactivated_after_edit", None)
+        if callable(deactivated) and deactivated():
+            self._finish_live_property_edit(edit_id)
+
+    def _commit_live_property_edits(self) -> None:
+        for edit_id in tuple(self._property_edit_sessions):
+            self._finish_live_property_edit(edit_id)
+
+    def _apply_discrete_property(
+        self,
+        target_id: str,
+        field_name: str,
+        new_value,
+        description: str,
+    ) -> bool:
+        self._commit_live_property_edits()
+        target = self._timeline_edit_target(target_id)
+        old_value = copy.deepcopy(getattr(target, field_name))
+        if new_value == old_value:
+            return False
+        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.undo import TimelinePropertyCommand, UndoManager
+
+        registry = DocumentRegistry.instance()
+        document = self._timeline_document()
+        if document is None:
+            return False
+        after_revision = registry.reserve_content_revision(document.document_id)
+        command = TimelinePropertyCommand(
+            self._timeline,
+            document.document_id,
+            target_id,
+            field_name,
+            old_value,
+            new_value,
+            document.revision,
+            after_revision,
+            description,
+        )
+        manager = UndoManager.instance()
+        applied = manager.execute(command) if manager is not None else False
+        if manager is None:
+            try:
+                command.execute()
+                applied = True
+            except Exception as exc:
+                Debug.log_error(f"Timeline edit failed: {exc}")
+        self._dirty = self._timeline_document().is_dirty
+        return applied
+
+    def _on_timeline_command_applied(self) -> None:
+        document = self._timeline_document()
+        self._dirty = bool(document and document.is_dirty)
+        self._playhead = max(0.0, min(float(self._timeline.duration), self._playhead))
 
     # ── State persistence ──────────────────────────────────────────────
 
@@ -373,6 +538,7 @@ class AnimTimelineEditorPanel(EditorPanel):
     def _request_document_save(self, *, save_as: bool) -> bool:
         from Infernux.engine.interaction import DocumentRegistry
 
+        self._commit_live_property_edits()
         document = self._timeline_document()
         if document is None:
             return False
@@ -485,6 +651,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         )
 
     def _discard_unsaved_changes(self) -> bool:
+        self._property_edit_sessions.clear()
         if self._file_path:
             timeline = AnimationTimeline.load(self._file_path)
             if timeline is None:
@@ -569,6 +736,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         return key
 
     def _add_keyframe_at_playhead(self):
+        self._commit_live_property_edits()
         sampled = self._timeline.sample(self._playhead)
         if sampled is not None:
             pos, rot, scl = sampled
@@ -577,18 +745,83 @@ class AnimTimelineEditorPanel(EditorPanel):
         key = TimelineKeyframe(
             time=float(self._playhead), position=pos, rotation=rot, scale=scl,
         )
-        self._timeline.keyframes.append(key)
-        self._select_key(key, record_history=False)
-        self._set_dirty(True)
+        from Infernux.engine.interaction import (
+            DocumentRegistry,
+            SelectionService,
+            SelectionSnapshot,
+            SelectionTarget,
+        )
+        from Infernux.engine.undo import TimelineInsertKeyframeCommand, UndoManager
+
+        document = self._timeline_document()
+        if document is None:
+            return
+        registry = DocumentRegistry.instance()
+        command = TimelineInsertKeyframeCommand(
+            self._timeline,
+            document.document_id,
+            key,
+            len(self._timeline.keyframes),
+            document.revision,
+            registry.reserve_content_revision(document.document_id),
+        )
+        command.before_selection_snapshot = SelectionService.instance().snapshot
+        command.after_selection_snapshot = SelectionSnapshot.create(
+            (
+                SelectionTarget.timeline_element(
+                    document.document_id,
+                    key.stable_id,
+                    sub_kind="keyframe",
+                ),
+            ),
+            owner_id=self.window_id,
+        )
+        manager = UndoManager.instance()
+        applied = manager.execute(command) if manager is not None else False
+        if manager is None:
+            command.execute()
+            applied = True
+        if applied:
+            inserted = self._timeline.find_keyframe(key.stable_id)
+            if inserted is not None:
+                self._select_key(inserted, record_history=False)
+        self._on_timeline_command_applied()
 
     def _delete_selected_key(self):
+        self._commit_live_property_edits()
         k = self._current_sel_key()
         if k is None:
             return
-        self._timeline.keyframes = [x for x in self._timeline.keyframes if x is not k]
-        self._clear_key_selection(record_history=False)
-        self._drag_key_id = ""
-        self._set_dirty(True)
+        from Infernux.engine.interaction import (
+            DocumentRegistry,
+            SelectionService,
+            SelectionSnapshot,
+        )
+        from Infernux.engine.undo import TimelineRemoveKeyframeCommand, UndoManager
+
+        document = self._timeline_document()
+        if document is None:
+            return
+        registry = DocumentRegistry.instance()
+        command = TimelineRemoveKeyframeCommand(
+            self._timeline,
+            document.document_id,
+            k,
+            self._timeline.keyframes.index(k),
+            document.revision,
+            registry.reserve_content_revision(document.document_id),
+        )
+        command.before_selection_snapshot = SelectionService.instance().snapshot
+        command.after_selection_snapshot = SelectionSnapshot()
+        manager = UndoManager.instance()
+        applied = manager.execute(command) if manager is not None else False
+        if manager is None:
+            command.execute()
+            applied = True
+        if applied:
+            self._clear_key_selection(record_history=False)
+            self._drag_key_id = ""
+        self._on_timeline_command_applied()
 
     # ── Playback ───────────────────────────────────────────────────────
     def _advance_playback(self):
@@ -743,9 +976,15 @@ class AnimTimelineEditorPanel(EditorPanel):
                 "text_input", t("animtimeline_editor.name"), True,
                 "animtimeline.toolbar.name", string_value=new_name,
             )
-        if new_name != self._timeline.name:
-            self._timeline.name = new_name
-            self._set_dirty(True)
+        self._set_live_property(
+            "timeline.name",
+            "",
+            "name",
+            self._timeline.name,
+            new_name,
+            "Rename Timeline",
+        )
+        self._finish_widget_property_edit(ctx, "timeline.name")
         ctx.same_line()
         ctx.label(f"{t('animtimeline_editor.duration')}:")
         ctx.same_line()
@@ -756,9 +995,15 @@ class AnimTimelineEditorPanel(EditorPanel):
                 "drag_float", t("animtimeline_editor.duration"), True,
                 "animtimeline.toolbar.duration", numeric_value=new_dur,
             )
-        if new_dur != self._timeline.duration:
-            self._timeline.duration = max(0.05, float(new_dur))
-            self._set_dirty(True)
+        self._set_live_property(
+            "timeline.duration",
+            "",
+            "duration",
+            self._timeline.duration,
+            max(0.05, float(new_dur)),
+            "Set Timeline Duration",
+        )
+        self._finish_widget_property_edit(ctx, "timeline.duration")
         ctx.same_line()
         ctx.label(f"{t('animtimeline_editor.apply_mode')}:")
         ctx.same_line()
@@ -773,8 +1018,12 @@ class AnimTimelineEditorPanel(EditorPanel):
                 "animtimeline.toolbar.apply_mode", string_value=APPLY_MODES[new_mode],
             )
         if new_mode != mode_idx:
-            self._timeline.apply_mode = APPLY_MODES[new_mode]
-            self._set_dirty(True)
+            self._apply_discrete_property(
+                "",
+                "apply_mode",
+                APPLY_MODES[new_mode],
+                "Set Timeline Apply Mode",
+            )
 
     def _render_transport(self, ctx: InxGUIContext):
         capture_semantics = _semantic_capture_enabled(ctx)
@@ -911,13 +1160,24 @@ class AnimTimelineEditorPanel(EditorPanel):
                 if self._drag_armed and abs(mx - self._press_x) > _DRAG_THRESHOLD:
                     self._drag_armed = False
                 if not self._drag_armed:
-                    drag_key.time = x_to_time(mx)
-                    self._playhead = drag_key.time
-                    self._set_dirty(True)
+                    new_time = x_to_time(mx)
+                    self._set_live_property(
+                        f"timeline.keyframe.{drag_key.stable_id}.bar_time",
+                        drag_key.stable_id,
+                        "time",
+                        drag_key.time,
+                        new_time,
+                        "Move Timeline Keyframe",
+                    )
+                    self._playhead = new_time
             else:
                 self._playhead = x_to_time(mx)
                 self._playing = False
         if not active:
+            if self._drag_key_id:
+                self._finish_live_property_edit(
+                    f"timeline.keyframe.{self._drag_key_id}.bar_time"
+                )
             self._drag_key_id = ""
             self._drag_armed = False
         self._bar_was_active = active
@@ -1028,10 +1288,20 @@ class AnimTimelineEditorPanel(EditorPanel):
                 "drag_float", t("animtimeline_editor.key_time"), True,
                 "animtimeline.keyframe.time", numeric_value=nt,
             )
-        if nt != k.time:
-            k.time = max(0.0, min(float(self._timeline.duration), float(nt)))
-            self._playhead = k.time
-            self._set_dirty(True)
+        normalized_time = max(0.0, min(float(self._timeline.duration), float(nt)))
+        self._set_live_property(
+            f"timeline.keyframe.{k.stable_id}.time",
+            k.stable_id,
+            "time",
+            k.time,
+            normalized_time,
+            "Move Timeline Keyframe",
+        )
+        self._playhead = normalized_time
+        self._finish_widget_property_edit(
+            ctx,
+            f"timeline.keyframe.{k.stable_id}.time",
+        )
 
         # Transition — inline label + combo.
         ctx.label(t("animtimeline_editor.transition"))
@@ -1046,8 +1316,12 @@ class AnimTimelineEditorPanel(EditorPanel):
                 "animtimeline.keyframe.interpolation", string_value=INTERP_MODES[nidx],
             )
         if nidx != idx:
-            k.interp = INTERP_MODES[nidx]
-            self._set_dirty(True)
+            self._apply_discrete_property(
+                k.stable_id,
+                "interp",
+                INTERP_MODES[nidx],
+                "Set Keyframe Interpolation",
+            )
 
         ctx.dummy(0, 4)
         ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
@@ -1055,38 +1329,37 @@ class AnimTimelineEditorPanel(EditorPanel):
         ctx.pop_style_color(1)
         ctx.separator()
 
-        if self._vec3_row(
-            ctx, "pos", t("animtimeline_editor.position"), k.position, 0.01,
-            capture_semantics,
-        ):
-            self._set_dirty(True)
-        if self._vec3_row(
-            ctx, "rot", t("animtimeline_editor.rotation"), k.rotation, 0.25,
-            capture_semantics,
-        ):
-            self._set_dirty(True)
-        if self._vec3_row(
-            ctx, "scl", t("animtimeline_editor.scale"), k.scale, 0.01,
-            capture_semantics,
-        ):
-            self._set_dirty(True)
+        self._vec3_row(
+            ctx, "pos", t("animtimeline_editor.position"), k.stable_id,
+            "position", 0.01, capture_semantics,
+        )
+        self._vec3_row(
+            ctx, "rot", t("animtimeline_editor.rotation"), k.stable_id,
+            "rotation", 0.25, capture_semantics,
+        )
+        self._vec3_row(
+            ctx, "scl", t("animtimeline_editor.scale"), k.stable_id,
+            "scale", 0.01, capture_semantics,
+        )
 
-    @staticmethod
     def _vec3_row(
+        self,
         ctx: InxGUIContext,
         vid: str,
         label: str,
-        values,
+        target_id: str,
+        field_name: str,
         speed: float,
         capture_semantics: bool = True,
     ) -> bool:
-        """Render a single-line ``label  [X][Y][Z]`` drag row. Mutates *values* in place."""
+        """Render a single-line ``label  [X][Y][Z]`` drag row."""
         ctx.label(label)
         ctx.same_line(_KF_LABEL_W)  # fixed column so all rows' fields align
         changed = False
         avail = ctx.get_content_region_avail_width()
         field_w = max(28.0, (avail - 12.0) / 3.0)
         for i, axis in enumerate(("X", "Y", "Z")):
+            values = getattr(self._timeline_edit_target(target_id), field_name)
             ctx.set_next_item_width(field_w)
             nv = ctx.drag_float(f"##{vid}_{axis}", float(values[i]), speed, -1.0e9, 1.0e9)
             if capture_semantics:
@@ -1095,8 +1368,20 @@ class AnimTimelineEditorPanel(EditorPanel):
                     f"animtimeline.keyframe.{vid}.{axis.lower()}", numeric_value=nv,
                 )
             if nv != values[i]:
-                values[i] = float(nv)
-                changed = True
+                edited = list(values)
+                edited[i] = float(nv)
+                changed = self._set_live_property(
+                    f"timeline.keyframe.{target_id}.{field_name}.{axis.lower()}",
+                    target_id,
+                    field_name,
+                    values,
+                    edited,
+                    f"Set Keyframe {label} {axis}",
+                ) or changed
+            self._finish_widget_property_edit(
+                ctx,
+                f"timeline.keyframe.{target_id}.{field_name}.{axis.lower()}",
+            )
             if i < 2:
                 ctx.same_line(0, 6)
         return changed

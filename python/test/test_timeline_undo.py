@@ -7,6 +7,7 @@ from Infernux.engine.interaction import (
     EditorActionJournal,
     EditorContextSnapshot,
     SelectionSnapshot,
+    SelectionService,
     SelectionTarget,
 )
 from Infernux.engine.undo import (
@@ -161,3 +162,115 @@ def test_timeline_property_edits_merge_and_cross_save_points(
     assert key.time == 3.0
     assert document.revision == second_revision
     assert not document.is_dirty
+
+
+def test_timeline_panel_add_delete_share_one_history_and_selection_authority(
+    _reset_editor_interaction_state,
+):
+    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+
+    previous_selection = SelectionService._instance
+    selection = SelectionService()
+    manager = UndoManager(EditorActionJournal())
+    manager.set_context_hooks(
+        lambda: EditorContextSnapshot(selection=selection.snapshot),
+        lambda context, _phase: selection.apply_snapshot(
+            context.selection,
+            reason="test_replay",
+            record_history=False,
+        ),
+    )
+    panel = AnimTimelineEditorPanel()
+    try:
+        panel.on_enable()
+        _reset_editor_interaction_state.mark_saved(panel.document_id)
+        panel._playhead = 0.5
+
+        panel._add_keyframe_at_playhead()
+
+        assert len(panel._timeline.keyframes) == 1
+        key_id = panel._timeline.keyframes[0].stable_id
+        assert selection.snapshot.primary == SelectionTarget.timeline_element(
+            panel.document_id,
+            key_id,
+            sub_kind="keyframe",
+        )
+        assert len(manager.action_journal.entries) == 1
+
+        panel._delete_selected_key()
+        assert panel._timeline.keyframes == []
+        assert selection.snapshot.is_empty
+        assert len(manager.action_journal.entries) == 2
+
+        manager.undo()
+        assert panel._timeline.find_keyframe(key_id) is not None
+        assert selection.snapshot.primary.target_id == key_id
+
+        manager.undo()
+        assert panel._timeline.keyframes == []
+        assert selection.snapshot.is_empty
+
+        manager.redo()
+        assert panel._timeline.find_keyframe(key_id) is not None
+        assert selection.snapshot.primary.target_id == key_id
+    finally:
+        panel.on_disable()
+        SelectionService._instance = previous_selection
+
+
+def test_timeline_panel_live_edit_commits_once_and_drops_no_op(
+    _reset_editor_interaction_state,
+):
+    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+
+    manager = UndoManager(EditorActionJournal())
+    panel = AnimTimelineEditorPanel()
+    key = TimelineKeyframe(time=1.0)
+    panel._timeline.keyframes.append(key)
+    _reset_editor_interaction_state.mark_saved(panel.document_id)
+
+    assert panel._set_live_property(
+        "key.time",
+        key.stable_id,
+        "time",
+        key.time,
+        2.0,
+        "Move Timeline Keyframe",
+    )
+    assert panel._set_live_property(
+        "key.time",
+        key.stable_id,
+        "time",
+        key.time,
+        3.0,
+        "Move Timeline Keyframe",
+    )
+    assert panel._finish_live_property_edit("key.time")
+
+    assert key.time == 3.0
+    assert len(manager.action_journal.entries) == 1
+    manager.undo()
+    assert key.time == 1.0
+
+    manager.clear()
+    clean_revision = panel._timeline_document().revision
+    assert panel._set_live_property(
+        "key.time.noop",
+        key.stable_id,
+        "time",
+        key.time,
+        4.0,
+        "Move Timeline Keyframe",
+    )
+    assert panel._set_live_property(
+        "key.time.noop",
+        key.stable_id,
+        "time",
+        key.time,
+        1.0,
+        "Move Timeline Keyframe",
+    )
+    assert not panel._finish_live_property_edit("key.time.noop")
+    assert key.time == 1.0
+    assert panel._timeline_document().revision == clean_revision
+    assert manager.action_journal.entries == ()
