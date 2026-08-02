@@ -6,6 +6,7 @@ from typing import Optional
 
 from .contexts import FocusService
 from .action_journal import EditorActionJournal, EditorContextSnapshot
+from .documents import DocumentRegistry
 from .selection import SelectionService
 
 
@@ -17,6 +18,7 @@ class EditorInteractionCore:
     def __init__(self) -> None:
         self.selection = SelectionService()
         self.focus = FocusService()
+        self.documents = DocumentRegistry()
         self.action_journal = EditorActionJournal()
         EditorInteractionCore._instance = self
 
@@ -26,6 +28,7 @@ class EditorInteractionCore:
 
     def shutdown(self) -> None:
         self.selection.clear(reason="session_shutdown", record_history=False)
+        self.documents.clear()
         self.action_journal.clear()
         active_panel_id = self.focus.snapshot.active_panel_id
         if active_panel_id:

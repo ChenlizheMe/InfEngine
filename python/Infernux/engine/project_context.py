@@ -10,11 +10,62 @@ from Infernux.engine.path_utils import is_path_within, portable_path, relative_p
 _project_root: Optional[str] = None
 _guid_manifest: Optional[dict] = None
 _guid_manifest_loaded: bool = False
-_panel_dirty_flags: dict[str, bool] = {}
-_panel_titles: dict[str, str] = {}
-_panel_save_handlers: dict[str, Callable[[], Any]] = {}
-_panel_save_pending_handlers: dict[str, Callable[[], bool]] = {}
-_panel_discard_handlers: dict[str, Callable[[], Any]] = {}
+
+
+class _LegacyPanelDocumentController:
+    """Temporary adapter while authoring panels migrate to DocumentRegistry."""
+
+    def __init__(self) -> None:
+        self.save_handler: Optional[Callable[[], Any]] = None
+        self.save_pending_handler: Optional[Callable[[], bool]] = None
+        self.discard_handler: Optional[Callable[[], Any]] = None
+
+    def save(self, *, save_as: bool = False) -> Any:
+        if not callable(self.save_handler):
+            return False
+        return self.save_handler()
+
+    def discard(self) -> Any:
+        if not callable(self.discard_handler):
+            return False
+        return self.discard_handler()
+
+    def is_save_pending(self) -> bool:
+        if not callable(self.save_pending_handler):
+            return False
+        return bool(self.save_pending_handler())
+
+
+def _legacy_document_id(panel_id: str) -> str:
+    return f"legacy-panel:{panel_id}"
+
+
+def _legacy_panel_document(panel_id: str, *, create: bool = False, title: str = ""):
+    from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+
+    registry = DocumentRegistry.instance()
+    document = registry.document_for_view(panel_id)
+    if document is not None or not create:
+        return document
+    document = registry.create(
+        DocumentKind.GENERIC,
+        title or panel_id,
+        document_id=_legacy_document_id(panel_id),
+        controller=_LegacyPanelDocumentController(),
+    )
+    registry.attach_view(document.document_id, panel_id)
+    return document
+
+
+def _legacy_capabilities(controller: _LegacyPanelDocumentController):
+    from Infernux.engine.interaction import DocumentCapability
+
+    capabilities = DocumentCapability.NONE
+    if callable(controller.save_handler):
+        capabilities |= DocumentCapability.SAVE
+    if callable(controller.discard_handler):
+        capabilities |= DocumentCapability.DISCARD
+    return capabilities
 
 
 def set_project_root(path: Optional[str]) -> None:
@@ -37,27 +88,32 @@ def set_panel_dirty(
     save_pending_handler: Optional[Callable[[], bool]] = None,
     discard_handler: Optional[Callable[[], Any]] = None,
 ) -> None:
-    """Set or clear project-scoped dirty state for an editor panel.
-
-    Optional *title* and *save_handler* metadata is stored for unified
-    close/exit confirmation flows.
-    """
+    """Compatibility adapter for panels not yet bound as real documents."""
     pid = (panel_id or "").strip()
     if not pid:
         return
-    ttl = (title or "").strip()
-    if ttl:
-        _panel_titles[pid] = ttl
+    from Infernux.engine.interaction import DocumentRegistry
+
+    registry = DocumentRegistry.instance()
+    document = _legacy_panel_document(pid, create=True, title=title)
+    controller = document.controller
+    if not isinstance(controller, _LegacyPanelDocumentController):
+        raise TypeError(f"panel view '{pid}' is bound to a non-legacy document")
     if save_handler is not None:
-        _panel_save_handlers[pid] = save_handler
+        controller.save_handler = save_handler
     if save_pending_handler is not None:
-        _panel_save_pending_handlers[pid] = save_pending_handler
+        controller.save_pending_handler = save_pending_handler
     if discard_handler is not None:
-        _panel_discard_handlers[pid] = discard_handler
-    if is_dirty:
-        _panel_dirty_flags[pid] = True
-    else:
-        _panel_dirty_flags.pop(pid, None)
+        controller.discard_handler = discard_handler
+    registry.update_metadata(
+        document.document_id,
+        title=(title or document.title),
+        capabilities=_legacy_capabilities(controller),
+    )
+    if is_dirty and not document.is_dirty:
+        registry.mark_changed(document.document_id)
+    elif not is_dirty and document.is_dirty:
+        registry.mark_saved(document.document_id)
 
 
 def is_panel_dirty(panel_id: str) -> bool:
@@ -65,17 +121,25 @@ def is_panel_dirty(panel_id: str) -> bool:
     pid = (panel_id or "").strip()
     if not pid:
         return False
-    return bool(_panel_dirty_flags.get(pid, False))
+    document = _legacy_panel_document(pid)
+    return bool(document and document.is_dirty)
 
 
 def any_panel_dirty() -> bool:
     """Return whether any editor panel currently has unsaved changes."""
-    return any(_panel_dirty_flags.values())
+    from Infernux.engine.interaction import DocumentRegistry
+
+    return bool(DocumentRegistry.instance().dirty_documents())
 
 
 def get_dirty_panels() -> list[str]:
     """Return IDs of all panels currently marked dirty."""
-    return [pid for pid, dirty in _panel_dirty_flags.items() if dirty]
+    from Infernux.engine.interaction import DocumentRegistry
+
+    result: list[str] = []
+    for document in DocumentRegistry.instance().dirty_documents():
+        result.extend(sorted(document.view_ids))
+    return result
 
 
 def set_panel_save_handler(panel_id: str, save_handler: Optional[Callable[[], Any]]) -> None:
@@ -83,10 +147,17 @@ def set_panel_save_handler(panel_id: str, save_handler: Optional[Callable[[], An
     pid = (panel_id or "").strip()
     if not pid:
         return
-    if save_handler is None:
-        _panel_save_handlers.pop(pid, None)
-    else:
-        _panel_save_handlers[pid] = save_handler
+    from Infernux.engine.interaction import DocumentRegistry
+
+    document = _legacy_panel_document(pid, create=True)
+    controller = document.controller
+    if not isinstance(controller, _LegacyPanelDocumentController):
+        raise TypeError(f"panel view '{pid}' is bound to a non-legacy document")
+    controller.save_handler = save_handler
+    DocumentRegistry.instance().update_metadata(
+        document.document_id,
+        capabilities=_legacy_capabilities(controller),
+    )
 
 
 def set_panel_title(panel_id: str, title: str) -> None:
@@ -95,7 +166,10 @@ def set_panel_title(panel_id: str, title: str) -> None:
     ttl = (title or "").strip()
     if not pid or not ttl:
         return
-    _panel_titles[pid] = ttl
+    from Infernux.engine.interaction import DocumentRegistry
+
+    document = _legacy_panel_document(pid, create=True, title=ttl)
+    DocumentRegistry.instance().update_metadata(document.document_id, title=ttl)
 
 
 def clear_panel_tracking(panel_id: str) -> None:
@@ -103,26 +177,34 @@ def clear_panel_tracking(panel_id: str) -> None:
     pid = (panel_id or "").strip()
     if not pid:
         return
-    _panel_dirty_flags.pop(pid, None)
-    _panel_titles.pop(pid, None)
-    _panel_save_handlers.pop(pid, None)
-    _panel_save_pending_handlers.pop(pid, None)
-    _panel_discard_handlers.pop(pid, None)
+    from Infernux.engine.interaction import DocumentRegistry
+
+    registry = DocumentRegistry.instance()
+    document_id = registry.detach_view(pid)
+    if document_id:
+        document = registry.get(document_id)
+        if document is not None and not document.view_ids:
+            registry.unregister(document_id)
 
 
 def get_dirty_panel_entries() -> list[dict]:
-    """Return dirty panels with metadata for unified close/exit pipelines."""
+    """Return legacy view records backed by the authoritative registry."""
+    from Infernux.engine.interaction import DocumentRegistry
+
+    registry = DocumentRegistry.instance()
     entries: list[dict] = []
-    for pid, dirty in _panel_dirty_flags.items():
-        if not dirty:
+    for document in registry.dirty_documents():
+        if not document.view_ids:
             continue
-        entries.append({
-            "panel_id": pid,
-            "title": _panel_titles.get(pid, pid),
-            "save_handler": _panel_save_handlers.get(pid),
-            "save_pending_handler": _panel_save_pending_handlers.get(pid),
-            "discard_handler": _panel_discard_handlers.get(pid),
-        })
+        for pid in sorted(document.view_ids):
+            entries.append({
+                "panel_id": pid,
+                "document_id": document.document_id,
+                "title": document.title,
+                "save_handler": lambda did=document.document_id: registry.request_save(did).accepted,
+                "save_pending_handler": lambda did=document.document_id: registry.is_save_pending(did),
+                "discard_handler": lambda did=document.document_id: registry.request_discard(did).accepted,
+            })
     return entries
 
 

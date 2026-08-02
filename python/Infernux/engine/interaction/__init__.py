@@ -2,6 +2,16 @@
 
 from .descriptors import SelectionDomain, SelectionSnapshot, SelectionTarget
 from .contexts import FocusService, FocusSnapshot, InputContext, InputContextStack
+from .documents import (
+    DocumentActionResult,
+    DocumentActionStatus,
+    DocumentCapability,
+    DocumentController,
+    DocumentKind,
+    DocumentRegistry,
+    DocumentState,
+    EditorDocument,
+)
 from .action_journal import (
     ActionOrigin,
     EditorActionJournal,
@@ -16,6 +26,14 @@ from .transactions import EditorTransaction
 __all__ = [
     "EditorInteractionCore",
     "EditorTransaction",
+    "DocumentActionResult",
+    "DocumentActionStatus",
+    "DocumentCapability",
+    "DocumentController",
+    "DocumentKind",
+    "DocumentRegistry",
+    "DocumentState",
+    "EditorDocument",
     "ActionOrigin",
     "EditorActionJournal",
     "EditorContextSnapshot",

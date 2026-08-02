@@ -56,6 +56,9 @@ class EditorServices:
     def interaction_core(self) -> Optional[EditorInteractionCore]: ...
 
     @property
+    def document_registry(self) -> object: ...
+
+    @property
     def asset_database(self) -> object:
         """The C++ ``AssetDatabase`` instance (or ``None``)."""
         ...

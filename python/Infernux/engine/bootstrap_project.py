@@ -381,10 +381,12 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
 
     # -- Panel focus sync --
     def _on_project_focus_changed(focused: bool):
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.interaction import FocusService
+
+        focus = FocusService.instance()
         if focused:
-            ClosablePanel._active_panel_id = "project"
-        elif ClosablePanel._active_panel_id == "project":
-            ClosablePanel._active_panel_id = None
+            focus.activate_panel("project", view_id="project")
+        else:
+            focus.deactivate_panel("project")
 
     pp.on_project_panel_focused = _on_project_focus_changed

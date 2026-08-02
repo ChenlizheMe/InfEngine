@@ -118,6 +118,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         # Panel persistence: ``load_state`` may run from bootstrap or first render.
         self._panel_state_restored_once: bool = False
         self._panel_restore_data: Optional[dict] = None
+        self._replace_timeline_document(resource_path="", dirty=True)
 
     def on_disable(self) -> None:
         # Always restore the editor idle setting if we suppressed it.
@@ -125,7 +126,40 @@ class AnimTimelineEditorPanel(EditorPanel):
 
     # Unsaved marker in the window title (shared dirty/save/close handled by ClosablePanel).
     def _window_title_suffix(self) -> str:
+        document = self._timeline_document()
+        self._dirty = bool(document and document.is_dirty)
         return " *" if self._dirty else ""
+
+    def _timeline_document(self):
+        from Infernux.engine.interaction import DocumentRegistry
+
+        return DocumentRegistry.instance().get(self.document_id)
+
+    def _replace_timeline_document(self, *, resource_path: str, dirty: bool) -> None:
+        from Infernux.engine.interaction import (
+            DocumentCapability,
+            DocumentKind,
+            DocumentRegistry,
+        )
+
+        path = self._normalize_timeline_path(resource_path) if resource_path else ""
+        title = os.path.splitext(os.path.basename(path))[0] if path else "Timeline"
+        registry = DocumentRegistry.instance()
+        document = registry.create(
+            DocumentKind.TIMELINE,
+            title,
+            resource_path=path,
+            revision=1 if dirty else 0,
+            saved_revision=0,
+            capabilities=(
+                DocumentCapability.SAVE
+                | DocumentCapability.SAVE_AS
+                | DocumentCapability.DISCARD
+            ),
+            controller=self,
+        )
+        self.bind_document(document.document_id)
+        self._dirty = document.is_dirty
 
     # ── Lifecycle ──────────────────────────────────────────────────────
     def _initial_size(self):
@@ -142,7 +176,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         self._playing = False
         self._sel_key = None
         self._drag_key = None
-        self._set_dirty(False)
+        self._replace_timeline_document(resource_path=path, dirty=False)
 
     def _new_timeline(self):
         self._timeline = AnimationTimeline(name="Timeline")
@@ -151,12 +185,21 @@ class AnimTimelineEditorPanel(EditorPanel):
         self._playing = False
         self._sel_key = None
         self._drag_key = None
-        self._set_dirty(True)
+        self._replace_timeline_document(resource_path="", dirty=True)
 
     def _set_dirty(self, value: bool):
-        # ClosablePanel._sync_dirty_registry() reads self._dirty every frame and
-        # registers the title + _do_save handler, so we only flip the flag here.
-        self._dirty = bool(value)
+        from Infernux.engine.interaction import DocumentRegistry
+
+        registry = DocumentRegistry.instance()
+        document = registry.get(self.document_id)
+        if document is None:
+            self._dirty = bool(value)
+            return
+        if value:
+            registry.mark_changed(document.document_id)
+        elif document.is_dirty:
+            registry.mark_saved(document.document_id)
+        self._dirty = document.is_dirty
 
     # ── State persistence ──────────────────────────────────────────────
 
@@ -293,21 +336,39 @@ class AnimTimelineEditorPanel(EditorPanel):
     # ── Save ───────────────────────────────────────────────────────────
     def _do_save(self):
         if self._file_path:
-            self._save_to(self._file_path)
-        else:
-            self._show_save_as_dialog()
+            return self._save_to(self._file_path)
+        self._show_save_as_dialog()
+        return False
 
-    def handle_save_command(self, save_as: bool = False) -> bool:
+    def save(self, *, save_as: bool = False) -> bool:
         if save_as:
             self._show_save_as_dialog()
-        else:
-            self._do_save()
+            return False
+        return bool(self._do_save())
+
+    def discard(self) -> bool:
+        return self._discard_unsaved_changes()
+
+    def is_save_pending(self) -> bool:
+        return bool(self._save_as_dialog.is_open)
+
+    def handle_save_command(self, save_as: bool = False) -> bool:
+        self.save(save_as=save_as)
         return True
 
     def _save_to(self, path: str) -> bool:
         self._timeline.name = os.path.splitext(os.path.basename(path))[0]
         if self._timeline.save(path):
             self._file_path = path
+            from Infernux.engine.interaction import DocumentRegistry
+
+            document = self._timeline_document()
+            if document is not None:
+                DocumentRegistry.instance().update_metadata(
+                    document.document_id,
+                    title=os.path.splitext(os.path.basename(path))[0],
+                    resource_path=self._normalize_timeline_path(path),
+                )
             Debug.log(f"[TimelineEditor] Saved: {path}")
             try:
                 from Infernux.core.assets import AssetManager
@@ -332,11 +393,22 @@ class AnimTimelineEditorPanel(EditorPanel):
 
     def _discard_unsaved_changes(self) -> bool:
         if self._file_path:
-            self._open_timeline(self._file_path)
-            return not self._dirty
-        self._new_timeline()
+            timeline = AnimationTimeline.load(self._file_path)
+            if timeline is None:
+                return False
+            self._timeline = timeline
+            self._playhead = 0.0
+            self._playing = False
+            self._sel_key = None
+            self._drag_key = None
+        else:
+            self._timeline = AnimationTimeline(name="Timeline")
+            self._playhead = 0.0
+            self._playing = False
+            self._sel_key = None
+            self._drag_key = None
         self._set_dirty(False)
-        return True
+        return not self._dirty
 
     # ── Selection helpers ──────────────────────────────────────────────
     def _current_sel_key(self) -> Optional[TimelineKeyframe]:

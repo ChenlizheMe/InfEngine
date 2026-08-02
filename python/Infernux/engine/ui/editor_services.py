@@ -94,6 +94,11 @@ class EditorServices:
         return self._interaction_core
 
     @property
+    def document_registry(self):
+        core = self._interaction_core
+        return core.documents if core is not None else None
+
+    @property
     def asset_database(self):
         """The C++ ``AssetDatabase`` instance (or *None*)."""
         return self._asset_database

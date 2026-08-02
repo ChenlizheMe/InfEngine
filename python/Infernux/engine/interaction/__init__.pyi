@@ -1,5 +1,6 @@
 from .descriptors import SelectionDomain, SelectionSnapshot, SelectionTarget
 from .contexts import FocusService, FocusSnapshot, InputContext, InputContextStack
+from .documents import DocumentActionResult, DocumentActionStatus, DocumentCapability, DocumentController, DocumentKind, DocumentRegistry, DocumentState, EditorDocument
 from .action_journal import ActionOrigin, EditorActionJournal, EditorContextSnapshot, JournalEntry, JournalPushResult
 from .selection import SelectionChange, SelectionService
 from .session import EditorInteractionCore

@@ -1,11 +1,13 @@
 from typing import Optional
 from .contexts import FocusService
 from .action_journal import EditorActionJournal, EditorContextSnapshot
+from .documents import DocumentRegistry
 from .selection import SelectionService
 
 class EditorInteractionCore:
     selection: SelectionService
     focus: FocusService
+    documents: DocumentRegistry
     action_journal: EditorActionJournal
     def __init__(self) -> None: ...
     @classmethod

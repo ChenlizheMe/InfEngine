@@ -121,11 +121,15 @@ void MenuBarPanel::HandleShortcuts(InxGUIContext *ctx)
         onNewScene();
 
     if (pressedOnce(KEY_Z)) {
-        if (canUndo && canUndo() && onUndo)
+        if (shift) {
+            if (canRedo && canRedo() && onRedo)
+                onRedo();
+        } else if (canUndo && canUndo() && onUndo) {
             onUndo();
+        }
     }
 
-    if (pressedOnce(KEY_Y)) {
+    if (!shift && pressedOnce(KEY_Y)) {
         if (canRedo && canRedo() && onRedo)
             onRedo();
     }
@@ -145,12 +149,12 @@ void MenuBarPanel::RenderProjectMenu(InxGUIContext *ctx)
             onNewScene();
     }
     if (SemanticMenuItem(ctx, T("menu.save_scene"), "Ctrl+S", false, true, "menu.project.save_scene")) {
-        if (onSave)
-            onSave();
+        if (onSaveFocused)
+            onSaveFocused();
     }
     if (SemanticMenuItem(ctx, T("menu.save_scene_as"), "Ctrl+Shift+S", false, true, "menu.project.save_scene_as")) {
-        if (onSaveAs)
-            onSaveAs();
+        if (onSaveFocusedAs)
+            onSaveFocusedAs();
     }
 
     ImGui::Separator();

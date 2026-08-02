@@ -352,11 +352,13 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
 
     # -- Panel focus sync --
     def _on_hierarchy_focus_changed(focused: bool):
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.interaction import FocusService
+
+        focus = FocusService.instance()
         if focused:
-            ClosablePanel._active_panel_id = "hierarchy"
-        elif ClosablePanel._active_panel_id == "hierarchy":
-            ClosablePanel._active_panel_id = None
+            focus.activate_panel("hierarchy", view_id="hierarchy")
+        else:
+            focus.deactivate_panel("hierarchy")
 
     hp.on_hierarchy_panel_focused = _on_hierarchy_focus_changed
 

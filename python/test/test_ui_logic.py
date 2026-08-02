@@ -711,17 +711,20 @@ def test_focused_save_routes_to_document_then_falls_back_to_scene():
         def save_scene_as():
             calls.append(("scene", True))
 
-    previous = ClosablePanel._active_panel_id
+    from Infernux.engine.interaction import FocusService
+
+    previous_focus = FocusService._instance
+    focus = FocusService()
     try:
-        ClosablePanel._active_panel_id = "timeline"
+        focus.activate_panel("timeline")
         BootstrapWiringMixin._save_focused_document(WindowManager, SceneFiles)
         BootstrapWiringMixin._save_focused_document(
             WindowManager, SceneFiles, save_as=True
         )
-        ClosablePanel._active_panel_id = "game"
+        focus.activate_panel("game")
         BootstrapWiringMixin._save_focused_document(WindowManager, SceneFiles)
     finally:
-        ClosablePanel._active_panel_id = previous
+        FocusService._instance = previous_focus
 
     assert calls == [
         ("document", False),
@@ -742,18 +745,20 @@ class TestPanelFocusEvents:
         bus = EditorEventBus.instance()
         received = []
         handler = received.append
-        previous_active = ClosablePanel._active_panel_id
+        from Infernux.engine.interaction import FocusService
+
+        previous_focus = FocusService._instance
+        FocusService()
         bus.subscribe(EditorEvent.PANEL_FOCUSED, handler)
         try:
             panel = ClosablePanel("Focus Test", "focus_test")
-            ClosablePanel._active_panel_id = None
             panel._activate_panel(FocusContext(), focus_window=True)
             panel._activate_panel(FocusContext(), focus_window=True)
             assert received == ["focus_test"]
             assert not hasattr(ClosablePanel, "set_on_panel_focus_changed")
         finally:
             bus.unsubscribe(EditorEvent.PANEL_FOCUSED, handler)
-            ClosablePanel._active_panel_id = previous_active
+            FocusService._instance = previous_focus
 
     def test_closable_panel_keeps_child_window_focus_as_panel_focus(self):
         from Infernux.engine.ui.closable_panel import ClosablePanel
@@ -780,16 +785,19 @@ class TestPanelFocusEvents:
 
         panel = ClosablePanel("Child Focus Test", "child_focus_test")
         ctx = FocusContext()
-        previous_active = ClosablePanel._active_panel_id
+        from Infernux.engine.interaction import FocusService
+
+        previous_focus = FocusService._instance
+        focus = FocusService()
         try:
-            ClosablePanel._active_panel_id = panel.window_id
+            focus.activate_panel(panel.window_id)
             panel._panel_was_focused = True
 
             assert panel._begin_closable_window(ctx) is True
             assert ClosablePanel.get_active_panel_id() == panel.window_id
             assert ctx.focus_flags == [3]
         finally:
-            ClosablePanel._active_panel_id = previous_active
+            FocusService._instance = previous_focus
 
     def test_dirty_registry_sync_is_change_driven(self, monkeypatch):
         from Infernux.engine import project_context

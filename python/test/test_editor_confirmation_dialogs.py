@@ -101,6 +101,55 @@ def test_exit_confirmation_saves_panels_sequentially():
         clear_panel_tracking(second)
 
 
+def test_exit_prompts_once_for_a_document_with_two_views():
+    from Infernux.engine.interaction import (
+        DocumentCapability,
+        DocumentKind,
+        DocumentRegistry,
+    )
+
+    registry = DocumentRegistry.instance()
+
+    class _Controller:
+        calls = 0
+
+        def save(self, *, save_as=False):
+            self.calls += 1
+            registry.mark_saved("shared-document")
+            return True
+
+        @staticmethod
+        def discard():
+            return False
+
+        @staticmethod
+        def is_save_pending():
+            return False
+
+    controller = _Controller()
+    document = registry.create(
+        DocumentKind.TIMELINE,
+        "Shared Timeline",
+        document_id="shared-document",
+        revision=1,
+        saved_revision=0,
+        capabilities=DocumentCapability.SAVE,
+        controller=controller,
+    )
+    registry.attach_view(document.document_id, "timeline-left")
+    registry.attach_view(document.document_id, "timeline-right")
+    completed = []
+    coordinator = DirtyPanelConfirmationCoordinator()
+
+    coordinator.request_exit(lambda: completed.append(True), lambda: None)
+    assert coordinator.active_document_id == document.document_id
+    coordinator.choose_save()
+
+    assert controller.calls == 1
+    assert completed == [True]
+    assert not coordinator.is_active
+
+
 def test_async_save_as_cancel_reopens_confirmation_without_cancelling_exit():
     panel_id = "dirty_test_async"
     pending = False
@@ -311,9 +360,12 @@ def test_titlebar_close_keeps_panel_open_without_stealing_modal_focus():
     ctx = _Context()
     coordinator = DirtyPanelConfirmationCoordinator()
     previous = DirtyPanelConfirmationCoordinator._instance
-    previous_active = ClosablePanel._active_panel_id
+    from Infernux.engine.interaction import FocusService
+
+    previous_focus = FocusService._instance
+    focus = FocusService()
     DirtyPanelConfirmationCoordinator._instance = coordinator
-    ClosablePanel._active_panel_id = "game"
+    focus.activate_panel("game")
     try:
         assert panel._begin_closable_window(ctx) is True
         assert panel.is_open is True
@@ -323,7 +375,7 @@ def test_titlebar_close_keeps_panel_open_without_stealing_modal_focus():
     finally:
         coordinator.choose_cancel()
         DirtyPanelConfirmationCoordinator._instance = previous
-        ClosablePanel._active_panel_id = previous_active
+        FocusService._instance = previous_focus
         clear_panel_tracking(panel_id)
 
 

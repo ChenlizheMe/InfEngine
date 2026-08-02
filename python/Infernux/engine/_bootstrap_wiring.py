@@ -43,6 +43,32 @@ class BootstrapWiringMixin:
 
     @staticmethod
     def _save_focused_document(wm, sfm, *, save_as: bool = False) -> None:
+        from Infernux.engine.interaction import (
+            DocumentActionStatus,
+            DocumentRegistry,
+            FocusService,
+        )
+
+        focus = FocusService.instance().snapshot
+        if focus.active_document_id:
+            document = DocumentRegistry.instance().get(focus.active_document_id)
+            if document is not None:
+                result = DocumentRegistry.instance().request_save(
+                    document.document_id,
+                    save_as=save_as,
+                )
+                if result.status in {
+                    DocumentActionStatus.FAILED,
+                    DocumentActionStatus.REJECTED,
+                }:
+                    from Infernux.debug import Debug
+
+                    Debug.log_warning(
+                        f"Could not save focused document '{document.title}': "
+                        f"{result.message or result.status.value}"
+                    )
+                return
+
         from Infernux.engine.ui.closable_panel import ClosablePanel
 
         panel_id = ClosablePanel.get_active_panel_id()

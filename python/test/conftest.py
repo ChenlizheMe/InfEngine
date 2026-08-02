@@ -27,6 +27,20 @@ from Infernux.resources import resources_path
 from Infernux.input import Input
 
 
+@pytest.fixture(autouse=True)
+def _reset_editor_document_registry():
+    """Prevent process-wide editor documents from leaking across tests."""
+    from Infernux.engine.interaction import DocumentRegistry
+
+    registry = DocumentRegistry()
+    try:
+        yield registry
+    finally:
+        registry.clear()
+        if DocumentRegistry._instance is registry:
+            DocumentRegistry._instance = None
+
+
 # ── session-scoped engine (Vulkan + SDL, created once for ALL tests) ─────
 
 @pytest.fixture(scope="session", autouse=True)

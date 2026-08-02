@@ -33,6 +33,7 @@ class ClosablePanel(InxGUIRenderable):
         self._is_open = True
         self._window_manager: Optional['WindowManager'] = None
         self._panel_was_focused: bool = False
+        self._document_id: str = ""
         self._dirty_close_approved: bool = False
         self._dirty_registry_snapshot = None
     
@@ -43,6 +44,58 @@ class ClosablePanel(InxGUIRenderable):
     @property
     def is_open(self) -> bool:
         return self._is_open
+
+    @property
+    def document_id(self) -> str:
+        return self._document_id
+
+    def bind_document(self, document_id: str) -> None:
+        """Bind this view to one stable document identity."""
+        from Infernux.engine.interaction import DocumentRegistry
+
+        identifier = str(document_id or "").strip()
+        if not identifier:
+            raise ValueError("panel document_id must not be empty")
+        registry = DocumentRegistry.instance()
+        registry.require(identifier)
+        previous_id = self._document_id
+        registry.attach_view(identifier, self._window_id)
+        self._document_id = identifier
+        self._dirty_registry_snapshot = None
+        if previous_id and previous_id != identifier:
+            previous = registry.get(previous_id)
+            if previous is not None and not previous.view_ids:
+                registry.unregister(previous_id)
+        from Infernux.engine.interaction import FocusService
+
+        focus = FocusService.instance()
+        if focus.snapshot.active_panel_id == self._window_id:
+            focus.activate_panel(
+                self._window_id,
+                view_id=self._window_id,
+                document_id=identifier,
+            )
+
+    def unbind_document(self) -> None:
+        from Infernux.engine.interaction import DocumentRegistry
+
+        registry = DocumentRegistry.instance()
+        document_id = registry.detach_view(self._window_id)
+        self._document_id = ""
+        self._dirty_registry_snapshot = None
+        if document_id:
+            document = registry.get(document_id)
+            if document is not None and not document.view_ids:
+                registry.unregister(document_id)
+        from Infernux.engine.interaction import FocusService
+
+        focus = FocusService.instance()
+        if focus.snapshot.active_panel_id == self._window_id:
+            focus.activate_panel(
+                self._window_id,
+                view_id=self._window_id,
+                document_id="",
+            )
     
     def set_window_manager(self, window_manager: 'WindowManager'):
         """Set the window manager reference."""
@@ -67,9 +120,7 @@ class ClosablePanel(InxGUIRenderable):
         request asynchronously.
         """
         self._sync_dirty_registry()
-        from Infernux.engine.project_context import is_panel_dirty
-
-        if not is_panel_dirty(self._window_id):
+        if not self._document_is_dirty():
             return True
         self._request_dirty_panel_close()
         return False
@@ -131,6 +182,14 @@ class ClosablePanel(InxGUIRenderable):
         return None
 
     def _sync_dirty_registry(self) -> None:
+        if self._document_id:
+            from Infernux.engine.interaction import DocumentRegistry
+
+            document = DocumentRegistry.instance().get(self._document_id)
+            if document is not None:
+                if hasattr(self, "_dirty"):
+                    self._dirty = document.is_dirty
+                return
         try:
             from Infernux.engine.project_context import set_panel_dirty
 
@@ -194,9 +253,7 @@ class ClosablePanel(InxGUIRenderable):
         return _discard
 
     def _request_dirty_panel_close(self) -> bool:
-        from Infernux.engine.project_context import is_panel_dirty
-
-        if not is_panel_dirty(self._window_id):
+        if not self._document_is_dirty():
             return False
         from .dirty_panel_confirmation import DirtyPanelConfirmationCoordinator
 
@@ -205,6 +262,16 @@ class ClosablePanel(InxGUIRenderable):
             on_complete=lambda: setattr(self, "_dirty_close_approved", True),
             on_cancel=self._restore_after_cancelled_close,
         )
+
+    def _document_is_dirty(self) -> bool:
+        if self._document_id:
+            from Infernux.engine.interaction import DocumentRegistry
+
+            document = DocumentRegistry.instance().get(self._document_id)
+            return bool(document and document.is_dirty)
+        from Infernux.engine.project_context import is_panel_dirty
+
+        return is_panel_dirty(self._window_id)
 
     def _restore_after_cancelled_close(self) -> None:
         """Restore the dock tab consumed by ImGui's titlebar close request."""
@@ -223,7 +290,11 @@ class ClosablePanel(InxGUIRenderable):
         if focus_window:
             ctx.set_window_focus()
 
-        if not FocusService.instance().activate_panel(self._window_id):
+        if not FocusService.instance().activate_panel(
+            self._window_id,
+            view_id=self._window_id,
+            document_id=self._document_id,
+        ):
             return
 
         from .event_bus import EditorEvent, EditorEventBus

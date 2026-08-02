@@ -40,6 +40,10 @@ class DirtyPanelConfirmationCoordinator:
         return str((self._active_entry or {}).get("panel_id") or "")
 
     @property
+    def active_document_id(self) -> str:
+        return str((self._active_entry or {}).get("document_id") or "")
+
+    @property
     def waiting_for_save(self) -> bool:
         return self._waiting_for_save
 
@@ -127,16 +131,15 @@ class DirtyPanelConfirmationCoordinator:
         entry = self._active_entry
         if entry is None:
             return
-        save_handler = entry.get("save_handler")
-        if not callable(save_handler):
-            self._error = t("editor.unsaved.no_save_action")
-            self._show_popup = True
-            return
+        from Infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
+
         try:
-            save_handler()
+            result = DocumentRegistry.instance().request_save(
+                str(entry.get("document_id") or "")
+            )
         except Exception as exc:
             Debug.log_suppressed(
-                f"DirtyPanelConfirmation.save[{self.active_panel_id}]", exc
+                f"DirtyPanelConfirmation.save[{self.active_document_id}]", exc
             )
             self._error = t("editor.unsaved.save_failed")
             self._show_popup = True
@@ -145,11 +148,16 @@ class DirtyPanelConfirmationCoordinator:
         if not self._entry_is_dirty(entry):
             self._resolve_active()
             return
-        if self._entry_save_pending(entry):
+        if result.status is DocumentActionStatus.PENDING or self._entry_save_pending(entry):
             self._waiting_for_save = True
             self._error = ""
             return
-        self._error = t("editor.unsaved.save_cancelled")
+        self._error = (
+            t("editor.unsaved.no_save_action")
+            if result.status is DocumentActionStatus.REJECTED
+            and "not supported" in result.message
+            else t("editor.unsaved.save_cancelled")
+        )
         self._show_popup = True
 
     def choose_discard(self) -> None:
@@ -160,18 +168,21 @@ class DirtyPanelConfirmationCoordinator:
         # scene confirmation is cancelled, the still-open panel must remain
         # dirty instead of silently treating its in-memory edits as saved.
         if self._scope == "panel":
-            discard_handler = entry.get("discard_handler")
-            if not callable(discard_handler):
-                self._error = t("editor.unsaved.no_discard_action")
-                self._show_popup = True
-                return
+            from Infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
+
             try:
-                discard_handler()
+                result = DocumentRegistry.instance().request_discard(
+                    str(entry.get("document_id") or "")
+                )
             except Exception as exc:
                 Debug.log_suppressed(
-                    f"DirtyPanelConfirmation.discard[{self.active_panel_id}]", exc
+                    f"DirtyPanelConfirmation.discard[{self.active_document_id}]", exc
                 )
                 self._error = t("editor.unsaved.discard_failed")
+                self._show_popup = True
+                return
+            if result.status is DocumentActionStatus.REJECTED:
+                self._error = t("editor.unsaved.no_discard_action")
                 self._show_popup = True
                 return
             if self._entry_is_dirty(entry):
@@ -202,24 +213,31 @@ class DirtyPanelConfirmationCoordinator:
         self._advance()
 
     def _advance(self) -> None:
-        from Infernux.engine.project_context import get_dirty_panel_entries
+        from Infernux.engine.interaction import DocumentRegistry
 
-        entries = list(get_dirty_panel_entries())
+        registry = DocumentRegistry.instance()
+        documents = list(registry.dirty_documents())
         if self._scope == "panel":
-            entries = [
-                entry
-                for entry in entries
-                if str(entry.get("panel_id") or "") == self._panel_id
-            ]
+            document = registry.document_for_view(self._panel_id)
+            documents = [document] if document is not None and document.is_dirty else []
         else:
-            entries = [
-                entry
-                for entry in entries
-                if str(entry.get("panel_id") or "") not in self._handled_ids
+            documents = [
+                document
+                for document in documents
+                if document.document_id not in self._handled_ids
             ]
 
-        if entries:
-            self._active_entry = entries[0]
+        if documents:
+            document = documents[0]
+            if self._scope == "panel":
+                panel_id = self._panel_id
+            else:
+                panel_id = sorted(document.view_ids)[0] if document.view_ids else ""
+            self._active_entry = {
+                "document_id": document.document_id,
+                "panel_id": panel_id,
+                "title": document.title,
+            }
             self._show_popup = True
             self._waiting_for_save = False
             self._error = ""
@@ -230,9 +248,9 @@ class DirtyPanelConfirmationCoordinator:
         self._invoke(callback, "complete")
 
     def _resolve_active(self) -> None:
-        panel_id = self.active_panel_id
-        if panel_id:
-            self._handled_ids.add(panel_id)
+        document_id = self.active_document_id
+        if document_id:
+            self._handled_ids.add(document_id)
         self._active_entry = None
         self._waiting_for_save = False
         self._error = ""
@@ -255,17 +273,21 @@ class DirtyPanelConfirmationCoordinator:
 
     @staticmethod
     def _entry_is_dirty(entry: dict[str, Any]) -> bool:
-        from Infernux.engine.project_context import is_panel_dirty
+        from Infernux.engine.interaction import DocumentRegistry
 
-        return is_panel_dirty(str(entry.get("panel_id") or ""))
+        document = DocumentRegistry.instance().get(
+            str(entry.get("document_id") or "")
+        )
+        return bool(document and document.is_dirty)
 
     @staticmethod
     def _entry_save_pending(entry: dict[str, Any]) -> bool:
-        handler = entry.get("save_pending_handler")
-        if not callable(handler):
-            return False
+        from Infernux.engine.interaction import DocumentRegistry
+
         try:
-            return bool(handler())
+            return DocumentRegistry.instance().is_save_pending(
+                str(entry.get("document_id") or "")
+            )
         except Exception as exc:
             Debug.log_suppressed("DirtyPanelConfirmation.save_pending", exc)
             return False
