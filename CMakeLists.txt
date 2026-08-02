@@ -687,6 +687,10 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_vulkan_submission_executor_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.vulkan_submission_executor COMMAND infernux_vulkan_submission_executor_tests)
+    set_tests_properties(infernux.vulkan_submission_executor PROPERTIES
+        LABELS "requires_vulkan_device"
+        TIMEOUT 60
+    )
 
     add_executable(infernux_scene_render_graph_validation_tests
         cpp/tests/SceneRenderGraphValidationTests.cpp
@@ -780,6 +784,10 @@ if(INFERNUX_BUILD_TESTS)
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuBillboard.frag.spv"
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuTexturedBillboard.vert.spv"
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuTexturedBillboard.frag.spv"
+    )
+    set_tests_properties(infernux.render_graph_compute_indirect PROPERTIES
+        LABELS "requires_vulkan_device"
+        TIMEOUT 180
     )
 
     add_executable(infernux_renderer_list_tests
@@ -1038,6 +1046,7 @@ if(INFERNUX_BUILD_TESTS)
     )
     set_tests_properties(infernux.gpu_upload PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        LABELS "requires_vulkan_device"
         TIMEOUT 30
         RUN_SERIAL TRUE
         SKIP_RETURN_CODE 77
@@ -1049,6 +1058,7 @@ if(INFERNUX_BUILD_TESTS)
     )
     set_tests_properties(infernux.scene_residency_soak PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        LABELS "requires_vulkan_device"
         TIMEOUT 90
         RUN_SERIAL TRUE
         SKIP_RETURN_CODE 77
