@@ -97,6 +97,26 @@ class DirtyPanelConfirmationCoordinator:
             panel_id=identifier,
         )
 
+    def request_document_replace(
+        self,
+        document_id: str,
+        on_complete: Callable[[], None],
+        on_cancel: Optional[Callable[[], None]] = None,
+    ) -> bool:
+        """Resolve one dirty document before replacing its in-memory content."""
+        identifier = str(document_id or "").strip()
+        if not identifier or self.is_active:
+            return False
+        return self._request(
+            "replace",
+            CloseIntent(
+                CloseIntentKind.REPLACE_DOCUMENT,
+                document_ids=(identifier,),
+            ),
+            on_complete,
+            on_cancel,
+        )
+
     def render(self, ctx, *, panel_host_id: Optional[str] = None) -> None:
         """Poll saves and render from the window that owns the transaction."""
         if not self.is_active:

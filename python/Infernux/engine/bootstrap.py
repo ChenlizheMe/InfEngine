@@ -457,6 +457,10 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
     def _setup_scene_change_cleanup(self):
         def on_scene_changed():
+            document_id = self.scene_file_manager.document_id
+            if document_id:
+                self.scene_view.bind_document(document_id)
+                self.game_view.bind_document(document_id)
             self._prev_selection[0] = 0
             from Infernux.engine.ui.selection_manager import SelectionManager
             SelectionManager.instance().clear()

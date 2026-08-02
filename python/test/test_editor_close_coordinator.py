@@ -66,6 +66,25 @@ def test_close_view_discard_uses_document_controller_once():
     assert close.state is CloseState.IDLE
 
 
+def test_closing_one_of_multiple_views_never_prompts_for_the_document():
+    registry = DocumentRegistry()
+    document, controller = _dirty_document(registry, "shared")
+    registry.attach_view(document.document_id, "scene-view")
+    registry.attach_view(document.document_id, "game-view")
+    completed: list[str] = []
+    close = CloseCoordinator(registry)
+
+    close.request(
+        CloseIntent(CloseIntentKind.CLOSE_VIEW, view_id="scene-view"),
+        lambda: completed.append("closed"),
+    )
+
+    assert completed == ["closed"]
+    assert close.state is CloseState.IDLE
+    assert document.is_dirty
+    assert controller.discard_calls == 0
+
+
 def test_exit_discard_defers_mutation_and_visits_each_document_once():
     registry = DocumentRegistry()
     first, first_controller = _dirty_document(registry, "first")
@@ -88,6 +107,26 @@ def test_exit_discard_defers_mutation_and_visits_each_document_once():
     assert first_controller.discard_calls == 0
     assert second_controller.discard_calls == 0
     assert first.is_dirty and second.is_dirty
+
+
+def test_replace_document_discard_approves_replacement_without_reloading_source():
+    registry = DocumentRegistry()
+    document, controller = _dirty_document(registry, "replace")
+    completed: list[str] = []
+    close = CloseCoordinator(registry)
+    close.request(
+        CloseIntent(
+            CloseIntentKind.REPLACE_DOCUMENT,
+            document_ids=(document.document_id,),
+        ),
+        lambda: completed.append("replace"),
+    )
+
+    close.decide_discard()
+
+    assert completed == ["replace"]
+    assert controller.discard_calls == 0
+    assert document.is_dirty
 
 
 def test_async_save_waits_for_captured_revision_and_then_advances():

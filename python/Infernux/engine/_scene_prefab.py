@@ -26,6 +26,7 @@ from Infernux.debug import Debug
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.path_utils import resolved_path, safe_path as _safe_path
 from .scene_manager import (
+    DEFAULT_SCENE_NAME,
     PREFAB_MODE_SCENE_NAME,
     PREFAB_RESTORE_SCENE_NAME,
     _empty_scene_document,
@@ -82,7 +83,7 @@ class ScenePrefabMixin:
 
         self._previous_scene_document = active_scene.serialize_document()
         self._previous_scene_path = self._current_scene_path
-        self._previous_scene_dirty = self._dirty
+        self._previous_scene_document_id = self._scene_document_id
         self.prefab_envelope = prefab_data
 
         # Clear the RenderStack singleton before the swap — matches the
@@ -143,7 +144,13 @@ class ScenePrefabMixin:
         self.is_prefab_mode = True
         self.prefab_mode_path = resolved_path(prefab_path)
         self._current_scene_path = prefab_path
-        self._dirty = False
+        self._replace_scene_document(
+            kind="prefab",
+            resource_path=self.prefab_mode_path,
+            title=os.path.splitext(os.path.basename(self.prefab_mode_path))[0],
+            dirty=False,
+            preserve_previous=True,
+        )
         if not preserve_undo_history:
             self._reset_undo_history(scene_is_dirty=False)
 
@@ -278,14 +285,34 @@ class ScenePrefabMixin:
                 self._asset_database
             )
 
+        from Infernux.engine.interaction import DocumentRegistry
+
+        registry = DocumentRegistry.instance()
+        prefab_document_id = self._scene_document_id
+        previous_document_id = self._previous_scene_document_id
         self.is_prefab_mode = False
         self.prefab_mode_path = None
         self._current_scene_path = self._previous_scene_path
-        self._dirty = self._previous_scene_dirty
+        if previous_document_id and registry.get(previous_document_id) is not None:
+            self._scene_document_id = previous_document_id
+        else:
+            self._replace_scene_document(
+                kind="scene",
+                resource_path=self._current_scene_path or "",
+                title=(
+                    os.path.splitext(os.path.basename(self._current_scene_path))[0]
+                    if self._current_scene_path
+                    else DEFAULT_SCENE_NAME
+                ),
+                dirty=False,
+            )
         self.prefab_envelope = {}
         self._previous_scene_document = None
-        self._previous_scene_dirty = False
+        self._previous_scene_document_id = ""
         self._previous_scene_path = None
+        prefab_document = registry.get(prefab_document_id)
+        if prefab_document is not None and not prefab_document.view_ids:
+            registry.unregister(prefab_document_id)
         if not preserve_undo_history:
             self._reset_undo_history(scene_is_dirty=self._dirty)
 

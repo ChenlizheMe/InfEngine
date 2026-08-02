@@ -510,7 +510,10 @@ def test_dirty_scene_close_uses_editor_owned_confirmation(tmp_path, monkeypatch)
 
     native = _Native()
     camera_paths: list[str] = []
+    coordinator = DirtyPanelConfirmationCoordinator.instance()
     try:
+        if coordinator.is_active:
+            coordinator.choose_cancel()
         manager._engine = native
         manager._dirty = True
         manager._current_scene_path = str(tmp_path / "Assets" / "UnsavedChanges.scene")
@@ -519,11 +522,17 @@ def test_dirty_scene_close_uses_editor_owned_confirmation(tmp_path, monkeypatch)
         manager.request_close()
 
         assert manager._close_in_progress is True
-        assert manager._pending_action == "close"
-        assert manager._show_confirm is True
-        assert camera_paths == [manager._current_scene_path]
+        assert coordinator.active_document_id == manager.document_id
+        assert manager._pending_action is None
+        assert manager._show_confirm is False
+        assert camera_paths == []
         assert native.calls == []
+        coordinator.choose_discard()
+        assert camera_paths == [manager._current_scene_path]
+        assert native.calls == ["confirm"]
     finally:
+        if coordinator.is_active:
+            coordinator.choose_cancel()
         _restore_scene_manager(manager)
 
 
@@ -562,14 +571,44 @@ def test_dirty_panel_confirmation_precedes_dirty_scene_confirmation(tmp_path, mo
         assert manager._show_confirm is False
         assert native.calls == []
         coordinator.choose_discard()
-        assert coordinator.is_active is False
-        assert manager._pending_action == "close"
-        assert manager._show_confirm is True
+        assert coordinator.is_active is True
+        assert coordinator.active_document_id == manager.document_id
+        assert manager._pending_action is None
+        assert manager._show_confirm is False
         assert native.calls == []
+        coordinator.choose_discard()
+        assert coordinator.is_active is False
+        assert native.calls == ["confirm"]
     finally:
         if coordinator.is_active:
             coordinator.choose_cancel()
         clear_panel_tracking(panel_id)
+        _restore_scene_manager(manager)
+
+
+def test_dirty_scene_open_uses_replace_document_transaction(monkeypatch):
+    manager = _scene_manager()
+    coordinator = DirtyPanelConfirmationCoordinator.instance()
+    try:
+        if coordinator.is_active:
+            coordinator.choose_cancel()
+        manager._dirty = True
+        manager._current_scene_path = "current.scene"
+        monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
+        monkeypatch.setattr(manager, "_save_camera_state", lambda _path: None)
+
+        assert manager.open_scene("next.scene") is False
+        assert coordinator.active_document_id == manager.document_id
+        assert manager._deferred_load_path is None
+
+        coordinator.choose_discard()
+
+        assert coordinator.is_active is False
+        assert manager._deferred_load_path == "next.scene"
+        assert manager._pending_action is None
+    finally:
+        if coordinator.is_active:
+            coordinator.choose_cancel()
         _restore_scene_manager(manager)
 
 

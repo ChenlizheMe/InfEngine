@@ -236,6 +236,32 @@ def test_timeline_panel_binds_a_real_revisioned_document():
     assert not document.is_dirty
 
 
+def test_scene_file_manager_uses_document_revisions_as_its_only_dirty_state():
+    from Infernux.engine.scene_manager import SceneFileManager
+
+    registry = DocumentRegistry.instance()
+    previous = SceneFileManager._instance
+    try:
+        manager = SceneFileManager()
+        document = registry.get(manager.document_id)
+
+        assert document is not None
+        assert document.kind is DocumentKind.SCENE
+        assert not document.is_dirty
+
+        manager.mark_dirty()
+        first_revision = document.revision
+        manager.mark_dirty()
+
+        assert manager.is_dirty
+        assert document.revision == first_revision + 1
+        manager.clear_dirty()
+        assert not manager.is_dirty
+        assert document.saved_revision == document.revision
+    finally:
+        SceneFileManager._instance = previous
+
+
 def test_focused_save_uses_the_document_registry_before_panel_fallback():
     from Infernux.engine._bootstrap_wiring import BootstrapWiringMixin
     from Infernux.engine.interaction import FocusService

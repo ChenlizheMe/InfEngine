@@ -10,7 +10,12 @@ import uuid
 
 from Infernux.debug import Debug
 
-from .documents import DocumentActionStatus, DocumentRegistry, EditorDocument
+from .documents import (
+    DocumentActionStatus,
+    DocumentKind,
+    DocumentRegistry,
+    EditorDocument,
+)
 
 
 class CloseIntentKind(str, Enum):
@@ -150,6 +155,7 @@ class CloseCoordinator:
             return
         intent = self._intent
         if intent is not None and intent.kind in {
+            CloseIntentKind.REPLACE_DOCUMENT,
             CloseIntentKind.CLOSE_PROJECT,
             CloseIntentKind.EXIT_EDITOR,
             CloseIntentKind.RESET_LAYOUT,
@@ -200,9 +206,21 @@ class CloseCoordinator:
             candidates = intent.document_ids
         elif intent.view_id:
             document = self.registry.document_for_view(intent.view_id)
-            candidates = (document.document_id,) if document is not None else ()
+            if (
+                document is not None
+                and intent.kind is CloseIntentKind.CLOSE_VIEW
+                and any(view_id != intent.view_id for view_id in document.view_ids)
+            ):
+                candidates = ()
+            else:
+                candidates = (document.document_id,) if document is not None else ()
         else:
-            candidates = (document.document_id for document in self.registry.dirty_documents())
+            documents = sorted(
+                self.registry.dirty_documents(),
+                key=lambda document: document.kind
+                in {DocumentKind.SCENE, DocumentKind.PREFAB},
+            )
+            candidates = (document.document_id for document in documents)
         result: list[str] = []
         seen: set[str] = set()
         for document_id in candidates:
