@@ -143,6 +143,7 @@ class EditorDocument:
     capabilities: DocumentCapability = DocumentCapability.NONE
     view_ids: set[str] = field(default_factory=set)
     controller: Optional[DocumentController] = field(default=None, repr=False)
+    _revision_high_watermark: int = field(default=0, repr=False)
 
     @property
     def is_dirty(self) -> bool:
@@ -226,6 +227,7 @@ class DocumentRegistry:
             saved_revision=clean_revision,
             capabilities=DocumentCapability(capabilities),
             controller=controller,
+            _revision_high_watermark=max(current_revision, clean_revision),
         )
         self._documents[identifier] = document
         self._document_ids_by_key[document_key] = identifier
@@ -384,7 +386,8 @@ class DocumentRegistry:
 
     def mark_changed(self, document_id: str) -> int:
         document = self.require(document_id)
-        document.revision += 1
+        document._revision_high_watermark += 1
+        document.revision = document._revision_high_watermark
         if (
             document.state is not DocumentState.CONFLICT
             and self.active_save_ticket(document_id) is None
@@ -396,10 +399,27 @@ class DocumentRegistry:
     def mark_saved(self, document_id: str, revision: Optional[int] = None) -> int:
         document = self.require(document_id)
         target = document.revision if revision is None else int(revision)
-        if target < 0 or target > document.revision:
+        if target < 0 or target > document._revision_high_watermark:
             raise ValueError("saved revision must reference an existing document revision")
         document.saved_revision = target
         document.state = DocumentState.READY
+        self._touch()
+        return target
+
+    def restore_content_revision(self, document_id: str, revision: int) -> int:
+        """Move a document through existing content history without moving its save point."""
+        document = self.require(document_id)
+        target = int(revision)
+        if target < 0 or target > document._revision_high_watermark:
+            raise ValueError("content revision must reference an existing document revision")
+        if document.revision == target:
+            return target
+        document.revision = target
+        if (
+            document.state is not DocumentState.CONFLICT
+            and self.active_save_ticket(document_id) is None
+        ):
+            document.state = DocumentState.READY
         self._touch()
         return target
 
@@ -422,8 +442,6 @@ class DocumentRegistry:
         document = self.require(document_id)
         current_revision = max(0, int(revision))
         clean_revision = max(0, int(saved_revision))
-        if clean_revision > current_revision:
-            raise ValueError("saved_revision cannot exceed revision")
         restored_state = DocumentState(state)
         if restored_state is DocumentState.CLOSED:
             raise ValueError("an open document cannot restore CLOSED state")
@@ -435,6 +453,11 @@ class DocumentRegistry:
             return
         document.revision = current_revision
         document.saved_revision = clean_revision
+        document._revision_high_watermark = max(
+            document._revision_high_watermark,
+            current_revision,
+            clean_revision,
+        )
         document.state = restored_state
         self._touch()
 
@@ -556,10 +579,7 @@ class DocumentRegistry:
                 success = False
                 message = str(exc)
         if success:
-            document.saved_revision = max(
-                document.saved_revision,
-                min(ticket.captured_revision, document.revision),
-            )
+            document.saved_revision = ticket.captured_revision
             document.state = DocumentState.READY
             ticket.status = SaveTicketStatus.SUCCEEDED
         else:

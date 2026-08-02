@@ -92,6 +92,54 @@ def test_saving_an_older_revision_does_not_clear_newer_edits():
     assert ticket.status is SaveTicketStatus.SUCCEEDED
 
 
+def test_undo_can_cross_a_save_point_without_moving_the_save_point():
+    registry = DocumentRegistry()
+    document, _controller = _document(registry)
+    original_revision = document.revision
+    edited_revision = registry.mark_changed(document.document_id)
+    registry.mark_saved(document.document_id)
+
+    registry.restore_content_revision(document.document_id, original_revision)
+
+    assert document.revision == original_revision
+    assert document.saved_revision == edited_revision
+    assert document.is_dirty
+
+    registry.restore_content_revision(document.document_id, edited_revision)
+    assert not document.is_dirty
+
+
+def test_edit_after_undo_allocates_a_fresh_revision_token():
+    registry = DocumentRegistry()
+    document, _controller = _document(registry)
+    original_revision = document.revision
+    abandoned_revision = registry.mark_changed(document.document_id)
+    registry.mark_saved(document.document_id)
+    registry.restore_content_revision(document.document_id, original_revision)
+
+    replacement_revision = registry.mark_changed(document.document_id)
+
+    assert replacement_revision > abandoned_revision
+    assert replacement_revision != document.saved_revision
+    assert document.is_dirty
+
+
+def test_async_save_records_the_exact_captured_revision_after_undo():
+    registry = DocumentRegistry()
+    document, _controller = _document(registry)
+    saved_revision = registry.mark_changed(document.document_id)
+    ticket = registry.begin_save(document.document_id)
+    newer_revision = registry.mark_changed(document.document_id)
+    registry.restore_content_revision(document.document_id, 0)
+
+    registry.complete_save(ticket.ticket_id, success=True)
+
+    assert document.saved_revision == saved_revision
+    assert document.revision == 0
+    assert newer_revision > saved_revision
+    assert document.is_dirty
+
+
 def test_one_document_can_have_multiple_views_without_duplicate_dirty_entries():
     registry = DocumentRegistry()
     document, _ = _document(registry, dirty=True)
