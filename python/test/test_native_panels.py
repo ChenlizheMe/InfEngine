@@ -436,6 +436,21 @@ class TestHierarchyPanel:
         assert hp.paste_clipboard() is True
         assert hp.has_clipboard_data() is False
 
+    def test_command_callbacks(self):
+        hp = HierarchyPanel()
+        calls = []
+        hp.execute_command = lambda command_id, source, argument: calls.append(
+            (command_id, source, argument)
+        ) or True
+        hp.can_execute_command = lambda command_id, argument: (
+            command_id == "edit.rename" and argument == "42"
+        )
+
+        assert hp.execute_command("edit.rename", "context_menu", "42") is True
+        assert hp.can_execute_command("edit.rename", "42") is True
+        hp.begin_rename_object(0)
+        assert calls == [("edit.rename", "context_menu", "42")]
+
     def test_creation_callbacks(self):
         hp = HierarchyPanel()
         created = []

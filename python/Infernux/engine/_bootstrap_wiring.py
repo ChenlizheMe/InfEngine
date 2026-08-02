@@ -85,6 +85,8 @@ class BootstrapWiringMixin:
             EditorCommand,
             KeyChord,
             ShortcutBinding,
+            ShortcutScope,
+            SelectionDomain,
         )
         from Infernux.engine.undo import UndoManager
         from Infernux.engine.ui.closable_panel import ClosablePanel
@@ -145,6 +147,66 @@ class BootstrapWiringMixin:
             wm.reset_layout()
             return True
 
+        def _hierarchy_panel():
+            return getattr(self, "hierarchy", None)
+
+        def _is_scene_edit_context(context, *, hierarchy_only: bool = False) -> bool:
+            active_panel = context.focus.active_panel_id
+            if hierarchy_only:
+                return active_panel == "hierarchy"
+            return active_panel in {"hierarchy", "scene_view"}
+
+        def _has_scene_selection(context) -> bool:
+            return bool(
+                _is_scene_edit_context(context)
+                and context.selection.domain is SelectionDomain.SCENE_OBJECT
+                and context.selection.targets
+            )
+
+        def _copy_scene_selection(_context, *, cut: bool):
+            panel = _hierarchy_panel()
+            if panel is None or not panel.copy_selected:
+                return False
+            return bool(panel.copy_selected(cut))
+
+        def _paste_scene_selection(_context):
+            panel = _hierarchy_panel()
+            if panel is None or not panel.paste_clipboard:
+                return False
+            return bool(panel.paste_clipboard())
+
+        def _delete_scene_selection(_context):
+            panel = _hierarchy_panel()
+            if panel is None or not panel.delete_selected_objects:
+                return False
+            panel.delete_selected_objects()
+            return True
+
+        def _rename_scene_selection(context):
+            panel = _hierarchy_panel()
+            if panel is None:
+                return False
+            target_id = str(context.payload.get("target_id", "") or "").strip()
+            if not target_id and context.selection.primary is not None:
+                target_id = context.selection.primary.target_id
+            try:
+                object_id = int(target_id)
+            except (TypeError, ValueError):
+                return False
+            if object_id <= 0:
+                return False
+            panel.begin_rename_object(object_id)
+            return True
+
+        def _can_paste_scene(context) -> bool:
+            panel = _hierarchy_panel()
+            return bool(
+                _is_scene_edit_context(context)
+                and panel is not None
+                and panel.has_clipboard_data
+                and panel.has_clipboard_data()
+            )
+
         commands = (
             EditorCommand(
                 "file.new_scene",
@@ -186,6 +248,50 @@ class BootstrapWiringMixin:
                     UndoManager.instance() and UndoManager.instance().can_redo
                 ),
                 default_shortcut="Ctrl+Shift+Z",
+            ),
+            EditorCommand(
+                "edit.copy",
+                lambda context: _copy_scene_selection(context, cut=False),
+                display_name="Copy",
+                category="Edit",
+                can_execute=_has_scene_selection,
+                default_shortcut="Ctrl+C",
+            ),
+            EditorCommand(
+                "edit.cut",
+                lambda context: _copy_scene_selection(context, cut=True),
+                display_name="Cut",
+                category="Edit",
+                can_execute=_has_scene_selection,
+                default_shortcut="Ctrl+X",
+            ),
+            EditorCommand(
+                "edit.paste",
+                _paste_scene_selection,
+                display_name="Paste",
+                category="Edit",
+                can_execute=_can_paste_scene,
+                default_shortcut="Ctrl+V",
+            ),
+            EditorCommand(
+                "edit.delete",
+                _delete_scene_selection,
+                display_name="Delete",
+                category="Edit",
+                can_execute=_has_scene_selection,
+                default_shortcut="Delete",
+            ),
+            EditorCommand(
+                "edit.rename",
+                _rename_scene_selection,
+                display_name="Rename",
+                category="Edit",
+                can_execute=lambda context: bool(
+                    _is_scene_edit_context(context, hierarchy_only=True)
+                    and context.selection.domain is SelectionDomain.SCENE_OBJECT
+                    and context.selection.primary is not None
+                ),
+                default_shortcut="F2",
             ),
             EditorCommand(
                 "play.toggle",
@@ -243,6 +349,34 @@ class BootstrapWiringMixin:
                 ShortcutBinding(command_id, KeyChord.parse(chord), binding_id=binding_id),
                 replace=True,
             )
+
+        for owner_id in ("hierarchy", "scene_view"):
+            for command_id, chord in (
+                ("edit.copy", "Ctrl+C"),
+                ("edit.cut", "Ctrl+X"),
+                ("edit.paste", "Ctrl+V"),
+                ("edit.delete", "Delete"),
+            ):
+                shortcuts.register(
+                    ShortcutBinding(
+                        command_id,
+                        KeyChord.parse(chord),
+                        ShortcutScope.PANEL,
+                        owner_id,
+                        binding_id=f"default.{owner_id}.{command_id}",
+                    ),
+                    replace=True,
+                )
+        shortcuts.register(
+            ShortcutBinding(
+                "edit.rename",
+                KeyChord.parse("F2"),
+                ShortcutScope.PANEL,
+                "hierarchy",
+                binding_id="default.hierarchy.edit.rename",
+            ),
+            replace=True,
+        )
 
     def _wire_menu_bar_callbacks(self, wm):
         """Wire C++ MenuBarPanel callbacks to Python managers."""

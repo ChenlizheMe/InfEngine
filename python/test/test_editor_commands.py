@@ -138,3 +138,50 @@ def test_bootstrap_registers_menu_and_shortcut_entries_against_same_commands():
     assert registry.is_checked("window.open", window_context)
     assert calls == ["save", "new", ("open", "console")]
     assert registry.get("file.save").default_shortcut == "Ctrl+S"
+
+
+def test_hierarchy_and_scene_edit_shortcuts_share_command_handlers():
+    class BootstrapHarness(BootstrapWiringMixin):
+        pass
+
+    calls = []
+    bootstrap = BootstrapHarness()
+    bootstrap.interaction_core = EditorInteractionCore()
+    bootstrap.engine = SimpleNamespace(_play_mode_manager=None)
+    bootstrap.hierarchy = SimpleNamespace(
+        copy_selected=lambda cut: calls.append(("copy", cut)) or True,
+        paste_clipboard=lambda: calls.append("paste") or True,
+        has_clipboard_data=lambda: True,
+        delete_selected_objects=lambda: calls.append("delete"),
+        begin_rename_object=lambda object_id: calls.append(("rename", object_id)),
+    )
+    windows = SimpleNamespace(
+        get_registered_types=lambda: {},
+        reset_layout=lambda: None,
+    )
+    scene_files = SimpleNamespace()
+    BootstrapWiringMixin._register_core_editor_commands(
+        bootstrap,
+        windows,
+        scene_files,
+    )
+    core = bootstrap.interaction_core
+    core.focus.activate_panel("hierarchy", view_id="hierarchy")
+    core.selection.select(
+        SelectionTarget.scene_object(42),
+        owner_id="hierarchy",
+    )
+
+    copied = core.shortcuts.route(ShortcutEvent(KeyChord.parse("Ctrl+C")))
+    deleted = core.shortcuts.route(ShortcutEvent(KeyChord.parse("Delete")))
+    renamed = core.shortcuts.route(ShortcutEvent(KeyChord.parse("F2")))
+
+    assert copied.status is ShortcutRouteStatus.EXECUTED
+    assert deleted.status is ShortcutRouteStatus.EXECUTED
+    assert renamed.status is ShortcutRouteStatus.EXECUTED
+    assert calls == [("copy", False), "delete", ("rename", 42)]
+
+    core.focus.activate_panel("scene_view", view_id="scene_view")
+    pasted = core.shortcuts.route(ShortcutEvent(KeyChord.parse("Ctrl+V")))
+    assert pasted.status is ShortcutRouteStatus.EXECUTED
+    assert calls[-1] == "paste"

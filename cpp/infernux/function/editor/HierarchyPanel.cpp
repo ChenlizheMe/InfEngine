@@ -16,13 +16,8 @@ static constexpr int kKeyLeftCtrl = ImGuiKey_LeftCtrl;
 static constexpr int kKeyRightCtrl = ImGuiKey_RightCtrl;
 static constexpr int kKeyLeftShift = ImGuiKey_LeftShift;
 static constexpr int kKeyRightShift = ImGuiKey_RightShift;
-static constexpr int kKeyF2 = ImGuiKey_F2;
-static constexpr int kKeyDelete = ImGuiKey_Delete;
 static constexpr int kKeyEnter = ImGuiKey_Enter;
 static constexpr int kKeyEscape = ImGuiKey_Escape;
-static constexpr int kKeyC = ImGuiKey_C;
-static constexpr int kKeyV = ImGuiKey_V;
-static constexpr int kKeyX = ImGuiKey_X;
 
 namespace infernux
 {
@@ -845,6 +840,11 @@ void HierarchyPanel::BeginRename(uint64_t objId)
     m_renameSkipDeactivateFrames = 2;
 }
 
+void HierarchyPanel::BeginRenameObject(uint64_t objId)
+{
+    BeginRename(objId);
+}
+
 void HierarchyPanel::CommitRename()
 {
     if (!m_renameId)
@@ -879,33 +879,6 @@ void HierarchyPanel::CancelRename()
     m_renameBuf[0] = '\0';
     m_renameFocus = false;
     m_renameSkipDeactivateFrames = 0;
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Clipboard shortcuts
-// ════════════════════════════════════════════════════════════════════
-
-void HierarchyPanel::HandleClipboardShortcuts(InxGUIContext *ctx)
-{
-    if (!ctx->IsWindowFocused(0) || ctx->WantTextInput())
-        return;
-    if (!IsCtrl(ctx))
-        return;
-
-    if (ctx->IsKeyPressed(kKeyC)) {
-        if (copySelected)
-            copySelected(false);
-        return;
-    }
-    if (ctx->IsKeyPressed(kKeyX)) {
-        if (copySelected)
-            copySelected(true);
-        return;
-    }
-    if (ctx->IsKeyPressed(kKeyV)) {
-        if (pasteClipboard)
-            pasteClipboard();
-    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1010,21 +983,20 @@ void HierarchyPanel::RenderItemContextMenu(InxGUIContext *ctx, GameObject *obj)
             createEmptyParent();
     }
     ctx->Separator();
-    if (ctx->Selectable(Tr("project.copy"), false, 0, 0, 0)) {
-        if (copySelected)
-            copySelected(false);
-    }
-    if (ctx->Selectable(Tr("project.cut"), false, 0, 0, 0)) {
-        if (copySelected)
-            copySelected(true);
-    }
-    if (ctx->Selectable(Tr("project.paste"), false, 0, 0, 0)) {
-        if (pasteClipboard)
-            pasteClipboard();
-    }
+    const bool canCopy = CanExecuteEditorCommand("edit.copy");
+    if (ctx->Selectable(Tr("project.copy"), false, canCopy ? 0 : ImGuiSelectableFlags_Disabled, 0, 0))
+        ExecuteEditorCommand("edit.copy");
+    const bool canCut = CanExecuteEditorCommand("edit.cut");
+    if (ctx->Selectable(Tr("project.cut"), false, canCut ? 0 : ImGuiSelectableFlags_Disabled, 0, 0))
+        ExecuteEditorCommand("edit.cut");
+    const bool canPaste = CanExecuteEditorCommand("edit.paste");
+    if (ctx->Selectable(Tr("project.paste"), false, canPaste ? 0 : ImGuiSelectableFlags_Disabled, 0, 0))
+        ExecuteEditorCommand("edit.paste");
     ctx->Separator();
-    if (ctx->Selectable(Tr("hierarchy.rename"), false, 0, 0, 0))
-        BeginRename(objId);
+    const std::string objectArgument = std::to_string(objId);
+    const bool canRename = CanExecuteEditorCommand("edit.rename", objectArgument);
+    if (ctx->Selectable(Tr("hierarchy.rename"), false, canRename ? 0 : ImGuiSelectableFlags_Disabled, 0, 0))
+        ExecuteEditorCommand("edit.rename", objectArgument);
     ctx->Separator();
     if (ctx->Selectable(Tr("hierarchy.save_as_prefab"), false, 0, 0, 0)) {
         if (saveAsPrefab)
@@ -1074,16 +1046,19 @@ void HierarchyPanel::RenderItemContextMenu(InxGUIContext *ctx, GameObject *obj)
     }
 
     ctx->Separator();
-    if (ctx->Selectable(Tr("hierarchy.delete"), false, 0, 0, 0)) {
-        if (undoRecordDelete)
-            undoRecordDelete(objId, "Delete GameObject");
-        if (m_selIds.count(objId)) {
-            if (clearSelection)
-                clearSelection();
-            SyncSelectionCache();
-            NotifySelectionChanged();
-        }
-    }
+    const bool canDelete = CanExecuteEditorCommand("edit.delete", objectArgument);
+    if (ctx->Selectable(Tr("hierarchy.delete"), false, canDelete ? 0 : ImGuiSelectableFlags_Disabled, 0, 0))
+        ExecuteEditorCommand("edit.delete", objectArgument);
+}
+
+bool HierarchyPanel::ExecuteEditorCommand(const std::string &commandId, const std::string &argument) const
+{
+    return executeCommand && executeCommand(commandId, "context_menu", argument);
+}
+
+bool HierarchyPanel::CanExecuteEditorCommand(const std::string &commandId, const std::string &argument) const
+{
+    return canExecuteCommand && canExecuteCommand(commandId, argument);
 }
 
 void HierarchyPanel::ShowStandardCreateMenus(InxGUIContext *ctx, uint64_t parentId, const char *semanticRoot)
@@ -1535,94 +1510,7 @@ void HierarchyPanel::RenderGameObjectTree(InxGUIContext *ctx, GameObject *obj)
     std::string ctxMenuId = "ctx_menu_" + std::to_string(objId);
     if (ctx->BeginPopupContextItem(ctxMenuId, 1)) {
         m_rightClickedObjId = objId;
-
-        if (ctx->BeginMenu(Tr("hierarchy.create_child"))) {
-            ShowCreateEntriesForCategory(ctx, objId, "Camera");
-            if (ctx->BeginMenu(Tr("hierarchy.create_3d_object"))) {
-                ShowCreatePrimitiveMenu(ctx, objId);
-                ctx->EndMenu();
-            }
-            if (ctx->BeginMenu(Tr("hierarchy.create_2d_object"))) {
-                ShowCreate2DMenu(ctx, objId);
-                ctx->EndMenu();
-            }
-            if (ctx->BeginMenu(Tr("hierarchy.post_processing_menu"))) {
-                ShowPostProcessingMenu(ctx, objId);
-                ctx->EndMenu();
-            }
-            if (ctx->BeginMenu(Tr("hierarchy.ui_menu"))) {
-                ShowUiMenu(ctx, objId);
-                ctx->EndMenu();
-            }
-            if (ctx->Selectable(Tr("hierarchy.empty_object"), false, 0, 0, 0)) {
-                if (createEmpty)
-                    createEmpty(objId);
-            }
-            ctx->EndMenu();
-        }
-        ctx->Separator();
-        if (ctx->Selectable(Tr("project.copy"), false, 0, 0, 0)) {
-            if (copySelected)
-                copySelected(false);
-        }
-        if (ctx->Selectable(Tr("project.cut"), false, 0, 0, 0)) {
-            if (copySelected)
-                copySelected(true);
-        }
-        if (ctx->Selectable(Tr("project.paste"), false, 0, 0, 0)) {
-            if (pasteClipboard)
-                pasteClipboard();
-        }
-        ctx->Separator();
-        if (ctx->Selectable(Tr("hierarchy.rename"), false, 0, 0, 0))
-            BeginRename(objId);
-        ctx->Separator();
-        if (ctx->Selectable(Tr("hierarchy.save_as_prefab"), false, 0, 0, 0)) {
-            if (saveAsPrefab)
-                saveAsPrefab(objId);
-        }
-
-        // Prefab instance actions
-        if (isPrefab) {
-            ctx->Separator();
-            ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::PREFAB_TEXT.x, EditorTheme::PREFAB_TEXT.y,
-                                EditorTheme::PREFAB_TEXT.z, EditorTheme::PREFAB_TEXT.w);
-            ctx->Label(Tr("hierarchy.prefab_label"));
-            ctx->PopStyleColor(1);
-            if (ctx->Selectable(Tr("hierarchy.select_prefab_asset"), false, 0, 0, 0)) {
-                if (prefabSelectAsset)
-                    prefabSelectAsset(objId);
-            }
-            if (ctx->Selectable(Tr("hierarchy.open_prefab"), false, 0, 0, 0)) {
-                if (prefabOpenAsset)
-                    prefabOpenAsset(objId);
-            }
-            if (ctx->Selectable(Tr("hierarchy.apply_all_overrides"), false, 0, 0, 0)) {
-                if (prefabApplyOverrides)
-                    prefabApplyOverrides(objId);
-            }
-            if (ctx->Selectable(Tr("hierarchy.revert_all_overrides"), false, 0, 0, 0)) {
-                if (prefabRevertOverrides)
-                    prefabRevertOverrides(objId);
-            }
-            ctx->Separator();
-            if (ctx->Selectable(Tr("hierarchy.unpack_prefab"), false, 0, 0, 0)) {
-                if (prefabUnpack)
-                    prefabUnpack(objId);
-            }
-        }
-
-        ctx->Separator();
-        if (ctx->Selectable(Tr("hierarchy.delete"), false, 0, 0, 0)) {
-            if (undoRecordDelete)
-                undoRecordDelete(objId, "Delete GameObject");
-            if (m_selIds.count(objId)) {
-                if (clearSelection)
-                    clearSelection();
-                SyncSelectionCache();
-                NotifySelectionChanged();
-            }
-        }
+        RenderItemContextMenu(ctx, obj);
         ctx->EndPopup();
     }
 
@@ -1699,22 +1587,6 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
     }
     m_subPreSelection += msSince(preSelectionStart);
 
-    // Keyboard shortcuts (F2 rename, Delete)
-    auto shortcutStart = Clock::now();
-    const bool hierarchyFocused = ctx->IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-    if (hierarchyFocused && !ctx->WantTextInput() && m_selCount > 0) {
-        if (ctx->IsKeyPressed(kKeyF2) && m_renameId == 0) {
-            if (m_selPrimary)
-                BeginRename(m_selPrimary);
-        }
-        if (ctx->IsKeyPressed(kKeyDelete)) {
-            if (deleteSelectedObjects)
-                deleteSelectedObjects();
-            SyncSelectionCache();
-        }
-    }
-    m_subPreShortcuts += msSince(shortcutStart);
-
     // Deferred left-click selection
     auto pendingStart = Clock::now();
     if (m_pendingSelectId != 0) {
@@ -1790,8 +1662,6 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                 onHierarchyPanelFocused(focused);
         }
     }
-
-    HandleClipboardShortcuts(ctx);
 
     // ── Header: scene name / prefab mode / ui mode ──────────────
     auto headerStart = Clock::now();

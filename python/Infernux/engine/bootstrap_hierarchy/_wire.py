@@ -362,6 +362,32 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
 
     hp.on_hierarchy_panel_focused = _on_hierarchy_focus_changed
 
+    # -- Unified command routing --
+    from Infernux.engine.interaction import CommandSource
+
+    command_registry = bs.interaction_core.commands
+
+    def _command_payload(argument):
+        target_id = str(argument or "").strip()
+        return {"target_id": target_id} if target_id else {}
+
+    hp.execute_command = lambda command_id, source, argument: (
+        command_registry.execute(
+            command_id,
+            source=CommandSource(source),
+            payload=_command_payload(argument),
+        ).accepted
+    )
+    hp.can_execute_command = lambda command_id, argument: (
+        command_registry.can_execute(
+            command_id,
+            command_registry.context(
+                CommandSource.CONTEXT_MENU,
+                _command_payload(argument),
+            ),
+        )
+    )
+
     # -- Translation & warning --
     hp.translate = _t
     hp.show_warning = lambda msg: Debug.log_warning(msg)

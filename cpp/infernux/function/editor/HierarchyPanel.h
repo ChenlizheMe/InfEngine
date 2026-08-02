@@ -55,6 +55,7 @@ class HierarchyPanel : public EditorPanel
                                 const std::string &prefabDisplayName);
     void ExpandToObject(uint64_t objId);
     void InvalidateSceneStructureCache();
+    void BeginRenameObject(uint64_t objId);
 
     /// Allow external panels (UIEditorPanel) to queue an auto-expand.
     void SetPendingExpandId(uint64_t id)
@@ -134,6 +135,11 @@ class HierarchyPanel : public EditorPanel
     // ── Focus callback ──────────────────────────────────────────────
 
     std::function<void(bool)> onHierarchyPanelFocused;
+
+    // ── Unified editor command entry points ─────────────────────────
+
+    std::function<bool(const std::string &, const std::string &, const std::string &)> executeCommand;
+    std::function<bool(const std::string &, const std::string &)> canExecuteCommand;
 
     // ── Clipboard callbacks ──────────────────────────────────────────
 
@@ -334,8 +340,8 @@ class HierarchyPanel : public EditorPanel
     // Ordered IDs
     std::vector<uint64_t> CollectOrderedIds(const std::vector<GameObject *> &roots) const;
 
-    // Clipboard shortcuts
-    void HandleClipboardShortcuts(InxGUIContext *ctx);
+    bool ExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;
+    bool CanExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;
 
     // Context menus
     void ShowStandardCreateMenus(InxGUIContext *ctx, uint64_t parentId, const char *semanticRoot);

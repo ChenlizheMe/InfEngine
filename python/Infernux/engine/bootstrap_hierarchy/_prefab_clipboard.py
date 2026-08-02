@@ -359,32 +359,3 @@ def wire_clipboard(ctx):
             _paste_clipboard,
             lambda: bool(_clipboard["entries"]),
         )
-
-    engine = getattr(bs, "engine", None)
-    if engine is not None:
-        from Infernux.debug import Debug
-        from Infernux.lib import InxGUIRenderable, InxGUIContext
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        from Infernux.engine.ui import imgui_keys as _keys
-
-        class _SceneHierarchyClipboardShortcuts(InxGUIRenderable):
-            def on_render(self, ctx: InxGUIContext):
-                if ClosablePanel.get_active_panel_id() != "scene_view":
-                    return
-                if ctx.want_text_input():
-                    return
-                ctrl = ctx.is_key_down(_keys.KEY_LEFT_CTRL) or ctx.is_key_down(_keys.KEY_RIGHT_CTRL)
-                if not ctrl:
-                    return
-                try:
-                    if ctx.is_key_pressed(_keys.KEY_C):
-                        _copy_selected(False)
-                    elif ctx.is_key_pressed(_keys.KEY_X):
-                        _copy_selected(True)
-                    elif ctx.is_key_pressed(_keys.KEY_V) and _clipboard["entries"]:
-                        _paste_clipboard()
-                except Exception as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-
-        bs._scene_hierarchy_clipboard_shortcuts = _SceneHierarchyClipboardShortcuts()
-        engine.register_gui("scene_hierarchy_clipboard_shortcuts", bs._scene_hierarchy_clipboard_shortcuts)

@@ -2513,6 +2513,7 @@ class HierarchyPanel(EditorPanel):
     def expand_to_object(self, obj_id: int) -> None: ...
     def set_pending_expand_id(self, obj_id: int) -> None: ...
     def invalidate_scene_structure_cache(self) -> None: ...
+    def begin_rename_object(self, obj_id: int) -> None: ...
 
     # Selection callbacks
     is_selected: Any
@@ -2530,6 +2531,10 @@ class HierarchyPanel(EditorPanel):
     on_selection_changed: Any
     on_double_click_focus: Any
     on_selection_changed_ui_editor: Any
+
+    # Unified command callbacks
+    execute_command: Any
+    can_execute_command: Any
 
     # Undo callbacks
     undo_record_create: Any

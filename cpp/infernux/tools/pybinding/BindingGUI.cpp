@@ -1208,6 +1208,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("expand_to_object", &HierarchyPanel::ExpandToObject, py::arg("obj_id"))
         .def("set_pending_expand_id", &HierarchyPanel::SetPendingExpandId, py::arg("obj_id"))
         .def("invalidate_scene_structure_cache", &HierarchyPanel::InvalidateSceneStructureCache)
+        .def("begin_rename_object", &HierarchyPanel::BeginRenameObject, py::arg("obj_id"))
         // Selection callbacks
         .def_readwrite("is_selected", &HierarchyPanel::isSelected)
         .def_readwrite("select_id", &HierarchyPanel::selectId)
@@ -1256,6 +1257,9 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("prefab_unpack", &HierarchyPanel::prefabUnpack)
         // Hierarchy panel focus callback
         .def_readwrite("on_hierarchy_panel_focused", &HierarchyPanel::onHierarchyPanelFocused)
+        // Unified commands
+        .def_readwrite("execute_command", &HierarchyPanel::executeCommand)
+        .def_readwrite("can_execute_command", &HierarchyPanel::canExecuteCommand)
         // Clipboard callbacks
         .def_readwrite("copy_selected", &HierarchyPanel::copySelected)
         .def_readwrite("paste_clipboard", &HierarchyPanel::pasteClipboard)

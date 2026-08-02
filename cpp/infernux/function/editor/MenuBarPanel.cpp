@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <tuple>
 
 namespace infernux
 {
@@ -107,9 +108,9 @@ void MenuBarPanel::HandleShortcuts(InxGUIContext *ctx)
 
     const auto isDown = [ctx](ImGuiKey key) { return ctx->IsKeyDown(static_cast<int>(key)); };
     const bool ctrl = isDown(ImGuiKey_LeftCtrl) || isDown(ImGuiKey_RightCtrl);
-    if (!ctrl)
-        return;
     const bool shift = isDown(ImGuiKey_LeftShift) || isDown(ImGuiKey_RightShift);
+    const bool alt = isDown(ImGuiKey_LeftAlt) || isDown(ImGuiKey_RightAlt);
+    const bool super = isDown(ImGuiKey_LeftSuper) || isDown(ImGuiKey_RightSuper);
     const auto pressedOnce = [](ImGuiKey key) { return ImGui::IsKeyPressed(key, false); };
     const bool textInputActive = ImGui::GetIO().WantTextInput;
     const bool popupActive = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
@@ -118,19 +119,34 @@ void MenuBarPanel::HandleShortcuts(InxGUIContext *ctx)
             routeShortcut(chord, textInputActive, popupActive);
     };
 
-    if (pressedOnce(ImGuiKey_S)) {
-        dispatch(shift ? "Ctrl+Shift+S" : "Ctrl+S");
+    if (ctrl && !alt && !super) {
+        if (pressedOnce(ImGuiKey_S))
+            dispatch(shift ? "Ctrl+Shift+S" : "Ctrl+S");
+
+        if (!shift && pressedOnce(ImGuiKey_N))
+            dispatch("Ctrl+N");
+
+        if (pressedOnce(ImGuiKey_Z))
+            dispatch(shift ? "Ctrl+Shift+Z" : "Ctrl+Z");
+
+        if (!shift && pressedOnce(ImGuiKey_Y))
+            dispatch("Ctrl+Y");
+
+        if (!shift && pressedOnce(ImGuiKey_C))
+            dispatch("Ctrl+C");
+        if (!shift && pressedOnce(ImGuiKey_X))
+            dispatch("Ctrl+X");
+        if (!shift && pressedOnce(ImGuiKey_V))
+            dispatch("Ctrl+V");
+        return;
     }
 
-    if (!shift && pressedOnce(ImGuiKey_N))
-        dispatch("Ctrl+N");
-
-    if (pressedOnce(ImGuiKey_Z)) {
-        dispatch(shift ? "Ctrl+Shift+Z" : "Ctrl+Z");
+    if (!shift && !alt && !super) {
+        if (pressedOnce(ImGuiKey_F2))
+            dispatch("F2");
+        if (pressedOnce(ImGuiKey_Delete))
+            dispatch("Delete");
     }
-
-    if (!shift && pressedOnce(ImGuiKey_Y))
-        dispatch("Ctrl+Y");
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -190,6 +206,19 @@ void MenuBarPanel::RenderEditMenu(InxGUIContext *ctx)
     const bool canRedoCommand = CanExecuteCommand("edit.redo");
     if (SemanticMenuItem(ctx, T("menu.redo"), "Ctrl+Shift+Z", false, canRedoCommand, "menu.edit.redo"))
         ExecuteCommand("edit.redo", "menu");
+
+    ImGui::Separator();
+
+    for (const auto &[commandId, labelKey, shortcut, semanticId] :
+         {std::tuple{"edit.copy", "menu.copy", "Ctrl+C", "menu.edit.copy"},
+          std::tuple{"edit.cut", "menu.cut", "Ctrl+X", "menu.edit.cut"},
+          std::tuple{"edit.paste", "menu.paste", "Ctrl+V", "menu.edit.paste"},
+          std::tuple{"edit.rename", "menu.rename", "F2", "menu.edit.rename"},
+          std::tuple{"edit.delete", "menu.delete", "Delete", "menu.edit.delete"}}) {
+        const bool enabled = CanExecuteCommand(commandId);
+        if (SemanticMenuItem(ctx, T(labelKey), shortcut, false, enabled, semanticId))
+            ExecuteCommand(commandId, "menu");
+    }
 
     ImGui::EndMenu();
 }
