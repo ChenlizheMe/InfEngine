@@ -119,6 +119,8 @@ class EditorActionJournal:
                 previous.after_context = after_context
                 previous.timestamp = time.time()
                 previous.revision += 1
+                self._dispose_action(action)
+                self._dispose_entries(discarded_redo)
                 return JournalPushResult(
                     True,
                     merged=True,
@@ -141,6 +143,9 @@ class EditorActionJournal:
             dropped = tuple(self._entries[:overflow])
             del self._entries[:overflow]
             self._cursor = max(0, self._cursor - overflow)
+
+        self._dispose_entries(discarded_redo)
+        self._dispose_entries(dropped)
 
         return JournalPushResult(
             True,
@@ -167,5 +172,24 @@ class EditorActionJournal:
         self._cursor += 1
 
     def clear(self) -> None:
+        entries = tuple(self._entries)
         self._entries.clear()
         self._cursor = 0
+        self._dispose_entries(entries)
+
+    @staticmethod
+    def _dispose_action(action: Any) -> None:
+        dispose = getattr(action, "dispose", None)
+        if not callable(dispose):
+            return
+        try:
+            dispose()
+        except Exception as exc:
+            from Infernux.debug import Debug
+
+            Debug.log_suppressed("EditorActionJournal.dispose", exc)
+
+    @classmethod
+    def _dispose_entries(cls, entries: tuple[JournalEntry, ...]) -> None:
+        for entry in entries:
+            cls._dispose_action(entry.action)

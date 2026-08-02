@@ -7,6 +7,26 @@ from Infernux.engine.interaction import (
     EditorActionJournal,
     EditorContextSnapshot,
 )
+
+
+class _DisposableAction:
+    marks_dirty = False
+
+    def __init__(self, name: str, disposed: list[str], *, merge: bool = False):
+        self.name = name
+        self.disposed = disposed
+        self.merge_enabled = merge
+
+    def can_merge(self, _other) -> bool:
+        return self.merge_enabled
+
+    def merge(self, _other) -> None:
+        pass
+
+    def dispose(self) -> None:
+        self.disposed.append(self.name)
+
+
 from Infernux.engine.undo import UndoCommand, UndoManager
 
 
@@ -44,6 +64,38 @@ def test_action_journal_uses_one_cursor_and_discards_redo_branch():
     assert journal.cursor == 2
     assert [entry.action for entry in journal.entries] == [first, replacement]
     assert result.discarded_redo[0].action is second
+
+
+def test_action_journal_disposes_redo_branch_overflow_and_clear():
+    disposed = []
+    journal = EditorActionJournal(max_entries=2)
+    first = _DisposableAction("first", disposed)
+    second = _DisposableAction("second", disposed)
+    third = _DisposableAction("third", disposed)
+    replacement = _DisposableAction("replacement", disposed)
+
+    journal.record(first)
+    journal.record(second)
+    journal.record(third)
+    assert disposed == ["first"]
+
+    journal.commit_undo(journal.peek_undo())
+    journal.record(replacement)
+    assert disposed == ["first", "third"]
+
+    journal.clear()
+    assert disposed == ["first", "third", "second", "replacement"]
+
+
+def test_action_journal_disposes_action_absorbed_by_merge():
+    disposed = []
+    journal = EditorActionJournal()
+    journal.record(_DisposableAction("stored", disposed, merge=True))
+
+    result = journal.record(_DisposableAction("incoming", disposed))
+
+    assert result.merged
+    assert disposed == ["incoming"]
 
 
 def test_external_changes_never_enter_user_history():

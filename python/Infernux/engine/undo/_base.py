@@ -28,6 +28,15 @@ class UndoCommand(ABC):
     def redo(self) -> None:
         self.execute()
 
+    def dispose(self) -> None:
+        """Release resources retained only for future replay.
+
+        The global action journal calls this exactly once after an action is
+        permanently removed from history. Most actions own no external
+        resources; asset transactions use it to remove disk-backed snapshots.
+        """
+        pass
+
     def can_merge(self, other: UndoCommand) -> bool:
         return False
 
@@ -77,6 +86,10 @@ class CompoundCommand(UndoCommand):
             for cmd in reversed(applied):
                 cmd.undo()
             raise
+
+    def dispose(self) -> None:
+        for command in self._commands:
+            command.dispose()
 
 
 class LambdaCommand(UndoCommand):
