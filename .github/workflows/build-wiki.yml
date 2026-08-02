@@ -72,6 +72,10 @@ jobs:
           DOCS_SOURCE_COMMIT: ${{ github.sha }}
         run: node docs/tools/stamp-docs-manifest.mjs
 
+      - name: Load deterministic Wiki build timestamp
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(node docs/tools/docs-source-date-epoch.mjs)" >> "$GITHUB_ENV"
+
       - name: Generate structured release notes
         run: node docs/tools/build-release-notes.mjs
 

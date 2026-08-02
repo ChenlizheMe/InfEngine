@@ -53,6 +53,10 @@ jobs:
       - name: Verify documentation build provenance schema
         run: node docs/tools/stamp-docs-manifest.mjs --check
 
+      - name: Load deterministic Wiki build timestamp
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(node docs/tools/docs-source-date-epoch.mjs)" >> "$GITHUB_ENV"
+
       - name: Verify curated core API guidance is current
         run: node docs/tools/apply-api-curation.mjs --check
 
