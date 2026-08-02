@@ -996,6 +996,134 @@ class TestInstantiate:
             assert restored.speed == pytest.approx(6.25)
             assert restored.wrap_distance == pytest.approx(42.0)
 
+    def test_ui_prefab_drop_with_implicit_canvas_is_one_atomic_action(
+        self, scene, tmp_path
+    ):
+        from Infernux.engine.bootstrap_hierarchy._wire import _wire_drop_and_delete
+        from Infernux.engine.interaction import (
+            EditorContextSnapshot,
+            SelectionService,
+            SelectionTarget,
+        )
+        from Infernux.engine.prefab_manager import save_prefab
+        from Infernux.engine.ui.selection_manager import SelectionManager
+        from Infernux.engine.undo import HierarchyUndoTracker, UndoManager
+        from Infernux.ui import UICanvas
+
+        source = scene.create_game_object("AtomicUIPrefab")
+        prefab_path = tmp_path / "atomic_ui.prefab"
+        assert save_prefab(
+            source,
+            str(prefab_path),
+            source_canvas_name="HUD",
+        )
+
+        selection = SelectionService.instance()
+        selection.select(
+            SelectionTarget.scene_object(source.id),
+            owner_id="hierarchy",
+            record_history=False,
+        )
+        previous_manager = UndoManager.instance()
+        manager = UndoManager()
+
+        def restore_context(context, _phase):
+            selection.apply_snapshot(context.selection, record_history=False)
+
+        manager.set_context_hooks(
+            lambda: EditorContextSnapshot(selection=selection.snapshot),
+            restore_context,
+        )
+        hierarchy = SimpleNamespace()
+        context = SimpleNamespace(
+            hp=hierarchy,
+            bs=SimpleNamespace(scene_file_manager=None),
+            sel=SelectionManager.instance(),
+            undo=HierarchyUndoTracker(),
+        )
+
+        try:
+            _wire_drop_and_delete(context)
+            hierarchy.instantiate_prefab(str(prefab_path), 0, False)
+
+            assert len(manager.action_journal.entries) == 1
+            assert manager.undo_description == "Instantiate Prefab"
+            instance_id = selection.snapshot.primary.scene_object_id()
+            instance = scene.find_by_id(instance_id)
+            canvas = instance.get_parent()
+            canvas_id = canvas.id
+            assert canvas.name == "HUD"
+            assert canvas.get_py_component(UICanvas) is not None
+
+            manager.undo()
+            assert scene.find_by_id(instance_id) is None
+            assert scene.find_by_id(canvas_id) is None
+            assert selection.snapshot.primary == SelectionTarget.scene_object(source.id)
+
+            manager.redo()
+            restored_canvas = scene.find_by_id(canvas_id)
+            restored_instance = scene.find_by_id(instance_id)
+            assert restored_canvas is not None
+            assert restored_instance is not None
+            assert restored_instance.get_parent() is restored_canvas
+            assert selection.snapshot.primary == SelectionTarget.scene_object(instance_id)
+        finally:
+            manager.clear()
+            UndoManager._instance = previous_manager
+
+    def test_failed_ui_prefab_drop_rolls_back_implicit_canvas(
+        self, scene, tmp_path, monkeypatch
+    ):
+        from Infernux.engine.bootstrap_hierarchy._wire import _wire_drop_and_delete
+        from Infernux.engine.interaction import SelectionService, SelectionTarget
+        from Infernux.engine.prefab_manager import save_prefab
+        from Infernux.engine.ui.selection_manager import SelectionManager
+        from Infernux.engine.undo import HierarchyUndoTracker, UndoManager
+
+        source = scene.create_game_object("BrokenUIPrefab")
+        prefab_path = tmp_path / "broken_ui.prefab"
+        assert save_prefab(
+            source,
+            str(prefab_path),
+            source_canvas_name="RollbackCanvas",
+        )
+
+        selection = SelectionService.instance()
+        selection.select(
+            SelectionTarget.scene_object(source.id),
+            owner_id="hierarchy",
+            record_history=False,
+        )
+        previous_manager = UndoManager.instance()
+        manager = UndoManager()
+        hierarchy = SimpleNamespace()
+        context = SimpleNamespace(
+            hp=hierarchy,
+            bs=SimpleNamespace(scene_file_manager=None),
+            sel=SelectionManager.instance(),
+            undo=HierarchyUndoTracker(),
+        )
+
+        def fail_instantiation(**_kwargs):
+            raise RuntimeError("intentional prefab failure")
+
+        monkeypatch.setattr(
+            "Infernux.engine.prefab_manager.instantiate_prefab",
+            fail_instantiation,
+        )
+        try:
+            _wire_drop_and_delete(context)
+            hierarchy.instantiate_prefab(str(prefab_path), 0, False)
+
+            assert all(
+                obj.name != "RollbackCanvas" for obj in scene.get_root_objects()
+            )
+            assert len(manager.action_journal.entries) == 0
+            assert selection.snapshot.primary == SelectionTarget.scene_object(source.id)
+        finally:
+            manager.clear()
+            UndoManager._instance = previous_manager
+
     def test_structural_undo_restores_rich_python_fields(self, scene):
         original = scene.create_game_object("UndoRichSource")
         original_id = original.id

@@ -174,61 +174,116 @@ def _wire_drop_and_delete(ctx):
     def _instantiate_prefab(ref, parent_id, is_guid):
         from Infernux.lib import SceneManager, AssetRegistry
         from Infernux.engine.prefab_manager import instantiate_prefab, read_prefab_source_canvas
+        from Infernux.engine.undo import (
+            CompoundCommand,
+            CreateGameObjectCommand,
+            UndoManager,
+        )
+        from Infernux.engine.interaction import SelectionService
         from Infernux.ui import UICanvas as _UICanvasCls
         from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
         scene = SceneManager.instance().get_active_scene()
         if not scene:
             return
+        selection = SelectionService.instance()
+        before_selection = selection.snapshot
         adb = None
         registry = AssetRegistry.instance()
         if registry:
             adb = registry.get_asset_database()
         parent = scene.find_by_id(parent_id) if parent_id else None
+        created_canvas = None
 
-        if parent is None:
-            canvas_name = read_prefab_source_canvas(
-                file_path=ref if not is_guid else None,
-                guid=ref if is_guid else None,
-                asset_database=adb,
-            )
-            if canvas_name:
-                for root_obj in scene.get_root_objects():
-                    if root_obj.name != canvas_name:
-                        continue
-                    for comp in _get_py_components_safe(root_obj):
-                        if isinstance(comp, _UICanvasCls):
-                            parent = root_obj
-                            break
-                    if parent is not None:
-                        break
-                if parent is None:
-                    canvas_go = scene.create_game_object(canvas_name)
-                    if canvas_go:
-                        canvas_go.add_py_component(_UICanvasCls())
-                        invalidate_canvas_cache()
-                        undo.record_create(canvas_go.id, "Create Canvas")
-                        parent = canvas_go
+        def _rollback_implicit_canvas() -> None:
+            nonlocal created_canvas
+            if created_canvas is None:
+                return
+            try:
+                scene.destroy_game_object(created_canvas)
+                scene.process_pending_destroys()
+                invalidate_canvas_cache()
+            except Exception as cleanup_exc:
+                Debug.log_suppressed(
+                    "hierarchy.prefab_drop.canvas_rollback",
+                    cleanup_exc,
+                )
+            finally:
+                created_canvas = None
 
         try:
+            if parent is None:
+                canvas_name = read_prefab_source_canvas(
+                    file_path=ref if not is_guid else None,
+                    guid=ref if is_guid else None,
+                    asset_database=adb,
+                )
+                if canvas_name:
+                    for root_obj in scene.get_root_objects():
+                        if root_obj.name != canvas_name:
+                            continue
+                        for comp in _get_py_components_safe(root_obj):
+                            if isinstance(comp, _UICanvasCls):
+                                parent = root_obj
+                                break
+                        if parent is not None:
+                            break
+                    if parent is None:
+                        created_canvas = scene.create_game_object(canvas_name)
+                        if created_canvas is None:
+                            raise RuntimeError(
+                                f"Failed to create Canvas '{canvas_name}' for prefab"
+                            )
+                        if created_canvas.add_py_component(_UICanvasCls()) is None:
+                            raise RuntimeError(
+                                f"Failed to attach UICanvas to '{canvas_name}'"
+                            )
+                        invalidate_canvas_cache()
+                        parent = created_canvas
+
             if is_guid:
                 new_obj = instantiate_prefab(guid=ref, scene=scene, parent=parent, asset_database=adb)
             else:
                 new_obj = instantiate_prefab(file_path=ref, scene=scene, parent=parent, asset_database=adb)
         except Exception as exc:
+            _rollback_implicit_canvas()
             Debug.log_error(f"Prefab instantiation failed: {exc}")
             return
-        if new_obj:
-            from Infernux.engine.interaction import SelectionService
+        if new_obj is None:
+            _rollback_implicit_canvas()
+            Debug.log_error("Prefab instantiation failed: no GameObject was created")
+            return
 
-            selection = SelectionService.instance()
-            before_selection = selection.snapshot
-            sel.select(new_obj.id, record_history=False)
-            undo.record_create(
+        sel.select(new_obj.id, record_history=False)
+        after_selection = selection.snapshot
+        commands = []
+        if created_canvas is not None:
+            commands.append(
+                CreateGameObjectCommand(
+                    created_canvas.id,
+                    "Instantiate Prefab",
+                )
+            )
+        commands.append(
+            CreateGameObjectCommand(
                 new_obj.id,
                 "Instantiate Prefab",
                 before_selection=before_selection,
-                after_selection=selection.snapshot,
+                after_selection=after_selection,
             )
+        )
+        command = (
+            commands[0]
+            if len(commands) == 1
+            else CompoundCommand(commands, "Instantiate Prefab")
+        )
+        manager = UndoManager.instance()
+        if manager is not None and manager.enabled:
+            manager.record(command)
+        else:
+            command.dispose()
+            scene_file_manager = getattr(bs, "scene_file_manager", None)
+            if scene_file_manager is not None:
+                scene_file_manager.mark_dirty()
 
     def _create_model_object(ref, parent_id, is_guid):
         from Infernux.lib import SceneManager, AssetRegistry

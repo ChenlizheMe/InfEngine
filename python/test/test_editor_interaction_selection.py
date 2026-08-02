@@ -11,6 +11,36 @@ from Infernux.engine.ui.selection_manager import SelectionManager
 import pytest
 
 
+def test_legacy_selection_adapter_rebinds_to_replaced_authority(monkeypatch):
+    monkeypatch.setattr(SelectionService, "_instance", None)
+    monkeypatch.setattr(SelectionManager, "_instance", None)
+
+    original = SelectionService()
+    adapter = SelectionManager.instance()
+    notifications = []
+    adapter.add_listener(lambda: notifications.append(adapter.get_ids()))
+
+    replacement = SelectionService()
+    assert SelectionManager.instance() is adapter
+    assert adapter._selection is replacement
+
+    replacement.select(
+        SelectionTarget.scene_object(42),
+        owner_id="hierarchy",
+        record_history=False,
+    )
+    assert adapter.get_ids() == [42]
+    assert notifications == [[42]]
+
+    original.select(
+        SelectionTarget.scene_object(7),
+        owner_id="hierarchy",
+        record_history=False,
+    )
+    assert adapter.get_ids() == [42]
+    assert notifications == [[42]]
+
+
 def test_selection_service_has_one_active_domain():
     service = SelectionService()
     service.select(SelectionTarget.scene_object(7), owner_id="hierarchy")

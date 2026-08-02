@@ -40,13 +40,26 @@ class SelectionManager:
     def instance(cls) -> "SelectionManager":
         if cls._instance is None:
             cls._instance = cls()
+        else:
+            current = SelectionService.instance()
+            if cls._instance._selection is not current:
+                cls._instance._bind_selection(current)
         return cls._instance
 
     def __init__(self) -> None:
         self._callbacks: list[Callable[[], None]] = []
-        self._selection = SelectionService.instance()
-        self._selection.add_listener(self._on_selection_changed)
+        self._selection: SelectionService | None = None
+        self._bind_selection(SelectionService.instance())
         SelectionManager._instance = self
+
+    def _bind_selection(self, selection: SelectionService) -> None:
+        previous = self._selection
+        if previous is selection:
+            return
+        if previous is not None:
+            previous.remove_listener(self._on_selection_changed)
+        self._selection = selection
+        selection.add_listener(self._on_selection_changed)
 
     def _on_selection_changed(self, _change: SelectionChange) -> None:
         for callback in tuple(self._callbacks):
