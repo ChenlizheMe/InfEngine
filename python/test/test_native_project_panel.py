@@ -333,11 +333,48 @@ class TestProjectPanelCallbacks:
         pp = ProjectPanel()
         pp.set_root_path(str(tmp_path))
         pp.set_selected_file(str(asset))
+        copied = []
+        pp.write_asset_clipboard = (
+            lambda paths, cut: copied.append((list(paths), cut)) or True
+        )
 
         assert pp.has_selected_assets() is True
         assert pp.can_rename_selected_asset() is True
         assert pp.can_rename_selected_asset(str(asset)) is True
         assert pp.copy_selected_assets(False) is True
+        assert copied == [([str(asset)], False)]
+
+    def test_project_paste_reads_shared_clipboard_without_owning_state(self, tmp_path):
+        import shutil
+
+        source_dir = tmp_path / "Source"
+        target_dir = tmp_path / "Assets"
+        source_dir.mkdir()
+        target_dir.mkdir()
+        source = source_dir / "Shared.mat"
+        source.write_text("{}", encoding="utf-8")
+
+        pp = ProjectPanel()
+        pp.set_root_path(str(target_dir))
+        pp.set_current_path(str(target_dir))
+        pp.read_asset_clipboard = lambda: ([str(source)], False)
+        pp.copy_item_to_path = lambda old, new: (
+            shutil.copy2(old, new) and str(new)
+        )
+        pp.get_unique_name = lambda _cur, base, _ext: base
+        selected = []
+        pp.on_selection_changed = (
+            lambda paths, primary: selected.append((list(paths), primary))
+        )
+
+        assert pp.paste_assets() is True
+        copied = target_dir / source.name
+        assert copied.exists()
+        assert len(selected) == 1
+        selected_paths, primary = selected[0]
+        assert len(selected_paths) == 1
+        assert os.path.samefile(selected_paths[0], copied)
+        assert os.path.samefile(primary, copied)
 
     def test_project_shortcuts_are_not_polled_inside_the_panel(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(

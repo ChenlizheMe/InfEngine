@@ -31,6 +31,14 @@ from .action_journal import (
     JournalPushResult,
 )
 from .selection import SelectionChange, SelectionService
+from .clipboard import (
+    ClipboardChange,
+    ClipboardDomain,
+    ClipboardItem,
+    ClipboardOperation,
+    ClipboardPayload,
+    ClipboardService,
+)
 from .commands import (
     CommandContext,
     CommandResult,
@@ -93,6 +101,12 @@ __all__ = [
     "SelectionService",
     "SelectionSnapshot",
     "SelectionTarget",
+    "ClipboardChange",
+    "ClipboardDomain",
+    "ClipboardItem",
+    "ClipboardOperation",
+    "ClipboardPayload",
+    "ClipboardService",
     "KeyChord",
     "ShortcutBinding",
     "ShortcutEvent",

@@ -280,9 +280,6 @@ class BootstrapPanelsMixin:
         self.scene_view.set_window_manager(wm)
         if engine._play_mode_manager is not None:
             self.scene_view.set_play_mode_manager(engine._play_mode_manager)
-        delete_selected = getattr(self, "_delete_selected_objects", None)
-        if delete_selected is not None:
-            self.scene_view.set_object_delete_handler(delete_selected)
         engine.register_gui("scene_view", self.scene_view)
         wm.register_existing_window("scene_view", self.scene_view, "scene_view")
 

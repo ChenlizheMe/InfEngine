@@ -28,17 +28,21 @@ from Infernux.input import Input
 
 
 @pytest.fixture(autouse=True)
-def _reset_editor_document_registry():
-    """Prevent process-wide editor documents from leaking across tests."""
-    from Infernux.engine.interaction import DocumentRegistry
+def _reset_editor_interaction_state():
+    """Prevent process-wide editor interaction state from leaking across tests."""
+    from Infernux.engine.interaction import ClipboardService, DocumentRegistry
 
     registry = DocumentRegistry()
+    clipboard = ClipboardService()
     try:
         yield registry
     finally:
         registry.clear()
+        clipboard.clear(reason="test_teardown")
         if DocumentRegistry._instance is registry:
             DocumentRegistry._instance = None
+        if ClipboardService._instance is clipboard:
+            ClipboardService._instance = None
 
 
 # ── session-scoped engine (Vulkan + SDL, created once for ALL tests) ─────

@@ -1714,22 +1714,17 @@ bool ProjectPanel::CanPasteAssets() const
 bool ProjectPanel::CopySelectedAssets(bool cut)
 {
     const auto selected = GetSelectedPaths();
-    if (selected.empty())
+    if (selected.empty() || !writeAssetClipboard)
         return false;
-    if (cut)
-        ClipboardCut(selected);
-    else
-        ClipboardCopy(selected);
-    return HasClipboardItems();
+    return writeAssetClipboard(selected, cut);
 }
 
 bool ProjectPanel::PasteAssets()
 {
     if (m_currentPath.empty())
         return false;
-    const auto beforeSelection = m_selectedFiles;
-    ClipboardPaste();
-    return beforeSelection != m_selectedFiles;
+    const auto payload = readAssetClipboard ? readAssetClipboard() : std::pair<std::vector<std::string>, bool>{};
+    return ClipboardPaste(payload.first, payload.second);
 }
 
 bool ProjectPanel::RequestDeleteSelectedAssets()
@@ -1958,56 +1953,26 @@ static std::vector<std::string> GetOSClipboardFiles()
     return result;
 }
 
-void ProjectPanel::ClipboardCopy(const std::vector<std::string> &paths)
-{
-    m_clipboardPaths.clear();
-    std::error_code ec;
-    for (auto &p : paths)
-        if (!p.empty() && fs::exists(fs::u8path(p), ec))
-            m_clipboardPaths.push_back(p);
-    m_clipboardIsCut = false;
-}
-
-void ProjectPanel::ClipboardCut(const std::vector<std::string> &paths)
-{
-    m_clipboardPaths.clear();
-    std::error_code ec;
-    for (auto &p : paths)
-        if (!p.empty() && fs::exists(fs::u8path(p), ec))
-            m_clipboardPaths.push_back(p);
-    m_clipboardIsCut = true;
-}
-
-bool ProjectPanel::HasClipboardItems() const
-{
-    std::error_code ec;
-    for (auto &p : m_clipboardPaths)
-        if (fs::exists(fs::u8path(p), ec))
-            return true;
-    return false;
-}
-
-void ProjectPanel::ClipboardPaste()
+bool ProjectPanel::ClipboardPaste(const std::vector<std::string> &paths, bool isCut)
 {
     std::error_code ec;
     std::vector<std::string> sources;
-    bool isCut = m_clipboardIsCut;
 
-    // Try internal clipboard first
-    for (auto &p : m_clipboardPaths)
+    // The shared clipboard only stores stable paths. Revalidate them at the
+    // execution boundary because an external filesystem mutation may have
+    // happened since Copy/Cut.
+    for (const auto &p : paths)
         if (fs::exists(fs::u8path(p), ec))
             sources.push_back(p);
 
-    // Fall back to OS clipboard (always copy, never cut)
+    // An OS file clipboard is an external copy source, never an Editor cut.
     if (sources.empty()) {
         sources = GetOSClipboardFiles();
         isCut = false;
     }
 
-    if (sources.empty()) {
-        m_clipboardPaths.clear();
-        return;
-    }
+    if (sources.empty())
+        return false;
 
     std::vector<std::string> pastedPaths;
     for (auto &src : sources) {
@@ -2061,10 +2026,10 @@ void ProjectPanel::ClipboardPaste()
     }
 
     if (pastedPaths.empty())
-        return;
+        return false;
 
-    if (isCut)
-        m_clipboardPaths.clear();
+    if (isCut && consumeAssetClipboard)
+        consumeAssetClipboard();
 
     m_pendingCacheInvalidation = true;
     m_selectedFiles = pastedPaths;
@@ -2072,6 +2037,7 @@ void ProjectPanel::ClipboardPaste()
     m_selectedSet.clear();
     m_selectedSet.insert(pastedPaths.begin(), pastedPaths.end());
     NotifySelectionChanged();
+    return true;
 }
 
 // ════════════════════════════════════════════════════════════════════

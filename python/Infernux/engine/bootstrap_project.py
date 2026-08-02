@@ -65,6 +65,51 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     pp.execute_command = _execute_project_command
     pp.can_execute_command = _can_execute_project_command
 
+    from Infernux.engine.interaction import (
+        ClipboardDomain,
+        ClipboardItem,
+        ClipboardOperation,
+    )
+
+    clipboard = bs.interaction_core.clipboard
+
+    def _write_asset_clipboard(paths, cut: bool) -> bool:
+        from Infernux.engine.path_utils import lexical_path
+
+        items = tuple(
+            ClipboardItem(lexical_path(path))
+            for path in paths or ()
+            if path and os.path.exists(path)
+        )
+        if not items:
+            return False
+        clipboard.write(
+            ClipboardDomain.ASSET,
+            items,
+            operation=(ClipboardOperation.CUT if cut else ClipboardOperation.COPY),
+            source_owner_id="project",
+            reason="cut_assets" if cut else "copy_assets",
+        )
+        return True
+
+    def _read_asset_clipboard():
+        payload = clipboard.peek(ClipboardDomain.ASSET)
+        if payload is None:
+            return [], False
+        return (
+            [item.target_id for item in payload.items],
+            payload.operation is ClipboardOperation.CUT,
+        )
+
+    def _consume_asset_clipboard() -> None:
+        payload = clipboard.peek(ClipboardDomain.ASSET)
+        if payload is not None:
+            clipboard.consume_cut(payload.revision)
+
+    pp.write_asset_clipboard = _write_asset_clipboard
+    pp.read_asset_clipboard = _read_asset_clipboard
+    pp.consume_asset_clipboard = _consume_asset_clipboard
+
     # -- Asset database access (via engine) --
     adb = bs.engine.get_asset_database()
 

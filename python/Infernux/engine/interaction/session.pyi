@@ -5,10 +5,12 @@ from .documents import DocumentRegistry
 from .close_coordinator import CloseCoordinator
 from .commands import EditorCommandRegistry
 from .selection import SelectionService
+from .clipboard import ClipboardService
 from .shortcuts import ShortcutRouter
 
 class EditorInteractionCore:
     selection: SelectionService
+    clipboard: ClipboardService
     focus: FocusService
     documents: DocumentRegistry
     close_coordinator: CloseCoordinator

@@ -10,29 +10,8 @@ from Infernux.engine.undo import UndoManager
 from Infernux.lib import Vector3
 
 
-class _ShortcutContext:
-    def want_text_input(self):
-        return False
-
-    def is_key_pressed(self, key):
-        return key == SceneViewPanel.KEY_DELETE
-
-    def is_key_down(self, key):
-        return False
-
-
-def test_scene_view_delete_uses_shared_structural_handler():
-    panel = SceneViewPanel(engine=None)
-    panel._delete_selected_callback = lambda: calls.append("delete")
-    panel._copy_selected_callback = None
-    panel._paste_clipboard_callback = None
-    panel._has_clipboard_data_callback = None
-    panel._is_window_or_child_focused = lambda _ctx: False
-    calls = []
-
-    panel._handle_object_clipboard_shortcuts(_ShortcutContext(), True)
-
-    assert calls == ["delete"]
+def test_scene_view_has_no_private_structural_shortcut_handler():
+    assert not hasattr(SceneViewPanel, "_handle_object_clipboard_shortcuts")
 
 
 def test_gizmo_drag_orders_selection_primary_first():

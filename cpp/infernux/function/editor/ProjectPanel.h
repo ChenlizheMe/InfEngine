@@ -79,6 +79,12 @@ class ProjectPanel : public EditorPanel
     std::function<bool(const std::string &, const std::string &, const std::string &)> executeCommand;
     std::function<bool(const std::string &, const std::string &)> canExecuteCommand;
 
+    // Shared EditorInteractionCore clipboard bridge. ProjectPanel executes
+    // filesystem operations but never owns clipboard state.
+    std::function<bool(const std::vector<std::string> &, bool)> writeAssetClipboard;
+    std::function<std::pair<std::vector<std::string>, bool>()> readAssetClipboard;
+    std::function<void()> consumeAssetClipboard;
+
     // ── Notification callbacks ───────────────────────────────────────
 
     /// Called when file selection changes (receives single path or empty).
@@ -402,10 +408,6 @@ class ProjectPanel : public EditorPanel
     // Model expand/collapse only needs augmented sub-asset rows rebuilt — not a full dir rescan.
     bool m_pendingAugmentedCacheInvalidation = false;
 
-    // Clipboard
-    std::vector<std::string> m_clipboardPaths;
-    bool m_clipboardIsCut = false;
-
     // ── Focus tracking ───────────────────────────────────────────────
     bool m_wasFocused = false;
 
@@ -459,10 +461,7 @@ class ProjectPanel : public EditorPanel
     void ClearDirCachesNow();
 
     // ── Clipboard helpers ────────────────────────────────────────────
-    void ClipboardCopy(const std::vector<std::string> &paths);
-    void ClipboardCut(const std::vector<std::string> &paths);
-    void ClipboardPaste();
-    bool HasClipboardItems() const;
+    bool ClipboardPaste(const std::vector<std::string> &paths, bool isCut);
 
     bool ExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;
     bool CanExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;

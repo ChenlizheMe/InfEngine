@@ -190,12 +190,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
     KEY_Q = _keys.KEY_Q
     KEY_E = _keys.KEY_E
     KEY_R = _keys.KEY_R
-    KEY_C = _keys.KEY_C
-    KEY_V = _keys.KEY_V
-    KEY_X = _keys.KEY_X
-    KEY_DELETE = _keys.KEY_DELETE
-    KEY_LEFT_CTRL = _keys.KEY_LEFT_CTRL
-    KEY_RIGHT_CTRL = _keys.KEY_RIGHT_CTRL
     KEY_LEFT_SHIFT = _keys.KEY_LEFT_SHIFT
     KEY_RIGHT_SHIFT = _keys.KEY_RIGHT_SHIFT
     
@@ -206,10 +200,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._last_frame_time = 0.0
         self._on_object_picked = None
         self._on_box_select = None  # callback(primary_obj_or_None) after box-select
-        self._copy_selected_callback = None
-        self._paste_clipboard_callback = None
-        self._has_clipboard_data_callback = None
-        self._delete_selected_callback = None
         
         # Scene render target size tracking
         self._last_scene_width = 0
@@ -340,16 +330,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
     def set_on_box_select(self, callback):
         """Set callback after box-select completes (receives primary obj or None)."""
         self._on_box_select = callback
-
-    def set_object_clipboard_handlers(self, copy_selected, paste_clipboard, has_clipboard_data=None):
-        """Set hierarchy-compatible object clipboard callbacks for Scene View focus."""
-        self._copy_selected_callback = copy_selected
-        self._paste_clipboard_callback = paste_clipboard
-        self._has_clipboard_data_callback = has_clipboard_data
-
-    def set_object_delete_handler(self, delete_selected):
-        """Use the hierarchy's structural delete transaction in Scene View."""
-        self._delete_selected_callback = delete_selected
 
     # ------------------------------------------------------------------
     # EditorPanel hooks
@@ -517,8 +497,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
             vp = capture_viewport_info(ctx)
             is_scene_hovered = vp.is_hovered
-            self._handle_object_clipboard_shortcuts(ctx, is_scene_hovered)
-
             overlay_hovered = self._render_overlays_and_shortcuts(
                 ctx,
                 vp,
@@ -541,41 +519,6 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             ctx.set_cursor_pos_x(cursor_start_x + 8)
             ctx.set_cursor_pos_y(cursor_start_y + 8)
             ctx.label(t("scene_view.loading"))
-
-    def _handle_object_clipboard_shortcuts(self, ctx: InxGUIContext, is_scene_hovered: bool):
-        if ctx.want_text_input():
-            return
-
-        panel_active = (ClosablePanel.get_active_panel_id() == self.window_id) or self._is_window_or_child_focused(ctx)
-        if not (panel_active or is_scene_hovered):
-            return
-
-        if ctx.is_key_pressed(self.KEY_DELETE):
-            if self._delete_selected_callback:
-                self._delete_selected_callback()
-            return
-
-        ctrl = ctx.is_key_down(self.KEY_LEFT_CTRL) or ctx.is_key_down(self.KEY_RIGHT_CTRL)
-        if not ctrl:
-            return
-
-        try:
-            if ctx.is_key_pressed(self.KEY_C):
-                if self._copy_selected_callback:
-                    self._copy_selected_callback(False)
-                return
-            if ctx.is_key_pressed(self.KEY_X):
-                if self._copy_selected_callback:
-                    self._copy_selected_callback(True)
-                return
-            if ctx.is_key_pressed(self.KEY_V):
-                has_clipboard = True
-                if self._has_clipboard_data_callback:
-                    has_clipboard = bool(self._has_clipboard_data_callback())
-                if has_clipboard and self._paste_clipboard_callback:
-                    self._paste_clipboard_callback()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
 
     # ------------------------------------------------------------------
     # Orientation Gizmo  (Unity-style axis widget)

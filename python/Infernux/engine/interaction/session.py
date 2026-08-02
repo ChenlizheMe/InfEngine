@@ -10,6 +10,7 @@ from .documents import DocumentRegistry
 from .close_coordinator import CloseCoordinator
 from .commands import EditorCommandRegistry
 from .selection import SelectionService
+from .clipboard import ClipboardService
 from .shortcuts import ShortcutRouter
 
 
@@ -20,6 +21,7 @@ class EditorInteractionCore:
 
     def __init__(self) -> None:
         self.selection = SelectionService()
+        self.clipboard = ClipboardService()
         self.focus = FocusService()
         self.documents = DocumentRegistry()
         self.close_coordinator = CloseCoordinator(self.documents)
@@ -38,6 +40,7 @@ class EditorInteractionCore:
     def shutdown(self) -> None:
         self.close_coordinator.cancel()
         self.selection.clear(reason="session_shutdown", record_history=False)
+        self.clipboard.clear(reason="session_shutdown")
         self.documents.clear()
         self.action_journal.clear()
         self.shortcuts.clear()

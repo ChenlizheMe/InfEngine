@@ -172,8 +172,19 @@ def wire_clipboard(ctx):
     hp = ctx.hp
     bs = ctx.bs
     sel = ctx.sel
+    from Infernux.engine.interaction import (
+        ClipboardDomain,
+        ClipboardItem,
+        ClipboardOperation,
+        ClipboardService,
+    )
 
-    _clipboard = {"entries": [], "cut": False}
+    interaction_core = getattr(bs, "interaction_core", None)
+    clipboard = (
+        interaction_core.clipboard
+        if interaction_core is not None
+        else ClipboardService.instance()
+    )
 
     def _copy_selected(cut):
         from Infernux.lib import SceneManager
@@ -214,8 +225,16 @@ def wire_clipboard(ctx):
                 "source_world_position": transform.position.to_tuple() if transform else None,
                 "source_world_rotation": transform.rotation.to_tuple() if transform else None,
             })
-        _clipboard["entries"] = entries
-        _clipboard["cut"] = bool(cut)
+        clipboard.write(
+            ClipboardDomain.SCENE_OBJECT,
+            (
+                ClipboardItem(str(obj.id), data=entry)
+                for obj, entry in zip(roots, entries)
+            ),
+            operation=(ClipboardOperation.CUT if cut else ClipboardOperation.COPY),
+            source_owner_id="hierarchy",
+            reason="cut_scene_objects" if cut else "copy_scene_objects",
+        )
         if cut:
             from Infernux.engine.undo import DeleteGameObjectsCommand, UndoManager
             mgr = UndoManager.instance()
@@ -236,7 +255,11 @@ def wire_clipboard(ctx):
         return True
 
     def _paste_clipboard():
-        if not _clipboard["entries"]:
+        payload = clipboard.peek(ClipboardDomain.SCENE_OBJECT)
+        if payload is None:
+            return False
+        entries = [item.data for item in payload.items if isinstance(item.data, dict)]
+        if not entries:
             return False
         from Infernux.lib import SceneManager, Vector3, quatf
         from Infernux.engine.undo import CompoundCommand, CreateGameObjectCommand, UndoManager
@@ -258,7 +281,7 @@ def wire_clipboard(ctx):
         adb = getattr(sfm2, "_asset_database", None) if sfm2 else None
         prepared_entries = []
         try:
-            for entry in _clipboard["entries"]:
+            for entry in entries:
                 obj_data = copy.deepcopy(entry["document"])
                 prepared = preflight_game_object_python_components(
                     obj_data,
@@ -343,19 +366,12 @@ def wire_clipboard(ctx):
         sel.set_ids(cids)
         if hp.on_selection_changed:
             hp.on_selection_changed(cids[-1] if cids else 0)
-        if _clipboard["cut"]:
-            _clipboard["entries"] = []
-            _clipboard["cut"] = False
+        if payload.operation is ClipboardOperation.CUT:
+            clipboard.consume_cut(payload.revision)
         return True
 
     hp.copy_selected = _copy_selected
     hp.paste_clipboard = _paste_clipboard
-    hp.has_clipboard_data = lambda: bool(_clipboard["entries"])
-
-    scene_view = getattr(bs, "scene_view", None)
-    if scene_view is not None and hasattr(scene_view, "set_object_clipboard_handlers"):
-        scene_view.set_object_clipboard_handlers(
-            _copy_selected,
-            _paste_clipboard,
-            lambda: bool(_clipboard["entries"]),
-        )
+    hp.has_clipboard_data = lambda: clipboard.has_payload(
+        ClipboardDomain.SCENE_OBJECT
+    )

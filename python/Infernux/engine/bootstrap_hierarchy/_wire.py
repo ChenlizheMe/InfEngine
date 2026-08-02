@@ -285,12 +285,9 @@ def _wire_drop_and_delete(ctx):
             _delete_selected_objects_impl(valid_ids)
 
     hp.delete_selected_objects = _delete_selected_objects
-    # Hierarchy is created before SceneView during bootstrap.  Keep the
-    # structural delete transaction on the bootstrap object so every selection
-    # surface can bind to the same action once it exists.
+    # Keep the action on the bootstrap object for non-panel callers. Scene and
+    # Hierarchy keyboard/menu surfaces route through EditorCommandRegistry.
     bs._delete_selected_objects = _delete_selected_objects
-    if bs.scene_view is not None:
-        bs.scene_view.set_object_delete_handler(_delete_selected_objects)
 
 
 def _finalize_drop(new_obj, parent_id, description, sel, undo, hp, SceneManager):
