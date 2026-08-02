@@ -2114,27 +2114,8 @@ void ProjectPanel::MoveProjectItemsToFolder(const std::string &targetDir, const 
     if (sources.empty())
         return;
 
-    std::vector<std::string> movedPaths;
-    for (auto &source : sources) {
-        if (fs::is_directory(fs::u8path(source), ec) && IsFilesystemPathWithin(targetDir, source))
-            continue; // Can't move folder into itself
-
-        if (moveItemToDirectory) {
-            auto newPath = moveItemToDirectory(source, targetDir);
-            if (!newPath.empty())
-                movedPaths.push_back(newPath);
-        }
-    }
-
-    if (movedPaths.empty())
-        return;
-
-    m_pendingCacheInvalidation = true;
-    m_selectedFiles = movedPaths;
-    m_selectedFile = movedPaths.back();
-    m_selectedSet.clear();
-    m_selectedSet.insert(movedPaths.begin(), movedPaths.end());
-    NotifySelectionChanged();
+    if (moveAssetPaths)
+        moveAssetPaths(sources, targetDir);
 }
 
 // ════════════════════════════════════════════════════════════════════

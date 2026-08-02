@@ -2762,6 +2762,7 @@ class ProjectPanel(EditorPanel):
     read_asset_clipboard: Any
     consume_asset_clipboard: Any
     paste_asset_clipboard: Any
+    move_asset_paths: Any
 
     # File operation callbacks
     create_folder: Any
@@ -2777,7 +2778,7 @@ class ProjectPanel(EditorPanel):
     delete_items: Any
     do_rename: Any
     get_unique_name: Any
-    move_item_to_directory: Any
+    copy_item_to_path: Any
 
     # Open/Reveal callbacks
     open_file: Any

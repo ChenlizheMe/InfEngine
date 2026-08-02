@@ -110,7 +110,13 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     pp.read_asset_clipboard = _read_asset_clipboard
     pp.consume_asset_clipboard = _consume_asset_clipboard
 
-    def _paste_asset_clipboard(paths, cut: bool, destination: str) -> bool:
+    def _apply_asset_transfer(
+        paths,
+        *,
+        cut: bool,
+        destination: str,
+        description: str,
+    ) -> bool:
         from Infernux.debug import Debug
         from Infernux.engine.undo import (
             ProjectAssetCopyCommand,
@@ -159,7 +165,7 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
             result_paths,
             on_applied=_on_applied,
             on_reverted=pp.invalidate_dir_cache,
-            description="Move Assets" if cut else "Paste Assets",
+            description=description,
         )
         manager = UndoManager.instance()
         if manager is not None:
@@ -170,7 +176,18 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         finally:
             command.dispose()
 
-    pp.paste_asset_clipboard = _paste_asset_clipboard
+    pp.paste_asset_clipboard = lambda paths, cut, destination: _apply_asset_transfer(
+        paths,
+        cut=bool(cut),
+        destination=destination,
+        description="Move Assets" if cut else "Paste Assets",
+    )
+    pp.move_asset_paths = lambda paths, destination: _apply_asset_transfer(
+        paths,
+        cut=True,
+        destination=destination,
+        description="Move Assets",
+    )
 
     # -- Asset database access (via engine) --
     adb = bs.engine.get_asset_database()
@@ -281,8 +298,6 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     pp.get_unique_name = lambda cur, base, ext: (
         file_ops.get_unique_name(cur, base, ext)
     )
-    pp.move_item_to_directory = lambda item, dest: _safe_project_path(
-        file_ops.move_item_to_directory, item, dest, adb)
     pp.copy_item_to_path = lambda item, dest: _safe_project_path(
         file_ops.copy_path_as_new_asset, item, dest, adb)
 

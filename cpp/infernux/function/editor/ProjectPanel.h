@@ -86,6 +86,7 @@ class ProjectPanel : public EditorPanel
     std::function<std::pair<std::vector<std::string>, bool>()> readAssetClipboard;
     std::function<void()> consumeAssetClipboard;
     std::function<bool(const std::vector<std::string> &, bool, const std::string &)> pasteAssetClipboard;
+    std::function<bool(const std::vector<std::string> &, const std::string &)> moveAssetPaths;
 
     // ── Notification callbacks ───────────────────────────────────────
 
@@ -141,8 +142,6 @@ class ProjectPanel : public EditorPanel
     /// Get unique name: (currentPath, baseName, extension) → uniqueName
     std::function<std::string(const std::string &, const std::string &, const std::string &)> getUniqueName;
 
-    /// Move item to directory: (itemPath, destDir) → newPath or empty
-    std::function<std::string(const std::string &, const std::string &)> moveItemToDirectory;
     /// Copy item to exact path as a distinct asset: (itemPath, destinationPath) → newPath or empty
     std::function<std::string(const std::string &, const std::string &)> copyItemToPath;
 

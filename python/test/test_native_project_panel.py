@@ -383,6 +383,28 @@ class TestProjectPanelCallbacks:
         assert pp.paste_assets() is True
         assert requests == [([str(source)], False, str(target_dir))]
 
+    def test_project_drag_move_uses_one_batch_transaction_callback(self):
+        pp = ProjectPanel()
+        requests = []
+        pp.move_asset_paths = (
+            lambda paths, destination: requests.append((list(paths), destination))
+            or True
+        )
+
+        assert pp.move_asset_paths(["/Assets/A", "/Assets/B"], "/Assets/Target")
+        assert requests == [(["/Assets/A", "/Assets/B"], "/Assets/Target")]
+
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(
+            encoding="utf-8"
+        )
+        move_body = source[
+            source.index("void ProjectPanel::MoveProjectItemsToFolder") : source.index(
+                "void ProjectPanel::PreRender"
+            )
+        ]
+        assert "moveAssetPaths(sources, targetDir)" in move_body
+        assert "moveItemToDirectory" not in move_body
+
     def test_project_shortcuts_are_not_polled_inside_the_panel(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(
             encoding="utf-8"
@@ -527,12 +549,6 @@ class TestProjectPanelCallbacks:
         pp.get_unique_name = lambda cur, base, ext: f"{base}_1{ext}"
         result = pp.get_unique_name("/dir", "File", ".txt")
         assert result == "File_1.txt"
-
-    def test_move_item_to_directory_callback(self):
-        pp = ProjectPanel()
-        pp.move_item_to_directory = lambda item, dest: f"{dest}/moved"
-        result = pp.move_item_to_directory("/a/b.txt", "/c")
-        assert result == "/c/moved"
 
     def test_open_file_callback(self):
         pp = ProjectPanel()
