@@ -7,7 +7,6 @@
 #include <imgui.h>
 
 #include <functional>
-#include <map>
 #include <string>
 #include <vector>
 
@@ -45,30 +44,17 @@ class MenuBarPanel : public InxGUIRenderable
     // ── Callbacks set from Python ────────────────────────────────────
 
     // Unified editor command and shortcut entry points.
-    std::function<bool(const std::string &, const std::string &)> executeCommand;
-    std::function<bool(const std::string &)> canExecuteCommand;
+    std::function<bool(const std::string &, const std::string &, const std::string &)> executeCommand;
+    std::function<bool(const std::string &, const std::string &)> canExecuteCommand;
+    std::function<bool(const std::string &, const std::string &)> isCommandChecked;
     std::function<bool(const std::string &, bool, bool)> routeShortcut;
     std::function<void()> onRequestClose;
 
     // Window management
     std::function<std::vector<WindowTypeInfo>()> getRegisteredTypes;
-    std::function<std::map<std::string, bool>()> getOpenWindows;
-    std::function<void(const std::string &)> openWindow;
-    std::function<void(const std::string &)> closeWindow;
-    std::function<void()> resetLayout;
 
     // Close request check (C++ engine)
     std::function<bool()> isCloseRequested;
-
-    // Toggle floating sub-panels — rendered from Python
-    std::function<void()> toggleBuildSettings;
-    std::function<void()> togglePreferences;
-    std::function<void()> togglePhysicsLayerMatrix;
-    std::function<void()> toggleEnvironmentSettings;
-    std::function<bool()> isBuildSettingsOpen;
-    std::function<bool()> isPreferencesOpen;
-    std::function<bool()> isPhysicsLayerMatrixOpen;
-    std::function<bool()> isEnvironmentSettingsOpen;
 
     // i18n
     std::function<std::string(const std::string &)> translate;
@@ -92,8 +78,10 @@ class MenuBarPanel : public InxGUIRenderable
                          const std::vector<WindowTypeInfo> &types);
 
     std::string T(const std::string &key) const;
-    bool ExecuteCommand(const std::string &commandId, const std::string &source) const;
-    bool CanExecuteCommand(const std::string &commandId) const;
+    bool ExecuteCommand(const std::string &commandId, const std::string &source,
+                        const std::string &argument = "") const;
+    bool CanExecuteCommand(const std::string &commandId, const std::string &argument = "") const;
+    bool IsCommandChecked(const std::string &commandId, const std::string &argument = "") const;
 
     int m_lastShortcutFrame = -1;
     std::vector<WindowTypeInfo> m_cachedWindowTypes;

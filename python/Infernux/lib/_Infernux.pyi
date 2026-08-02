@@ -2488,22 +2488,11 @@ class MenuBarPanel(InxGUIRenderable):
 
     execute_command: Any
     can_execute_command: Any
+    is_command_checked: Any
     route_shortcut: Any
     on_request_close: Any
     get_registered_types: Any
-    get_open_windows: Any
-    open_window: Any
-    close_window: Any
-    reset_layout: Any
     is_close_requested: Any
-    toggle_build_settings: Any
-    toggle_preferences: Any
-    toggle_physics_layer_matrix: Any
-    toggle_environment_settings: Any
-    is_build_settings_open: Any
-    is_preferences_open: Any
-    is_physics_layer_matrix_open: Any
-    is_environment_settings_open: Any
     translate: Any
 
 

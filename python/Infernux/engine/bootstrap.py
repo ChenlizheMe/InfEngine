@@ -374,11 +374,16 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         from Infernux.engine.interaction import CommandSource
 
         command_registry = self.interaction_core.commands
-        tb.execute_command = lambda command_id, source: command_registry.execute(
+        tb.execute_command = lambda command_id, source, _argument: command_registry.execute(
             command_id,
             source=CommandSource(source),
         ).accepted
-        tb.can_execute_command = command_registry.can_execute
+        tb.can_execute_command = lambda command_id, _argument: (
+            command_registry.can_execute(
+                command_id,
+                command_registry.context(CommandSource.TOOLBAR),
+            )
+        )
         tb.get_play_state = _get_play_state
         tb.get_play_time_str = _get_play_time_str
 

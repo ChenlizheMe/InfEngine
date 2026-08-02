@@ -101,7 +101,13 @@ def test_bootstrap_registers_menu_and_shortcut_entries_against_same_commands():
         save_current_scene=lambda: calls.append("save") or True,
         save_scene_as=lambda: calls.append("save_as") or True,
     )
-    windows = SimpleNamespace(get_window_instance=lambda _panel_id: None)
+    windows = SimpleNamespace(
+        get_window_instance=lambda _panel_id: None,
+        get_registered_types=lambda: {"console": object()},
+        open_window=lambda target_id: calls.append(("open", target_id)) or object(),
+        is_window_open=lambda target_id: target_id == "console",
+        reset_layout=lambda: calls.append("reset_layout"),
+    )
     bootstrap = BootstrapHarness()
     bootstrap.interaction_core = EditorInteractionCore()
     bootstrap.engine = SimpleNamespace(_play_mode_manager=None)
@@ -117,7 +123,18 @@ def test_bootstrap_registers_menu_and_shortcut_entries_against_same_commands():
     routed = bootstrap.interaction_core.shortcuts.route(
         ShortcutEvent(KeyChord.parse("Ctrl+N"))
     )
+    opened = registry.execute(
+        "window.open",
+        source=CommandSource.MENU,
+        payload={"target_id": "console"},
+    )
+    window_context = registry.context(
+        CommandSource.MENU,
+        {"target_id": "console"},
+    )
 
     assert routed.status is ShortcutRouteStatus.EXECUTED
-    assert calls == ["save", "new"]
+    assert opened.accepted
+    assert registry.is_checked("window.open", window_context)
+    assert calls == ["save", "new", ("open", "console")]
     assert registry.get("file.save").default_shortcut == "Ctrl+S"

@@ -103,12 +103,16 @@ class TestToolbarPanel:
     def test_command_callbacks(self):
         tb = ToolbarPanel()
         calls = []
-        tb.execute_command = lambda command_id, source: calls.append((command_id, source)) or True
-        tb.can_execute_command = lambda command_id: command_id == "play.toggle"
+        tb.execute_command = lambda command_id, source, argument: calls.append(
+            (command_id, source, argument)
+        ) or True
+        tb.can_execute_command = lambda command_id, argument: (
+            command_id == "play.toggle" and not argument
+        )
 
-        assert tb.execute_command("play.toggle", "toolbar") is True
-        assert tb.can_execute_command("play.toggle") is True
-        assert calls == [("play.toggle", "toolbar")]
+        assert tb.execute_command("play.toggle", "toolbar", "") is True
+        assert tb.can_execute_command("play.toggle", "") is True
+        assert calls == [("play.toggle", "toolbar", "")]
 
     def test_get_play_state_callback(self):
         tb = ToolbarPanel()
@@ -205,19 +209,28 @@ class TestMenuBarPanel:
     def test_command_callbacks(self):
         mb = MenuBarPanel()
         calls = []
-        mb.execute_command = lambda command_id, source: calls.append((command_id, source)) or True
-        mb.can_execute_command = lambda command_id: command_id == "file.save"
+        mb.execute_command = lambda command_id, source, argument: calls.append(
+            (command_id, source, argument)
+        ) or True
+        mb.can_execute_command = lambda command_id, argument: (
+            command_id == "file.save" or argument == "console"
+        )
+        mb.is_command_checked = lambda command_id, argument: (
+            command_id == "window.open" and argument == "console"
+        )
         mb.route_shortcut = lambda chord, text_input, modal: calls.append(
             (chord, text_input, modal)
         ) or True
         mb.on_request_close = lambda: calls.append("close")
 
-        assert mb.execute_command("file.save", "menu") is True
-        assert mb.can_execute_command("file.save") is True
+        assert mb.execute_command("file.save", "menu", "") is True
+        assert mb.can_execute_command("file.save", "") is True
+        assert mb.can_execute_command("window.open", "console") is True
+        assert mb.is_command_checked("window.open", "console") is True
         assert mb.route_shortcut("Ctrl+S", False, False) is True
         mb.on_request_close()
         assert calls == [
-            ("file.save", "menu"), ("Ctrl+S", False, False), "close"
+            ("file.save", "menu", ""), ("Ctrl+S", False, False), "close"
         ]
 
     def test_window_management_callbacks(self):
@@ -229,7 +242,6 @@ class TestMenuBarPanel:
         wti.singleton = True
 
         mb.get_registered_types = lambda: [wti]
-        mb.get_open_windows = lambda: {"console": True}
 
         types = mb.get_registered_types()
         assert len(types) == 1
@@ -237,46 +249,13 @@ class TestMenuBarPanel:
         assert types[0].display_name == "Console"
         assert types[0].singleton is True
 
-        windows = mb.get_open_windows()
-        assert windows["console"] is True
         mb.invalidate_window_type_cache()
-
-    def test_open_close_window(self):
-        mb = MenuBarPanel()
-        calls = []
-        mb.open_window = lambda tid: calls.append(("open", tid))
-        mb.close_window = lambda tid: calls.append(("close", tid))
-        mb.open_window("inspector")
-        mb.close_window("console")
-        assert calls == [("open", "inspector"), ("close", "console")]
-
-    def test_reset_layout(self):
-        mb = MenuBarPanel()
-        called = [False]
-        mb.reset_layout = lambda: called.__setitem__(0, True)
-        mb.reset_layout()
-        assert called[0]
 
     def test_close_requested_callback(self):
         mb = MenuBarPanel()
         mb.is_close_requested = lambda: False
         assert not mb.is_close_requested()
 
-    def test_floating_panel_toggles(self):
-        mb = MenuBarPanel()
-        state = {"bs": False, "pref": False, "phys": False}
-
-        mb.is_build_settings_open = lambda: state["bs"]
-        mb.is_preferences_open = lambda: state["pref"]
-        mb.is_physics_layer_matrix_open = lambda: state["phys"]
-
-        mb.toggle_build_settings = lambda: state.__setitem__("bs", not state["bs"])
-        mb.toggle_preferences = lambda: state.__setitem__("pref", not state["pref"])
-        mb.toggle_physics_layer_matrix = lambda: state.__setitem__("phys", not state["phys"])
-
-        assert not mb.is_build_settings_open()
-        mb.toggle_build_settings()
-        assert mb.is_build_settings_open()
 
     def test_translate_callback(self):
         mb = MenuBarPanel()

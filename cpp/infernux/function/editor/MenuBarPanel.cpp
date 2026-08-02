@@ -155,27 +155,26 @@ void MenuBarPanel::RenderProjectMenu(InxGUIContext *ctx)
     ImGui::Separator();
 
     // Build Settings toggle
-    bool bsOpen = isBuildSettingsOpen ? isBuildSettingsOpen() : false;
-    if (SemanticMenuItem(ctx, T("menu.build_settings"), "", bsOpen, true, "menu.project.build_settings")) {
-        if (toggleBuildSettings)
-            toggleBuildSettings();
-    }
+    const bool canBuildSettings = CanExecuteCommand("window.toggle.build_settings");
+    const bool buildSettingsOpen = IsCommandChecked("window.toggle.build_settings");
+    if (SemanticMenuItem(ctx, T("menu.build_settings"), "", buildSettingsOpen, canBuildSettings,
+                         "menu.project.build_settings"))
+        ExecuteCommand("window.toggle.build_settings", "menu");
 
     // Physics Layer Matrix toggle
-    bool plOpen = isPhysicsLayerMatrixOpen ? isPhysicsLayerMatrixOpen() : false;
-    if (SemanticMenuItem(ctx, T("menu.physics_layer_matrix"), "", plOpen, true, "menu.project.physics_layer_matrix")) {
-        if (togglePhysicsLayerMatrix)
-            togglePhysicsLayerMatrix();
-    }
+    const bool canPhysicsLayers = CanExecuteCommand("window.toggle.physics_layers");
+    const bool physicsLayersOpen = IsCommandChecked("window.toggle.physics_layers");
+    if (SemanticMenuItem(ctx, T("menu.physics_layer_matrix"), "", physicsLayersOpen, canPhysicsLayers,
+                         "menu.project.physics_layer_matrix"))
+        ExecuteCommand("window.toggle.physics_layers", "menu");
 
     ImGui::Separator();
 
     // Preferences toggle
-    bool prefOpen = isPreferencesOpen ? isPreferencesOpen() : false;
-    if (SemanticMenuItem(ctx, T("menu.preferences"), "", prefOpen, true, "menu.project.preferences")) {
-        if (togglePreferences)
-            togglePreferences();
-    }
+    const bool canPreferences = CanExecuteCommand("window.toggle.preferences");
+    const bool preferencesOpen = IsCommandChecked("window.toggle.preferences");
+    if (SemanticMenuItem(ctx, T("menu.preferences"), "", preferencesOpen, canPreferences, "menu.project.preferences"))
+        ExecuteCommand("window.toggle.preferences", "menu");
 
     ImGui::EndMenu();
 }
@@ -195,14 +194,20 @@ void MenuBarPanel::RenderEditMenu(InxGUIContext *ctx)
     ImGui::EndMenu();
 }
 
-bool MenuBarPanel::ExecuteCommand(const std::string &commandId, const std::string &source) const
+bool MenuBarPanel::ExecuteCommand(const std::string &commandId, const std::string &source,
+                                  const std::string &argument) const
 {
-    return executeCommand && executeCommand(commandId, source);
+    return executeCommand && executeCommand(commandId, source, argument);
 }
 
-bool MenuBarPanel::CanExecuteCommand(const std::string &commandId) const
+bool MenuBarPanel::CanExecuteCommand(const std::string &commandId, const std::string &argument) const
 {
-    return canExecuteCommand && canExecuteCommand(commandId);
+    return canExecuteCommand && canExecuteCommand(commandId, argument);
+}
+
+bool MenuBarPanel::IsCommandChecked(const std::string &commandId, const std::string &argument) const
+{
+    return isCommandChecked && isCommandChecked(commandId, argument);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -214,12 +219,11 @@ void MenuBarPanel::RenderSceneMenu(InxGUIContext *ctx)
     if (!BeginSemanticMenu(ctx, T("menu.scene"), "menu.scene"))
         return;
 
-    // Environment (skybox + ambient) settings toggle
-    bool envOpen = isEnvironmentSettingsOpen ? isEnvironmentSettingsOpen() : false;
-    if (SemanticMenuItem(ctx, T("menu.environment_settings"), "", envOpen, true, "menu.scene.environment_settings")) {
-        if (toggleEnvironmentSettings)
-            toggleEnvironmentSettings();
-    }
+    const bool canEnvironment = CanExecuteCommand("window.toggle.environment");
+    const bool environmentOpen = IsCommandChecked("window.toggle.environment");
+    if (SemanticMenuItem(ctx, T("menu.environment_settings"), "", environmentOpen, canEnvironment,
+                         "menu.scene.environment_settings"))
+        ExecuteCommand("window.toggle.environment", "menu");
 
     ImGui::EndMenu();
 }
@@ -234,27 +238,17 @@ void MenuBarPanel::RenderWindowMenu(InxGUIContext *ctx)
         return;
 
     RefreshWindowTypeCache();
-    if (!m_cachedWindowTypes.empty() && getOpenWindows) {
-        auto openWins = getOpenWindows();
-
+    if (!m_cachedWindowTypes.empty()) {
         bool hasItems = false;
         for (const auto &info : m_cachedWindowTypes) {
             if (info.menuPath != "Window")
                 continue;
             hasItems = true;
 
-            bool isOpen = false;
-            auto it = openWins.find(info.typeId);
-            if (it != openWins.end())
-                isOpen = it->second;
-
-            if (SemanticMenuItem(ctx, info.displayName, "", isOpen, true, "window." + info.typeId)) {
-                // A checked entry represents an already-open tool window.
-                // Opening it again asks WindowManager to bring its dock tab
-                // to the foreground rather than unexpectedly closing it.
-                if (openWindow)
-                    openWindow(info.typeId);
-            }
+            const bool canOpen = CanExecuteCommand("window.open", info.typeId);
+            const bool isOpen = IsCommandChecked("window.open", info.typeId);
+            if (SemanticMenuItem(ctx, info.displayName, "", isOpen, canOpen, "window." + info.typeId))
+                ExecuteCommand("window.open", "menu", info.typeId);
         }
 
         if (!hasItems) {
@@ -266,10 +260,9 @@ void MenuBarPanel::RenderWindowMenu(InxGUIContext *ctx)
 
     ImGui::Separator();
 
-    if (SemanticMenuItem(ctx, T("menu.reset_layout"), "", false, true, "menu.window.reset_layout")) {
-        if (resetLayout)
-            resetLayout();
-    }
+    const bool canResetLayout = CanExecuteCommand("window.reset_layout");
+    if (SemanticMenuItem(ctx, T("menu.reset_layout"), "", false, canResetLayout, "menu.window.reset_layout"))
+        ExecuteCommand("window.reset_layout", "menu");
 
     ImGui::EndMenu();
 }
@@ -375,20 +368,12 @@ void MenuBarPanel::RenderMenuGroup(InxGUIContext *ctx, const std::string &topMen
         }
     }
 
-    const auto openWins = getOpenWindows ? getOpenWindows() : std::map<std::string, bool>{};
-
-    // Lambda: render a single menu-item toggle
+    // Lambda: render a single command-backed menu item.
     auto renderItem = [&](const Entry &e) {
-        bool isOpen = false;
-        auto it = openWins.find(e.typeId);
-        if (it != openWins.end())
-            isOpen = it->second;
-        if (SemanticMenuItem(ctx, e.displayName, "", isOpen, true, "window." + e.typeId)) {
-            // WindowManager treats an already-visible window as a focus
-            // request, which makes this menu work like a normal tool picker.
-            if (openWindow)
-                openWindow(e.typeId);
-        }
+        const bool canOpen = CanExecuteCommand("window.open", e.typeId);
+        const bool isOpen = IsCommandChecked("window.open", e.typeId);
+        if (SemanticMenuItem(ctx, e.displayName, "", isOpen, canOpen, "window." + e.typeId))
+            ExecuteCommand("window.open", "menu", e.typeId);
     };
 
     // Top-level items (menuPath == topMenu exactly)

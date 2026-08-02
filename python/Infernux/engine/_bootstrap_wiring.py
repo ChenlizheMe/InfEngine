@@ -132,6 +132,19 @@ class BootstrapWiringMixin:
             pmm.step_frame()
             return True
 
+        def _window_target(context) -> str:
+            return str(context.payload.get("target_id", "") or "").strip()
+
+        def _open_window(context):
+            target_id = _window_target(context)
+            if not target_id:
+                return False
+            return wm.open_window(target_id) is not None
+
+        def _reset_layout(_context):
+            wm.reset_layout()
+            return True
+
         commands = (
             EditorCommand(
                 "file.new_scene",
@@ -195,6 +208,24 @@ class BootstrapWiringMixin:
                 category="Play",
                 can_execute=lambda _context: bool(pmm and pmm.is_paused),
             ),
+            EditorCommand(
+                "window.open",
+                _open_window,
+                display_name="Open Window",
+                category="Window",
+                can_execute=lambda context: _window_target(context)
+                in wm.get_registered_types(),
+                is_checked=lambda context: bool(
+                    _window_target(context)
+                    and wm.is_window_open(_window_target(context))
+                ),
+            ),
+            EditorCommand(
+                "window.reset_layout",
+                _reset_layout,
+                display_name="Reset Layout",
+                category="Window",
+            ),
         )
         for command in commands:
             registry.register(command, replace=True)
@@ -224,15 +255,34 @@ class BootstrapWiringMixin:
         shortcut_router = self.interaction_core.shortcuts
         from Infernux.engine.interaction import (
             CommandSource,
+            EditorCommand,
             KeyChord,
             ShortcutEvent,
         )
 
-        mb.execute_command = lambda command_id, source: command_registry.execute(
-            command_id,
-            source=CommandSource(source),
-        ).accepted
-        mb.can_execute_command = command_registry.can_execute
+        def _payload(argument):
+            target_id = str(argument or "").strip()
+            return {"target_id": target_id} if target_id else {}
+
+        mb.execute_command = lambda command_id, source, argument: (
+            command_registry.execute(
+                command_id,
+                source=CommandSource(source),
+                payload=_payload(argument),
+            ).accepted
+        )
+        mb.can_execute_command = lambda command_id, argument: (
+            command_registry.can_execute(
+                command_id,
+                command_registry.context(CommandSource.MENU, _payload(argument)),
+            )
+        )
+        mb.is_command_checked = lambda command_id, argument: (
+            command_registry.is_checked(
+                command_id,
+                command_registry.context(CommandSource.MENU, _payload(argument)),
+            )
+        )
         mb.route_shortcut = lambda chord, text_input, modal: shortcut_router.route(
             ShortcutEvent(
                 KeyChord.parse(chord),
@@ -276,16 +326,9 @@ class BootstrapWiringMixin:
                 wti.singleton = True
                 result.append(wti)
             return result
-        def _get_open_windows():
-            return wm.get_open_windows()
-
         mb.get_registered_types = _get_registered_types
         wm.add_type_change_listener(mb.invalidate_window_type_cache)
         mb.invalidate_window_type_cache()
-        mb.get_open_windows = _get_open_windows
-        mb.open_window = lambda tid: wm.open_window(tid)
-        mb.close_window = lambda tid: wm.close_window(tid)
-        mb.reset_layout = lambda: wm.reset_layout()
 
         # Close request from C++ engine
         native = engine.get_native_engine() if engine else None
@@ -304,26 +347,34 @@ class BootstrapWiringMixin:
         self._physics_layer_matrix.set_project_path(get_project_root() or "")
         self._environment_settings = EnvironmentSettingsPanel()
 
-        mb.toggle_build_settings = lambda: (
-            self._build_settings.close() if self._build_settings.is_open
-            else self._build_settings.open()
-        )
-        mb.toggle_preferences = lambda: (
-            self._preferences.close() if self._preferences.is_open
-            else self._preferences.open()
-        )
-        mb.toggle_physics_layer_matrix = lambda: (
-            self._physics_layer_matrix.close() if self._physics_layer_matrix.is_open
-            else self._physics_layer_matrix.open()
-        )
-        mb.toggle_environment_settings = lambda: (
-            self._environment_settings.close() if self._environment_settings.is_open
-            else self._environment_settings.open()
-        )
-        mb.is_build_settings_open = lambda: self._build_settings.is_open
-        mb.is_preferences_open = lambda: self._preferences.is_open
-        mb.is_physics_layer_matrix_open = lambda: self._physics_layer_matrix.is_open
-        mb.is_environment_settings_open = lambda: self._environment_settings.is_open
+        def _toggle_floating_panel(panel):
+            panel.close() if panel.is_open else panel.open()
+            return True
+
+        for command_id, display_name, panel in (
+            ("window.toggle.build_settings", "Build Settings", self._build_settings),
+            ("window.toggle.preferences", "Preferences", self._preferences),
+            (
+                "window.toggle.physics_layers",
+                "Physics Layer Matrix",
+                self._physics_layer_matrix,
+            ),
+            (
+                "window.toggle.environment",
+                "Environment Settings",
+                self._environment_settings,
+            ),
+        ):
+            command_registry.register(
+                EditorCommand(
+                    command_id,
+                    lambda _context, target=panel: _toggle_floating_panel(target),
+                    display_name=display_name,
+                    category="Window",
+                    is_checked=lambda _context, target=panel: bool(target.is_open),
+                ),
+                replace=True,
+            )
 
         # Floating utility windows participate in the normal panel layer.
         # Global confirmations are registered separately at overlay priority

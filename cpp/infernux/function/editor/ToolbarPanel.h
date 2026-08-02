@@ -32,8 +32,8 @@ class ToolbarPanel : public EditorPanel
     // ── Callbacks set from Python ────────────────────────────────────
 
     /// Unified command entry used by toolbar buttons.
-    std::function<bool(const std::string &, const std::string &)> executeCommand;
-    std::function<bool(const std::string &)> canExecuteCommand;
+    std::function<bool(const std::string &, const std::string &, const std::string &)> executeCommand;
+    std::function<bool(const std::string &, const std::string &)> canExecuteCommand;
 
     /// Query current play state.
     std::function<PlayState()> getPlayState;
