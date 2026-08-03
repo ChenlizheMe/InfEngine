@@ -12,7 +12,6 @@ Docked alongside Scene / Game views.
 import configparser
 import math
 import os
-from contextlib import nullcontext as _nullcontext
 from time import perf_counter as _pc
 
 from typing import Optional
@@ -91,149 +90,120 @@ class UIEditorCreationMixin:
                     record_history=False,
                 )
 
-    def _record_ui_create(
-        self,
-        object_id: int,
-        description: str = "Create UI Element",
-        *,
-        before_selection=None,
-        after_selection=None,
-    ):
-        """Record a UI object creation through the undo system."""
-        from Infernux.engine.undo import UndoManager, CreateGameObjectCommand
-        mgr = UndoManager.instance()
-        if mgr:
-            mgr.record(CreateGameObjectCommand(
-                object_id,
-                description,
-                before_selection=before_selection,
-                after_selection=after_selection,
-            ))
-
     def _create_canvas(self):
-        """Create a new Canvas GameObject in the scene."""
+        """Create a Canvas through the shared hierarchy transaction."""
         from Infernux.lib import SceneManager
-        from Infernux.ui import UICanvas as UICanvasCls
-        from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
+        from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+
         scene = SceneManager.instance().get_active_scene()
         if scene is None:
             return
-        from Infernux.engine.interaction import SelectionService
-
-        selection = SelectionService.instance()
-        before_selection = selection.snapshot
-        mgr = self._get_undo_mgr()
-        ctx_mgr = mgr.suppress() if mgr else _nullcontext()
-        go = None
-        with ctx_mgr:
-            go = scene.create_game_object("Canvas")
-            if go:
-                go.add_py_component(UICanvasCls())
-                self._focused_canvas_id = go.id
-                invalidate_canvas_cache()
-                self._select_canvas(go)
-        if go:
-            self._record_ui_create(
-                go.id,
-                "Create Canvas",
-                before_selection=before_selection,
-                after_selection=selection.snapshot,
+        try:
+            created = HierarchyCreationService.instance().create(
+                "ui.canvas",
+                selection_owner_id="ui_editor",
+                selection_reason="ui_editor_create_canvas",
             )
+        except Exception as exc:
+            Debug.log_error(f"[UIEditor] Failed to create Canvas: {exc}")
+            return
+        go = scene.find_by_id(int(created["id"]))
+        if go is None:
+            return
+        self._clear_interaction_state()
+        self._focused_canvas_id = go.id
 
-    def _create_ui_element(self, canvas_go, component_cls, go_name: str,
-                           default_size=None, default_pos=None,
-                           undo_label: str = "Create UI Element"):
-        """Generic helper to create a UI element under a canvas.
+    def _create_ui_element(self, canvas_go, kind: str, component_cls, go_name: str,
+                           default_size=None, default_pos=None):
+        """Create a UI element through the shared hierarchy transaction.
 
         Args:
             canvas_go: Parent canvas game-object.
+            kind: Shared hierarchy creation kind.
             component_cls: UI component class to instantiate.
             go_name: Name for the new game-object.
             default_size: Optional (w, h) to set before adding the component.
             default_pos: Optional (x, y) centered-anchor offset.
-            undo_label: Description for the undo system.
         """
         from Infernux.lib import SceneManager
-        from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
+        from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+
         scene = SceneManager.instance().get_active_scene()
         if scene is None:
             return
-        from Infernux.engine.interaction import SelectionService
+        created_component = []
 
-        selection = SelectionService.instance()
-        before_selection = selection.snapshot
-        mgr = self._get_undo_mgr()
-        ctx_mgr = mgr.suppress() if mgr else _nullcontext()
-        go = None
-        with ctx_mgr:
-            go = scene.create_game_object(go_name)
-            if go:
-                go.set_parent(canvas_go)
-                try:
-                    comp = component_cls()
-                except Exception as _exc:
-                    Debug.log_error(f"[UIEditor] Failed to create {component_cls.__name__}: {_exc}")
-                    return
-                if default_size is not None:
-                    comp.width = float(default_size[0])
-                    comp.height = float(default_size[1])
-                try:
-                    go.add_py_component(comp)
-                except Exception as _exc:
-                    Debug.log_error(f"[UIEditor] add_py_component failed for {go_name}: {_exc}")
-                    return
-                if default_pos is not None:
-                    # Find parent canvas component to set centered alignment
-                    canvas_comp = None
-                    for c in canvas_go.get_py_components():
-                        from Infernux.ui import UICanvas
-                        if isinstance(c, UICanvas):
-                            canvas_comp = c
-                            break
-                    if canvas_comp:
-                        from Infernux.ui.enums import ScreenAlignH, ScreenAlignV
-                        comp.align_h = ScreenAlignH.Center
-                        comp.align_v = ScreenAlignV.Center
-                        comp.x = float(default_pos[0])
-                        comp.y = float(default_pos[1])
-                self._select_element(comp)
-                invalidate_canvas_cache()
-                if self._hierarchy_panel:
-                    self._hierarchy_panel.set_pending_expand_id(canvas_go.id)
-        if go:
-            self._record_ui_create(
-                go.id,
-                undo_label,
-                before_selection=before_selection,
-                after_selection=selection.snapshot,
+        def configure_created(go):
+            comp = go.get_py_component(component_cls)
+            if comp is None:
+                raise RuntimeError(
+                    f"{go_name} creation did not attach {component_cls.__name__}"
+                )
+            if default_size is not None:
+                comp.width = float(default_size[0])
+                comp.height = float(default_size[1])
+            if default_pos is not None:
+                from Infernux.ui import UICanvas
+
+                canvas_comp = next(
+                    (
+                        candidate
+                        for candidate in canvas_go.get_py_components()
+                        if isinstance(candidate, UICanvas)
+                    ),
+                    None,
+                )
+                if canvas_comp is not None:
+                    from Infernux.ui.enums import ScreenAlignH, ScreenAlignV
+
+                    comp.align_h = ScreenAlignH.Center
+                    comp.align_v = ScreenAlignV.Center
+                    comp.x = float(default_pos[0])
+                    comp.y = float(default_pos[1])
+            created_component.append(comp)
+
+        try:
+            created = HierarchyCreationService.instance().create(
+                kind,
+                parent_id=int(canvas_go.id),
+                name=go_name,
+                selection_owner_id="ui_editor",
+                selection_reason=f"ui_editor_create_{kind.rsplit('.', 1)[-1]}",
+                configure_created=configure_created,
             )
+        except Exception as exc:
+            Debug.log_error(f"[UIEditor] Failed to create {go_name}: {exc}")
+            return
+
+        go = scene.find_by_id(int(created["id"]))
+        if go is None or not created_component:
+            return
+        self._focused_canvas_id = int(canvas_go.id)
+        self._selected_element_comp = created_component[0]
 
     def _create_text_element(self, canvas_go):
         """Create a UIText child under the given canvas GameObject."""
         from Infernux.ui import UIText as UITextCls
         self._create_ui_element(
-            canvas_go, UITextCls, "Text",
+            canvas_go, "ui.text", UITextCls, "Text",
             default_pos=Theme.UI_EDITOR_NEW_TEXT_POS,
-            undo_label="Create Text",
         )
 
     def _create_image_element(self, canvas_go):
         """Create a UIImage child under the given canvas GameObject."""
         from Infernux.ui import UIImage as UIImageCls
         self._create_ui_element(
-            canvas_go, UIImageCls, "Image",
+            canvas_go, "ui.image", UIImageCls, "Image",
             default_size=Theme.UI_EDITOR_NEW_IMAGE_SIZE,
             default_pos=Theme.UI_EDITOR_NEW_IMAGE_POS,
-            undo_label="Create Image",
         )
 
     def _create_button_element(self, canvas_go):
         """Create a UIButton child under the given canvas GameObject."""
         from Infernux.ui import UIButton as UIButtonCls
         self._create_ui_element(
-            canvas_go, UIButtonCls, "Button",
+            canvas_go, "ui.button", UIButtonCls, "Button",
             default_size=Theme.UI_EDITOR_NEW_BUTTON_SIZE,
             default_pos=Theme.UI_EDITOR_NEW_BUTTON_POS,
-            undo_label="Create Button",
         )
 

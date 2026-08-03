@@ -126,6 +126,9 @@ class HierarchyCreationService:
         name: str | None = None,
         select: bool = True,
         record_undo: bool = True,
+        selection_owner_id: str = "hierarchy",
+        selection_reason: str = "create_game_object",
+        configure_created: Callable[[Any], None] | None = None,
     ) -> dict[str, Any]:
         from Infernux.lib import SceneManager
         from Infernux.engine.interaction import SelectionService
@@ -145,23 +148,44 @@ class HierarchyCreationService:
                 raise ValueError(f"Parent GameObject {effective_parent_id} was not found.")
 
         before_selection = SelectionService.instance().snapshot
-        obj = self._create_raw(scene, kind, parent_id)
-        if obj is None:
-            raise RuntimeError(f"Failed to create hierarchy object kind '{kind}'.")
+        obj = None
+        try:
+            obj = self._create_raw(scene, kind, parent_id)
+            if obj is None:
+                raise RuntimeError(
+                    f"Failed to create hierarchy object kind '{kind}'."
+                )
 
-        if name:
-            obj.name = str(name)
-        else:
-            obj.name = _unique_scene_object_name(scene, str(obj.name), exclude_id=int(getattr(obj, "id", 0) or 0))
-
-        self._finalize(
-            obj,
-            effective_parent_id,
-            self._description_for(kind),
-            select=select,
-            record_undo=record_undo,
-            before_selection=before_selection,
-        )
+            if name:
+                obj.name = str(name)
+            else:
+                obj.name = _unique_scene_object_name(
+                    scene,
+                    str(obj.name),
+                    exclude_id=int(getattr(obj, "id", 0) or 0),
+                )
+            self._finalize(
+                obj,
+                effective_parent_id,
+                self._description_for(kind),
+                select=select,
+                record_undo=record_undo,
+                before_selection=before_selection,
+                selection_owner_id=selection_owner_id,
+                selection_reason=selection_reason,
+                configure_created=configure_created,
+            )
+        except Exception:
+            if obj is not None:
+                try:
+                    scene.destroy_game_object(obj)
+                    scene.process_pending_destroys()
+                except Exception as cleanup_exc:
+                    Debug.log_suppressed(
+                        "hierarchy.create.rollback",
+                        cleanup_exc,
+                    )
+            raise
         return self._serialize_created(obj, kind, selected=select)
 
     def create_empty_parent(self, object_ids: list[int] | None = None) -> dict[str, Any]:
@@ -468,6 +492,9 @@ class HierarchyCreationService:
         select: bool,
         record_undo: bool,
         before_selection=None,
+        selection_owner_id: str = "hierarchy",
+        selection_reason: str = "create_game_object",
+        configure_created: Callable[[Any], None] | None = None,
     ) -> None:
         if parent_id:
             from Infernux.lib import SceneManager
@@ -475,6 +502,9 @@ class HierarchyCreationService:
             parent = scene.find_by_id(parent_id) if scene else None
             if parent:
                 obj.set_parent(parent)
+
+        if configure_created is not None:
+            configure_created(obj)
 
         from Infernux.engine.interaction import SelectionService, SelectionTarget
 
@@ -484,8 +514,8 @@ class HierarchyCreationService:
         if select:
             selection.select(
                 SelectionTarget.scene_object(obj.id),
-                owner_id="hierarchy",
-                reason="create_game_object",
+                owner_id=str(selection_owner_id or "hierarchy"),
+                reason=str(selection_reason or "create_game_object"),
                 record_history=False,
             )
         after_selection = selection.snapshot
@@ -502,7 +532,10 @@ class HierarchyCreationService:
         if select and hp is not None:
             reveal = getattr(hp, "set_pending_expand_id", None)
             if callable(reveal):
-                reveal(obj.id)
+                try:
+                    reveal(obj.id)
+                except Exception as exc:
+                    Debug.log_suppressed("hierarchy.create.reveal", exc)
 
     def _description_for(self, kind: str) -> str:
         if kind.startswith("primitive."):
