@@ -68,6 +68,39 @@ def _add_component_through_editor_transaction(
     return component
 
 
+def _remove_component_through_editor_transaction(obj, component) -> bool:
+    """Use the same constraint-aware undo command as the visible Inspector."""
+    from Infernux.engine.undo import UndoManager
+
+    is_python = _is_python_script_component(component)
+    type_name = str(
+        getattr(component, "type_name", type(component).__name__)
+    )
+    manager = UndoManager.instance()
+    if manager is not None:
+        if is_python and hasattr(obj, "remove_py_component"):
+            from Infernux.engine.undo._component_commands import (
+                RemovePyComponentCommand,
+            )
+
+            command = RemovePyComponentCommand(
+                int(obj.id), component, "MCP Remove Component"
+            )
+        else:
+            from Infernux.engine.undo._component_commands import (
+                RemoveNativeComponentCommand,
+            )
+
+            command = RemoveNativeComponentCommand(
+                int(obj.id), type_name, component, "MCP Remove Component"
+            )
+        return bool(manager.execute(command))
+
+    if is_python and hasattr(obj, "remove_py_component"):
+        return bool(obj.remove_py_component(component))
+    return bool(obj.remove_component(component))
+
+
 def _set_component_fields_through_editor_transaction(
     component,
     component_type: str,
@@ -1042,21 +1075,13 @@ def register_scene_tools(mcp) -> None:
             comp = _find_component(obj, component_type, int(ordinal))
             if comp is None:
                 raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
-            is_py = _is_python_script_component(comp)
             type_name = getattr(comp, "type_name", type(comp).__name__)
-            from Infernux.engine.undo import UndoManager
-            mgr = UndoManager.instance()
-            if mgr:
-                if is_py and hasattr(obj, "remove_py_component"):
-                    from Infernux.engine.undo._component_commands import RemovePyComponentCommand
-                    mgr.execute(RemovePyComponentCommand(int(obj.id), comp, "MCP Remove Component"))
-                else:
-                    from Infernux.engine.undo._component_commands import RemoveNativeComponentCommand
-                    mgr.execute(RemoveNativeComponentCommand(int(obj.id), str(type_name), comp, "MCP Remove Component"))
-            elif is_py and hasattr(obj, "remove_py_component"):
-                obj.remove_py_component(comp)
-            else:
-                obj.remove_component(comp)
+            removed = _remove_component_through_editor_transaction(obj, comp)
+            if not removed:
+                raise RuntimeError(
+                    f"Component '{type_name}' could not be removed because its "
+                    "registered component constraints rejected the operation."
+                )
             return {"object_id": int(obj.id), "removed": str(type_name), "components": _all_components(obj)}
 
         return main_thread("component_remove", _remove)

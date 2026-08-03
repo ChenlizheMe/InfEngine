@@ -495,6 +495,172 @@ class TestComponentLifecycle:
         assert go.remove_component(dependency) is False
         assert go.get_component(RegistryDependency) is dependency
 
+    def test_native_renderer_constraints_are_enforced_by_game_object(self, scene):
+        go = scene.create_game_object("NativeRendererConstraints")
+        renderer = go.add_component("MeshRenderer")
+
+        assert renderer is not None
+        assert go.add_component("MeshRenderer") is None
+        assert go.add_component("SpriteRenderer") is None
+        assert go.add_component("SkinnedMeshRenderer") is None
+        matching_ids = [
+            int(component.component_id) for component in go.get_components()
+            if getattr(component, "type_name", "") == "MeshRenderer"
+        ]
+        assert matching_ids == [int(renderer.component_id)]
+
+    def test_python_constraints_reject_native_components_in_both_orders(self, scene):
+        class NativeExclusivePythonComponent(InxComponent):
+            _incompatible_components_ = ("MeshRenderer",)
+
+        mesh_first = scene.create_game_object("NativeFirst")
+        assert mesh_first.add_component("MeshRenderer") is not None
+        assert mesh_first.add_component(NativeExclusivePythonComponent) is None
+
+        python_first = scene.create_game_object("PythonFirst")
+        component = python_first.add_component(NativeExclusivePythonComponent)
+        assert component is not None
+        assert python_first.add_component("MeshRenderer") is None
+
+    def test_failed_python_attachment_rolls_back_auto_added_dependencies(self, scene):
+        from Infernux.components.decorators import require_component
+
+        class AutoDependency(InxComponent):
+            pass
+
+        @require_component(AutoDependency)
+        class RejectedConsumer(InxComponent):
+            _incompatible_components_ = ("MeshRenderer",)
+
+        go = scene.create_game_object("AtomicPythonAttachment")
+        assert go.add_component("MeshRenderer") is not None
+
+        assert go.add_component(RejectedConsumer) is None
+        assert go.get_component(RejectedConsumer) is None
+        assert go.get_component(AutoDependency) is None
+
+    def test_python_exclusive_group_is_enforced_by_native_attachment_core(self, scene):
+        class FirstOwner(InxComponent):
+            _component_exclusive_groups_ = ("test-owner",)
+
+        class SecondOwner(InxComponent):
+            _component_exclusive_groups_ = ("test-owner",)
+
+        go = scene.create_game_object("PythonExclusiveGroup")
+        first = go.add_component(FirstOwner)
+
+        assert first is not None
+        assert go.add_component(SecondOwner) is None
+        assert go.get_component(FirstOwner) is first
+        assert go.get_component(SecondOwner) is None
+
+    def test_python_require_component_uses_stable_type_identity(self, scene):
+        from Infernux.components.decorators import require_component
+
+        FirstDependency = type(
+            "SharedDependency",
+            (InxComponent,),
+            {"__module__": "tests.constraint_identity.first"},
+        )
+        RequiredDependency = type(
+            "SharedDependency",
+            (InxComponent,),
+            {"__module__": "tests.constraint_identity.required"},
+        )
+
+        @require_component(RequiredDependency)
+        class StableIdentityConsumer(InxComponent):
+            pass
+
+        go = scene.create_game_object("StableConstraintIdentity")
+        first = go.add_component(FirstDependency)
+        consumer = go.add_component(StableIdentityConsumer)
+        required = go.get_component(RequiredDependency)
+
+        assert first is not None
+        assert consumer is not None
+        assert required is not None
+        assert go.remove_component(required) is False
+        assert go.get_component(RequiredDependency) is required
+
+    def test_python_satisfied_type_alias_is_used_by_add_and_remove(self, scene):
+        from Infernux.components.decorators import require_component
+
+        class CapabilityProvider(InxComponent):
+            _component_satisfied_types_ = ("TestCapability",)
+
+        @require_component("TestCapability")
+        class CapabilityConsumer(InxComponent):
+            pass
+
+        go = scene.create_game_object("ConstraintAlias")
+        provider = go.add_component(CapabilityProvider)
+        consumer = go.add_component(CapabilityConsumer)
+
+        assert provider is not None
+        assert consumer is not None
+        assert go.remove_component(provider) is False
+
+    def test_prepared_python_attachment_honors_existing_exact_type_incompatibility(self, scene):
+        class ExactCandidate(InxComponent):
+            pass
+
+        class ExistingBlocker(InxComponent):
+            _incompatible_components_ = (ExactCandidate,)
+
+        go = scene.create_game_object("ExactIncompatibility")
+        assert go.add_component(ExistingBlocker) is not None
+
+        candidate = ExactCandidate()
+        with pytest.raises(ValueError, match="incompatible"):
+            go._attach_prepared_py_component(candidate, 1)
+
+        assert go.get_component(ExactCandidate) is None
+
+    def test_prepared_python_component_requires_valid_complete_set_before_activation(self, scene):
+        from Infernux.components.decorators import require_component
+
+        class PreparedDependency(InxComponent):
+            pass
+
+        @require_component(PreparedDependency)
+        class PreparedConsumer(InxComponent):
+            pass
+
+        go = scene.create_game_object("PreparedConstraintGate")
+        component = PreparedConsumer()
+        assert go._attach_prepared_py_component(component, 0) is component
+
+        with pytest.raises(ValueError, match="requires missing component"):
+            go._activate_prepared_py_component(component._cpp_component)
+
+        assert go._remove_prepared_py_component(component._cpp_component) is True
+        assert go.get_component(PreparedConsumer) is None
+
+    def test_prepared_rollback_api_cannot_remove_published_python_component(self, scene):
+        class PublishedComponent(InxComponent):
+            pass
+
+        go = scene.create_game_object("PublishedComponentGate")
+        component = go.add_component(PublishedComponent)
+
+        assert component is not None
+        assert go._remove_prepared_py_component(component._cpp_component) is False
+        assert go.get_component(PublishedComponent) is component
+
+    def test_python_component_is_bound_before_reset(self, scene):
+        observed = []
+
+        class ResetBindingProbe(InxComponent):
+            def reset(self):
+                observed.append((self.game_object, self._cpp_component))
+
+        go = scene.create_game_object("ResetBinding")
+        component = go.add_component(ResetBindingProbe)
+
+        assert component is not None
+        assert observed == [(go, component._cpp_component)]
+
     def test_add_and_get_builtin_component_by_class(self, scene):
         go = scene.create_game_object("CamGO")
         cam = go.add_component(CameraComponent)

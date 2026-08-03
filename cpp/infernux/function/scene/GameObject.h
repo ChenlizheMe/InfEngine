@@ -8,6 +8,7 @@
 #include <string>
 #include <typeindex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace infernux
@@ -194,12 +195,7 @@ class GameObject
         static_assert(!std::is_same_v<Transform, T>, "Cannot add Transform component manually");
 
         auto component = std::make_unique<T>(std::forward<Args>(args)...);
-        T *ptr = component.get();
-        ptr->SetGameObject(this);
-
-        m_components.push_back(std::move(component));
-        PostAddComponent(ptr);
-        return ptr;
+        return dynamic_cast<T *>(AttachComponent(std::move(component), true));
     }
 
     /// @brief Get the first component of type T
@@ -362,6 +358,7 @@ class GameObject
     Component *AddComponentByTypeName(const std::string &typeName);
 
     [[nodiscard]] std::vector<std::string> GetAddComponentBlockers(const std::string &typeName) const;
+    [[nodiscard]] std::vector<std::string> GetComponentSetBlockers() const;
     [[nodiscard]] bool CanAddComponentByTypeName(const std::string &typeName) const
     {
         return GetAddComponentBlockers(typeName).empty();
@@ -479,6 +476,12 @@ class GameObject
 
     void SetScene(Scene *scene);
 
+    Component *AttachComponent(std::unique_ptr<Component> component, bool enforceUserAddable);
+    [[nodiscard]] std::vector<std::string> GetAttachmentBlockers(const std::string &constraintTypeId,
+                                                                 const std::string &typeName,
+                                                                 const ComponentTypeConstraints &constraints,
+                                                                 const Component *replacing, bool enforceUserAddable,
+                                                                 bool enforceRequirements) const;
     void PostAddComponent(Component *component);
     void HandleActiveStateChanged(bool wasActiveInHierarchy, bool isActiveInHierarchy);
     void InvalidateComponentExecutionCache();
@@ -505,6 +508,7 @@ class GameObject
 
     Transform m_transform;
     std::vector<std::unique_ptr<Component>> m_components;
+    std::unordered_set<Component *> m_preparedPythonComponents;
     mutable std::vector<Component *> m_executionOrderCache;
     mutable bool m_executionOrderCacheDirty = true;
 

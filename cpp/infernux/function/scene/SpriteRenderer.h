@@ -21,7 +21,8 @@ class SpriteRenderer : public MeshRenderer
     [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
     {
         ComponentTypeConstraints constraints;
-        constraints.incompatibleTypes = {"MeshRenderer", "SkinnedMeshRenderer"};
+        constraints.allowMultiple = false;
+        constraints.exclusiveGroups = {"renderer-owner"};
         return constraints;
     }
 

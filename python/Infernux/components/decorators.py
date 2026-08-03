@@ -42,10 +42,13 @@ def require_component(*component_types: Type) -> Callable:
             pass
     """
     def decorator(cls):
-        # Initialize or extend the _require_components_ list
-        if not hasattr(cls, '_require_components_'):
-            cls._require_components_ = []
-        
+        # Copy inherited requirements before extending them. Mutating the
+        # inherited list would silently contaminate the base class and sibling
+        # component registrations.
+        cls._require_components_ = list(
+            getattr(cls, '_require_components_', ()) or ()
+        )
+
         # Add all specified types (avoid duplicates)
         for comp_type in component_types:
             if comp_type not in cls._require_components_:

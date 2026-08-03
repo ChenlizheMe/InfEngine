@@ -277,12 +277,6 @@ class Rigidbody : public Component
         return "Rigidbody";
     }
 
-    /// Rigidbody requires at least one Collider sibling to function.
-    [[nodiscard]] std::vector<std::string> GetRequiredComponentTypes() const override
-    {
-        return {"Collider"};
-    }
-
     // ====================================================================
     // Serialization
     // ====================================================================

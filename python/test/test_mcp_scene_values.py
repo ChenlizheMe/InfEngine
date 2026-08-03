@@ -8,6 +8,7 @@ from Infernux.mcp.tools.scene import (
     _coerce_component_property_value,
     _coerce_property_value,
     _find_component,
+    _remove_component_through_editor_transaction,
     _resolved_component_field_metadata,
 )
 from Infernux.renderstack.effect_slot import EffectSlot
@@ -201,5 +202,34 @@ def test_mcp_component_add_fields_are_one_editor_transaction(scene):
         assert restored is not None
         assert restored.component_id == component_id
         assert restored.intensity == 3.25
+    finally:
+        UndoManager._instance = previous_manager
+
+
+def test_mcp_component_remove_reports_constraint_rejection(scene):
+    from Infernux.components.decorators import require_component
+    from Infernux.engine.undo import UndoManager
+
+    class McpDependency(InxComponent):
+        pass
+
+    @require_component(McpDependency)
+    class McpConsumer(InxComponent):
+        pass
+
+    owner = scene.create_game_object("McpConstraintAwareRemove")
+    consumer = owner.add_component(McpConsumer)
+    dependency = owner.get_component(McpDependency)
+    assert consumer is not None
+    assert dependency is not None
+
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    try:
+        assert _remove_component_through_editor_transaction(
+            owner, dependency
+        ) is False
+        assert owner.get_component(McpDependency) is dependency
+        assert not manager.can_undo
     finally:
         UndoManager._instance = previous_manager

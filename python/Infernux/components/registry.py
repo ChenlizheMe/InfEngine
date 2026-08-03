@@ -39,8 +39,13 @@ class ComponentRegistration:
     component_type: Optional[Type['InxComponent']]
     project_script: bool
     allow_multiple: bool = True
+    user_addable: bool = True
+    removable: bool = True
+    intrinsic: bool = False
     required_types: tuple[object, ...] = ()
     incompatible_types: tuple[object, ...] = ()
+    exclusive_groups: tuple[str, ...] = ()
+    satisfied_types: tuple[str, ...] = ()
 
 
 _registration_lock = threading.RLock()
@@ -130,8 +135,13 @@ def register_component_type(component_type: Type['InxComponent'], *, script_path
         component_type=component_type,
         project_script=project_script,
         allow_multiple=not bool(getattr(component_type, "_disallow_multiple_", False)),
+        user_addable=bool(getattr(component_type, "_component_user_addable_", True)),
+        removable=bool(getattr(component_type, "_component_removable_", True)),
+        intrinsic=bool(getattr(component_type, "_component_intrinsic_", False)),
         required_types=tuple(getattr(component_type, "_require_components_", ()) or ()),
         incompatible_types=tuple(getattr(component_type, "_incompatible_components_", ()) or ()),
+        exclusive_groups=tuple(getattr(component_type, "_component_exclusive_groups_", ()) or ()),
+        satisfied_types=tuple(getattr(component_type, "_component_satisfied_types_", ()) or ()),
     )
     type_key = str(identity())
     with _registration_lock:
@@ -193,8 +203,13 @@ def register_component_script(file_path: str) -> bool:
             ),
             project_script=True,
             allow_multiple=(previous.allow_multiple if previous is not None else True),
+            user_addable=(previous.user_addable if previous is not None else True),
+            removable=(previous.removable if previous is not None else True),
+            intrinsic=(previous.intrinsic if previous is not None else False),
             required_types=(previous.required_types if previous is not None else ()),
             incompatible_types=(previous.incompatible_types if previous is not None else ()),
+            exclusive_groups=(previous.exclusive_groups if previous is not None else ()),
+            satisfied_types=(previous.satisfied_types if previous is not None else ()),
         )
         if previous != registration:
             _script_registrations[key] = registration
@@ -221,8 +236,12 @@ def get_component_registrations(*, project_root: str = "") -> tuple[ComponentReg
             entry
             for entry in _type_registrations.values()
             if not entry.project_script and entry.menu_path
+            and entry.user_addable and not entry.intrinsic
         ]
-        project_entries = list(_script_registrations.values())
+        project_entries = [
+            entry for entry in _script_registrations.values()
+            if entry.user_addable and not entry.intrinsic
+        ]
     if project_root:
         assets_root = os.path.join(project_root, "Assets")
         project_entries = [
@@ -258,38 +277,71 @@ def get_component_constraints(component_type: type) -> ComponentRegistration:
     return registration
 
 
+def component_constraint_type_id(value: object) -> str:
+    """Return the canonical constraint token for a component declaration.
+
+    Class references are exact identities. String declarations intentionally
+    remain semantic aliases (for example ``"Collider"``).
+    """
+    if isinstance(value, str):
+        return value
+    cpp_name = str(getattr(value, "_cpp_type_name", "") or "")
+    if cpp_name:
+        return f"native:{cpp_name}"
+    identity = getattr(value, "_get_type_guid", None)
+    if callable(identity):
+        type_guid = str(identity() or "")
+        if type_guid:
+            return f"python:{type_guid}"
+    return str(getattr(value, "__name__", "") or "")
+
+
 def get_python_attachment_blockers(game_object, component_type: type) -> tuple[str, ...]:
     """Evaluate one loaded Python type against an object's live components."""
     registration = get_component_constraints(component_type)
     blockers = []
+    if registration.intrinsic:
+        blockers.append("intrinsic components cannot be attached")
+    if not registration.user_addable:
+        blockers.append("component is not user-addable")
     existing = tuple(game_object.get_py_components() or ())
     if not registration.allow_multiple and any(
         isinstance(component, component_type) for component in existing
     ):
         blockers.append("only one instance is allowed per GameObject")
 
-    def _type_name(value) -> str:
-        if isinstance(value, str):
-            return value
-        return str(
-            getattr(value, "_cpp_type_name", "")
-            or getattr(value, "__name__", "")
-        )
-
     candidate_incompatible = {
-        _type_name(value) for value in registration.incompatible_types
-        if _type_name(value)
+        component_constraint_type_id(value)
+        for value in registration.incompatible_types
+        if component_constraint_type_id(value)
     }
     for component in existing:
         existing_type = type(component)
         existing_registration = get_component_constraints(existing_type)
         existing_name = existing_type.__name__
+        existing_identity = component_constraint_type_id(existing_type)
+        candidate_identity = component_constraint_type_id(component_type)
         existing_incompatible = {
-            _type_name(value) for value in existing_registration.incompatible_types
-            if _type_name(value)
+            component_constraint_type_id(value)
+            for value in existing_registration.incompatible_types
+            if component_constraint_type_id(value)
         }
-        if existing_name in candidate_incompatible or component_type.__name__ in existing_incompatible:
+        existing_aliases = {
+            existing_name,
+            existing_identity,
+            *(component_constraint_type_id(value) for value in existing_registration.satisfied_types),
+        }
+        candidate_aliases = {
+            component_type.__name__,
+            candidate_identity,
+            *(component_constraint_type_id(value) for value in registration.satisfied_types),
+        }
+        if candidate_incompatible & existing_aliases or existing_incompatible & candidate_aliases:
             blockers.append(f"incompatible with existing component '{existing_name}'")
+        if set(registration.exclusive_groups) & set(existing_registration.exclusive_groups):
+            blockers.append(
+                f"exclusive component group already owned by '{existing_name}'"
+            )
     return tuple(sorted(set(blockers)))
 
 

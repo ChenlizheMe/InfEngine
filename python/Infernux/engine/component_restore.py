@@ -255,6 +255,11 @@ def _prepare_python_component_records(
     reference_scene=None,
 ) -> PreparedPythonComponentGraph:
     pending_types: set[tuple[int, str]] = set()
+    available_constraint_types: set[tuple[int, str]] = {
+        (object_id, token)
+        for object_id, native_type in native_types
+        for token in (native_type, f"native:{native_type}")
+    }
     component_type_counts: dict[tuple[int, str], int] = {}
     python_component_ids: set[int] = set()
     parsed: list[
@@ -289,7 +294,9 @@ def _prepare_python_component_records(
         }
         if object_id is not None:
             pending_types.add((object_id, type_name))
-            key = (object_id, type_name)
+            available_constraint_types.add((object_id, type_name))
+            available_constraint_types.add((object_id, f"python:{type_guid}"))
+            key = (object_id, type_guid)
             component_type_counts[key] = component_type_counts.get(key, 0) + 1
         parsed.append(
             (
@@ -371,42 +378,33 @@ def _prepare_python_component_records(
             else:
                 live_fields = fields
             component_type = type(instance)
+            from Infernux.components.registry import (
+                component_constraint_type_id,
+                get_component_constraints,
+            )
+            registration = None if is_broken else get_component_constraints(component_type)
             if (
                 not is_broken
                 and object_id is not None
-                and getattr(component_type, "_disallow_multiple_", False)
-                and component_type_counts[(object_id, type_name)] != 1
+                and not registration.allow_multiple
+                and component_type_counts[(object_id, type_guid)] != 1
             ):
                 instance._call_on_destroy()
                 raise PythonComponentRestoreError(
                     f"Python component '{type_name}' disallows multiple instances on one GameObject"
                 )
             if not is_broken:
-                for required_type in getattr(component_type, "_require_components_", ()):
-                    if isinstance(required_type, str):
-                        required_name = required_type
-                        required_is_native = (object_id, required_name) in native_types
-                    elif hasattr(required_type, "_cpp_type_name"):
-                        required_name = str(required_type._cpp_type_name)
-                        required_is_native = True
-                    elif isinstance(required_type, type):
-                        required_name = required_type.__name__
-                        required_is_native = False
-                    else:
+                for required_type in registration.required_types:
+                    required_token = component_constraint_type_id(required_type)
+                    if not required_token:
                         instance._call_on_destroy()
                         raise PythonComponentRestoreError(
                             f"Python component '{type_name}' has an invalid required component declaration"
                         )
-                    if not required_name:
+                    if object_id is None or (object_id, required_token) not in available_constraint_types:
                         instance._call_on_destroy()
                         raise PythonComponentRestoreError(
-                            f"Python component '{type_name}' has an empty required component type"
-                        )
-                    available_types = native_types if required_is_native else pending_types
-                    if object_id is None or (object_id, required_name) not in available_types:
-                        instance._call_on_destroy()
-                        raise PythonComponentRestoreError(
-                            f"Python component '{type_name}' requires missing component '{required_name}'"
+                            f"Python component '{type_name}' requires missing component '{required_token}'"
                         )
             try:
                 instance._deserialize_fields_document(
@@ -739,6 +737,7 @@ def replace_scene_python_components_for_play(
     prepared = list(prepared_graph.components)
     existing_by_object: dict[int, list[Any]] = {}
     targets: dict[int, Any] = {}
+    replaced: list[tuple[Any, Any, Any]] = []
 
     try:
         for item in prepared:
@@ -769,50 +768,49 @@ def replace_scene_python_components_for_play(
                     f"Python component identity changed on GameObject {object_id}"
                 )
 
-        for existing in existing_by_object.values():
-            for component in existing:
-                native_component = getattr(component, "_cpp_component", None)
-                owner = getattr(component, "game_object", None)
-                if native_component is None or owner is None:
-                    raise PythonComponentRestoreError("live Python component lost its native binding")
-                if not owner._remove_prepared_py_component(native_component):
-                    raise PythonComponentRestoreError("failed to detach an edit-mode Python component")
-
-        from Infernux.components.component import InxComponent
-        from Infernux.components.builtin_component import BuiltinComponent
-        from Infernux.gizmos.collector import notify_scene_changed
-
-        InxComponent._clear_all_instances()
-        BuiltinComponent._clear_cache()
-        notify_scene_changed()
-
-        attached = []
+        existing_by_id = {
+            int(getattr(component, "_component_id", 0) or 0): component
+            for existing in existing_by_object.values()
+            for component in existing
+        }
         for item in sorted(prepared, key=lambda value: (value.game_object_id, value.component_index)):
             target = targets[item.game_object_id]
-            instance = target._attach_prepared_py_component(item.instance, item.component_index)
+            previous = existing_by_id.get(item.component_id)
+            if previous is None:
+                raise PythonComponentRestoreError(
+                    f"Python component '{item.type_name}' lost its edit-mode counterpart"
+                )
+            instance = target.replace_py_component(previous, item.instance)
             if instance is not item.instance:
                 raise PythonComponentRestoreError(
-                    f"Python component '{item.type_name}' was rejected by its target GameObject"
+                    f"Python component '{item.type_name}' replacement was rejected"
                 )
-            native_component = getattr(instance, "_cpp_component", None)
+            native_component = getattr(item.instance, "_cpp_component", None)
             if native_component is None:
                 raise PythonComponentRestoreError(
                     f"Python component '{item.type_name}' was not bound to a native proxy"
                 )
-            native_component._set_component_id(item.component_id)
-            instance._component_id = item.component_id
-            instance._refresh_native_handle()
             native_component.execution_order = item.execution_order
-            attached.append((target, instance, native_component))
+            replaced.append((target, previous, item.instance))
 
-        for _target, instance, _native_component in attached:
+        for _target, _previous, instance in replaced:
             instance._call_on_after_deserialize()
-        for target, _instance, native_component in attached:
-            target._activate_prepared_py_component(native_component)
         prepared_graph.consume()
         return True
-    except Exception:
+    except Exception as exc:
+        rollback_errors = []
+        for target, previous, current in reversed(replaced):
+            try:
+                if target.replace_py_component(current, previous) is not previous:
+                    rollback_errors.append(type(previous).__name__)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"{type(previous).__name__}: {rollback_exc}")
         prepared_graph.discard()
+        if rollback_errors:
+            raise PythonComponentRestoreError(
+                "failed to roll back Play Mode Python replacement: "
+                + "; ".join(rollback_errors)
+            ) from exc
         raise
 
 

@@ -1068,8 +1068,8 @@ class ParticleSystem(InxComponent):
             SceneManager.instance().mark_temporal_discontinuity()
         return accepted
 
-    def reset(self, emitter: int | str | None = None) -> bool:
-        """Reset to time zero while preserving each emitter's play state."""
+    def reset_simulation(self, emitter: int | str | None = None) -> bool:
+        """Reset particle simulation time while preserving emitter play state."""
         return self.seek(0.0, emitter)
 
     def start_emitter(self, emitter: int | str) -> bool:

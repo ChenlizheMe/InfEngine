@@ -53,6 +53,22 @@ class TestRequireComponent:
     def test_alias_RequireComponent(self):
         assert RequireComponent is require_component
 
+    def test_subclass_requirement_does_not_mutate_base_or_sibling(self):
+        @require_component(_DummyA)
+        class Base:
+            pass
+
+        @require_component(_DummyB)
+        class Child(Base):
+            pass
+
+        class Sibling(Base):
+            pass
+
+        assert Base._require_components_ == [_DummyA]
+        assert Child._require_components_ == [_DummyA, _DummyB]
+        assert Sibling._require_components_ == [_DummyA]
+
 
 # ══════════════════════════════════════════════════════════════════════
 # disallow_multiple

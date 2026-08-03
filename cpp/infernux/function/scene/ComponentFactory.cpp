@@ -72,31 +72,48 @@ std::vector<std::string> ComponentFactory::GetAttachmentBlockers(const std::stri
         blockers.emplace_back("component type name is empty");
         return blockers;
     }
-    if (typeName == "Transform") {
-        blockers.emplace_back("Transform is intrinsic and cannot be added");
-        return blockers;
-    }
     if (!IsRegistered(typeName)) {
         blockers.emplace_back("component type is not registered");
         return blockers;
     }
 
     const auto &candidateConstraints = GetTypeConstraints(typeName);
+    if (candidateConstraints.intrinsic) {
+        blockers.emplace_back("intrinsic components cannot be attached");
+        return blockers;
+    }
     if (!candidateConstraints.allowMultiple &&
         std::find(attachedTypes.begin(), attachedTypes.end(), typeName) != attachedTypes.end()) {
         blockers.emplace_back("only one instance is allowed per GameObject");
     }
 
-    const auto declaresIncompatible = [](const ComponentTypeConstraints &constraints, const std::string &otherType) {
-        return std::find(constraints.incompatibleTypes.begin(), constraints.incompatibleTypes.end(), otherType) !=
-               constraints.incompatibleTypes.end();
+    const auto typeSatisfies = [](const std::string &concreteType, const ComponentTypeConstraints &constraints,
+                                  const std::string &requestedType) {
+        return concreteType == requestedType ||
+               std::find(constraints.satisfiedTypes.begin(), constraints.satisfiedTypes.end(), requestedType) !=
+                   constraints.satisfiedTypes.end();
+    };
+    const auto declaresIncompatible = [&](const ComponentTypeConstraints &constraints, const std::string &otherType,
+                                          const ComponentTypeConstraints &otherConstraints) {
+        return std::any_of(constraints.incompatibleTypes.begin(), constraints.incompatibleTypes.end(),
+                           [&](const std::string &incompatibleType) {
+                               return typeSatisfies(otherType, otherConstraints, incompatibleType);
+                           });
+    };
+    const auto sharesExclusiveGroup = [](const ComponentTypeConstraints &left, const ComponentTypeConstraints &right) {
+        return std::any_of(left.exclusiveGroups.begin(), left.exclusiveGroups.end(), [&](const std::string &group) {
+            return std::find(right.exclusiveGroups.begin(), right.exclusiveGroups.end(), group) !=
+                   right.exclusiveGroups.end();
+        });
     };
     for (const std::string &existingType : attachedTypes) {
         if (!IsRegistered(existingType))
             continue;
         const auto &existingConstraints = GetTypeConstraints(existingType);
-        if (declaresIncompatible(candidateConstraints, existingType) ||
-            declaresIncompatible(existingConstraints, typeName)) {
+        if (sharesExclusiveGroup(candidateConstraints, existingConstraints)) {
+            blockers.push_back("exclusive component group already owned by '" + existingType + "'");
+        } else if (declaresIncompatible(candidateConstraints, existingType, existingConstraints) ||
+                   declaresIncompatible(existingConstraints, typeName, candidateConstraints)) {
             blockers.push_back("incompatible with existing component '" + existingType + "'");
         }
     }
@@ -119,6 +136,19 @@ std::vector<std::string> ComponentFactory::GetRegisteredTypeNames()
     names.reserve(registry.size());
     for (const auto &pair : registry)
         names.push_back(pair.first);
+    return names;
+}
+
+std::vector<std::string> ComponentFactory::GetUserAddableTypeNames()
+{
+    auto &registry = GetRegistry();
+    std::vector<std::string> names;
+    names.reserve(registry.size());
+    for (const auto &pair : registry) {
+        const auto &constraints = pair.second.constraints;
+        if (constraints.userAddable && !constraints.intrinsic)
+            names.push_back(pair.first);
+    }
     return names;
 }
 

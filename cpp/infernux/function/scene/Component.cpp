@@ -4,6 +4,7 @@
 #include "Scene.h"
 #include "Transform.h"
 #include <InxLog.h>
+#include <algorithm>
 #include <atomic>
 #include <nlohmann/json.hpp>
 
@@ -82,6 +83,35 @@ ObjectHandle Component::GetHandle() const
 {
     const Scene *scene = m_gameObject ? m_gameObject->GetScene() : nullptr;
     return ObjectHandle{m_componentId, m_lifetimeGeneration, scene ? scene->GetWorldId() : 0};
+}
+
+std::string Component::GetConstraintTypeId() const
+{
+    return std::string("native:") + GetTypeName();
+}
+
+const ComponentTypeConstraints &Component::GetComponentTypeConstraints() const
+{
+    const std::string typeName = GetTypeName();
+    if (ComponentFactory::IsRegistered(typeName))
+        return ComponentFactory::GetTypeConstraints(typeName);
+    static const ComponentTypeConstraints defaults{};
+    return defaults;
+}
+
+std::vector<std::string> Component::GetRequiredComponentTypes() const
+{
+    return GetComponentTypeConstraints().requiredTypes;
+}
+
+bool Component::IsComponentType(const std::string &typeName) const
+{
+    if (typeName.empty())
+        return false;
+    if (typeName == GetConstraintTypeId() || typeName == GetTypeName())
+        return true;
+    const auto &aliases = GetComponentTypeConstraints().satisfiedTypes;
+    return std::find(aliases.begin(), aliases.end(), typeName) != aliases.end();
 }
 
 void Component::CallAwake()

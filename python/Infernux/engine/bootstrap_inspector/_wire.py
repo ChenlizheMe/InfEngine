@@ -951,7 +951,7 @@ def _wire_clipboard_and_context(ctx):
 
     def _can_remove_selected_components():
         entries = _selected_component_entries()
-        return bool(entries) and all(type_name != "Transform" for _, _, _, type_name, _ in entries) and all(
+        return bool(entries) and all(
             _can_remove_component(obj, comp, type_name, is_native)
             for _target, obj, comp, type_name, is_native in entries
         )

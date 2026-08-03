@@ -2,6 +2,7 @@
 #include "Collider.h"
 #include "GameObject.h"
 #include "physics/PhysicsContactListener.h"
+#include <algorithm>
 #include <core/log/InxLog.h>
 #include <nlohmann/json.hpp>
 #include <tools/pybinding/JsonPyBridge.h>
@@ -18,21 +19,16 @@ void BindPythonMirrorHelpers(const py::object &pyComponent, Component *nativeCom
     if (pyComponent.is_none())
         return;
 
-    try {
-        if (py::hasattr(pyComponent, "_bind_native_component")) {
-            pyComponent.attr("_bind_native_component")(
-                py::cast(nativeComponent, py::return_value_policy::reference),
-                gameObject ? py::cast(gameObject, py::return_value_policy::reference) : py::none());
-            return;
-        }
-
-        if (gameObject && py::hasattr(pyComponent, "_set_game_object")) {
-            pyComponent.attr("_set_game_object")(py::cast(gameObject, py::return_value_policy::reference));
-        }
-        pyComponent.attr("_cpp_component") = py::cast(nativeComponent, py::return_value_policy::reference);
-    } catch (const py::error_already_set &e) {
-        INXLOG_ERROR("[PyComponentProxy] Failed to bind Python mirror: ", e.what());
+    if (py::hasattr(pyComponent, "_bind_native_component")) {
+        pyComponent.attr("_bind_native_component")(py::cast(nativeComponent, py::return_value_policy::reference),
+                                                   gameObject ? py::cast(gameObject, py::return_value_policy::reference)
+                                                              : py::none());
+        return;
     }
+
+    if (gameObject && py::hasattr(pyComponent, "_set_game_object"))
+        pyComponent.attr("_set_game_object")(py::cast(gameObject, py::return_value_policy::reference));
+    pyComponent.attr("_cpp_component") = py::cast(nativeComponent, py::return_value_policy::reference);
 }
 
 void SyncPythonMirrorState(const py::object &pyComponent, const Component *nativeComponent)
@@ -104,6 +100,42 @@ void CallPythonLifecycleOneArg(const py::object &pyComponent, const std::string 
         INXLOG_ERROR("[PyComponentProxy] Error in ", typeName, ".", displayName, "(): ", e.what());
     }
 }
+
+std::string ConstraintTypeName(const py::handle &value)
+{
+    if (py::isinstance<py::str>(value))
+        return py::cast<std::string>(value);
+    if (py::hasattr(value, "_cpp_type_name")) {
+        const py::object cppTypeName = py::reinterpret_borrow<py::object>(value).attr("_cpp_type_name");
+        if (!cppTypeName.is_none()) {
+            const std::string name = cppTypeName.cast<std::string>();
+            if (!name.empty())
+                return "native:" + name;
+        }
+    }
+    if (py::hasattr(value, "_get_type_guid")) {
+        const py::object identity = py::reinterpret_borrow<py::object>(value).attr("_get_type_guid")();
+        if (!identity.is_none()) {
+            const std::string typeGuid = identity.cast<std::string>();
+            if (!typeGuid.empty())
+                return "python:" + typeGuid;
+        }
+    }
+    if (py::hasattr(value, "__name__"))
+        return py::reinterpret_borrow<py::object>(value).attr("__name__").cast<std::string>();
+    return {};
+}
+
+std::vector<std::string> ConstraintTypeNames(const py::handle &values)
+{
+    std::vector<std::string> result;
+    for (const py::handle value : py::reinterpret_borrow<py::iterable>(values)) {
+        std::string name = ConstraintTypeName(value);
+        if (!name.empty() && std::find(result.begin(), result.end(), name) == result.end())
+            result.push_back(std::move(name));
+    }
+    return result;
+}
 } // namespace
 
 PyComponentProxy::PyComponentProxy(py::object pyComponent)
@@ -149,9 +181,6 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
                 }
             }
 
-            // Inject component ID (generated in Component constructor)
-            m_pyComponent.attr("_component_id") = py::int_(m_componentId);
-
             SyncEnabledFromPython(m_pyComponent, m_enabled, "constructor");
 
             if (py::hasattr(m_pyComponent, "_script_guid")) {
@@ -161,9 +190,36 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
                 }
             }
 
+            RefreshConstraintTypeId();
+            const bool isMissingScript =
+                py::hasattr(m_pyComponent, "_is_broken") && m_pyComponent.attr("_is_broken").cast<bool>();
+            if (isMissingScript) {
+                // Missing-script placeholders preserve authored data but are
+                // never offered as addable component types.
+                m_typeConstraints.userAddable = false;
+            } else {
+                try {
+                    const py::object constraints =
+                        py::module_::import("Infernux.components.registry").attr("get_component_constraints")(pyType);
+                    m_typeConstraints.allowMultiple = constraints.attr("allow_multiple").cast<bool>();
+                    m_typeConstraints.userAddable = constraints.attr("user_addable").cast<bool>();
+                    m_typeConstraints.removable = constraints.attr("removable").cast<bool>();
+                    m_typeConstraints.intrinsic = constraints.attr("intrinsic").cast<bool>();
+                    m_typeConstraints.requiredTypes = ConstraintTypeNames(constraints.attr("required_types"));
+                    m_typeConstraints.incompatibleTypes = ConstraintTypeNames(constraints.attr("incompatible_types"));
+                    m_typeConstraints.exclusiveGroups = ConstraintTypeNames(constraints.attr("exclusive_groups"));
+                    m_typeConstraints.satisfiedTypes = ConstraintTypeNames(constraints.attr("satisfied_types"));
+                } catch (const py::error_already_set &e) {
+                    INXLOG_ERROR("[PyComponentProxy] Failed to resolve component constraints for '", m_typeName,
+                                 "': ", e.what());
+                    throw;
+                }
+            }
+
             RefreshCoroutineSchedulerFlag();
         } catch (const py::error_already_set &e) {
             INXLOG_ERROR("[PyComponentProxy] Failed to get type name: ", e.what());
+            throw;
         }
     }
 }
@@ -180,7 +236,8 @@ PyComponentProxy::PyComponentProxy(PyComponentProxy &&other) noexcept
     : Component(std::move(other)), m_pyComponent(std::move(other.m_pyComponent)),
       m_typeName(std::move(other.m_typeName)), m_typeGuid(std::move(other.m_typeGuid)),
       m_scriptGuid(std::move(other.m_scriptGuid)), m_moduleName(std::move(other.m_moduleName)),
-      m_qualifiedName(std::move(other.m_qualifiedName)), m_executeInEditMode(other.m_executeInEditMode),
+      m_qualifiedName(std::move(other.m_qualifiedName)), m_constraintTypeId(std::move(other.m_constraintTypeId)),
+      m_typeConstraints(std::move(other.m_typeConstraints)), m_executeInEditMode(other.m_executeInEditMode),
       m_overridesUpdate(other.m_overridesUpdate), m_overridesFixedUpdate(other.m_overridesFixedUpdate),
       m_overridesLateUpdate(other.m_overridesLateUpdate), m_hasCoroutineScheduler(other.m_hasCoroutineScheduler),
       m_updateDispatchCount(other.m_updateDispatchCount), m_updateForwardCount(other.m_updateForwardCount)
@@ -198,6 +255,8 @@ PyComponentProxy &PyComponentProxy::operator=(PyComponentProxy &&other) noexcept
         m_scriptGuid = std::move(other.m_scriptGuid);
         m_moduleName = std::move(other.m_moduleName);
         m_qualifiedName = std::move(other.m_qualifiedName);
+        m_constraintTypeId = std::move(other.m_constraintTypeId);
+        m_typeConstraints = std::move(other.m_typeConstraints);
         m_executeInEditMode = other.m_executeInEditMode;
         m_overridesUpdate = other.m_overridesUpdate;
         m_overridesFixedUpdate = other.m_overridesFixedUpdate;
@@ -230,6 +289,11 @@ void PyComponentProxy::RefreshCoroutineSchedulerFlag()
     }
 }
 
+void PyComponentProxy::RefreshConstraintTypeId()
+{
+    m_constraintTypeId = "python:" + (m_typeGuid.empty() ? m_moduleName + "." + m_qualifiedName : m_typeGuid);
+}
+
 void PyComponentProxy::BindPythonMirror()
 {
     if (m_pyComponent.is_none())
@@ -257,6 +321,36 @@ void PyComponentProxy::RebindPythonMirror()
     BindPythonMirror();
     SyncPythonMirror();
     RefreshCoroutineSchedulerFlag();
+}
+
+void PyComponentProxy::RefreshPythonMirrorIdentity() noexcept
+{
+    try {
+        py::gil_scoped_acquire acquire;
+        if (!m_pyComponent.is_none())
+            m_pyComponent.attr("_component_id") = py::int_(GetComponentID());
+        SyncPythonMirror();
+        if (!m_pyComponent.is_none() && py::hasattr(m_pyComponent, "_refresh_native_handle"))
+            m_pyComponent.attr("_refresh_native_handle")();
+    } catch (const py::error_already_set &error) {
+        INXLOG_ERROR("[PyComponentProxy] Failed to refresh published Python mirror identity: ", error.what());
+    }
+}
+
+void PyComponentProxy::InvalidatePythonMirrorBinding() noexcept
+{
+    try {
+        py::gil_scoped_acquire acquire;
+        if (m_pyComponent.is_none())
+            return;
+        if (py::hasattr(m_pyComponent, "_invalidate_native_binding")) {
+            m_pyComponent.attr("_invalidate_native_binding")();
+            return;
+        }
+        m_pyComponent.attr("_cpp_component") = py::none();
+    } catch (const py::error_already_set &error) {
+        INXLOG_ERROR("[PyComponentProxy] Failed to invalidate Python mirror binding: ", error.what());
+    }
 }
 
 void PyComponentProxy::Awake()
@@ -487,30 +581,7 @@ const char *PyComponentProxy::GetTypeName() const
 
 std::vector<std::string> PyComponentProxy::GetRequiredComponentTypes() const
 {
-    py::gil_scoped_acquire acquire;
-    std::vector<std::string> result;
-    if (m_pyComponent.is_none())
-        return result;
-
-    try {
-        py::object pyType = m_pyComponent.attr("__class__");
-        const py::object constraints =
-            py::module_::import("Infernux.components.registry").attr("get_component_constraints")(pyType);
-        const py::tuple requiredTypes = constraints.attr("required_types").cast<py::tuple>();
-        if (requiredTypes.size() > 0) {
-            for (auto item : requiredTypes) {
-                // Each entry is either a string or a Python type with __name__
-                if (py::isinstance<py::str>(item)) {
-                    result.push_back(item.cast<std::string>());
-                } else if (py::hasattr(item, "__name__")) {
-                    result.push_back(item.attr("__name__").cast<std::string>());
-                }
-            }
-        }
-    } catch (const py::error_already_set &e) {
-        INXLOG_WARN("[PyComponentProxy] Failed to get required components for '", m_typeName, "': ", e.what());
-    }
-    return result;
+    return m_typeConstraints.requiredTypes;
 }
 
 nlohmann::json PyComponentProxy::SerializeDocument() const
@@ -555,6 +626,7 @@ bool PyComponentProxy::DeserializeDocument(const nlohmann::json &j)
         if (j.contains("type_guid")) {
             m_typeGuid = j["type_guid"].get<std::string>();
         }
+        RefreshConstraintTypeId();
 
         // Python component and fields will be restored by Python side
         // after the C++ scene structure is rebuilt
@@ -570,6 +642,7 @@ void PyComponentProxy::SetScriptGuid(const std::string &guid)
 {
     py::gil_scoped_acquire acquire;
     m_scriptGuid = guid;
+    RefreshConstraintTypeId();
     if (!m_pyComponent.is_none()) {
         try {
             m_pyComponent.attr("_script_guid") = py::str(guid);

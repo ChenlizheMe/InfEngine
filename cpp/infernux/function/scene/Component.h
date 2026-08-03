@@ -14,8 +14,13 @@ namespace infernux
 struct ComponentTypeConstraints
 {
     bool allowMultiple = true;
+    bool userAddable = true;
+    bool removable = true;
+    bool intrinsic = false;
     std::vector<std::string> requiredTypes;
     std::vector<std::string> incompatibleTypes;
+    std::vector<std::string> exclusiveGroups;
+    std::vector<std::string> satisfiedTypes;
 };
 
 // Forward declarations
@@ -306,6 +311,15 @@ class Component
         return "Component";
     }
 
+    /// Stable registry identity used by component attachment constraints.
+    /// Native components use their registered type name; Python proxies use
+    /// their script/type GUID pair so equally named scripts do not collide.
+    [[nodiscard]] virtual std::string GetConstraintTypeId() const;
+
+    /// Immutable attachment/removal metadata for this concrete component.
+    /// This is queried only when the component set changes, never per frame.
+    [[nodiscard]] virtual const ComponentTypeConstraints &GetComponentTypeConstraints() const;
+
     /// @brief Declare component types that this component depends on.
     ///
     /// When a component X is about to be removed, the engine checks every sibling
@@ -317,20 +331,13 @@ class Component
     /// to Unity's [RequireComponent] attribute.
     ///
     /// @return List of type-name strings (e.g. {"Collider"} for Rigidbody).
-    [[nodiscard]] virtual std::vector<std::string> GetRequiredComponentTypes() const
-    {
-        return {};
-    }
+    [[nodiscard]] virtual std::vector<std::string> GetRequiredComponentTypes() const;
 
     /// @brief Check whether this component satisfies a given type name.
     ///
-    /// Default returns true only when typeName exactly matches GetTypeName().
-    /// Override in base classes that form a hierarchy (e.g. Collider) so that
-    /// derived types (BoxCollider, SphereCollider …) also match the base name.
-    [[nodiscard]] virtual bool IsComponentType(const std::string &typeName) const
-    {
-        return typeName == GetTypeName();
-    }
+    /// Matches the stable registry identity, concrete display type, or one of
+    /// the semantic aliases declared by the component registration.
+    [[nodiscard]] virtual bool IsComponentType(const std::string &typeName) const;
 
     /// @brief Whether this component's lifecycle (Awake/OnEnable/OnDisable) should
     ///        fire in edit mode as well as play mode.

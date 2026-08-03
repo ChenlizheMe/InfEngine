@@ -38,6 +38,9 @@ class ComponentFactory
 
     /// @brief Get all registered component type names
     static std::vector<std::string> GetRegisteredTypeNames();
+
+    /// @brief Get only component types that belong in user-facing add menus.
+    static std::vector<std::string> GetUserAddableTypeNames();
 };
 
 } // namespace infernux

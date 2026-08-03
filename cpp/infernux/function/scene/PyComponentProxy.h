@@ -75,6 +75,14 @@ class PyComponentProxy : public Component
     // ========================================================================
 
     [[nodiscard]] const char *GetTypeName() const override;
+    [[nodiscard]] std::string GetConstraintTypeId() const override
+    {
+        return m_constraintTypeId;
+    }
+    [[nodiscard]] const ComponentTypeConstraints &GetComponentTypeConstraints() const override
+    {
+        return m_typeConstraints;
+    }
 
     /// Python components only receive Awake/OnEnable/OnDisable in edit mode
     /// when explicitly decorated with @execute_in_edit_mode, matching the
@@ -156,6 +164,8 @@ class PyComponentProxy : public Component
     /// Bind a newly published Python mirror and copy the preserved native
     /// lifecycle state into it without invoking user lifecycle methods.
     void RebindPythonMirror();
+    void RefreshPythonMirrorIdentity() noexcept;
+    void InvalidatePythonMirrorBinding() noexcept;
 
     // ========================================================================
     // Serialization
@@ -184,6 +194,7 @@ class PyComponentProxy : public Component
     void BindPythonMirror();
     void SyncPythonMirror() const;
     void RefreshCoroutineSchedulerFlag();
+    void RefreshConstraintTypeId();
 
     py::object m_pyComponent;
     std::string m_typeName;
@@ -191,6 +202,8 @@ class PyComponentProxy : public Component
     std::string m_scriptGuid; // Stable GUID for the script asset
     std::string m_moduleName;
     std::string m_qualifiedName;
+    std::string m_constraintTypeId;
+    ComponentTypeConstraints m_typeConstraints;
     bool m_executeInEditMode = false;
     bool m_overridesUpdate = true;
     bool m_overridesFixedUpdate = true;

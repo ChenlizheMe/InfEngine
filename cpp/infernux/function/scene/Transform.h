@@ -26,6 +26,22 @@ namespace infernux
 class Transform : public Component
 {
   public:
+    [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
+    {
+        ComponentTypeConstraints constraints;
+        constraints.allowMultiple = false;
+        constraints.userAddable = false;
+        constraints.removable = false;
+        constraints.intrinsic = true;
+        return constraints;
+    }
+
+    [[nodiscard]] const ComponentTypeConstraints &GetComponentTypeConstraints() const override
+    {
+        static const ComponentTypeConstraints constraints = GetTypeConstraints();
+        return constraints;
+    }
+
     Transform();
     ~Transform() override;
 

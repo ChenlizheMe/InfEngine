@@ -48,7 +48,8 @@ class MeshRenderer : public Component
     [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
     {
         ComponentTypeConstraints constraints;
-        constraints.incompatibleTypes = {"SpriteRenderer"};
+        constraints.allowMultiple = false;
+        constraints.exclusiveGroups = {"renderer-owner"};
         return constraints;
     }
 

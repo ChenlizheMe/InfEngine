@@ -535,7 +535,7 @@ class TestGameObject:
         assert first.add_component("SpriteRenderer") is not None
         assert not first.can_add_component("MeshRenderer")
         assert first.get_add_component_blockers("MeshRenderer") == [
-            "incompatible with existing component 'SpriteRenderer'"
+            "exclusive component group already owned by 'SpriteRenderer'"
         ]
         assert first.add_component("MeshRenderer") is None
         assert first.get_component("MeshRenderer") is None
@@ -545,7 +545,7 @@ class TestGameObject:
         assert second.add_component("MeshRenderer") is not None
         assert not second.can_add_component("SpriteRenderer")
         assert second.get_add_component_blockers("SpriteRenderer") == [
-            "incompatible with existing component 'MeshRenderer'"
+            "exclusive component group already owned by 'MeshRenderer'"
         ]
         assert second.add_component("SpriteRenderer") is None
         assert second.get_component("SpriteRenderer") is None
@@ -2535,6 +2535,23 @@ class TestSceneSerialization:
         assert target.execution_order == 42
         assert target.enabled is False
         assert target.value == 13
+
+    def test_python_component_replacement_rejects_new_registry_constraints(self, scene):
+        class ReloadSource(InxComponent):
+            pass
+
+        class ReloadTarget(InxComponent):
+            _incompatible_components_ = ("MeshRenderer",)
+
+        root = scene.create_game_object("ConstraintAwareReplacement")
+        assert root.add_component("MeshRenderer") is not None
+        source = root.add_py_component(ReloadSource())
+
+        with pytest.raises(RuntimeError, match="replacement failed"):
+            root.replace_py_component(source, ReloadTarget())
+
+        assert root.get_py_components() == [source]
+        assert source._cpp_component is not None
 
     def test_unified_component_records_preserve_order_and_python_execution_order(self, scene):
         root = scene.create_game_object("UnifiedComponentOrder")

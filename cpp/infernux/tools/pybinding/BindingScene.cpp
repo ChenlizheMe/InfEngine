@@ -1491,6 +1491,15 @@ void RegisterSceneBindings(py::module_ &m)
         .def(
             "add_py_component",
             [](GameObject *obj, py::object pyComponentInstance) -> py::object {
+                std::vector<Component *> autoAddedDependencies;
+                const auto rollbackDependencies = [&]() {
+                    for (auto it = autoAddedDependencies.rbegin(); it != autoAddedDependencies.rend(); ++it) {
+                        if (*it && (*it)->GetGameObject() == obj && !obj->RemoveComponent(*it))
+                            INXLOG_ERROR("[Binding] Failed to roll back auto-added component '", (*it)->GetTypeName(),
+                                         "'");
+                    }
+                    autoAddedDependencies.clear();
+                };
                 auto hasCppComponent = [&](const std::string &typeName) -> bool {
                     if (typeName == "Transform") {
                         return true;
@@ -1543,103 +1552,63 @@ void RegisterSceneBindings(py::module_ &m)
                 }
 
                 const py::tuple requiredTypes = constraints.attr("required_types").cast<py::tuple>();
+                bool dependencyFailed = false;
                 if (requiredTypes.size() > 0) {
                     for (auto reqType : requiredTypes) {
-                        bool found = false;
-
-                        if (py::isinstance<py::str>(reqType)) {
-                            std::string reqTypeName = reqType.cast<std::string>();
-                            if (hasCppComponent(reqTypeName)) {
+                        const std::string requiredToken =
+                            py::module_::import("Infernux.components.registry")
+                                .attr("component_constraint_type_id")(reqType)
+                                .cast<std::string>();
+                        bool found = obj->GetTransform()->IsComponentType(requiredToken);
+                        for (const auto &component : obj->GetAllComponents()) {
+                            if (component && component->IsComponentType(requiredToken)) {
                                 found = true;
-                            } else {
-                                found = (obj->AddComponentByTypeName(reqTypeName) != nullptr);
-                            }
-                            if (!found) {
-                                py::print("[Warning] Failed to auto-add required native component", reqTypeName);
-                            }
-                            continue;
-                        } else if (py::hasattr(reqType, "_cpp_type_name")) {
-                            std::string reqCppTypeName;
-                            try {
-                                reqCppTypeName = reqType.attr("_cpp_type_name").cast<std::string>();
-                            } catch (...) {
-                                INXLOG_WARN("[Binding] Failed to read _cpp_type_name from required component type");
-                                reqCppTypeName.clear();
-                            }
-
-                            if (!reqCppTypeName.empty()) {
-                                if (hasCppComponent(reqCppTypeName)) {
-                                    found = true;
-                                } else if (obj->AddComponentByTypeName(reqCppTypeName) != nullptr) {
-                                    found = true;
-                                }
-                            }
-
-                            if (!found && !reqCppTypeName.empty()) {
-                                py::print("[Warning] Failed to auto-add required native component", reqCppTypeName);
-                            }
-                            continue;
-                        }
-
-                        if (found) {
-                            continue;
-                        }
-
-                        for (const auto &comp : obj->GetAllComponents()) {
-                            if (auto *proxy = dynamic_cast<PyComponentProxy *>(comp.get())) {
-                                py::object existingComp = proxy->GetPyComponent();
-                                if (!existingComp.is_none() && py::isinstance(existingComp, reqType)) {
-                                    found = true;
-                                    break;
-                                }
+                                break;
                             }
                         }
-                        if (!found) {
-                            std::string typeName = pyType.attr("__name__").cast<std::string>();
-                            std::string reqTypeName = py::hasattr(reqType, "__name__")
-                                                          ? reqType.attr("__name__").cast<std::string>()
-                                                          : std::string("Component");
-                            py::print("[Warning] Component", typeName, "requires", reqTypeName,
-                                      "- adding it automatically");
-                            // Auto-add the required component
+                        if (found)
+                            continue;
+
+                        std::string nativeTypeName;
+                        if (py::hasattr(reqType, "_cpp_type_name"))
+                            nativeTypeName = reqType.attr("_cpp_type_name").cast<std::string>();
+                        else if (py::isinstance<py::str>(reqType)) {
+                            const std::string declaredName = reqType.cast<std::string>();
+                            if (ComponentFactory::IsRegistered(declaredName))
+                                nativeTypeName = declaredName;
+                        }
+                        if (!nativeTypeName.empty()) {
+                            Component *required = obj->AddComponentByTypeName(nativeTypeName);
+                            found = required != nullptr;
+                            if (required)
+                                autoAddedDependencies.push_back(required);
+                        } else if (py::isinstance<py::type>(reqType)) {
                             py::object newReqComp = reqType();
                             auto reqProxy = std::make_unique<PyComponentProxy>(newReqComp);
                             Component *reqAdded = obj->AddExistingComponent(std::move(reqProxy));
-                            if (reqAdded && py::hasattr(newReqComp, "_bind_native_component")) {
-                                try {
-                                    newReqComp.attr("_bind_native_component")(
-                                        py::cast(reqAdded, py::return_value_policy::reference),
-                                        py::cast(obj, py::return_value_policy::reference));
-                                } catch (...) {
-                                    INXLOG_WARN("[Binding] Failed to bind required component to native proxy");
-                                }
-                            }
+                            found = reqAdded != nullptr;
+                            if (reqAdded)
+                                autoAddedDependencies.push_back(reqAdded);
+                        }
+                        if (!found) {
+                            py::print("[Warning] Failed to satisfy required component", requiredToken);
+                            dependencyFailed = true;
                         }
                     }
+                }
+                if (dependencyFailed) {
+                    rollbackDependencies();
+                    return py::none();
                 }
 
                 // Create a PyComponentProxy that wraps the Python component
                 auto proxy = std::make_unique<PyComponentProxy>(pyComponentInstance);
                 Component *added = obj->AddExistingComponent(std::move(proxy));
                 if (added) {
-                    // Immediately bind the native proxy and owning GameObject.
-                    // This makes the C++ proxy the lifecycle authority from the
-                    // moment the component is attached, even before Awake().
-                    try {
-                        if (py::hasattr(pyComponentInstance, "_bind_native_component")) {
-                            pyComponentInstance.attr("_bind_native_component")(
-                                py::cast(added, py::return_value_policy::reference),
-                                py::cast(obj, py::return_value_policy::reference));
-                        } else if (py::hasattr(pyComponentInstance, "_set_game_object")) {
-                            pyComponentInstance.attr("_set_game_object")(
-                                py::cast(obj, py::return_value_policy::reference));
-                        }
-                    } catch (...) {
-                        INXLOG_WARN("[Binding] Failed to bind newly added component to native proxy");
-                    }
                     // Return the original Python component
                     return pyComponentInstance;
                 }
+                rollbackDependencies();
                 return py::none();
             },
             py::arg("component_instance"), "Add a Python InxComponent instance to this GameObject")
@@ -1649,14 +1618,7 @@ void RegisterSceneBindings(py::module_ &m)
                 if (!py::hasattr(instance, "_bind_native_component"))
                     throw py::type_error("prepared Python component requires _bind_native_component");
                 auto proxy = std::make_unique<PyComponentProxy>(instance);
-                Component *added = obj->AddPreparedPythonComponent(std::move(proxy), componentIndex);
-                try {
-                    instance.attr("_bind_native_component")(py::cast(added, py::return_value_policy::reference),
-                                                            py::cast(obj, py::return_value_policy::reference));
-                } catch (...) {
-                    obj->RemovePreparedPythonComponent(added);
-                    throw;
-                }
+                obj->AddPreparedPythonComponent(std::move(proxy), componentIndex);
                 return instance;
             },
             py::arg("component_instance"), py::arg("component_index"),
@@ -1740,8 +1702,6 @@ void RegisterSceneBindings(py::module_ &m)
                         oldComponent.attr("_invalidate_native_binding")();
                     }
 
-                    auto *newProxy = static_cast<PyComponentProxy *>(published);
-                    newProxy->RebindPythonMirror();
                     return newComponent;
                 }
                 return py::none();
@@ -2243,8 +2203,8 @@ void RegisterSceneBindings(py::module_ &m)
     // ========================================================================
     // ComponentFactory — query registered native component types
     // ========================================================================
-    m.def("get_registered_component_types", &ComponentFactory::GetRegisteredTypeNames,
-          "Get list of all registered native component type names");
+    m.def("get_registered_component_types", &ComponentFactory::GetUserAddableTypeNames,
+          "Get user-addable registered native component type names");
 }
 
 } // namespace infernux

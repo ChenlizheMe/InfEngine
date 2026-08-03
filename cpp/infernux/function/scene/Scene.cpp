@@ -826,7 +826,9 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
             INXLOG_ERROR("Scene object '", name, "' contains Transform in its components array");
             return fail();
         }
-        const auto constraintBlockers = obj->GetAddComponentBlockers(typeName);
+        const auto constraintBlockers =
+            obj->GetAttachmentBlockers("native:" + typeName, typeName, ComponentFactory::GetTypeConstraints(typeName),
+                                       nullptr, false, false);
         if (!constraintBlockers.empty()) {
             INXLOG_ERROR("Scene object '", name, "' rejects component '", typeName, "': ", constraintBlockers.front());
             return fail();
@@ -893,6 +895,12 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
         if (prototypeCache && supportsPrototype && !prototype)
             (*prototypeCache)[prototypeHash].push_back({&componentRecordDocument, comp.get()});
         obj->m_components.push_back(std::move(comp));
+    }
+
+    const auto componentSetBlockers = obj->GetComponentSetBlockers();
+    if (!componentSetBlockers.empty()) {
+        INXLOG_ERROR("Scene object '", name, "' has an invalid component set: ", componentSetBlockers.front());
+        return fail();
     }
 
     // Recurse children

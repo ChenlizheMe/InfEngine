@@ -348,16 +348,188 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
     HandleActiveStateChanged(wasActiveInHierarchy, isActiveInHierarchy);
 }
 
-Component *GameObject::AddExistingComponent(std::unique_ptr<Component> component)
+std::vector<std::string> GameObject::GetAttachmentBlockers(const std::string &constraintTypeId,
+                                                           const std::string &typeName,
+                                                           const ComponentTypeConstraints &constraints,
+                                                           const Component *replacing, bool enforceUserAddable,
+                                                           bool enforceRequirements) const
+{
+    std::vector<std::string> blockers;
+    if (typeName.empty() || constraintTypeId.empty()) {
+        blockers.emplace_back("component has no stable registry identity");
+        return blockers;
+    }
+    if (constraintTypeId.rfind("native:", 0) == 0 && !ComponentFactory::IsRegistered(typeName)) {
+        blockers.emplace_back("native component type is not registered");
+        return blockers;
+    }
+    if (constraints.intrinsic) {
+        blockers.emplace_back("intrinsic components cannot be attached");
+        return blockers;
+    }
+    if (enforceUserAddable && !constraints.userAddable)
+        blockers.emplace_back("component is not user-addable");
+
+    if (enforceRequirements) {
+        for (const std::string &requiredType : constraints.requiredTypes) {
+            bool found = requiredType == "Transform";
+            for (const auto &entry : m_components) {
+                if (entry && entry.get() != replacing && entry->IsComponentType(requiredType)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                blockers.push_back("requires missing component '" + requiredType + "'");
+        }
+    }
+
+    const auto candidateSatisfies = [&](const std::string &requestedType) {
+        return constraintTypeId == requestedType || typeName == requestedType ||
+               std::find(constraints.satisfiedTypes.begin(), constraints.satisfiedTypes.end(), requestedType) !=
+                   constraints.satisfiedTypes.end();
+    };
+    const auto sharesExclusiveGroup = [](const ComponentTypeConstraints &left, const ComponentTypeConstraints &right) {
+        return std::any_of(left.exclusiveGroups.begin(), left.exclusiveGroups.end(), [&](const std::string &group) {
+            return std::find(right.exclusiveGroups.begin(), right.exclusiveGroups.end(), group) !=
+                   right.exclusiveGroups.end();
+        });
+    };
+
+    for (const auto &entry : m_components) {
+        const Component *existing = entry.get();
+        if (!existing || existing == replacing)
+            continue;
+        const auto &existingConstraints = existing->GetComponentTypeConstraints();
+        if (!constraints.allowMultiple && existing->GetConstraintTypeId() == constraintTypeId)
+            blockers.emplace_back("only one instance is allowed per GameObject");
+
+        if (sharesExclusiveGroup(constraints, existingConstraints)) {
+            blockers.push_back("exclusive component group already owned by '" + std::string(existing->GetTypeName()) +
+                               "'");
+            continue;
+        }
+
+        const bool candidateRejectsExisting = std::any_of(
+            constraints.incompatibleTypes.begin(), constraints.incompatibleTypes.end(),
+            [&](const std::string &incompatibleType) { return existing->IsComponentType(incompatibleType); });
+        const bool existingRejectsCandidate =
+            std::any_of(existingConstraints.incompatibleTypes.begin(), existingConstraints.incompatibleTypes.end(),
+                        candidateSatisfies);
+        if (candidateRejectsExisting || existingRejectsCandidate)
+            blockers.push_back("incompatible with existing component '" + std::string(existing->GetTypeName()) + "'");
+    }
+
+    std::sort(blockers.begin(), blockers.end());
+    blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
+    return blockers;
+}
+
+std::vector<std::string> GameObject::GetComponentSetBlockers() const
+{
+    std::vector<const Component *> components;
+    components.reserve(m_components.size() + 1);
+    components.push_back(&m_transform);
+    for (const auto &component : m_components) {
+        if (component)
+            components.push_back(component.get());
+    }
+
+    std::vector<std::string> blockers;
+    const auto describe = [](const Component *component) {
+        return std::string(component ? component->GetTypeName() : "<null>");
+    };
+    const auto sharesExclusiveGroup = [](const ComponentTypeConstraints &left, const ComponentTypeConstraints &right) {
+        return std::any_of(left.exclusiveGroups.begin(), left.exclusiveGroups.end(), [&](const std::string &group) {
+            return std::find(right.exclusiveGroups.begin(), right.exclusiveGroups.end(), group) !=
+                   right.exclusiveGroups.end();
+        });
+    };
+
+    for (size_t index = 0; index < components.size(); ++index) {
+        const Component *component = components[index];
+        const auto &constraints = component->GetComponentTypeConstraints();
+        const std::string identity = component->GetConstraintTypeId();
+        if (identity.empty()) {
+            blockers.push_back(describe(component) + " has no stable registry identity");
+            continue;
+        }
+        if (component != &m_transform && constraints.intrinsic)
+            blockers.push_back(describe(component) + " is intrinsic and cannot occupy a component slot");
+        if (!constraints.allowMultiple) {
+            const size_t count = static_cast<size_t>(
+                std::count_if(components.begin(), components.end(), [&](const Component *candidate) {
+                    return candidate && candidate->GetConstraintTypeId() == identity;
+                }));
+            if (count > 1)
+                blockers.push_back(describe(component) + " allows only one instance per GameObject");
+        }
+        for (const std::string &requiredType : constraints.requiredTypes) {
+            const bool found = std::any_of(components.begin(), components.end(), [&](const Component *candidate) {
+                return candidate && candidate != component && candidate->IsComponentType(requiredType);
+            });
+            if (!found)
+                blockers.push_back(describe(component) + " requires missing component '" + requiredType + "'");
+        }
+
+        for (size_t otherIndex = index + 1; otherIndex < components.size(); ++otherIndex) {
+            const Component *other = components[otherIndex];
+            const auto &otherConstraints = other->GetComponentTypeConstraints();
+            if (sharesExclusiveGroup(constraints, otherConstraints)) {
+                blockers.push_back(describe(component) + " and " + describe(other) +
+                                   " occupy the same exclusive component group");
+                continue;
+            }
+            const bool componentRejectsOther =
+                std::any_of(constraints.incompatibleTypes.begin(), constraints.incompatibleTypes.end(),
+                            [&](const std::string &type) { return other->IsComponentType(type); });
+            const bool otherRejectsComponent =
+                std::any_of(otherConstraints.incompatibleTypes.begin(), otherConstraints.incompatibleTypes.end(),
+                            [&](const std::string &type) { return component->IsComponentType(type); });
+            if (componentRejectsOther || otherRejectsComponent)
+                blockers.push_back(describe(component) + " is incompatible with " + describe(other));
+        }
+    }
+
+    std::sort(blockers.begin(), blockers.end());
+    blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
+    return blockers;
+}
+
+Component *GameObject::AttachComponent(std::unique_ptr<Component> component, bool enforceUserAddable)
 {
     if (!component)
         return nullptr;
+    const auto blockers =
+        GetAttachmentBlockers(component->GetConstraintTypeId(), component->GetTypeName(),
+                              component->GetComponentTypeConstraints(), nullptr, enforceUserAddable, true);
+    if (!blockers.empty()) {
+        INXLOG_WARN("Cannot add component '", component->GetTypeName(), "' to GameObject '", m_name,
+                    "': ", blockers.front());
+        return nullptr;
+    }
 
     Component *ptr = component.get();
     ptr->SetGameObject(this);
+    if (auto *proxy = dynamic_cast<PyComponentProxy *>(ptr)) {
+        try {
+            proxy->RebindPythonMirror();
+        } catch (const std::exception &error) {
+            proxy->InvalidatePythonMirrorBinding();
+            ptr->SetGameObject(nullptr);
+            INXLOG_ERROR("Cannot bind Python component '", ptr->GetTypeName(), "' to GameObject '", m_name,
+                         "': ", error.what());
+            return nullptr;
+        }
+    }
     m_components.push_back(std::move(component));
     PostAddComponent(ptr);
     return ptr;
+}
+
+Component *GameObject::AddExistingComponent(std::unique_ptr<Component> component)
+{
+    return AttachComponent(std::move(component), true);
 }
 
 std::vector<uint64_t> GameObject::GetComponentOrder() const
@@ -435,11 +607,25 @@ Component *GameObject::AddPreparedPythonComponent(std::unique_ptr<Component> com
     if (!component || dynamic_cast<PyComponentProxy *>(component.get()) == nullptr)
         throw std::invalid_argument("prepared component must be a PyComponentProxy");
 
-    Component *ptr = component.get();
-    ptr->SetGameObject(this);
+    const auto blockers = GetAttachmentBlockers(component->GetConstraintTypeId(), component->GetTypeName(),
+                                                component->GetComponentTypeConstraints(), nullptr, false, false);
+    if (!blockers.empty())
+        throw std::invalid_argument("prepared Python component rejected: " + blockers.front());
     if (componentIndex > m_components.size())
         throw std::out_of_range("prepared Python component index exceeds component count");
+
+    Component *ptr = component.get();
+    ptr->SetGameObject(this);
+    auto *proxy = static_cast<PyComponentProxy *>(ptr);
+    try {
+        proxy->RebindPythonMirror();
+    } catch (...) {
+        proxy->InvalidatePythonMirrorBinding();
+        ptr->SetGameObject(nullptr);
+        throw;
+    }
     m_components.insert(m_components.begin() + static_cast<std::ptrdiff_t>(componentIndex), std::move(component));
+    m_preparedPythonComponents.insert(ptr);
     if (m_scene)
         m_scene->BumpStructureVersion();
     InvalidateComponentExecutionCache();
@@ -451,10 +637,12 @@ void GameObject::ActivatePreparedPythonComponent(Component *component)
 {
     if (!component || component->GetGameObject() != this || dynamic_cast<PyComponentProxy *>(component) == nullptr)
         throw std::invalid_argument("component is not a prepared Python proxy owned by this GameObject");
-    if (std::none_of(m_components.begin(), m_components.end(),
-                     [component](const auto &candidate) { return candidate.get() == component; })) {
-        throw std::invalid_argument("prepared Python proxy is no longer attached");
-    }
+    if (m_preparedPythonComponents.find(component) == m_preparedPythonComponents.end())
+        throw std::invalid_argument("Python proxy is not awaiting prepared publication");
+    const auto blockers = GetComponentSetBlockers();
+    if (!blockers.empty())
+        throw std::invalid_argument("prepared component set rejected: " + blockers.front());
+    m_preparedPythonComponents.erase(component);
     if (!m_scene || !IsActiveInHierarchy())
         return;
 
@@ -466,6 +654,8 @@ void GameObject::ActivatePreparedPythonComponent(Component *component)
 bool GameObject::RemovePreparedPythonComponent(Component *component)
 {
     if (!component || dynamic_cast<PyComponentProxy *>(component) == nullptr)
+        return false;
+    if (m_preparedPythonComponents.erase(component) == 0)
         return false;
     for (auto it = m_components.begin(); it != m_components.end(); ++it) {
         if (it->get() != component)
@@ -483,34 +673,18 @@ bool GameObject::RemovePreparedPythonComponent(Component *component)
 
 Component *GameObject::AddComponentByTypeName(const std::string &typeName)
 {
-    const auto blockers = GetAddComponentBlockers(typeName);
-    if (!blockers.empty()) {
-        INXLOG_WARN("Cannot add component '", typeName, "' to GameObject '", m_name, "': ", blockers.front());
-        return nullptr;
-    }
-
     std::unique_ptr<Component> component = ComponentFactory::Create(typeName);
-    if (!component) {
+    if (!component)
         return nullptr;
-    }
-
-    Component *ptr = component.get();
-    ptr->SetGameObject(this);
-    m_components.push_back(std::move(component));
-    PostAddComponent(ptr);
-    return ptr;
+    return AttachComponent(std::move(component), true);
 }
 
 std::vector<std::string> GameObject::GetAddComponentBlockers(const std::string &typeName) const
 {
-    std::vector<std::string> attachedTypes;
-    attachedTypes.reserve(m_components.size());
-    for (const auto &component : m_components) {
-        if (!component || dynamic_cast<PyComponentProxy *>(component.get()) != nullptr)
-            continue;
-        attachedTypes.emplace_back(component->GetTypeName());
-    }
-    return ComponentFactory::GetAttachmentBlockers(typeName, attachedTypes);
+    if (!ComponentFactory::IsRegistered(typeName))
+        return {"component type is not registered"};
+    return GetAttachmentBlockers("native:" + typeName, typeName, ComponentFactory::GetTypeConstraints(typeName),
+                                 nullptr, true, true);
 }
 
 void GameObject::PostAddComponent(Component *component)
@@ -524,9 +698,8 @@ void GameObject::PostAddComponent(Component *component)
     RefreshLifecycleDispatchFlags();
 
     // Unity: Reset is editor-only and fires when a component is first added.
-    if (!m_scene->IsPlaying()) {
+    if (!m_scene->IsPlaying())
         component->CallReset();
-    }
 
     // Unity: components added to inactive objects do not Awake until the
     // object first becomes active in the hierarchy.
@@ -549,9 +722,10 @@ bool GameObject::RemoveComponent(Component *component)
         return false;
     }
 
-    if (dynamic_cast<Transform *>(component)) {
-        INXLOG_WARN("Cannot remove Transform from GameObject '", m_name, "'");
-        return false; // Cannot remove Transform
+    if (!component->GetComponentTypeConstraints().removable) {
+        INXLOG_WARN("Cannot remove non-removable component '", component->GetTypeName(), "' from GameObject '", m_name,
+                    "'");
+        return false;
     }
 
     const auto blockers = GetRemovalBlockingComponentTypes(component);
@@ -591,6 +765,14 @@ Component *GameObject::ReplacePythonComponent(Component *current, std::unique_pt
         return nullptr;
     }
 
+    const auto blockers = GetAttachmentBlockers(replacement->GetConstraintTypeId(), replacement->GetTypeName(),
+                                                replacement->GetComponentTypeConstraints(), current, false, true);
+    if (!blockers.empty()) {
+        INXLOG_ERROR("Cannot hot-reload Python component '", replacement->GetTypeName(), "' on GameObject '", m_name,
+                     "': ", blockers.front());
+        return nullptr;
+    }
+
     for (auto &slot : m_components) {
         if (slot.get() != current) {
             continue;
@@ -608,10 +790,21 @@ Component *GameObject::ReplacePythonComponent(Component *current, std::unique_pt
         replacement->m_isBeingDestroyed = false;
         replacement->m_executionOrder = current->m_executionOrder;
         replacement->m_lifetimeGeneration = current->m_lifetimeGeneration;
+        auto *replacementProxy = static_cast<PyComponentProxy *>(replacement.get());
+        try {
+            replacementProxy->RebindPythonMirror();
+        } catch (const std::exception &error) {
+            replacementProxy->InvalidatePythonMirrorBinding();
+            replacement->SetGameObject(nullptr);
+            INXLOG_ERROR("Cannot bind replacement Python component '", replacement->GetTypeName(), "' on GameObject '",
+                         m_name, "': ", error.what());
+            return nullptr;
+        }
         replacement->SetComponentID(current->GetComponentID());
 
         Component *published = replacement.get();
         slot = std::move(replacement);
+        static_cast<PyComponentProxy *>(published)->RefreshPythonMirrorIdentity();
 
         if (m_scene) {
             m_scene->BumpStructureVersion();
@@ -626,7 +819,8 @@ Component *GameObject::ReplacePythonComponent(Component *current, std::unique_pt
 
 bool GameObject::CanRemoveComponent(Component *component) const
 {
-    return GetRemovalBlockingComponentTypes(component).empty();
+    return component && component->GetComponentTypeConstraints().removable &&
+           GetRemovalBlockingComponentTypes(component).empty();
 }
 
 std::vector<std::string> GameObject::GetRemovalBlockingComponentTypes(Component *component) const

@@ -1977,7 +1977,7 @@ def test_particle_system_seek_replays_from_zero_and_preserves_pause_state(
     assert replay["force_simulation"] is False
     assert component._gpu_controllers[0].simulation_step == 4
 
-    assert component.reset("Seek Smoke") is True
+    assert component.reset_simulation("Seek Smoke") is True
     component.pause("Seek Smoke")
     component.update(0.0)
     reset_item = native.frames[-1][1][0]
