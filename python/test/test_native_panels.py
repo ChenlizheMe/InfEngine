@@ -40,6 +40,12 @@ class TestConsolePanel:
 
     def test_status_snapshot_is_exact_before_panel_render(self):
         console = ConsolePanel()
+        selection_changes = []
+        console.on_selection_changed = (
+            lambda uid, record_history: selection_changes.append(
+                (uid, record_history)
+            )
+        )
         console.log_from_python(LogLevel.Info, "first")
         console.log_from_python(LogLevel.Warn, "second")
         console.log_from_python(LogLevel.Error, "latest")
@@ -51,6 +57,15 @@ class TestConsolePanel:
 
         console._select_entry(uid)
         assert console._selected_uid == uid
+        assert selection_changes == [(uid, True)]
+
+        console.set_selection_snapshot(0)
+        assert console._selected_uid == 0
+        assert selection_changes == [(uid, True)]
+
+        console.set_selection_snapshot(uid)
+        console.clear()
+        assert selection_changes[-1] == (0, False)
 
     def test_error_pause_callback_runs_when_error_enters_console(self):
         console = ConsolePanel()
@@ -65,12 +80,16 @@ class TestConsolePanel:
     def test_clear_resets_authoritative_summary_and_counts(self):
         console = ConsolePanel()
         console.log_from_python(LogLevel.Warn, "warning")
-        console._get_status_snapshot()
+        first_uid = console._get_status_snapshot()[-1]
         revision = console._revision
 
         console.clear()
         assert console._revision > revision
         assert console._get_status_snapshot() == ("", "info", 0, 0, 0, 0)
+
+        console.log_from_python(LogLevel.Info, "after clear")
+        next_uid = console._get_status_snapshot()[-1]
+        assert next_uid > first_uid
 
     def test_select_requests_window_manager_focus(self):
         console = ConsolePanel()

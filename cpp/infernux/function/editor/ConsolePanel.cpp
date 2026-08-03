@@ -117,24 +117,28 @@ void ConsolePanel::LogFromPython(LogLevel level, const std::string &message, con
 
 void ConsolePanel::Clear()
 {
-    std::lock_guard<std::mutex> lock(m_logMutex);
-    m_logs.clear();
-    m_pendingLogs.clear();
-    m_infoCount = 0;
-    m_warnCount = 0;
-    m_errorCount = 0;
-    m_selectedUid = 0;
-    m_requestedUid = 0;
-    m_followTail = true;
-    m_scrollToBottom = false;
-    m_nextUid = 1;
-    m_cacheDirty = true;
-    m_cachedInfoCount = 0;
-    m_cachedWarnCount = 0;
-    m_cachedErrorCount = 0;
-    m_visible.clear();
-    m_collapseLookup.clear();
-    m_revision.fetch_add(1, std::memory_order_release);
+    const bool selectionChanged = m_selectedUid != 0;
+    {
+        std::lock_guard<std::mutex> lock(m_logMutex);
+        m_logs.clear();
+        m_pendingLogs.clear();
+        m_infoCount = 0;
+        m_warnCount = 0;
+        m_errorCount = 0;
+        m_selectedUid = 0;
+        m_requestedUid = 0;
+        m_followTail = true;
+        m_scrollToBottom = false;
+        m_cacheDirty = true;
+        m_cachedInfoCount = 0;
+        m_cachedWarnCount = 0;
+        m_cachedErrorCount = 0;
+        m_visible.clear();
+        m_collapseLookup.clear();
+        m_revision.fetch_add(1, std::memory_order_release);
+    }
+    if (selectionChanged)
+        PublishSelection(0, false);
 }
 
 int ConsolePanel::GetInfoCount() const
@@ -185,6 +189,18 @@ void ConsolePanel::SelectEntry(uint64_t uid)
         return;
     }
     SelectUid(uid, true);
+}
+
+void ConsolePanel::SetSelectionSnapshot(uint64_t uid)
+{
+    if (m_selectedUid == uid)
+        return;
+    m_selectedUid = uid;
+    m_requestedUid = uid;
+    if (uid != 0) {
+        m_followTail = false;
+        m_scrollToBottom = false;
+    }
 }
 
 void ConsolePanel::GetStatusBarSnapshot(std::string &outMsg, std::string &outLevel, int &outInfoCount,
@@ -331,6 +347,16 @@ void ConsolePanel::FlushPendingLogs()
         trimmed = true;
     }
 
+    if (trimmed && m_selectedUid != 0) {
+        const auto selected = std::find_if(m_logs.begin(), m_logs.end(),
+                                           [this](const LogEntry &entry) { return entry.uid == m_selectedUid; });
+        if (selected == m_logs.end()) {
+            m_selectedUid = 0;
+            m_requestedUid = 0;
+            PublishSelection(0, false);
+        }
+    }
+
     // The common non-collapse path can extend the visible cache in O(new logs).
     // Filtering/collapse changes and deque trimming still use the full rebuild.
     if (!appendToVisible || trimmed)
@@ -417,8 +443,9 @@ int ConsolePanel::FindVisibleIndexByUid(uint64_t uid) const
     return group == m_collapseLookup.end() ? -1 : static_cast<int>(group->second);
 }
 
-void ConsolePanel::SelectUid(uint64_t uid, bool focusWindow)
+void ConsolePanel::SelectUid(uint64_t uid, bool focusWindow, bool publishSelection, bool recordHistory)
 {
+    const bool selectionChanged = m_selectedUid != uid;
     m_isOpen = true;
     m_requestedUid = uid;
     m_selectedUid = uid;
@@ -441,6 +468,14 @@ void ConsolePanel::SelectUid(uint64_t uid, bool focusWindow)
             onRequestFocus();
         ImGui::SetWindowFocus((m_title + "###" + m_windowId).c_str());
     }
+    if (selectionChanged && publishSelection)
+        PublishSelection(uid, recordHistory);
+}
+
+void ConsolePanel::PublishSelection(uint64_t uid, bool recordHistory)
+{
+    if (onSelectionChanged)
+        onSelectionChanged(uid, recordHistory);
 }
 
 void ConsolePanel::EnsureCache()
@@ -486,9 +521,6 @@ void ConsolePanel::EnsureCache()
         ve.latestUid = log.uid;
         m_visible.push_back(ve);
     }
-
-    if (m_selectedUid > 0 && FindVisibleIndexByUid(m_selectedUid) < 0)
-        m_selectedUid = 0;
 
     m_cacheDirty = false;
     m_filterDirty = false;
@@ -684,8 +716,12 @@ void ConsolePanel::RenderBody(InxGUIContext *ctx)
                 ImGui::SetClipboardText(copyText.c_str());
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                const bool selectionChanged = m_selectedUid != 0;
                 m_selectedUid = 0;
+                m_requestedUid = 0;
                 selectedIndex = -1;
+                if (selectionChanged)
+                    PublishSelection(0, true);
             }
         }
 
@@ -783,6 +819,7 @@ void ConsolePanel::RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry 
              visIdx);
 
     if (ImGui::Selectable(label, isSel, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick)) {
+        const bool selectionChanged = m_selectedUid != ve.uid;
         m_selectedUid = ve.uid;
         m_requestedUid = 0;
         m_followTail = false;
@@ -791,6 +828,8 @@ void ConsolePanel::RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry 
         if (ImGui::IsMouseDoubleClicked(0) && onDoubleClickEntry && !log.sourceFile.empty()) {
             onDoubleClickEntry(log.sourceFile, log.sourceLine);
         }
+        if (selectionChanged)
+            PublishSelection(ve.uid, true);
     }
     ctx->RecordSemanticItem("console_entry", log.firstLine, true,
                             "console.entry." + std::to_string(static_cast<unsigned long long>(ve.uid)), isSel,

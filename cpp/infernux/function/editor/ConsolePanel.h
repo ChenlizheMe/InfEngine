@@ -47,6 +47,9 @@ class ConsolePanel : public EditorPanel
     /// Called from status bar click.
     void SelectLatestEntry();
     void SelectEntry(uint64_t uid);
+    /// Project the authoritative editor selection without publishing a second
+    /// selection event back to Python.
+    void SetSelectionSnapshot(uint64_t uid);
 
     /// Authoritative status-bar snapshot. The latest entry and counts do not
     /// depend on the Console window's current filters.
@@ -59,6 +62,7 @@ class ConsolePanel : public EditorPanel
     std::function<void(const std::string &, int)> onDoubleClickEntry;
     std::function<void()> onErrorPause;
     std::function<void()> onRequestFocus;
+    std::function<void(uint64_t, bool)> onSelectionChanged;
 
     /// Filter state — exposed for pybind11 property access.
     bool showInfo = true;
@@ -148,7 +152,8 @@ class ConsolePanel : public EditorPanel
     bool MatchesCurrentFilters(const LogEntry &entry) const;
     std::string CollapseKey(const LogEntry &entry) const;
     int FindVisibleIndexByUid(uint64_t uid) const;
-    void SelectUid(uint64_t uid, bool focusWindow);
+    void SelectUid(uint64_t uid, bool focusWindow, bool publishSelection = true, bool recordHistory = true);
+    void PublishSelection(uint64_t uid, bool recordHistory);
     void RenderToolbar(InxGUIContext *ctx);
     void RenderBody(InxGUIContext *ctx);
     void RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry &ve, bool selected);

@@ -92,6 +92,20 @@ class BootstrapSelectionMixin:
 
         primary = snapshot.primary
         domain = snapshot.domain
+        console_uid = 0
+        if (
+            domain is SelectionDomain.DIAGNOSTIC_ENTRY
+            and primary is not None
+            and primary.document_id == "console"
+        ):
+            try:
+                console_uid = int(primary.target_id)
+            except (TypeError, ValueError):
+                console_uid = 0
+        console = getattr(self, "console", None)
+        if console is not None:
+            console.set_selection_snapshot(console_uid)
+
         if domain in (SelectionDomain.ASSET, SelectionDomain.ASSET_SUBRESOURCE):
             paths = [
                 (

@@ -139,6 +139,7 @@ class BootstrapPanelsMixin:
         from Infernux.lib import ConsolePanel as NativeConsolePanel
         panel = NativeConsolePanel()
         panel.on_request_focus = lambda: self.window_manager.open_window("console")
+        panel.on_selection_changed = self._on_console_selection_changed
         _project_path = self.project_path
         def _on_dbl(source_file, source_line):
             if not source_file:
@@ -148,6 +149,37 @@ class BootstrapPanelsMixin:
                 source_file, project_root=_project_path)
         panel.on_double_click_entry = _on_dbl
         return panel
+
+    @staticmethod
+    def _on_console_selection_changed(uid, record_history):
+        from Infernux.engine.interaction import (
+            SelectionDomain,
+            SelectionService,
+            SelectionTarget,
+        )
+
+        selection = SelectionService.instance()
+        entry_uid = int(uid or 0)
+        if entry_uid > 0:
+            selection.select(
+                SelectionTarget.diagnostic_entry(
+                    "console",
+                    str(entry_uid),
+                    sub_kind="log",
+                ),
+                owner_id="console",
+                reason="console_select_entry",
+                record_history=bool(record_history),
+            )
+            return
+        if (
+            selection.snapshot.domain is SelectionDomain.DIAGNOSTIC_ENTRY
+            and selection.snapshot.owner_id == "console"
+        ):
+            selection.clear(
+                reason="console_clear_selection",
+                record_history=bool(record_history),
+            )
 
     def _create_native_hierarchy(self):
         """Create a fresh C++ HierarchyPanel with all callbacks wired."""
@@ -230,6 +262,7 @@ class BootstrapPanelsMixin:
         engine.register_gui("console", self.console)
         wm.register_existing_window("console", self.console, "console")
         self.console.on_request_focus = lambda: wm.open_window("console")
+        self.console.on_selection_changed = self._on_console_selection_changed
 
         cs = _panel_state.get("console")
         if cs:

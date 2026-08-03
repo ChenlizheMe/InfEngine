@@ -394,6 +394,75 @@ def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch):
     assert outlines[-1] == (42, [41, 42])
 
 
+def test_console_selection_callback_uses_typed_global_authority():
+    from Infernux.engine._bootstrap_panels import BootstrapPanelsMixin
+
+    service = SelectionService()
+    changes = []
+    service.add_listener(changes.append)
+
+    BootstrapPanelsMixin._on_console_selection_changed(73, True)
+    assert service.snapshot.owner_id == "console"
+    assert service.snapshot.primary == SelectionTarget.diagnostic_entry(
+        "console",
+        "73",
+        sub_kind="log",
+    )
+    assert changes[-1].record_history is True
+
+    BootstrapPanelsMixin._on_console_selection_changed(0, False)
+    assert service.snapshot == SelectionSnapshot()
+    assert changes[-1].record_history is False
+
+    asset = SelectionTarget.asset("Assets/Smoke.mat")
+    service.select(asset, owner_id="project", record_history=False)
+    BootstrapPanelsMixin._on_console_selection_changed(0, False)
+    assert service.snapshot.primary == asset
+
+
+def test_bootstrap_projects_diagnostic_selection_into_console():
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+
+    projected = []
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.console = SimpleNamespace(
+        set_selection_snapshot=lambda uid: projected.append(uid)
+    )
+    bootstrap.project_panel = SimpleNamespace(
+        clear_selection=lambda _notify: None,
+        set_selected_files=lambda *_args: None,
+    )
+    bootstrap.inspector_panel = SimpleNamespace(
+        clear_selected_object=lambda: None,
+        set_selected_object_id=lambda _object_id: None,
+    )
+    bootstrap._inspector_set_selected_file = lambda _path: None
+    bootstrap._set_outline = lambda _primary, _selected: None
+    bootstrap.event_bus = SimpleNamespace(emit=lambda *_args: None)
+
+    diagnostic = SelectionSnapshot.create(
+        (
+            SelectionTarget.diagnostic_entry(
+                "console",
+                "91",
+                sub_kind="log",
+            ),
+        ),
+        owner_id="console",
+    )
+    bootstrap._present_selection_snapshot(diagnostic)
+    bootstrap._present_selection_snapshot(
+        SelectionSnapshot.create(
+            (SelectionTarget.asset("Assets/Test.mat"),),
+            owner_id="project",
+        )
+    )
+
+    assert projected == [91, 0]
+
+
 def test_typed_selection_undo_replays_without_legacy_domain_loss():
     from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
 

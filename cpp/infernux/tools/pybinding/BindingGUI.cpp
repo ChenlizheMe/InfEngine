@@ -1050,6 +1050,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("get_error_count", &ConsolePanel::GetErrorCount, "Get count of error messages")
         .def("select_latest_entry", &ConsolePanel::SelectLatestEntry, "Select last visible entry and focus window")
         .def("_select_entry", &ConsolePanel::SelectEntry, py::arg("uid"))
+        .def("set_selection_snapshot", &ConsolePanel::SetSelectionSnapshot, py::arg("uid"))
         .def_property_readonly("_selected_uid", &ConsolePanel::GetSelectedUid)
         .def_property_readonly("_revision", &ConsolePanel::GetRevision)
         .def("_get_status_snapshot",
@@ -1072,7 +1073,8 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("auto_scroll", &ConsolePanel::autoScroll)
         .def_readwrite("on_double_click_entry", &ConsolePanel::onDoubleClickEntry)
         .def_readwrite("on_error_pause", &ConsolePanel::onErrorPause)
-        .def_readwrite("on_request_focus", &ConsolePanel::onRequestFocus);
+        .def_readwrite("on_request_focus", &ConsolePanel::onRequestFocus)
+        .def_readwrite("on_selection_changed", &ConsolePanel::onSelectionChanged);
 
     // ── PlayState enum ─────────────────────────────────────────────────
     py::enum_<PlayState>(m, "PlayState")
