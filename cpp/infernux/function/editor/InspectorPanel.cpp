@@ -155,6 +155,32 @@ void InspectorPanel::SetDetailFile(const std::string &filePath, const std::strin
     }
 }
 
+void InspectorPanel::SetSelectedComponentIds(const std::vector<uint64_t> &componentIds)
+{
+    m_selectedComponentIds.clear();
+    for (const uint64_t componentId : componentIds) {
+        if (componentId != 0)
+            m_selectedComponentIds.insert(componentId);
+    }
+}
+
+void InspectorPanel::ClearSelectedComponents()
+{
+    m_selectedComponentIds.clear();
+}
+
+bool InspectorPanel::IsComponentSelected(uint64_t componentId) const
+{
+    return componentId != 0 && m_selectedComponentIds.find(componentId) != m_selectedComponentIds.end();
+}
+
+bool InspectorPanel::AreComponentsSelected(const std::vector<uint64_t> &componentIds) const
+{
+    return !componentIds.empty() && std::all_of(componentIds.begin(), componentIds.end(), [this](uint64_t componentId) {
+        return IsComponentSelected(componentId);
+    });
+}
+
 // ============================================================================
 // VisiblePreRender
 // ============================================================================
@@ -394,12 +420,16 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     if (!info.hideTransform) {
         if (m_cachedTransformIconId == 0 && getComponentIconId)
             m_cachedTransformIconId = getComponentIconId("Transform", false);
-        auto [headerOpen, _unused] = RenderComponentHeader(
-            ctx, "Transform", "transform", m_cachedTransformIconId,
-            /*showEnabled=*/false, /*isEnabled=*/true, /*suffix=*/"",
-            /*defaultOpen=*/true, "inspector.object." + std::to_string(objId) + ".component.transform");
+        const auto header = RenderComponentHeader(ctx, "Transform", "transform", m_cachedTransformIconId,
+                                                  /*showEnabled=*/false, /*isEnabled=*/true, /*suffix=*/"",
+                                                  /*defaultOpen=*/true,
+                                                  "inspector.object." + std::to_string(objId) + ".component.transform",
+                                                  "", IsComponentSelected(info.transformComponentId));
 
-        if (headerOpen) {
+        if (header.selectionRequested && info.transformComponentId != 0 && onComponentSelectionChanged)
+            onComponentSelectionChanged({objId}, {info.transformComponentId}, true);
+
+        if (header.open) {
             if (isPrefabTransformReadonly)
                 ImGui::BeginDisabled();
             if (m_cachedTransformBodyHeight > 0.0f && ctx &&
@@ -459,12 +489,15 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
 
         const char *scriptSuffix = comp.isBroken ? " (Missing Script)" : " (Script)";
         const std::string &componentLabel = comp.displayName.empty() ? comp.typeName : comp.displayName;
-        auto [headerOpen, newEnabled] = RenderComponentHeader(
+        const auto header = RenderComponentHeader(
             ctx, componentLabel, "comp_" + std::to_string(comp.componentId), comp.iconId,
             /*showEnabled=*/true, comp.enabled, comp.isScript ? scriptSuffix : "",
             /*defaultOpen=*/true,
             "inspector.object." + std::to_string(objId) + ".component." + std::to_string(comp.componentId),
-            comp.isScript ? "py_comp_ctx" : "comp_ctx");
+            comp.isScript ? "py_comp_ctx" : "comp_ctx", IsComponentSelected(comp.componentId));
+
+        if (header.selectionRequested && onComponentSelectionChanged)
+            onComponentSelectionChanged({objId}, {comp.componentId}, comp.isNative);
 
         // Right-click context menu — only call Python when popup is open
         bool componentRemoved = false;
@@ -481,12 +514,12 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
 
         if (!componentRemoved) {
             // Enabled toggle
-            if (newEnabled != comp.enabled && setComponentEnabled) {
-                setComponentEnabled(objId, comp.componentId, newEnabled, comp.isNative);
+            if (header.enabled != comp.enabled && setComponentEnabled) {
+                setComponentEnabled(objId, comp.componentId, header.enabled, comp.isNative);
             }
 
             // Component body
-            if (headerOpen) {
+            if (header.open) {
                 if (comp.isBroken && !comp.brokenError.empty()) {
                     ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::ERROR_TEXT);
                     ImGui::TextWrapped("%s", comp.brokenError.c_str());
@@ -637,6 +670,15 @@ InspectorPanel::GetMultiTransformSnapshot(const std::vector<uint64_t> &ids)
     if (!getTransformData || ids.empty())
         return m_cachedMultiTransformSnapshot;
 
+    if (getObjectInfo) {
+        m_cachedMultiTransformSnapshot.componentIds.reserve(ids.size());
+        for (const uint64_t objectId : ids) {
+            const uint64_t componentId = getObjectInfo(objectId).transformComponentId;
+            if (componentId != 0)
+                m_cachedMultiTransformSnapshot.componentIds.push_back(componentId);
+        }
+    }
+
     TransformData first = getTransformData(ids[0]);
     m_cachedMultiTransformSnapshot.first = first;
 
@@ -675,14 +717,21 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
 
         // Transform header
         uint64_t transformIcon = getComponentIconId ? getComponentIconId("Transform", false) : 0;
-        auto [headerOpen, _unused] = RenderComponentHeader(ctx, "Transform", "multi_transform", transformIcon,
-                                                           /*showEnabled=*/false, /*isEnabled=*/true, /*suffix=*/"",
-                                                           /*defaultOpen=*/true);
+        const auto &transformSnapshot = GetMultiTransformSnapshot(ids);
+        const auto &transformComponentIds = transformSnapshot.componentIds;
+        const auto transformHeader = RenderComponentHeader(
+            ctx, "Transform", "multi_transform", transformIcon,
+            /*showEnabled=*/false, /*isEnabled=*/true, /*suffix=*/"", /*defaultOpen=*/true, "", "",
+            transformComponentIds.size() == ids.size() && AreComponentsSelected(transformComponentIds));
+
+        if (transformHeader.selectionRequested && transformComponentIds.size() == ids.size() &&
+            onComponentSelectionChanged)
+            onComponentSelectionChanged(ids, transformComponentIds, true);
 
 #if INFERNUX_FRAME_PROFILE
         auto transformStart = clock::now();
 #endif
-        if (headerOpen)
+        if (transformHeader.open)
             RenderMultiTransform(ctx, ids);
 #if INFERNUX_FRAME_PROFILE
         auto transformEnd = clock::now();
@@ -709,18 +758,22 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
                 comp.iconId ? comp.iconId : (getComponentIconId ? getComponentIconId(comp.typeName, comp.isScript) : 0);
 
             const std::string &componentLabel = comp.displayName.empty() ? comp.typeName : comp.displayName;
-            auto [compOpen, newEnabled] =
-                RenderComponentHeader(ctx, componentLabel, "multi_comp_" + std::to_string(comp.componentId), iconId,
-                                      true, comp.enabled, comp.isScript ? " (Script)" : "", true);
+            const auto componentHeader = RenderComponentHeader(
+                ctx, componentLabel, "multi_comp_" + std::to_string(comp.componentId), iconId, true, comp.enabled,
+                comp.isScript ? " (Script)" : "", true, "", "", AreComponentsSelected(entry.componentIds));
 
-            if (newEnabled != comp.enabled && setComponentEnabled) {
+            if (componentHeader.selectionRequested && onComponentSelectionChanged)
+                onComponentSelectionChanged(ids, entry.componentIds, comp.isNative);
+
+            if (componentHeader.enabled != comp.enabled && setComponentEnabled) {
                 for (size_t objectIndex = 0; objectIndex < ids.size() && objectIndex < entry.componentIds.size();
                      ++objectIndex)
-                    setComponentEnabled(ids[objectIndex], entry.componentIds[objectIndex], newEnabled, comp.isNative);
+                    setComponentEnabled(ids[objectIndex], entry.componentIds[objectIndex], componentHeader.enabled,
+                                        comp.isNative);
                 m_cachedMultiComponentsValid = false;
             }
 
-            if (compOpen) {
+            if (componentHeader.open) {
                 if (comp.isBroken && !comp.brokenError.empty()) {
                     ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::ERROR_TEXT);
                     ImGui::TextWrapped("%s", comp.brokenError.c_str());
@@ -1135,11 +1188,11 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
 // Component header (icon + checkbox + collapsing header)
 // ============================================================================
 
-std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName,
-                                                            const std::string &headerId, uint64_t iconId,
-                                                            bool showEnabled, bool isEnabled, const std::string &suffix,
-                                                            bool defaultOpen, const std::string &semanticId,
-                                                            const std::string &contextPopupId)
+InspectorPanel::ComponentHeaderResult
+InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName, const std::string &headerId,
+                                      uint64_t iconId, bool showEnabled, bool isEnabled, const std::string &suffix,
+                                      bool defaultOpen, const std::string &semanticId,
+                                      const std::string &contextPopupId, bool selected)
 {
     bool newEnabled = isEnabled;
 
@@ -1157,9 +1210,12 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
     displayName += suffix;
 
     // Styling
-    ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::INSPECTOR_HEADER_PRIMARY);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorTheme::INSPECTOR_HEADER_PRIMARY_HOVERED);
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorTheme::INSPECTOR_HEADER_PRIMARY_ACTIVE);
+    ImGui::PushStyleColor(ImGuiCol_Header,
+                          selected ? EditorTheme::SELECTION_BG : EditorTheme::INSPECTOR_HEADER_PRIMARY);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered,
+                          selected ? EditorTheme::SELECTION_BG : EditorTheme::INSPECTOR_HEADER_PRIMARY_HOVERED);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive,
+                          selected ? EditorTheme::SELECTION_BG : EditorTheme::INSPECTOR_HEADER_PRIMARY_ACTIVE);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::INSPECTOR_HEADER_ITEM_SPC);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::INSPECTOR_HEADER_BORDER_SIZE);
@@ -1177,6 +1233,8 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
         ImGui::GetWindowDrawList()->PushClipRect(ImVec2(0.0f, 0.0f), ImVec2(clipMaxX, 1e7f), true);
     }
     bool headerOpen = ImGui::CollapsingHeader(headerKey.c_str());
+    const bool headerLeftClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+    const bool headerRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
     ImGui::GetWindowDrawList()->PopClipRect();
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
     const std::string semanticBase =
@@ -1214,6 +1272,7 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
         ImGui::SameLine(0, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x);
     }
 
+    bool enabledClicked = false;
     if (showEnabled) {
         // Compact enabled box: center against the header bar height. The shared
         // CheckboxInspector centers against ambient frame/text metrics, which
@@ -1225,6 +1284,7 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
         if (boxH < headerHeight)
             ImGui::SetCursorPosY(rowY + (headerHeight - boxH) * 0.5f);
         ImGui::Checkbox("##hdr_en", &newEnabled);
+        enabledClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
         ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_HEADER_PRIMARY_FONT_SCALE);
         ImGui::PopStyleVar();
         if (ctx && captureSemantics)
@@ -1235,13 +1295,16 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(displayName.c_str());
 
+    bool optionsClicked = false;
     if (!contextPopupId.empty()) {
         constexpr float optionsWidth = 24.0f;
         ImGui::SameLine();
         const float rightEdge = ImGui::GetWindowContentRegionMax().x;
         ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX(), rightEdge - optionsWidth));
-        if (ImGui::SmallButton("...##component_options"))
+        if (ImGui::SmallButton("...##component_options")) {
+            optionsClicked = true;
             ImGui::OpenPopup(contextPopupId.c_str());
+        }
         const std::string optionsLabel = Tr("inspector.component_options");
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
             ImGui::SetTooltip("%s", optionsLabel.c_str());
@@ -1256,7 +1319,7 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar(3);
 
-    return {headerOpen, newEnabled};
+    return {headerOpen, newEnabled, (headerLeftClicked || headerRightClicked || optionsClicked) && !enabledClicked};
 }
 
 // ============================================================================

@@ -2619,6 +2619,7 @@ class InspectorObjectInfo:
     layer: int
     prefab_guid: str
     hide_transform: bool
+    transform_component_id: int
 
 
 class InspectorTransformData:
@@ -2667,6 +2668,8 @@ class InspectorPanel(EditorPanel):
     def clear_selected_file(self) -> None: ...
     def get_selected_file(self) -> str: ...
     def set_detail_file(self, file_path: str, category: str) -> None: ...
+    def set_selected_component_ids(self, component_ids: List[int]) -> None: ...
+    def clear_selected_components(self) -> None: ...
 
     # Selection callbacks
     is_multi_selection: Any
@@ -2689,6 +2692,7 @@ class InspectorPanel(EditorPanel):
     render_component_body: Any
     render_multi_component_body: Any
     consume_component_body_profile: Any
+    on_component_selection_changed: Any
     render_component_context_menu: Any
     set_component_enabled: Any
 

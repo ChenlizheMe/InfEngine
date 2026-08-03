@@ -206,18 +206,29 @@ class SelectionManager:
 
     def get_ids(self) -> list[int]:
         """Ordered list of selected IDs (last = most recently added)."""
-        return [
-            target.scene_object_id()
-            for target in self._selection.snapshot.targets
-            if target.domain is SelectionDomain.SCENE_OBJECT
-        ]
+        snapshot = self._selection.snapshot
+        if snapshot.domain is SelectionDomain.SCENE_OBJECT:
+            return [target.scene_object_id() for target in snapshot.targets]
+        if snapshot.domain is SelectionDomain.COMPONENT:
+            return list(dict.fromkeys(
+                target.component_ids()[0]
+                for target in snapshot.targets
+                if target.component_ids()[0] > 0
+            ))
+        return []
 
     def get_primary(self) -> int:
         primary = self._selection.snapshot.primary
-        return primary.scene_object_id() if primary is not None else 0
+        if primary is None:
+            return 0
+        if primary.domain is SelectionDomain.SCENE_OBJECT:
+            return primary.scene_object_id()
+        if primary.domain is SelectionDomain.COMPONENT:
+            return primary.component_ids()[0]
+        return 0
 
     def is_selected(self, obj_id: int) -> bool:
-        return SelectionTarget.scene_object(obj_id) in self._selection.snapshot.targets
+        return int(obj_id) in self.get_ids()
 
     def count(self) -> int:
         return len(self.get_ids())

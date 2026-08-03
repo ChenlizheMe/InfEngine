@@ -210,6 +210,27 @@ def test_legacy_selection_manager_is_a_typed_service_adapter():
     assert service.snapshot.domain is SelectionDomain.ASSET
 
 
+def test_legacy_selection_manager_projects_component_owners():
+    service = SelectionService()
+    SelectionService.install(service)
+    manager = SelectionManager()
+    first = SelectionTarget.component(41, 101)
+    second = SelectionTarget.component(42, 102)
+
+    service.replace(
+        (first, second),
+        owner_id="inspector",
+        primary=second,
+        anchor=first,
+        record_history=False,
+    )
+
+    assert manager.get_ids() == [41, 42]
+    assert manager.get_primary() == 42
+    assert manager.is_selected(41)
+    assert manager.is_multi()
+
+
 def test_focus_service_owns_pending_and_active_panel_state():
     focus = FocusService()
 
@@ -347,6 +368,7 @@ def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch):
 
     project_calls = []
     inspector_calls = []
+    component_projection = []
     outlines = []
     bootstrap = BootstrapSelectionMixin()
     bootstrap.project_panel = SimpleNamespace(
@@ -358,6 +380,8 @@ def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch):
     bootstrap.inspector_panel = SimpleNamespace(
         set_selected_object_id=lambda object_id: inspector_calls.append(object_id),
         clear_selected_object=lambda: None,
+        set_selected_component_ids=lambda ids: component_projection.append(list(ids)),
+        clear_selected_components=lambda: component_projection.append([]),
     )
     bootstrap._inspector_set_selected_file = inspector_calls.append
     bootstrap._set_outline = (
@@ -392,6 +416,41 @@ def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch):
     assert project_calls == [("clear", False)]
     assert inspector_calls == [42]
     assert outlines[-1] == (42, [41, 42])
+    assert component_projection[-1] == [1, 2]
+
+
+def test_inspector_component_header_publishes_stable_global_targets():
+    from types import SimpleNamespace
+
+    from Infernux.engine.bootstrap_inspector._wire import (
+        _publish_component_selection,
+    )
+
+    service = SelectionService()
+    changes = []
+    service.add_listener(changes.append)
+    bootstrap = SimpleNamespace(
+        scene_file_manager=SimpleNamespace(document_id="scene:active")
+    )
+
+    assert _publish_component_selection(
+        bootstrap,
+        [41, 42],
+        [101, 102],
+        False,
+    )
+    assert service.snapshot.targets == (
+        SelectionTarget.component(
+            41, 101, document_id="scene:active", sub_kind="script"
+        ),
+        SelectionTarget.component(
+            42, 102, document_id="scene:active", sub_kind="script"
+        ),
+    )
+    assert service.snapshot.owner_id == "inspector"
+    assert service.snapshot.primary == service.snapshot.targets[-1]
+    assert service.snapshot.anchor == service.snapshot.targets[0]
+    assert changes[-1].record_history is True
 
 
 def test_console_selection_callback_uses_typed_global_authority():

@@ -1376,7 +1376,8 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("tag", &InspectorPanel::ObjectInfo::tag)
         .def_readwrite("layer", &InspectorPanel::ObjectInfo::layer)
         .def_readwrite("prefab_guid", &InspectorPanel::ObjectInfo::prefabGuid)
-        .def_readwrite("hide_transform", &InspectorPanel::ObjectInfo::hideTransform);
+        .def_readwrite("hide_transform", &InspectorPanel::ObjectInfo::hideTransform)
+        .def_readwrite("transform_component_id", &InspectorPanel::ObjectInfo::transformComponentId);
 
     py::class_<InspectorPanel::TransformData>(m, "InspectorTransformData")
         .def(py::init<>())
@@ -1413,6 +1414,8 @@ void RegisterGUIBindings(py::module_ &m)
         .def("clear_selected_file", &InspectorPanel::ClearSelectedFile)
         .def("get_selected_file", &InspectorPanel::GetSelectedFile)
         .def("set_detail_file", &InspectorPanel::SetDetailFile, py::arg("file_path"), py::arg("category"))
+        .def("set_selected_component_ids", &InspectorPanel::SetSelectedComponentIds, py::arg("component_ids"))
+        .def("clear_selected_components", &InspectorPanel::ClearSelectedComponents)
         // Selection callbacks
         .def_readwrite("is_multi_selection", &InspectorPanel::isMultiSelection)
         .def_readwrite("get_selected_ids", &InspectorPanel::getSelectedIds)
@@ -1430,6 +1433,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("render_component_body", &InspectorPanel::renderComponentBody)
         .def_readwrite("render_multi_component_body", &InspectorPanel::renderMultiComponentBody)
         .def_readwrite("consume_component_body_profile", &InspectorPanel::consumeComponentBodyProfile)
+        .def_readwrite("on_component_selection_changed", &InspectorPanel::onComponentSelectionChanged)
         .def_readwrite("render_component_context_menu", &InspectorPanel::renderComponentContextMenu)
         .def_readwrite("set_component_enabled", &InspectorPanel::setComponentEnabled)
         // Add Component

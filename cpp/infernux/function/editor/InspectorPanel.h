@@ -9,6 +9,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace infernux
@@ -67,6 +68,11 @@ class InspectorPanel : public EditorPanel
 
     void SetDetailFile(const std::string &filePath, const std::string &category);
 
+    /// Project the authoritative component selection into the native view.
+    /// Component IDs are scene-unique and are only used for header styling.
+    void SetSelectedComponentIds(const std::vector<uint64_t> &componentIds);
+    void ClearSelectedComponents();
+
     // ── Selection callbacks (wrap Python SelectionManager) ───────────
 
     std::function<bool()> isMultiSelection;
@@ -84,6 +90,7 @@ class InspectorPanel : public EditorPanel
         int layer = 0;
         std::string prefabGuid;
         bool hideTransform = false;
+        uint64_t transformComponentId = 0;
     };
     std::function<ObjectInfo(uint64_t)> getObjectInfo;
 
@@ -122,6 +129,10 @@ class InspectorPanel : public EditorPanel
 
     /// Return and reset Python-side component body profile metrics.
     std::function<std::unordered_map<std::string, double>()> consumeComponentBodyProfile;
+
+    /// Publish a real component-header selection gesture. The two ID arrays
+    /// are parallel and contain one entry per selected object/component.
+    std::function<void(const std::vector<uint64_t> &, const std::vector<uint64_t> &, bool)> onComponentSelectionChanged;
 
     /// Render a component right-click context menu.
     /// Returns true if an action consumed the frame (caller should bail).
@@ -210,6 +221,7 @@ class InspectorPanel : public EditorPanel
     uint64_t m_selectedObjectId = 0;
     std::string m_selectedFile;
     std::string m_assetCategory;
+    std::unordered_set<uint64_t> m_selectedComponentIds;
 
     // ── Splitter state ───────────────────────────────────────────────
     float m_propertiesRatio = EditorTheme::INSPECTOR_DEFAULT_RATIO;
@@ -256,6 +268,7 @@ class InspectorPanel : public EditorPanel
     {
         TransformData first;
         std::array<bool, 9> mixed{};
+        std::vector<uint64_t> componentIds;
     };
 
     bool m_cachedMultiComponentsValid = false;
@@ -291,13 +304,22 @@ class InspectorPanel : public EditorPanel
     void RenderMultiTransform(InxGUIContext *ctx, const std::vector<uint64_t> &ids);
     void RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, const PrefabInfo &pinfo);
 
+    struct ComponentHeaderResult
+    {
+        bool open = false;
+        bool enabled = true;
+        bool selectionRequested = false;
+    };
+
+    [[nodiscard]] bool IsComponentSelected(uint64_t componentId) const;
+    [[nodiscard]] bool AreComponentsSelected(const std::vector<uint64_t> &componentIds) const;
+
     /// Render one component header (icon + enabled + collapsing).
-    /// Returns (headerOpen, newEnabled).
-    std::pair<bool, bool> RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName,
+    ComponentHeaderResult RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName,
                                                 const std::string &headerId, uint64_t iconId, bool showEnabled,
                                                 bool isEnabled, const std::string &suffix = "", bool defaultOpen = true,
                                                 const std::string &semanticId = "",
-                                                const std::string &contextPopupId = "");
+                                                const std::string &contextPopupId = "", bool selected = false);
 
     bool RenderInspectorCheckbox(InxGUIContext *ctx, const char *label, bool value);
 

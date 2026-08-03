@@ -1383,6 +1383,39 @@ class TestSelectionUndoIntegration:
         mgr.redo()
         assert service.snapshot.primary == SelectionTarget.scene_object(1)
 
+    def test_component_header_selection_undo_restores_object_context(
+        self,
+        _reset_undo_manager,
+    ):
+        manager = _reset_undo_manager
+        self._install_recording_listener()
+        service = SelectionService.instance()
+        service.select(
+            SelectionTarget.scene_object(42),
+            owner_id="hierarchy",
+            record_history=False,
+        )
+        component = SelectionTarget.component(
+            42,
+            701,
+            document_id="scene:active",
+            sub_kind="native",
+        )
+
+        service.select(
+            component,
+            owner_id="inspector",
+            reason="inspector_component_select",
+            record_history=True,
+        )
+
+        assert len(manager.action_journal.entries) == 1
+        assert service.snapshot.primary == component
+        manager.undo()
+        assert service.snapshot.primary == SelectionTarget.scene_object(42)
+        manager.redo()
+        assert service.snapshot.primary == component
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Structural command selection context

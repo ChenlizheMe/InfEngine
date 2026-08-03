@@ -82,6 +82,11 @@ class TestInspectorSelection:
         assert ip.get_selected_object_id() == 42
         assert ip.get_selected_file() == "a.mat"
 
+    def test_component_selection_projection_api(self):
+        ip = InspectorPanel()
+        ip.set_selected_component_ids([11, 12])
+        ip.clear_selected_components()
+
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Data structs
@@ -108,8 +113,10 @@ class TestInspectorDataStructs:
         oi.layer = 3
         oi.prefab_guid = ""
         oi.hide_transform = False
+        oi.transform_component_id = 91
         assert oi.name == "Cube"
         assert oi.layer == 3
+        assert oi.transform_component_id == 91
 
     def test_transform_data(self):
         td = InspectorTransformData()
@@ -220,6 +227,17 @@ class TestInspectorCallbacks:
         ip.render_component_body = lambda ctx, oid, tn, cid, native: called.append((oid, tn))
         ip.render_component_body(None, 1, "Camera", 100, True)
         assert called == [(1, "Camera")]
+
+    def test_component_selection_callback(self):
+        ip = InspectorPanel()
+        selected = []
+        ip.on_component_selection_changed = (
+            lambda object_ids, component_ids, native: selected.append(
+                (object_ids, component_ids, native)
+            )
+        )
+        ip.on_component_selection_changed([1, 2], [11, 12], True)
+        assert selected == [([1, 2], [11, 12], True)]
 
     def test_get_all_tags(self):
         ip = InspectorPanel()

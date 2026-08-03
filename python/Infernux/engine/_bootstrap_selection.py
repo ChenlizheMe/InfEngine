@@ -106,6 +106,19 @@ class BootstrapSelectionMixin:
         if console is not None:
             console.set_selection_snapshot(console_uid)
 
+        inspector = self.inspector_panel
+        if domain is SelectionDomain.COMPONENT:
+            component_ids = [
+                target.component_ids()[1]
+                for target in snapshot.targets
+                if target.domain is SelectionDomain.COMPONENT
+                and target.component_ids()[1] > 0
+            ]
+            if hasattr(inspector, "set_selected_component_ids"):
+                inspector.set_selected_component_ids(component_ids)
+        elif hasattr(inspector, "clear_selected_components"):
+            inspector.clear_selected_components()
+
         if domain in (SelectionDomain.ASSET, SelectionDomain.ASSET_SUBRESOURCE):
             paths = [
                 (
@@ -159,7 +172,7 @@ class BootstrapSelectionMixin:
 
                 scene = SceneManager.instance().get_active_scene()
                 obj = scene.find_by_id(primary_id) if scene else None
-            self.inspector_panel.set_selected_object_id(primary_id or 0)
+            inspector.set_selected_object_id(primary_id or 0)
             self.project_panel.clear_selection(False)
             self._set_outline(primary_id, object_ids)
             self.event_bus.emit(EditorEvent.SELECTION_CHANGED, obj)

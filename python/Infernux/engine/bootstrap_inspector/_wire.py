@@ -238,6 +238,10 @@ def _wire_object_info(ctx):
         info.layer = getattr(obj, 'layer', 0)
         info.prefab_guid = getattr(obj, 'prefab_guid', '') or ''
         info.hide_transform = getattr(obj, 'hide_transform', False)
+        transform = obj.get_transform()
+        info.transform_component_id = int(
+            getattr(transform, 'component_id', 0) or 0
+        )
         return info
 
     ip.get_object_info = _get_object_info
@@ -561,6 +565,36 @@ def _apply_python_component_clipboard_document(
     )
 
 
+def _publish_component_selection(bs, object_ids, component_ids, is_native):
+    """Publish a native Inspector header gesture into the global authority."""
+    from Infernux.engine.interaction import SelectionService, SelectionTarget
+
+    document_id = ""
+    scene_file_manager = getattr(bs, "scene_file_manager", None)
+    if scene_file_manager is not None:
+        document_id = str(getattr(scene_file_manager, "document_id", "") or "")
+    targets = tuple(
+        SelectionTarget.component(
+            int(object_id),
+            int(component_id),
+            document_id=document_id,
+            sub_kind="native" if is_native else "script",
+        )
+        for object_id, component_id in zip(object_ids, component_ids)
+        if int(object_id) > 0 and int(component_id) > 0
+    )
+    if not targets:
+        return False
+    return SelectionService.instance().replace(
+        targets,
+        owner_id="inspector",
+        primary=targets[-1],
+        anchor=targets[0],
+        reason="inspector_component_select",
+        record_history=True,
+    )
+
+
 def _component_clipboard_data() -> dict | None:
     from Infernux.engine.interaction import ClipboardDomain, ClipboardService
 
@@ -723,6 +757,10 @@ def _wire_clipboard_and_context(ctx):
     _resolve = ctx.resolve_component
     _invalidate = ctx.invalidate_component_cache
     _bump = ctx._bump_inspector_values
+
+    ip.on_component_selection_changed = lambda object_ids, component_ids, is_native: (
+        _publish_component_selection(ctx.bs, object_ids, component_ids, is_native)
+    )
     _t = ctx._t
     SceneManager = ctx.SceneManager
 
