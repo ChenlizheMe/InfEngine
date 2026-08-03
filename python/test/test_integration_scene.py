@@ -398,6 +398,69 @@ class TestGameObject:
             UndoManager._instance = previous_undo
             SelectionService._instance = previous_selection
 
+    def test_multi_object_component_reorder_is_one_atomic_action(self, scene):
+        from Infernux.engine.interaction import SelectionService, SelectionTarget
+        from Infernux.engine.undo import ReorderComponentsCommand, UndoManager
+
+        first = scene.create_game_object("FirstComponentOrder")
+        second = scene.create_game_object("SecondComponentOrder")
+        first_components = tuple(
+            first.add_component(type_name)
+            for type_name in ("BoxCollider", "Light", "AudioSource")
+        )
+        second_components = tuple(
+            second.add_component(type_name)
+            for type_name in ("BoxCollider", "Light", "AudioSource")
+        )
+        first_before = tuple(first.get_component_order())
+        second_before = tuple(second.get_component_order())
+        first_after = (first_before[2], first_before[0], first_before[1])
+        second_after = (second_before[2], second_before[0], second_before[1])
+
+        previous_selection = SelectionService._instance
+        previous_undo = UndoManager._instance
+        selection = SelectionService()
+        manager = UndoManager()
+        selected = tuple(
+            SelectionTarget.component(owner.id, component.component_id, sub_kind="native")
+            for owner, component in (
+                (first, first_components[2]),
+                (second, second_components[2]),
+            )
+        )
+        selection.replace(
+            selected,
+            owner_id="inspector",
+            primary=selected[-1],
+            anchor=selected[0],
+            record_history=False,
+        )
+        command = ReorderComponentsCommand(
+            [
+                (first.id, first_before, first_after),
+                (second.id, second_before, second_after),
+            ],
+            "Reorder Components",
+        )
+        try:
+            assert manager.execute(command)
+            assert tuple(first.get_component_order()) == first_after
+            assert tuple(second.get_component_order()) == second_after
+            assert selection.snapshot.targets == selected
+
+            manager.undo()
+            assert tuple(first.get_component_order()) == first_before
+            assert tuple(second.get_component_order()) == second_before
+            assert selection.snapshot.targets == selected
+
+            manager.redo()
+            assert tuple(first.get_component_order()) == first_after
+            assert tuple(second.get_component_order()) == second_after
+            assert selection.snapshot.targets == selected
+        finally:
+            UndoManager._instance = previous_undo
+            SelectionService._instance = previous_selection
+
     def test_native_component_default_document_preserves_identity(self, scene):
         from Infernux.engine.undo import GenericComponentCommand, UndoManager
 

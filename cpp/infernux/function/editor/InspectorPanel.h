@@ -138,9 +138,12 @@ class InspectorPanel : public EditorPanel
     /// Returns true if an action consumed the frame (caller should bail).
     std::function<bool(InxGUIContext *, uint64_t, const std::string &, uint64_t, bool)> renderComponentContextMenu;
 
-    /// Publish a component-header drag reorder intent.
-    /// Parameters: (objectId, draggedComponentId, targetComponentId, insertAfter)
-    std::function<void(uint64_t, uint64_t, uint64_t, bool)> reorderComponent;
+    /// Publish a component-header drag reorder intent. The three ID arrays are
+    /// parallel, allowing one multi-selection gesture to remain one command.
+    /// Parameters: (objectIds, draggedComponentIds, targetComponentIds, insertAfter)
+    std::function<void(const std::vector<uint64_t> &, const std::vector<uint64_t> &, const std::vector<uint64_t> &,
+                       bool)>
+        reorderComponent;
 
     // ── Component enabled toggle ─────────────────────────────────────
 
@@ -320,7 +323,8 @@ class InspectorPanel : public EditorPanel
                                                 bool isEnabled, const std::string &suffix = "", bool defaultOpen = true,
                                                 const std::string &semanticId = "",
                                                 const std::string &contextPopupId = "", bool selected = false,
-                                                uint64_t dragObjectId = 0, uint64_t dragComponentId = 0);
+                                                const std::vector<uint64_t> &dragObjectIds = {},
+                                                const std::vector<uint64_t> &dragComponentIds = {});
 
     bool RenderInspectorCheckbox(InxGUIContext *ctx, const char *label, bool value);
 

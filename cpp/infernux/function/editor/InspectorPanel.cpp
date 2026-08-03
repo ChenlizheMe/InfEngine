@@ -500,7 +500,8 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
             /*showEnabled=*/true, comp.enabled, comp.isScript ? scriptSuffix : "",
             /*defaultOpen=*/true,
             "inspector.object." + std::to_string(objId) + ".component." + std::to_string(comp.componentId),
-            comp.isScript ? "py_comp_ctx" : "comp_ctx", IsComponentSelected(comp.componentId), objId, comp.componentId);
+            comp.isScript ? "py_comp_ctx" : "comp_ctx", IsComponentSelected(comp.componentId), {objId},
+            {comp.componentId});
 
         if (header.selectionRequested && onComponentSelectionChanged)
             onComponentSelectionChanged({objId}, {comp.componentId}, comp.isNative);
@@ -773,7 +774,7 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
             const auto componentHeader = RenderComponentHeader(
                 ctx, componentLabel, "multi_comp_" + std::to_string(comp.componentId), iconId, true, comp.enabled,
                 comp.isScript ? " (Script)" : "", true, "", comp.isScript ? "multi_py_comp_ctx" : "multi_comp_ctx",
-                AreComponentsSelected(entry.componentIds));
+                AreComponentsSelected(entry.componentIds), ids, entry.componentIds);
 
             if (componentHeader.selectionRequested && onComponentSelectionChanged)
                 onComponentSelectionChanged(ids, entry.componentIds, comp.isNative);
@@ -1213,7 +1214,8 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
 InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     InxGUIContext *ctx, const std::string &typeName, const std::string &headerId, uint64_t iconId, bool showEnabled,
     bool isEnabled, const std::string &suffix, bool defaultOpen, const std::string &semanticId,
-    const std::string &contextPopupId, bool selected, uint64_t dragObjectId, uint64_t dragComponentId)
+    const std::string &contextPopupId, bool selected, const std::vector<uint64_t> &dragObjectIds,
+    const std::vector<uint64_t> &dragComponentIds)
 {
     bool newEnabled = isEnabled;
 
@@ -1266,31 +1268,42 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     const ImVec2 headerMin = ImGui::GetItemRectMin();
     const ImVec2 headerMax = ImGui::GetItemRectMax();
 
-    struct ComponentDragPayload
-    {
-        uint64_t objectId;
-        uint64_t componentId;
-    };
     constexpr const char *componentDragType = "INFERNUX_COMPONENT_ORDER";
-    if (dragObjectId != 0 && dragComponentId != 0) {
+    const bool canDrag =
+        !dragObjectIds.empty() && dragObjectIds.size() == dragComponentIds.size() &&
+        std::none_of(dragObjectIds.begin(), dragObjectIds.end(), [](uint64_t value) { return value == 0; }) &&
+        std::none_of(dragComponentIds.begin(), dragComponentIds.end(), [](uint64_t value) { return value == 0; });
+    if (canDrag) {
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoDisableHover)) {
-            const ComponentDragPayload payload{dragObjectId, dragComponentId};
-            ImGui::SetDragDropPayload(componentDragType, &payload, sizeof(payload));
+            std::vector<uint64_t> payload;
+            payload.reserve(1 + dragObjectIds.size() * 2);
+            payload.push_back(static_cast<uint64_t>(dragObjectIds.size()));
+            payload.insert(payload.end(), dragObjectIds.begin(), dragObjectIds.end());
+            payload.insert(payload.end(), dragComponentIds.begin(), dragComponentIds.end());
+            ImGui::SetDragDropPayload(componentDragType, payload.data(), payload.size() * sizeof(uint64_t));
             ImGui::TextUnformatted(displayName.c_str());
             ImGui::EndDragDropSource();
         }
         if (ImGui::BeginDragDropTarget()) {
             if (const ImGuiPayload *payload =
                     ImGui::AcceptDragDropPayload(componentDragType, ImGuiDragDropFlags_AcceptBeforeDelivery)) {
-                if (payload->DataSize == sizeof(ComponentDragPayload)) {
-                    const auto *dragged = static_cast<const ComponentDragPayload *>(payload->Data);
-                    if (dragged->objectId == dragObjectId && dragged->componentId != dragComponentId) {
-                        const bool insertAfter = ImGui::GetMousePos().y >= (headerMin.y + headerMax.y) * 0.5f;
-                        const float lineY = insertAfter ? headerMax.y : headerMin.y;
-                        ImGui::GetWindowDrawList()->AddLine(ImVec2(headerMin.x, lineY), ImVec2(headerMax.x, lineY),
-                                                            ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
-                        if (payload->IsDelivery() && reorderComponent)
-                            reorderComponent(dragObjectId, dragged->componentId, dragComponentId, insertAfter);
+                if (payload->DataSize >= static_cast<int>(sizeof(uint64_t))) {
+                    const auto *values = static_cast<const uint64_t *>(payload->Data);
+                    const size_t count = static_cast<size_t>(values[0]);
+                    const size_t expectedBytes = (1 + count * 2) * sizeof(uint64_t);
+                    if (count == dragObjectIds.size() && payload->DataSize == static_cast<int>(expectedBytes)) {
+                        const std::vector<uint64_t> draggedObjectIds(values + 1, values + 1 + count);
+                        const std::vector<uint64_t> draggedComponentIds(values + 1 + count, values + 1 + count * 2);
+                        const bool sameObjects = draggedObjectIds == dragObjectIds;
+                        const bool selfDrop = draggedComponentIds == dragComponentIds;
+                        if (sameObjects && !selfDrop) {
+                            const bool insertAfter = ImGui::GetMousePos().y >= (headerMin.y + headerMax.y) * 0.5f;
+                            const float lineY = insertAfter ? headerMax.y : headerMin.y;
+                            ImGui::GetWindowDrawList()->AddLine(ImVec2(headerMin.x, lineY), ImVec2(headerMax.x, lineY),
+                                                                ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
+                            if (payload->IsDelivery() && reorderComponent)
+                                reorderComponent(dragObjectIds, draggedComponentIds, dragComponentIds, insertAfter);
+                        }
                     }
                 }
             }

@@ -384,9 +384,9 @@ def test_inspector_component_menu_and_shortcuts_share_command_handlers():
         "component.reorder",
         source=CommandSource.DRAG_DROP,
         payload={
-            "object_id": 42,
-            "dragged_component_id": 701,
-            "target_component_id": 702,
+            "object_ids": [42, 43],
+            "dragged_component_ids": [701, 801],
+            "target_component_ids": [702, 802],
             "insert_after": True,
         },
     ).accepted
@@ -403,5 +403,8 @@ def test_inspector_component_menu_and_shortcuts_share_command_handlers():
         "reset_component",
         "move_component_up",
         "move_component_down",
-        ("reorder_components", (42, 701, 702, True)),
+        (
+            "reorder_components",
+            ((42, 43), (701, 801), (702, 802), True),
+        ),
     ]

@@ -206,17 +206,26 @@ class BootstrapWiringMixin:
         def _component_reorder_args(context):
             payload = context.payload
             try:
-                object_id = int(payload.get("object_id", 0) or 0)
-                dragged_id = int(payload.get("dragged_component_id", 0) or 0)
-                target_id = int(payload.get("target_component_id", 0) or 0)
+                object_ids = tuple(int(value) for value in payload.get("object_ids", ()))
+                dragged_ids = tuple(
+                    int(value) for value in payload.get("dragged_component_ids", ())
+                )
+                target_ids = tuple(
+                    int(value) for value in payload.get("target_component_ids", ())
+                )
             except (TypeError, ValueError):
                 return None
-            if object_id <= 0 or dragged_id <= 0 or target_id <= 0:
+            if (
+                not object_ids
+                or len(object_ids) != len(dragged_ids)
+                or len(object_ids) != len(target_ids)
+                or any(value <= 0 for value in object_ids + dragged_ids + target_ids)
+            ):
                 return None
             return (
-                object_id,
-                dragged_id,
-                target_id,
+                object_ids,
+                dragged_ids,
+                target_ids,
                 bool(payload.get("insert_after", False)),
             )
 

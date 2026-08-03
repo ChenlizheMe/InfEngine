@@ -1080,71 +1080,83 @@ def _wire_clipboard_and_context(ctx):
         )
 
     def _component_drag_reorder_changes(
-        object_id: int,
-        dragged_component_id: int,
-        target_component_id: int,
+        object_ids,
+        dragged_component_ids,
+        target_component_ids,
         insert_after: bool,
     ):
         scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(int(object_id)) if scene else None
-        if obj is None:
+        if scene is None:
             return []
-        before = [int(value) for value in obj.get_component_order()]
-        dragged_component_id = int(dragged_component_id)
-        target_component_id = int(target_component_id)
+        try:
+            object_ids = tuple(int(value) for value in object_ids)
+            dragged_component_ids = tuple(int(value) for value in dragged_component_ids)
+            target_component_ids = tuple(int(value) for value in target_component_ids)
+        except (TypeError, ValueError):
+            return []
         if (
-            dragged_component_id not in before
-            or target_component_id not in before
-            or dragged_component_id == target_component_id
+            not object_ids
+            or len(object_ids) != len(dragged_component_ids)
+            or len(object_ids) != len(target_component_ids)
+            or len(set(object_ids)) != len(object_ids)
         ):
             return []
 
-        selected_ids = {
-            int(getattr(comp, "component_id", 0) or 0)
-            for _target, selected_obj, comp, _type_name, _is_native
-            in _selected_component_entries()
-            if int(selected_obj.id) == int(object_id)
-        }
-        moving_ids = (
-            selected_ids if dragged_component_id in selected_ids else {dragged_component_id}
-        )
-        moving = [component_id for component_id in before if component_id in moving_ids]
-        if target_component_id in moving_ids:
-            return []
-        remaining = [component_id for component_id in before if component_id not in moving_ids]
-        target_index = remaining.index(target_component_id)
-        insertion_index = target_index + (1 if insert_after else 0)
-        after = remaining[:insertion_index] + moving + remaining[insertion_index:]
-        if after == before:
-            return []
-        return [(int(object_id), tuple(before), tuple(after))]
+        changes = []
+        for object_id, dragged_component_id, target_component_id in zip(
+            object_ids, dragged_component_ids, target_component_ids
+        ):
+            obj = scene.find_by_id(object_id)
+            if obj is None:
+                return []
+            before = [int(value) for value in obj.get_component_order()]
+            if (
+                dragged_component_id not in before
+                or target_component_id not in before
+                or dragged_component_id == target_component_id
+            ):
+                return []
+            remaining = [
+                component_id for component_id in before
+                if component_id != dragged_component_id
+            ]
+            target_index = remaining.index(target_component_id)
+            insertion_index = target_index + (1 if insert_after else 0)
+            after = (
+                remaining[:insertion_index]
+                + [dragged_component_id]
+                + remaining[insertion_index:]
+            )
+            if after != before:
+                changes.append((object_id, tuple(before), tuple(after)))
+        return changes
 
     def _can_reorder_selected_components(
-        object_id: int,
-        dragged_component_id: int,
-        target_component_id: int,
+        object_ids,
+        dragged_component_ids,
+        target_component_ids,
         insert_after: bool,
     ):
         return bool(
             _component_drag_reorder_changes(
-                object_id,
-                dragged_component_id,
-                target_component_id,
+                object_ids,
+                dragged_component_ids,
+                target_component_ids,
                 insert_after,
             )
         )
 
     def _reorder_selected_components(
-        object_id: int,
-        dragged_component_id: int,
-        target_component_id: int,
+        object_ids,
+        dragged_component_ids,
+        target_component_ids,
         insert_after: bool,
     ):
         return _execute_component_reorder(
             _component_drag_reorder_changes(
-                object_id,
-                dragged_component_id,
-                target_component_id,
+                object_ids,
+                dragged_component_ids,
+                target_component_ids,
                 insert_after,
             ),
             "Reorder Components",
@@ -1255,16 +1267,16 @@ def _wire_clipboard_and_context(ctx):
         open_script=_open_selected_script,
     )
 
-    def _request_component_reorder(object_id, dragged_id, target_id, insert_after):
+    def _request_component_reorder(object_ids, dragged_ids, target_ids, insert_after):
         from Infernux.engine.interaction import CommandSource
 
         ctx.bs.interaction_core.commands.execute(
             "component.reorder",
             source=CommandSource.DRAG_DROP,
             payload={
-                "object_id": int(object_id),
-                "dragged_component_id": int(dragged_id),
-                "target_component_id": int(target_id),
+                "object_ids": [int(value) for value in object_ids],
+                "dragged_component_ids": [int(value) for value in dragged_ids],
+                "target_component_ids": [int(value) for value in target_ids],
                 "insert_after": bool(insert_after),
             },
         )
