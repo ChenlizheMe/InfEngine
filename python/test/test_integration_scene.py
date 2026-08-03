@@ -1213,6 +1213,7 @@ class TestInstantiate:
             owner.id,
             type(prototype).__name__,
             python_instance=prototype,
+            invoke_after_deserialize=True,
         )
         previous_manager = UndoManager._instance
         manager = UndoManager()

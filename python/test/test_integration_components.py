@@ -612,12 +612,10 @@ class TestComponentLifecycle:
         assert second_mesh.convex is True
 
     def test_undo_adding_dynamic_rigidbody_restores_mesh_collider_convex(self, scene):
-        from Infernux.engine.ui._inspector_undo import (
-            _get_component_ids,
-            _get_native_component_documents,
-            _record_add_component_compound,
+        from Infernux.engine.undo import (
+            AddComponentTransactionCommand,
+            UndoManager,
         )
-        from Infernux.engine.undo import UndoManager
 
         previous_manager = UndoManager.instance()
         manager = UndoManager()
@@ -625,16 +623,8 @@ class TestComponentLifecycle:
             owner = scene.create_primitive(PrimitiveType.Cube, "UndoDynamicMesh")
             mesh = owner.add_component("MeshCollider")
             assert mesh.convex is False
-            before_documents = _get_native_component_documents(owner)
-            before_ids = _get_component_ids(owner)
-
-            rigidbody = owner.add_component("Rigidbody")
-            _record_add_component_compound(
-                owner,
-                "Rigidbody",
-                rigidbody,
-                before_ids,
-                before_documents=before_documents,
+            assert manager.execute(
+                AddComponentTransactionCommand(owner.id, "Rigidbody")
             )
             assert mesh.convex is True
 

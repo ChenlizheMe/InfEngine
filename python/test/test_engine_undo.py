@@ -539,11 +539,10 @@ class TestCompoundCommand:
         assert structural.after_selection_snapshot == after
 
     def test_compound_add_component_undo_reverses_auto_created(self):
-        """Simulate adding Rigidbody (which auto-creates BoxCollider).
+        """Simulate adding a component with an automatically-created dependency.
 
-        A CompoundCommand [AddBoxCollider, AddRigidbody] should:
-        - undo in reverse: remove Rigidbody first, then BoxCollider
-        - redo in order:  add BoxCollider first, then Rigidbody
+        A CompoundCommand [AddDependency, AddMain] should remove the dependent
+        component first and recreate the dependency first.
         """
         log: list = []
 
@@ -558,20 +557,19 @@ class TestCompoundCommand:
             def redo(self):
                 log.append(("re-add", self.tag))
 
-        # Mirror the compound construction from _record_add_component_compound:
-        # auto-created first, main last.
+        # AddComponentTransactionCommand stores dependencies first, main last.
         compound = CompoundCommand(
-            [FakeAddCmd("BoxCollider"), FakeAddCmd("Rigidbody")],
-            "Add Rigidbody")
+            [FakeAddCmd("Dependency"), FakeAddCmd("Main")],
+            "Add Main")
 
-        # Undo should reverse: remove Rigidbody, then BoxCollider
+        # Undo should reverse: remove Main, then Dependency
         compound.undo()
-        assert log == [("remove", "Rigidbody"), ("remove", "BoxCollider")]
+        assert log == [("remove", "Main"), ("remove", "Dependency")]
 
         log.clear()
-        # Redo should replay in order: add BoxCollider, then Rigidbody
+        # Redo should replay in order: add Dependency, then Main
         compound.redo()
-        assert log == [("re-add", "BoxCollider"), ("re-add", "Rigidbody")]
+        assert log == [("re-add", "Dependency"), ("re-add", "Main")]
 
     def test_compound_add_single_undo_through_manager(self, _reset_undo_manager):
         """A CompoundCommand recorded via mgr.record() is a single undo step."""

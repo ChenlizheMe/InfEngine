@@ -19,6 +19,113 @@ from Infernux.mcp.tools.common import (
 )
 
 
+def _add_component_through_editor_transaction(
+    obj,
+    component_type: str,
+    *,
+    python_instance=None,
+    fields: dict[str, Any] | None = None,
+):
+    """Use the same atomic add command as the visible Inspector."""
+    from Infernux.engine.undo import AddComponentTransactionCommand, UndoManager
+
+    initial_fields = dict(fields or {})
+
+    def _initialize(component):
+        for key, value in initial_fields.items():
+            current_value = _component_field_value(component, key)
+            setattr(
+                component,
+                key,
+                _coerce_component_property_value(
+                    component, key, value, current_value
+                ),
+            )
+
+    command = AddComponentTransactionCommand(
+        obj.id,
+        component_type,
+        python_instance=python_instance,
+        initializer=_initialize if initial_fields else None,
+        description=f"Add {component_type}",
+    )
+    manager = UndoManager.instance()
+    if manager is not None:
+        if not manager.execute(command):
+            raise RuntimeError(f"Failed to add component '{component_type}'.")
+        return command.result_component
+
+    try:
+        command.execute()
+        component = command.result_component
+    except Exception:
+        command.dispose()
+        raise
+    command.dispose()
+    from Infernux.engine.ui._inspector_undo import _notify_scene_modified
+
+    _notify_scene_modified()
+    return component
+
+
+def _set_component_fields_through_editor_transaction(
+    component,
+    component_type: str,
+    values: dict[str, Any] | None,
+) -> dict[str, Any]:
+    changes = []
+    for field, value in (values or {}).items():
+        old_value = _component_field_value(component, field)
+        new_value = _coerce_component_property_value(
+            component, field, value, old_value
+        )
+        if serialize_value(new_value) != serialize_value(old_value):
+            changes.append((field, old_value, new_value))
+
+    if changes:
+        from Infernux.engine.undo import (
+            CompoundCommand,
+            SetPropertyCommand,
+            UndoManager,
+        )
+
+        commands = [
+            SetPropertyCommand(
+                component,
+                field,
+                old_value,
+                new_value,
+                f"Set {component_type}.{field}",
+            )
+            for field, old_value, new_value in changes
+        ]
+        command = commands[0] if len(commands) == 1 else CompoundCommand(
+            commands,
+            f"Set {component_type} Fields",
+        )
+        manager = UndoManager.instance()
+        if manager is not None:
+            if not manager.execute(command):
+                raise RuntimeError(
+                    f"Failed to set fields on component '{component_type}'."
+                )
+        else:
+            try:
+                command.execute()
+            except Exception:
+                command.dispose()
+                raise
+            command.dispose()
+            from Infernux.engine.ui._inspector_undo import _notify_scene_modified
+
+            _notify_scene_modified()
+
+    return {
+        field: serialize_value(getattr(component, field))
+        for field, _old_value, _new_value in changes
+    }
+
+
 def register_scene_tools(mcp) -> None:
     @mcp.tool(name="scene_get_hierarchy")
     def scene_get_hierarchy(
@@ -219,9 +326,7 @@ def register_scene_tools(mcp) -> None:
         def _add():
             _require_component_knowledge(component_type, knowledge_token)
             obj = find_game_object(object_id)
-            before_ids = _component_ids(obj)
-            is_py = False
-            comp = None
+            instance = None
 
             if script_path:
                 from Infernux.components import load_and_create_component
@@ -234,28 +339,19 @@ def register_scene_tools(mcp) -> None:
                 resolved_script_path = resolve_asset_path(
                     capabilities.project_path(), script_path
                 )
-                comp = load_and_create_component(
+                instance = load_and_create_component(
                     resolved_script_path,
                     asset_database=get_asset_database(),
                     type_name=component_type,
                 )
-                if comp is None:
+                if instance is None:
                     raise RuntimeError(f"Script did not create component '{component_type}'.")
-                comp = obj.add_py_component(comp)
-                is_py = True
-            else:
-                comp = obj.add_component(component_type)
-                is_py = _is_python_script_component(comp)
-
-            if comp is None:
-                raise RuntimeError(f"Failed to add component '{component_type}'.")
-
-            for key, value in (fields or {}).items():
-                current_value = _component_field_value(comp, key)
-                setattr(comp, key, _coerce_component_property_value(comp, key, value, current_value))
-
-            from Infernux.engine.ui._inspector_undo import _record_add_component_compound
-            _record_add_component_compound(obj, component_type, comp, before_ids, is_py=is_py)
+            comp = _add_component_through_editor_transaction(
+                obj,
+                component_type,
+                python_instance=instance,
+                fields=fields,
+            )
             return {
                 "object_id": int(obj.id),
                 "component": serialize_component(comp),
@@ -839,50 +935,11 @@ def register_scene_tools(mcp) -> None:
             comp = _find_component(obj, component_type, int(ordinal))
             if comp is None:
                 raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
-            changes = []
-            for field, value in (values or {}).items():
-                old_value = _component_field_value(comp, field)
-                new_value = _coerce_component_property_value(comp, field, value, old_value)
-                changes.append((field, old_value, new_value))
-
-            from Infernux.engine.undo import (
-                CompoundCommand,
-                SetPropertyCommand,
-                UndoManager,
+            changed = _set_component_fields_through_editor_transaction(
+                comp,
+                component_type,
+                values,
             )
-            commands = [
-                SetPropertyCommand(
-                    comp,
-                    field,
-                    old_value,
-                    new_value,
-                    f"Set {component_type}.{field}",
-                )
-                for field, old_value, new_value in changes
-            ]
-            manager = UndoManager.instance()
-            if manager and commands:
-                command = commands[0] if len(commands) == 1 else CompoundCommand(
-                    commands,
-                    f"Set {component_type} Fields",
-                )
-                manager.execute(command)
-            elif commands:
-                applied = []
-                try:
-                    for field, old_value, new_value in changes:
-                        setattr(comp, field, new_value)
-                        applied.append((field, old_value))
-                except Exception:
-                    for field, old_value in reversed(applied):
-                        setattr(comp, field, old_value)
-                    raise
-                from Infernux.engine.ui._inspector_undo import _notify_scene_modified
-                _notify_scene_modified()
-
-            changed = {}
-            for field, _old_value, _new_value in changes:
-                changed[field] = serialize_value(getattr(comp, field))
             return {"object_id": int(obj.id), "component": serialize_component(comp), "changed": changed}
 
         return main_thread("component_set_fields", _set_fields, arguments={"object_id": object_id, "component_type": component_type, "knowledge_token": knowledge_token})
@@ -903,7 +960,7 @@ def register_scene_tools(mcp) -> None:
             comp = _find_component(obj, component_type, 0)
             created = False
             if comp is None:
-                before_ids = _component_ids(obj)
+                instance = None
                 if script_path:
                     from Infernux.components import load_and_create_component
                     from Infernux.mcp import capabilities
@@ -911,26 +968,26 @@ def register_scene_tools(mcp) -> None:
                     resolved_script_path = resolve_asset_path(
                         capabilities.project_path(), script_path
                     )
-                    comp = load_and_create_component(
+                    instance = load_and_create_component(
                         resolved_script_path,
                         asset_database=get_asset_database(),
                         type_name=component_type,
                     )
-                    if comp is None:
+                    if instance is None:
                         raise RuntimeError(f"Script did not create component '{component_type}'.")
-                    comp = obj.add_py_component(comp)
-                    is_py = True
-                else:
-                    comp = obj.add_component(component_type)
-                    is_py = _is_python_script_component(comp)
-                if comp is None:
-                    raise RuntimeError(f"Failed to add component '{component_type}'.")
-                from Infernux.engine.ui._inspector_undo import _record_add_component_compound
-                _record_add_component_compound(obj, component_type, comp, before_ids, is_py=is_py)
+                comp = _add_component_through_editor_transaction(
+                    obj,
+                    component_type,
+                    python_instance=instance,
+                    fields=fields,
+                )
                 created = True
-            for key, value in (fields or {}).items():
-                current_value = _component_field_value(comp, key)
-                setattr(comp, key, _coerce_component_property_value(comp, key, value, current_value))
+            else:
+                _set_component_fields_through_editor_transaction(
+                    comp,
+                    component_type,
+                    fields,
+                )
             return {"object_id": int(obj.id), "created": created, "component": serialize_component(comp), "components": _all_components(obj)}
 
         return main_thread("component_ensure", _ensure, arguments={"object_id": object_id, "component_type": component_type, "knowledge_token": knowledge_token})
@@ -1150,18 +1207,6 @@ def _all_components(obj) -> list[dict[str, Any]]:
     except Exception:
         pass
     return items
-
-
-def _component_ids(obj) -> set[int]:
-    ids: set[int] = set()
-    try:
-        for comp in obj.get_components() or []:
-            component_id = getattr(comp, "component_id", 0)
-            if component_id:
-                ids.add(int(component_id))
-    except Exception:
-        pass
-    return ids
 
 
 def _object_path(obj) -> str:

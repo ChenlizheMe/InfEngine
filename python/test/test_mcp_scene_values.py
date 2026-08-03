@@ -3,6 +3,7 @@ from enum import IntEnum
 from Infernux.components import InxComponent, serialized_field
 from Infernux.lib import Vector3
 from Infernux.mcp.tools.scene import (
+    _add_component_through_editor_transaction,
     _component_snapshot,
     _coerce_component_property_value,
     _coerce_property_value,
@@ -174,3 +175,31 @@ def test_builtin_lazy_enum_metadata_resolves_to_public_enum():
         "Light.shadows",
     )
     assert decoded is LightShadows.Soft
+
+
+def test_mcp_component_add_fields_are_one_editor_transaction(scene):
+    from Infernux.engine.undo import UndoManager
+
+    owner = scene.create_game_object("McpComponentAddTransaction")
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    try:
+        light = _add_component_through_editor_transaction(
+            owner,
+            "Light",
+            fields={"intensity": 3.25},
+        )
+        component_id = int(light.component_id)
+        assert light.intensity == 3.25
+
+        manager.undo()
+        assert owner.get_component("Light") is None
+        assert not manager.can_undo
+
+        manager.redo()
+        restored = owner.get_component("Light")
+        assert restored is not None
+        assert restored.component_id == component_id
+        assert restored.intensity == 3.25
+    finally:
+        UndoManager._instance = previous_manager

@@ -36,8 +36,6 @@ from .theme import Theme, ImGuiCol
 from ._inspector_undo import (  # noqa: F401
     _notify_scene_modified, _is_python_component_entry,
     _record_property, _record_material_slot, _record_generic_component,
-    _record_add_component, _get_component_ids, _get_native_component_documents,
-    _record_add_component_compound,
     _record_builtin_property, _TrackVolumeCommand, _record_track_volume,
 )
 from ._inspector_references import (  # noqa: F401

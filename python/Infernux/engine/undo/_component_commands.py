@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from Infernux.debug import Debug
 from Infernux.engine.undo._base import CompoundCommand, UndoCommand
@@ -345,6 +345,8 @@ class AddComponentTransactionCommand(UndoCommand):
         *,
         native_document: Optional[dict] = None,
         python_instance: Any = None,
+        initializer: Optional[Callable[[Any], None]] = None,
+        invoke_after_deserialize: bool = False,
         description: str = "",
     ):
         super().__init__(description or f"Add {type_name}")
@@ -354,7 +356,15 @@ class AddComponentTransactionCommand(UndoCommand):
         self._type_name = str(type_name)
         self._native_document = copy.deepcopy(native_document)
         self._python_instance = python_instance
+        self._initializer = initializer
+        self._invoke_after_deserialize = bool(invoke_after_deserialize)
+        self._result_component = None
+        self._result_component_id = 0
         self._compound: Optional[CompoundCommand] = None
+
+    @property
+    def result_component(self):
+        return self._result_component
 
     def _perform_initial_add(self, obj):
         if self._python_instance is not None:
@@ -363,7 +373,10 @@ class AddComponentTransactionCommand(UndoCommand):
                 raise RuntimeError(
                     f"failed to attach Python component '{self._type_name}'"
                 )
-            attached._call_on_after_deserialize()
+            if self._initializer is not None:
+                self._initializer(attached)
+            if self._invoke_after_deserialize:
+                attached._call_on_after_deserialize()
             return attached
 
         component = obj.add_component(self._type_name)
@@ -376,6 +389,8 @@ class AddComponentTransactionCommand(UndoCommand):
                 raise RuntimeError(
                     f"failed to apply '{self._type_name}' component document"
                 )
+        if self._initializer is not None:
+            self._initializer(component)
         return component
 
     def _build_compound(self, before: dict, after: dict) -> CompoundCommand:
@@ -460,7 +475,10 @@ class AddComponentTransactionCommand(UndoCommand):
         )
         before = _capture_component_documents(obj)
         try:
-            self._perform_initial_add(obj)
+            self._result_component = self._perform_initial_add(obj)
+            self._result_component_id = int(
+                getattr(self._result_component, "component_id", 0) or 0
+            )
             after = _capture_component_documents(obj)
             self._compound = self._build_compound(before, after)
         except Exception:
@@ -468,6 +486,8 @@ class AddComponentTransactionCommand(UndoCommand):
                 obj, before, f"AddComponent('{self._type_name}').rollback"
             )
             raise
+        finally:
+            self._initializer = None
         _bump_inspector_structure()
         _notify_gizmos_scene_changed()
 
@@ -475,16 +495,33 @@ class AddComponentTransactionCommand(UndoCommand):
         if self._compound is None:
             raise RuntimeError("component add transaction has not executed")
         self._compound.undo()
+        self._result_component = None
 
     def redo(self) -> None:
         if self._compound is None:
             raise RuntimeError("component add transaction has not executed")
         self._compound.redo()
+        _scene, obj = _require_scene_object(
+            self._object_id, f"AddComponent('{self._type_name}').redo.resolve"
+        )
+        state = _capture_component_documents(obj)
+        record = state["native"].get(self._result_component_id)
+        if record is None:
+            record = state["python"].get(self._result_component_id)
+        if record is None:
+            raise RuntimeError(
+                f"component add redo lost stable component {self._result_component_id}"
+            )
+        self._result_component = record["ref"]
 
     def dispose(self) -> None:
         if self._compound is not None:
             self._compound.dispose()
             self._compound = None
+        elif self._python_instance is not None and not bool(
+            getattr(self._python_instance, "_is_destroyed", False)
+        ):
+            self._python_instance._call_on_destroy()
 
 class AddNativeComponentCommand(UndoCommand):
     """Undo removes the C++ component; redo re-adds from a document snapshot."""
