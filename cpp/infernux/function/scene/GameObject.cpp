@@ -360,6 +360,55 @@ Component *GameObject::AddExistingComponent(std::unique_ptr<Component> component
     return ptr;
 }
 
+std::vector<uint64_t> GameObject::GetComponentOrder() const
+{
+    std::vector<uint64_t> result;
+    result.reserve(m_components.size());
+    for (const auto &component : m_components) {
+        if (!component)
+            throw std::logic_error("GameObject component storage contains a null entry");
+        result.push_back(component->GetComponentID());
+    }
+    return result;
+}
+
+bool GameObject::SetComponentOrder(const std::vector<uint64_t> &componentIds)
+{
+    if (componentIds.size() != m_components.size())
+        return false;
+
+    std::unordered_map<uint64_t, size_t> currentIndices;
+    currentIndices.reserve(m_components.size());
+    bool changed = false;
+    for (size_t index = 0; index < m_components.size(); ++index) {
+        const auto &component = m_components[index];
+        if (!component || !currentIndices.emplace(component->GetComponentID(), index).second)
+            return false;
+        changed = changed || componentIds[index] != component->GetComponentID();
+    }
+
+    std::unordered_set<uint64_t> requestedIds;
+    requestedIds.reserve(componentIds.size());
+    for (const uint64_t componentId : componentIds) {
+        if (componentId == 0 || !requestedIds.insert(componentId).second ||
+            currentIndices.find(componentId) == currentIndices.end()) {
+            return false;
+        }
+    }
+    if (!changed)
+        return true;
+
+    std::vector<std::unique_ptr<Component>> reordered;
+    reordered.reserve(m_components.size());
+    for (const uint64_t componentId : componentIds)
+        reordered.push_back(std::move(m_components[currentIndices.at(componentId)]));
+    m_components = std::move(reordered);
+
+    if (m_scene)
+        m_scene->BumpStructureVersion();
+    return true;
+}
+
 Component *GameObject::AddPreparedPythonComponent(std::unique_ptr<Component> component, size_t componentIndex)
 {
     if (!component || dynamic_cast<PyComponentProxy *>(component.get()) == nullptr)

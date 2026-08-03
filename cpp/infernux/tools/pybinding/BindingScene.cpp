@@ -1403,6 +1403,10 @@ void RegisterSceneBindings(py::module_ &m)
                 return result;
             },
             "Get all components (including Transform)")
+        .def("get_component_order", &GameObject::GetComponentOrder,
+             "Get stable component IDs in serialized/Inspector order (Transform excluded)")
+        .def("set_component_order", &GameObject::SetComponentOrder, py::arg("component_ids"),
+             "Atomically reorder attached components using an exact stable-ID permutation")
         .def(
             "get_component",
             [](GameObject *obj, const std::string &typeName) -> py::object {

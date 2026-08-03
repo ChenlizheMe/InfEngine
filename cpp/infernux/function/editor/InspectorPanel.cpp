@@ -494,7 +494,7 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
             /*showEnabled=*/true, comp.enabled, comp.isScript ? scriptSuffix : "",
             /*defaultOpen=*/true,
             "inspector.object." + std::to_string(objId) + ".component." + std::to_string(comp.componentId),
-            comp.isScript ? "py_comp_ctx" : "comp_ctx", IsComponentSelected(comp.componentId));
+            comp.isScript ? "py_comp_ctx" : "comp_ctx", IsComponentSelected(comp.componentId), objId, comp.componentId);
 
         if (header.selectionRequested && onComponentSelectionChanged)
             onComponentSelectionChanged({objId}, {comp.componentId}, comp.isNative);
@@ -1188,11 +1188,10 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
 // Component header (icon + checkbox + collapsing header)
 // ============================================================================
 
-InspectorPanel::ComponentHeaderResult
-InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName, const std::string &headerId,
-                                      uint64_t iconId, bool showEnabled, bool isEnabled, const std::string &suffix,
-                                      bool defaultOpen, const std::string &semanticId,
-                                      const std::string &contextPopupId, bool selected)
+InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
+    InxGUIContext *ctx, const std::string &typeName, const std::string &headerId, uint64_t iconId, bool showEnabled,
+    bool isEnabled, const std::string &suffix, bool defaultOpen, const std::string &semanticId,
+    const std::string &contextPopupId, bool selected, uint64_t dragObjectId, uint64_t dragComponentId)
 {
     bool newEnabled = isEnabled;
 
@@ -1244,6 +1243,38 @@ InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, const std::string &typ
 
     const ImVec2 headerMin = ImGui::GetItemRectMin();
     const ImVec2 headerMax = ImGui::GetItemRectMax();
+
+    struct ComponentDragPayload
+    {
+        uint64_t objectId;
+        uint64_t componentId;
+    };
+    constexpr const char *componentDragType = "INFERNUX_COMPONENT_ORDER";
+    if (dragObjectId != 0 && dragComponentId != 0) {
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoDisableHover)) {
+            const ComponentDragPayload payload{dragObjectId, dragComponentId};
+            ImGui::SetDragDropPayload(componentDragType, &payload, sizeof(payload));
+            ImGui::TextUnformatted(displayName.c_str());
+            ImGui::EndDragDropSource();
+        }
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload *payload =
+                    ImGui::AcceptDragDropPayload(componentDragType, ImGuiDragDropFlags_AcceptBeforeDelivery)) {
+                if (payload->DataSize == sizeof(ComponentDragPayload)) {
+                    const auto *dragged = static_cast<const ComponentDragPayload *>(payload->Data);
+                    if (dragged->objectId == dragObjectId && dragged->componentId != dragComponentId) {
+                        const bool insertAfter = ImGui::GetMousePos().y >= (headerMin.y + headerMax.y) * 0.5f;
+                        const float lineY = insertAfter ? headerMax.y : headerMin.y;
+                        ImGui::GetWindowDrawList()->AddLine(ImVec2(headerMin.x, lineY), ImVec2(headerMax.x, lineY),
+                                                            ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
+                        if (payload->IsDelivery() && reorderComponent)
+                            reorderComponent(dragObjectId, dragged->componentId, dragComponentId, insertAfter);
+                    }
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+    }
     float headerMinY = headerMin.y;
     float headerMaxY = headerMax.y;
     float headerHeight = (std::max)(0.0f, headerMaxY - headerMinY);

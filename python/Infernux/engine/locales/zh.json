@@ -542,6 +542,8 @@
   "inspector.paste_as_new": "粘贴为新组件",
   "inspector.paste_properties": "粘贴属性",
   "inspector.remove": "移除",
+  "inspector.move_up": "上移",
+  "inspector.move_down": "下移",
   "inspector.component_options": "组件选项",
   "inspector.show_script": "显示脚本",
   "inspector.add_component": "添加组件",

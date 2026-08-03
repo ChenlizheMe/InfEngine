@@ -189,19 +189,50 @@ class BootstrapWiringMixin:
                 and _inspector_component_actions() is not None
             )
 
-        def _can_component_action(context, predicate_name: str) -> bool:
+        def _can_component_action(context, predicate_name: str, *args) -> bool:
             if not _is_inspector_component_context(context):
                 return False
             actions = _inspector_component_actions()
             predicate = getattr(actions, predicate_name, None)
-            return bool(predicate and predicate())
+            return bool(predicate and predicate(*args))
 
-        def _invoke_component_action(context, action_name: str) -> bool:
+        def _invoke_component_action(context, action_name: str, *args) -> bool:
             if not _is_inspector_component_context(context):
                 return False
             actions = _inspector_component_actions()
             action = getattr(actions, action_name, None)
-            return bool(action and action())
+            return bool(action and action(*args))
+
+        def _component_reorder_args(context):
+            payload = context.payload
+            try:
+                object_id = int(payload.get("object_id", 0) or 0)
+                dragged_id = int(payload.get("dragged_component_id", 0) or 0)
+                target_id = int(payload.get("target_component_id", 0) or 0)
+            except (TypeError, ValueError):
+                return None
+            if object_id <= 0 or dragged_id <= 0 or target_id <= 0:
+                return None
+            return (
+                object_id,
+                dragged_id,
+                target_id,
+                bool(payload.get("insert_after", False)),
+            )
+
+        def _can_reorder_component(context) -> bool:
+            args = _component_reorder_args(context)
+            return bool(
+                args is not None
+                and _can_component_action(context, "can_reorder", *args)
+            )
+
+        def _reorder_component(context) -> bool:
+            args = _component_reorder_args(context)
+            return bool(
+                args is not None
+                and _invoke_component_action(context, "reorder", *args)
+            )
 
         def _has_project_selection(context) -> bool:
             return bool(
@@ -485,6 +516,31 @@ class BootstrapWiringMixin:
                 can_execute=lambda context: _can_component_action(
                     context, "can_remove"
                 ),
+            ),
+            EditorCommand(
+                "component.move_up",
+                lambda context: _invoke_component_action(context, "move_up"),
+                display_name="Move Component Up",
+                category="Component",
+                can_execute=lambda context: _can_component_action(
+                    context, "can_move_up"
+                ),
+            ),
+            EditorCommand(
+                "component.move_down",
+                lambda context: _invoke_component_action(context, "move_down"),
+                display_name="Move Component Down",
+                category="Component",
+                can_execute=lambda context: _can_component_action(
+                    context, "can_move_down"
+                ),
+            ),
+            EditorCommand(
+                "component.reorder",
+                _reorder_component,
+                display_name="Reorder Components",
+                category="Component",
+                can_execute=_can_reorder_component,
             ),
             EditorCommand(
                 "project.create_folder",

@@ -332,6 +332,14 @@ class GameObject
     /// @brief Get components sorted by execution order (ascending), then by stable component ID.
     [[nodiscard]] std::vector<Component *> GetComponentsInExecutionOrder() const;
 
+    /// @brief Return the serialized/Inspector component order.
+    /// Transform is structurally fixed and is intentionally excluded.
+    [[nodiscard]] std::vector<uint64_t> GetComponentOrder() const;
+
+    /// @brief Atomically replace the serialized/Inspector component order.
+    /// The IDs must be an exact permutation of the attached components.
+    bool SetComponentOrder(const std::vector<uint64_t> &componentIds);
+
     /// @brief Add a pre-created component (used for PyComponentProxy)
     Component *AddExistingComponent(std::unique_ptr<Component> component);
 

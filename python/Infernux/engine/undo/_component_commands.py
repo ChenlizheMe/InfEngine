@@ -386,3 +386,63 @@ class RemoveComponentsCommand(CompoundCommand):
             self.after_selection_snapshot,
             "redo_remove_components",
         )
+
+
+class ReorderComponentsCommand(UndoCommand):
+    """Apply one or more exact component-order permutations atomically."""
+
+    def __init__(self, changes, description: str = "Reorder Components"):
+        super().__init__(description)
+        normalized = []
+        for object_id, before_order, after_order in changes:
+            before = tuple(int(value) for value in before_order)
+            after = tuple(int(value) for value in after_order)
+            if not before or len(before) != len(after):
+                raise ValueError("component orders must be non-empty and equally sized")
+            if len(set(before)) != len(before) or set(before) != set(after):
+                raise ValueError("component orders must be exact stable-ID permutations")
+            if before != after:
+                normalized.append((int(object_id), before, after))
+        if not normalized:
+            raise ValueError("component reorder must change at least one object")
+        self._changes = tuple(normalized)
+
+    @staticmethod
+    def _set_order(object_id: int, order: tuple[int, ...], label: str) -> None:
+        _scene, obj = _require_scene_object(object_id, label)
+        current = tuple(int(value) for value in obj.get_component_order())
+        if current == order:
+            return
+        if set(current) != set(order) or not obj.set_component_order(list(order)):
+            raise RuntimeError(
+                f"[Undo] {label}: component order no longer matches object {object_id}"
+            )
+
+    def _apply(self, order_index: int, label: str) -> None:
+        applied = []
+        try:
+            for change in self._changes:
+                object_id = change[0]
+                _scene, obj = _require_scene_object(object_id, label)
+                previous = tuple(int(value) for value in obj.get_component_order())
+                self._set_order(object_id, change[order_index], label)
+                applied.append((object_id, previous))
+        except Exception:
+            for object_id, previous in reversed(applied):
+                try:
+                    self._set_order(object_id, previous, f"{label}.rollback")
+                except Exception as rollback_exc:
+                    Debug.log_error(
+                        f"[Undo] {label}: component-order rollback failed: {rollback_exc}"
+                    )
+            raise
+        _bump_inspector_structure()
+
+    def execute(self) -> None:
+        self._apply(2, "ReorderComponents.execute")
+
+    def undo(self) -> None:
+        self._apply(1, "ReorderComponents.undo")
+
+    def redo(self) -> None:
+        self._apply(2, "ReorderComponents.redo")

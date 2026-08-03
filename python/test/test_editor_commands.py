@@ -326,6 +326,12 @@ def test_inspector_component_menu_and_shortcuts_share_command_handlers():
         paste_default=lambda: calls.append("paste_default") or True,
         can_remove=lambda: True,
         remove=lambda: calls.append("remove_component") or True,
+        can_move_up=lambda: True,
+        move_up=lambda: calls.append("move_component_up") or True,
+        can_move_down=lambda: True,
+        move_down=lambda: calls.append("move_component_down") or True,
+        can_reorder=lambda *args: bool(args),
+        reorder=lambda *args: calls.append(("reorder_components", args)) or True,
         can_open_script=lambda: True,
         open_script=lambda: calls.append("open_script") or True,
     )
@@ -363,11 +369,24 @@ def test_inspector_component_menu_and_shortcuts_share_command_handlers():
         "component.paste_properties",
         "component.paste_as_new",
         "component.remove",
+        "component.move_up",
+        "component.move_down",
     ):
         assert core.commands.execute(
             command_id,
             source=CommandSource.CONTEXT_MENU,
         ).accepted
+
+    assert core.commands.execute(
+        "component.reorder",
+        source=CommandSource.DRAG_DROP,
+        payload={
+            "object_id": 42,
+            "dragged_component_id": 701,
+            "target_component_id": 702,
+            "insert_after": True,
+        },
+    ).accepted
 
     assert calls == [
         "copy_component",
@@ -378,4 +397,7 @@ def test_inspector_component_menu_and_shortcuts_share_command_handlers():
         "paste_values",
         "paste_as_new",
         "remove_component",
+        "move_component_up",
+        "move_component_down",
+        ("reorder_components", (42, 701, 702, True)),
     ]

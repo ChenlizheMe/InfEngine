@@ -1435,6 +1435,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("consume_component_body_profile", &InspectorPanel::consumeComponentBodyProfile)
         .def_readwrite("on_component_selection_changed", &InspectorPanel::onComponentSelectionChanged)
         .def_readwrite("render_component_context_menu", &InspectorPanel::renderComponentContextMenu)
+        .def_readwrite("reorder_component", &InspectorPanel::reorderComponent)
         .def_readwrite("set_component_enabled", &InspectorPanel::setComponentEnabled)
         // Add Component
         .def_readwrite("get_add_component_entries", &InspectorPanel::getAddComponentEntries)

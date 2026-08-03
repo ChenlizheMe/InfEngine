@@ -9,6 +9,7 @@ class CommandSource(str, Enum):
     SHORTCUT: CommandSource
     TOOLBAR: CommandSource
     CONTEXT_MENU: CommandSource
+    DRAG_DROP: CommandSource
     PALETTE: CommandSource
     AUTOMATION: CommandSource
     API: CommandSource

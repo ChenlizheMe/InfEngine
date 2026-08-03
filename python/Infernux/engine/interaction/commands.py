@@ -19,6 +19,7 @@ class CommandSource(str, Enum):
     SHORTCUT = "shortcut"
     TOOLBAR = "toolbar"
     CONTEXT_MENU = "context_menu"
+    DRAG_DROP = "drag_drop"
     PALETTE = "palette"
     AUTOMATION = "automation"
     API = "api"

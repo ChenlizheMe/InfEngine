@@ -1010,6 +1010,131 @@ def _wire_clipboard_and_context(ctx):
             for _target, obj, comp, type_name, is_native in entries
         )
 
+    def _component_reorder_changes(direction: int):
+        if direction not in {-1, 1}:
+            raise ValueError("component move direction must be -1 or 1")
+        grouped = {}
+        for _target, obj, comp, _type_name, _is_native in _selected_component_entries():
+            component_id = int(getattr(comp, "component_id", 0) or 0)
+            if component_id:
+                grouped.setdefault(int(obj.id), (obj, set()))[1].add(component_id)
+
+        changes = []
+        for object_id, (obj, selected_ids) in grouped.items():
+            before = [int(value) for value in obj.get_component_order()]
+            selected_ids.intersection_update(before)
+            if not selected_ids:
+                continue
+            after = list(before)
+            indices = (
+                range(1, len(after))
+                if direction < 0
+                else range(len(after) - 2, -1, -1)
+            )
+            for index in indices:
+                neighbor = index - 1 if direction < 0 else index + 1
+                if after[index] in selected_ids and after[neighbor] not in selected_ids:
+                    after[index], after[neighbor] = after[neighbor], after[index]
+            if after != before:
+                changes.append((object_id, tuple(before), tuple(after)))
+        return changes
+
+    def _can_move_selected_components(direction: int):
+        return bool(_component_reorder_changes(direction))
+
+    def _execute_component_reorder(changes, description: str):
+        if not changes:
+            return False
+        from Infernux.engine.undo import ReorderComponentsCommand, UndoManager
+
+        command = ReorderComponentsCommand(changes, description)
+        manager = UndoManager.instance()
+        if manager is not None:
+            if not manager.execute(command):
+                return False
+        else:
+            command.execute()
+            command.dispose()
+        _invalidate()
+        return True
+
+    def _move_selected_components(direction: int):
+        return _execute_component_reorder(
+            _component_reorder_changes(direction),
+            "Move Components Up" if direction < 0 else "Move Components Down",
+        )
+
+    def _component_drag_reorder_changes(
+        object_id: int,
+        dragged_component_id: int,
+        target_component_id: int,
+        insert_after: bool,
+    ):
+        scene = SceneManager.instance().get_active_scene()
+        obj = scene.find_by_id(int(object_id)) if scene else None
+        if obj is None:
+            return []
+        before = [int(value) for value in obj.get_component_order()]
+        dragged_component_id = int(dragged_component_id)
+        target_component_id = int(target_component_id)
+        if (
+            dragged_component_id not in before
+            or target_component_id not in before
+            or dragged_component_id == target_component_id
+        ):
+            return []
+
+        selected_ids = {
+            int(getattr(comp, "component_id", 0) or 0)
+            for _target, selected_obj, comp, _type_name, _is_native
+            in _selected_component_entries()
+            if int(selected_obj.id) == int(object_id)
+        }
+        moving_ids = (
+            selected_ids if dragged_component_id in selected_ids else {dragged_component_id}
+        )
+        moving = [component_id for component_id in before if component_id in moving_ids]
+        if target_component_id in moving_ids:
+            return []
+        remaining = [component_id for component_id in before if component_id not in moving_ids]
+        target_index = remaining.index(target_component_id)
+        insertion_index = target_index + (1 if insert_after else 0)
+        after = remaining[:insertion_index] + moving + remaining[insertion_index:]
+        if after == before:
+            return []
+        return [(int(object_id), tuple(before), tuple(after))]
+
+    def _can_reorder_selected_components(
+        object_id: int,
+        dragged_component_id: int,
+        target_component_id: int,
+        insert_after: bool,
+    ):
+        return bool(
+            _component_drag_reorder_changes(
+                object_id,
+                dragged_component_id,
+                target_component_id,
+                insert_after,
+            )
+        )
+
+    def _reorder_selected_components(
+        object_id: int,
+        dragged_component_id: int,
+        target_component_id: int,
+        insert_after: bool,
+    ):
+        return _execute_component_reorder(
+            _component_drag_reorder_changes(
+                object_id,
+                dragged_component_id,
+                target_component_id,
+                insert_after,
+            ),
+            "Reorder Components",
+        )
+
     def _remove_selected_components():
         entries = _selected_component_entries()
         if not entries or not _can_remove_selected_components():
@@ -1103,9 +1228,31 @@ def _wire_clipboard_and_context(ctx):
         paste_default=_paste_selected_default,
         can_remove=_can_remove_selected_components,
         remove=_remove_selected_components,
+        can_move_up=lambda: _can_move_selected_components(-1),
+        move_up=lambda: _move_selected_components(-1),
+        can_move_down=lambda: _can_move_selected_components(1),
+        move_down=lambda: _move_selected_components(1),
+        can_reorder=_can_reorder_selected_components,
+        reorder=_reorder_selected_components,
         can_open_script=_can_open_selected_script,
         open_script=_open_selected_script,
     )
+
+    def _request_component_reorder(object_id, dragged_id, target_id, insert_after):
+        from Infernux.engine.interaction import CommandSource
+
+        ctx.bs.interaction_core.commands.execute(
+            "component.reorder",
+            source=CommandSource.DRAG_DROP,
+            payload={
+                "object_id": int(object_id),
+                "dragged_component_id": int(dragged_id),
+                "target_component_id": int(target_id),
+                "insert_after": bool(insert_after),
+            },
+        )
+
+    ip.reorder_component = _request_component_reorder
 
     def _render_component_context_menu(ctx_arg, obj_id, type_name, comp_id, is_native):
         del obj_id, type_name, comp_id, is_native
@@ -1138,6 +1285,12 @@ def _wire_clipboard_and_context(ctx):
             if _command_item(_t("inspector.show_script"), "component.open_script"):
                 return False
             ctx_arg.separator()
+
+        if _command_item(_t("inspector.move_up"), "component.move_up"):
+            return False
+        if _command_item(_t("inspector.move_down"), "component.move_down"):
+            return False
+        ctx_arg.separator()
 
         if _command_item(
             _t("inspector.copy_properties"),

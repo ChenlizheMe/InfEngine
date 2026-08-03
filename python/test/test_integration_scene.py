@@ -344,6 +344,60 @@ class TestGameObject:
         finally:
             SelectionService._instance = previous_selection
 
+    def test_component_order_is_atomic_and_undoable(self, scene):
+        from Infernux.engine.interaction import SelectionService, SelectionTarget
+        from Infernux.engine.undo import ReorderComponentsCommand, UndoManager
+
+        obj = scene.create_game_object("ComponentOrder")
+        collider = obj.add_component("BoxCollider")
+        light = obj.add_component("Light")
+        audio = obj.add_component("AudioSource")
+        before = tuple(obj.get_component_order())
+        expected_ids = (
+            int(collider.component_id),
+            int(light.component_id),
+            int(audio.component_id),
+        )
+        assert before == expected_ids
+
+        assert not obj.set_component_order([before[0], before[0], before[2]])
+        assert tuple(obj.get_component_order()) == before
+        assert not obj.set_component_order([before[0], before[1]])
+        assert tuple(obj.get_component_order()) == before
+
+        after = (before[2], before[0], before[1])
+        previous_selection = SelectionService._instance
+        previous_undo = UndoManager._instance
+        selection = SelectionService()
+        manager = UndoManager()
+        selection.select(
+            SelectionTarget.component(obj.id, before[0], sub_kind="native"),
+            owner_id="inspector",
+            record_history=False,
+        )
+        command = ReorderComponentsCommand([(obj.id, before, after)])
+        try:
+            assert manager.execute(command)
+            assert tuple(obj.get_component_order()) == after
+            assert selection.snapshot.primary == SelectionTarget.component(
+                obj.id, before[0], sub_kind="native"
+            )
+
+            manager.undo()
+            assert tuple(obj.get_component_order()) == before
+            assert selection.snapshot.primary == SelectionTarget.component(
+                obj.id, before[0], sub_kind="native"
+            )
+
+            manager.redo()
+            assert tuple(obj.get_component_order()) == after
+            assert selection.snapshot.primary == SelectionTarget.component(
+                obj.id, before[0], sub_kind="native"
+            )
+        finally:
+            UndoManager._instance = previous_undo
+            SelectionService._instance = previous_selection
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Hierarchy (parent / child)
