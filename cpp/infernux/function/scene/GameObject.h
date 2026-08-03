@@ -340,6 +340,10 @@ class GameObject
     /// The IDs must be an exact permutation of the attached components.
     bool SetComponentOrder(const std::vector<uint64_t> &componentIds);
 
+    /// @brief Build the default current-schema document for an attached native component.
+    /// Stable identity and execution order are preserved in the returned document.
+    [[nodiscard]] nlohmann::json GetDefaultComponentDocument(Component *component) const;
+
     /// @brief Add a pre-created component (used for PyComponentProxy)
     Component *AddExistingComponent(std::unique_ptr<Component> component);
 

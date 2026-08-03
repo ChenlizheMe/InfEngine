@@ -281,11 +281,6 @@ class TestInspectorCallbacks:
         ip.add_component("Light", True, "")
         assert added == ["Light"]
 
-    def test_remove_component(self):
-        ip = InspectorPanel()
-        ip.remove_component = lambda oid, tn, cid, native: True
-        assert ip.remove_component(1, "Camera", 5, True) is True
-
     def test_prefab_info(self):
         ip = InspectorPanel()
         def _get_pi(oid):

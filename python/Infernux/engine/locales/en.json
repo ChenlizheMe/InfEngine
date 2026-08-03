@@ -542,6 +542,7 @@
   "inspector.paste_as_new": "Paste as New Component",
   "inspector.paste_properties": "Paste as Properties",
   "inspector.remove": "Remove",
+  "inspector.reset": "Reset",
   "inspector.move_up": "Move Up",
   "inspector.move_down": "Move Down",
   "inspector.component_options": "Component Options",

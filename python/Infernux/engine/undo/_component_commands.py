@@ -121,6 +121,32 @@ def _find_native_component(obj, type_name: str, component_id: int = 0):
     return _find_live_native_component(obj, type_name)
 
 
+def _component_index(object_id: int, component_id: int) -> int:
+    if not component_id:
+        return -1
+    _scene, obj = _require_scene_object(object_id, "ComponentIndex")
+    try:
+        return tuple(int(value) for value in obj.get_component_order()).index(
+            int(component_id)
+        )
+    except ValueError:
+        return -1
+
+
+def _restore_component_index(obj, component_id: int, component_index: int,
+                             label: str) -> None:
+    if component_index < 0:
+        return
+    order = [int(value) for value in obj.get_component_order()]
+    component_id = int(component_id)
+    if component_id not in order:
+        raise RuntimeError(f"[Undo] {label}: restored component is missing")
+    order.remove(component_id)
+    order.insert(min(component_index, len(order)), component_id)
+    if not obj.set_component_order(order):
+        raise RuntimeError(f"[Undo] {label}: failed to restore component order")
+
+
 def _snapshot_and_remove_native(object_id: int, type_name: str,
                                 label: str, component_id: int = 0) -> dict:
     _scene, obj = _require_scene_object(object_id, label)
@@ -131,7 +157,8 @@ def _snapshot_and_remove_native(object_id: int, type_name: str,
             f"[Undo] {label}: component '{type_name}'{identity} not found"
         )
     document = live.serialize_document()
-    obj.remove_component(live)
+    if obj.remove_component(live) is False:
+        raise RuntimeError(f"[Undo] {label}: native component removal failed")
     _invalidate_builtin_wrapper(live)
     _bump_inspector_structure()
     _notify_gizmos_scene_changed()
@@ -140,7 +167,7 @@ def _snapshot_and_remove_native(object_id: int, type_name: str,
 
 def _add_native_from_snapshot(object_id: int, type_name: str,
                               document: Optional[dict],
-                              label: str):
+                              label: str, component_index: int = -1):
     _scene, obj = _require_scene_object(object_id, label)
     result = obj.add_component(type_name)
     if not result:
@@ -156,6 +183,12 @@ def _add_native_from_snapshot(object_id: int, type_name: str,
                 f"[Undo] {label}: restored component id={restored_id} is not live"
             )
         result = live
+    _restore_component_index(
+        obj,
+        int(getattr(result, "component_id", 0) or 0),
+        component_index,
+        label,
+    )
     _bump_inspector_structure()
     _notify_gizmos_scene_changed()
     return result
@@ -169,19 +202,26 @@ def _snapshot_and_remove_py(object_id: int, type_name: str, script_guid: str, ty
         raise RuntimeError(f"[Undo] {label}: component not found")
     fields_json = _snapshot_py_fields(live)
     enabled = _snapshot_py_enabled(live)
-    obj.remove_py_component(live)
+    if obj.remove_py_component(live) is False:
+        raise RuntimeError(f"[Undo] {label}: Python component removal failed")
     _bump_inspector_structure()
     return fields_json, enabled, live
 
 
 def _add_py_from_snapshot(object_id: int, type_name: str, script_guid: str, type_guid: str,
-                          fields_json, enabled, label: str):
+                          fields_json, enabled, label: str, component_index: int = -1):
     _scene, obj = _require_scene_object(object_id, label)
     instance = _instantiate_py_snapshot(
         type_name, script_guid, type_guid, fields_json, enabled, description=label)
     if instance is None:
         raise RuntimeError(f"[Undo] {label}: recreate failed")
     obj.add_py_component(instance)
+    _restore_component_index(
+        obj,
+        int(getattr(instance, "component_id", 0) or 0),
+        component_index,
+        label,
+    )
     if hasattr(instance, '_call_on_after_deserialize'):
         try:
             instance._call_on_after_deserialize()
@@ -204,6 +244,7 @@ class AddNativeComponentCommand(UndoCommand):
         self._document: Optional[dict] = None
         self._component_ref = comp_ref
         self._component_id = int(getattr(comp_ref, "component_id", 0) or 0)
+        self._component_index = _component_index(object_id, self._component_id)
 
     def execute(self) -> None:
         pass
@@ -220,7 +261,7 @@ class AddNativeComponentCommand(UndoCommand):
     def redo(self) -> None:
         self._component_ref = _add_native_from_snapshot(
             self._object_id, self._type_name, self._document,
-            f"AddNative('{self._type_name}').redo")
+            f"AddNative('{self._type_name}').redo", self._component_index)
         self._component_id = int(
             getattr(self._component_ref, "component_id", 0) or 0
         )
@@ -237,6 +278,7 @@ class RemoveNativeComponentCommand(UndoCommand):
         self._document: Optional[dict] = comp_ref.serialize_document() if comp_ref is not None else None
         self._component_ref = comp_ref
         self._component_id = int(getattr(comp_ref, "component_id", 0) or 0)
+        self._component_index = _component_index(object_id, self._component_id)
 
     def execute(self) -> None:
         self._do_remove()
@@ -244,7 +286,7 @@ class RemoveNativeComponentCommand(UndoCommand):
     def undo(self) -> None:
         self._component_ref = _add_native_from_snapshot(
             self._object_id, self._type_name, self._document,
-            f"RemoveNative('{self._type_name}').undo")
+            f"RemoveNative('{self._type_name}').undo", self._component_index)
         self._component_id = int(
             getattr(self._component_ref, "component_id", 0) or 0
         )
@@ -276,6 +318,9 @@ class AddPyComponentCommand(UndoCommand):
         self._fields_json = _snapshot_py_fields(py_comp_ref)
         self._enabled = _snapshot_py_enabled(py_comp_ref)
         self._ordinal = _find_py_ordinal(object_id, py_comp_ref)
+        self._component_index = _component_index(
+            object_id, int(getattr(py_comp_ref, "component_id", 0) or 0)
+        )
 
     def execute(self) -> None:
         pass
@@ -293,7 +338,7 @@ class AddPyComponentCommand(UndoCommand):
             self._object_id, self._type_name_str, self._script_guid,
             self._type_guid,
             self._fields_json, self._enabled,
-            f"AddPy('{self._type_name_str}').redo")
+            f"AddPy('{self._type_name_str}').redo", self._component_index)
 
 
 class RemovePyComponentCommand(UndoCommand):
@@ -310,6 +355,9 @@ class RemovePyComponentCommand(UndoCommand):
         self._fields_json = _snapshot_py_fields(py_comp_ref)
         self._enabled = _snapshot_py_enabled(py_comp_ref)
         self._ordinal = _find_py_ordinal(object_id, py_comp_ref)
+        self._component_index = _component_index(
+            object_id, int(getattr(py_comp_ref, "component_id", 0) or 0)
+        )
 
     def execute(self) -> None:
         self._do_remove()
@@ -319,7 +367,7 @@ class RemovePyComponentCommand(UndoCommand):
             self._object_id, self._type_name_str, self._script_guid,
             self._type_guid,
             self._fields_json, self._enabled,
-            f"RemovePy('{self._type_name_str}').undo")
+            f"RemovePy('{self._type_name_str}').undo", self._component_index)
 
     def redo(self) -> None:
         self._do_remove()
@@ -353,8 +401,31 @@ class RemoveComponentsCommand(CompoundCommand):
         if not commands:
             raise ValueError("component removal requires at least one command")
         super().__init__(commands, description)
+        self._before_orders = {}
+        for command in commands:
+            object_id = int(getattr(command, "_object_id", 0) or 0)
+            if not object_id or object_id in self._before_orders:
+                continue
+            _scene, obj = _require_scene_object(
+                object_id, "RemoveComponents.capture_order"
+            )
+            self._before_orders[object_id] = tuple(
+                int(value) for value in obj.get_component_order()
+            )
         self.before_selection_snapshot = before_selection
         self.after_selection_snapshot = after_selection
+
+    def _restore_original_orders(self, label: str) -> None:
+        for object_id, order in self._before_orders.items():
+            _scene, obj = _require_scene_object(object_id, label)
+            current = tuple(int(value) for value in obj.get_component_order())
+            if current == order:
+                continue
+            if set(current) != set(order) or not obj.set_component_order(list(order)):
+                raise RuntimeError(
+                    f"[Undo] {label}: failed to restore component order for "
+                    f"object {object_id}"
+                )
 
     @staticmethod
     def _apply_selection(snapshot, reason: str) -> None:
@@ -367,7 +438,11 @@ class RemoveComponentsCommand(CompoundCommand):
         )
 
     def execute(self) -> None:
-        super().execute()
+        try:
+            super().execute()
+        except Exception:
+            self._restore_original_orders("RemoveComponents.execute.rollback")
+            raise
         self._apply_selection(
             self.after_selection_snapshot,
             "remove_components",
@@ -375,6 +450,7 @@ class RemoveComponentsCommand(CompoundCommand):
 
     def undo(self) -> None:
         super().undo()
+        self._restore_original_orders("RemoveComponents.undo")
         self._apply_selection(
             self.before_selection_snapshot,
             "undo_remove_components",

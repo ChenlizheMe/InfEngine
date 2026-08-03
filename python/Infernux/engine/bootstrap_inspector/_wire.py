@@ -13,7 +13,6 @@ from Infernux.engine.bootstrap_inspector._helpers import (
     _get_components_safe,
     _get_py_components_safe,
     _load_script_component,
-    _remove_component_impl,
 )
 
 if TYPE_CHECKING:
@@ -1010,6 +1009,75 @@ def _wire_clipboard_and_context(ctx):
             for _target, obj, comp, type_name, is_native in entries
         )
 
+    def _can_reset_selected_components():
+        return bool(_selected_component_entries())
+
+    def _reset_selected_components():
+        entries = _selected_component_entries()
+        if not entries:
+            return False
+        from Infernux.engine.undo import (
+            CompoundCommand,
+            GenericComponentCommand,
+            PythonComponentDocumentCommand,
+            UndoManager,
+        )
+
+        commands = []
+        for _target, obj, comp, type_name, is_native in entries:
+            if is_native:
+                old_document = comp.serialize_document()
+                native_component = (
+                    comp._require_cpp_component()
+                    if hasattr(comp, "_require_cpp_component")
+                    else comp
+                )
+                new_document = obj.get_component_default_document(native_component)
+                if old_document != new_document:
+                    commands.append(
+                        GenericComponentCommand(
+                            comp,
+                            old_document,
+                            new_document,
+                            f"Reset {type_name}",
+                            mergeable=False,
+                        )
+                    )
+                continue
+
+            old_document = _python_component_clipboard_document(comp)
+            fresh = type(comp)()
+            if hasattr(fresh, "_call_reset"):
+                fresh._call_reset()
+            new_document = _python_component_clipboard_document(fresh)
+            if old_document != new_document:
+                commands.append(
+                    PythonComponentDocumentCommand(
+                        comp,
+                        old_document,
+                        new_document,
+                        f"Reset {type_name}",
+                        edit_key=f"reset_component:{int(getattr(comp, 'component_id', 0) or 0)}",
+                    )
+                )
+
+        if not commands:
+            return False
+        command = (
+            commands[0]
+            if len(commands) == 1
+            else CompoundCommand(commands, f"Reset {len(commands)} Components")
+        )
+        manager = UndoManager.instance()
+        if manager is not None:
+            if not manager.execute(command):
+                return False
+        else:
+            command.execute()
+            command.dispose()
+        _bump()
+        return True
+
     def _component_reorder_changes(direction: int):
         if direction not in {-1, 1}:
             raise ValueError("component move direction must be -1 or 1")
@@ -1228,6 +1296,8 @@ def _wire_clipboard_and_context(ctx):
         paste_default=_paste_selected_default,
         can_remove=_can_remove_selected_components,
         remove=_remove_selected_components,
+        can_reset=_can_reset_selected_components,
+        reset=_reset_selected_components,
         can_move_up=lambda: _can_move_selected_components(-1),
         move_up=lambda: _move_selected_components(-1),
         can_move_down=lambda: _can_move_selected_components(1),
@@ -1286,6 +1356,9 @@ def _wire_clipboard_and_context(ctx):
                 return False
             ctx_arg.separator()
 
+        if _command_item(_t("inspector.reset"), "component.reset"):
+            return False
+
         if _command_item(_t("inspector.move_up"), "component.move_up"):
             return False
         if _command_item(_t("inspector.move_down"), "component.move_down"):
@@ -1319,14 +1392,13 @@ def _wire_clipboard_and_context(ctx):
 # ═══════ Add / remove / script-drop ════════════════════════════
 
 def _wire_add_remove_and_drop(ctx):
-    """Wire add_component, remove_component, and handle_script_drop."""
+    """Wire add_component and handle_script_drop."""
     ip = ctx.ip
     engine = ctx.engine
     SelectionManager = ctx.SelectionManager
     SceneManager = ctx.SceneManager
     _invalidate = ctx.invalidate_component_cache
     _bump = ctx._bump_inspector_values
-    _resolve = ctx.resolve_component
 
     ip.get_add_component_entries = _get_add_component_entries
 
@@ -1420,13 +1492,6 @@ def _wire_add_remove_and_drop(ctx):
             Debug.log_internal(f"Added component {instance.type_name}")
 
     ip.add_component = _add_component
-
-    def _remove_component(obj_id, type_name, comp_id, is_native):
-        return _remove_component_impl(
-            obj_id, type_name, comp_id, is_native,
-            _resolve, _can_remove_component, _invalidate, _bump)
-
-    ip.remove_component = _remove_component
 
     def _handle_script_drop(script_path):
         sel = SelectionManager.instance()

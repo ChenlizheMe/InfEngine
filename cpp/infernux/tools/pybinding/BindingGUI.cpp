@@ -1440,8 +1440,6 @@ void RegisterGUIBindings(py::module_ &m)
         // Add Component
         .def_readwrite("get_add_component_entries", &InspectorPanel::getAddComponentEntries)
         .def_readwrite("add_component", &InspectorPanel::addComponent)
-        // Remove Component
-        .def_readwrite("remove_component", &InspectorPanel::removeComponent)
         // Asset / File preview
         .def_readwrite("render_asset_inspector", &InspectorPanel::renderAssetInspector)
         .def_readwrite("render_file_preview", &InspectorPanel::renderFilePreview)

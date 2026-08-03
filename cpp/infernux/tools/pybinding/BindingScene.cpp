@@ -1408,6 +1408,12 @@ void RegisterSceneBindings(py::module_ &m)
         .def("set_component_order", &GameObject::SetComponentOrder, py::arg("component_ids"),
              "Atomically reorder attached components using an exact stable-ID permutation")
         .def(
+            "get_component_default_document",
+            [](const GameObject &obj, Component *component) {
+                return JsonToPython(obj.GetDefaultComponentDocument(component));
+            },
+            py::arg("component"), "Build a default document while preserving component identity")
+        .def(
             "get_component",
             [](GameObject *obj, const std::string &typeName) -> py::object {
                 auto &reg = ComponentBindingRegistry::Instance();

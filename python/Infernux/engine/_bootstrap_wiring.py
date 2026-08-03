@@ -518,6 +518,15 @@ class BootstrapWiringMixin:
                 ),
             ),
             EditorCommand(
+                "component.reset",
+                lambda context: _invoke_component_action(context, "reset"),
+                display_name="Reset Component",
+                category="Component",
+                can_execute=lambda context: _can_component_action(
+                    context, "can_reset"
+                ),
+            ),
+            EditorCommand(
                 "component.move_up",
                 lambda context: _invoke_component_action(context, "move_up"),
                 display_name="Move Component Up",

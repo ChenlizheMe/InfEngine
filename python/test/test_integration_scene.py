@@ -398,6 +398,119 @@ class TestGameObject:
             UndoManager._instance = previous_undo
             SelectionService._instance = previous_selection
 
+    def test_native_component_default_document_preserves_identity(self, scene):
+        from Infernux.engine.undo import GenericComponentCommand, UndoManager
+
+        obj = scene.create_game_object("ResetComponent")
+        light = obj.add_component("Light")
+        light.intensity = 7.5
+        light.execution_order = 23
+        old_document = light.serialize_document()
+        default_document = obj.get_component_default_document(light)
+
+        assert default_document["component_id"] == light.component_id
+        assert default_document["execution_order"] == 23
+        assert default_document["intensity"] == pytest.approx(1.0)
+
+        previous_undo = UndoManager._instance
+        manager = UndoManager()
+        try:
+            assert manager.execute(
+                GenericComponentCommand(
+                    light,
+                    old_document,
+                    default_document,
+                    "Reset Light",
+                    mergeable=False,
+                )
+            )
+            assert light.intensity == pytest.approx(1.0)
+            assert light.component_id == old_document["component_id"]
+
+            manager.undo()
+            assert light.intensity == pytest.approx(7.5)
+            assert light.component_id == old_document["component_id"]
+
+            manager.redo()
+            assert light.intensity == pytest.approx(1.0)
+            assert light.component_id == old_document["component_id"]
+        finally:
+            UndoManager._instance = previous_undo
+
+    def test_remove_component_undo_restores_original_order(self, scene):
+        from Infernux.engine.undo import RemoveNativeComponentCommand
+
+        obj = scene.create_game_object("RemoveOrder")
+        collider = obj.add_component("BoxCollider")
+        light = obj.add_component("Light")
+        audio = obj.add_component("AudioSource")
+        before = tuple(obj.get_component_order())
+        light_id = int(light.component_id)
+        assert before == (
+            int(collider.component_id),
+            light_id,
+            int(audio.component_id),
+        )
+
+        command = RemoveNativeComponentCommand(obj.id, "Light", light)
+        command.execute()
+        assert tuple(obj.get_component_order()) == (before[0], before[2])
+
+        command.undo()
+        assert tuple(obj.get_component_order()) == before
+        assert obj.get_component("Light").component_id == light_id
+
+        command.redo()
+        assert tuple(obj.get_component_order()) == (before[0], before[2])
+
+    def test_batch_remove_restores_adjacent_components_in_exact_order(self, scene):
+        from Infernux.engine.interaction import SelectionSnapshot, SelectionTarget
+        from Infernux.engine.undo import (
+            RemoveComponentsCommand,
+            RemoveNativeComponentCommand,
+        )
+
+        obj = scene.create_game_object("BatchRemoveOrder")
+        collider = obj.add_component("BoxCollider")
+        light = obj.add_component("Light")
+        audio = obj.add_component("AudioSource")
+        camera = obj.add_component("Camera")
+        before_order = tuple(obj.get_component_order())
+        light_target = SelectionTarget.component(obj.id, int(light.component_id))
+        audio_target = SelectionTarget.component(obj.id, int(audio.component_id))
+        before_selection = SelectionSnapshot.create(
+            (light_target, audio_target),
+            owner_id="inspector",
+            primary=audio_target,
+        )
+        after_selection = SelectionSnapshot.create(
+            (SelectionTarget.scene_object(obj.id),),
+            owner_id="inspector",
+        )
+        command = RemoveComponentsCommand(
+            (
+                RemoveNativeComponentCommand(obj.id, "Light", light),
+                RemoveNativeComponentCommand(obj.id, "AudioSource", audio),
+            ),
+            before_selection,
+            after_selection,
+        )
+
+        command.execute()
+        assert tuple(obj.get_component_order()) == (
+            int(collider.component_id),
+            int(camera.component_id),
+        )
+
+        command.undo()
+        assert tuple(obj.get_component_order()) == before_order
+
+        command.redo()
+        assert tuple(obj.get_component_order()) == (
+            int(collider.component_id),
+            int(camera.component_id),
+        )
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Hierarchy (parent / child)

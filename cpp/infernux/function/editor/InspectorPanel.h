@@ -159,10 +159,6 @@ class InspectorPanel : public EditorPanel
     std::function<void(const std::string &, bool, const std::string &)>
         addComponent; // (typeName/path, isNative, scriptPath)
 
-    // ── Remove Component callback ────────────────────────────────────
-
-    std::function<bool(uint64_t, const std::string &, uint64_t, bool)> removeComponent;
-
     // ── Asset / File preview callbacks ───────────────────────────────
 
     /// Render the asset inspector for the given file/category.
