@@ -474,6 +474,27 @@ class TestComponentLifecycle:
         assert go.get_component("ProbeComponent") is probe
         assert go.get_components(ProbeComponent) == [probe]
 
+    def test_python_component_constraints_are_enforced_from_registry(self, scene):
+        from Infernux.components.decorators import disallow_multiple, require_component
+
+        class RegistryDependency(InxComponent):
+            pass
+
+        @disallow_multiple
+        @require_component(RegistryDependency)
+        class RegistryConsumer(InxComponent):
+            pass
+
+        go = scene.create_game_object("PythonComponentConstraints")
+        consumer = go.add_component(RegistryConsumer)
+        dependency = go.get_component(RegistryDependency)
+        assert consumer is not None
+        assert dependency is not None
+        assert go.add_component(RegistryConsumer) is None
+        assert go.get_components(RegistryConsumer) == [consumer]
+        assert go.remove_component(dependency) is False
+        assert go.get_component(RegistryDependency) is dependency
+
     def test_add_and_get_builtin_component_by_class(self, scene):
         go = scene.create_game_object("CamGO")
         cam = go.add_component(CameraComponent)

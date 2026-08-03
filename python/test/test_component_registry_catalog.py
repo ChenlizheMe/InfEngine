@@ -1,6 +1,7 @@
 import os
 
 from Infernux.components.registry import (
+    get_component_constraints,
     get_component_registrations,
     get_type_by_identity,
     register_component_script,
@@ -130,3 +131,20 @@ def test_engine_component_catalog_is_explicit_and_complete():
         "UIImage",
         "UIText",
     }
+
+
+def test_component_decorators_refresh_the_authoritative_constraint_record():
+    from Infernux.components import InxComponent
+    from Infernux.components.decorators import disallow_multiple, require_component
+
+    class RegistryDependency(InxComponent):
+        pass
+
+    @disallow_multiple
+    @require_component(RegistryDependency)
+    class RegistryConstrained(InxComponent):
+        pass
+
+    constraints = get_component_constraints(RegistryConstrained)
+    assert constraints.allow_multiple is False
+    assert constraints.required_types == (RegistryDependency,)

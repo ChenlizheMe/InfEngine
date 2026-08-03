@@ -129,6 +129,19 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
     for (size_t index = 0; index < object["components"].size(); ++index)
         ValidateUnifiedComponentRecord(object["components"][index], path + ".components[" + std::to_string(index) + "]",
                                        componentIds, componentTypes);
+
+    std::vector<std::string> attachedNativeTypes;
+    for (size_t index = 0; index < object["components"].size(); ++index) {
+        const DecodedComponentRecord record = DecodeComponentRecord(object["components"][index]);
+        if (record.kind != ComponentRecordKind::Native)
+            continue;
+        const auto blockers = ComponentFactory::GetAttachmentBlockers(record.nativeTypeName, attachedNativeTypes);
+        if (!blockers.empty()) {
+            throw std::invalid_argument(path + ".components[" + std::to_string(index) + "] rejects component '" +
+                                        record.nativeTypeName + "': " + blockers.front());
+        }
+        attachedNativeTypes.push_back(record.nativeTypeName);
+    }
     for (size_t index = 0; index < object["children"].size(); ++index)
         ValidateObject(object["children"][index], path + ".children[" + std::to_string(index) + "]", objectIds,
                        componentIds, componentTypes);

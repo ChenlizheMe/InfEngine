@@ -530,6 +530,30 @@ class TestGameObject:
         assert transform.local_position == Vector3(3.0, 4.0, 5.0)
         assert transform.local_scale == Vector3(2.0, 3.0, 4.0)
 
+    def test_native_component_constraints_are_enforced_below_inspector(self, scene):
+        first = scene.create_game_object("SpriteFirst")
+        assert first.add_component("SpriteRenderer") is not None
+        assert not first.can_add_component("MeshRenderer")
+        assert first.get_add_component_blockers("MeshRenderer") == [
+            "incompatible with existing component 'SpriteRenderer'"
+        ]
+        assert first.add_component("MeshRenderer") is None
+        assert first.get_component("MeshRenderer") is None
+        assert first.get_component("SpriteRenderer") is not None
+
+        second = scene.create_game_object("MeshFirst")
+        assert second.add_component("MeshRenderer") is not None
+        assert not second.can_add_component("SpriteRenderer")
+        assert second.get_add_component_blockers("SpriteRenderer") == [
+            "incompatible with existing component 'MeshRenderer'"
+        ]
+        assert second.add_component("SpriteRenderer") is None
+        assert second.get_component("SpriteRenderer") is None
+        assert second.get_component("MeshRenderer") is not None
+
+        assert not second.can_add_component("Transform")
+        assert not second.can_add_component("MissingNativeComponent")
+
     def test_remove_component_undo_restores_original_order(self, scene):
         from Infernux.engine.undo import RemoveNativeComponentCommand
 
@@ -2208,6 +2232,27 @@ class TestSceneSerialization:
         restored_existing = scene.find("ExistingSceneState")
         assert restored_existing is existing
         assert restored_existing.transform.position.x == pytest.approx(17)
+
+    def test_deserialize_rejects_incompatible_registered_components(self, scene):
+        sprite_owner = scene.create_game_object("SerializedSprite")
+        mesh_owner = scene.create_game_object("SerializedMesh")
+        sprite_owner.add_component("SpriteRenderer")
+        mesh_owner.add_component("MeshRenderer")
+        original_document = scene.serialize_document()
+        candidate = json.loads(json.dumps(original_document))
+        sprite_document = next(
+            item for item in candidate["objects"] if item["name"] == "SerializedSprite"
+        )
+        mesh_document = next(
+            item for item in candidate["objects"] if item["name"] == "SerializedMesh"
+        )
+        sprite_document["components"].append(mesh_document["components"][0])
+        candidate["objects"] = [sprite_document]
+
+        assert scene._commit_document(candidate) is False
+        assert scene.serialize_document() == original_document
+        assert scene.find("SerializedSprite") is sprite_owner
+        assert scene.find("SerializedMesh") is mesh_owner
 
     @pytest.mark.parametrize(
         "corruption",

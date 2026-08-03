@@ -18,6 +18,13 @@ namespace infernux
 class SpriteRenderer : public MeshRenderer
 {
   public:
+    [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
+    {
+        ComponentTypeConstraints constraints;
+        constraints.incompatibleTypes = {"MeshRenderer", "SkinnedMeshRenderer"};
+        return constraints;
+    }
+
     SpriteRenderer();
 
     [[nodiscard]] const char *GetTypeName() const override

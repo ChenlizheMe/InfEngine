@@ -826,6 +826,11 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
             INXLOG_ERROR("Scene object '", name, "' contains Transform in its components array");
             return fail();
         }
+        const auto constraintBlockers = obj->GetAddComponentBlockers(typeName);
+        if (!constraintBlockers.empty()) {
+            INXLOG_ERROR("Scene object '", name, "' rejects component '", typeName, "': ", constraintBlockers.front());
+            return fail();
+        }
         bool supportsPrototype = typeName == "BoxCollider";
         if (typeName == "MeshRenderer") {
             supportsPrototype = true;

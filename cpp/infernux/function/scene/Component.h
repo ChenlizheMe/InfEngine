@@ -11,6 +11,13 @@
 namespace infernux
 {
 
+struct ComponentTypeConstraints
+{
+    bool allowMultiple = true;
+    std::vector<std::string> requiredTypes;
+    std::vector<std::string> incompatibleTypes;
+};
+
 // Forward declarations
 class GameObject;
 class Transform;
@@ -35,6 +42,11 @@ void InvalidateGameObjectLifecycleCaches(GameObject *gameObject);
 class Component
 {
   public:
+    [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
+    {
+        return {};
+    }
+
     Component();
     virtual ~Component();
 

@@ -483,7 +483,9 @@ bool GameObject::RemovePreparedPythonComponent(Component *component)
 
 Component *GameObject::AddComponentByTypeName(const std::string &typeName)
 {
-    if (typeName.empty() || typeName == "Transform") {
+    const auto blockers = GetAddComponentBlockers(typeName);
+    if (!blockers.empty()) {
+        INXLOG_WARN("Cannot add component '", typeName, "' to GameObject '", m_name, "': ", blockers.front());
         return nullptr;
     }
 
@@ -497,6 +499,18 @@ Component *GameObject::AddComponentByTypeName(const std::string &typeName)
     m_components.push_back(std::move(component));
     PostAddComponent(ptr);
     return ptr;
+}
+
+std::vector<std::string> GameObject::GetAddComponentBlockers(const std::string &typeName) const
+{
+    std::vector<std::string> attachedTypes;
+    attachedTypes.reserve(m_components.size());
+    for (const auto &component : m_components) {
+        if (!component || dynamic_cast<PyComponentProxy *>(component.get()) != nullptr)
+            continue;
+        attachedTypes.emplace_back(component->GetTypeName());
+    }
+    return ComponentFactory::GetAttachmentBlockers(typeName, attachedTypes);
 }
 
 void GameObject::PostAddComponent(Component *component)

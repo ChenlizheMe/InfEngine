@@ -1361,6 +1361,11 @@ void RegisterSceneBindings(py::module_ &m)
                 if (comp) {
                     return ComponentBindingRegistry::Instance().CastToPython(comp);
                 }
+                // A registered native type that was rejected by its component
+                // constraints must never fall through into Python attachment.
+                if (ComponentFactory::IsRegistered(typeName)) {
+                    return py::none();
+                }
                 // If native creation failed and the argument is a class (not a
                 // string), treat it as a Python InxComponent subclass:
                 // instantiate and delegate to add_py_component.
@@ -1379,6 +1384,10 @@ void RegisterSceneBindings(py::module_ &m)
         .def(
             "remove_component", [](GameObject *obj, Component *component) { return obj->RemoveComponent(component); },
             py::arg("component"), "Remove a component instance (cannot remove Transform or required components)")
+        .def("can_add_component", &GameObject::CanAddComponentByTypeName, py::arg("type_name"),
+             "Check authoritative component registry constraints before adding a native component")
+        .def("get_add_component_blockers", &GameObject::GetAddComponentBlockers, py::arg("type_name"),
+             "Get authoritative registry reasons that reject adding a native component")
         .def(
             "can_remove_component",
             [](GameObject *obj, Component *component) { return obj->CanRemoveComponent(component); },
@@ -1494,8 +1503,9 @@ void RegisterSceneBindings(py::module_ &m)
                     return false;
                 };
 
-                // Check for DisallowMultipleComponent
                 py::object pyType = pyComponentInstance.attr("__class__");
+                py::object constraints =
+                    py::module_::import("Infernux.components.registry").attr("get_component_constraints")(pyType);
                 std::string cppTypeName;
                 if (py::hasattr(pyType, "_cpp_type_name")) {
                     try {
@@ -1505,14 +1515,7 @@ void RegisterSceneBindings(py::module_ &m)
                         cppTypeName.clear();
                     }
                 }
-                bool disallowMultiple = false;
-                if (py::hasattr(pyType, "_disallow_multiple_")) {
-                    try {
-                        disallowMultiple = pyType.attr("_disallow_multiple_").cast<bool>();
-                    } catch (...) {
-                        INXLOG_WARN("[Binding] Failed to read _disallow_multiple_ from component type");
-                    }
-                }
+                const bool disallowMultiple = !constraints.attr("allow_multiple").cast<bool>();
 
                 if (disallowMultiple) {
                     if (!cppTypeName.empty()) {
@@ -1539,9 +1542,8 @@ void RegisterSceneBindings(py::module_ &m)
                     }
                 }
 
-                // Check for RequireComponent
-                if (py::hasattr(pyType, "_require_components_")) {
-                    py::list requiredTypes = pyType.attr("_require_components_").cast<py::list>();
+                const py::tuple requiredTypes = constraints.attr("required_types").cast<py::tuple>();
+                if (requiredTypes.size() > 0) {
                     for (auto reqType : requiredTypes) {
                         bool found = false;
 

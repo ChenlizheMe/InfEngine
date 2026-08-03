@@ -45,6 +45,13 @@ struct MeshRef
 class MeshRenderer : public Component
 {
   public:
+    [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
+    {
+        ComponentTypeConstraints constraints;
+        constraints.incompatibleTypes = {"SpriteRenderer"};
+        return constraints;
+    }
+
     MeshRenderer() = default;
     ~MeshRenderer() override;
 

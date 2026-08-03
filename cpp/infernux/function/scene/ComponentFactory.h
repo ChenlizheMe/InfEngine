@@ -9,6 +9,7 @@
 namespace infernux
 {
 class Component;
+struct ComponentTypeConstraints;
 
 class ComponentFactory
 {
@@ -18,7 +19,8 @@ class ComponentFactory
 
     /// @brief Register a component creator by type name
     /// @return true if registered, false if already exists
-    static bool Register(const std::string &typeName, Creator creator, DocumentValidator validator);
+    static bool Register(const std::string &typeName, Creator creator, DocumentValidator validator,
+                         ComponentTypeConstraints constraints);
 
     /// @brief Create a component by type name
     /// @return unique_ptr to component or nullptr if not registered
@@ -28,6 +30,11 @@ class ComponentFactory
     static bool IsRegistered(const std::string &typeName);
 
     static void ValidateDocument(const std::string &typeName, const nlohmann::json &document);
+
+    static const ComponentTypeConstraints &GetTypeConstraints(const std::string &typeName);
+
+    static std::vector<std::string> GetAttachmentBlockers(const std::string &typeName,
+                                                          const std::vector<std::string> &attachedTypes);
 
     /// @brief Get all registered component type names
     static std::vector<std::string> GetRegisteredTypeNames();
@@ -40,5 +47,6 @@ class ComponentFactory
     {                                                                                                                  \
     const bool s_infernux_component_registered_##CLASS_TYPE = infernux::ComponentFactory::Register(                    \
         TYPE_STR, []() { return std::make_unique<CLASS_TYPE>(); },                                                     \
-        [](const nlohmann::json &document) { CLASS_TYPE::ValidateSerializedDocument(document); });                     \
+        [](const nlohmann::json &document) { CLASS_TYPE::ValidateSerializedDocument(document); },                      \
+        CLASS_TYPE::GetTypeConstraints());                                                                             \
     }

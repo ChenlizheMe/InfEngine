@@ -38,6 +38,9 @@ class ComponentRegistration:
     script_path: str
     component_type: Optional[Type['InxComponent']]
     project_script: bool
+    allow_multiple: bool = True
+    required_types: tuple[object, ...] = ()
+    incompatible_types: tuple[object, ...] = ()
 
 
 _registration_lock = threading.RLock()
@@ -126,6 +129,9 @@ def register_component_type(component_type: Type['InxComponent'], *, script_path
         script_path=path if project_script else "",
         component_type=component_type,
         project_script=project_script,
+        allow_multiple=not bool(getattr(component_type, "_disallow_multiple_", False)),
+        required_types=tuple(getattr(component_type, "_require_components_", ()) or ()),
+        incompatible_types=tuple(getattr(component_type, "_incompatible_components_", ()) or ()),
     )
     type_key = str(identity())
     with _registration_lock:
@@ -186,6 +192,9 @@ def register_component_script(file_path: str) -> bool:
                 else None
             ),
             project_script=True,
+            allow_multiple=(previous.allow_multiple if previous is not None else True),
+            required_types=(previous.required_types if previous is not None else ()),
+            incompatible_types=(previous.incompatible_types if previous is not None else ()),
         )
         if previous != registration:
             _script_registrations[key] = registration
@@ -228,6 +237,60 @@ def get_component_registrations(*, project_root: str = "") -> tuple[ComponentReg
 def get_component_registration_revision() -> int:
     with _registration_lock:
         return _registration_revision
+
+
+def get_component_constraints(component_type: type) -> ComponentRegistration:
+    """Return the final decorator-aware registry record for a loaded type."""
+    if not isinstance(component_type, type):
+        raise TypeError("component constraints require a component type")
+    identity = getattr(component_type, "_get_type_guid", None)
+    if not callable(identity):
+        raise TypeError("component type has no stable registry identity")
+    type_key = str(identity())
+    with _registration_lock:
+        registration = _type_registrations.get(type_key)
+    if registration is None or registration.component_type is not component_type:
+        register_component_type(component_type)
+        with _registration_lock:
+            registration = _type_registrations.get(type_key)
+    if registration is None:
+        raise LookupError(f"component type '{component_type.__name__}' is not registered")
+    return registration
+
+
+def get_python_attachment_blockers(game_object, component_type: type) -> tuple[str, ...]:
+    """Evaluate one loaded Python type against an object's live components."""
+    registration = get_component_constraints(component_type)
+    blockers = []
+    existing = tuple(game_object.get_py_components() or ())
+    if not registration.allow_multiple and any(
+        isinstance(component, component_type) for component in existing
+    ):
+        blockers.append("only one instance is allowed per GameObject")
+
+    def _type_name(value) -> str:
+        if isinstance(value, str):
+            return value
+        return str(
+            getattr(value, "_cpp_type_name", "")
+            or getattr(value, "__name__", "")
+        )
+
+    candidate_incompatible = {
+        _type_name(value) for value in registration.incompatible_types
+        if _type_name(value)
+    }
+    for component in existing:
+        existing_type = type(component)
+        existing_registration = get_component_constraints(existing_type)
+        existing_name = existing_type.__name__
+        existing_incompatible = {
+            _type_name(value) for value in existing_registration.incompatible_types
+            if _type_name(value)
+        }
+        if existing_name in candidate_incompatible or component_type.__name__ in existing_incompatible:
+            blockers.append(f"incompatible with existing component '{existing_name}'")
+    return tuple(sorted(set(blockers)))
 
 
 def get_type(name: str) -> Optional[Type['InxComponent']]:

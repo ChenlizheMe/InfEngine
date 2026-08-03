@@ -494,9 +494,11 @@ std::vector<std::string> PyComponentProxy::GetRequiredComponentTypes() const
 
     try {
         py::object pyType = m_pyComponent.attr("__class__");
-        if (py::hasattr(pyType, "_require_components_")) {
-            py::list reqList = pyType.attr("_require_components_").cast<py::list>();
-            for (auto item : reqList) {
+        const py::object constraints =
+            py::module_::import("Infernux.components.registry").attr("get_component_constraints")(pyType);
+        const py::tuple requiredTypes = constraints.attr("required_types").cast<py::tuple>();
+        if (requiredTypes.size() > 0) {
+            for (auto item : requiredTypes) {
                 // Each entry is either a string or a Python type with __name__
                 if (py::isinstance<py::str>(item)) {
                     result.push_back(item.cast<std::string>());

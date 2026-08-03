@@ -1367,6 +1367,16 @@ def _wire_add_remove_and_drop(ctx):
             UndoManager,
         )
 
+        if python_instance is not None:
+            from Infernux.components.registry import get_python_attachment_blockers
+
+            blockers = get_python_attachment_blockers(obj, type(python_instance))
+            if blockers:
+                Debug.log_warning(
+                    f"Cannot add '{type_name}': " + "; ".join(blockers)
+                )
+                return False
+
         command = AddComponentTransactionCommand(
             obj.id,
             type_name,
@@ -1404,22 +1414,12 @@ def _wire_add_remove_and_drop(ctx):
         if obj is None:
             return
         if is_native:
-            # Block adding MeshRenderer when SpriteRenderer manages it.
-            if type_name_or_path == "MeshRenderer":
-                for c in _get_components_safe(obj):
-                    if getattr(c, 'type_name', '') == 'SpriteRenderer':
-                        Debug.log_warning(
-                            "Cannot add MeshRenderer — "
-                            "SpriteRenderer already manages the renderer.")
-                        return
-            # Block adding SpriteRenderer when MeshRenderer exists.
-            if type_name_or_path == "SpriteRenderer":
-                for c in _get_components_safe(obj):
-                    if getattr(c, 'type_name', '') == 'MeshRenderer':
-                        Debug.log_warning(
-                            "Cannot add SpriteRenderer — "
-                            "a MeshRenderer already exists. Remove it first.")
-                        return
+            blockers = tuple(obj.get_add_component_blockers(type_name_or_path))
+            if blockers:
+                Debug.log_warning(
+                    f"Cannot add '{type_name_or_path}': " + "; ".join(blockers)
+                )
+                return False
             return _execute_add_transaction(obj, type_name_or_path)
         elif not script_path:
             _engine_py_map = {"RenderStack": None}
@@ -1436,13 +1436,6 @@ def _wire_add_remove_and_drop(ctx):
             if comp_cls is None:
                 Debug.log_error(f"Unknown engine component: {type_name_or_path}")
                 return
-            if getattr(comp_cls, '_disallow_multiple_', False):
-                for pc in _get_py_components_safe(obj):
-                    if isinstance(pc, comp_cls):
-                        Debug.log_warning(
-                            f"Cannot add another '{comp_cls.__name__}' — "
-                            f"only one per GameObject is allowed")
-                        return False
             instance = comp_cls()
             return _execute_add_transaction(
                 obj,

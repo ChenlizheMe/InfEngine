@@ -361,6 +361,12 @@ class GameObject
     /// @brief Add a component by registered type name
     Component *AddComponentByTypeName(const std::string &typeName);
 
+    [[nodiscard]] std::vector<std::string> GetAddComponentBlockers(const std::string &typeName) const;
+    [[nodiscard]] bool CanAddComponentByTypeName(const std::string &typeName) const
+    {
+        return GetAddComponentBlockers(typeName).empty();
+    }
+
     /// @brief Remove a component instance by pointer
     bool RemoveComponent(Component *component);
 
