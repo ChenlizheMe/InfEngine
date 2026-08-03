@@ -424,10 +424,16 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
                                                   /*showEnabled=*/false, /*isEnabled=*/true, /*suffix=*/"",
                                                   /*defaultOpen=*/true,
                                                   "inspector.object." + std::to_string(objId) + ".component.transform",
-                                                  "", IsComponentSelected(info.transformComponentId));
+                                                  "transform_ctx", IsComponentSelected(info.transformComponentId));
 
         if (header.selectionRequested && info.transformComponentId != 0 && onComponentSelectionChanged)
             onComponentSelectionChanged({objId}, {info.transformComponentId}, true);
+
+        if (ImGui::BeginPopup("transform_ctx")) {
+            if (renderComponentContextMenu)
+                renderComponentContextMenu(ctx, objId, "Transform", info.transformComponentId, true);
+            ImGui::EndPopup();
+        }
 
         if (header.open) {
             if (isPrefabTransformReadonly)
@@ -721,12 +727,18 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
         const auto &transformComponentIds = transformSnapshot.componentIds;
         const auto transformHeader = RenderComponentHeader(
             ctx, "Transform", "multi_transform", transformIcon,
-            /*showEnabled=*/false, /*isEnabled=*/true, /*suffix=*/"", /*defaultOpen=*/true, "", "",
+            /*showEnabled=*/false, /*isEnabled=*/true, /*suffix=*/"", /*defaultOpen=*/true, "", "multi_transform_ctx",
             transformComponentIds.size() == ids.size() && AreComponentsSelected(transformComponentIds));
 
         if (transformHeader.selectionRequested && transformComponentIds.size() == ids.size() &&
             onComponentSelectionChanged)
             onComponentSelectionChanged(ids, transformComponentIds, true);
+
+        if (ImGui::BeginPopup("multi_transform_ctx")) {
+            if (renderComponentContextMenu && transformComponentIds.size() == ids.size())
+                renderComponentContextMenu(ctx, ids.front(), "Transform", transformComponentIds.front(), true);
+            ImGui::EndPopup();
+        }
 
 #if INFERNUX_FRAME_PROFILE
         auto transformStart = clock::now();
@@ -760,12 +772,22 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
             const std::string &componentLabel = comp.displayName.empty() ? comp.typeName : comp.displayName;
             const auto componentHeader = RenderComponentHeader(
                 ctx, componentLabel, "multi_comp_" + std::to_string(comp.componentId), iconId, true, comp.enabled,
-                comp.isScript ? " (Script)" : "", true, "", "", AreComponentsSelected(entry.componentIds));
+                comp.isScript ? " (Script)" : "", true, "", comp.isScript ? "multi_py_comp_ctx" : "multi_comp_ctx",
+                AreComponentsSelected(entry.componentIds));
 
             if (componentHeader.selectionRequested && onComponentSelectionChanged)
                 onComponentSelectionChanged(ids, entry.componentIds, comp.isNative);
 
-            if (componentHeader.enabled != comp.enabled && setComponentEnabled) {
+            bool componentRemoved = false;
+            const char *contextPopupId = comp.isScript ? "multi_py_comp_ctx" : "multi_comp_ctx";
+            if (ImGui::BeginPopup(contextPopupId)) {
+                if (renderComponentContextMenu)
+                    componentRemoved = renderComponentContextMenu(ctx, ids.front(), comp.typeName,
+                                                                  entry.componentIds.front(), comp.isNative);
+                ImGui::EndPopup();
+            }
+
+            if (!componentRemoved && componentHeader.enabled != comp.enabled && setComponentEnabled) {
                 for (size_t objectIndex = 0; objectIndex < ids.size() && objectIndex < entry.componentIds.size();
                      ++objectIndex)
                     setComponentEnabled(ids[objectIndex], entry.componentIds[objectIndex], componentHeader.enabled,
@@ -773,7 +795,7 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
                 m_cachedMultiComponentsValid = false;
             }
 
-            if (componentHeader.open) {
+            if (!componentRemoved && componentHeader.open) {
                 if (comp.isBroken && !comp.brokenError.empty()) {
                     ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::ERROR_TEXT);
                     ImGui::TextWrapped("%s", comp.brokenError.c_str());

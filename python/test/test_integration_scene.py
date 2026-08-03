@@ -437,6 +437,36 @@ class TestGameObject:
         finally:
             UndoManager._instance = previous_undo
 
+    def test_transform_default_document_is_resettable_and_preserves_identity(self, scene):
+        from Infernux.engine.undo import GenericComponentCommand
+
+        obj = scene.create_game_object("ResetTransform")
+        transform = obj.transform
+        transform.local_position = Vector3(3.0, 4.0, 5.0)
+        transform.local_scale = Vector3(2.0, 3.0, 4.0)
+        old_document = transform.serialize_document()
+        default_document = obj.get_component_default_document(transform)
+
+        assert default_document["component_id"] == transform.component_id
+        assert default_document["position"] == pytest.approx([0.0, 0.0, 0.0])
+        assert default_document["scale"] == pytest.approx([1.0, 1.0, 1.0])
+
+        command = GenericComponentCommand(
+            transform,
+            old_document,
+            default_document,
+            "Reset Transform",
+            mergeable=False,
+        )
+        command.execute()
+        assert transform.component_id == old_document["component_id"]
+        assert transform.local_position == Vector3(0.0, 0.0, 0.0)
+        assert transform.local_scale == Vector3(1.0, 1.0, 1.0)
+
+        command.undo()
+        assert transform.local_position == Vector3(3.0, 4.0, 5.0)
+        assert transform.local_scale == Vector3(2.0, 3.0, 4.0)
+
     def test_remove_component_undo_restores_original_order(self, scene):
         from Infernux.engine.undo import RemoveNativeComponentCommand
 

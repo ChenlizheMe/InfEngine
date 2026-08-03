@@ -935,7 +935,8 @@ def _wire_clipboard_and_context(ctx):
         return _paste_values(comp, is_native)
 
     def _can_paste_selected_as_new():
-        return _primary_component_entry() is not None and _has_clip()
+        entry = _primary_component_entry()
+        return bool(entry is not None and entry[3] != "Transform" and _has_clip())
 
     def _paste_selected_as_new():
         entry = _primary_component_entry()
@@ -950,7 +951,7 @@ def _wire_clipboard_and_context(ctx):
 
     def _can_remove_selected_components():
         entries = _selected_component_entries()
-        return bool(entries) and all(
+        return bool(entries) and all(type_name != "Transform" for _, _, _, type_name, _ in entries) and all(
             _can_remove_component(obj, comp, type_name, is_native)
             for _target, obj, comp, type_name, is_native in entries
         )

@@ -413,12 +413,14 @@ nlohmann::json GameObject::GetDefaultComponentDocument(Component *component) con
 {
     if (!component || dynamic_cast<PyComponentProxy *>(component) != nullptr)
         throw std::invalid_argument("default component document requires a native component");
-    if (std::none_of(m_components.begin(), m_components.end(),
-                     [component](const auto &candidate) { return candidate.get() == component; })) {
+    const bool isTransform = component == &m_transform;
+    if (!isTransform && std::none_of(m_components.begin(), m_components.end(),
+                                     [component](const auto &candidate) { return candidate.get() == component; })) {
         throw std::invalid_argument("component is not attached to this GameObject");
     }
 
-    std::unique_ptr<Component> defaults = ComponentFactory::Create(component->GetTypeName());
+    std::unique_ptr<Component> defaults =
+        isTransform ? std::make_unique<Transform>() : ComponentFactory::Create(component->GetTypeName());
     if (!defaults)
         throw std::runtime_error("component factory cannot construct default document for " +
                                  std::string(component->GetTypeName()));
