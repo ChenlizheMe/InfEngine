@@ -1,8 +1,8 @@
-from Infernux.engine.ui.editor_panel import EditorPanel
+from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
 from Infernux.particle.asset import ParticleGraphAsset
 
 
-class ParticleGraphEditorPanel(EditorPanel):
+class ParticleGraphEditorPanel(NodeGraphEditorPanel):
     window_id: str
     @property
     def asset(self) -> ParticleGraphAsset: ...

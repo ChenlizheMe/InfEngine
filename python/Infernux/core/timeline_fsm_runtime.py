@@ -20,6 +20,7 @@ from Infernux.core.anim_state_machine import (
 )
 from Infernux.core.animation_timeline import AnimationTimeline, sample_sorted_keys
 from Infernux.debug import Debug
+from Infernux.graph.types import ValueType
 
 _DEFAULT_PERIOD = 1.0  # fallback loop period when a timeline has no duration
 
@@ -112,12 +113,12 @@ class TimelineFSMRuntime:
         self._trs_setter = None
         if fsm is not None:
             for p in fsm.parameters:
-                if p.kind == "bool":
-                    self._params[p.name] = bool(p.default_bool)
-                elif p.kind == "int":
-                    self._params[p.name] = int(p.default_int)
+                if p.value_type.value_type is ValueType.BOOL:
+                    self._params[p.name] = bool(p.default)
+                elif p.value_type.value_type is ValueType.I32:
+                    self._params[p.name] = int(p.default)
                 else:
-                    self._params[p.name] = float(p.default_float)
+                    self._params[p.name] = float(p.default)
 
     @property
     def fsm(self) -> Optional[AnimStateMachine]:

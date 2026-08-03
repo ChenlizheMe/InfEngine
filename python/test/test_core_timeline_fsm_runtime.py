@@ -11,6 +11,7 @@ import pytest
 from Infernux.core.anim_state_machine import AnimStateMachine, AnimState, AnimTransition
 from Infernux.core.animation_timeline import AnimationTimeline, TimelineKeyframe
 from Infernux.core.timeline_fsm_runtime import TimelineFSMRuntime
+from Infernux.graph import TypeRef, ValueType
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -59,9 +60,9 @@ def test_runtime_initializes_parameter_defaults(tmp_path):
     fsm = _fsm([_state(tmp_path, "A")])
     from Infernux.core.anim_state_machine import AnimParameter
     fsm.parameters = [
-        AnimParameter(name="spd", kind="float", default_float=2.0),
-        AnimParameter(name="flag", kind="bool", default_bool=True),
-        AnimParameter(name="cnt", kind="int", default_int=3),
+        AnimParameter(name="spd", value_type=TypeRef(ValueType.F32), default=2.0),
+        AnimParameter(name="flag", value_type=TypeRef(ValueType.BOOL), default=True),
+        AnimParameter(name="cnt", value_type=TypeRef(ValueType.I32), default=3),
     ]
     rt = TimelineFSMRuntime()
     rt.set_fsm(fsm)

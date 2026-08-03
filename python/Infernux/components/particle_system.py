@@ -347,11 +347,33 @@ class ParticleSystem(InxComponent):
         if not hasattr(self, "_output_materials"):
             self._output_materials = {}
 
+    def _deserialized_play_state(self) -> bool:
+        """Resolve the initial runtime state for a freshly restored instance."""
+        playing = bool(getattr(self, "_playing", False))
+        if int(getattr(self, "_batch_id", 0)) > 0:
+            return playing
+        try:
+            from Infernux.engine.play_mode import PlayModeManager
+
+            manager = PlayModeManager.instance()
+            if manager is not None and manager.is_playing:
+                return bool(get_raw_field_value(self, "play_on_awake"))
+        except (ImportError, AttributeError, ReferenceError, RuntimeError):
+            pass
+        return playing
+
     def on_after_deserialize(self) -> None:
         """Reconcile serialized authoring state after load, undo, or redo."""
-        self._ensure_runtime_state(playing=bool(getattr(self, "_playing", False)))
+        self._ensure_runtime_state(playing=self._deserialized_play_state())
         self._sync_serialized_instance_overrides()
         self.on_validate()
+
+    def _detach_native_binding_for_replacement(self) -> None:
+        """Retire native GPU state before replacing the Python component mirror."""
+        if hasattr(self, "_gpu_controllers"):
+            self._remove_native_batch()
+            self._clear_runtime_state()
+        super()._detach_native_binding_for_replacement()
 
     def start(self):
         if not self._has_runtime():

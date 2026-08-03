@@ -22,6 +22,7 @@ from Infernux.core.animation_clip3d import AnimationClip3D, resolve_disk_path_fo
 from Infernux.core.asset_ref import AnimStateMachineRef
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import lexical_path, portable_path
+from Infernux.graph.types import ValueType
 
 
 def _normalize_guid_key(s: str) -> str:
@@ -413,12 +414,12 @@ class SkeletalAnimator(InxComponent):
     def _seed_parameters_from_fsm(self, fsm: AnimStateMachine) -> None:
         self._parameters = {}
         for p in fsm.parameters:
-            if p.kind == "bool":
-                self._parameters[p.name] = bool(p.default_bool)
-            elif p.kind == "int":
-                self._parameters[p.name] = int(p.default_int)
+            if p.value_type.value_type is ValueType.BOOL:
+                self._parameters[p.name] = bool(p.default)
+            elif p.value_type.value_type is ValueType.I32:
+                self._parameters[p.name] = int(p.default)
             else:
-                self._parameters[p.name] = float(p.default_float)
+                self._parameters[p.name] = float(p.default)
 
     def _resolve_clip(self, state: AnimState) -> Optional[AnimationClip3D]:
         key = state.name

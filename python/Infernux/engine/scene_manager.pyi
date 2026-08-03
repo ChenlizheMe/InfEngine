@@ -92,10 +92,6 @@ class SceneFileManager:
         """Load the most recently opened scene, or create a default."""
         ...
 
-    def poll_pending_save(self) -> None:
-        """Tick the save-confirmation popup state machine (per frame)."""
-        ...
-
     def poll_deferred_load(self) -> None:
         """Tick deferred scene open/new operations (per frame)."""
         ...

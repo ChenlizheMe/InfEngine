@@ -167,6 +167,7 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
                 "writable": False,
                 "category": "",
             "tooltip": "",
+            "attributes": [],
         }
     )
     source.write_text(

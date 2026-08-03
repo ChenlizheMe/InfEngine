@@ -17,8 +17,10 @@ class GraphElementKind(str, Enum):
     LINK = "link"
     PARAMETER = "parameter"
     EVENT_TYPE = "event_type"
+    EVENT_FLOW = "event_flow"
     EMITTER = "emitter"
     ATTRIBUTE = "attribute"
+    DATA_INTERFACE = "data_interface"
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +152,11 @@ class GraphSelectionController:
         document_id: Callable[[], str],
         contains: Callable[[GraphElementRef], bool],
         view=None,
+        element_from_view: Optional[
+            Callable[[GraphElementKind, str], GraphElementRef]
+        ] = None,
+        element_to_view: Optional[Callable[[GraphElementRef], str]] = None,
+        on_changed: Optional[Callable[[tuple[GraphElementRef, ...]], None]] = None,
     ) -> None:
         owner_id = str(owner_id or "").strip()
         if not owner_id:
@@ -160,6 +167,11 @@ class GraphSelectionController:
         self._document_id = document_id
         self._contains = contains
         self._view = view
+        self._element_from_view = element_from_view or (
+            lambda kind, stable_id: GraphElementRef(kind, stable_id)
+        )
+        self._element_to_view = element_to_view or (lambda element: element.stable_id)
+        self._on_changed = on_changed
         self._service: Optional[SelectionService] = None
         self._elements: tuple[GraphElementRef, ...] = ()
 
@@ -280,10 +292,12 @@ class GraphSelectionController:
         record_history: bool,
     ) -> bool:
         if link_id:
-            elements = (GraphElementRef(GraphElementKind.LINK, link_id),)
+            elements = (
+                self._element_from_view(GraphElementKind.LINK, link_id),
+            )
         else:
             elements = tuple(
-                GraphElementRef(GraphElementKind.NODE, node_id)
+                self._element_from_view(GraphElementKind.NODE, node_id)
                 for node_id in node_ids
                 if node_id
             )
@@ -319,13 +333,25 @@ class GraphSelectionController:
     def _set_elements(self, elements: tuple[GraphElementRef, ...]) -> None:
         self._elements = elements
         self._project_view()
+        if self._on_changed is not None:
+            self._on_changed(elements)
 
     def _project_view(self) -> None:
         view = self._view
         if view is None:
             return
-        nodes = self.selected_ids(GraphElementKind.NODE)
-        link = self.primary_id(GraphElementKind.LINK)
+        nodes = tuple(
+            view_id
+            for element in self._elements
+            if element.kind is GraphElementKind.NODE
+            and (view_id := self._element_to_view(element))
+        )
+        primary = self.primary
+        link = (
+            self._element_to_view(primary)
+            if primary is not None and primary.kind is GraphElementKind.LINK
+            else ""
+        )
         setter = getattr(view, "set_selection", None)
         if callable(setter):
             setter(nodes, link, notify=False)

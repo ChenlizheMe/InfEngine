@@ -43,11 +43,26 @@ class GraphDiffCommand(UndoCommand):
             raise RuntimeError(
                 f"graph document {diff.document_id!r} has no live domain adapter"
             )
-        apply_diff(diff)
-        registry.restore_content_revision(diff.document_id, diff.after_revision)
-        refresh = getattr(adapter, "on_graph_diff_applied", None)
-        if callable(refresh):
-            refresh(diff)
+        capture = getattr(adapter, "capture_graph_diff_checkpoint", None)
+        restore = getattr(adapter, "restore_graph_diff_checkpoint", None)
+        checkpoint = capture() if callable(capture) else None
+        previous_revision = document.revision
+        try:
+            apply_diff(diff)
+            registry.restore_content_revision(diff.document_id, diff.after_revision)
+            refresh = getattr(adapter, "on_graph_diff_applied", None)
+            if callable(refresh):
+                refresh(diff)
+        except Exception as exc:
+            if checkpoint is not None and callable(restore):
+                try:
+                    restore(checkpoint)
+                except Exception as rollback_error:
+                    exc.add_note(
+                        f"Graph domain rollback also failed: {rollback_error}"
+                    )
+            registry.restore_content_revision(diff.document_id, previous_revision)
+            raise
 
     def execute(self) -> None:
         self._apply(self._diff)

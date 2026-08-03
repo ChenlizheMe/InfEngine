@@ -456,6 +456,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             registry = definition_set.registry
         self._definitions = registry
         self._definition_set = definition_set
+        self._definition_set_resolver = None
         self._emitter_id = str(emitter.stable_id)
         self._collision_enabled = bool(emitter.settings.collision_enabled)
         self._base_attribute_catalog = {
@@ -546,6 +547,11 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                     )
                 )
 
+        self.set_node_definition_resolver(
+            self._resolve_particle_node_type,
+            invalidator=self._invalidate_particle_node_definition,
+        )
+
     @staticmethod
     def _make_link(source_node, source_pin, target_node, target_pin, uid):
         return GraphDocumentAuthoringModel._make_link(
@@ -565,6 +571,11 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         stage = str(uid).split(cls._UID_SEPARATOR, 1)[0]
         return stage if stage in cls.STAGES or stage.startswith("event.") else ""
 
+    @classmethod
+    def event_stage_canvas_origin(cls, event_index: int) -> float:
+        """Return the canvas Y origin for an emitter's indexed Event flow."""
+        return max(cls._STAGE_Y.values()) + 230.0 + max(0, int(event_index)) * 230.0
+
     @property
     def authoring_stage(self) -> str:
         return self._authoring_stage
@@ -582,6 +593,41 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
 
     def _mark_attribute_catalog_dirty(self) -> None:
         self._attribute_catalog_dirty = True
+        self._dynamic_type_cache.clear()
+
+    def set_definition_set_resolver(self, resolver) -> None:
+        """Supply refreshed compiler definitions after particle data changes."""
+        self._definition_set_resolver = resolver
+
+    def authoring_node_payload(self, node) -> dict:
+        payload = super().authoring_node_payload(node)
+        payload["stage"] = self.stage_for_uid(node.uid)
+        return payload
+
+    def prepare_authoring_node_restore(self, payload: dict) -> None:
+        stage = str(payload.get("stage", ""))
+        if not stage:
+            raise RuntimeError("Particle Graph node restore requires a lifecycle stage")
+        self.set_authoring_stage(stage)
+        self.prepare_node_creation(stage)
+
+    def on_authoring_node_restored(self, node) -> None:
+        self._mark_attribute_catalog_dirty()
+
+    def on_authoring_link_restored(self, link) -> None:
+        self._mark_attribute_catalog_dirty()
+
+    def _invalidate_particle_node_definition(self, node) -> None:
+        self._mark_attribute_catalog_dirty()
+        if self._definition_set_resolver is None:
+            return
+        definition_set = self._definition_set_resolver(self, node)
+        if definition_set is None:
+            return
+        self._definition_set = definition_set
+        self._definitions = definition_set.registry
+        self._parameter_catalog = dict(definition_set.parameter_by_id)
+        self._event_catalog = dict(definition_set.event_type_by_id)
         self._dynamic_type_cache.clear()
 
     def _ensure_attribute_catalog(self) -> None:
@@ -788,7 +834,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             if bool(getattr(item, "writable", False))
         )
 
-    def get_node_type(self, node) -> NodeTypeDef | None:
+    def _resolve_particle_node_type(self, node) -> NodeTypeDef | None:
         self._ensure_attribute_catalog()
 
         def with_lifecycle_state(value):
@@ -863,7 +909,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         if node.type_id == "particle.emitter.playing":
             definition = self._definitions.get(node.type_id)
             if definition is None:
-                return with_lifecycle_state(super().get_node_type(node))
+                return with_lifecycle_state(self.get_type(node.type_id))
             entries = tuple(
                 (label, value)
                 for label, value in definition.properties[0].choices
@@ -885,7 +931,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 self._dynamic_type_cache[cache_key] = cached
             return with_lifecycle_state(cached)
 
-        base = super().get_node_type(node)
+        base = self.get_type(node.type_id)
         if base is None:
             return base
         if node.type_id in {
@@ -1027,24 +1073,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
 
     def remove_invalid_links_for_node(self, node_uid: str) -> tuple[str, ...]:
         self._mark_attribute_catalog_dirty()
-        removed = []
-        kept = []
-        for link in self.links:
-            if node_uid not in {link.source_node, link.target_node}:
-                kept.append(link)
-                continue
-            if self.validate_link(
-                link.source_node,
-                link.source_pin,
-                link.target_node,
-                link.target_pin,
-                ignore_link_uid=link.uid,
-            ):
-                kept.append(link)
-            else:
-                removed.append(link.uid)
-        self.links = kept
-        return tuple(removed)
+        return super().remove_invalid_links_for_node(node_uid)
 
     def _stage_for_new_node(self, type_id: str, canvas_y: float) -> str:
         allowed = set(self._allowed_stages.get(type_id, set()))
@@ -1324,36 +1353,61 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         value_type = self._effective_port_type(source, port)
         if value_type is None:
             return
-        from Infernux.particle.asset import particle_attribute_zero
+        from Infernux.particle.asset import (
+            particle_attribute_cache_id,
+            particle_attribute_zero,
+        )
 
-        target.data["value_type"] = value_type.value_type.value
-        target.data["value_space"] = value_type.space.value
-        target.data["value"] = copy.deepcopy(particle_attribute_zero(value_type))
-        self._mark_attribute_catalog_dirty()
+        cache_id = particle_attribute_cache_id(
+            self.stage_for_uid(target.uid), self._document_uid(target.uid)
+        )
+        dependents = [
+            node.uid
+            for node in self.nodes
+            if node.type_id == "particle.attribute.get"
+            and str(node.data.get("attribute", "")) == cache_id
+        ]
+        self.rebuild_nodes(
+            {
+                target.uid: {
+                    "value_type": value_type.value_type.value,
+                    "value_space": value_type.space.value,
+                    "value": copy.deepcopy(particle_attribute_zero(value_type)),
+                }
+            },
+            affected_node_uids=dependents,
+        )
 
     def add_link(self, src_node, src_pin, dst_node, dst_pin, uid=None, **data):
+        checkpoint = self.capture_authoring_state()
         stage = self.stage_for_uid(src_node)
         raw_uid = str(uid) if uid else uuid.uuid4().hex[:8]
         canvas_uid = raw_uid if self.stage_for_uid(raw_uid) else self._canvas_uid(stage, raw_uid)
-        link = super().add_link(
-            src_node, src_pin, dst_node, dst_pin, uid=canvas_uid, **data
-        )
-        if link is not None:
-            self._infer_cache_type(src_node, src_pin, dst_node, dst_pin)
-            self._mark_attribute_catalog_dirty()
-        return link
+        try:
+            link = super().add_link(
+                src_node, src_pin, dst_node, dst_pin, uid=canvas_uid, **data
+            )
+            if link is not None:
+                self._infer_cache_type(src_node, src_pin, dst_node, dst_pin)
+                self._mark_attribute_catalog_dirty()
+            return self.find_link(canvas_uid) if link is not None else None
+        except Exception:
+            self.restore_authoring_state(checkpoint)
+            raise
 
     def replace_link(self, link_uid, src_node, src_pin, dst_node, dst_pin):
-        target = self.find_node(dst_node)
-        previous = copy.deepcopy(target.data) if target is not None else None
-        self._infer_cache_type(src_node, src_pin, dst_node, dst_pin)
-        link = super().replace_link(
-            link_uid, src_node, src_pin, dst_node, dst_pin
-        )
-        if link is None and target is not None and previous is not None:
-            target.data = previous
-        self._mark_attribute_catalog_dirty()
-        return link
+        checkpoint = self.capture_authoring_state()
+        try:
+            link = super().replace_link(
+                link_uid, src_node, src_pin, dst_node, dst_pin
+            )
+            if link is not None:
+                self._infer_cache_type(src_node, src_pin, dst_node, dst_pin)
+                self._mark_attribute_catalog_dirty()
+            return self.find_link(link_uid) if link is not None else None
+        except Exception:
+            self.restore_authoring_state(checkpoint)
+            raise
 
     def remove_link(self, uid: str) -> bool:
         link = self.find_link(uid)

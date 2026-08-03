@@ -16,6 +16,7 @@ from Infernux.core.anim_state_machine import (
     AnimConditionError,
     evaluate_anim_condition,
 )
+from Infernux.graph import TypeRef, ValueType
 
 
 # ── evaluate_anim_condition ─────────────────────────────────────────────────
@@ -119,28 +120,33 @@ def test_condition_mixed_type_compare_does_not_crash():
 def test_parameter_defaults():
     p = AnimParameter()
     assert p.name == "NewVar"
-    assert p.kind == "float"
-    assert p.default_float == 0.0
+    assert p.value_type == TypeRef(ValueType.F32)
+    assert p.default == 0.0
     assert p.stable_id
 
 
 def test_parameter_to_dict_bool():
-    d = AnimParameter(name="jump", kind="bool", default_bool=True).to_dict()
+    d = AnimParameter(
+        name="jump", value_type=TypeRef(ValueType.BOOL), default=True
+    ).to_dict()
     assert d["name"] == "jump"
-    assert d["kind"] == "bool"
-    assert d["default_bool"] is True
+    assert d["type"] == {"value_type": "bool", "space": "none"}
+    assert d["default"] is True
     assert d["stable_id"]
 
 
 def test_parameter_to_dict_float():
-    d = AnimParameter(name="speed", kind="float", default_float=2.5).to_dict()
-    assert d["default_float"] == 2.5
-    assert "default_bool" not in d
+    d = AnimParameter(
+        name="speed", value_type=TypeRef(ValueType.F32), default=2.5
+    ).to_dict()
+    assert d["default"] == 2.5
 
 
 def test_parameter_to_dict_int():
-    d = AnimParameter(name="hp", kind="int", default_int=7).to_dict()
-    assert d["default_int"] == 7
+    d = AnimParameter(
+        name="hp", value_type=TypeRef(ValueType.I32), default=7
+    ).to_dict()
+    assert d["default"] == 7
 
 
 @pytest.mark.parametrize(
@@ -157,9 +163,13 @@ def test_parameter_rejects_noncanonical_documents(document):
 
 
 def test_parameter_round_trip():
-    p = AnimParameter(name="x", kind="int", default_int=4)
+    p = AnimParameter(
+        name="x", value_type=TypeRef(ValueType.I32), default=4
+    )
     p2 = AnimParameter.from_dict(p.to_dict())
-    assert p2.name == "x" and p2.kind == "int" and p2.default_int == 4
+    assert p2.name == "x"
+    assert p2.value_type == TypeRef(ValueType.I32)
+    assert p2.default == 4
     assert p2.stable_id == p.stable_id
 
 
@@ -169,8 +179,13 @@ def test_parameter_invalid_float_default_is_rejected():
             {
                 "stable_id": "parameter-s",
                 "name": "s",
-                "kind": "float",
-                "default_float": "NaNN",
+                "type": {"value_type": "f32", "space": "none"},
+                "default": "NaNN",
+                "exposed": True,
+                "writable": True,
+                "category": "",
+                "tooltip": "",
+                "attributes": [],
             }
         )
 
@@ -364,7 +379,11 @@ def test_fsm_round_trip():
     fsm = AnimStateMachine(name="Player", mode="3d")
     fsm.add_state("Idle")
     fsm.add_state("Run")
-    fsm.parameters.append(AnimParameter(name="speed", kind="float", default_float=1.0))
+    fsm.parameters.append(
+        AnimParameter(
+            name="speed", value_type=TypeRef(ValueType.F32), default=1.0
+        )
+    )
     fsm2 = AnimStateMachine.from_dict(fsm.to_dict())
     assert fsm2.name == "Player"
     assert fsm2.mode == "3d"

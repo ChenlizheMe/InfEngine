@@ -227,6 +227,56 @@ class TestPlayModeManager:
         assert scene_changed == [True]
         assert remembered_paths == []
 
+    def test_exit_play_mode_restores_document_state_without_legacy_dirty_backup(
+        self, monkeypatch
+    ):
+        from Infernux.engine.deferred_task import DeferredTaskRunner
+
+        class _SceneManager:
+            def __init__(self):
+                self.stop_calls = 0
+
+            def stop(self):
+                self.stop_calls += 1
+
+        class _Runner:
+            is_busy = False
+
+            def __init__(self):
+                self.steps = []
+
+            def submit(self, _name, steps, on_done=None):
+                self.steps = list(steps)
+                self.on_done = on_done
+                return True
+
+        scene_manager = _SceneManager()
+        runner = _Runner()
+        monkeypatch.setattr(DeferredTaskRunner, "_instance", runner)
+
+        manager = PlayModeManager()
+        manager._state = PlayModeState.PLAYING
+        manager._scene_backup = object()
+        manager._get_scene_manager = lambda: scene_manager
+        rebuild_calls = []
+        manager._rebuild_active_scene = lambda snapshot, **kwargs: (
+            rebuild_calls.append((snapshot, kwargs)) or True
+        )
+        notifications = []
+        manager._notify_state_change = lambda old, new: notifications.append((old, new))
+
+        assert manager.exit_play_mode() is True
+        assert manager.state is PlayModeState.EDIT
+        assert scene_manager.stop_calls == 1
+
+        _, _, restore = runner.steps[0]
+        restore()
+
+        assert rebuild_calls == [
+            (manager._scene_backup, {"for_play": False, "restore_scene_path": True})
+        ]
+        assert notifications == [(PlayModeState.PLAYING, PlayModeState.EDIT)]
+
     def test_listener_list_empty(self):
         mgr = PlayModeManager()
         assert mgr._state_change_listeners == []

@@ -22,6 +22,12 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from Infernux.graph.parameters import (
+    GraphParameterCollection,
+    GraphParameterDefinition,
+)
+from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Safe transition-condition evaluator (replaces eval())
@@ -153,83 +159,37 @@ def evaluate_anim_condition(expr: str, context: Dict[str, Any]) -> bool:
     return bool(_anim_eval_node(body, context))
 
 
-@dataclass
-class AnimParameter:
-    """Declared variable for transition conditions (matches runtime SpiritAnimator parameters)."""
+@dataclass(frozen=True, slots=True)
+class AnimParameter(GraphParameterDefinition):
+    """Animation-domain parameter using the shared Graph schema."""
 
     name: str = "NewVar"
-    kind: str = "float"  # bool, float, int
-    default_bool: bool = False
-    default_float: float = 0.0
-    default_int: int = 0
-    stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    writable: bool = True
 
     def __post_init__(self) -> None:
-        if type(self.stable_id) is not str or not self.stable_id:
-            raise ValueError("animation parameter stable_id must be a non-empty string")
-
-    def to_dict(self) -> dict:
-        out: Dict[str, Any] = {
-            "stable_id": self.stable_id,
-            "name": self.name,
-            "kind": self.kind,
-        }
-        if self.kind == "bool":
-            out["default_bool"] = self.default_bool
-        elif self.kind == "float":
-            out["default_float"] = self.default_float
-        elif self.kind == "int":
-            out["default_int"] = self.default_int
-        return out
+        GraphParameterDefinition.__post_init__(self)
+        if self.value_type.space is not CoordinateSpace.NONE:
+            raise ValueError("animation parameters cannot carry coordinate spaces")
+        kind = self.value_type.value_type
+        if kind not in {ValueType.BOOL, ValueType.I32, ValueType.F32}:
+            raise ValueError("animation parameter type must be bool, i32, or f32")
+        if kind is ValueType.BOOL and type(self.default) is not bool:
+            raise TypeError("animation bool default must be a bool")
+        if kind is ValueType.I32 and (
+            type(self.default) is not int or isinstance(self.default, bool)
+        ):
+            raise TypeError("animation int default must be an integer")
+        if kind is ValueType.F32:
+            if not isinstance(self.default, (int, float)) or isinstance(
+                self.default, bool
+            ):
+                raise TypeError("animation float default must be numeric")
+            object.__setattr__(self, "default", float(self.default))
 
     @classmethod
-    def from_dict(cls, d: dict) -> "AnimParameter":
-        if type(d) is not dict:
-            raise TypeError("animation parameter must be an object")
-        kind = d.get("kind")
-        default_key = {
-            "bool": "default_bool",
-            "float": "default_float",
-            "int": "default_int",
-        }.get(kind)
-        if default_key is None:
-            raise ValueError("animation parameter kind must be bool, float, or int")
-        expected = {"stable_id", "name", "kind", default_key}
-        if set(d) != expected:
-            raise ValueError(
-                f"animation parameter fields mismatch; "
-                f"missing={sorted(expected - set(d))}, unknown={sorted(set(d) - expected)}"
-            )
-        if type(d["name"]) is not str or not d["name"]:
-            raise ValueError("animation parameter name must be a non-empty string")
-        if type(d["stable_id"]) is not str or not d["stable_id"]:
-            raise ValueError("animation parameter stable_id must be a non-empty string")
-        if kind == "bool":
-            if type(d[default_key]) is not bool:
-                raise TypeError("animation bool default must be a bool")
-            return cls(
-                name=d["name"],
-                kind=kind,
-                default_bool=d[default_key],
-                stable_id=d["stable_id"],
-            )
-        if kind == "int":
-            if type(d[default_key]) is not int:
-                raise TypeError("animation int default must be an integer")
-            return cls(
-                name=d["name"],
-                kind=kind,
-                default_int=d[default_key],
-                stable_id=d["stable_id"],
-            )
-        value = d[default_key]
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise TypeError("animation float default must be numeric")
-        return cls(
-            name=d["name"],
-            kind=kind,
-            default_float=float(value),
-            stable_id=d["stable_id"],
+    def from_dict(cls, value: dict) -> "AnimParameter":
+        return GraphParameterDefinition.from_dict.__func__(
+            cls, value, "animation parameter"
         )
 
 
@@ -439,8 +399,7 @@ class AnimStateMachine:
         states = [AnimState.from_dict(item) for item in d["states"]]
         state_names = [state.name for state in states]
         state_ids = [state.stable_id for state in states]
-        parameter_names = [parameter.name for parameter in params]
-        parameter_ids = [parameter.stable_id for parameter in params]
+        GraphParameterCollection(params)
         transition_ids = [
             transition.stable_id
             for state in states
@@ -450,10 +409,6 @@ class AnimStateMachine:
             raise ValueError("animation state names must be unique")
         if len(state_ids) != len(set(state_ids)):
             raise ValueError("animation state stable_ids must be unique")
-        if len(parameter_names) != len(set(parameter_names)):
-            raise ValueError("animation parameter names must be unique")
-        if len(parameter_ids) != len(set(parameter_ids)):
-            raise ValueError("animation parameter stable_ids must be unique")
         if len(transition_ids) != len(set(transition_ids)):
             raise ValueError("animation transition stable_ids must be unique")
         known_states = set(state_names)

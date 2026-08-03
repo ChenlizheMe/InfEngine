@@ -9,8 +9,10 @@ class GraphElementKind(str, Enum):
     LINK: GraphElementKind
     PARAMETER: GraphElementKind
     EVENT_TYPE: GraphElementKind
+    EVENT_FLOW: GraphElementKind
     EMITTER: GraphElementKind
     ATTRIBUTE: GraphElementKind
+    DATA_INTERFACE: GraphElementKind
 
 class GraphElementRef:
     kind: GraphElementKind
@@ -50,7 +52,7 @@ class GraphDomainAdapter(Protocol):
 
 class GraphSelectionController:
     owner_id: str
-    def __init__(self, *, owner_id: str, document_id: Callable[[], str], contains: Callable[[GraphElementRef], bool], view = ...) -> None: ...
+    def __init__(self, *, owner_id: str, document_id: Callable[[], str], contains: Callable[[GraphElementRef], bool], view = ..., element_from_view: Optional[Callable[[GraphElementKind, str], GraphElementRef]] = ..., element_to_view: Optional[Callable[[GraphElementRef], str]] = ..., on_changed: Optional[Callable[[tuple[GraphElementRef, ...]], None]] = ...) -> None: ...
     @property
     def elements(self) -> tuple[GraphElementRef, ...]: ...
     @property

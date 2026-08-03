@@ -9,7 +9,9 @@ from Infernux.engine.interaction import (
     SelectionService,
 )
 from Infernux.core.anim_state_machine import AnimState, AnimTransition
+from Infernux.engine.ui.animfsm_graph_authoring import AnimFSMGraphAuthoringModel
 from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
+from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
 from Infernux.engine.undo import UndoManager
 
 
@@ -29,6 +31,35 @@ def _panel_with_history():
     panel = AnimFSMEditorPanel()
     panel._graph_selection.bind(selection)
     return panel, manager
+
+
+def test_animfsm_uses_the_shared_node_graph_editor_and_domain_adapter():
+    panel, _manager = _panel_with_history()
+
+    assert isinstance(panel, NodeGraphEditorPanel)
+    assert isinstance(panel._graph, AnimFSMGraphAuthoringModel)
+    assert panel._view.on_link_created == panel._on_link_created
+    assert panel._view.on_nodes_deleted == panel._on_nodes_deleted
+    assert panel._view.on_copy == panel._on_graph_copy
+
+
+def test_animfsm_stages_structure_in_node_graph_without_mutating_fsm(monkeypatch):
+    panel, _manager = _panel_with_history()
+    state = AnimState(name="Graph First")
+    observed = {}
+
+    def reject_command(_description, mutations, **_kwargs):
+        observed["mutation_count"] = len(mutations)
+        observed["fsm_states"] = tuple(panel._fsm.states)
+        observed["graph_node"] = panel._graph.find_node(state.stable_id)
+        return False
+
+    monkeypatch.setattr(panel, "_execute_graph_mutations", reject_command)
+
+    assert not panel._insert_state(state, "Add Graph First", make_default=True)
+    assert observed["mutation_count"] == 2
+    assert observed["fsm_states"] == ()
+    assert observed["graph_node"] is None
 
 
 def test_animfsm_parameter_edit_uses_stable_diff_and_document_revision():
@@ -105,6 +136,11 @@ def test_animfsm_parameter_rename_updates_transition_expression_and_undo():
     assert panel._fsm.states[0].transitions[0].condition == (
         "velocity > 1 and speed_limit > velocity"
     )
+    rename_diff = manager._undo_stack[-1].diff
+    assert [mutation.element.kind for mutation in rename_diff.mutations] == [
+        GraphElementKind.LINK,
+        GraphElementKind.PARAMETER,
+    ]
 
     manager.undo()
     assert panel._fsm.parameters[0].name == "speed"
@@ -136,6 +172,24 @@ def test_animfsm_node_move_does_not_snapshot_the_whole_fsm():
     assert state.position == [10.0, 20.0]
     assert (node.pos_x, node.pos_y) == (10.0, 20.0)
     assert document.revision == initial_revision
+
+
+def test_animfsm_structural_undo_uses_shared_node_graph_payloads():
+    panel, manager = _panel_with_history()
+    state = AnimState(name="Shared Core", position=[64.0, 96.0])
+
+    assert panel._insert_state(state, "Add Shared Core", make_default=True)
+
+    mutations = manager._undo_stack[-1].diff.mutations
+    node_insert = next(
+        mutation
+        for mutation in mutations
+        if mutation.element.kind is GraphElementKind.NODE
+    )
+    assert node_insert.after["type_id"] == "anim_state"
+    assert node_insert.after["position"] == [64.0, 96.0]
+    assert node_insert.after["properties"]["fsm_state"]["stable_id"] == state.stable_id
+    assert not hasattr(manager._undo_stack[-1], "before_snapshot")
 
 
 def test_animfsm_state_delete_undo_restores_tree_links_default_and_selection():

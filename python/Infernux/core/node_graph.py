@@ -8,9 +8,10 @@ shader graphs, dialogue trees, etc.).  The *view* layer lives in
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, runtime_checkable
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, runtime_checkable
 import json
 import uuid
 
@@ -204,6 +205,118 @@ class GraphLink:
         )
 
 
+class NodeGraphElementKind(str, Enum):
+    """Structural element kinds owned by every node graph."""
+
+    NODE = "node"
+    LINK = "link"
+
+
+class NodeGraphMutationKind(str, Enum):
+    """Reversible authoring operations supported by :class:`NodeGraph`."""
+
+    INSERT = "insert"
+    REMOVE = "remove"
+    UPDATE = "update"
+    MOVE = "move"
+
+
+@dataclass(frozen=True, slots=True)
+class NodeGraphElementState:
+    payload: dict
+    index: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", copy.deepcopy(dict(self.payload)))
+        object.__setattr__(self, "index", int(self.index))
+
+
+@dataclass(frozen=True, slots=True)
+class NodeGraphAuthoringState:
+    """Identity-indexed structural state used to build precise graph diffs."""
+
+    nodes: dict[str, NodeGraphElementState]
+    links: dict[str, NodeGraphElementState]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "nodes", dict(self.nodes))
+        object.__setattr__(self, "links", dict(self.links))
+
+
+@dataclass(frozen=True, slots=True)
+class NodeGraphMutation:
+    """A reversible node/link edit independent of any editor domain."""
+
+    kind: NodeGraphMutationKind
+    element_kind: NodeGraphElementKind
+    stable_id: str
+    before: object = None
+    after: object = None
+    before_index: int = -1
+    after_index: int = -1
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", NodeGraphMutationKind(self.kind))
+        object.__setattr__(
+            self, "element_kind", NodeGraphElementKind(self.element_kind)
+        )
+        stable_id = str(self.stable_id or "").strip()
+        if not stable_id:
+            raise ValueError("node graph mutation stable_id must not be empty")
+        object.__setattr__(self, "stable_id", stable_id)
+        object.__setattr__(self, "before", copy.deepcopy(self.before))
+        object.__setattr__(self, "after", copy.deepcopy(self.after))
+        object.__setattr__(self, "before_index", int(self.before_index))
+        object.__setattr__(self, "after_index", int(self.after_index))
+
+    def inverted(self) -> "NodeGraphMutation":
+        inverse_kind = {
+            NodeGraphMutationKind.INSERT: NodeGraphMutationKind.REMOVE,
+            NodeGraphMutationKind.REMOVE: NodeGraphMutationKind.INSERT,
+            NodeGraphMutationKind.UPDATE: NodeGraphMutationKind.UPDATE,
+            NodeGraphMutationKind.MOVE: NodeGraphMutationKind.MOVE,
+        }[self.kind]
+        return NodeGraphMutation(
+            inverse_kind,
+            self.element_kind,
+            self.stable_id,
+            before=self.after,
+            after=self.before,
+            before_index=self.after_index,
+            after_index=self.before_index,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NodeGraphRebuildResult:
+    """Atomic result of rebuilding one node against a dynamic definition."""
+
+    node_uid: str
+    before: NodeGraphAuthoringState
+    after: NodeGraphAuthoringState
+    mutations: tuple[NodeGraphMutation, ...]
+    removed_link_ids: tuple[str, ...] = ()
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.mutations)
+
+
+@dataclass(frozen=True, slots=True)
+class NodeGraphBatchRebuildResult:
+    """Atomic result of rebuilding a dependency set of dynamic nodes."""
+
+    node_uids: tuple[str, ...]
+    before: NodeGraphAuthoringState
+    after: NodeGraphAuthoringState
+    mutations: tuple[NodeGraphMutation, ...]
+    removed_link_ids: tuple[str, ...] = ()
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.mutations)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Type catalog
 # ═══════════════════════════════════════════════════════════════════════════
@@ -248,7 +361,7 @@ node_catalog = NodeCatalog()
 # ═══════════════════════════════════════════════════════════════════════════
 
 class NodeGraph:
-    """Generic node-graph container with CRUD and serialisation."""
+    """Generic node-graph container with CRUD, serialisation, and precise edits."""
 
     _DEFAULT_TYPE_COMPATIBILITY = {
         ("int", "float"),
@@ -266,6 +379,10 @@ class NodeGraph:
         self.nodes: List[GraphNode] = []
         self.links: List[GraphLink] = []
         self._type_registry: Dict[str, NodeTypeDef] = {}
+        self._node_definition_resolver: Optional[
+            Callable[[GraphNode], Optional[NodeTypeDef]]
+        ] = None
+        self._node_definition_invalidator: Optional[Callable[[GraphNode], None]] = None
         self.graph_kind = graph_kind
         self._type_compatibility = set(self._DEFAULT_TYPE_COMPATIBILITY)
         if graph_kind:
@@ -281,9 +398,32 @@ class NodeGraph:
     def get_type(self, type_id: str) -> Optional[NodeTypeDef]:
         return self._type_registry.get(type_id)
 
+    def set_node_definition_resolver(
+        self,
+        resolver: Optional[Callable[[GraphNode], Optional[NodeTypeDef]]],
+        *,
+        invalidator: Optional[Callable[[GraphNode], None]] = None,
+    ) -> None:
+        """Configure instance-dependent node definitions for this graph.
+
+        Dynamic definitions are a graph capability, not a domain-owned rebuild
+        protocol. A graph domain may supply the effective definition and an
+        optional cache invalidator; :meth:`rebuild_node` still owns migration,
+        link validation, rollback, and the reversible structural diff.
+        """
+        self._node_definition_resolver = resolver
+        self._node_definition_invalidator = invalidator
+
     def get_node_type(self, node: GraphNode) -> Optional[NodeTypeDef]:
         """Resolve a node instance's effective type definition."""
+        if self._node_definition_resolver is not None:
+            return self._node_definition_resolver(node)
         return self.get_type(node.type_id)
+
+    def invalidate_node_definition(self, node: GraphNode) -> None:
+        """Invalidate resolver state before a node definition is re-resolved."""
+        if self._node_definition_invalidator is not None:
+            self._node_definition_invalidator(node)
 
     def registered_types(self) -> List[NodeTypeDef]:
         return list(self._type_registry.values())
@@ -301,8 +441,13 @@ class NodeGraph:
         uid: Optional[str] = None,
         **data: Any,
     ) -> GraphNode:
+        node_uid = str(uid) if uid else uuid.uuid4().hex[:8]
+        while uid is None and self.find_node(node_uid) is not None:
+            node_uid = uuid.uuid4().hex[:8]
+        if self.find_node(node_uid) is not None:
+            raise ValueError(f"node uid already exists: {node_uid!r}")
         node = GraphNode(
-            uid=uid or uuid.uuid4().hex[:8],
+            uid=node_uid,
             type_id=type_id,
             pos_x=canvas_x,
             pos_y=canvas_y,
@@ -337,10 +482,15 @@ class NodeGraph:
         uid: Optional[str] = None,
         **data: Any,
     ) -> Optional[GraphLink]:
+        link_uid = str(uid) if uid else uuid.uuid4().hex[:8]
+        while uid is None and self.find_link(link_uid) is not None:
+            link_uid = uuid.uuid4().hex[:8]
+        if self.find_link(link_uid) is not None:
+            raise ValueError(f"link uid already exists: {link_uid!r}")
         if not self.validate_link(src_node, src_pin, dst_node, dst_pin):
             return None
         link = GraphLink(
-            uid=uid or uuid.uuid4().hex[:8],
+            uid=link_uid,
             source_node=src_node,
             source_pin=src_pin,
             target_node=dst_node,
@@ -467,6 +617,155 @@ class NodeGraph:
         self.links = [lk for lk in self.links if lk.uid != uid]
         return len(self.links) < before
 
+    def remove_invalid_links_for_node(self, node_uid: str) -> tuple[str, ...]:
+        """Remove links rejected by the node's current effective definition."""
+        if self.find_node(node_uid) is None:
+            return ()
+        original = list(self.links)
+        adjacent = [
+            link
+            for link in original
+            if node_uid in {link.source_node, link.target_node}
+        ]
+        self.links = [link for link in original if link not in adjacent]
+        removed: list[str] = []
+        kept_ids = {link.uid for link in self.links}
+        try:
+            # Validate against the links already retained. This makes a port
+            # capacity reduction deterministic instead of having every old
+            # connection reject every other old connection.
+            for link in adjacent:
+                if self.validate_link(
+                    link.source_node,
+                    link.source_pin,
+                    link.target_node,
+                    link.target_pin,
+                ):
+                    self.links.append(link)
+                    kept_ids.add(link.uid)
+                else:
+                    removed.append(link.uid)
+            self.links = [link for link in original if link.uid in kept_ids]
+        except Exception:
+            self.links = original
+            raise
+        return tuple(removed)
+
+    def rebuild_node(
+        self,
+        node_uid: str,
+        data_updates: Optional[dict[str, Any]] = None,
+        *,
+        preserve_fields: Iterable[str] = (),
+    ) -> NodeGraphRebuildResult:
+        """Re-resolve one node schema and migrate its editable properties.
+
+        A dynamic definition resolver may be registered once on the graph. The
+        core keeps stable identity, initializes newly introduced inline fields,
+        removes retired fields, validates adjacent links, rolls back failures,
+        and returns one reversible structural diff.
+        """
+        node_uid = str(node_uid)
+        batch = self.rebuild_nodes(
+            {node_uid: dict(data_updates or {})},
+            preserve_fields={node_uid: tuple(preserve_fields)},
+        )
+        return NodeGraphRebuildResult(
+            node_uid,
+            batch.before,
+            batch.after,
+            batch.mutations,
+            batch.removed_link_ids,
+        )
+
+    def rebuild_nodes(
+        self,
+        data_updates: Mapping[str, Mapping[str, Any]],
+        *,
+        affected_node_uids: Iterable[str] = (),
+        preserve_fields: Optional[Mapping[str, Iterable[str]]] = None,
+    ) -> NodeGraphBatchRebuildResult:
+        """Atomically rebuild dynamic definitions for a dependency set.
+
+        Domains identify which stable nodes depend on a changed schema and
+        provide only their data updates. The graph owns field migration,
+        definition invalidation, deterministic link pruning, rollback, and the
+        combined reversible diff.
+        """
+        updates = {
+            str(node_uid): copy.deepcopy(dict(values))
+            for node_uid, values in dict(data_updates).items()
+        }
+        requested = set(updates)
+        requested.update(str(node_uid) for node_uid in affected_node_uids)
+        node_uids = tuple(node.uid for node in self.nodes if node.uid in requested)
+        missing = requested - set(node_uids)
+        if missing:
+            raise KeyError(f"nodes not found: {sorted(missing)!r}")
+        if not node_uids:
+            raise ValueError("dynamic node rebuild requires at least one node")
+        preserved = {
+            str(node_uid): set(fields)
+            for node_uid, fields in dict(preserve_fields or {}).items()
+        }
+        before = self.capture_authoring_state()
+        old_definitions = {
+            node_uid: self.get_node_type(self.find_node(node_uid))
+            for node_uid in node_uids
+        }
+        try:
+            for node_uid, values in updates.items():
+                self.find_node(node_uid).data.update(values)
+            for node_uid in node_uids:
+                self.invalidate_node_definition(self.find_node(node_uid))
+
+            for node_uid in node_uids:
+                node = self.find_node(node_uid)
+                old_definition = old_definitions[node_uid]
+                new_definition = self.get_node_type(node)
+                if new_definition is None:
+                    raise RuntimeError(
+                        f"node {node_uid!r} has no effective definition after rebuild"
+                    )
+                old_inline = (
+                    {field.id: field for field in old_definition.inline_fields}
+                    if old_definition is not None
+                    else {}
+                )
+                new_inline = {
+                    field.id: field for field in new_definition.inline_fields
+                }
+                keep = preserved.get(node_uid, set()) | set(updates.get(node_uid, {}))
+                for field_id in old_inline.keys() - new_inline.keys() - keep:
+                    node.data.pop(field_id, None)
+                for field_id, field_definition in new_inline.items():
+                    previous_field = old_inline.get(field_id)
+                    type_changed = (
+                        previous_field is not None
+                        and previous_field.data_type != field_definition.data_type
+                    )
+                    if field_id not in node.data or (
+                        type_changed and field_id not in keep
+                    ):
+                        node.data[field_id] = copy.deepcopy(field_definition.default)
+
+            removed_links: list[str] = []
+            for node_uid in node_uids:
+                for link_uid in self.remove_invalid_links_for_node(node_uid):
+                    if link_uid not in removed_links:
+                        removed_links.append(link_uid)
+            after = self.capture_authoring_state()
+        except Exception:
+            self.restore_authoring_state(before)
+            raise
+        return NodeGraphBatchRebuildResult(
+            node_uids,
+            before,
+            after,
+            self.diff_authoring_states(before, after),
+            tuple(removed_links),
+        )
+
     def find_link(self, uid: str) -> Optional[GraphLink]:
         for lk in self.links:
             if lk.uid == uid:
@@ -582,6 +881,406 @@ class NodeGraph:
             grouped.setdefault(stage, []).append(node)
         return grouped
 
+    # ── Reversible authoring ─────────────────────────────────────────
+
+    def authoring_node_payload(self, node: GraphNode) -> dict:
+        """Return the domain-neutral payload required to restore *node*."""
+        return {
+            "type_id": str(node.type_id),
+            "position": [float(node.pos_x), float(node.pos_y)],
+            "properties": copy.deepcopy(node.data),
+        }
+
+    def authoring_link_payload(self, link: GraphLink) -> dict:
+        """Return the domain-neutral payload required to restore *link*."""
+        return {
+            "source_node": str(link.source_node),
+            "source_port": str(link.source_pin),
+            "target_node": str(link.target_node),
+            "target_port": str(link.target_pin),
+            "properties": copy.deepcopy(link.data),
+        }
+
+    def capture_authoring_state(
+        self,
+        *,
+        identity: Optional[Callable[[NodeGraphElementKind, str], str]] = None,
+    ) -> NodeGraphAuthoringState:
+        """Capture stable node/link state for a future precise diff."""
+        encode = identity or (lambda _kind, stable_id: stable_id)
+        nodes: dict[str, NodeGraphElementState] = {}
+        for index, node in enumerate(self.nodes):
+            stable_id = str(encode(NodeGraphElementKind.NODE, node.uid))
+            if stable_id in nodes:
+                raise ValueError(f"duplicate node graph identity: {stable_id!r}")
+            nodes[stable_id] = NodeGraphElementState(
+                self.authoring_node_payload(node), index
+            )
+        links: dict[str, NodeGraphElementState] = {}
+        for index, link in enumerate(self.links):
+            stable_id = str(encode(NodeGraphElementKind.LINK, link.uid))
+            if stable_id in links:
+                raise ValueError(f"duplicate node graph identity: {stable_id!r}")
+            links[stable_id] = NodeGraphElementState(
+                self.authoring_link_payload(link), index
+            )
+        return NodeGraphAuthoringState(nodes, links)
+
+    def restore_authoring_state(self, state: NodeGraphAuthoringState) -> None:
+        """Restore an authoring checkpoint without replaying a partial diff."""
+        if not isinstance(state, NodeGraphAuthoringState):
+            raise TypeError("authoring checkpoint must be a NodeGraphAuthoringState")
+
+        restored_nodes: list[GraphNode] = []
+        for stable_id, item in sorted(
+            state.nodes.items(), key=lambda pair: (pair[1].index, pair[0])
+        ):
+            payload = item.payload
+            position = payload.get("position")
+            properties = payload.get("properties")
+            if (
+                not isinstance(position, (list, tuple))
+                or len(position) != 2
+                or not isinstance(properties, dict)
+            ):
+                raise RuntimeError("node authoring checkpoint is invalid")
+            restored_nodes.append(
+                GraphNode(
+                    uid=stable_id,
+                    type_id=str(payload.get("type_id", "")),
+                    pos_x=float(position[0]),
+                    pos_y=float(position[1]),
+                    data=copy.deepcopy(properties),
+                )
+            )
+
+        restored_links: list[GraphLink] = []
+        for stable_id, item in sorted(
+            state.links.items(), key=lambda pair: (pair[1].index, pair[0])
+        ):
+            payload = item.payload
+            properties = payload.get("properties", {})
+            if not isinstance(properties, dict):
+                raise RuntimeError("link authoring checkpoint is invalid")
+            restored_links.append(
+                GraphLink(
+                    uid=stable_id,
+                    source_node=str(payload.get("source_node", "")),
+                    source_pin=str(payload.get("source_port", "")),
+                    target_node=str(payload.get("target_node", "")),
+                    target_pin=str(payload.get("target_port", "")),
+                    data=copy.deepcopy(properties),
+                )
+            )
+
+        self.nodes = restored_nodes
+        self.links = restored_links
+        for node in self.nodes:
+            self.on_authoring_node_restored(node)
+        for link in self.links:
+            self.on_authoring_link_restored(link)
+        for node in self.nodes:
+            self.invalidate_node_definition(node)
+
+    @staticmethod
+    def merge_authoring_states(
+        states: Iterable[NodeGraphAuthoringState],
+    ) -> NodeGraphAuthoringState:
+        nodes: dict[str, NodeGraphElementState] = {}
+        links: dict[str, NodeGraphElementState] = {}
+        for state in states:
+            overlap = nodes.keys() & state.nodes.keys()
+            if overlap:
+                raise ValueError(f"duplicate node graph identities: {sorted(overlap)!r}")
+            overlap = links.keys() & state.links.keys()
+            if overlap:
+                raise ValueError(f"duplicate node graph identities: {sorted(overlap)!r}")
+            nodes.update(state.nodes)
+            links.update(state.links)
+        return NodeGraphAuthoringState(nodes, links)
+
+    @staticmethod
+    def diff_authoring_states(
+        before: NodeGraphAuthoringState,
+        after: NodeGraphAuthoringState,
+    ) -> tuple[NodeGraphMutation, ...]:
+        """Build a deterministic, reversible structural diff."""
+        mutations: list[NodeGraphMutation] = []
+
+        def removed(kind, left, right):
+            return sorted(
+                left.keys() - right.keys(),
+                key=lambda stable_id: (-left[stable_id].index, stable_id),
+            )
+
+        def inserted(kind, left, right):
+            return sorted(
+                right.keys() - left.keys(),
+                key=lambda stable_id: (right[stable_id].index, stable_id),
+            )
+
+        for element_kind, left, right in (
+            (NodeGraphElementKind.LINK, before.links, after.links),
+            (NodeGraphElementKind.NODE, before.nodes, after.nodes),
+        ):
+            for stable_id in removed(element_kind, left, right):
+                item = left[stable_id]
+                mutations.append(
+                    NodeGraphMutation(
+                        NodeGraphMutationKind.REMOVE,
+                        element_kind,
+                        stable_id,
+                        before=item.payload,
+                        before_index=item.index,
+                    )
+                )
+
+        for element_kind, left, right in (
+            (NodeGraphElementKind.NODE, before.nodes, after.nodes),
+            (NodeGraphElementKind.LINK, before.links, after.links),
+        ):
+            for stable_id in inserted(element_kind, left, right):
+                item = right[stable_id]
+                mutations.append(
+                    NodeGraphMutation(
+                        NodeGraphMutationKind.INSERT,
+                        element_kind,
+                        stable_id,
+                        after=item.payload,
+                        after_index=item.index,
+                    )
+                )
+
+        for element_kind, left, right in (
+            (NodeGraphElementKind.NODE, before.nodes, after.nodes),
+            (NodeGraphElementKind.LINK, before.links, after.links),
+        ):
+            common_ids = left.keys() & right.keys()
+            before_order = [
+                stable_id
+                for stable_id, _item in sorted(
+                    left.items(), key=lambda pair: (pair[1].index, pair[0])
+                )
+                if stable_id in common_ids
+            ]
+            after_order = [
+                stable_id
+                for stable_id, _item in sorted(
+                    right.items(), key=lambda pair: (pair[1].index, pair[0])
+                )
+                if stable_id in common_ids
+            ]
+            before_rank = {
+                stable_id: index for index, stable_id in enumerate(before_order)
+            }
+            after_rank = {
+                stable_id: index for index, stable_id in enumerate(after_order)
+            }
+            for stable_id in sorted(left.keys() & right.keys()):
+                old = left[stable_id]
+                new = right[stable_id]
+                order_changed = before_rank[stable_id] != after_rank[stable_id]
+                if old.payload == new.payload and not order_changed:
+                    continue
+                if (
+                    element_kind is NodeGraphElementKind.NODE
+                    and not order_changed
+                    and old.payload.get("type_id") == new.payload.get("type_id")
+                    and old.payload.get("properties") == new.payload.get("properties")
+                    and {
+                        key: value
+                        for key, value in old.payload.items()
+                        if key != "position"
+                    }
+                    == {
+                        key: value
+                        for key, value in new.payload.items()
+                        if key != "position"
+                    }
+                ):
+                    mutations.append(
+                        NodeGraphMutation(
+                            NodeGraphMutationKind.MOVE,
+                            element_kind,
+                            stable_id,
+                            before={"position": old.payload["position"]},
+                            after={"position": new.payload["position"]},
+                        )
+                    )
+                    continue
+                mutations.append(
+                    NodeGraphMutation(
+                        NodeGraphMutationKind.UPDATE,
+                        element_kind,
+                        stable_id,
+                        before=old.payload,
+                        after=new.payload,
+                        before_index=old.index,
+                        after_index=new.index,
+                    )
+                )
+        priority = {
+            (NodeGraphElementKind.LINK, NodeGraphMutationKind.REMOVE): 0,
+            (NodeGraphElementKind.NODE, NodeGraphMutationKind.INSERT): 1,
+            (NodeGraphElementKind.NODE, NodeGraphMutationKind.UPDATE): 2,
+            (NodeGraphElementKind.NODE, NodeGraphMutationKind.MOVE): 2,
+            (NodeGraphElementKind.LINK, NodeGraphMutationKind.UPDATE): 3,
+            (NodeGraphElementKind.NODE, NodeGraphMutationKind.REMOVE): 4,
+            (NodeGraphElementKind.LINK, NodeGraphMutationKind.INSERT): 5,
+        }
+        return tuple(
+            mutation
+            for _index, mutation in sorted(
+                enumerate(mutations),
+                key=lambda item: (
+                    priority[(item[1].element_kind, item[1].kind)],
+                    item[0],
+                ),
+            )
+        )
+
+    @staticmethod
+    def invert_authoring_mutations(
+        mutations: Iterable[NodeGraphMutation],
+    ) -> tuple[NodeGraphMutation, ...]:
+        return tuple(item.inverted() for item in reversed(tuple(mutations)))
+
+    def prepare_authoring_node_restore(self, payload: dict) -> None:
+        """Domain hook called before a node is inserted from a diff."""
+
+    def on_authoring_node_restored(self, node: GraphNode) -> None:
+        """Domain hook called after a node payload has been restored."""
+
+    def on_authoring_link_restored(self, link: GraphLink) -> None:
+        """Domain hook called after a link payload has been restored."""
+
+    @staticmethod
+    def _move_element(items: list, value, index: int) -> None:
+        items.remove(value)
+        items.insert(max(0, min(int(index), len(items))), value)
+
+    def apply_authoring_mutation(self, mutation: NodeGraphMutation) -> None:
+        """Replay one structural mutation through the graph's domain CRUD hooks."""
+        if not isinstance(mutation, NodeGraphMutation):
+            raise TypeError("authoring mutation must be a NodeGraphMutation")
+        payload = mutation.after
+        stable_id = mutation.stable_id
+        if mutation.element_kind is NodeGraphElementKind.NODE:
+            node = self.find_node(stable_id)
+            if mutation.kind is NodeGraphMutationKind.INSERT:
+                if node is not None or not isinstance(payload, dict):
+                    raise RuntimeError(f"cannot insert node {stable_id!r}")
+                position = payload.get("position")
+                properties = payload.get("properties")
+                if (
+                    not isinstance(position, (list, tuple))
+                    or len(position) != 2
+                    or not isinstance(properties, dict)
+                ):
+                    raise RuntimeError("node authoring payload is invalid")
+                self.prepare_authoring_node_restore(payload)
+                node = self.add_node(
+                    str(payload.get("type_id", "")),
+                    float(position[0]),
+                    float(position[1]),
+                    uid=stable_id,
+                    **copy.deepcopy(properties),
+                )
+                if node.uid != stable_id:
+                    raise RuntimeError("node identity changed while replaying a graph edit")
+                self._move_element(self.nodes, node, mutation.after_index)
+                self.invalidate_node_definition(node)
+                self.on_authoring_node_restored(node)
+                return
+            if mutation.kind is NodeGraphMutationKind.REMOVE:
+                if node is not None:
+                    self.invalidate_node_definition(node)
+                if node is not None and not self.remove_node(stable_id):
+                    raise RuntimeError(f"cannot remove node {stable_id!r}")
+                return
+            if node is None or not isinstance(payload, dict):
+                raise RuntimeError(f"cannot update node {stable_id!r}")
+            if mutation.kind is NodeGraphMutationKind.MOVE:
+                position = payload.get("position")
+                if not isinstance(position, (list, tuple)) or len(position) != 2:
+                    raise RuntimeError("node move requires a two-value position")
+                node.pos_x = float(position[0])
+                node.pos_y = float(position[1])
+                self.on_authoring_node_restored(node)
+                return
+            if mutation.kind is NodeGraphMutationKind.UPDATE:
+                if str(payload.get("type_id", "")) != node.type_id:
+                    raise RuntimeError("node update cannot change the registered type")
+                position = payload.get("position")
+                properties = payload.get("properties")
+                if (
+                    not isinstance(position, (list, tuple))
+                    or len(position) != 2
+                    or not isinstance(properties, dict)
+                ):
+                    raise RuntimeError("node authoring payload is invalid")
+                node.pos_x = float(position[0])
+                node.pos_y = float(position[1])
+                node.data = copy.deepcopy(properties)
+                self._move_element(self.nodes, node, mutation.after_index)
+                self.invalidate_node_definition(node)
+                self.on_authoring_node_restored(node)
+                return
+            raise RuntimeError(f"unsupported node mutation: {mutation.kind.value}")
+
+        link = self.find_link(stable_id)
+        if mutation.kind is NodeGraphMutationKind.INSERT:
+            if link is not None or not isinstance(payload, dict):
+                raise RuntimeError(f"cannot insert link {stable_id!r}")
+            link = self.add_link(
+                str(payload.get("source_node", "")),
+                str(payload.get("source_port", "")),
+                str(payload.get("target_node", "")),
+                str(payload.get("target_port", "")),
+                uid=stable_id,
+                **copy.deepcopy(payload.get("properties", {})),
+            )
+            if link is None or link.uid != stable_id:
+                raise RuntimeError("link insertion was rejected while replaying a graph edit")
+            self._move_element(self.links, link, mutation.after_index)
+            self.on_authoring_link_restored(link)
+            return
+        if mutation.kind is NodeGraphMutationKind.REMOVE:
+            if link is not None and not self.remove_link(stable_id):
+                raise RuntimeError(f"cannot remove link {stable_id!r}")
+            return
+        if link is None or not isinstance(payload, dict):
+            raise RuntimeError(f"cannot update link {stable_id!r}")
+        if mutation.kind is NodeGraphMutationKind.UPDATE:
+            link = self.replace_link(
+                stable_id,
+                str(payload.get("source_node", "")),
+                str(payload.get("source_port", "")),
+                str(payload.get("target_node", "")),
+                str(payload.get("target_port", "")),
+            )
+            if link is None:
+                raise RuntimeError("link replacement was rejected while replaying a graph edit")
+            link.data = copy.deepcopy(payload.get("properties", {}))
+            self._move_element(self.links, link, mutation.after_index)
+            self.on_authoring_link_restored(link)
+            return
+        raise RuntimeError(f"unsupported link mutation: {mutation.kind.value}")
+
+    def apply_authoring_mutations(
+        self, mutations: Iterable[NodeGraphMutation]
+    ) -> None:
+        checkpoint = self.capture_authoring_state()
+        try:
+            for mutation in tuple(mutations):
+                self.apply_authoring_mutation(mutation)
+        except Exception as exc:
+            try:
+                self.restore_authoring_state(checkpoint)
+            except Exception as rollback_error:
+                exc.add_note(f"NodeGraph rollback also failed: {rollback_error}")
+            raise
+
     # ── Serialisation ─────────────────────────────────────────────────
 
     def to_dict(self) -> dict:
@@ -591,8 +1290,16 @@ class NodeGraph:
         }
 
     def load_dict(self, d: dict) -> None:
-        self.nodes = [GraphNode.from_dict(nd) for nd in d.get("nodes", [])]
-        self.links = [GraphLink.from_dict(lk) for lk in d.get("links", [])]
+        nodes = [GraphNode.from_dict(nd) for nd in d.get("nodes", [])]
+        links = [GraphLink.from_dict(lk) for lk in d.get("links", [])]
+        node_ids = [node.uid for node in nodes]
+        link_ids = [link.uid for link in links]
+        if len(node_ids) != len(set(node_ids)):
+            raise ValueError("node graph data contains duplicate node ids")
+        if len(link_ids) != len(set(link_ids)):
+            raise ValueError("node graph data contains duplicate link ids")
+        self.nodes = nodes
+        self.links = links
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)

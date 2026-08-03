@@ -284,6 +284,46 @@ def test_attribute_cache_node_owns_storage_and_infers_its_input_type():
     assert model.node_creation_state("particle.attribute.cache") == (True, "")
 
 
+def test_attribute_cache_type_change_rebuilds_dependent_get_nodes():
+    model = ParticleEmitterGraphAuthoringModel(ParticleEmitterAsset())
+    model.set_authoring_stage("update")
+    model.prepare_node_creation("update")
+    cache = model.add_node("particle.attribute.cache", 240.0, 250.0)
+    scalar = model.add_node("common.constant.f32", 20.0, 200.0, value=1.0)
+    vector = model.add_node(
+        "common.constant.vec3", 20.0, 300.0, value=[1.0, 2.0, 3.0]
+    )
+    incoming = model.add_link(scalar.uid, "value", cache.uid, "value")
+    cache_id = particle_attribute_cache_id(
+        "update", model._document_uid(cache.uid)
+    )
+    dependent = model.add_node(
+        "particle.attribute.get",
+        480.0,
+        250.0,
+        attribute=cache_id,
+    )
+
+    scalar_output = next(
+        pin for pin in model.get_node_type(dependent).output_pins() if pin.id == "value"
+    )
+    assert scalar_output.data_type == "f32"
+
+    assert model.replace_link(
+        incoming.uid,
+        vector.uid,
+        "value",
+        cache.uid,
+        "value",
+    ) is not None
+
+    vector_output = next(
+        pin for pin in model.get_node_type(dependent).output_pins() if pin.id == "value"
+    )
+    assert cache.data["value_type"] == "vec3"
+    assert vector_output.data_type == "vec3"
+
+
 def test_unlinked_attribute_cache_uses_its_declared_vector_type_in_the_canvas():
     model = ParticleEmitterGraphAuthoringModel(ParticleEmitterAsset())
     model.set_authoring_stage("update")
@@ -751,6 +791,7 @@ def test_particle_parameter_canvas_drop_creates_the_selected_parameter_node():
                 "writable": False,
                 "category": "",
             "tooltip": "",
+            "attributes": [],
         }
     ]
     canvas_node = next(
@@ -980,7 +1021,7 @@ def test_unsaved_particle_graph_edits_do_not_publish_runtime_artifacts(
         lambda *_args, **_kwargs: published.append(True),
     )
 
-    panel._mark_changed()
+    panel.add_authoring_parameter("Draft Value", "f32", 1.0)
 
     assert panel._dirty is True
     assert published == []
@@ -990,6 +1031,7 @@ def test_particle_emitter_row_defers_model_rebind_until_list_render_finishes(
     monkeypatch,
 ):
     import Infernux.engine.ui.particle_graph_editor_panel as module
+    import Infernux.engine.ui.node_graph_editor_panel as shared_module
 
     panel = module.ParticleGraphEditorPanel()
     panel._asset = ParticleGraphAsset(
@@ -1001,22 +1043,31 @@ def test_particle_emitter_row_defers_model_rebind_until_list_render_finishes(
     panel._bind_stage()
     rendered_rows = []
     selected = []
-    original_select = panel._select_emitter
+    original_activate = panel._node_graph_workspace_activate
 
     def _begin(_ctx, entry_id, _selected):
         rendered_rows.append(entry_id)
         return entry_id.endswith("second"), (0.0, 0.0, 100.0, 28.0)
 
-    def _select(index):
-        assert rendered_rows == ["particle_emitter_first", "particle_emitter_second"]
-        selected.append(index)
-        original_select(index)
+    def _activate(element):
+        assert rendered_rows == [
+            "graph_workspace_particle_emitter_emitter_first",
+            "graph_workspace_particle_emitter_emitter_second",
+        ]
+        selected.append(element.stable_id)
+        return original_activate(element)
 
-    monkeypatch.setattr(module, "render_workspace_add_header", lambda *_a, **_k: None)
-    monkeypatch.setattr(module, "begin_workspace_entry", _begin)
-    monkeypatch.setattr(module, "paint_workspace_entry", lambda *_a, **_k: None)
-    monkeypatch.setattr(module, "finish_workspace_entry", lambda *_a, **_k: None)
-    monkeypatch.setattr(panel, "_select_emitter", _select)
+    monkeypatch.setattr(
+        shared_module, "render_workspace_add_header", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(shared_module, "begin_workspace_entry", _begin)
+    monkeypatch.setattr(
+        shared_module, "paint_workspace_entry", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        shared_module, "finish_workspace_entry", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(panel, "_node_graph_workspace_activate", _activate)
     ctx = SimpleNamespace(
         semantic_capture_enabled=False,
         begin_popup_context_item=lambda _item_id: False,
@@ -1024,24 +1075,74 @@ def test_particle_emitter_row_defers_model_rebind_until_list_render_finishes(
 
     panel._render_emitter_page(ctx)
 
-    assert selected == [1]
+    assert selected == ["second"]
     assert panel._emitter_index == 1
     assert panel._selected_emitter().stable_id == "second"
 
 
-def test_particle_parameter_rename_state_uses_the_existing_undoable_api():
+def test_particle_workspace_defers_add_until_all_rows_finish(monkeypatch):
+    import Infernux.engine.ui.node_graph_editor_panel as shared_module
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        ParticleGraphEditorPanel,
+    )
+
+    panel = ParticleGraphEditorPanel()
+    rendered_rows = []
+    dispatched = []
+
+    def _header(_ctx, _title, _section_id, **kwargs):
+        kwargs["on_add"]()
+
+    def _begin(_ctx, entry_id, _selected):
+        rendered_rows.append(entry_id)
+        return False, (0.0, 0.0, 100.0, 28.0)
+
+    def _add(section_id, action_id):
+        assert rendered_rows == [
+            "graph_workspace_particle_emitter_emitter_"
+            + panel.asset.emitters[0].stable_id
+        ]
+        dispatched.append((section_id, action_id))
+        return True
+
+    monkeypatch.setattr(shared_module, "render_workspace_add_header", _header)
+    monkeypatch.setattr(shared_module, "begin_workspace_entry", _begin)
+    monkeypatch.setattr(
+        shared_module, "paint_workspace_entry", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        shared_module, "finish_workspace_entry", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(panel, "_node_graph_workspace_add", _add)
+    ctx = SimpleNamespace(begin_popup_context_item=lambda _item_id: False)
+
+    panel._render_emitter_page(ctx)
+
+    assert dispatched == [("particle_emitter", "default")]
+
+
+def test_particle_parameter_workspace_rename_uses_the_existing_undoable_api():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
     parameter = panel.add_authoring_parameter("Intensity", "f32", 1.0)
+    sections = []
+    panel._render_graph_workspace_section = (
+        lambda _ctx, section: sections.append(section)
+    )
 
-    panel._request_parameter_rename(parameter["stable_id"])
-    panel._parameter_rename_buffer = "Emission Strength"
+    panel._render_parameter_page(SimpleNamespace())
+    entry = sections[0].entries[0]
 
-    assert panel._commit_parameter_rename() is True
+    assert entry.element.stable_id == parameter["stable_id"]
+    assert (
+        panel._node_graph_workspace_rename(
+            entry.element, "Emission Strength"
+        )
+        is not False
+    )
     assert panel.asset.parameters[0].name == "Emission Strength"
-    assert panel._renaming_parameter_id == ""
 
 
 def test_shared_palette_notifies_host_with_the_complete_creation_request():
@@ -1466,6 +1567,31 @@ def test_particle_output_shader_switch_preserves_compatible_ports_and_links():
         and link.target_pin == "shader.baseColor"
         for link in panel._model.links
     )
+
+
+def _particle_panel_with_history():
+    from Infernux.engine.interaction import (
+        DocumentRegistry,
+        EditorContextSnapshot,
+        SelectionService,
+    )
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from Infernux.engine.undo import UndoManager
+
+    DocumentRegistry()
+    selection = SelectionService()
+    manager = UndoManager()
+    manager.set_context_hooks(
+        lambda: EditorContextSnapshot(selection=selection.snapshot),
+        lambda context, phase: selection.apply_snapshot(
+            context.selection,
+            reason=phase,
+            record_history=False,
+        ),
+    )
+    panel = ParticleGraphEditorPanel()
+    panel._graph_selection.bind(selection)
+    return panel, manager
 
 
 def test_six_way_output_exposes_texture_ports_but_not_internal_controls():
@@ -2003,15 +2129,33 @@ def test_particle_graph_editor_dragged_event_root_uses_canvas_position():
 def test_particle_graph_defers_canvas_drop_target_until_after_floating_sources():
     import inspect
 
+    from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
-    source = inspect.getsource(ParticleGraphEditorPanel.on_render_content)
-    graph_render = source.index("defer_canvas_drop_target=True")
+    source = inspect.getsource(NodeGraphEditorPanel._render_node_graph_workspace)
+    graph_render = source.index("self._view.render(")
     left_overlay = source.index("self._left_overlay", graph_render)
     right_overlay = source.index("self._right_overlay", left_overlay)
     drop_target = source.index("render_canvas_drop_target", right_overlay)
 
+    assert ParticleGraphEditorPanel()._node_graph_defer_canvas_drop_target()
     assert graph_render < left_overlay < right_overlay < drop_target
+
+
+def test_particle_graph_uses_the_shared_editor_shell_and_node_graph_model():
+    from Infernux.engine.ui.graph_document_authoring import (
+        ParticleEmitterGraphAuthoringModel,
+    )
+    from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+
+    assert isinstance(panel, NodeGraphEditorPanel)
+    assert isinstance(panel._model, ParticleEmitterGraphAuthoringModel)
+    assert panel._view.on_link_created == panel._on_link_created
+    assert panel._view.on_nodes_deleted == panel._on_nodes_deleted
+    assert panel._view.on_node_data_changed == panel._on_node_data_changed
 
 
 def test_particle_event_canvas_drop_creates_an_independent_event_flow():
@@ -2038,21 +2182,27 @@ def test_particle_event_canvas_drop_creates_an_independent_event_flow():
 
 def test_particle_event_row_binds_drag_source_before_context_menu(monkeypatch):
     import Infernux.engine.ui.particle_graph_editor_panel as module
+    import Infernux.engine.ui.node_graph_editor_panel as shared_module
 
     panel = module.ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
     event_type = panel.add_event_type("Pulse", 8, [])
     calls = []
 
-    monkeypatch.setattr(module, "render_workspace_add_header", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        module,
+        shared_module, "render_workspace_add_header", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        shared_module,
         "begin_workspace_entry",
         lambda *_a, **_k: (False, (0.0, 0.0, 100.0, 28.0)),
     )
-    monkeypatch.setattr(module, "paint_workspace_entry", lambda *_a, **_k: None)
-    monkeypatch.setattr(module, "finish_workspace_entry", lambda *_a, **_k: None)
-    monkeypatch.setattr(panel, "_workspace_shortcut_pressed", lambda *_a: False)
+    monkeypatch.setattr(
+        shared_module, "paint_workspace_entry", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        shared_module, "finish_workspace_entry", lambda *_a, **_k: None
+    )
 
     class Context:
         semantic_capture_enabled = False
@@ -2405,6 +2555,248 @@ def test_particle_graph_editor_save_aot_compiles_and_reopens(tmp_path, monkeypat
     assert reopened._dirty is False
     assert reopened.reload_from_disk() is True
     assert reopened._dirty is False
+
+
+def test_particle_graph_document_revision_and_selection_are_globally_authoritative(
+    tmp_path, monkeypatch
+):
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.interaction import (
+        DocumentRegistry,
+        GraphElementKind,
+        SelectionService,
+    )
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    DocumentRegistry()
+    selection = SelectionService()
+    monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(lambda cls, _path: None))
+    panel = ParticleGraphEditorPanel()
+    panel.on_enable()
+    path = tmp_path / "Authority.particlegraph"
+
+    assert panel._save_to(str(path)) is True
+    document = DocumentRegistry.instance().require(panel.document_id)
+    assert document.is_dirty is False
+
+    parameter = panel.add_authoring_parameter("Intensity")
+
+    assert document.is_dirty is True
+    assert panel._dirty is True
+    assert selection.snapshot.primary.document_id == document.document_id
+    assert selection.snapshot.primary.sub_kind == GraphElementKind.PARAMETER.value
+    assert selection.snapshot.primary.target_id == parameter["stable_id"]
+
+    assert panel._save_to(str(path)) is True
+    assert document.is_dirty is False
+    assert panel._dirty is False
+    panel.on_disable()
+
+
+def test_particle_parameter_insert_and_update_use_precise_graph_diffs():
+    from Infernux.engine.interaction import GraphElementKind
+
+    panel, manager = _particle_panel_with_history()
+    document = panel._particle_document()
+    initial_revision = document.revision
+
+    created = panel.add_authoring_parameter("Intensity")
+    parameter_id = created["stable_id"]
+    insert_revision = document.revision
+
+    assert insert_revision > initial_revision
+    assert panel._graph_selection.primary_id(GraphElementKind.PARAMETER) == parameter_id
+
+    updated = panel.update_authoring_parameter(
+        parameter_id,
+        {"name": "Smoke Intensity", "default": 2.0},
+    )
+    update_revision = document.revision
+    assert updated["name"] == "Smoke Intensity"
+    assert update_revision > insert_revision
+
+    manager.undo()
+    parameter = next(item for item in panel.asset.parameters if item.stable_id == parameter_id)
+    assert parameter.name == "Intensity"
+    assert document.revision == insert_revision
+
+    manager.undo()
+    assert all(item.stable_id != parameter_id for item in panel.asset.parameters)
+    assert document.revision == initial_revision
+
+    manager.redo()
+    manager.redo()
+    parameter = next(item for item in panel.asset.parameters if item.stable_id == parameter_id)
+    assert parameter.name == "Smoke Intensity"
+    assert document.revision == update_revision
+
+
+def test_particle_structural_parameter_edit_restores_affected_graph_in_one_undo():
+    panel, manager = _particle_panel_with_history()
+    parameter = panel.add_authoring_parameter("Scale", "f32", 1.0)
+    source = panel.add_authoring_parameter_node(
+        parameter["stable_id"], 220.0, 40.0, stage="init"
+    )
+    target = panel.add_authoring_node(
+        "init", "particle.attribute.size", 480.0, 40.0
+    )
+    link = panel.connect_value(source["uid"], "value", target["uid"], "value")
+    manager.clear()
+
+    panel.update_authoring_parameter(
+        parameter["stable_id"],
+        {"type": TypeRef(ValueType.VEC3).to_dict()},
+    )
+
+    assert panel._model.find_link(link["link_uid"]) is None
+    manager.undo()
+    restored = next(
+        item
+        for item in panel.asset.parameters
+        if item.stable_id == parameter["stable_id"]
+    )
+    assert restored.value_type == TypeRef(ValueType.F32)
+    assert panel._model.find_link(link["link_uid"]) is not None
+    manager.redo()
+    assert panel._model.find_link(link["link_uid"]) is None
+
+
+def test_particle_emitter_settings_use_one_precise_undo_action():
+    panel, manager = _particle_panel_with_history()
+    emitter = panel.asset.emitters[0]
+    settings = emitter.settings.to_dict()
+    settings["spawn_rate"] = 73.0
+    manager.clear()
+
+    panel.set_authoring_emitter_settings(emitter.stable_id, settings)
+
+    assert panel.asset.emitters[0].settings.spawn_rate == 73.0
+    manager.undo()
+    assert panel.asset.emitters[0].settings.spawn_rate == emitter.settings.spawn_rate
+    manager.redo()
+    assert panel.asset.emitters[0].settings.spawn_rate == 73.0
+
+
+def test_particle_data_interface_edit_uses_one_precise_undo_action():
+    from Infernux.particle.data_interface import VectorField
+
+    panel, manager = _particle_panel_with_history()
+    emitter = panel.asset.emitters[0]
+    interface = VectorField(stable_id="wind-field", name="Wind Field")
+    panel._replace_emitter(
+        replace(emitter, data_interfaces=(interface,))
+    )
+    panel._bind_stage()
+    manager.clear()
+
+    updated = panel.patch_authoring_data_interface(
+        emitter.stable_id,
+        interface.stable_id,
+        {"vector_scale": 2.5},
+    )
+
+    assert updated["vector_scale"] == 2.5
+    assert manager.undo_description == "Edit Particle Graph Data Interface"
+    manager.undo()
+    assert panel.asset.emitters[0].data_interfaces[0].vector_scale == 1.0
+    manager.redo()
+    assert panel.asset.emitters[0].data_interfaces[0].vector_scale == 2.5
+
+
+def test_particle_event_type_and_flow_use_precise_domain_diffs():
+    panel, manager = _particle_panel_with_history()
+
+    event_type = panel.add_event_type("Impact", 8, [])
+    event_id = event_type["stable_id"]
+    manager.undo()
+    assert panel.asset.event_types == ()
+    manager.redo()
+    assert panel.asset.event_types[0].stable_id == event_id
+
+    manager.clear()
+    flow = panel.add_authoring_event_flow(event_id, 420.0, 760.0)
+    flow_id = flow["flow_id"]
+    assert panel.asset.emitters[0].event_flows[0].stable_id == flow_id
+    manager.undo()
+    assert panel.asset.emitters[0].event_flows == ()
+    manager.redo()
+    assert panel.asset.emitters[0].event_flows[0].stable_id == flow_id
+    assert panel._model.find_node(f"event.{flow_id}::root.event") is not None
+
+    manager.clear()
+    panel.remove_event_type(event_id)
+    assert panel.asset.event_types == ()
+    assert panel.asset.emitters[0].event_flows[0].event_id == ""
+    manager.undo()
+    assert panel.asset.event_types[0].stable_id == event_id
+    assert panel.asset.emitters[0].event_flows[0].event_id == event_id
+    manager.redo()
+    assert panel.asset.event_types == ()
+    assert panel.asset.emitters[0].event_flows[0].event_id == ""
+
+
+def test_particle_node_drag_records_only_stable_node_positions():
+    panel, manager = _particle_panel_with_history()
+    node_data = panel.add_authoring_node(
+        "update",
+        "common.noise.vector3d",
+        240.0,
+        460.0,
+    )
+    node_uid = node_data["uid"]
+    node = panel._model.find_node(node_uid)
+    before = (node.pos_x, node.pos_y)
+    manager.clear()
+
+    panel._view.set_selection((node_uid,), "", notify=False)
+    panel._on_node_drag_start(node_uid)
+    node.pos_x += 37.0
+    node.pos_y -= 19.0
+    after = (node.pos_x, node.pos_y)
+    panel._on_node_drag_end(node_uid)
+
+    assert (panel._model.find_node(node_uid).pos_x, panel._model.find_node(node_uid).pos_y) == after
+    manager.undo()
+    assert (
+        panel._model.find_node(node_uid).pos_x,
+        panel._model.find_node(node_uid).pos_y,
+    ) == before
+    manager.redo()
+    assert (
+        panel._model.find_node(node_uid).pos_x,
+        panel._model.find_node(node_uid).pos_y,
+    ) == after
+
+
+def test_particle_node_and_link_deletion_is_one_precise_undo_action():
+    panel, manager = _particle_panel_with_history()
+    panel._stage = "update"
+    panel._model.set_authoring_stage("update")
+    panel._model.prepare_node_creation("update")
+    node = panel._on_node_add("particle.attribute.velocity", 260.0, 230.0)
+    assert node is not None
+    panel._on_link_created("update::root.update", "out", node.uid, "in")
+    link = next(
+        item
+        for item in panel._model.links
+        if item.target_node == node.uid and item.target_pin == "in"
+    )
+    node_uid = node.uid
+    link_uid = link.uid
+    manager.clear()
+
+    panel._on_nodes_deleted((node_uid,))
+
+    assert panel._model.find_node(node_uid) is None
+    assert panel._model.find_link(link_uid) is None
+
+    manager.undo()
+    assert panel._model.find_node(node_uid) is not None
+    assert panel._model.find_link(link_uid) is not None
+
+    manager.redo()
+    assert panel._model.find_node(node_uid) is None
+    assert panel._model.find_link(link_uid) is None
 
 
 def test_project_create_particlegraph_writes_loadable_asset(tmp_path, monkeypatch):

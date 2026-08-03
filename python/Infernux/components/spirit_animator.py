@@ -27,6 +27,7 @@ from Infernux.core.anim_state_machine import (
 from Infernux.core.animation_clip import AnimationClip
 from Infernux.core.asset_ref import AnimStateMachineRef
 from Infernux.debug import Debug
+from Infernux.graph.types import ValueType
 
 
 def _get_asset_database():
@@ -331,12 +332,12 @@ class SpiritAnimator(InxComponent):
         """Expose FSM parameter defaults in condition eval (``eval`` ctx)."""
         self._parameters = {}
         for p in fsm.parameters:
-            if p.kind == "bool":
-                self._parameters[p.name] = bool(p.default_bool)
-            elif p.kind == "int":
-                self._parameters[p.name] = int(p.default_int)
+            if p.value_type.value_type is ValueType.BOOL:
+                self._parameters[p.name] = bool(p.default)
+            elif p.value_type.value_type is ValueType.I32:
+                self._parameters[p.name] = int(p.default)
             else:
-                self._parameters[p.name] = float(p.default_float)
+                self._parameters[p.name] = float(p.default)
 
     def _resolve_clip(self, state: AnimState) -> Optional[AnimationClip]:
         """Resolve and cache the AnimationClip for an FSM state."""

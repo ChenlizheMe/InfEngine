@@ -454,19 +454,9 @@ class PlayModeManager(PlayModeSerializationMixin):
                     "— editor may be in a degraded state"
                 )
 
-            # 2. Sync scene dirty baseline without nuking undo stacks
-            from Infernux.engine.undo import UndoManager
-            _undo = UndoManager.instance()
-            if _undo:
-                _undo.set_scene_dirty_baseline(self._scene_dirty_backup)
-            else:
-                from Infernux.engine.scene_manager import SceneFileManager
-                sfm = SceneFileManager.instance()
-                if sfm:
-                    if self._scene_dirty_backup:
-                        sfm.mark_dirty()
-                    else:
-                        sfm.clear_dirty()
+            # The rebuild above restores the authored document identity and
+            # its exact revision/saved-revision pair. A second dirty-baseline
+            # write here would duplicate ownership and discard revision data.
             notify_started = time.perf_counter()
             self._notify_state_change(old_state, PlayModeState.EDIT)
             notify_ms = (time.perf_counter() - notify_started) * 1000.0

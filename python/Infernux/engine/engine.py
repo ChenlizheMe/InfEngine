@@ -282,10 +282,6 @@ class Engine():
             sfm = SceneFileManager.instance()
             if sfm is not None:
                 try:
-                    sfm.poll_pending_save()
-                except Exception as exc:
-                    Debug.log_suppressed("Engine.post_draw_tick.poll_pending_save", exc)
-                try:
                     sfm.poll_deferred_load()
                 except Exception as exc:
                     Debug.log_suppressed("Engine.post_draw_tick.poll_deferred_load", exc)

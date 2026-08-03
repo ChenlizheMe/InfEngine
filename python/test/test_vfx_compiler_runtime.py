@@ -436,8 +436,8 @@ def test_particle_system_exposed_parameter_updates_live_gpu_block(
                 TypeRef(ValueType.F32),
                 0.25,
                 True,
-                "Smoke",
-                "Controls the smoke density.",
+                category="Smoke",
+                tooltip="Controls the smoke density.",
             ),
         ),
         emitters=(

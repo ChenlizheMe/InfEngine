@@ -90,6 +90,48 @@ def test_graph_selection_rejects_stale_and_mixed_elements():
     assert service.snapshot.is_empty
 
 
+def test_graph_selection_maps_document_identity_to_active_canvas_identity():
+    service = SelectionService()
+    view = _View()
+    live = {
+        GraphElementRef(GraphElementKind.NODE, "emitter-a/update::node-a"),
+        GraphElementRef(GraphElementKind.LINK, "emitter-a/update::link-a"),
+    }
+
+    def from_view(kind, view_id):
+        return GraphElementRef(kind, f"emitter-a/{view_id}")
+
+    def to_view(element):
+        emitter_id, separator, view_id = element.stable_id.partition("/")
+        return view_id if separator and emitter_id == "emitter-a" else ""
+
+    projected = []
+    controller = GraphSelectionController(
+        owner_id="particle-graph",
+        document_id=lambda: "particle:one",
+        contains=live.__contains__,
+        view=view,
+        element_from_view=from_view,
+        element_to_view=to_view,
+        on_changed=lambda elements: projected.append(elements),
+    )
+    controller.bind(service)
+
+    controller.accept_view_selection(("update::node-a",), "", record_history=True)
+
+    assert controller.primary == GraphElementRef(
+        GraphElementKind.NODE,
+        "emitter-a/update::node-a",
+    )
+    assert service.snapshot.primary == SelectionTarget.graph_element(
+        "particle:one",
+        "emitter-a/update::node-a",
+        sub_kind="node",
+    )
+    assert view.nodes == ("update::node-a",)
+    assert projected[-1] == controller.elements
+
+
 def test_graph_action_diff_is_precise_and_invertible():
     before = {"name": "Old"}
     after = {"name": "New"}
@@ -123,6 +165,12 @@ class _Adapter:
         self.applied.append(diff)
         for mutation in diff.mutations:
             self.values[mutation.element.stable_id] = mutation.after
+
+    def capture_graph_diff_checkpoint(self):
+        return dict(self.values)
+
+    def restore_graph_diff_checkpoint(self, checkpoint):
+        self.values = checkpoint
 
 
 def test_graph_diff_command_replays_through_document_adapter_and_revision():
@@ -160,6 +208,44 @@ def test_graph_diff_command_replays_through_document_adapter_and_revision():
     command.undo()
     assert adapter.values["parameter-a"] == {"name": "Old"}
     assert document.revision == 1
+
+
+def test_graph_diff_command_restores_domain_and_revision_after_partial_failure():
+    class FailingAdapter(_Adapter):
+        def apply_diff(self, diff):
+            self.values["parameter-a"] = {"name": "Partially Applied"}
+            raise RuntimeError("domain apply failed")
+
+    registry = DocumentRegistry()
+    adapter = FailingAdapter()
+    document, _ = registry.open_or_create(
+        DocumentKey.session(DocumentKind.ANIMATION_FSM),
+        "FSM",
+        revision=3,
+        saved_revision=1,
+        controller=adapter,
+    )
+    mutation = GraphMutation(
+        GraphMutationKind.UPDATE,
+        GraphElementRef(GraphElementKind.PARAMETER, "parameter-a"),
+        before={"name": "Old"},
+        after={"name": "New"},
+    )
+    command = GraphDiffCommand(
+        "Rename parameter",
+        GraphActionDiff(
+            document.document_id,
+            (mutation,),
+            before_revision=3,
+            after_revision=4,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="domain apply failed"):
+        command.execute()
+
+    assert adapter.values == {"parameter-a": {"name": "Old"}}
+    assert document.revision == 3
 
 
 def test_graph_diff_command_merges_same_property_without_losing_original_before():

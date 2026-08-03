@@ -483,6 +483,44 @@ def test_particle_preview_entering_play_forgets_handles_without_runtime_command(
     assert calls == []
 
 
+@pytest.mark.parametrize("play_on_awake", [False, True])
+def test_play_mode_deserialize_initializes_particle_runtime_from_play_on_awake(
+    monkeypatch, play_on_awake
+):
+    from Infernux.engine.play_mode import PlayModeManager
+
+    monkeypatch.setattr(
+        PlayModeManager,
+        "instance",
+        classmethod(lambda _cls: SimpleNamespace(is_playing=True)),
+    )
+    component = ParticleSystem()
+    component.play_on_awake = play_on_awake
+
+    component.on_after_deserialize()
+
+    assert component._playing is play_on_awake
+
+
+def test_particle_replacement_retires_edit_preview_native_batch(monkeypatch):
+    from Infernux.components.component import InxComponent
+
+    component = ParticleSystem()
+    component._gpu_controllers = [object()]
+    calls = []
+    component._remove_native_batch = lambda: calls.append("remove")
+    component._clear_runtime_state = lambda: calls.append("clear")
+    monkeypatch.setattr(
+        InxComponent,
+        "_detach_native_binding_for_replacement",
+        lambda _self: calls.append("detach"),
+    )
+
+    component._detach_native_binding_for_replacement()
+
+    assert calls == ["remove", "clear", "detach"]
+
+
 def test_scene_panel_subscribes_to_play_mode_lifecycle():
     panel = _panel()
     listeners = []
