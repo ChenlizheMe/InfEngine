@@ -278,6 +278,72 @@ class TestGameObject:
         go.active = True
         assert go.active is True
 
+    def test_batch_component_removal_restores_ids_and_selection(self, scene):
+        from Infernux.engine.interaction import (
+            SelectionService,
+            SelectionSnapshot,
+            SelectionTarget,
+        )
+        from Infernux.engine.undo import (
+            RemoveComponentsCommand,
+            RemoveNativeComponentCommand,
+        )
+
+        first = scene.create_game_object("RemoveComponentA")
+        second = scene.create_game_object("RemoveComponentB")
+        first_component = first.add_component("BoxCollider")
+        second_component = second.add_component("BoxCollider")
+        first_component_id = int(first_component.component_id)
+        second_component_id = int(second_component.component_id)
+        before = SelectionSnapshot.create(
+            (
+                SelectionTarget.component(first.id, first_component_id),
+                SelectionTarget.component(second.id, second_component_id),
+            ),
+            owner_id="inspector",
+            primary=SelectionTarget.component(second.id, second_component_id),
+        )
+        after = SelectionSnapshot.create(
+            (
+                SelectionTarget.scene_object(first.id),
+                SelectionTarget.scene_object(second.id),
+            ),
+            owner_id="inspector",
+            primary=SelectionTarget.scene_object(second.id),
+        )
+        previous_selection = SelectionService._instance
+        selection = SelectionService()
+        selection.apply_snapshot(before, record_history=False)
+        command = RemoveComponentsCommand(
+            [
+                RemoveNativeComponentCommand(
+                    first.id, "BoxCollider", first_component
+                ),
+                RemoveNativeComponentCommand(
+                    second.id, "BoxCollider", second_component
+                ),
+            ],
+            before,
+            after,
+        )
+        try:
+            command.execute()
+            assert first.get_component("BoxCollider") is None
+            assert second.get_component("BoxCollider") is None
+            assert selection.snapshot == after
+
+            command.undo()
+            assert first.get_component("BoxCollider").component_id == first_component_id
+            assert second.get_component("BoxCollider").component_id == second_component_id
+            assert selection.snapshot == before
+
+            command.redo()
+            assert first.get_component("BoxCollider") is None
+            assert second.get_component("BoxCollider") is None
+            assert selection.snapshot == after
+        finally:
+            SelectionService._instance = previous_selection
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Hierarchy (parent / child)

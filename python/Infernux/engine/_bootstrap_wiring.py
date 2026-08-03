@@ -159,6 +159,9 @@ class BootstrapWiringMixin:
                 return None
             return getter("animtimeline_editor")
 
+        def _inspector_component_actions():
+            return getattr(self, "_inspector_component_actions", None)
+
         def _is_scene_edit_context(context, *, hierarchy_only: bool = False) -> bool:
             active_panel = context.focus.active_panel_id
             if hierarchy_only:
@@ -177,6 +180,28 @@ class BootstrapWiringMixin:
 
         def _is_timeline_edit_context(context) -> bool:
             return context.focus.active_panel_id == "animtimeline_editor"
+
+        def _is_inspector_component_context(context) -> bool:
+            return bool(
+                context.focus.active_panel_id == "inspector"
+                and context.selection.domain is SelectionDomain.COMPONENT
+                and context.selection.targets
+                and _inspector_component_actions() is not None
+            )
+
+        def _can_component_action(context, predicate_name: str) -> bool:
+            if not _is_inspector_component_context(context):
+                return False
+            actions = _inspector_component_actions()
+            predicate = getattr(actions, predicate_name, None)
+            return bool(predicate and predicate())
+
+        def _invoke_component_action(context, action_name: str) -> bool:
+            if not _is_inspector_component_context(context):
+                return False
+            actions = _inspector_component_actions()
+            action = getattr(actions, action_name, None)
+            return bool(action and action())
 
         def _has_project_selection(context) -> bool:
             return bool(
@@ -245,12 +270,16 @@ class BootstrapWiringMixin:
             if _is_project_edit_context(context):
                 panel = _project_panel()
                 return bool(panel and panel.copy_selected_assets(cut))
+            if not cut and _is_inspector_component_context(context):
+                return _invoke_component_action(context, "copy")
             return _copy_scene_selection(context, cut=cut)
 
         def _paste_edit_selection(context):
             if _is_project_edit_context(context):
                 panel = _project_panel()
                 return bool(panel and panel.paste_assets())
+            if _is_inspector_component_context(context):
+                return _invoke_component_action(context, "paste_default")
             return _paste_scene_selection(context)
 
         def _delete_edit_selection(context):
@@ -260,6 +289,8 @@ class BootstrapWiringMixin:
             if _is_project_edit_context(context):
                 panel = _project_panel()
                 return bool(panel and panel.request_delete_selected_assets())
+            if _is_inspector_component_context(context):
+                return _invoke_component_action(context, "remove")
             return _delete_scene_selection(context)
 
         def _rename_edit_selection(context):
@@ -272,15 +303,31 @@ class BootstrapWiringMixin:
             return _rename_scene_selection(context)
 
         def _can_copy_edit_selection(context) -> bool:
+            return bool(
+                _has_project_selection(context)
+                or _has_scene_selection(context)
+                or _can_component_action(context, "can_copy")
+            )
+
+        def _can_cut_edit_selection(context) -> bool:
             return _has_project_selection(context) or _has_scene_selection(context)
 
         def _can_delete_edit_selection(context) -> bool:
-            return _can_copy_edit_selection(context) or _has_timeline_selection(context)
+            return bool(
+                _can_cut_edit_selection(context)
+                or _has_timeline_selection(context)
+                or _can_component_action(context, "can_remove")
+            )
 
         def _can_paste_edit_selection(context) -> bool:
             if _is_project_edit_context(context):
                 panel = _project_panel()
                 return bool(panel and panel.can_paste_assets())
+            if _is_inspector_component_context(context):
+                return bool(
+                    _can_component_action(context, "can_paste_values")
+                    or _can_component_action(context, "can_paste_as_new")
+                )
             return _can_paste_scene(context)
 
         def _can_rename_edit_selection(context) -> bool:
@@ -367,7 +414,7 @@ class BootstrapWiringMixin:
                 lambda context: _copy_edit_selection(context, cut=True),
                 display_name="Cut",
                 category="Edit",
-                can_execute=_can_copy_edit_selection,
+                can_execute=_can_cut_edit_selection,
                 default_shortcut="Ctrl+X",
             ),
             EditorCommand(
@@ -393,6 +440,51 @@ class BootstrapWiringMixin:
                 category="Edit",
                 can_execute=_can_rename_edit_selection,
                 default_shortcut="F2",
+            ),
+            EditorCommand(
+                "component.open_script",
+                lambda context: _invoke_component_action(context, "open_script"),
+                display_name="Open Script",
+                category="Component",
+                can_execute=lambda context: _can_component_action(
+                    context, "can_open_script"
+                ),
+            ),
+            EditorCommand(
+                "component.copy_properties",
+                lambda context: _invoke_component_action(context, "copy"),
+                display_name="Copy Component",
+                category="Component",
+                can_execute=lambda context: _can_component_action(
+                    context, "can_copy"
+                ),
+            ),
+            EditorCommand(
+                "component.paste_properties",
+                lambda context: _invoke_component_action(context, "paste_values"),
+                display_name="Paste Component Values",
+                category="Component",
+                can_execute=lambda context: _can_component_action(
+                    context, "can_paste_values"
+                ),
+            ),
+            EditorCommand(
+                "component.paste_as_new",
+                lambda context: _invoke_component_action(context, "paste_as_new"),
+                display_name="Paste Component As New",
+                category="Component",
+                can_execute=lambda context: _can_component_action(
+                    context, "can_paste_as_new"
+                ),
+            ),
+            EditorCommand(
+                "component.remove",
+                lambda context: _invoke_component_action(context, "remove"),
+                display_name="Remove Component",
+                category="Component",
+                can_execute=lambda context: _can_component_action(
+                    context, "can_remove"
+                ),
             ),
             EditorCommand(
                 "project.create_folder",
@@ -534,6 +626,22 @@ class BootstrapWiringMixin:
                     ShortcutScope.PANEL,
                     "project",
                     binding_id=f"default.project.{command_id}",
+                ),
+                replace=True,
+            )
+
+        for command_id, chord in (
+            ("edit.copy", "Ctrl+C"),
+            ("edit.paste", "Ctrl+V"),
+            ("edit.delete", "Delete"),
+        ):
+            shortcuts.register(
+                ShortcutBinding(
+                    command_id,
+                    KeyChord.parse(chord),
+                    ShortcutScope.PANEL,
+                    "inspector",
+                    binding_id=f"default.inspector.{command_id}",
                 ),
                 replace=True,
             )

@@ -927,83 +927,236 @@ def _wire_clipboard_and_context(ctx):
                 return path
         return ''
 
-    _project_path = ctx.project_path
+    def _selected_component_entries():
+        from Infernux.engine.interaction import SelectionDomain, SelectionService
+
+        snapshot = SelectionService.instance().snapshot
+        if snapshot.domain is not SelectionDomain.COMPONENT:
+            return []
+        scene = SceneManager.instance().get_active_scene()
+        if scene is None:
+            return []
+        entries = []
+        for target in snapshot.targets:
+            object_id, component_id = target.component_ids()
+            obj = scene.find_by_id(object_id) if object_id else None
+            if obj is None or component_id <= 0:
+                continue
+            native_hint = target.sub_kind != "script"
+            comp = _resolve(object_id, component_id, native_hint)
+            is_native = native_hint
+            if comp is None and not target.sub_kind:
+                comp = _resolve(object_id, component_id, False)
+                is_native = False
+            if comp is None:
+                continue
+            type_name = str(
+                getattr(comp, "type_name", type(comp).__name__) or type(comp).__name__
+            )
+            entries.append((target, obj, comp, type_name, is_native))
+        return entries
+
+    def _primary_component_entry():
+        entries = _selected_component_entries()
+        if not entries:
+            return None
+        from Infernux.engine.interaction import SelectionService
+
+        primary = SelectionService.instance().snapshot.primary
+        return next((entry for entry in entries if entry[0] == primary), entries[-1])
+
+    def _can_copy_selected_component():
+        return _primary_component_entry() is not None
+
+    def _copy_selected_component():
+        entry = _primary_component_entry()
+        if entry is None:
+            return False
+        _target, _obj, comp, type_name, is_native = entry
+        return _copy_to_clipboard(comp, type_name, is_native)
+
+    def _can_paste_selected_values():
+        entry = _primary_component_entry()
+        if entry is None:
+            return False
+        _target, _obj, comp, type_name, is_native = entry
+        return _can_paste_values(comp, type_name, is_native)
+
+    def _paste_selected_values():
+        entry = _primary_component_entry()
+        if entry is None:
+            return False
+        _target, _obj, comp, _type_name, is_native = entry
+        return _paste_values(comp, is_native)
+
+    def _can_paste_selected_as_new():
+        return _primary_component_entry() is not None and _has_clip()
+
+    def _paste_selected_as_new():
+        entry = _primary_component_entry()
+        if entry is None:
+            return False
+        return _paste_as_new(entry[1])
+
+    def _paste_selected_default():
+        if _can_paste_selected_values():
+            return _paste_selected_values()
+        return _paste_selected_as_new()
+
+    def _can_remove_selected_components():
+        entries = _selected_component_entries()
+        return bool(entries) and all(
+            _can_remove_component(obj, comp, type_name, is_native)
+            for _target, obj, comp, type_name, is_native in entries
+        )
+
+    def _remove_selected_components():
+        entries = _selected_component_entries()
+        if not entries or not _can_remove_selected_components():
+            return False
+        from Infernux.engine.interaction import (
+            SelectionService,
+            SelectionSnapshot,
+            SelectionTarget,
+        )
+        from Infernux.engine.undo import (
+            RemoveComponentsCommand,
+            RemoveNativeComponentCommand,
+            RemovePyComponentCommand,
+            UndoManager,
+        )
+
+        before_selection = SelectionService.instance().snapshot
+        object_ids = list(dict.fromkeys(int(entry[1].id) for entry in entries))
+        after_targets = tuple(
+            SelectionTarget.scene_object(object_id) for object_id in object_ids
+        )
+        primary_object_id = (
+            before_selection.primary.component_ids()[0]
+            if before_selection.primary is not None
+            else object_ids[-1]
+        )
+        primary_target = SelectionTarget.scene_object(primary_object_id)
+        after_selection = SelectionSnapshot.create(
+            after_targets,
+            owner_id="inspector",
+            primary=primary_target,
+            anchor=after_targets[0],
+        )
+        commands = [
+            (
+                RemoveNativeComponentCommand(obj.id, type_name, comp)
+                if is_native
+                else RemovePyComponentCommand(obj.id, comp)
+            )
+            for _target, obj, comp, type_name, is_native in entries
+        ]
+        description = (
+            commands[0].description
+            if len(commands) == 1
+            else f"Remove {len(commands)} Components"
+        )
+        command = RemoveComponentsCommand(
+            commands,
+            before_selection,
+            after_selection,
+            description,
+        )
+        manager = UndoManager.instance()
+        if manager is not None:
+            if not manager.execute(command):
+                return False
+        else:
+            command.execute()
+            command.dispose()
+        _invalidate()
+        return True
+
+    def _can_open_selected_script():
+        entry = _primary_component_entry()
+        return bool(entry is not None and not entry[4] and _get_script_path(entry[2]))
+
+    def _open_selected_script():
+        entry = _primary_component_entry()
+        if entry is None or entry[4]:
+            return False
+        script_path = _get_script_path(entry[2])
+        if not script_path:
+            return False
+        from Infernux.engine.ui import project_utils
+
+        project_utils.open_file_with_system(
+            script_path,
+            project_root=ctx.project_path,
+        )
+        return True
+
+    from types import SimpleNamespace
+
+    ctx.bs._inspector_component_actions = SimpleNamespace(
+        can_copy=_can_copy_selected_component,
+        copy=_copy_selected_component,
+        can_paste_values=_can_paste_selected_values,
+        paste_values=_paste_selected_values,
+        can_paste_as_new=_can_paste_selected_as_new,
+        paste_as_new=_paste_selected_as_new,
+        paste_default=_paste_selected_default,
+        can_remove=_can_remove_selected_components,
+        remove=_remove_selected_components,
+        can_open_script=_can_open_selected_script,
+        open_script=_open_selected_script,
+    )
 
     def _render_component_context_menu(ctx_arg, obj_id, type_name, comp_id, is_native):
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(obj_id) if scene else None
-        if obj is None:
-            return False
-        comp = _resolve(obj_id, comp_id, is_native)
-        if comp is None:
-            return False
+        del obj_id, type_name, comp_id, is_native
+        from Infernux.engine.interaction import CommandSource
 
-        if not is_native:
-            script_path = _get_script_path(comp)
-            if script_path:
-                if ctx_arg.selectable(_t("inspector.show_script")):
-                    from Infernux.engine.ui import project_utils
-                    project_utils.open_file_with_system(
-                        script_path, project_root=_project_path)
-                    ctx_arg.close_current_popup()
-                    return False
-                ctx_arg.separator()
+        registry = ctx.bs.interaction_core.commands
 
-        if ctx_arg.selectable(_t("inspector.copy_properties")):
-            _copy_to_clipboard(comp, type_name, is_native)
-            ctx_arg.close_current_popup()
-            return False
-
-        has_clip = _has_clip()
-        if not has_clip:
-            ctx_arg.begin_disabled()
-        if ctx_arg.selectable(_t("inspector.paste_as_new")):
-            _paste_as_new(obj)
-            ctx_arg.close_current_popup()
-            if not has_clip:
+        def _command_item(label, command_id):
+            context = registry.context(CommandSource.CONTEXT_MENU)
+            enabled = registry.can_execute(command_id, context)
+            if not enabled:
+                ctx_arg.begin_disabled()
+            clicked = ctx_arg.selectable(label)
+            if not enabled:
                 ctx_arg.end_disabled()
-            return False
-        if not has_clip:
-            ctx_arg.end_disabled()
+            if not clicked:
+                return False
+            result = registry.execute(
+                command_id,
+                source=CommandSource.CONTEXT_MENU,
+            )
+            if result.accepted:
+                ctx_arg.close_current_popup()
+            return result.accepted
 
-        can_paste_v = _can_paste_values(comp, type_name, is_native)
-        if not can_paste_v:
-            ctx_arg.begin_disabled()
-        if ctx_arg.selectable(_t("inspector.paste_properties")):
-            _paste_values(comp, is_native)
-            ctx_arg.close_current_popup()
-            if not can_paste_v:
-                ctx_arg.end_disabled()
+        if registry.can_execute(
+            "component.open_script",
+            registry.context(CommandSource.CONTEXT_MENU),
+        ):
+            if _command_item(_t("inspector.show_script"), "component.open_script"):
+                return False
+            ctx_arg.separator()
+
+        if _command_item(
+            _t("inspector.copy_properties"),
+            "component.copy_properties",
+        ):
             return False
-        if not can_paste_v:
-            ctx_arg.end_disabled()
+        if _command_item(
+            _t("inspector.paste_as_new"),
+            "component.paste_as_new",
+        ):
+            return False
+        if _command_item(
+            _t("inspector.paste_properties"),
+            "component.paste_properties",
+        ):
+            return False
 
         ctx_arg.separator()
-
-        if ctx_arg.selectable(_t("inspector.remove")):
-            if not _can_remove_component(obj, comp, type_name, is_native):
-                return False
-            if is_native:
-                from Infernux.engine.undo import UndoManager, RemoveNativeComponentCommand
-                mgr = UndoManager.instance()
-                if mgr:
-                    mgr.execute(RemoveNativeComponentCommand(obj.id, type_name, comp))
-                    _invalidate()
-                elif obj.remove_component(comp) is False:
-                    return False
-                else:
-                    _invalidate()
-            else:
-                from Infernux.engine.undo import UndoManager, RemovePyComponentCommand
-                mgr = UndoManager.instance()
-                if mgr:
-                    mgr.execute(RemovePyComponentCommand(obj.id, comp))
-                    _invalidate()
-                elif obj.remove_py_component(comp) is False:
-                    return False
-                else:
-                    _invalidate()
-            ctx_arg.close_current_popup()
+        if _command_item(_t("inspector.remove"), "component.remove"):
             return True
         return False
 

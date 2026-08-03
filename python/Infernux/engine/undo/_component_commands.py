@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from Infernux.debug import Debug
-from Infernux.engine.undo._base import UndoCommand
+from Infernux.engine.undo._base import CompoundCommand, UndoCommand
 from Infernux.engine.undo._helpers import (
     _get_active_scene, _comp_type_name_of,
     _require_scene_object, _find_live_native_component,
@@ -148,6 +148,14 @@ def _add_native_from_snapshot(object_id: int, type_name: str,
     if document is not None and not result.deserialize_document(document):
         obj.remove_component(result)
         raise RuntimeError(f"[Undo] {label}: component document restore failed")
+    restored_id = int((document or {}).get("component_id", 0) or 0)
+    if restored_id:
+        live = _find_native_component(obj, type_name, restored_id)
+        if live is None:
+            raise RuntimeError(
+                f"[Undo] {label}: restored component id={restored_id} is not live"
+            )
+        result = live
     _bump_inspector_structure()
     _notify_gizmos_scene_changed()
     return result
@@ -323,3 +331,58 @@ class RemovePyComponentCommand(UndoCommand):
             self._ordinal, self._py_comp_ref,
             f"RemovePy('{self._type_name_str}')")
         self._fields_json, self._enabled, self._py_comp_ref = fj, en, live
+
+
+class RemoveComponentsCommand(CompoundCommand):
+    """Remove one or more selected components as one structural action."""
+
+    def __init__(
+        self,
+        commands,
+        before_selection,
+        after_selection,
+        description: str = "Remove Components",
+    ):
+        from Infernux.engine.interaction import SelectionSnapshot
+
+        if not isinstance(before_selection, SelectionSnapshot):
+            raise TypeError("before_selection must be a SelectionSnapshot")
+        if not isinstance(after_selection, SelectionSnapshot):
+            raise TypeError("after_selection must be a SelectionSnapshot")
+        commands = list(commands)
+        if not commands:
+            raise ValueError("component removal requires at least one command")
+        super().__init__(commands, description)
+        self.before_selection_snapshot = before_selection
+        self.after_selection_snapshot = after_selection
+
+    @staticmethod
+    def _apply_selection(snapshot, reason: str) -> None:
+        from Infernux.engine.interaction import SelectionService
+
+        SelectionService.instance().apply_snapshot(
+            snapshot,
+            reason=reason,
+            record_history=False,
+        )
+
+    def execute(self) -> None:
+        super().execute()
+        self._apply_selection(
+            self.after_selection_snapshot,
+            "remove_components",
+        )
+
+    def undo(self) -> None:
+        super().undo()
+        self._apply_selection(
+            self.before_selection_snapshot,
+            "undo_remove_components",
+        )
+
+    def redo(self) -> None:
+        super().redo()
+        self._apply_selection(
+            self.after_selection_snapshot,
+            "redo_remove_components",
+        )

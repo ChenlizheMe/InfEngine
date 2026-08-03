@@ -309,3 +309,73 @@ def test_timeline_toolbar_and_shortcuts_share_command_handlers():
         ShortcutEvent(KeyChord.parse("Space"), text_input_active=True)
     )
     assert blocked.status is ShortcutRouteStatus.BLOCKED
+
+
+def test_inspector_component_menu_and_shortcuts_share_command_handlers():
+    class BootstrapHarness(BootstrapWiringMixin):
+        pass
+
+    calls = []
+    actions = SimpleNamespace(
+        can_copy=lambda: True,
+        copy=lambda: calls.append("copy_component") or True,
+        can_paste_values=lambda: True,
+        paste_values=lambda: calls.append("paste_values") or True,
+        can_paste_as_new=lambda: True,
+        paste_as_new=lambda: calls.append("paste_as_new") or True,
+        paste_default=lambda: calls.append("paste_default") or True,
+        can_remove=lambda: True,
+        remove=lambda: calls.append("remove_component") or True,
+        can_open_script=lambda: True,
+        open_script=lambda: calls.append("open_script") or True,
+    )
+    bootstrap = BootstrapHarness()
+    bootstrap.interaction_core = EditorInteractionCore()
+    bootstrap.engine = SimpleNamespace(_play_mode_manager=None)
+    bootstrap.hierarchy = None
+    bootstrap.project_panel = None
+    bootstrap._inspector_component_actions = actions
+    windows = SimpleNamespace(
+        get_window_instance=lambda _panel_id: None,
+        get_registered_types=lambda: {},
+        reset_layout=lambda: None,
+    )
+    BootstrapWiringMixin._register_core_editor_commands(
+        bootstrap,
+        windows,
+        SimpleNamespace(),
+    )
+    core = bootstrap.interaction_core
+    core.focus.activate_panel("inspector", view_id="inspector")
+    core.selection.select(
+        SelectionTarget.component(42, 701, sub_kind="native"),
+        owner_id="inspector",
+    )
+
+    for chord in ("Ctrl+C", "Ctrl+V", "Delete"):
+        assert core.shortcuts.route(
+            ShortcutEvent(KeyChord.parse(chord))
+        ).status is ShortcutRouteStatus.EXECUTED
+
+    for command_id in (
+        "component.open_script",
+        "component.copy_properties",
+        "component.paste_properties",
+        "component.paste_as_new",
+        "component.remove",
+    ):
+        assert core.commands.execute(
+            command_id,
+            source=CommandSource.CONTEXT_MENU,
+        ).accepted
+
+    assert calls == [
+        "copy_component",
+        "paste_default",
+        "remove_component",
+        "open_script",
+        "copy_component",
+        "paste_values",
+        "paste_as_new",
+        "remove_component",
+    ]

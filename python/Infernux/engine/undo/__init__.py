@@ -67,6 +67,7 @@ from Infernux.engine.undo._component_commands import (
     RemoveNativeComponentCommand,
     AddPyComponentCommand,
     RemovePyComponentCommand,
+    RemoveComponentsCommand,
 )
 
 # -- Manager --
@@ -137,6 +138,7 @@ __all__ = [
     "TimelineRemoveKeyframeCommand",
     "AddNativeComponentCommand", "RemoveNativeComponentCommand",
     "AddPyComponentCommand", "RemovePyComponentCommand",
+    "RemoveComponentsCommand",
     "UndoManager",
     "InspectorSnapshotCommand", "InspectorUndoTracker", "HierarchyUndoTracker",
     "RenderStackFieldCommand", "RenderStackSetPipelineCommand",

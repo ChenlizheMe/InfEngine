@@ -94,6 +94,7 @@ ReparentCommand = _undo_mod.ReparentCommand
 MoveGameObjectCommand = _undo_mod.MoveGameObjectCommand
 MaterialDocumentCommand = _undo_mod.MaterialDocumentCommand
 CompoundCommand = _undo_mod.CompoundCommand
+RemoveComponentsCommand = _undo_mod.RemoveComponentsCommand
 GlobalSelectionCommand = _undo_mod.GlobalSelectionCommand
 PrefabModeCommand = _undo_mod.PrefabModeCommand
 PrefabUnpackCommand = _undo_mod.PrefabUnpackCommand
@@ -600,6 +601,59 @@ class TestCompoundCommand:
         assert state["a"] is False
         assert state["b"] is False
         assert not mgr.can_undo  # only one entry was on the stack
+
+    def test_component_batch_removal_owns_selection_transition(self):
+        previous = SelectionService._instance
+        service = SelectionService()
+        before = SelectionSnapshot.create(
+            (
+                SelectionTarget.component(41, 101),
+                SelectionTarget.component(42, 102),
+            ),
+            owner_id="inspector",
+            primary=SelectionTarget.component(42, 102),
+        )
+        after = SelectionSnapshot.create(
+            (
+                SelectionTarget.scene_object(41),
+                SelectionTarget.scene_object(42),
+            ),
+            owner_id="inspector",
+            primary=SelectionTarget.scene_object(42),
+        )
+        service.apply_snapshot(before, record_history=False)
+        calls = []
+
+        class RemoveStub(UndoCommand):
+            def __init__(self, component_id):
+                super().__init__(f"Remove {component_id}")
+                self.component_id = component_id
+
+            def execute(self):
+                calls.append(("remove", self.component_id))
+
+            def undo(self):
+                calls.append(("restore", self.component_id))
+
+        command = RemoveComponentsCommand(
+            [RemoveStub(101), RemoveStub(102)],
+            before,
+            after,
+        )
+        try:
+            command.execute()
+            assert calls == [("remove", 101), ("remove", 102)]
+            assert service.snapshot == after
+
+            command.undo()
+            assert calls[-2:] == [("restore", 102), ("restore", 101)]
+            assert service.snapshot == before
+
+            command.redo()
+            assert calls[-2:] == [("remove", 101), ("remove", 102)]
+            assert service.snapshot == after
+        finally:
+            SelectionService._instance = previous
 
 
 # ══════════════════════════════════════════════════════════════════════
