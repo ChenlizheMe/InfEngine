@@ -9,5 +9,6 @@ from .commands import CommandContext, CommandResult, CommandSource, CommandStatu
 from .shortcuts import KeyChord, ShortcutBinding, ShortcutEvent, ShortcutModifier, ShortcutPhase, ShortcutRouteResult, ShortcutRouteStatus, ShortcutRouter, ShortcutScope
 from .session import EditorInteractionCore
 from .transactions import EditorTransaction
+from .graph_authoring import GraphActionDiff, GraphDomainAdapter, GraphElementKind, GraphElementRef, GraphMutation, GraphMutationKind, GraphSelectionController
 
 __all__: list[str]

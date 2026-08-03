@@ -229,6 +229,7 @@ class NodeGraphView:
         self._drag_src_kind: PinKind = PinKind.OUTPUT
         self._drag_end_x: float = 0.0
         self._drag_end_y: float = 0.0
+        self._reconnect_link_uid: str = ""
 
         # Node drag
         self._dragging_node: bool = False
@@ -274,6 +275,9 @@ class NodeGraphView:
         # Hosts can use this to pop a "create node and auto-connect" search menu.
         self.on_link_dropped_empty: Optional[Callable[[str, str, "PinKind", float, float], None]] = None
         self.on_node_selected: Optional[Callable[[str], None]] = None
+        self.on_selection_changed: Optional[
+            Callable[[Tuple[str, ...], str, bool], None]
+        ] = None
         self.on_node_data_changed: Optional[Callable[[str, str, object, object], None]] = None
         # Called immediately before user-driven selection changes (click), so editors can snapshot undo.
         self.on_before_selection_change: Optional[Callable[[], None]] = None
@@ -314,11 +318,11 @@ class NodeGraphView:
 
     def reset_interaction_state(self) -> None:
         """Drop selection and transient gestures when the host replaces the graph."""
-        self.selected_nodes.clear()
-        self.selected_link = ""
+        self.set_selection((), "", notify=False)
         self._dragging_pin = False
         self._drag_src_node = ""
         self._drag_src_pin = ""
+        self._reconnect_link_uid = ""
         self._dragging_node = False
         self._drag_node_id = ""
         self._panning = False
@@ -336,6 +340,27 @@ class NodeGraphView:
         self._inline_control_hovered = False
         self._inline_control_active = False
         self._canvas_window_hovered = False
+
+    def set_selection(
+        self,
+        node_ids=(),
+        link_id: str = "",
+        *,
+        notify: bool = True,
+        record_history: bool = True,
+    ) -> bool:
+        """Set projected selection while leaving authority to the host service."""
+        nodes = tuple(dict.fromkeys(str(uid) for uid in node_ids if str(uid)))
+        link = str(link_id or "")
+        if nodes and link:
+            raise ValueError("node graph selection cannot contain nodes and a link")
+        if tuple(self.selected_nodes) == nodes and self.selected_link == link:
+            return False
+        self.selected_nodes = list(nodes)
+        self.selected_link = link
+        if notify and self.on_selection_changed is not None:
+            self.on_selection_changed(nodes, link, bool(record_history))
+        return True
 
     def register_body_renderer(self, type_id: str, renderer: Callable) -> None:
         self._body_renderers[type_id] = renderer
@@ -1723,6 +1748,7 @@ class NodeGraphView:
             if not ctx.is_mouse_button_down(0):
                 self._try_complete_link(mx, my)
                 self._dragging_pin = False
+                self._reconnect_link_uid = ""
             return
 
         # Node dragging (divide delta by zoom)
@@ -1778,7 +1804,7 @@ class NodeGraphView:
                 elif self.graph:
                     for uid in list(self.selected_nodes):
                         self.graph.remove_node(uid)
-                self.selected_nodes.clear()
+                self.set_selection((), "", record_history=False)
                 return
             if self.selected_link:
                 link_uid = self.selected_link
@@ -1786,7 +1812,7 @@ class NodeGraphView:
                     self.on_link_deleted(link_uid)
                 elif self.graph:
                     self.graph.remove_link(link_uid)
-                self.selected_link = ""
+                self.set_selection((), "", record_history=False)
                 return
 
         if canvas_hovered and ctx.is_key_down(_IMGUI_MOD_CTRL):
@@ -1808,8 +1834,7 @@ class NodeGraphView:
             hit_lk = self._hit_test_link(mx, my)
             if hit_lk:
                 self._notify_before_selection_change()
-                self.selected_link = hit_lk
-                self.selected_nodes.clear()
+                self.set_selection((), hit_lk)
                 if self.on_node_selected:
                     self.on_node_selected("")
 
@@ -1819,8 +1844,7 @@ class NodeGraphView:
             hit_color_uid = self._hit_test_header_color_swatch(mx, my)
             if hit_color_uid:
                 self._notify_before_selection_change()
-                self.selected_nodes = [hit_color_uid]
-                self.selected_link = ""
+                self.set_selection((hit_color_uid,), "")
                 if self.on_node_selected:
                     self.on_node_selected(hit_color_uid)
                 self._header_color_popup_node_uid = hit_color_uid
@@ -1842,12 +1866,10 @@ class NodeGraphView:
                     existing = self._find_link_to_input(hit_node, hit_pin)
                     if existing:
                         src_n, src_p = existing.source_node, existing.source_pin
-                        if self.on_link_deleted:
-                            self.on_link_deleted(existing.uid)
-                        else:
-                            self.graph.remove_link(existing.uid)
-                        # Start a new drag from the output end
+                        # Keep the old link alive until a valid replacement is
+                        # committed. Releasing or cancelling the gesture is a no-op.
                         self._dragging_pin = True
+                        self._reconnect_link_uid = existing.uid
                         self._drag_src_node = src_n
                         self._drag_src_pin = src_p
                         self._drag_src_kind = PinKind.OUTPUT
@@ -1855,6 +1877,7 @@ class NodeGraphView:
                         self._drag_end_y = my
                         return
                 self._dragging_pin = True
+                self._reconnect_link_uid = ""
                 self._drag_src_node = hit_node
                 self._drag_src_pin = hit_pin
                 self._drag_src_kind = hit_kind
@@ -1869,11 +1892,8 @@ class NodeGraphView:
             endpoint_link = self._hit_test_link_endpoint(mx, my)
             if endpoint_link is not None:
                 link, endpoint = endpoint_link
-                if self.on_link_deleted:
-                    self.on_link_deleted(link.uid)
-                elif self.graph:
-                    self.graph.remove_link(link.uid)
                 self._dragging_pin = True
+                self._reconnect_link_uid = link.uid
                 if endpoint == "target":
                     self._drag_src_node = link.source_node
                     self._drag_src_pin = link.source_pin
@@ -1884,15 +1904,14 @@ class NodeGraphView:
                     self._drag_src_kind = PinKind.INPUT
                 self._drag_end_x = mx
                 self._drag_end_y = my
-                self.selected_link = ""
+                self.set_selection((), "", record_history=False)
                 return
 
             # Nodes
             hit_uid = self._hit_test_node(mx, my)
             if hit_uid:
                 self._notify_before_selection_change()
-                self.selected_nodes = [hit_uid]
-                self.selected_link = ""
+                self.set_selection((hit_uid,), "")
                 if self.on_node_selected:
                     self.on_node_selected(hit_uid)
                 consumed = False
@@ -1909,16 +1928,14 @@ class NodeGraphView:
             hit_lk = self._hit_test_link(mx, my)
             if hit_lk:
                 self._notify_before_selection_change()
-                self.selected_link = hit_lk
-                self.selected_nodes.clear()
+                self.set_selection((), hit_lk)
                 if self.on_node_selected:
                     self.on_node_selected("")
                 return
 
             # Empty space — deselect
             self._notify_before_selection_change()
-            self.selected_nodes.clear()
-            self.selected_link = ""
+            self.set_selection((), "")
             if self.on_node_selected:
                 self.on_node_selected("")
 
@@ -2036,6 +2053,8 @@ class NodeGraphView:
     def _try_complete_link(self, mx, my):
         target_node, target_pin, target_kind = self._hit_test_pin(mx, my)
         if target_pin is None:
+            if self._reconnect_link_uid:
+                return
             if self._drag_src_node and self._drag_src_pin:
                 gx, gy = self.screen_to_graph(mx, my)
                 if self.on_link_dropped_empty is not None:
@@ -2066,7 +2085,11 @@ class NodeGraphView:
             src_n, src_p = target_node, target_pin
             dst_n, dst_p = self._drag_src_node, self._drag_src_pin
         endpoints = (src_n, src_p, dst_n, dst_p)
-        existing = self._replaceable_input_link(endpoints)
+        existing = (
+            self.graph.find_link(self._reconnect_link_uid)
+            if self.graph is not None and self._reconnect_link_uid
+            else self._replaceable_input_link(endpoints)
+        )
         ignore_uid = existing.uid if existing is not None else ""
         if self.graph is not None and not self.graph.validate_link(
             *endpoints, ignore_link_uid=ignore_uid
@@ -2076,7 +2099,17 @@ class NodeGraphView:
             if self.on_link_replaced:
                 self.on_link_replaced(existing.uid, *endpoints)
             elif self.graph:
-                self.graph.replace_link(existing.uid, *endpoints)
+                if self.on_link_deleted or self.on_link_created:
+                    if self.on_link_deleted:
+                        self.on_link_deleted(existing.uid)
+                    else:
+                        self.graph.remove_link(existing.uid)
+                    if self.on_link_created:
+                        self.on_link_created(*endpoints)
+                    else:
+                        self.graph.add_link(*endpoints)
+                else:
+                    self.graph.replace_link(existing.uid, *endpoints)
             return
         if self.on_link_created:
             self.on_link_created(*endpoints)
@@ -2313,7 +2346,7 @@ class NodeGraphView:
                 else:
                     for uid in self.selected_nodes:
                         self.graph.remove_node(uid)
-                self.selected_nodes.clear()
+                self.set_selection((), "", record_history=False)
 
         # Delete selected link
         if self.selected_link:
@@ -2324,7 +2357,7 @@ class NodeGraphView:
                     self.on_link_deleted(self.selected_link)
                 else:
                     self.graph.remove_link(self.selected_link)
-                self.selected_link = ""
+                self.set_selection((), "", record_history=False)
 
         ctx.separator()
         centered = ctx.menu_item("Center View", "", False, True)

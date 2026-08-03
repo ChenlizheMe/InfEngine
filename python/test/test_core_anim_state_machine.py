@@ -121,11 +121,15 @@ def test_parameter_defaults():
     assert p.name == "NewVar"
     assert p.kind == "float"
     assert p.default_float == 0.0
+    assert p.stable_id
 
 
 def test_parameter_to_dict_bool():
     d = AnimParameter(name="jump", kind="bool", default_bool=True).to_dict()
-    assert d == {"name": "jump", "kind": "bool", "default_bool": True}
+    assert d["name"] == "jump"
+    assert d["kind"] == "bool"
+    assert d["default_bool"] is True
+    assert d["stable_id"]
 
 
 def test_parameter_to_dict_float():
@@ -156,11 +160,19 @@ def test_parameter_round_trip():
     p = AnimParameter(name="x", kind="int", default_int=4)
     p2 = AnimParameter.from_dict(p.to_dict())
     assert p2.name == "x" and p2.kind == "int" and p2.default_int == 4
+    assert p2.stable_id == p.stable_id
 
 
 def test_parameter_invalid_float_default_is_rejected():
     with pytest.raises(TypeError):
-        AnimParameter.from_dict({"name": "s", "kind": "float", "default_float": "NaNN"})
+        AnimParameter.from_dict(
+            {
+                "stable_id": "parameter-s",
+                "name": "s",
+                "kind": "float",
+                "default_float": "NaNN",
+            }
+        )
 
 
 # ── AnimTransition ──────────────────────────────────────────────────────────
@@ -376,9 +388,16 @@ def test_fsm_copy_is_independent():
 def test_fsm_equality_by_content():
     a = AnimStateMachine(name="X")
     a.add_state("Idle")
+    b = a.copy()
+    assert a == b
+
+
+def test_fsm_identity_is_part_of_serialized_content():
+    a = AnimStateMachine(name="X")
+    a.add_state("Idle")
     b = AnimStateMachine(name="X")
     b.add_state("Idle")
-    assert a == b
+    assert a != b
 
 
 def test_fsm_equality_ignores_file_path():

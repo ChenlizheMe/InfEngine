@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from Infernux.core.anim_state_machine import AnimParameter, AnimStateMachine
+from Infernux.engine.interaction import GraphElementKind
 from Infernux.engine.ui import animfsm_editor_panel as animfsm_module
 from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
 from Infernux.engine.ui.node_graph_view import NodeCreationEntry, NodeGraphView
@@ -342,11 +343,7 @@ def test_animfsm_toolbar_exposes_stable_semantic_ids():
 
 
 def test_animfsm_parameter_add_exposes_stable_semantic_id():
-    panel = AnimFSMEditorPanel.__new__(AnimFSMEditorPanel)
-    panel._fsm = AnimStateMachine(name="Locomotion")
-    panel._graph = SimpleNamespace(find_node=lambda _uid: None)
-    panel._selected_uid = ""
-    panel._selected_parameter_index = -1
+    panel = AnimFSMEditorPanel()
     ctx = _ToolbarContext()
     ctx.push_style_color = lambda *_args: None
     ctx.pop_style_color = lambda *_args: None
@@ -736,12 +733,11 @@ def test_animfsm_selection_only_click_does_not_mark_resource_dirty():
     uid = panel._name_to_uid["State 0"]
     panel._dirty = False
 
-    panel._view.selected_nodes = [uid]
-    panel._on_node_selected(uid)
+    panel._on_canvas_selection_changed((uid,), "", True)
     panel._on_node_drag_start(uid)
     panel._on_node_drag_end(uid)
 
-    assert panel._selected_uid == uid
+    assert panel._graph_selection.primary_id(GraphElementKind.NODE) == uid
     assert panel._dirty is False
 
 
@@ -803,8 +799,9 @@ def test_animfsm_selected_link_renders_transition_detail_semantics():
     link.data["cond_terms"] = [
         {"name": "ReplayTrigger", "op": ">", "value": 0.0},
     ]
-    panel._selected_uid = ""
-    panel._view.selected_link = link.uid
+    panel._graph_selection.select_one(
+        GraphElementKind.LINK, link.uid, record_history=False
+    )
     ctx = _TransitionDetailContext(transition_exit_time=0.0)
 
     panel._render_detail_panel(ctx)
@@ -935,6 +932,47 @@ def test_node_graph_drop_on_occupied_input_requests_atomic_replacement():
     view._try_complete_link(100.0, 100.0)
 
     assert replaced == [(original.uid, second.uid, "out", target.uid, "in")]
+
+
+def test_node_graph_cancelled_reconnect_preserves_original_link():
+    from Infernux.core.node_graph import NodeGraph
+    from Infernux.core.node_graph import NodeTypeDef, PinDef, PinKind
+
+    graph = NodeGraph()
+    graph.register_type(
+        NodeTypeDef(
+            "source",
+            "Source",
+            pins=[PinDef("out", "Out", PinKind.OUTPUT, data_type="float")],
+        )
+    )
+    graph.register_type(
+        NodeTypeDef(
+            "target",
+            "Target",
+            pins=[PinDef("in", "In", PinKind.INPUT, data_type="float")],
+        )
+    )
+    source = graph.add_node("source", uid="source")
+    target = graph.add_node("target", uid="target")
+    original = graph.add_link(source.uid, "out", target.uid, "in")
+    deleted = []
+    replaced = []
+    view = NodeGraphView()
+    view.graph = graph
+    view.on_link_deleted = deleted.append
+    view.on_link_replaced = lambda *args: replaced.append(args)
+    view._reconnect_link_uid = original.uid
+    view._drag_src_node = source.uid
+    view._drag_src_pin = "out"
+    view._drag_src_kind = PinKind.OUTPUT
+    view._hit_test_pin = lambda _x, _y: ("", None, PinKind.INPUT)
+
+    view._try_complete_link(100.0, 100.0)
+
+    assert graph.find_link(original.uid) is original
+    assert deleted == []
+    assert replaced == []
 
 
 def test_node_graph_open_add_menu_preserves_open_state_on_domain_semantic():

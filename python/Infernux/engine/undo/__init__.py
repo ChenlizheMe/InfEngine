@@ -61,6 +61,8 @@ from Infernux.engine.undo._timeline_commands import (
     TimelineRemoveKeyframeCommand,
 )
 
+from Infernux.engine.undo._graph_commands import GraphDiffCommand
+
 # -- Component commands --
 from Infernux.engine.undo._component_commands import (
     AddComponentTransactionCommand,
@@ -138,6 +140,7 @@ __all__ = [
     "TimelineInsertKeyframeCommand",
     "TimelinePropertyCommand",
     "TimelineRemoveKeyframeCommand",
+    "GraphDiffCommand",
     "AddComponentTransactionCommand",
     "AddNativeComponentCommand", "RemoveNativeComponentCommand",
     "AddPyComponentCommand", "RemovePyComponentCommand",

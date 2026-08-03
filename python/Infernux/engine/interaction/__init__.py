@@ -60,6 +60,15 @@ from .shortcuts import (
 )
 from .session import EditorInteractionCore
 from .transactions import EditorTransaction
+from .graph_authoring import (
+    GraphActionDiff,
+    GraphDomainAdapter,
+    GraphElementKind,
+    GraphElementRef,
+    GraphMutation,
+    GraphMutationKind,
+    GraphSelectionController,
+)
 
 __all__ = [
     "EditorInteractionCore",
@@ -116,4 +125,11 @@ __all__ = [
     "ShortcutRouteStatus",
     "ShortcutRouter",
     "ShortcutScope",
+    "GraphActionDiff",
+    "GraphDomainAdapter",
+    "GraphElementKind",
+    "GraphElementRef",
+    "GraphMutation",
+    "GraphMutationKind",
+    "GraphSelectionController",
 ]

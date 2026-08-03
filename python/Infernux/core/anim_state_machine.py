@@ -18,6 +18,7 @@ import json
 import math
 import os
 import operator
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -161,9 +162,18 @@ class AnimParameter:
     default_bool: bool = False
     default_float: float = 0.0
     default_int: int = 0
+    stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    def __post_init__(self) -> None:
+        if type(self.stable_id) is not str or not self.stable_id:
+            raise ValueError("animation parameter stable_id must be a non-empty string")
 
     def to_dict(self) -> dict:
-        out: Dict[str, Any] = {"name": self.name, "kind": self.kind}
+        out: Dict[str, Any] = {
+            "stable_id": self.stable_id,
+            "name": self.name,
+            "kind": self.kind,
+        }
         if self.kind == "bool":
             out["default_bool"] = self.default_bool
         elif self.kind == "float":
@@ -184,7 +194,7 @@ class AnimParameter:
         }.get(kind)
         if default_key is None:
             raise ValueError("animation parameter kind must be bool, float, or int")
-        expected = {"name", "kind", default_key}
+        expected = {"stable_id", "name", "kind", default_key}
         if set(d) != expected:
             raise ValueError(
                 f"animation parameter fields mismatch; "
@@ -192,30 +202,53 @@ class AnimParameter:
             )
         if type(d["name"]) is not str or not d["name"]:
             raise ValueError("animation parameter name must be a non-empty string")
+        if type(d["stable_id"]) is not str or not d["stable_id"]:
+            raise ValueError("animation parameter stable_id must be a non-empty string")
         if kind == "bool":
             if type(d[default_key]) is not bool:
                 raise TypeError("animation bool default must be a bool")
-            return cls(name=d["name"], kind=kind, default_bool=d[default_key])
+            return cls(
+                name=d["name"],
+                kind=kind,
+                default_bool=d[default_key],
+                stable_id=d["stable_id"],
+            )
         if kind == "int":
             if type(d[default_key]) is not int:
                 raise TypeError("animation int default must be an integer")
-            return cls(name=d["name"], kind=kind, default_int=d[default_key])
+            return cls(
+                name=d["name"],
+                kind=kind,
+                default_int=d[default_key],
+                stable_id=d["stable_id"],
+            )
         value = d[default_key]
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             raise TypeError("animation float default must be numeric")
-        return cls(name=d["name"], kind=kind, default_float=float(value))
+        return cls(
+            name=d["name"],
+            kind=kind,
+            default_float=float(value),
+            stable_id=d["stable_id"],
+        )
 
 
 @dataclass
 class AnimTransition:
     """A directed transition between two states."""
 
+    stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     target_state: str = ""
     condition: str = ""       # expression string evaluated at runtime
     duration: float = 0.0     # cross-fade / blend duration in seconds
 
+    def __post_init__(self) -> None:
+        if type(self.stable_id) is not str or not self.stable_id:
+            raise ValueError("animation transition stable_id must be a non-empty string")
+
     def to_dict(self) -> dict:
         return {
+            "stable_id": self.stable_id,
             "target_state": self.target_state,
             "condition": self.condition,
             "duration": self.duration,
@@ -223,13 +256,23 @@ class AnimTransition:
 
     @classmethod
     def from_dict(cls, d: dict) -> AnimTransition:
-        _require_exact_fields(d, {"target_state", "condition", "duration"}, "animation transition")
-        if type(d["target_state"]) is not str or type(d["condition"]) is not str:
+        _require_exact_fields(
+            d,
+            {"stable_id", "target_state", "condition", "duration"},
+            "animation transition",
+        )
+        if (
+            type(d["stable_id"]) is not str
+            or not d["stable_id"]
+            or type(d["target_state"]) is not str
+            or type(d["condition"]) is not str
+        ):
             raise TypeError("animation transition target_state and condition must be strings")
         duration = _finite_number(d["duration"], "animation transition duration")
         if duration < 0.0:
             raise ValueError("animation transition duration must be non-negative")
         return cls(
+            stable_id=d["stable_id"],
             target_state=d["target_state"],
             condition=d["condition"],
             duration=duration,
@@ -247,6 +290,7 @@ class AnimState:
     blend state owns its Lerp (not shared across nodes).
     """
 
+    stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     name: str = "New State"
     kind: str = "clip"        # "clip" | "blend" | "timeline"
     clip_guid: str = ""       # GUID of the referenced .animclip2d / .animclip3d (clip A)
@@ -272,8 +316,13 @@ class AnimState:
     # Optional custom node header color in editor RGBA.
     header_color: List[float] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        if type(self.stable_id) is not str or not self.stable_id:
+            raise ValueError("animation state stable_id must be a non-empty string")
+
     def to_dict(self) -> dict:
         return {
+            "stable_id": self.stable_id,
             "name": self.name,
             "kind": self.kind,
             "clip_guid": self.clip_guid,
@@ -295,17 +344,17 @@ class AnimState:
     @classmethod
     def from_dict(cls, d: dict) -> AnimState:
         expected = {
-            "name", "kind", "clip_guid", "clip_path", "clip_b_guid", "clip_b_path",
+            "stable_id", "name", "kind", "clip_guid", "clip_path", "clip_b_guid", "clip_b_path",
             "blend_value", "timeline_guid", "timeline_path", "speed",
             "exit_time_normalized", "loop", "restart_same_clip", "transitions",
             "position", "header_color",
         }
         _require_exact_fields(d, expected, "animation state")
         string_fields = (
-            "name", "kind", "clip_guid", "clip_path", "clip_b_guid", "clip_b_path",
+            "stable_id", "name", "kind", "clip_guid", "clip_path", "clip_b_guid", "clip_b_path",
             "timeline_guid", "timeline_path",
         )
-        if any(type(d[field]) is not str for field in string_fields):
+        if any(type(d[field]) is not str for field in string_fields) or not d["stable_id"]:
             raise TypeError("animation state identity and asset fields must be strings")
         if d["kind"] not in {"clip", "blend", "timeline"}:
             raise ValueError("animation state kind must be clip, blend, or timeline")
@@ -328,6 +377,7 @@ class AnimState:
         if any(value < 0.0 or value > 1.0 for value in header_color):
             raise ValueError("animation state header_color values must be in [0, 1]")
         return cls(
+            stable_id=d["stable_id"],
             name=d["name"],
             kind=d["kind"],
             clip_guid=d["clip_guid"],
@@ -386,11 +436,40 @@ class AnimStateMachine:
         if type(raw_params) is not list:
             raise TypeError("animation state machine parameters must be an array")
         params = [AnimParameter.from_dict(item) for item in raw_params]
+        states = [AnimState.from_dict(item) for item in d["states"]]
+        state_names = [state.name for state in states]
+        state_ids = [state.stable_id for state in states]
+        parameter_names = [parameter.name for parameter in params]
+        parameter_ids = [parameter.stable_id for parameter in params]
+        transition_ids = [
+            transition.stable_id
+            for state in states
+            for transition in state.transitions
+        ]
+        if len(state_names) != len(set(state_names)):
+            raise ValueError("animation state names must be unique")
+        if len(state_ids) != len(set(state_ids)):
+            raise ValueError("animation state stable_ids must be unique")
+        if len(parameter_names) != len(set(parameter_names)):
+            raise ValueError("animation parameter names must be unique")
+        if len(parameter_ids) != len(set(parameter_ids)):
+            raise ValueError("animation parameter stable_ids must be unique")
+        if len(transition_ids) != len(set(transition_ids)):
+            raise ValueError("animation transition stable_ids must be unique")
+        known_states = set(state_names)
+        if d["default_state"] and d["default_state"] not in known_states:
+            raise ValueError("animation default_state must reference a declared state")
+        if any(
+            transition.target_state not in known_states
+            for state in states
+            for transition in state.transitions
+        ):
+            raise ValueError("animation transitions must reference declared states")
         return cls(
             name=d["name"],
             default_state=d["default_state"],
             mode=d["mode"],
-            states=[AnimState.from_dict(s) for s in d["states"]],
+            states=states,
             parameters=params,
         )
 
@@ -439,6 +518,21 @@ class AnimStateMachine:
         for s in self.states:
             if s.name == name:
                 return s
+        return None
+
+    def get_state_by_id(self, stable_id: str) -> Optional[AnimState]:
+        for state in self.states:
+            if state.stable_id == stable_id:
+                return state
+        return None
+
+    def get_transition_by_id(
+        self, stable_id: str
+    ) -> Optional[tuple[AnimState, AnimTransition]]:
+        for state in self.states:
+            for transition in state.transitions:
+                if transition.stable_id == stable_id:
+                    return state, transition
         return None
 
     def add_state(self, name: str = "") -> AnimState:

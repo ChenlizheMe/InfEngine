@@ -15,6 +15,7 @@ import copy
 import os
 import re
 import threading
+import uuid
 from typing import Dict, List, Optional, Tuple
 
 from Infernux.engine.path_utils import path_key, relative_path, resolved_path, same_path
@@ -37,6 +38,17 @@ from Infernux.core.node_graph import (
 )
 from Infernux.debug import Debug
 from Infernux.engine.i18n import t
+from Infernux.engine.interaction import (
+    ClipboardDomain,
+    ClipboardItem,
+    ClipboardService,
+    GraphActionDiff,
+    GraphElementKind,
+    GraphElementRef,
+    GraphMutation,
+    GraphMutationKind,
+    GraphSelectionController,
+)
 from Infernux.lib import InxGUIContext
 
 from .asset_save_dialog import AssetSaveAsDialog
@@ -57,6 +69,11 @@ from .inspector_utils import field_label, max_label_w
 from .panel_registry import editor_panel
 from .theme import ImGuiCol, Theme
 from .igui import IGUI
+
+
+_FSM_ENTRY_NODE_ID = "animfsm.entry"
+_FSM_ENTRY_LINK_ID = "animfsm.entry-link"
+_FSM_GRAPH_ID = "animfsm.graph"
 
 
 # Legacy single-compare fallback when ast parse fails
@@ -100,8 +117,6 @@ def _ast_to_float(node: ast.expr) -> Optional[float]:
             return 1.0 if v else 0.0
         if isinstance(v, (int, float)):
             return float(v)
-    if hasattr(ast, "Num") and isinstance(node, ast.Num):
-        return float(node.n)
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         inner = _ast_to_float(node.operand)
         if inner is not None:
@@ -286,19 +301,23 @@ class AnimFSMEditorPanel(EditorPanel):
         self._view.graph = self._graph
         self._view.on_link_created = self._on_link_created
         self._view.on_link_deleted = self._on_link_deleted
+        self._view.on_link_replaced = self._on_link_replaced
         self._view.on_nodes_deleted = self._on_nodes_deleted
         self._view.on_node_add_request = self._on_node_add_request
         self._view.on_node_creation_entries = self._node_creation_entries
         self._view.on_node_creation_selected = self._on_node_creation_selected
-        self._view.on_node_selected = self._on_node_selected
+        self._view.on_selection_changed = self._on_canvas_selection_changed
         self._view.on_canvas_drop = self._on_canvas_drop
         self._view.on_node_drag_start = self._on_node_drag_start
         self._view.on_node_drag_end = self._on_node_drag_end
         self._view.on_node_header_color_changed = self._on_node_header_color_changed
 
-        # Currently selected node uid
-        self._selected_uid: str = ""
-        self._selected_parameter_index = -1
+        self._graph_selection = GraphSelectionController(
+            owner_id=self.window_id,
+            document_id=lambda: self.document_id,
+            contains=self._contains_graph_element,
+            view=self._view,
+        )
         self._left_overlay = FloatingOverlayState()
         self._right_overlay = FloatingOverlayState()
 
@@ -309,15 +328,11 @@ class AnimFSMEditorPanel(EditorPanel):
         # Entry node uid
         self._entry_uid: str = ""
 
-        # Guard to avoid re-entrant selection clearing
-        self._clearing_selection: bool = False
-
         # Panel persistence: ``load_state`` may run from bootstrap or first render
         self._panel_state_restored_once: bool = False
         self._panel_restore_data: Optional[dict] = None
-        self._undo_drag_snapshot: Optional[dict] = None
         self._undo_drag_node_position: Optional[Tuple[float, float]] = None
-        self._clipboard_fsm_nodes: Optional[dict] = None
+        self._pending_save_ticket_id: str = ""
 
         self._view.on_copy = self._on_graph_copy
         self._view.on_paste = self._on_graph_paste
@@ -344,6 +359,786 @@ class AnimFSMEditorPanel(EditorPanel):
             return resolved_path(os.path.join(root, p))
         return resolved_path(p)
 
+    @staticmethod
+    def _fsm_document_key(path: str):
+        from Infernux.engine.interaction import DocumentKey, DocumentKind
+
+        normalized = resolved_path(path)
+        try:
+            from Infernux.core.asset_types import read_meta_guid
+
+            guid = read_meta_guid(normalized)
+        except Exception:
+            guid = ""
+        if guid:
+            return DocumentKey.asset(DocumentKind.ANIMATION_FSM, guid)
+        return DocumentKey.resource(DocumentKind.ANIMATION_FSM, normalized)
+
+    def _replace_fsm_document(self, *, resource_path: str, dirty: bool) -> None:
+        from Infernux.engine.interaction import (
+            DocumentCapability,
+            DocumentKey,
+            DocumentKind,
+            DocumentRegistry,
+        )
+
+        path = self._normalize_fsm_path(resource_path) if resource_path else ""
+        title = os.path.splitext(os.path.basename(path))[0] if path else "State Machine"
+        registry = DocumentRegistry.instance()
+        key = self._fsm_document_key(path) if path else DocumentKey.session(
+            DocumentKind.ANIMATION_FSM
+        )
+        document, _created = registry.open_or_create(
+            key,
+            title,
+            resource_path=path,
+            revision=1 if dirty else 0,
+            saved_revision=0,
+            capabilities=(
+                DocumentCapability.SAVE
+                | DocumentCapability.SAVE_AS
+                | DocumentCapability.DISCARD
+            ),
+            controller=self,
+        )
+        self.bind_document(document.document_id)
+        self._dirty = document.is_dirty
+        self._graph_selection.refresh()
+
+    def _fsm_document(self):
+        from Infernux.engine.interaction import DocumentRegistry
+
+        return DocumentRegistry.instance().get(self.document_id)
+
+    def _contains_graph_element(self, element: GraphElementRef) -> bool:
+        if element.kind is GraphElementKind.GRAPH:
+            return element.stable_id == _FSM_GRAPH_ID and self._fsm is not None
+        if element.kind is GraphElementKind.NODE:
+            return self._graph.find_node(element.stable_id) is not None
+        if element.kind is GraphElementKind.LINK:
+            return self._graph.find_link(element.stable_id) is not None
+        if element.kind is GraphElementKind.PARAMETER:
+            return self._fsm is not None and any(
+                parameter.stable_id == element.stable_id
+                for parameter in self._fsm.parameters
+            )
+        return False
+
+    def _state_index_by_id(self, stable_id: str) -> int:
+        if self._fsm is None:
+            return -1
+        return next(
+            (
+                index
+                for index, state in enumerate(self._fsm.states)
+                if state.stable_id == stable_id
+            ),
+            -1,
+        )
+
+    def _transition_document(self, stable_id: str) -> Optional[dict]:
+        if self._fsm is None:
+            return None
+        found = self._fsm.get_transition_by_id(stable_id)
+        if found is None:
+            return None
+        owner, transition = found
+        return {
+            "source_state_id": owner.stable_id,
+            "transition": transition.to_dict(),
+        }
+
+    def _parameter_by_id(self, stable_id: str) -> Optional[AnimParameter]:
+        if self._fsm is None:
+            return None
+        return next(
+            (
+                parameter
+                for parameter in self._fsm.parameters
+                if parameter.stable_id == stable_id
+            ),
+            None,
+        )
+
+    def _parameter_index_by_id(self, stable_id: str) -> int:
+        if self._fsm is None:
+            return -1
+        return next(
+            (
+                index
+                for index, parameter in enumerate(self._fsm.parameters)
+                if parameter.stable_id == stable_id
+            ),
+            -1,
+        )
+
+    def _selected_parameter(self) -> Optional[AnimParameter]:
+        return self._parameter_by_id(
+            self._graph_selection.primary_id(GraphElementKind.PARAMETER)
+        )
+
+    @staticmethod
+    def _parameter_document_for_kind(
+        parameter: AnimParameter, kind: str
+    ) -> dict:
+        document = {
+            "stable_id": parameter.stable_id,
+            "name": parameter.name,
+            "kind": kind,
+        }
+        if kind == "bool":
+            document["default_bool"] = bool(parameter.default_bool)
+        elif kind == "int":
+            document["default_int"] = int(parameter.default_int)
+        elif kind == "float":
+            document["default_float"] = float(parameter.default_float)
+        else:
+            raise ValueError(f"unsupported animation parameter kind: {kind}")
+        return document
+
+    def _insert_parameter(self) -> bool:
+        if self._fsm is None:
+            return False
+        parameter = AnimParameter(
+            name=f"var_{len(self._fsm.parameters)}",
+            kind="float",
+        )
+        ref = GraphElementRef(GraphElementKind.PARAMETER, parameter.stable_id)
+        return self._execute_graph_mutations(
+            "Add parameter",
+            (
+                GraphMutation(
+                    GraphMutationKind.INSERT,
+                    ref,
+                    after=parameter.to_dict(),
+                    after_index=len(self._fsm.parameters),
+                ),
+            ),
+            selection_after=(ref,),
+        )
+
+    def _remove_parameter(self, stable_id: str) -> bool:
+        parameter = self._parameter_by_id(stable_id)
+        index = self._parameter_index_by_id(stable_id)
+        if parameter is None or index < 0:
+            return False
+        selected = self._graph_selection.primary_id(GraphElementKind.PARAMETER)
+        return self._execute_graph_mutations(
+            "Remove parameter",
+            (
+                GraphMutation(
+                    GraphMutationKind.REMOVE,
+                    GraphElementRef(GraphElementKind.PARAMETER, stable_id),
+                    before=parameter.to_dict(),
+                    before_index=index,
+                ),
+            ),
+            selection_after=() if selected == stable_id else None,
+        )
+
+    def _update_parameter_document(
+        self,
+        parameter: AnimParameter,
+        after: dict,
+        description: str,
+        *,
+        merge_key: str,
+    ) -> bool:
+        before = parameter.to_dict()
+        if after == before:
+            return False
+        return self._execute_graph_mutations(
+            description,
+            (
+                GraphMutation(
+                    GraphMutationKind.UPDATE,
+                    GraphElementRef(
+                        GraphElementKind.PARAMETER, parameter.stable_id
+                    ),
+                    before=before,
+                    after=after,
+                ),
+            ),
+            merge_key=merge_key,
+        )
+
+    def _update_graph_document(
+        self,
+        *,
+        name: Optional[str] = None,
+        mode: Optional[str] = None,
+        description: str,
+        merge_key: str,
+    ) -> bool:
+        if self._fsm is None:
+            return False
+        before = {"name": self._fsm.name, "mode": self._fsm.mode}
+        after = dict(before)
+        if name is not None:
+            after["name"] = str(name)
+        if mode is not None:
+            after["mode"] = str(mode)
+        if before == after:
+            return False
+        return self._execute_graph_mutations(
+            description,
+            (
+                GraphMutation(
+                    GraphMutationKind.UPDATE,
+                    GraphElementRef(GraphElementKind.GRAPH, _FSM_GRAPH_ID),
+                    before=before,
+                    after=after,
+                ),
+            ),
+            merge_key=merge_key,
+        )
+
+    def _update_state_document(
+        self,
+        state: AnimState,
+        after: dict,
+        description: str,
+        *,
+        merge_key: str,
+        before: Optional[dict] = None,
+    ) -> bool:
+        before_document = state.to_dict() if before is None else copy.deepcopy(before)
+        if before_document == after:
+            return False
+        return self._execute_graph_mutations(
+            description,
+            (
+                GraphMutation(
+                    GraphMutationKind.UPDATE,
+                    GraphElementRef(GraphElementKind.NODE, state.stable_id),
+                    before=before_document,
+                    after=after,
+                ),
+            ),
+            merge_key=merge_key,
+        )
+
+    def _update_state_fields(
+        self,
+        state: AnimState,
+        description: str,
+        *,
+        merge_key: str,
+        **changes,
+    ) -> bool:
+        after = state.to_dict()
+        for key, value in changes.items():
+            if key not in after:
+                raise KeyError(f"unknown animation state field: {key}")
+            after[key] = copy.deepcopy(value)
+        return self._update_state_document(
+            state,
+            after,
+            description,
+            merge_key=merge_key,
+        )
+
+    def _insert_state(
+        self,
+        state: AnimState,
+        description: str,
+        *,
+        make_default: bool,
+    ) -> bool:
+        if self._fsm is None:
+            return False
+        state.transitions = []
+        mutations: list[GraphMutation] = [
+            GraphMutation(
+                GraphMutationKind.INSERT,
+                GraphElementRef(GraphElementKind.NODE, state.stable_id),
+                after=state.to_dict(),
+                after_index=len(self._fsm.states),
+            )
+        ]
+        if make_default:
+            mutations.append(
+                GraphMutation(
+                    GraphMutationKind.UPDATE,
+                    GraphElementRef(GraphElementKind.LINK, _FSM_ENTRY_LINK_ID),
+                    before={"default_state": self._fsm.default_state},
+                    after={"default_state": state.name},
+                )
+            )
+        ref = GraphElementRef(GraphElementKind.NODE, state.stable_id)
+        return self._execute_graph_mutations(
+            description,
+            tuple(mutations),
+            selection_after=(ref,),
+        )
+
+    def _set_default_state(self, state_name: str, description: str) -> bool:
+        if self._fsm is None or self._fsm.default_state == state_name:
+            return False
+        return self._execute_graph_mutations(
+            description,
+            (
+                GraphMutation(
+                    GraphMutationKind.UPDATE,
+                    GraphElementRef(GraphElementKind.LINK, _FSM_ENTRY_LINK_ID),
+                    before={"default_state": self._fsm.default_state},
+                    after={"default_state": state_name},
+                ),
+            ),
+        )
+
+    def _insert_transition(
+        self,
+        owner: AnimState,
+        transition: AnimTransition,
+        description: str,
+    ) -> bool:
+        return self._execute_graph_mutations(
+            description,
+            (
+                GraphMutation(
+                    GraphMutationKind.INSERT,
+                    GraphElementRef(GraphElementKind.LINK, transition.stable_id),
+                    after={
+                        "source_state_id": owner.stable_id,
+                        "transition": transition.to_dict(),
+                    },
+                    after_index=len(owner.transitions),
+                ),
+            ),
+        )
+
+    def _remove_transition(self, stable_id: str, description: str) -> bool:
+        if self._fsm is None:
+            return False
+        if stable_id == _FSM_ENTRY_LINK_ID:
+            if not self._fsm.default_state:
+                return False
+            mutation = GraphMutation(
+                GraphMutationKind.UPDATE,
+                GraphElementRef(GraphElementKind.LINK, stable_id),
+                before={"default_state": self._fsm.default_state},
+                after={"default_state": ""},
+            )
+        else:
+            found = self._fsm.get_transition_by_id(stable_id)
+            if found is None:
+                return False
+            owner, transition = found
+            mutation = GraphMutation(
+                GraphMutationKind.REMOVE,
+                GraphElementRef(GraphElementKind.LINK, stable_id),
+                before={
+                    "source_state_id": owner.stable_id,
+                    "transition": transition.to_dict(),
+                },
+                before_index=owner.transitions.index(transition),
+            )
+        selected = self._graph_selection.primary_id(GraphElementKind.LINK)
+        return self._execute_graph_mutations(
+            description,
+            (mutation,),
+            selection_after=() if selected == stable_id else None,
+        )
+
+    def _update_transition_document(
+        self,
+        stable_id: str,
+        after_transition: dict,
+        description: str,
+        *,
+        merge_key: str,
+    ) -> bool:
+        if self._fsm is None:
+            return False
+        found = self._fsm.get_transition_by_id(stable_id)
+        if found is None:
+            return False
+        owner, transition = found
+        before = {
+            "source_state_id": owner.stable_id,
+            "transition": transition.to_dict(),
+        }
+        after = {
+            "source_state_id": owner.stable_id,
+            "transition": copy.deepcopy(after_transition),
+        }
+        if before == after:
+            return False
+        index = owner.transitions.index(transition)
+        return self._execute_graph_mutations(
+            description,
+            (
+                GraphMutation(
+                    GraphMutationKind.UPDATE,
+                    GraphElementRef(GraphElementKind.LINK, stable_id),
+                    before=before,
+                    after=after,
+                    before_index=index,
+                    after_index=index,
+                ),
+            ),
+            merge_key=merge_key,
+        )
+
+    def _update_transition_fields(
+        self,
+        stable_id: str,
+        description: str,
+        *,
+        merge_key: str,
+        **changes,
+    ) -> bool:
+        if self._fsm is None:
+            return False
+        found = self._fsm.get_transition_by_id(stable_id)
+        if found is None:
+            return False
+        _, transition = found
+        after = transition.to_dict()
+        for key, value in changes.items():
+            if key not in after:
+                raise KeyError(f"unknown animation transition field: {key}")
+            after[key] = copy.deepcopy(value)
+        return self._update_transition_document(
+            stable_id,
+            after,
+            description,
+            merge_key=merge_key,
+        )
+
+    def _remove_states(self, stable_ids: Tuple[str, ...]) -> bool:
+        fsm = self._fsm
+        if fsm is None:
+            return False
+        targets = [
+            state for state in fsm.states if state.stable_id in set(stable_ids)
+        ]
+        if not targets:
+            return False
+        target_names = {state.name for state in targets}
+        mutations: list[GraphMutation] = []
+        for owner in fsm.states:
+            for index, transition in enumerate(owner.transitions):
+                if owner in targets or transition.target_state in target_names:
+                    mutations.append(
+                        GraphMutation(
+                            GraphMutationKind.REMOVE,
+                            GraphElementRef(
+                                GraphElementKind.LINK, transition.stable_id
+                            ),
+                            before={
+                                "source_state_id": owner.stable_id,
+                                "transition": transition.to_dict(),
+                            },
+                            before_index=index,
+                        )
+                    )
+        if fsm.default_state in target_names:
+            replacement_default = next(
+                (state.name for state in fsm.states if state not in targets), ""
+            )
+            mutations.append(
+                GraphMutation(
+                    GraphMutationKind.UPDATE,
+                    GraphElementRef(GraphElementKind.LINK, _FSM_ENTRY_LINK_ID),
+                    before={"default_state": fsm.default_state},
+                    after={"default_state": replacement_default},
+                )
+            )
+        indexed_targets = sorted(
+            ((fsm.states.index(state), state) for state in targets), reverse=True
+        )
+        for index, state in indexed_targets:
+            document = state.to_dict()
+            document["transitions"] = []
+            mutations.append(
+                GraphMutation(
+                    GraphMutationKind.REMOVE,
+                    GraphElementRef(GraphElementKind.NODE, state.stable_id),
+                    before=document,
+                    before_index=index,
+                )
+            )
+        selected = set(self._graph_selection.selected_ids(GraphElementKind.NODE))
+        return self._execute_graph_mutations(
+            "Delete state" if len(targets) == 1 else "Delete states",
+            tuple(mutations),
+            selection_after=() if selected & set(stable_ids) else None,
+        )
+
+    def apply_diff(self, diff: GraphActionDiff) -> None:
+        """Apply one precise FSM authoring diff through stable identities."""
+        if diff.document_id != self.document_id:
+            raise RuntimeError("graph diff targets a different animation FSM document")
+        fsm = self._fsm
+        if fsm is None:
+            raise RuntimeError("animation FSM document has no live model")
+        rebuild_graph = False
+        for mutation in diff.mutations:
+            if mutation.element.kind is GraphElementKind.PARAMETER:
+                stable_id = mutation.element.stable_id
+                index = self._parameter_index_by_id(stable_id)
+                if mutation.kind is GraphMutationKind.INSERT:
+                    if index >= 0 or not isinstance(mutation.after, dict):
+                        raise RuntimeError(f"cannot insert animation parameter {stable_id}")
+                    target_index = max(
+                        0, min(int(mutation.after_index), len(fsm.parameters))
+                    )
+                    fsm.parameters.insert(
+                        target_index, AnimParameter.from_dict(mutation.after)
+                    )
+                elif mutation.kind is GraphMutationKind.REMOVE:
+                    if index < 0:
+                        raise RuntimeError(f"animation parameter no longer exists: {stable_id}")
+                    fsm.parameters.pop(index)
+                elif mutation.kind is GraphMutationKind.UPDATE:
+                    if index < 0 or not isinstance(mutation.after, dict):
+                        raise RuntimeError(f"cannot update animation parameter {stable_id}")
+                    current = fsm.parameters[index]
+                    replacement = AnimParameter.from_dict(mutation.after)
+                    if replacement.stable_id != stable_id:
+                        raise RuntimeError("animation parameter update changed stable identity")
+                    if current.name != replacement.name:
+                        self._rename_parameter_in_fsm(current.name, replacement.name)
+                        rebuild_graph = True
+                    fsm.parameters[index] = replacement
+                else:
+                    raise RuntimeError(
+                        f"unsupported animation parameter mutation: {mutation.kind.value}"
+                    )
+                continue
+            if mutation.element.kind is GraphElementKind.GRAPH:
+                if (
+                    mutation.element.stable_id != _FSM_GRAPH_ID
+                    or mutation.kind is not GraphMutationKind.UPDATE
+                    or not isinstance(mutation.after, dict)
+                ):
+                    raise RuntimeError("invalid animation FSM document mutation")
+                name = mutation.after.get("name")
+                mode = mutation.after.get("mode")
+                if type(name) is not str or not name:
+                    raise RuntimeError("animation FSM name must not be empty")
+                if mode not in {"2d", "3d", "timeline"}:
+                    raise RuntimeError("animation FSM mode is invalid")
+                fsm.name = name
+                fsm.mode = mode
+                rebuild_graph = True
+                continue
+            if mutation.element.kind is GraphElementKind.LINK:
+                stable_id = mutation.element.stable_id
+                if stable_id == _FSM_ENTRY_LINK_ID:
+                    payload = (
+                        mutation.after
+                        if mutation.kind
+                        in (GraphMutationKind.INSERT, GraphMutationKind.UPDATE)
+                        else {"default_state": ""}
+                    )
+                    if not isinstance(payload, dict):
+                        raise RuntimeError("animation entry link mutation is incomplete")
+                    default_state = str(payload.get("default_state") or "")
+                    if default_state and fsm.get_state(default_state) is None:
+                        raise RuntimeError(
+                            f"animation default state no longer exists: {default_state}"
+                        )
+                    fsm.default_state = default_state
+                    rebuild_graph = True
+                    continue
+                found = fsm.get_transition_by_id(stable_id)
+                if mutation.kind is GraphMutationKind.REMOVE:
+                    if found is None:
+                        raise RuntimeError(
+                            f"animation transition no longer exists: {stable_id}"
+                        )
+                    owner, transition = found
+                    owner.transitions.remove(transition)
+                    rebuild_graph = True
+                    continue
+                payload = mutation.after
+                if not isinstance(payload, dict):
+                    raise RuntimeError("animation transition mutation is incomplete")
+                transition_document = payload.get("transition")
+                source_state_id = str(payload.get("source_state_id") or "")
+                new_owner = fsm.get_state_by_id(source_state_id)
+                if new_owner is None or not isinstance(transition_document, dict):
+                    raise RuntimeError("animation transition mutation is incomplete")
+                replacement = AnimTransition.from_dict(transition_document)
+                if replacement.stable_id != stable_id:
+                    raise RuntimeError("animation transition mutation changed stable identity")
+                if fsm.get_state(replacement.target_state) is None:
+                    raise RuntimeError("animation transition target no longer exists")
+                if mutation.kind is GraphMutationKind.INSERT:
+                    if found is not None:
+                        raise RuntimeError(f"animation transition already exists: {stable_id}")
+                elif mutation.kind is GraphMutationKind.UPDATE:
+                    if found is None:
+                        raise RuntimeError(
+                            f"animation transition no longer exists: {stable_id}"
+                        )
+                    old_owner, current = found
+                    old_owner.transitions.remove(current)
+                else:
+                    raise RuntimeError(
+                        f"unsupported animation transition mutation: {mutation.kind.value}"
+                    )
+                target_index = max(
+                    0,
+                    min(int(mutation.after_index), len(new_owner.transitions)),
+                )
+                new_owner.transitions.insert(target_index, replacement)
+                rebuild_graph = True
+                continue
+            if (
+                mutation.element.kind is GraphElementKind.NODE
+                and mutation.kind is GraphMutationKind.MOVE
+            ):
+                state = fsm.get_state_by_id(mutation.element.stable_id)
+                if state is None or not isinstance(mutation.after, dict):
+                    raise RuntimeError(
+                        f"animation state no longer exists: {mutation.element.stable_id}"
+                    )
+                raw_position = mutation.after.get("position")
+                if not isinstance(raw_position, (list, tuple)) or len(raw_position) != 2:
+                    raise RuntimeError("animation state move requires a two-value position")
+                state.position = [float(raw_position[0]), float(raw_position[1])]
+                node = self._graph.find_node(state.stable_id)
+                if node is not None:
+                    node.pos_x, node.pos_y = state.position
+                continue
+            if mutation.element.kind is GraphElementKind.NODE:
+                stable_id = mutation.element.stable_id
+                index = self._state_index_by_id(stable_id)
+                if mutation.kind is GraphMutationKind.INSERT:
+                    if index >= 0 or not isinstance(mutation.after, dict):
+                        raise RuntimeError(f"cannot insert animation state {stable_id}")
+                    replacement = AnimState.from_dict(mutation.after)
+                    if replacement.stable_id != stable_id:
+                        raise RuntimeError("animation state insertion changed stable identity")
+                    if fsm.get_state(replacement.name) is not None:
+                        raise RuntimeError(
+                            f"animation state name already exists: {replacement.name}"
+                        )
+                    target_index = max(
+                        0, min(int(mutation.after_index), len(fsm.states))
+                    )
+                    fsm.states.insert(target_index, replacement)
+                elif mutation.kind is GraphMutationKind.REMOVE:
+                    if index < 0:
+                        raise RuntimeError(f"animation state no longer exists: {stable_id}")
+                    state = fsm.states[index]
+                    referenced = any(
+                        transition.target_state == state.name
+                        for owner in fsm.states
+                        for transition in owner.transitions
+                    )
+                    if state.transitions or referenced or fsm.default_state == state.name:
+                        raise RuntimeError(
+                            "animation state removal must include its links in the same diff"
+                        )
+                    fsm.states.pop(index)
+                elif mutation.kind is GraphMutationKind.UPDATE:
+                    if index < 0 or not isinstance(mutation.after, dict):
+                        raise RuntimeError(f"cannot update animation state {stable_id}")
+                    current = fsm.states[index]
+                    replacement = AnimState.from_dict(mutation.after)
+                    if replacement.stable_id != stable_id:
+                        raise RuntimeError("animation state update changed stable identity")
+                    duplicate = fsm.get_state(replacement.name)
+                    if duplicate is not None and duplicate is not current:
+                        raise RuntimeError(
+                            f"animation state name already exists: {replacement.name}"
+                        )
+                    if current.name != replacement.name:
+                        if fsm.default_state == current.name:
+                            fsm.default_state = replacement.name
+                        for owner in fsm.states:
+                            for transition in owner.transitions:
+                                if transition.target_state == current.name:
+                                    transition.target_state = replacement.name
+                    fsm.states[index] = replacement
+                else:
+                    raise RuntimeError(
+                        f"unsupported animation state mutation: {mutation.kind.value}"
+                    )
+                rebuild_graph = True
+                continue
+            raise RuntimeError(
+                f"unsupported animation FSM graph mutation: "
+                f"{mutation.element.kind.value}/{mutation.kind.value}"
+            )
+        if rebuild_graph:
+            self._sync_graph_from_fsm()
+
+    def on_graph_diff_applied(self, _diff: GraphActionDiff) -> None:
+        document = self._fsm_document()
+        self._dirty = bool(document and document.is_dirty)
+        self._graph_selection.refresh()
+
+    def _execute_graph_mutations(
+        self,
+        description: str,
+        mutations: Tuple[GraphMutation, ...],
+        *,
+        merge_key: str = "",
+        selection_after: Optional[Tuple[GraphElementRef, ...]] = None,
+    ) -> bool:
+        from Infernux.engine.interaction import (
+            DocumentRegistry,
+            SelectionService,
+            SelectionSnapshot,
+        )
+        from Infernux.engine.undo import GraphDiffCommand, UndoManager
+
+        document = self._fsm_document()
+        if document is None or not mutations:
+            return False
+        registry = DocumentRegistry.instance()
+        diff = GraphActionDiff(
+            document.document_id,
+            tuple(mutations),
+            before_revision=document.revision,
+            after_revision=registry.reserve_content_revision(document.document_id),
+        )
+        command = GraphDiffCommand(description, diff, merge_key=merge_key)
+        if selection_after is not None:
+            service = SelectionService.instance()
+            command.before_selection_snapshot = service.snapshot
+            targets = tuple(
+                element.selection_target(document.document_id)
+                for element in selection_after
+            )
+            command.after_selection_snapshot = SelectionSnapshot.create(
+                targets,
+                primary=targets[-1] if targets else None,
+                anchor=targets[0] if targets else None,
+                owner_id=self.window_id if targets else "",
+            )
+        manager = UndoManager.instance()
+        if manager is not None and self._animfsm_undo_enabled():
+            applied = manager.execute(command)
+        else:
+            try:
+                command.execute()
+                applied = True
+            except Exception as exc:
+                Debug.log_error(f"Animation FSM graph edit failed: {exc}")
+                applied = False
+            finally:
+                command.dispose()
+        if applied and selection_after is not None:
+            if selection_after:
+                self._graph_selection.select(
+                    selection_after,
+                    reason="animfsm_graph_edit_selection",
+                    record_history=False,
+                )
+            else:
+                self._graph_selection.clear(
+                    reason="animfsm_graph_edit_selection",
+                    record_history=False,
+                )
+        return applied
+
     def _open_animfsm(self, file_path: str):
         """Load an .animfsm file into the editor."""
         normalized_path = self._normalize_fsm_path(file_path)
@@ -354,8 +1149,6 @@ class AnimFSMEditorPanel(EditorPanel):
             return
         self._fsm = fsm
         self._file_path = target_path
-        self._selected_uid = ""
-        self._selected_parameter_index = -1
         self._dirty = False
         for state in fsm.states:
             if not state.clip_guid and state.clip_path:
@@ -363,15 +1156,17 @@ class AnimFSMEditorPanel(EditorPanel):
             if state.clip_guid:
                 state.clip_path = ""
         self._sync_graph_from_fsm()
+        self._replace_fsm_document(resource_path=target_path, dirty=False)
+        self._graph_selection.clear(record_history=False)
 
     def _new_fsm(self):
         """Create a blank FSM for editing."""
         self._fsm = AnimStateMachine(name="New State Machine")
         self._file_path = ""
-        self._selected_uid = ""
-        self._selected_parameter_index = -1
         self._dirty = True
         self._sync_graph_from_fsm()
+        self._replace_fsm_document(resource_path="", dirty=True)
+        self._graph_selection.clear(record_history=False)
 
     def _switch_to_new_mode_resource(self, mode: str) -> None:
         """Leave the current asset and start a new resource in *mode*."""
@@ -451,9 +1246,8 @@ class AnimFSMEditorPanel(EditorPanel):
     # ── Lifecycle ──────────────────────────────────────────────────────
 
     def on_enable(self) -> None:
-        from Infernux.engine.ui.selection_manager import SelectionManager
         from .event_bus import EditorEventBus, EditorEvent
-        SelectionManager.instance().add_listener(self._on_global_selection_changed)
+        self._graph_selection.bind()
         bus = EditorEventBus.instance()
         bus.subscribe(EditorEvent.FILE_SELECTED, self._on_file_selected)
         try:
@@ -465,9 +1259,8 @@ class AnimFSMEditorPanel(EditorPanel):
             pass
 
     def on_disable(self) -> None:
-        from Infernux.engine.ui.selection_manager import SelectionManager
         from .event_bus import EditorEventBus, EditorEvent
-        SelectionManager.instance().remove_listener(self._on_global_selection_changed)
+        self._graph_selection.unbind()
         bus = EditorEventBus.instance()
         bus.unsubscribe(EditorEvent.FILE_SELECTED, self._on_file_selected)
         try:
@@ -477,24 +1270,20 @@ class AnimFSMEditorPanel(EditorPanel):
                 pmm.remove_state_change_listener(self._on_play_mode_changed)
         except Exception:
             pass
-        try:
-            from Infernux.engine.project_context import set_panel_dirty
-
-            set_panel_dirty(self.window_id, False)
-        except Exception:
-            pass
 
     def _window_title_suffix(self) -> str:
         self._sync_project_dirty_flag()
         return " *" if self._dirty else ""
 
     def _sync_project_dirty_flag(self) -> None:
-        try:
-            from Infernux.engine.project_context import set_panel_dirty
+        from Infernux.engine.interaction import DocumentRegistry
 
-            set_panel_dirty(self.window_id, bool(self._dirty))
-        except Exception:
-            pass
+        document = DocumentRegistry.instance().get(self.document_id)
+        if document is None:
+            return
+        if self._dirty and not document.is_dirty:
+            DocumentRegistry.instance().mark_changed(document.document_id)
+        self._dirty = document.is_dirty
 
     # ── State persistence ──────────────────────────────────────────────
 
@@ -576,8 +1365,8 @@ class AnimFSMEditorPanel(EditorPanel):
             self._file_path = self._normalize_fsm_path(data.get("file_path") or "")
             self._fsm.file_path = self._file_path
             self._dirty = True
-            self._selected_uid = ""
             self._sync_graph_from_fsm()
+            self._graph_selection.clear(record_history=False)
             self._panel_state_restored_once = True
             return
         self._panel_state_restored_once = False
@@ -610,78 +1399,6 @@ class AnimFSMEditorPanel(EditorPanel):
             return
         self._panel_state_restored_once = True
 
-    # ── Undo (AnimStateMachine snapshots; edit mode only) ─────────────
-
-    def _link_key_for_undo(self) -> Optional[Tuple[str, str]]:
-        lid = (self._view.selected_link or "").strip()
-        if not lid or not self._graph:
-            return None
-        lk = self._graph.find_link(lid)
-        if lk is None:
-            return None
-        sn = self._uid_to_name.get(lk.source_node, "")
-        dn = self._uid_to_name.get(lk.target_node, "")
-        return (sn, dn) if sn and dn else None
-
-    def _undo_snapshot(self) -> dict:
-        """FSM data + graph selection (by state name so it survives graph rebuild)."""
-        fsm_data: dict = {}
-        if self._fsm is not None:
-            fsm_data = copy.deepcopy(self._fsm.to_dict())
-        selected_key = ""
-        if self._selected_uid:
-            if self._selected_uid == self._entry_uid:
-                selected_key = "__entry__"
-            else:
-                selected_key = self._uid_to_name.get(self._selected_uid, "")
-        return {
-            "fsm": fsm_data,
-            "ui": {
-                "selected_state": selected_key,
-                "link_key": self._link_key_for_undo(),
-            },
-        }
-
-    def _apply_undo_snapshot(self, snap: dict) -> None:
-        if not isinstance(snap, dict):
-            return
-        if "fsm" in snap:
-            fsm_data = snap.get("fsm") or {}
-            ui = snap.get("ui") or {}
-        else:
-            fsm_data = snap
-            ui = {}
-        if not fsm_data:
-            self._new_fsm()
-        else:
-            self._fsm = AnimStateMachine.from_dict(fsm_data)
-            self._sync_graph_from_fsm()
-        self._dirty = True
-        sel = (ui.get("selected_state") or "").strip() if isinstance(ui, dict) else ""
-        if sel == "__entry__" and self._entry_uid:
-            uid = self._entry_uid
-            self._selected_uid = uid
-            self._view.selected_nodes = [uid]
-        elif sel and sel in self._name_to_uid:
-            uid = self._name_to_uid[sel]
-            self._selected_uid = uid
-            self._view.selected_nodes = [uid]
-        else:
-            self._selected_uid = ""
-            self._view.selected_nodes = []
-        self._view.selected_link = ""
-        lk_key = ui.get("link_key") if isinstance(ui, dict) else None
-        if isinstance(lk_key, (list, tuple)) and len(lk_key) == 2:
-            sn, dn = str(lk_key[0]), str(lk_key[1])
-            if sn in self._name_to_uid and dn in self._name_to_uid:
-                su = self._name_to_uid[sn]
-                du = self._name_to_uid[dn]
-                for lk in self._graph.links:
-                    if lk.source_node == su and lk.target_node == du:
-                        self._view.selected_link = lk.uid
-                        break
-        self._sync_project_dirty_flag()
-
     def _animfsm_undo_enabled(self) -> bool:
         from Infernux.engine.play_mode import PlayModeManager, PlayModeState
         from Infernux.engine.undo import UndoManager
@@ -693,16 +1410,6 @@ class AnimFSMEditorPanel(EditorPanel):
         if pmm and pmm.state != PlayModeState.EDIT:
             return False
         return True
-
-    def _try_record_undo(self, description: str, before: dict, after: dict) -> None:
-        from Infernux.engine.undo import record_node_graph_snapshot
-
-        record_node_graph_snapshot(
-            description=description,
-            before_snapshot=before,
-            after_snapshot=after,
-            apply_snapshot=self._apply_undo_snapshot,
-        )
 
     def _initial_size(self):
         return (900, 600)
@@ -799,8 +1506,8 @@ class AnimFSMEditorPanel(EditorPanel):
         self._render_mode_switch_confirmation(ctx)
         self._save_as_dialog.render(
             ctx,
-            self._execute_save,
-            cancel_callback=self._cancel_pending_mode_switch,
+            self._save_to,
+            cancel_callback=self._cancel_pending_save,
         )
 
     # ── Toolbar ───────────────────────────────────────────────────────
@@ -845,9 +1552,7 @@ class AnimFSMEditorPanel(EditorPanel):
         new_pressed = ctx.button(new_label)
         ctx.record_semantic_item("button", new_label, True, "animfsm.toolbar.new")
         if new_pressed:
-            before = self._undo_snapshot()
             self._new_fsm()
-            self._try_record_undo("New state machine", before, self._undo_snapshot())
             return
 
         ctx.same_line(0, 8)
@@ -867,10 +1572,13 @@ class AnimFSMEditorPanel(EditorPanel):
             None, None, new_name,
         )
         if new_name != fsm.name:
-            before = self._undo_snapshot()
-            fsm.name = new_name
-            self._dirty = True
-            self._try_record_undo("Rename FSM", before, self._undo_snapshot())
+            candidate = new_name.strip()
+            if candidate:
+                self._update_graph_document(
+                    name=candidate,
+                    description="Rename FSM",
+                    merge_key="animfsm:graph:name",
+                )
 
         ctx.same_line(0, 16)
         ctx.label(f"{t('animfsm_editor.mode')}:")
@@ -926,11 +1634,12 @@ class AnimFSMEditorPanel(EditorPanel):
         old = str(lk.data.get("condition", "") or "")
         if cond == old:
             return
-        before = self._undo_snapshot()
-        lk.data["condition"] = cond
-        self._sync_transition_condition(lk)
-        self._dirty = True
-        self._try_record_undo("Edit transition condition", before, self._undo_snapshot())
+        self._update_transition_fields(
+            lk.uid,
+            "Edit transition condition",
+            merge_key=f"transition:{lk.uid}:condition",
+            condition=cond,
+        )
 
     def _render_transition_duration_row(
         self,
@@ -954,11 +1663,12 @@ class AnimFSMEditorPanel(EditorPanel):
             )
         if new_dur != dur:
             new_dur = max(0.0, float(new_dur))
-            before = self._undo_snapshot()
-            lk.data["duration"] = new_dur
-            self._sync_transition_condition(lk)
-            self._dirty = True
-            self._try_record_undo("Edit transition duration", before, self._undo_snapshot())
+            self._update_transition_fields(
+                lk.uid,
+                "Edit transition duration",
+                merge_key=f"transition:{lk.uid}:duration",
+                duration=new_dur,
+            )
         ctx.dummy(0, 4)
 
     def _render_transition_condition_block(
@@ -1113,26 +1823,16 @@ class AnimFSMEditorPanel(EditorPanel):
         ctx.end_group()
 
     def _rename_parameter_in_fsm(self, old_name: str, new_name: str) -> None:
-        """Rename a parameter in all transition expressions and graph link data."""
+        """Rename a parameter in the authoritative transition expressions."""
         if not old_name or old_name == new_name or self._fsm is None:
             return
-        for lk in self._graph.links:
-            ct = lk.data.get("cond_terms")
-            if isinstance(ct, list) and ct:
-                changed = False
-                for t in ct:
-                    if isinstance(t, dict) and t.get("name") == old_name:
-                        t["name"] = new_name
-                        changed = True
-                if changed:
-                    lk.data["cond_terms"] = ct
-                    lk.data["condition"] = _encode_condition_model(ct)
-                    self._sync_transition_condition(lk)
-            elif lk.data.get("condition"):
-                lk.data["condition"] = _replace_identifier_in_expr(
-                    str(lk.data["condition"]), old_name, new_name
+        for state in self._fsm.states:
+            for transition in state.transitions:
+                transition.condition = _replace_identifier_in_expr(
+                    transition.condition,
+                    old_name,
+                    new_name,
                 )
-                self._sync_transition_condition(lk)
 
     def _render_variables_panel(self, ctx: InxGUIContext):
         """Left overlay: parameter list (selection only)."""
@@ -1141,15 +1841,7 @@ class AnimFSMEditorPanel(EditorPanel):
             return
 
         def _add_parameter() -> None:
-            before = self._undo_snapshot()
-            fsm.parameters.append(
-                AnimParameter(name=f"var_{len(fsm.parameters)}", kind="float")
-            )
-            self._selected_parameter_index = len(fsm.parameters) - 1
-            self._selected_uid = ""
-            self._view.selected_nodes = []
-            self._dirty = True
-            self._try_record_undo("Add parameter", before, self._undo_snapshot())
+            self._insert_parameter()
 
         render_workspace_add_header(
             ctx,
@@ -1159,15 +1851,13 @@ class AnimFSMEditorPanel(EditorPanel):
             semantic_id="animfsm.parameters.add",
         )
 
-        remove_idx = -1
+        remove_id = ""
         kinds = ["bool", "float", "int"]
         for i, p in enumerate(fsm.parameters):
-            if p.kind not in kinds:
-                before = self._undo_snapshot()
-                p.kind = "float"
-                self._dirty = True
-                self._try_record_undo("Fix parameter type", before, self._undo_snapshot())
-            selected = i == self._selected_parameter_index
+            selected = (
+                p.stable_id
+                == self._graph_selection.primary_id(GraphElementKind.PARAMETER)
+            )
             clicked, rect = begin_workspace_entry(ctx, f"animfsm_param_{i}", selected)
             paint_workspace_entry(
                 ctx,
@@ -1178,13 +1868,15 @@ class AnimFSMEditorPanel(EditorPanel):
                 selected=selected,
             )
             if clicked:
-                self._selected_parameter_index = i
-                self._selected_uid = ""
-                self._view.selected_nodes = []
-                self._view.selected_link = ""
+                self._graph_selection.select_one(
+                    GraphElementKind.PARAMETER,
+                    p.stable_id,
+                    reason="animfsm_parameter_selection",
+                    record_history=True,
+                )
             if ctx.begin_popup_context_item(f"##animfsm_param_ctx_{i}"):
                 if ctx.menu_item(t("particle_graph_editor.remove_parameter")):
-                    remove_idx = i
+                    remove_id = p.stable_id
                 ctx.end_popup()
             finish_workspace_entry(ctx)
             ctx.record_semantic_item(
@@ -1196,41 +1888,30 @@ class AnimFSMEditorPanel(EditorPanel):
                 bool_value=selected,
             )
 
-        if 0 <= remove_idx < len(fsm.parameters):
-            before = self._undo_snapshot()
-            fsm.parameters.pop(remove_idx)
-            if self._selected_parameter_index == remove_idx:
-                self._selected_parameter_index = -1
-            elif self._selected_parameter_index > remove_idx:
-                self._selected_parameter_index -= 1
-            self._dirty = True
-            self._try_record_undo("Remove parameter", before, self._undo_snapshot())
+        if remove_id:
+            self._remove_parameter(remove_id)
             return
 
+        selected_parameter = self._selected_parameter()
         if (
-            self._selected_parameter_index >= 0
+            selected_parameter is not None
             and ctx.is_window_focused(3)
             and not ctx.is_any_item_active()
             and ctx.is_key_pressed(KEY_DELETE)
         ):
-            before = self._undo_snapshot()
-            fsm.parameters.pop(self._selected_parameter_index)
-            self._selected_parameter_index = -1
-            self._dirty = True
-            self._try_record_undo("Remove parameter", before, self._undo_snapshot())
+            self._remove_parameter(selected_parameter.stable_id)
 
     def _render_parameter_detail_panel(self, ctx: InxGUIContext) -> bool:
         fsm = self._fsm
-        if fsm is None or self._selected_parameter_index < 0:
+        if fsm is None:
             return False
-        if self._selected_parameter_index >= len(fsm.parameters):
-            self._selected_parameter_index = -1
+        p = self._selected_parameter()
+        if p is None:
             return False
 
-        p = fsm.parameters[self._selected_parameter_index]
         kinds = ["bool", "float", "int"]
         if p.kind not in kinds:
-            p.kind = "float"
+            raise RuntimeError(f"invalid animation parameter kind: {p.kind}")
 
         ctx.label(t("animfsm_editor.section_parameters"))
         ctx.separator()
@@ -1240,45 +1921,64 @@ class AnimFSMEditorPanel(EditorPanel):
         raw_name = ctx.text_input("##animfsm_param_name", p.name, 64)
         san = self._sanitize_param_identifier(raw_name)
         if san and san != p.name:
-            before = self._undo_snapshot()
-            self._rename_parameter_in_fsm(p.name, san)
-            p.name = san
-            self._dirty = True
-            self._try_record_undo("Rename parameter", before, self._undo_snapshot())
+            after = p.to_dict()
+            after["name"] = san
+            self._update_parameter_document(
+                p,
+                after,
+                "Rename parameter",
+                merge_key=f"parameter:{p.stable_id}:name",
+            )
+            p = self._parameter_by_id(p.stable_id) or p
 
         ctx.label(t("particle_graph_editor.parameter_type"))
         ctx.set_next_item_width(-1)
         ki = kinds.index(p.kind) if p.kind in kinds else 1
         new_ki = ctx.combo("##animfsm_param_kind", ki, [k.capitalize() for k in kinds], len(kinds))
         if new_ki != ki:
-            before = self._undo_snapshot()
-            p.kind = kinds[new_ki]
-            self._dirty = True
-            self._try_record_undo("Change parameter type", before, self._undo_snapshot())
+            self._update_parameter_document(
+                p,
+                self._parameter_document_for_kind(p, kinds[new_ki]),
+                "Change parameter type",
+                merge_key=f"parameter:{p.stable_id}:kind",
+            )
+            p = self._parameter_by_id(p.stable_id) or p
 
         ctx.label(t("particle_graph_editor.parameter_default"))
         ctx.set_next_item_width(-1)
         if p.kind == "bool":
             nb = ctx.checkbox("##animfsm_param_def_bool", p.default_bool)
             if nb != p.default_bool:
-                before = self._undo_snapshot()
-                p.default_bool = nb
-                self._dirty = True
-                self._try_record_undo("Parameter default", before, self._undo_snapshot())
+                after = p.to_dict()
+                after["default_bool"] = nb
+                self._update_parameter_document(
+                    p,
+                    after,
+                    "Parameter default",
+                    merge_key=f"parameter:{p.stable_id}:default_bool",
+                )
         elif p.kind == "float":
             nf = ctx.drag_float("##animfsm_param_def_float", p.default_float, 0.01, -1.0e9, 1.0e9)
             if nf != p.default_float:
-                before = self._undo_snapshot()
-                p.default_float = nf
-                self._dirty = True
-                self._try_record_undo("Parameter default", before, self._undo_snapshot())
+                after = p.to_dict()
+                after["default_float"] = nf
+                self._update_parameter_document(
+                    p,
+                    after,
+                    "Parameter default",
+                    merge_key=f"parameter:{p.stable_id}:default_float",
+                )
         else:
             ni = ctx.input_int("##animfsm_param_def_int", p.default_int)
             if ni != p.default_int:
-                before = self._undo_snapshot()
-                p.default_int = ni
-                self._dirty = True
-                self._try_record_undo("Parameter default", before, self._undo_snapshot())
+                after = p.to_dict()
+                after["default_int"] = ni
+                self._update_parameter_document(
+                    p,
+                    after,
+                    "Parameter default",
+                    merge_key=f"parameter:{p.stable_id}:default_int",
+                )
         return True
 
     # ── Detail panel (right side) ─────────────────────────────────────
@@ -1429,25 +2129,37 @@ class AnimFSMEditorPanel(EditorPanel):
         return name
 
     def _assign_clip_b_to_state(self, state: AnimState, clip_path: str, node=None, *, record_undo: bool = True):
-        before = self._undo_snapshot() if record_undo else None
         p = (clip_path or "").strip()
         if p and not self._clip_path_matches_fsm_mode(p):
             return
-        state.clip_b_guid = self._resolve_guid(p) if p else ""
-        state.clip_b_path = "" if state.clip_b_guid else (p or "")
+        guid = self._resolve_guid(p) if p else ""
+        path = "" if guid else (p or "")
+        if record_undo:
+            self._update_state_fields(
+                state,
+                "Assign blend clip B",
+                merge_key=f"state:{state.stable_id}:clip_b",
+                clip_b_guid=guid,
+                clip_b_path=path,
+            )
+        else:
+            state.clip_b_guid = guid
+            state.clip_b_path = path
         self._clip_name_cache = {}
-        self._dirty = True
-        if record_undo and before is not None:
-            self._try_record_undo("Assign blend clip B", before, self._undo_snapshot())
 
     def _clear_clip_b_from_state(self, state: AnimState, node=None, *, record_undo: bool = True):
-        before = self._undo_snapshot() if record_undo else None
-        state.clip_b_guid = ""
-        state.clip_b_path = ""
+        if record_undo:
+            self._update_state_fields(
+                state,
+                "Clear blend clip B",
+                merge_key=f"state:{state.stable_id}:clip_b",
+                clip_b_guid="",
+                clip_b_path="",
+            )
+        else:
+            state.clip_b_guid = ""
+            state.clip_b_path = ""
         self._clip_name_cache = {}
-        self._dirty = True
-        if record_undo and before is not None:
-            self._try_record_undo("Clear blend clip B", before, self._undo_snapshot())
 
     def _render_clip_b_reference_row(self, ctx: InxGUIContext, state: AnimState, node, lw: float) -> None:
         cfg = get_asset_type_config(self._fsm_clip_asset_type()) or {}
@@ -1590,7 +2302,9 @@ class AnimFSMEditorPanel(EditorPanel):
         if self._render_parameter_detail_panel(ctx):
             return
 
-        node = self._graph.find_node(self._selected_uid)
+        node = self._graph.find_node(
+            self._graph_selection.primary_id(GraphElementKind.NODE)
+        )
         if node is None or node.type_id != "anim_state":
             ctx.push_style_color(ImGuiCol.Text, 0.50, 0.51, 0.53, 1.0)
             ctx.label(t("animfsm_editor.no_state_selected"))
@@ -1638,11 +2352,7 @@ class AnimFSMEditorPanel(EditorPanel):
                 "button", "Default: false; Set Default", True, "animfsm.state.set_default",
             )
             if set_default_clicked:
-                before = self._undo_snapshot()
-                fsm.default_state = state.name
-                self._update_entry_link()
-                self._dirty = True
-                self._try_record_undo("Set default state", before, self._undo_snapshot())
+                self._set_default_state(state.name, "Set default state")
         ctx.separator()
         ctx.dummy(0, 4)
 
@@ -1655,10 +2365,14 @@ class AnimFSMEditorPanel(EditorPanel):
             "animfsm.state.name",
         )
         if new_name != state.name:
-            before = self._undo_snapshot()
-            if self._try_rename_state(state, new_name.strip()):
-                self._dirty = True
-                self._try_record_undo("Rename state", before, self._undo_snapshot())
+            candidate = new_name.strip()
+            if candidate and fsm.get_state(candidate) is None:
+                self._update_state_fields(
+                    state,
+                    "Rename state",
+                    merge_key=f"state:{state.stable_id}:name",
+                    name=candidate,
+                )
 
         ctx.dummy(0, Theme.INSPECTOR_SECTION_GAP)
         ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
@@ -1688,10 +2402,12 @@ class AnimFSMEditorPanel(EditorPanel):
             ctx.set_next_item_width(-1)
             new_lerp = ctx.drag_float("##blend_lerp", float(state.blend_value), 0.005, 0.0, 1.0)
             if new_lerp != state.blend_value:
-                before = self._undo_snapshot()
-                state.blend_value = max(0.0, min(1.0, float(new_lerp)))
-                self._dirty = True
-                self._try_record_undo("Change blend lerp", before, self._undo_snapshot())
+                self._update_state_fields(
+                    state,
+                    "Change blend lerp",
+                    merge_key=f"state:{state.stable_id}:blend_value",
+                    blend_value=max(0.0, min(1.0, float(new_lerp))),
+                )
         elif kind == "timeline":
             self._render_timeline_reference_row(ctx, state, node, lw)
         else:
@@ -1713,10 +2429,12 @@ class AnimFSMEditorPanel(EditorPanel):
             "animfsm.state.speed",
         )
         if new_speed != state.speed:
-            before = self._undo_snapshot()
-            state.speed = new_speed
-            self._dirty = True
-            self._try_record_undo("Change playback speed", before, self._undo_snapshot())
+            self._update_state_fields(
+                state,
+                "Change playback speed",
+                merge_key=f"state:{state.stable_id}:speed",
+                speed=float(new_speed),
+            )
 
         exit_pct = state.exit_time_normalized * 100.0
         field_label(ctx, t("animfsm_editor.exit_time"), lw)
@@ -1728,32 +2446,36 @@ class AnimFSMEditorPanel(EditorPanel):
             "animfsm.state.exit_time",
         )
         if new_exit_pct != exit_pct:
-            before = self._undo_snapshot()
-            state.exit_time_normalized = max(0.0, min(1.0, new_exit_pct / 100.0))
-            self._dirty = True
-            self._try_record_undo("Change exit time", before, self._undo_snapshot())
+            self._update_state_fields(
+                state,
+                "Change exit time",
+                merge_key=f"state:{state.stable_id}:exit_time",
+                exit_time_normalized=max(0.0, min(1.0, new_exit_pct / 100.0)),
+            )
 
         new_loop = self._detail_checkbox_row_right(
             ctx, lw, "animfsm_editor.loop", "##state_loop", state.loop,
             "animfsm.state.loop",
         )
         if new_loop != state.loop:
-            before = self._undo_snapshot()
-            state.loop = new_loop
-            node.data["loop"] = state.loop
-            self._dirty = True
-            self._try_record_undo("Toggle loop", before, self._undo_snapshot())
+            self._update_state_fields(
+                state,
+                "Toggle loop",
+                merge_key=f"state:{state.stable_id}:loop",
+                loop=bool(new_loop),
+            )
 
         new_rs = self._detail_checkbox_row_right(
             ctx, lw, "animfsm_editor.restart_same_clip", "##state_restart_same", state.restart_same_clip,
             "animfsm.state.restart_same_clip",
         )
         if new_rs != state.restart_same_clip:
-            before = self._undo_snapshot()
-            state.restart_same_clip = new_rs
-            node.data["restart_same_clip"] = state.restart_same_clip
-            self._dirty = True
-            self._try_record_undo("Toggle restart same clip", before, self._undo_snapshot())
+            self._update_state_fields(
+                state,
+                "Toggle restart same clip",
+                merge_key=f"state:{state.stable_id}:restart_same_clip",
+                restart_same_clip=bool(new_rs),
+            )
 
         ctx.dummy(0, Theme.INSPECTOR_SECTION_GAP)
         ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
@@ -1783,10 +2505,7 @@ class AnimFSMEditorPanel(EditorPanel):
             ctx.pop_id()
 
         if remove_link_uid:
-            before = self._undo_snapshot()
-            if self._remove_link_and_transition(remove_link_uid):
-                self._dirty = True
-                self._try_record_undo("Remove transition", before, self._undo_snapshot())
+            self._remove_transition(remove_link_uid, "Remove transition")
 
     def _render_transition_exit_time_row(self, ctx: InxGUIContext, lk: GraphLink) -> None:
         source_name = self._uid_to_name.get(lk.source_node, "")
@@ -1806,19 +2525,21 @@ class AnimFSMEditorPanel(EditorPanel):
             "animfsm.transition.exit_time",
         )
         if new_exit_pct != exit_pct:
-            before = self._undo_snapshot()
-            state.exit_time_normalized = max(0.0, min(1.0, new_exit_pct / 100.0))
-            self._dirty = True
-            self._try_record_undo("Change transition exit time", before, self._undo_snapshot())
+            self._update_state_fields(
+                state,
+                "Change transition exit time",
+                merge_key=f"state:{state.stable_id}:exit_time",
+                exit_time_normalized=max(0.0, min(1.0, new_exit_pct / 100.0)),
+            )
         ctx.dummy(0, 4)
 
     def _render_selected_transition_detail(self, ctx: InxGUIContext) -> bool:
-        link_uid = (self._view.selected_link or "").strip()
+        link_uid = self._graph_selection.primary_id(GraphElementKind.LINK)
         if not link_uid:
             return False
         lk = self._graph.find_link(link_uid)
         if lk is None:
-            self._view.selected_link = ""
+            self._graph_selection.clear(record_history=False)
             return False
 
         source_name = self._uid_to_name.get(lk.source_node, "Entry")
@@ -1850,11 +2571,7 @@ class AnimFSMEditorPanel(EditorPanel):
             "button", delete_label, True, "animfsm.transition.delete",
         )
         if delete_clicked:
-            before = self._undo_snapshot()
-            if self._remove_link_and_transition(link_uid):
-                self._view.selected_link = ""
-                self._dirty = True
-                self._try_record_undo("Remove transition", before, self._undo_snapshot())
+            self._remove_transition(link_uid, "Remove transition")
         return True
 
     # ═══════════════════════════════════════════════════════════════════
@@ -1874,7 +2591,12 @@ class AnimFSMEditorPanel(EditorPanel):
             return
 
         # Create entry node
-        entry = self._graph.add_node("anim_entry", canvas_x=-100, canvas_y=50)
+        entry = self._graph.add_node(
+            "anim_entry",
+            canvas_x=-100,
+            canvas_y=50,
+            uid=_FSM_ENTRY_NODE_ID,
+        )
         entry.data["label"] = "Entry"
         self._entry_uid = entry.uid
 
@@ -1886,7 +2608,12 @@ class AnimFSMEditorPanel(EditorPanel):
                 px = 100.0
                 py = y_offset
                 y_offset += 80.0
-            node = self._graph.add_node("anim_state", canvas_x=px, canvas_y=py)
+            node = self._graph.add_node(
+                "anim_state",
+                canvas_x=px,
+                canvas_y=py,
+                uid=state.stable_id,
+            )
             node.data["label"] = state.name
             node.data["loop"] = state.loop
             node.data["restart_same_clip"] = state.restart_same_clip
@@ -1915,36 +2642,18 @@ class AnimFSMEditorPanel(EditorPanel):
                 dst_uid = self._name_to_uid.get(tr.target_state, "")
                 if not dst_uid:
                     continue
-                lk = self._graph.add_link(src_uid, "out", dst_uid, "in")
+                lk = self._graph.add_link(
+                    src_uid,
+                    "out",
+                    dst_uid,
+                    "in",
+                    uid=tr.stable_id,
+                )
                 if lk:
                     lk.data["condition"] = tr.condition
                     lk.data["duration"] = float(getattr(tr, "duration", 0.0) or 0.0)
                     lk.data["cond_terms"] = parse_condition_string_to_model(tr.condition)
                     lk.data.pop("cond_joins", None)
-
-    def _sync_fsm_positions(self):
-        """Write node visual data (position/color) back to FSM states."""
-        fsm = self._fsm
-        if fsm is None:
-            return
-        for state in fsm.states:
-            uid = self._name_to_uid.get(state.name, "")
-            node = self._graph.find_node(uid) if uid else None
-            if node:
-                state.position = [node.pos_x, node.pos_y]
-                raw = node.data.get("header_color", [])
-                if isinstance(raw, (list, tuple)) and len(raw) >= 3:
-                    try:
-                        state.header_color = [
-                            float(raw[0]),
-                            float(raw[1]),
-                            float(raw[2]),
-                            float(raw[3]) if len(raw) >= 4 else 1.0,
-                        ]
-                    except (TypeError, ValueError):
-                        state.header_color = []
-                else:
-                    state.header_color = []
 
     def _update_entry_link(self):
         """Ensure the entry node points to the current default state."""
@@ -1957,7 +2666,13 @@ class AnimFSMEditorPanel(EditorPanel):
         if fsm and fsm.default_state:
             dst_uid = self._name_to_uid.get(fsm.default_state, "")
             if dst_uid:
-                self._graph.add_link(self._entry_uid, "out", dst_uid, "in")
+                self._graph.add_link(
+                    self._entry_uid,
+                    "out",
+                    dst_uid,
+                    "in",
+                    uid=_FSM_ENTRY_LINK_ID,
+                )
 
     def _unique_state_name(self, want: str) -> str:
         fsm = self._fsm
@@ -1977,82 +2692,122 @@ class AnimFSMEditorPanel(EditorPanel):
         fsm = self._fsm
         if fsm is None:
             return
-        uids = [u for u in self._view.selected_nodes if u and u != self._entry_uid]
+        uids = [
+            uid
+            for uid in self._graph_selection.selected_ids(GraphElementKind.NODE)
+            if uid != self._entry_uid
+        ]
         names = [self._uid_to_name.get(u) for u in uids]
         names = [n for n in names if n]
         if not names:
             return
         name_set = set(names)
-        states_copy: List[dict] = []
+        items: List[ClipboardItem] = []
         for n in names:
             st = fsm.get_state(n)
             if not st:
                 continue
             d = st.to_dict()
-            d["transitions"] = []
-            states_copy.append(copy.deepcopy(d))
-        transitions: List[Tuple[str, dict]] = []
-        for n in names:
-            st = fsm.get_state(n)
-            if not st:
-                continue
-            for tr in st.transitions:
-                if tr.target_state in name_set:
-                    transitions.append((n, tr.to_dict()))
-        self._clipboard_fsm_nodes = {"states": states_copy, "transitions": transitions}
+            d["transitions"] = [
+                transition.to_dict()
+                for transition in st.transitions
+                if transition.target_state in name_set
+            ]
+            items.append(
+                ClipboardItem(
+                    st.stable_id,
+                    self.document_id,
+                    "animfsm_state",
+                    d,
+                )
+            )
+        if items:
+            ClipboardService.instance().write(
+                ClipboardDomain.GRAPH_ELEMENT,
+                items,
+                source_owner_id=self.window_id,
+                reason="animfsm_copy_states",
+            )
 
     def _on_graph_paste(self) -> None:
-        blob = self._clipboard_fsm_nodes
+        payload = ClipboardService.instance().peek(ClipboardDomain.GRAPH_ELEMENT)
         fsm = self._fsm
-        if not blob or not fsm or not blob.get("states"):
+        if payload is None or fsm is None:
             return
-        before = self._undo_snapshot()
-        old_names = [s["name"] for s in blob["states"]]
+        state_documents = [
+            copy.deepcopy(item.data)
+            for item in payload.items
+            if item.sub_kind == "animfsm_state" and isinstance(item.data, dict)
+        ]
+        if not state_documents:
+            return
+        old_names = [str(document.get("name") or "") for document in state_documents]
+        if any(not name for name in old_names):
+            return
         name_map: Dict[str, str] = {}
         for old in old_names:
             name_map[old] = self._unique_state_name(old)
-        for sd in blob["states"]:
-            new_n = name_map[sd["name"]]
+        states_by_old_name: Dict[str, AnimState] = {}
+        mutations: List[GraphMutation] = []
+        selection: List[GraphElementRef] = []
+        insertion_index = len(fsm.states)
+        pending_transitions: List[Tuple[str, dict]] = []
+        for sd in state_documents:
+            old_name = sd["name"]
+            new_n = name_map[old_name]
             state = AnimState.from_dict(sd)
+            for transition in state.transitions:
+                pending_transitions.append((old_name, transition.to_dict()))
+            state.stable_id = uuid.uuid4().hex
             state.name = new_n
             state.transitions = []
             pos = list(sd.get("position", [0.0, 0.0]))
             if len(pos) < 2:
                 pos = [0.0, 0.0]
             state.position = [float(pos[0]) + 48.0, float(pos[1]) + 48.0]
-            fsm.states.append(state)
-        for src_old, tr_d in blob.get("transitions", []):
-            src_new = name_map.get(src_old)
-            if not src_new:
+            states_by_old_name[sd["name"]] = state
+            mutations.append(
+                GraphMutation(
+                    GraphMutationKind.INSERT,
+                    GraphElementRef(GraphElementKind.NODE, state.stable_id),
+                    after=state.to_dict(),
+                    after_index=insertion_index,
+                )
+            )
+            selection.append(GraphElementRef(GraphElementKind.NODE, state.stable_id))
+            insertion_index += 1
+        for source_name, tr_d in pending_transitions:
+            source = states_by_old_name.get(source_name)
+            if source is None:
                 continue
             tr = AnimTransition.from_dict(tr_d)
+            tr.stable_id = uuid.uuid4().hex
             tgt_old = tr.target_state
             tr.target_state = name_map.get(tgt_old, tgt_old)
-            st = fsm.get_state(src_new)
-            if st:
-                st.transitions.append(tr)
-        self._sync_graph_from_fsm()
-        new_uids: List[str] = []
-        for o in old_names:
-            nn = name_map.get(o)
-            if nn:
-                uid = self._name_to_uid.get(nn)
-                if uid:
-                    new_uids.append(uid)
-        if new_uids:
-            self._view.selected_nodes = new_uids
-            self._selected_uid = new_uids[0]
-        self._dirty = True
-        self._try_record_undo("Paste states", before, self._undo_snapshot())
+            mutations.append(
+                GraphMutation(
+                    GraphMutationKind.INSERT,
+                    GraphElementRef(GraphElementKind.LINK, tr.stable_id),
+                    after={
+                        "source_state_id": source.stable_id,
+                        "transition": tr.to_dict(),
+                    },
+                    after_index=len(source.transitions),
+                )
+            )
+            source.transitions.append(tr)
+        self._execute_graph_mutations(
+            "Paste states",
+            tuple(mutations),
+            selection_after=tuple(selection),
+        )
 
     # ── Callbacks from NodeGraphView ──────────────────────────────────
 
     def _on_node_drag_start(self, uid: str) -> None:
         if uid == self._entry_uid:
-            self._undo_drag_snapshot = None
             self._undo_drag_node_position = None
             return
-        self._undo_drag_snapshot = self._undo_snapshot()
         node = self._graph.find_node(uid)
         self._undo_drag_node_position = (
             (float(node.pos_x), float(node.pos_y)) if node is not None else None
@@ -2060,26 +2815,28 @@ class AnimFSMEditorPanel(EditorPanel):
 
     def _on_node_drag_end(self, uid: str) -> None:
         if uid == self._entry_uid:
-            self._undo_drag_snapshot = None
             self._undo_drag_node_position = None
             return
-        before = self._undo_drag_snapshot
         start_position = self._undo_drag_node_position
-        self._undo_drag_snapshot = None
         self._undo_drag_node_position = None
         node = self._graph.find_node(uid)
-        if before is None or start_position is None or node is None:
+        if start_position is None or node is None:
             return
         end_position = (float(node.pos_x), float(node.pos_y))
         if end_position == start_position:
             return
-        self._sync_fsm_positions()
-        after = self._undo_snapshot()
-        if before == after:
-            return
-        self._dirty = True
-        self._sync_project_dirty_flag()
-        self._try_record_undo("Move state node", before, after)
+        self._execute_graph_mutations(
+            "Move state node",
+            (
+                GraphMutation(
+                    GraphMutationKind.MOVE,
+                    GraphElementRef(GraphElementKind.NODE, uid),
+                    before={"position": list(start_position)},
+                    after={"position": list(end_position)},
+                ),
+            ),
+            merge_key=f"node:{uid}:position",
+        )
 
     def _on_node_header_color_changed(
         self,
@@ -2091,42 +2848,32 @@ class AnimFSMEditorPanel(EditorPanel):
         node = self._graph.find_node(node_uid)
         if node is None or node_uid == self._entry_uid:
             return
-        node.data["header_color"] = new_color
-
         state_name = self._uid_to_name.get(node_uid, "")
-        if self._fsm is not None and state_name:
-            state = self._fsm.get_state(state_name)
-            if state is not None:
-                state.header_color = [
-                    float(new_color[0]),
-                    float(new_color[1]),
-                    float(new_color[2]),
-                    float(new_color[3]),
-                ]
-
-        self._dirty = True
-        self._sync_project_dirty_flag()
+        state = self._fsm.get_state(state_name) if self._fsm and state_name else None
+        if state is None:
+            return
+        new_value = [float(component) for component in new_color]
+        old_value = [float(component) for component in old_color]
+        node.data["header_color"] = new_color
+        state.header_color = new_value
 
         # During color picker drag we only preview/apply changes.
         # Record exactly one undo command when the popup closes.
         if not commit_undo:
             return
-
-        after = self._undo_snapshot()
-        before = copy.deepcopy(after)
-        fsm = before.get("fsm") or {}
-        states = fsm.get("states") if isinstance(fsm, dict) else None
-        if isinstance(states, list):
-            for s in states:
-                if str(s.get("name", "")) == state_name:
-                    s["header_color"] = [
-                        float(old_color[0]),
-                        float(old_color[1]),
-                        float(old_color[2]),
-                        float(old_color[3]),
-                    ]
-                    break
-        self._try_record_undo("Change state header color", before, after)
+        if new_value == old_value:
+            return
+        # The picker previews directly in the live model. Restore its committed
+        # value before executing the precise command so revision and history only
+        # advance once when the edit session closes.
+        state.header_color = old_value
+        node.data["header_color"] = tuple(old_value)
+        self._update_state_fields(
+            state,
+            "Change state header color",
+            merge_key=f"state:{state.stable_id}:header_color",
+            header_color=new_value,
+        )
 
     def _on_link_created(self, src_node: str, src_pin: str, dst_node: str, dst_pin: str):
         """User created a connection by dragging between pins."""
@@ -2134,11 +2881,7 @@ class AnimFSMEditorPanel(EditorPanel):
         if src_node == self._entry_uid:
             target_name = self._uid_to_name.get(dst_node, "")
             if target_name and self._fsm:
-                before = self._undo_snapshot()
-                self._fsm.default_state = target_name
-                self._update_entry_link()
-                self._dirty = True
-                self._try_record_undo("Set default state", before, self._undo_snapshot())
+                self._set_default_state(target_name, "Set default state")
             return
 
         src_name = self._uid_to_name.get(src_node, "")
@@ -2155,44 +2898,89 @@ class AnimFSMEditorPanel(EditorPanel):
             if tr.target_state == dst_name:
                 return
 
-        before = self._undo_snapshot()
-        state.transitions.append(AnimTransition(target_state=dst_name))
-        lk = self._graph.add_link(src_node, src_pin, dst_node, dst_pin)
-        if lk:
-            lk.data["cond_terms"] = []
-            lk.data.pop("cond_joins", None)
-        self._dirty = True
-        self._try_record_undo("Add transition", before, self._undo_snapshot())
+        transition = AnimTransition(target_state=dst_name)
+        self._insert_transition(state, transition, "Add transition")
 
     def _on_link_deleted(self, link_uid: str):
-        before = self._undo_snapshot()
-        if self._remove_link_and_transition(link_uid):
-            self._dirty = True
-            self._try_record_undo("Remove transition", before, self._undo_snapshot())
+        self._remove_transition(link_uid, "Remove transition")
 
-    def _on_nodes_deleted(self, uids: List[str]):
+    def _on_link_replaced(
+        self,
+        link_uid: str,
+        src_node: str,
+        _src_pin: str,
+        dst_node: str,
+        _dst_pin: str,
+    ) -> None:
         fsm = self._fsm
         if fsm is None:
             return
-        before = self._undo_snapshot()
-        changed = False
-        for uid in uids:
-            # Don't delete entry node
-            if uid == self._entry_uid:
-                continue
-            changed = True
-            name = self._uid_to_name.get(uid, "")
-            if name:
-                fsm.remove_state(name)
-                del self._name_to_uid[name]
-                del self._uid_to_name[uid]
-            self._graph.remove_node(uid)
-        if self._selected_uid in uids:
-            self._selected_uid = ""
-        if changed:
-            self._update_entry_link()
-            self._dirty = True
-            self._try_record_undo("Delete state", before, self._undo_snapshot())
+        target_name = self._uid_to_name.get(dst_node, "")
+        if not target_name:
+            return
+        ref = GraphElementRef(GraphElementKind.LINK, link_uid)
+        if link_uid == _FSM_ENTRY_LINK_ID:
+            if src_node != self._entry_uid:
+                return
+            self._execute_graph_mutations(
+                "Change default state",
+                (
+                    GraphMutation(
+                        GraphMutationKind.UPDATE,
+                        ref,
+                        before={"default_state": fsm.default_state},
+                        after={"default_state": target_name},
+                    ),
+                ),
+                selection_after=(ref,),
+            )
+            return
+        if src_node == self._entry_uid:
+            return
+        found = fsm.get_transition_by_id(link_uid)
+        new_owner_name = self._uid_to_name.get(src_node, "")
+        new_owner = fsm.get_state(new_owner_name)
+        if found is None or new_owner is None:
+            return
+        old_owner, transition = found
+        if any(
+            other is not transition and other.target_state == target_name
+            for other in new_owner.transitions
+        ):
+            return
+        old_index = old_owner.transitions.index(transition)
+        new_index = (
+            old_index
+            if old_owner is new_owner
+            else len(new_owner.transitions)
+        )
+        replacement = AnimTransition.from_dict(transition.to_dict())
+        replacement.target_state = target_name
+        self._execute_graph_mutations(
+            "Reconnect transition",
+            (
+                GraphMutation(
+                    GraphMutationKind.UPDATE,
+                    ref,
+                    before={
+                        "source_state_id": old_owner.stable_id,
+                        "transition": transition.to_dict(),
+                    },
+                    after={
+                        "source_state_id": new_owner.stable_id,
+                        "transition": replacement.to_dict(),
+                    },
+                    before_index=old_index,
+                    after_index=new_index,
+                ),
+            ),
+            selection_after=(ref,),
+        )
+
+    def _on_nodes_deleted(self, uids: List[str]):
+        stable_ids = tuple(uid for uid in uids if uid != self._entry_uid)
+        if stable_ids:
+            self._remove_states(stable_ids)
 
     def _on_node_add_request(self, type_id: str, x: float, y: float):
         if type_id != "anim_state":
@@ -2200,22 +2988,15 @@ class AnimFSMEditorPanel(EditorPanel):
         fsm = self._fsm
         if fsm is None:
             return
-        before = self._undo_snapshot()
-        state = fsm.add_state()
+        state = AnimState(name=self._unique_state_name(f"State {fsm.state_count}"))
         state.position = [x, y]
         if self._is_timeline_mode():
             state.kind = "timeline"
-        node = self._graph.add_node("anim_state", canvas_x=x, canvas_y=y)
-        node.data["label"] = state.name
-        node.data["loop"] = state.loop
-        node.data["restart_same_clip"] = state.restart_same_clip
-        self._name_to_uid[state.name] = node.uid
-        self._uid_to_name[node.uid] = state.name
-        self._view.selected_nodes = [node.uid]
-        self._selected_uid = node.uid
-        self._update_entry_link()
-        self._dirty = True
-        self._try_record_undo("Add state", before, self._undo_snapshot())
+        self._insert_state(
+            state,
+            "Add state",
+            make_default=not bool(fsm.default_state),
+        )
 
     # ── Shared create palette domain adapter ──────────────────────────
     def _node_creation_entries(self, request: dict) -> list[NodeCreationEntry]:
@@ -2247,71 +3028,73 @@ class AnimFSMEditorPanel(EditorPanel):
         gx = float(ctx_data.get("gx", 0.0))
         gy = float(ctx_data.get("gy", 0.0))
         src_node = str(ctx_data.get("source_node", ctx_data.get("src_node", "")))
-        # Resolve the source state name *before* rebuilding (uids change on rebuild).
         from_entry = (src_node == self._entry_uid)
         src_name = "" if from_entry else self._uid_to_name.get(src_node, "")
 
-        before = self._undo_snapshot()
-        # Persist current node positions so the rebuild doesn't reset them.
-        self._sync_fsm_positions()
-
         base_name = "Timeline" if kind == "timeline" else "State"
-        state = fsm.add_state(self._unique_state_name(base_name))
+        state = AnimState(name=self._unique_state_name(base_name))
         state.position = [gx, gy]
         if kind in ("blend", "timeline"):
             state.kind = kind
-
+        mutations: List[GraphMutation] = [
+            GraphMutation(
+                GraphMutationKind.INSERT,
+                GraphElementRef(GraphElementKind.NODE, state.stable_id),
+                after=state.to_dict(),
+                after_index=len(fsm.states),
+            )
+        ]
         if from_entry:
-            fsm.default_state = state.name
+            mutations.append(
+                GraphMutation(
+                    GraphMutationKind.UPDATE,
+                    GraphElementRef(GraphElementKind.LINK, _FSM_ENTRY_LINK_ID),
+                    before={"default_state": fsm.default_state},
+                    after={"default_state": state.name},
+                )
+            )
         elif src_name:
             src_state = fsm.get_state(src_name)
             if src_state is not None and not any(
                     tr.target_state == state.name for tr in src_state.transitions):
-                src_state.transitions.append(AnimTransition(target_state=state.name))
+                transition = AnimTransition(target_state=state.name)
+                mutations.append(
+                    GraphMutation(
+                        GraphMutationKind.INSERT,
+                        GraphElementRef(
+                            GraphElementKind.LINK, transition.stable_id
+                        ),
+                        after={
+                            "source_state_id": src_state.stable_id,
+                            "transition": transition.to_dict(),
+                        },
+                        after_index=len(src_state.transitions),
+                    )
+                )
+        self._execute_graph_mutations(
+            "Create node from link",
+            tuple(mutations),
+            selection_after=(
+                GraphElementRef(GraphElementKind.NODE, state.stable_id),
+            ),
+        )
 
-        # Rebuild graph from the model — same code path as loading an FSM, which
-        # guarantees graph/FSM consistency (manual node/link drift caused hangs).
-        self._sync_graph_from_fsm()
-        new_uid = self._name_to_uid.get(state.name, "")
-        if new_uid:
-            self._view.selected_nodes = [new_uid]
-            self._selected_uid = new_uid
-        self._dirty = True
-        self._try_record_undo("Create node from link", before, self._undo_snapshot())
-
-    def _on_node_selected(self, uid: str):
-        self._selected_uid = uid
-        self._selected_parameter_index = -1
-        self._clear_external_selection()
-
-    def _clear_external_selection(self):
-        """Clear hierarchy / scene selection only; keep Project panel file selection."""
-        if self._clearing_selection:
-            return
-        self._clearing_selection = True
-        try:
-            from Infernux.engine.ui.selection_manager import SelectionManager
-
-            SelectionManager.instance().clear(record_history=False)
-        finally:
-            self._clearing_selection = False
-
-    def _on_global_selection_changed(self):
-        """SelectionManager listener — hierarchy/scene selected something."""
-        if self._clearing_selection:
-            return
-        from Infernux.engine.ui.selection_manager import SelectionManager
-        if SelectionManager.instance().get_ids():
-            self._view.selected_nodes.clear()
-            self._view.selected_link = ""
-            self._selected_uid = ""
+    def _on_canvas_selection_changed(
+        self,
+        node_ids: Tuple[str, ...],
+        link_id: str,
+        record_history: bool,
+    ) -> None:
+        self._graph_selection.accept_view_selection(
+            node_ids,
+            link_id,
+            record_history=record_history,
+        )
 
     def _on_file_selected(self, path):
         """EditorEvent.FILE_SELECTED — project panel selected a file."""
         if path:
-            self._view.selected_nodes.clear()
-            self._view.selected_link = ""
-            self._selected_uid = ""
+            self._graph_selection.refresh()
 
     def _on_play_mode_changed(self, event):
         """Keep editor drafts in memory when Play Mode changes.
@@ -2351,21 +3134,16 @@ class AnimFSMEditorPanel(EditorPanel):
                 return
         # Otherwise create a new state with this clip (state name stays independent)
         if self._fsm:
-            before = self._undo_snapshot()
-            state = self._fsm.add_state()
+            state = AnimState(
+                name=self._unique_state_name(f"State {self._fsm.state_count}")
+            )
             state.position = [gx, gy]
-            node = self._graph.add_node("anim_state", canvas_x=gx, canvas_y=gy)
-            node.data["label"] = state.name
-            self._name_to_uid[state.name] = node.uid
-            self._uid_to_name[node.uid] = state.name
-            self._assign_clip_to_state(state, p, node, record_undo=False)
-            node.data["loop"] = state.loop
-            node.data["restart_same_clip"] = state.restart_same_clip
-            self._view.selected_nodes = [node.uid]
-            self._selected_uid = node.uid
-            self._update_entry_link()
-            self._dirty = True
-            self._try_record_undo("Drop clip to canvas", before, self._undo_snapshot())
+            self._assign_clip_to_state(state, p, record_undo=False)
+            self._insert_state(
+                state,
+                "Drop clip to canvas",
+                make_default=not bool(self._fsm.default_state),
+            )
 
     def _drop_timeline_to_canvas(self, payload, gx: float, gy: float):
         """Create or assign a Timeline node from a dropped ``.animtimeline`` path."""
@@ -2383,43 +3161,50 @@ class AnimFSMEditorPanel(EditorPanel):
                     self._assign_timeline_to_state(state, p, node, record_undo=True)
                 return
         if self._fsm:
-            before = self._undo_snapshot()
-            state = self._fsm.add_state(self._unique_state_name("Timeline"))
+            state = AnimState(name=self._unique_state_name("Timeline"))
             state.position = [gx, gy]
             state.kind = "timeline"
-            node = self._graph.add_node("anim_state", canvas_x=gx, canvas_y=gy)
-            node.data["label"] = state.name
-            self._name_to_uid[state.name] = node.uid
-            self._uid_to_name[node.uid] = state.name
-            self._assign_timeline_to_state(state, p, node, record_undo=False)
-            node.data["loop"] = state.loop
-            self._view.selected_nodes = [node.uid]
-            self._selected_uid = node.uid
-            self._update_entry_link()
-            self._dirty = True
-            self._try_record_undo("Drop timeline to canvas", before, self._undo_snapshot())
+            self._assign_timeline_to_state(state, p, record_undo=False)
+            self._insert_state(
+                state,
+                "Drop timeline to canvas",
+                make_default=not bool(self._fsm.default_state),
+            )
 
     def _assign_timeline_to_state(self, state: AnimState, path: str, node=None, *, record_undo: bool = True):
-        before = self._undo_snapshot() if record_undo else None
         p = (path or "").strip()
         if p and not p.lower().endswith(".animtimeline"):
             return
-        state.kind = "timeline"
-        state.timeline_guid = self._resolve_guid(p) if p else ""
-        state.timeline_path = "" if state.timeline_guid else (p or "")
+        guid = self._resolve_guid(p) if p else ""
+        resolved_path = "" if guid else (p or "")
+        if record_undo:
+            self._update_state_fields(
+                state,
+                "Assign timeline",
+                merge_key=f"state:{state.stable_id}:timeline",
+                kind="timeline",
+                timeline_guid=guid,
+                timeline_path=resolved_path,
+            )
+        else:
+            state.kind = "timeline"
+            state.timeline_guid = guid
+            state.timeline_path = resolved_path
         self._clip_name_cache = {}
-        self._dirty = True
-        if record_undo and before is not None:
-            self._try_record_undo("Assign timeline", before, self._undo_snapshot())
 
     def _clear_timeline_from_state(self, state: AnimState, node=None, *, record_undo: bool = True):
-        before = self._undo_snapshot() if record_undo else None
-        state.timeline_guid = ""
-        state.timeline_path = ""
+        if record_undo:
+            self._update_state_fields(
+                state,
+                "Clear timeline",
+                merge_key=f"state:{state.stable_id}:timeline",
+                timeline_guid="",
+                timeline_path="",
+            )
+        else:
+            state.timeline_guid = ""
+            state.timeline_path = ""
         self._clip_name_cache = {}
-        self._dirty = True
-        if record_undo and before is not None:
-            self._try_record_undo("Clear timeline", before, self._undo_snapshot())
 
     def _timeline_display_name(self, state: AnimState) -> str:
         guid = str(getattr(state, "timeline_guid", "") or "")
@@ -2483,118 +3268,84 @@ class AnimFSMEditorPanel(EditorPanel):
             return ""
 
     def _clear_clip_from_state(self, state: AnimState, node=None, *, record_undo: bool = True):
-        before = self._undo_snapshot() if record_undo else None
-        state.clip_guid = ""
-        state.clip_path = ""
+        if record_undo:
+            self._update_state_fields(
+                state,
+                "Clear clip",
+                merge_key=f"state:{state.stable_id}:clip",
+                clip_guid="",
+                clip_path="",
+            )
+        else:
+            state.clip_guid = ""
+            state.clip_path = ""
         self._clip_name_cache = {}
-        self._dirty = True
-        if record_undo and before is not None:
-            self._try_record_undo("Clear clip", before, self._undo_snapshot())
-
-    def _try_rename_state(self, state: AnimState, new_name: str) -> bool:
-        """Rename an FSM state and keep graph / transitions consistent."""
-        if not new_name or state.name == new_name:
-            return False
-        fsm = self._fsm
-        if fsm is None or fsm.get_state(new_name) is not None:
-            return False
-
-        old_name = state.name
-        uid = self._name_to_uid.get(old_name, "")
-        if not uid:
-            return False
-
-        state.name = new_name
-        del self._name_to_uid[old_name]
-        self._name_to_uid[new_name] = uid
-        self._uid_to_name[uid] = new_name
-
-        node = self._graph.find_node(uid)
-        if node:
-            node.data["label"] = new_name
-
-        if fsm.default_state == old_name:
-            fsm.default_state = new_name
-
-        for s in fsm.states:
-            for tr in s.transitions:
-                if tr.target_state == old_name:
-                    tr.target_state = new_name
-
-        return True
 
     def _assign_clip_to_state(self, state: AnimState, clip_path: str, node=None, *, record_undo: bool = True):
         """Assign a clip path/guid to a state."""
-        before = self._undo_snapshot() if record_undo else None
         p = (clip_path or "").strip()
         if p and not self._clip_path_matches_fsm_mode(p):
             return
-        state.clip_guid = self._resolve_guid(p) if p else ""
-        state.clip_path = "" if state.clip_guid else (p or "")
+        guid = self._resolve_guid(p) if p else ""
+        path = "" if guid else (p or "")
+        if record_undo:
+            self._update_state_fields(
+                state,
+                "Assign clip",
+                merge_key=f"state:{state.stable_id}:clip",
+                clip_guid=guid,
+                clip_path=path,
+            )
+        else:
+            state.clip_guid = guid
+            state.clip_path = path
         self._clip_name_cache = {}
-        self._dirty = True
-        if record_undo and before is not None:
-            self._try_record_undo("Assign clip", before, self._undo_snapshot())
-
-    def _remove_link_and_transition(self, link_uid: str) -> bool:
-        """Remove a graph link and the corresponding FSM transition."""
-        lk = self._graph.find_link(link_uid)
-        if lk is None:
-            return False
-        if lk.source_node == self._entry_uid:
-            if self._fsm and self._uid_to_name.get(lk.target_node, "") == self._fsm.default_state:
-                self._fsm.default_state = ""
-            return self._graph.remove_link(link_uid)
-        src_name = self._uid_to_name.get(lk.source_node, "")
-        dst_name = self._uid_to_name.get(lk.target_node, "")
-        if src_name and dst_name and self._fsm:
-            state = self._fsm.get_state(src_name)
-            if state:
-                state.transitions = [
-                    tr for tr in state.transitions if tr.target_state != dst_name
-                ]
-        return self._graph.remove_link(link_uid)
-
-    def _sync_transition_condition(self, lk: GraphLink):
-        """Sync condition from link.data back to FSM transition."""
-        src_name = self._uid_to_name.get(lk.source_node, "")
-        dst_name = self._uid_to_name.get(lk.target_node, "")
-        if src_name and dst_name and self._fsm:
-            state = self._fsm.get_state(src_name)
-            if state:
-                for tr in state.transitions:
-                    if tr.target_state == dst_name:
-                        tr.condition = lk.data.get("condition", "")
-                        if "duration" in lk.data:
-                            try:
-                                tr.duration = max(0.0, float(lk.data.get("duration", 0.0) or 0.0))
-                            except (TypeError, ValueError):
-                                tr.duration = 0.0
-                        break
 
     # ── Save ──────────────────────────────────────────────────────────
 
     def _do_save(self):
-        fsm = self._fsm
-        if fsm is None:
-            return
-        # Sync node positions back before saving
-        self._sync_fsm_positions()
-        target = self._file_path or fsm.file_path
-        if target:
-            self._execute_save(target)
-        else:
-            self._show_save_as_dialog()
+        return self._request_document_save(save_as=False)
+
+    def _request_document_save(self, *, save_as: bool) -> bool:
+        from Infernux.engine.interaction import DocumentRegistry
+
+        document = self._fsm_document()
+        if document is None or self._fsm is None:
+            return False
+        return DocumentRegistry.instance().request_save(
+            document.document_id,
+            save_as=save_as,
+        ).accepted
+
+    def save(self, *, ticket, save_as: bool = False):
+        from Infernux.engine.interaction import (
+            DocumentActionResult,
+            DocumentActionStatus,
+        )
+
+        target = self._file_path or (
+            self._fsm.file_path if self._fsm is not None else ""
+        )
+        if save_as or not target:
+            self._pending_save_ticket_id = ticket.ticket_id
+            if self._show_save_as_dialog():
+                return DocumentActionResult(DocumentActionStatus.PENDING)
+            self._pending_save_ticket_id = ""
+            return DocumentActionResult(
+                DocumentActionStatus.REJECTED,
+                "no project root is available",
+            )
+        return self._save_to(target, ticket_id=ticket.ticket_id)
+
+    def discard(self, *, document_id: str) -> bool:
+        if document_id != self.document_id:
+            return False
+        return self._discard_unsaved_changes()
 
     def handle_save_command(self, save_as: bool = False) -> bool:
-        if save_as:
-            if self._fsm is not None:
-                self._show_save_as_dialog()
-        else:
-            self._do_save()
-        return True
+        return self._request_document_save(save_as=save_as)
 
-    def _show_save_as_dialog(self):
+    def _show_save_as_dialog(self) -> bool:
         safe_name = (self._fsm.name or "NewStateMachine").replace(" ", "_")
         # Timeline-mode FSMs save as .timelinefsm (so TimelineAction can pick them up).
         if self._is_timeline_mode():
@@ -2610,32 +3361,93 @@ class AnimFSMEditorPanel(EditorPanel):
             current_path=self._file_path,
         ):
             Debug.log_warning("[AnimFSM] No project root set - cannot save state machine.")
+            return False
+        return True
 
-    def _execute_save(self, target: str) -> bool:
+    def _save_to(self, target: str, *, ticket_id: str = "") -> bool:
         fsm = self._fsm
         if fsm is None:
             return False
         if fsm.save(target):
-            self._file_path = target
-            self._dirty = False
-            self._sync_project_dirty_flag()
+            normalized = self._normalize_fsm_path(target)
+            self._file_path = normalized
+            fsm.file_path = normalized
+            fsm.name = os.path.splitext(os.path.basename(normalized))[0]
+            from Infernux.engine.interaction import DocumentRegistry
+
+            registry = DocumentRegistry.instance()
+            document = self._fsm_document()
+            active_ticket_id = ticket_id or self._pending_save_ticket_id
+            if active_ticket_id:
+                registry.complete_save(
+                    active_ticket_id,
+                    success=True,
+                    key=self._fsm_document_key(normalized),
+                    resource_path=normalized,
+                    title=fsm.name,
+                )
+                self._pending_save_ticket_id = ""
+            elif document is not None:
+                registry.rekey(
+                    document.document_id,
+                    self._fsm_document_key(normalized),
+                    resource_path=normalized,
+                )
+                registry.update_metadata(document.document_id, title=fsm.name)
+                registry.mark_saved(document.document_id)
+            document = self._fsm_document()
+            self._dirty = bool(document and document.is_dirty)
             Debug.log(f"Saved animfsm: {target}")
-            self._hot_reload_animators(target)
+            self._hot_reload_animators(normalized)
             if self._mode_switch_waiting_for_save and self._pending_mode_switch:
                 self._commit_mode_switch(self._pending_mode_switch)
             return True
         else:
             Debug.log_error(f"Failed to save animfsm: {target}")
+            active_ticket_id = ticket_id or self._pending_save_ticket_id
+            if active_ticket_id:
+                from Infernux.engine.interaction import DocumentRegistry
+
+                DocumentRegistry.instance().complete_save(
+                    active_ticket_id,
+                    success=False,
+                    message=f"failed to save animation FSM: {target}",
+                )
+                self._pending_save_ticket_id = ""
             return False
+
+    def _cancel_pending_save(self) -> None:
+        ticket_id = self._pending_save_ticket_id
+        self._pending_save_ticket_id = ""
+        if ticket_id:
+            from Infernux.engine.interaction import DocumentRegistry
+
+            DocumentRegistry.instance().complete_save(
+                ticket_id,
+                success=False,
+                cancelled=True,
+                message="save was cancelled",
+            )
+        if self._mode_switch_waiting_for_save:
+            self._cancel_pending_mode_switch()
 
     def _discard_unsaved_changes(self) -> bool:
         target = self._file_path or (self._fsm.file_path if self._fsm is not None else "")
         if target:
             self._open_animfsm(target)
             return not self._dirty
-        self._new_fsm()
+        self._fsm = AnimStateMachine(name="New State Machine")
+        self._file_path = ""
+        self._sync_graph_from_fsm()
+        self._graph_selection.clear(record_history=False)
+        from Infernux.engine.interaction import DocumentRegistry
+
+        document = self._fsm_document()
+        if document is not None:
+            DocumentRegistry.instance().restore_content_revision(
+                document.document_id, document.saved_revision
+            )
         self._dirty = False
-        self._sync_project_dirty_flag()
         return True
 
     def _hot_reload_animators(self, fsm_path: str):
