@@ -1142,6 +1142,7 @@ class TestInstantiate:
     def test_python_component_add_undo_redo_preserves_loaded_type_and_fields(self, scene):
         owner = scene.create_game_object("PythonComponentUndoOwner")
         component = owner.add_py_component(_RichCloneComponent())
+        component_id = int(component.component_id)
         component.count = 377
         component.values = [34, 55, 89]
         component.settings = _CloneSettings(gain=12.5, label="redo")
@@ -1155,10 +1156,73 @@ class TestInstantiate:
         command.redo()
         restored = owner.get_py_component(_RichCloneComponent)
         assert type(restored) is type(component)
+        assert restored.component_id == component_id
         assert restored.count == 377
         assert restored.values == [34, 55, 89]
         assert restored.settings.gain == pytest.approx(12.5)
         assert restored.settings.label == "redo"
+
+    def test_component_add_transaction_owns_python_requirements(self, scene):
+        from Infernux.engine.undo import AddComponentTransactionCommand, UndoManager
+
+        owner = scene.create_game_object("PythonAddTransactionOwner")
+        prototype = _RequiresRigidbodyComponent()
+        prototype.value = 42
+        command = AddComponentTransactionCommand(
+            owner.id,
+            type(prototype).__name__,
+            python_instance=prototype,
+            description="Add required Python component",
+        )
+
+        previous_manager = UndoManager._instance
+        manager = UndoManager()
+        try:
+            assert owner.get_component("Rigidbody") is None
+            assert owner.get_py_component(_RequiresRigidbodyComponent) is None
+            assert manager.execute(command)
+            rigidbody = owner.get_component("Rigidbody")
+            attached = owner.get_py_component(_RequiresRigidbodyComponent)
+            assert rigidbody is not None
+            assert attached is prototype
+            assert attached.value == 42
+            order = tuple(owner.get_component_order())
+            assert order == (int(rigidbody.component_id), int(attached.component_id))
+
+            manager.undo()
+            assert owner.get_component("Rigidbody") is None
+            assert owner.get_py_component(_RequiresRigidbodyComponent) is None
+            assert not manager.can_undo
+
+            manager.redo()
+            restored_rigidbody = owner.get_component("Rigidbody")
+            restored = owner.get_py_component(_RequiresRigidbodyComponent)
+            assert restored_rigidbody is not None
+            assert restored is not None
+            assert restored.value == 42
+            assert tuple(owner.get_component_order()) == order
+        finally:
+            UndoManager._instance = previous_manager
+
+    def test_component_add_transaction_rolls_back_failed_python_callback(self, scene):
+        from Infernux.engine.undo import AddComponentTransactionCommand, UndoManager
+
+        owner = scene.create_game_object("FailedPythonAddTransaction")
+        prototype = _ExplodingAfterDeserializeComponent()
+        command = AddComponentTransactionCommand(
+            owner.id,
+            type(prototype).__name__,
+            python_instance=prototype,
+        )
+        previous_manager = UndoManager._instance
+        manager = UndoManager()
+        try:
+            assert not manager.execute(command)
+            assert owner.get_py_component(_ExplodingAfterDeserializeComponent) is None
+            assert tuple(owner.get_component_order()) == ()
+            assert not manager.can_undo
+        finally:
+            UndoManager._instance = previous_manager
 
     def test_repeated_asset_script_clone_preserves_fields_across_module_reload(
         self, scene, tmp_path

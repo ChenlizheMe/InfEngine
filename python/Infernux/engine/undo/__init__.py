@@ -63,6 +63,7 @@ from Infernux.engine.undo._timeline_commands import (
 
 # -- Component commands --
 from Infernux.engine.undo._component_commands import (
+    AddComponentTransactionCommand,
     AddNativeComponentCommand,
     RemoveNativeComponentCommand,
     AddPyComponentCommand,
@@ -137,6 +138,7 @@ __all__ = [
     "TimelineInsertKeyframeCommand",
     "TimelinePropertyCommand",
     "TimelineRemoveKeyframeCommand",
+    "AddComponentTransactionCommand",
     "AddNativeComponentCommand", "RemoveNativeComponentCommand",
     "AddPyComponentCommand", "RemovePyComponentCommand",
     "RemoveComponentsCommand",

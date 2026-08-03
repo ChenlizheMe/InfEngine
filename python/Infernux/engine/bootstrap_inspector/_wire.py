@@ -663,65 +663,33 @@ def _publish_component_clipboard(comp, type_name: str, is_native: bool) -> bool:
     return True
 
 
-def _restore_native_components_after_failed_paste(
-    obj,
-    before_ids: set[int],
-    before_documents: dict,
-) -> None:
-    for component in reversed(list(obj.get_components() or ())):
-        component_id = int(getattr(component, "component_id", 0) or 0)
-        if component_id and component_id not in before_ids:
-            obj.remove_component(component)
-    for component_id, (component, document) in before_documents.items():
-        if component_id not in before_ids:
-            continue
-        if not component.deserialize_document(copy.deepcopy(document)):
-            raise RuntimeError(
-                f"Failed to roll back native component {component_id}"
-            )
-
-
 def _paste_native_component_as_new(obj, type_name: str, document: dict) -> bool:
-    from Infernux.engine.ui._inspector_undo import (
-        _get_component_ids,
-        _get_native_component_documents,
-        _record_add_component_compound,
+    from Infernux.engine.undo import (
+        AddComponentTransactionCommand,
+        UndoManager,
     )
 
-    before_ids = _get_component_ids(obj)
-    before_documents = _get_native_component_documents(obj)
+    command = AddComponentTransactionCommand(
+        obj.id,
+        type_name,
+        native_document=document,
+        description=f"Paste {type_name} As New",
+    )
+    manager = UndoManager.instance()
+    if manager is not None:
+        return manager.execute(command)
     try:
-        result = obj.add_component(type_name)
-        if result is None:
-            raise RuntimeError(f"Failed to add native component '{type_name}'")
-        if int(getattr(result, "component_id", 0) or 0) in before_ids:
-            raise RuntimeError(
-                f"Native component '{type_name}' does not allow another instance"
-            )
-        if not result.deserialize_document(copy.deepcopy(document)):
-            raise RuntimeError(f"Failed to paste native component '{type_name}'")
+        command.execute()
     except Exception as exc:
-        try:
-            _restore_native_components_after_failed_paste(
-                obj,
-                before_ids,
-                before_documents,
-            )
-        except Exception as rollback_exc:
-            Debug.log_error(
-                f"Cannot roll back failed component paste '{type_name}': {rollback_exc}"
-            )
+        command.dispose()
         Debug.log_error(f"Cannot paste native component '{type_name}': {exc}")
         return False
+    else:
+        command.dispose()
+        from Infernux.engine.ui._inspector_undo import _notify_scene_modified
 
-    _record_add_component_compound(
-        obj,
-        type_name,
-        result,
-        before_ids,
-        before_documents=before_documents,
-    )
-    return True
+        _notify_scene_modified()
+        return True
 
 
 def _paste_native_component_values(comp, document: dict) -> bool:
@@ -826,54 +794,31 @@ def _wire_clipboard_and_context(ctx):
                     instance._script_guid = guid
                 except Exception as _exc:
                     Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            from Infernux.engine.ui._inspector_undo import (
-                _get_component_ids,
-                _get_native_component_documents,
-                _record_add_component_compound,
+            from Infernux.engine.undo import (
+                AddComponentTransactionCommand,
+                UndoManager,
             )
-            before_ids = _get_component_ids(obj)
-            before_documents = _get_native_component_documents(obj)
-            attached = obj.add_py_component(instance)
-            if attached is None:
-                instance._call_on_destroy()
-                try:
-                    _restore_native_components_after_failed_paste(
-                        obj,
-                        before_ids,
-                        before_documents,
-                    )
-                except Exception as rollback_exc:
-                    Debug.log_error(
-                        f"Cannot roll back failed component paste '{tn}': "
-                        f"{rollback_exc}"
-                    )
-                Debug.log_error(f"Cannot paste: failed to attach '{tn}'")
-                return False
-            try:
-                attached._call_on_after_deserialize()
-            except Exception as exc:
-                obj.remove_py_component(attached)
-                try:
-                    _restore_native_components_after_failed_paste(
-                        obj,
-                        before_ids,
-                        before_documents,
-                    )
-                except Exception as rollback_exc:
-                    Debug.log_error(
-                        f"Cannot roll back failed component paste '{tn}': "
-                        f"{rollback_exc}"
-                    )
-                Debug.log_error(f"Cannot finish pasting '{tn}': {exc}")
-                return False
-            _record_add_component_compound(
-                obj,
+            command = AddComponentTransactionCommand(
+                obj.id,
                 tn,
-                attached,
-                before_ids,
-                is_py=True,
-                before_documents=before_documents,
+                python_instance=instance,
+                description=f"Paste {tn} As New",
             )
+            manager = UndoManager.instance()
+            if manager is not None:
+                if not manager.execute(command):
+                    return False
+            else:
+                try:
+                    command.execute()
+                except Exception as exc:
+                    command.dispose()
+                    Debug.log_error(f"Cannot finish pasting '{tn}': {exc}")
+                    return False
+                command.dispose()
+                from Infernux.engine.ui._inspector_undo import _notify_scene_modified
+
+                _notify_scene_modified()
         _invalidate()
         return True
 

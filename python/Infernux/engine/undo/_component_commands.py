@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Optional
 
 from Infernux.debug import Debug
@@ -215,23 +216,275 @@ def _add_py_from_snapshot(object_id: int, type_name: str, script_guid: str, type
         type_name, script_guid, type_guid, fields_json, enabled, description=label)
     if instance is None:
         raise RuntimeError(f"[Undo] {label}: recreate failed")
-    obj.add_py_component(instance)
+    restored_id = int(getattr(instance, "component_id", 0) or 0)
+    attached = obj.add_py_component(instance)
+    if attached is None:
+        raise RuntimeError(f"[Undo] {label}: attach failed")
+    if restored_id:
+        native_component = getattr(attached, "_cpp_component", None)
+        if native_component is None:
+            obj.remove_py_component(attached)
+            raise RuntimeError(f"[Undo] {label}: native proxy is unavailable")
+        native_component._set_component_id(restored_id)
+        attached._bind_native_component(native_component, obj)
     _restore_component_index(
         obj,
-        int(getattr(instance, "component_id", 0) or 0),
+        int(getattr(attached, "component_id", 0) or 0),
         component_index,
         label,
     )
-    if hasattr(instance, '_call_on_after_deserialize'):
+    if hasattr(attached, '_call_on_after_deserialize'):
         try:
-            instance._call_on_after_deserialize()
+            attached._call_on_after_deserialize()
         except Exception as exc:
             Debug.log_suppressed("undo._component_commands._add_py_from_snapshot.on_after_deserialize", exc)
     _bump_inspector_structure()
-    return instance
+    return attached
+
+
+def _capture_component_documents(obj) -> dict:
+    """Capture the exact component structure needed by an add transaction."""
+    python_components = {}
+    for component in obj.get_py_components() or ():
+        component_id = int(getattr(component, "component_id", 0) or 0)
+        if not component_id:
+            raise RuntimeError("Python component has no stable component identity")
+        python_components[component_id] = {
+            "ref": component,
+            "type_name": _comp_type_name_of(component),
+            "document": copy.deepcopy(component._serialize_fields_document()),
+        }
+
+    native_components = {}
+    for component in obj.get_components() or ():
+        component_id = int(getattr(component, "component_id", 0) or 0)
+        if not component_id or component_id in python_components:
+            continue
+        type_name = _comp_type_name_of(component)
+        if type_name == "Transform":
+            continue
+        serializer = getattr(component, "serialize_document", None)
+        if not callable(serializer):
+            raise RuntimeError(
+                f"native component '{type_name}' has no document serializer"
+            )
+        native_components[component_id] = {
+            "ref": component,
+            "type_name": type_name,
+            "document": copy.deepcopy(serializer()),
+        }
+
+    order = tuple(int(value) for value in obj.get_component_order())
+    captured_ids = set(native_components) | set(python_components)
+    if set(order) != captured_ids:
+        missing = sorted(set(order) - captured_ids)
+        extra = sorted(captured_ids - set(order))
+        raise RuntimeError(
+            "component document capture disagrees with native order: "
+            f"missing={missing}, extra={extra}"
+        )
+    return {
+        "order": order,
+        "native": native_components,
+        "python": python_components,
+    }
+
+
+def _restore_component_documents(obj, state: dict, label: str) -> None:
+    """Roll a failed first execution back without creating an undo action."""
+    before_ids = set(state["order"])
+    current = _capture_component_documents(obj)
+    for component_id in reversed(current["order"]):
+        if component_id in before_ids:
+            continue
+        if component_id in current["python"]:
+            component = current["python"][component_id]["ref"]
+            removed = obj.remove_py_component(component)
+        else:
+            component = current["native"][component_id]["ref"]
+            removed = obj.remove_component(component)
+            _invalidate_builtin_wrapper(component)
+        if removed is False:
+            raise RuntimeError(
+                f"[Undo] {label}: failed to remove component {component_id}"
+            )
+
+    restored = _capture_component_documents(obj)
+    if set(restored["order"]) != before_ids:
+        raise RuntimeError(f"[Undo] {label}: component set rollback is incomplete")
+    for component_id, record in state["native"].items():
+        component = restored["native"][component_id]["ref"]
+        if not component.deserialize_document(copy.deepcopy(record["document"])):
+            raise RuntimeError(
+                f"[Undo] {label}: native component {component_id} rollback failed"
+            )
+    for component_id, record in state["python"].items():
+        component = restored["python"][component_id]["ref"]
+        component._deserialize_fields_document(copy.deepcopy(record["document"]))
+    if tuple(restored["order"]) != tuple(state["order"]):
+        if not obj.set_component_order(list(state["order"])):
+            raise RuntimeError(f"[Undo] {label}: component order rollback failed")
+    _bump_inspector_structure()
+    _notify_gizmos_scene_changed()
 
 
 # -- Command classes --
+
+class AddComponentTransactionCommand(UndoCommand):
+    """Create one component and own every structural side effect atomically.
+
+    The first ``execute`` performs the requested add and derives precise child
+    commands for automatically-created dependencies and modified existing
+    components. Later undo/redo never rerun Inspector code.
+    """
+
+    def __init__(
+        self,
+        object_id: int,
+        type_name: str,
+        *,
+        native_document: Optional[dict] = None,
+        python_instance: Any = None,
+        description: str = "",
+    ):
+        super().__init__(description or f"Add {type_name}")
+        if python_instance is not None and native_document is not None:
+            raise ValueError("component add cannot be both native and Python")
+        self._object_id = int(object_id)
+        self._type_name = str(type_name)
+        self._native_document = copy.deepcopy(native_document)
+        self._python_instance = python_instance
+        self._compound: Optional[CompoundCommand] = None
+
+    def _perform_initial_add(self, obj):
+        if self._python_instance is not None:
+            attached = obj.add_py_component(self._python_instance)
+            if attached is None:
+                raise RuntimeError(
+                    f"failed to attach Python component '{self._type_name}'"
+                )
+            attached._call_on_after_deserialize()
+            return attached
+
+        component = obj.add_component(self._type_name)
+        if component is None:
+            raise RuntimeError(f"failed to add native component '{self._type_name}'")
+        if self._native_document is not None:
+            document = copy.deepcopy(self._native_document)
+            document.pop("component_id", None)
+            if not component.deserialize_document(document):
+                raise RuntimeError(
+                    f"failed to apply '{self._type_name}' component document"
+                )
+        return component
+
+    def _build_compound(self, before: dict, after: dict) -> CompoundCommand:
+        from Infernux.engine.undo._property_commands import (
+            GenericComponentCommand,
+            PythonComponentDocumentCommand,
+        )
+
+        before_ids = set(before["order"])
+        after_ids = set(after["order"])
+        missing = before_ids - after_ids
+        if missing:
+            raise RuntimeError(
+                "component add unexpectedly removed existing components: "
+                f"{sorted(missing)}"
+            )
+
+        commands = []
+        for component_id in before["order"]:
+            if component_id in before["native"]:
+                old_record = before["native"][component_id]
+                new_record = after["native"][component_id]
+                if old_record["document"] != new_record["document"]:
+                    commands.append(
+                        GenericComponentCommand(
+                            new_record["ref"],
+                            old_record["document"],
+                            new_record["document"],
+                            f"Update {new_record['type_name']} for {self._type_name}",
+                            mergeable=False,
+                        )
+                    )
+                continue
+            old_record = before["python"][component_id]
+            new_record = after["python"][component_id]
+            if old_record["document"] != new_record["document"]:
+                commands.append(
+                    PythonComponentDocumentCommand(
+                        new_record["ref"],
+                        old_record["document"],
+                        new_record["document"],
+                        f"Update {new_record['type_name']} for {self._type_name}",
+                        edit_key=f"component_add:{self._object_id}:{component_id}",
+                    )
+                )
+
+        for component_id in after["order"]:
+            if component_id in before_ids:
+                continue
+            if component_id in after["native"]:
+                record = after["native"][component_id]
+                commands.append(
+                    AddNativeComponentCommand(
+                        self._object_id,
+                        record["type_name"],
+                        record["ref"],
+                        f"Add {record['type_name']}",
+                    )
+                )
+            else:
+                record = after["python"][component_id]
+                commands.append(
+                    AddPyComponentCommand(
+                        self._object_id,
+                        record["ref"],
+                        f"Add {record['type_name']}",
+                    )
+                )
+
+        if not commands or before_ids == after_ids:
+            raise RuntimeError(
+                f"component add '{self._type_name}' produced no new component"
+            )
+        return CompoundCommand(commands, self.description)
+
+    def execute(self) -> None:
+        if self._compound is not None:
+            self._compound.redo()
+            return
+        _scene, obj = _require_scene_object(
+            self._object_id, f"AddComponent('{self._type_name}').execute"
+        )
+        before = _capture_component_documents(obj)
+        try:
+            self._perform_initial_add(obj)
+            after = _capture_component_documents(obj)
+            self._compound = self._build_compound(before, after)
+        except Exception:
+            _restore_component_documents(
+                obj, before, f"AddComponent('{self._type_name}').rollback"
+            )
+            raise
+        _bump_inspector_structure()
+        _notify_gizmos_scene_changed()
+
+    def undo(self) -> None:
+        if self._compound is None:
+            raise RuntimeError("component add transaction has not executed")
+        self._compound.undo()
+
+    def redo(self) -> None:
+        if self._compound is None:
+            raise RuntimeError("component add transaction has not executed")
+        self._compound.redo()
+
+    def dispose(self) -> None:
+        if self._compound is not None:
+            self._compound.dispose()
+            self._compound = None
 
 class AddNativeComponentCommand(UndoCommand):
     """Undo removes the C++ component; redo re-adds from a document snapshot."""
