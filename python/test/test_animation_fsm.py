@@ -10,7 +10,14 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.core.anim_state_machine import AnimStateMachine, AnimState, AnimTransition
+from Infernux.core.anim_state_machine import (
+    AnimCondition,
+    AnimParameter,
+    AnimState,
+    AnimStateMachine,
+    AnimTransition,
+)
+from Infernux.graph import TypeRef, ValueType
 from Infernux.components.skeletal_animator import SkeletalAnimator
 from Infernux.components.spirit_animator import SpiritAnimator
 
@@ -22,6 +29,14 @@ def _make_animator() -> SkeletalAnimator:
     anim._duration_cache = {}
     anim._clip_cache = {}
     return anim
+
+
+def _condition(parameter: AnimParameter, operator: str = "==", threshold: float = 1.0):
+    return AnimCondition(
+        parameter_id=parameter.stable_id,
+        operator=operator,
+        threshold=threshold,
+    )
 
 
 class _FakeClip:
@@ -43,29 +58,62 @@ def test_skeletal_mismatch_check_is_inconclusive_when_renderer_has_no_guid():
 class TestTriggerConsumption:
     def test_exact_identifier_consumed(self):
         anim = _make_animator()
+        attack = AnimParameter(
+            name="attack", value_type=TypeRef(ValueType.BOOL), default=False
+        )
+        anim._fsm = AnimStateMachine(parameters=[attack])
         anim._parameters = {"attack": True}
-        anim._consume_triggers("attack and speed > 1")
+        anim._consume_triggers(
+            AnimTransition(conditions=[_condition(attack)])
+        )
         assert anim._parameters["attack"] is False
 
     def test_substring_not_consumed(self):
         anim = _make_animator()
+        attack = AnimParameter(
+            name="attack", value_type=TypeRef(ValueType.BOOL), default=False
+        )
+        attacking = AnimParameter(
+            name="is_attacking", value_type=TypeRef(ValueType.BOOL), default=False
+        )
+        anim._fsm = AnimStateMachine(parameters=[attack, attacking])
         anim._parameters = {"attack": True}
-        anim._consume_triggers("is_attacking")
+        anim._consume_triggers(
+            AnimTransition(conditions=[_condition(attacking)])
+        )
         assert anim._parameters["attack"] is True, \
             "'attack' must NOT be consumed by identifier 'is_attacking'"
 
     def test_multiple_triggers(self):
         anim = _make_animator()
+        jump = AnimParameter(
+            name="jump", value_type=TypeRef(ValueType.BOOL), default=False
+        )
+        fire = AnimParameter(
+            name="fire", value_type=TypeRef(ValueType.BOOL), default=False
+        )
+        anim._fsm = AnimStateMachine(parameters=[jump, fire])
         anim._parameters = {"jump": True, "fire": True, "idle": True}
-        anim._consume_triggers("jump or fire")
+        anim._consume_triggers(
+            AnimTransition(conditions=[_condition(jump), _condition(fire)])
+        )
         assert anim._parameters["jump"] is False
         assert anim._parameters["fire"] is False
         assert anim._parameters["idle"] is True
 
     def test_spirit_animator_same_semantics(self):
         sp = SpiritAnimator()
+        attack = AnimParameter(
+            name="attack", value_type=TypeRef(ValueType.BOOL), default=False
+        )
+        attacking = AnimParameter(
+            name="is_attacking", value_type=TypeRef(ValueType.BOOL), default=False
+        )
+        sp._fsm = AnimStateMachine(parameters=[attack, attacking])
         sp._parameters = {"attack": True}
-        sp._consume_triggers("is_attacking")
+        sp._consume_triggers(
+            AnimTransition(conditions=[_condition(attacking)])
+        )
         assert sp._parameters["attack"] is True
 
 
@@ -118,27 +166,33 @@ class TestEmptyConditionTransition:
     def test_clip_finished_fires_for_non_loop(self):
         anim, _ = self._animator_with_state(loop=False, duration=1.0)
         anim._elapsed = 1.0
-        tr = AnimTransition(target_state="Next", condition="")
+        tr = AnimTransition(target_state="Next")
         assert anim._evaluate_condition(tr) is True
 
     def test_clip_not_finished_does_not_fire(self):
         anim, _ = self._animator_with_state(loop=False, duration=1.0)
         anim._elapsed = 0.4
-        tr = AnimTransition(target_state="Next", condition="")
+        tr = AnimTransition(target_state="Next")
         assert anim._evaluate_condition(tr) is False
 
     def test_looping_state_never_fires_empty_condition(self):
         anim, _ = self._animator_with_state(loop=True, duration=1.0)
         anim._elapsed = 5.0
-        tr = AnimTransition(target_state="Next", condition="")
+        tr = AnimTransition(target_state="Next")
         assert anim._evaluate_condition(tr) is False
 
     def test_parameter_condition(self):
         anim, _ = self._animator_with_state(loop=True, duration=1.0)
+        speed = AnimParameter(name="speed")
+        anim._fsm.parameters.append(speed)
         anim._parameters = {"speed": 3.0}
-        tr = AnimTransition(target_state="Run", condition="speed > 2.0")
+        tr = AnimTransition(
+            target_state="Run", conditions=[_condition(speed, ">", 2.0)]
+        )
         assert anim._evaluate_condition(tr) is True
-        tr2 = AnimTransition(target_state="Run", condition="speed > 5.0")
+        tr2 = AnimTransition(
+            target_state="Run", conditions=[_condition(speed, ">", 5.0)]
+        )
         assert anim._evaluate_condition(tr2) is False
 
 
@@ -260,7 +314,8 @@ class TestAnimationEventWindowing:
 
 class TestAnimationSerialization:
     def test_transition_duration_round_trip(self):
-        tr = AnimTransition(target_state="Run", condition="speed > 1", duration=0.25)
+        condition = AnimCondition(parameter_id="speed-id", operator=">", threshold=1.0)
+        tr = AnimTransition(target_state="Run", conditions=[condition], duration=0.25)
         tr2 = AnimTransition.from_dict(tr.to_dict())
         assert tr2.duration == 0.25
         assert tr2.target_state == "Run"

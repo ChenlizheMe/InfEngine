@@ -8,7 +8,7 @@ from Infernux.engine.interaction import (
     GraphElementRef,
     SelectionService,
 )
-from Infernux.core.anim_state_machine import AnimState, AnimTransition
+from Infernux.core.anim_state_machine import AnimCondition, AnimState, AnimTransition
 from Infernux.engine.ui.animfsm_graph_authoring import AnimFSMGraphAuthoringModel
 from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
 from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
@@ -101,17 +101,12 @@ def test_animfsm_parameter_edit_uses_stable_diff_and_document_revision():
     assert document.revision == rename_revision
 
 
-def test_animfsm_parameter_rename_updates_transition_expression_and_undo():
+def test_animfsm_parameter_rename_preserves_transition_reference_and_undo():
     panel, manager = _panel_with_history()
     source = AnimState(name="Source")
     target = AnimState(name="Target")
     assert panel._insert_state(source, "Add Source", make_default=True)
     assert panel._insert_state(target, "Add Target", make_default=False)
-    transition = AnimTransition(
-        target_state="Target",
-        condition="speed > 1 and speed_limit > speed",
-    )
-    assert panel._insert_transition(source, transition, "Connect")
     assert panel._insert_parameter()
     parameter = panel._fsm.parameters[0]
     old_parameter = parameter.to_dict()
@@ -122,6 +117,17 @@ def test_animfsm_parameter_rename_updates_transition_expression_and_undo():
         "Rename parameter",
         merge_key=f"parameter:{parameter.stable_id}:name",
     )
+    transition = AnimTransition(
+        target_state="Target",
+        conditions=[
+            AnimCondition(
+                parameter_id=parameter.stable_id,
+                operator=">",
+                threshold=1.0,
+            )
+        ],
+    )
+    assert panel._insert_transition(source, transition, "Connect")
     baseline_revision = panel._fsm_document().revision
     manager.clear()
 
@@ -133,21 +139,46 @@ def test_animfsm_parameter_rename_updates_transition_expression_and_undo():
         "Rename parameter",
         merge_key=f"parameter:{parameter.stable_id}:name",
     )
-    assert panel._fsm.states[0].transitions[0].condition == (
-        "velocity > 1 and speed_limit > velocity"
+    assert panel._fsm.states[0].transitions[0].conditions[0].parameter_id == (
+        parameter.stable_id
     )
     rename_diff = manager._undo_stack[-1].diff
     assert [mutation.element.kind for mutation in rename_diff.mutations] == [
-        GraphElementKind.LINK,
         GraphElementKind.PARAMETER,
     ]
 
     manager.undo()
     assert panel._fsm.parameters[0].name == "speed"
-    assert panel._fsm.states[0].transitions[0].condition == (
-        "speed > 1 and speed_limit > speed"
+    assert panel._fsm.states[0].transitions[0].conditions[0].parameter_id == (
+        parameter.stable_id
     )
     assert panel._fsm_document().revision == baseline_revision
+
+
+def test_animfsm_parameter_remove_atomically_removes_conditions_and_undo_restores():
+    panel, manager = _panel_with_history()
+    source = AnimState(name="Source")
+    target = AnimState(name="Target")
+    assert panel._insert_state(source, "Add Source", make_default=True)
+    assert panel._insert_state(target, "Add Target", make_default=False)
+    assert panel._insert_parameter()
+    parameter = panel._fsm.parameters[0]
+    condition = AnimCondition(
+        parameter_id=parameter.stable_id,
+        operator=">",
+        threshold=0.5,
+    )
+    transition = AnimTransition(target_state="Target", conditions=[condition])
+    assert panel._insert_transition(source, transition, "Connect")
+    manager.clear()
+
+    assert panel._remove_parameter(parameter.stable_id)
+    assert panel._fsm.parameters == []
+    assert panel._fsm.states[0].transitions[0].conditions == []
+
+    manager.undo()
+    assert panel._fsm.parameters[0].stable_id == parameter.stable_id
+    assert panel._fsm.states[0].transitions[0].conditions == [condition]
 
 
 def test_animfsm_node_move_does_not_snapshot_the_whole_fsm():
@@ -311,7 +342,14 @@ def test_animfsm_copy_paste_uses_global_typed_clipboard_and_is_atomic():
     second = AnimState(name="Second", position=[30.0, 40.0])
     assert panel._insert_state(first, "Add First", make_default=True)
     assert panel._insert_state(second, "Add Second", make_default=False)
-    transition = AnimTransition(target_state="Second", condition="ready > 0")
+    assert panel._insert_parameter()
+    parameter = panel._fsm.parameters[0]
+    transition = AnimTransition(
+        target_state="Second",
+        conditions=[
+            AnimCondition(parameter_id=parameter.stable_id, operator=">", threshold=0.0)
+        ],
+    )
     assert panel._insert_transition(first, transition, "Connect")
     panel._graph_selection.select(
         (

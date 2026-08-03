@@ -1428,9 +1428,16 @@ def _render_animfsm_body(ctx: InxGUIContext, panel, state: _State):
                 ctx.label(f"  [{os.path.basename(clip_path)}]")
             for tr in s.transitions:
                 ctx.label(f"      → {tr.target_state}")
-                if tr.condition:
+                if tr.conditions:
+                    labels = []
+                    for condition in tr.conditions:
+                        parameter = fsm.parameter_by_id(condition.parameter_id)
+                        name = parameter.name if parameter is not None else "Missing"
+                        labels.append(
+                            f"{name} {condition.operator} {condition.threshold:g}"
+                        )
                     ctx.same_line()
-                    ctx.label(f"  ({tr.condition})")
+                    ctx.label(f"  ({' AND '.join(labels)})")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

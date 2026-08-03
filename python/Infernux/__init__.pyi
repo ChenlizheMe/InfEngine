@@ -80,6 +80,7 @@ from Infernux.core import AnimationClip as AnimationClip
 from Infernux.core import AnimStateMachine as AnimStateMachine
 from Infernux.core import AnimState as AnimState
 from Infernux.core import AnimTransition as AnimTransition
+from Infernux.core import AnimCondition as AnimCondition
 from Infernux.core import AnimParameter as AnimParameter
 from Infernux.core import AssetManager as AssetManager
 from Infernux.core import TextureRef as TextureRef

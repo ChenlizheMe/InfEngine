@@ -795,9 +795,14 @@ def test_animfsm_selected_link_renders_transition_detail_semantics():
         lk for lk in panel._graph.links
         if lk.source_node == source_uid and lk.target_node == target_uid
     )
-    link.data["condition"] = "ReplayTrigger > 0"
-    link.data["cond_terms"] = [
-        {"name": "ReplayTrigger", "op": ">", "value": 0.0},
+    parameter = panel._fsm.parameters[0]
+    link.data["conditions"] = [
+        {
+            "stable_id": "condition-replay-trigger",
+            "parameter_id": parameter.stable_id,
+            "operator": ">",
+            "threshold": 0.0,
+        },
     ]
     panel._graph_selection.select_one(
         GraphElementKind.LINK, link.uid, record_history=False

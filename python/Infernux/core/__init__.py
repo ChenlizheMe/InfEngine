@@ -38,6 +38,7 @@ from .anim_state_machine import (
     AnimStateMachine,
     AnimState,
     AnimTransition,
+    AnimCondition,
     AnimParameter,
 )
 from .assets import AssetManager
@@ -81,6 +82,7 @@ __all__ = [
     "AnimStateMachine",
     "AnimState",
     "AnimTransition",
+    "AnimCondition",
     "AnimParameter",
     "AssetManager",
     "ParallelBackend",

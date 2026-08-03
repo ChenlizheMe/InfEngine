@@ -143,6 +143,7 @@ __all__ = [
     "AnimStateMachine",
     "AnimState",
     "AnimTransition",
+    "AnimCondition",
     "AnimParameter",
     "AssetManager",
     "TextureRef",

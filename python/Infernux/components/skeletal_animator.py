@@ -16,7 +16,7 @@ from Infernux.components.serialized_field import serialized_field
 from Infernux.components.decorators import require_component, disallow_multiple, add_component_menu
 from Infernux.components.builtin.skinned_mesh_renderer import SkinnedMeshRenderer
 from Infernux.core.anim_state_machine import (
-    AnimStateMachine, AnimState, AnimTransition, evaluate_anim_condition,
+    AnimStateMachine, AnimState, AnimTransition,
 )
 from Infernux.core.animation_clip3d import AnimationClip3D, resolve_disk_path_for_guid_string
 from Infernux.core.asset_ref import AnimStateMachineRef
@@ -798,7 +798,7 @@ class SkeletalAnimator(InxComponent):
             return
         for tr in state.transitions:
             if self._evaluate_condition(tr):
-                self._consume_triggers(tr.condition)
+                self._consume_triggers(tr)
                 # AnimTransition.duration (authored in the FSM editor) drives
                 # this specific fade; <= 0 falls back to cross_fade_duration.
                 tr_duration = float(getattr(tr, "duration", 0.0) or 0.0)
@@ -807,9 +807,7 @@ class SkeletalAnimator(InxComponent):
                 return
 
     def _evaluate_condition(self, transition: AnimTransition) -> bool:
-        cond = transition.condition.strip()
-
-        if not cond:
+        if not transition.conditions:
             duration = self._clip_duration(self._current_clip)
             if duration <= 0.0:
                 return False
@@ -818,27 +816,19 @@ class SkeletalAnimator(InxComponent):
             if self._current_clip and not should_loop:
                 return self._elapsed >= duration
             return False
-
-        ctx = dict(self._parameters)
-        ctx["time"] = self._elapsed
-        ctx["normalized_time"] = self.normalized_time
-        ctx["state"] = self._current_state_name
-
-        # Safe structured evaluation — no eval()/builtins/attribute access.
-        try:
-            return evaluate_anim_condition(cond, ctx)
-        except Exception as exc:
-            Debug.log_warning(
-                f"[SkeletalAnimator] Condition error in '{self._current_state_name}': "
-                f"'{cond}' -> {exc}"
+        return bool(
+            self._fsm
+            and self._fsm.evaluate_transition_conditions(
+                transition, self._parameters
             )
-            return False
+        )
 
-    def _consume_triggers(self, condition: str):
-        # Identifier-boundary matching: a trigger named "attack" must NOT be
-        # consumed by a condition that references "is_attacking".
-        import re
-        identifiers = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", condition or ""))
+    def _consume_triggers(self, transition: AnimTransition):
+        names = set(
+            self._fsm.transition_parameter_names(transition)
+            if self._fsm is not None
+            else ()
+        )
         for name, val in list(self._parameters.items()):
-            if val is True and name in identifiers:
+            if val is True and name in names:
                 self._parameters[name] = False

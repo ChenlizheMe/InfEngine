@@ -12,11 +12,10 @@ be reused elsewhere.
 
 from __future__ import annotations
 
-import re
 from typing import Dict, Optional
 
 from Infernux.core.anim_state_machine import (
-    AnimStateMachine, AnimState, AnimTransition, evaluate_anim_condition,
+    AnimStateMachine, AnimState, AnimTransition,
 )
 from Infernux.core.animation_timeline import AnimationTimeline, sample_sorted_keys
 from Infernux.debug import Debug
@@ -90,7 +89,6 @@ class TimelineFSMRuntime:
         self._sorted_keys = None                          # timeline keys sorted once per state
         self._apply_additive: bool = True                 # cached apply_mode test
         self._duration: float = _DEFAULT_PERIOD           # cached timeline duration
-        self._cond_ctx: Dict[str, object] = {}            # reused condition-eval scratch dict
         # Cache against the native lifetime handle, never the wrapper address.
         self._trs_handle = None
         self._trs_setter = None
@@ -338,33 +336,29 @@ class TimelineFSMRuntime:
             return
         for tr in transitions:
             if self._evaluate_condition(tr, state):
-                self._consume_triggers(tr.condition)
+                self._consume_triggers(tr)
                 self._enter_state(tr.target_state, transform)
                 return
 
     def _evaluate_condition(self, transition: AnimTransition, state: AnimState) -> bool:
-        cond = transition.condition
-        if not cond or not cond.strip():
+        if not transition.conditions:
             # No explicit condition: advance only when a non-looping timeline ends.
             if self._timeline is None or state.loop:
                 return False
             return self._elapsed >= self._duration
-        cond = cond.strip()
-        # Reuse a persistent scratch dict instead of allocating a new ctx each frame.
-        ctx = self._cond_ctx
-        ctx.clear()
-        ctx.update(self._params)
-        ctx["time"] = self._elapsed
-        ctx["normalized_time"] = self.normalized_time
-        ctx["state"] = self._state_name
-        try:
-            return evaluate_anim_condition(cond, ctx)
-        except Exception as exc:
-            Debug.log_warning(f"[TimelineFSM] Condition error in '{self._state_name}': '{cond}' -> {exc}")
-            return False
+        return bool(
+            self._fsm
+            and self._fsm.evaluate_transition_conditions(
+                transition, self._params
+            )
+        )
 
-    def _consume_triggers(self, condition: str):
-        identifiers = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", condition or ""))
+    def _consume_triggers(self, transition: AnimTransition):
+        names = set(
+            self._fsm.transition_parameter_names(transition)
+            if self._fsm is not None
+            else ()
+        )
         for name, val in list(self._params.items()):
-            if val is True and name in identifiers:
+            if val is True and name in names:
                 self._params[name] = False

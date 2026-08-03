@@ -10,10 +10,8 @@ in the Project panel.
 
 from __future__ import annotations
 
-import ast
 import copy
 import os
-import re
 import threading
 import uuid
 from typing import Dict, List, Optional, Tuple
@@ -23,6 +21,7 @@ from Infernux.core.anim_state_machine import (
     AnimStateMachine,
     AnimState,
     AnimTransition,
+    AnimCondition,
     AnimParameter,
 )
 from Infernux.core.asset_ref import AnimationClipRef, AnimationClip3DRef, get_asset_type_config
@@ -78,148 +77,7 @@ _FSM_ENTRY_LINK_ID = "animfsm.entry-link"
 _FSM_GRAPH_ID = "animfsm.graph"
 
 
-# Legacy single-compare fallback when ast parse fails
-_COND_NUM_RE = re.compile(
-    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(==|!=|<=|>=|<|>)\s*(-?[0-9]+(?:\.[0-9]*)?)\s*$"
-)
-_COND_NOT_RE = re.compile(r"^\s*not\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
-_COND_BOOL_EQ_RE = re.compile(
-    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*==\s*(True|False)\s*$"
-)
-
 _OPS = ["<", ">", "<=", ">=", "==", "!="]
-
-
-def _fmt_rhs_float(v: float) -> str:
-    if abs(v - round(v)) < 1e-9:
-        return str(int(round(v)))
-    return f"{v:.8g}"
-
-
-def _cmpop_to_str(op: ast.cmpop) -> Optional[str]:
-    if isinstance(op, ast.Eq):
-        return "=="
-    if isinstance(op, ast.NotEq):
-        return "!="
-    if isinstance(op, ast.Lt):
-        return "<"
-    if isinstance(op, ast.LtE):
-        return "<="
-    if isinstance(op, ast.Gt):
-        return ">"
-    if isinstance(op, ast.GtE):
-        return ">="
-    return None
-
-
-def _ast_to_float(node: ast.expr) -> Optional[float]:
-    if isinstance(node, ast.Constant):
-        v = node.value
-        if isinstance(v, bool):
-            return 1.0 if v else 0.0
-        if isinstance(v, (int, float)):
-            return float(v)
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-        inner = _ast_to_float(node.operand)
-        if inner is not None:
-            return -inner
-    return None
-
-
-def _compare_to_term(n: ast.Compare) -> Optional[dict]:
-    if len(n.ops) != 1 or len(n.comparators) != 1:
-        return None
-    if not isinstance(n.left, ast.Name):
-        return None
-    op_s = _cmpop_to_str(n.ops[0])
-    if not op_s:
-        return None
-    fv = _ast_to_float(n.comparators[0])
-    if fv is None:
-        return None
-    return {"name": n.left.id, "op": op_s, "value": float(fv)}
-
-
-def _flatten_and_only(node: ast.expr) -> List[ast.Compare]:
-    """Only AND chains (Unity-style: multiple conditions are all required)."""
-    if isinstance(node, ast.Compare):
-        return [node]
-    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
-        out: List[ast.Compare] = []
-        for v in node.values:
-            sub = _flatten_and_only(v)
-            if not sub:
-                return []
-            out.extend(sub)
-        return out
-    return []
-
-
-def _encode_condition_model(terms: List[dict]) -> str:
-    """Encode as left-associative ``and`` chain (implicit between rows)."""
-    if not terms:
-        return ""
-    if len(terms) == 1:
-        t = terms[0]
-        return f"({t['name']} {t['op']} {_fmt_rhs_float(float(t['value']))})"
-    expr = f"({terms[0]['name']} {terms[0]['op']} {_fmt_rhs_float(float(terms[0]['value']))})"
-    for i in range(1, len(terms)):
-        tn = terms[i]
-        part = f"({tn['name']} {tn['op']} {_fmt_rhs_float(float(tn['value']))})"
-        expr = f"({expr} and {part})"
-    return expr
-
-
-def _simple_condition_to_terms(cond: str) -> List[dict]:
-    c = (cond or "").strip()
-    if not c:
-        return []
-    m = _COND_NUM_RE.match(c)
-    if m:
-        name, op, num_s = m.group(1), m.group(2), m.group(3)
-        try:
-            v = float(num_s)
-        except ValueError:
-            return []
-        return [{"name": name, "op": op, "value": v}]
-    m2 = _COND_BOOL_EQ_RE.match(c)
-    if m2:
-        name, tf = m2.group(1), m2.group(2)
-        return [{"name": name, "op": "==", "value": 1.0 if tf == "True" else 0.0}]
-    m3 = _COND_NOT_RE.match(c)
-    if m3:
-        return [{"name": m3.group(1), "op": "==", "value": 0.0}]
-    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", c):
-        return [{"name": c, "op": "==", "value": 1.0}]
-    return []
-
-
-def parse_condition_string_to_model(cond: str) -> List[dict]:
-    c = (cond or "").strip()
-    if not c:
-        return []
-    try:
-        tree = ast.parse(c, mode="eval")
-        body = tree.body
-        terms_ast = _flatten_and_only(body)
-        if not terms_ast:
-            return _simple_condition_to_terms(c)
-        out: List[dict] = []
-        for t in terms_ast:
-            d = _compare_to_term(t)
-            if not d:
-                return _simple_condition_to_terms(c)
-            out.append(d)
-        return out
-    except (SyntaxError, ValueError, TypeError):
-        pass
-    return _simple_condition_to_terms(c)
-
-
-def _replace_identifier_in_expr(expr: str, old: str, new: str) -> str:
-    if not old or old == new:
-        return expr
-    return re.sub(r"\b" + re.escape(old) + r"\b", new, expr)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -299,7 +157,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         # Node graph
         self._graph = AnimFSMGraphAuthoringModel(
             AnimStateMachine(name="New State Machine"),
-            condition_parser=parse_condition_string_to_model,
         )
 
         self._view.graph = self._graph
@@ -520,10 +377,30 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         index = self._parameter_index_by_id(stable_id)
         if parameter is None or index < 0:
             return False
+        graph_before = self._graph.capture_authoring_state()
+        for link in self._graph.links:
+            document = self._graph_transition_document(link.uid)
+            if document is None:
+                continue
+            conditions = [
+                condition
+                for condition in document["conditions"]
+                if condition["parameter_id"] != stable_id
+            ]
+            if conditions == document["conditions"]:
+                continue
+            document["conditions"] = conditions
+            link.data = self._transition_graph_properties(
+                AnimTransition.from_dict(document)
+            )
+        graph_after = self._graph.capture_authoring_state()
+        graph_mutations = self._node_graph_mutations(graph_before, graph_after)
+        self._graph.restore_authoring_state(graph_before)
         selected = self._graph_selection.primary_id(GraphElementKind.PARAMETER)
         return self._execute_graph_mutations(
             "Remove parameter",
             (
+                *graph_mutations,
                 GraphMutation(
                     GraphMutationKind.REMOVE,
                     GraphElementRef(GraphElementKind.PARAMETER, stable_id),
@@ -547,26 +424,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             return False
         replacement = AnimParameter.from_dict(after)
         GraphParameterCollection(self._fsm.parameters).replace(replacement)
-        graph_mutations = ()
-        old_name = str(before.get("name", ""))
-        new_name = str(after.get("name", ""))
-        if old_name != new_name:
-            graph_before = self._graph.capture_authoring_state()
-            self._rename_parameter_in_graph(old_name, new_name)
-            graph_after = self._graph.capture_authoring_state()
-            graph_mutations = self._node_graph_mutations(
-                graph_before,
-                graph_after,
-            )
-            self._graph.apply_authoring_mutations(
-                NodeGraph.invert_authoring_mutations(
-                    NodeGraph.diff_authoring_states(graph_before, graph_after)
-                )
-            )
         return self._execute_graph_mutations(
             description,
             (
-                *graph_mutations,
                 GraphMutation(
                     GraphMutationKind.UPDATE,
                     GraphElementRef(
@@ -1457,20 +1317,17 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     def _default_compare_term(self, fsm: AnimStateMachine) -> dict:
         p0 = fsm.parameters[0]
-        return {"name": p0.name, "op": ">", "value": 0.0}
+        return AnimCondition(parameter_id=p0.stable_id).to_dict()
 
     def _apply_condition_model(self, lk: GraphLink, terms: List[dict]) -> None:
-        cond = _encode_condition_model(terms)
-        lk.data["cond_terms"] = [dict(x) for x in terms]
-        lk.data.pop("cond_joins", None)
-        old = str(lk.data.get("condition", "") or "")
-        if cond == old:
+        conditions = [AnimCondition.from_dict(dict(term)).to_dict() for term in terms]
+        if conditions == list(lk.data.get("conditions", ())):
             return
         self._update_transition_fields(
             lk.uid,
             "Edit transition condition",
-            merge_key=f"transition:{lk.uid}:condition",
-            condition=cond,
+            merge_key=f"transition:{lk.uid}:conditions",
+            conditions=conditions,
         )
 
     def _render_transition_duration_row(
@@ -1515,21 +1372,19 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         # Crossfade duration applies to every transition regardless of condition
         # mode, so render it first (before the condition-specific early returns).
         self._render_transition_duration_row(ctx, lk, semantic_prefix)
-        cond = str(lk.data.get("condition", "") or "")
-        if "cond_terms" not in lk.data:
-            terms = parse_condition_string_to_model(cond)
-            lk.data["cond_terms"] = terms
-        else:
-            terms = lk.data.get("cond_terms") or []
-            if not isinstance(terms, list):
-                terms = []
-        lk.data.pop("cond_joins", None)
+        raw_terms = lk.data.get("conditions", ())
+        terms = (
+            [copy.deepcopy(term) for term in raw_terms]
+            if isinstance(raw_terms, (list, tuple))
+            else []
+        )
 
         has_p = len(fsm.parameters) > 0
         names = [p.name for p in fsm.parameters]
+        parameter_ids = [p.stable_id for p in fsm.parameters]
         mode_clip = t("animfsm_editor.cond_mode_clip_end")
         mode_param = t("animfsm_editor.cond_mode_parameter")
-        clip_mode = (not cond.strip()) and len(terms) == 0
+        clip_mode = len(terms) == 0
 
         if not has_p:
             ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
@@ -1575,10 +1430,10 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         for i in range(len(terms)):
             ctx.push_id(i)
             tm = terms[i]
-            pname = str(tm.get("name", names[0]))
-            if pname not in names:
-                pname = names[0]
-            pi = names.index(pname)
+            parameter_id = str(tm.get("parameter_id", parameter_ids[0]))
+            if parameter_id not in parameter_ids:
+                parameter_id = parameter_ids[0]
+            pi = parameter_ids.index(parameter_id)
             ctx.set_next_item_width(88)
             new_pi = ctx.combo("##pn", pi, names, len(names))
             if semantic_prefix:
@@ -1589,7 +1444,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                     f"{semantic_prefix}.condition.{i}.parameter",
                 )
             ctx.same_line(0, 4)
-            op = str(tm.get("op", ">"))
+            op = str(tm.get("operator", ">"))
             if op not in _OPS:
                 op = ">"
             oi = _OPS.index(op)
@@ -1603,7 +1458,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                     f"{semantic_prefix}.condition.{i}.operator",
                 )
             ctx.same_line(0, 4)
-            fv = float(tm.get("value", 0.0))
+            fv = float(tm.get("threshold", 0.0))
             ctx.set_next_item_width(-1)
             new_fv = ctx.drag_float("##fv", fv, 0.05, -1e9, 1e9)
             if semantic_prefix:
@@ -1616,12 +1471,12 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             ctx.pop_id()
 
             if new_pi != pi:
-                terms[i]["name"] = names[new_pi]
+                terms[i]["parameter_id"] = parameter_ids[new_pi]
                 self._apply_condition_model(lk, terms)
                 return
             if new_oi != oi or new_fv != fv:
-                terms[i]["op"] = _OPS[new_oi]
-                terms[i]["value"] = float(new_fv)
+                terms[i]["operator"] = _OPS[new_oi]
+                terms[i]["threshold"] = float(new_fv)
                 self._apply_condition_model(lk, terms)
                 return
 
@@ -1653,22 +1508,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             nt.pop()
             self._apply_condition_model(lk, nt)
         ctx.end_group()
-
-    def _rename_parameter_in_graph(self, old_name: str, new_name: str) -> None:
-        """Rename transition expressions in the authoritative graph payloads."""
-        if not old_name or old_name == new_name:
-            return
-        for link in self._graph.links:
-            document = self._graph_transition_document(link.uid)
-            if document is None:
-                continue
-            document["condition"] = _replace_identifier_in_expr(
-                str(document.get("condition", "")),
-                old_name,
-                new_name,
-            )
-            transition = AnimTransition.from_dict(document)
-            link.data = self._transition_graph_properties(transition)
 
     def _render_variables_panel(self, ctx: InxGUIContext):
         """Left overlay: parameter Blackboard using shared graph chrome."""

@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.core.anim_state_machine import AnimStateMachine, AnimState, AnimTransition
+from Infernux.core.anim_state_machine import (
+    AnimCondition,
+    AnimParameter,
+    AnimState,
+    AnimStateMachine,
+    AnimTransition,
+)
 from Infernux.core.animation_timeline import AnimationTimeline, TimelineKeyframe
 from Infernux.core.timeline_fsm_runtime import TimelineFSMRuntime
 from Infernux.graph import TypeRef, ValueType
@@ -30,7 +36,20 @@ def _state(tmp_path, name, *, loop=True, exit_time=1.0, dur=1.0, trans=None):
     s = AnimState(name=name, kind="timeline", loop=loop, exit_time_normalized=exit_time)
     s.timeline_path = _timeline_file(tmp_path, name, dur)
     for target, cond in (trans or []):
-        s.transitions.append(AnimTransition(target_state=target, condition=cond))
+        conditions = []
+        if cond:
+            parts = cond.split()
+            parameter_name = parts[0]
+            operator = parts[1] if len(parts) == 3 else "=="
+            threshold = float(parts[2]) if len(parts) == 3 else 1.0
+            conditions.append(
+                AnimCondition(
+                    parameter_id=f"parameter:{parameter_name}",
+                    operator=operator,
+                    threshold=threshold,
+                )
+            )
+        s.transitions.append(AnimTransition(target_state=target, conditions=conditions))
     return s
 
 
@@ -38,6 +57,16 @@ def _fsm(states, default=None):
     fsm = AnimStateMachine(mode="timeline")
     fsm.states = states
     fsm.default_state = default or (states[0].name if states else "")
+    parameter_ids = {
+        condition.parameter_id
+        for state in states
+        for transition in state.transitions
+        for condition in transition.conditions
+    }
+    fsm.parameters = [
+        AnimParameter(stable_id=parameter_id, name=parameter_id.removeprefix("parameter:"))
+        for parameter_id in sorted(parameter_ids)
+    ]
     return fsm
 
 

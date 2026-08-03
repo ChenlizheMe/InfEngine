@@ -193,24 +193,96 @@ class AnimParameter(GraphParameterDefinition):
         )
 
 
+_ANIM_CONDITION_OPERATORS = {
+    "==": operator.eq,
+    "!=": operator.ne,
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class AnimCondition:
+    """One Unity-style transition predicate bound to a stable parameter ID."""
+
+    stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    parameter_id: str = ""
+    operator: str = ">"
+    threshold: float = 0.0
+
+    def __post_init__(self) -> None:
+        stable_id = str(self.stable_id).strip()
+        parameter_id = str(self.parameter_id).strip()
+        if not stable_id:
+            raise ValueError("animation condition stable_id must not be empty")
+        if not parameter_id:
+            raise ValueError("animation condition parameter_id must not be empty")
+        if self.operator not in _ANIM_CONDITION_OPERATORS:
+            raise ValueError(f"unsupported animation condition operator: {self.operator!r}")
+        threshold = _finite_number(
+            self.threshold, "animation condition threshold"
+        )
+        object.__setattr__(self, "stable_id", stable_id)
+        object.__setattr__(self, "parameter_id", parameter_id)
+        object.__setattr__(self, "threshold", threshold)
+
+    def to_dict(self) -> dict:
+        return {
+            "stable_id": self.stable_id,
+            "parameter_id": self.parameter_id,
+            "operator": self.operator,
+            "threshold": self.threshold,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict) -> "AnimCondition":
+        _require_exact_fields(
+            value,
+            {"stable_id", "parameter_id", "operator", "threshold"},
+            "animation condition",
+        )
+        return cls(
+            stable_id=value["stable_id"],
+            parameter_id=value["parameter_id"],
+            operator=value["operator"],
+            threshold=value["threshold"],
+        )
+
+    def evaluate(self, value: object) -> bool:
+        try:
+            return bool(_ANIM_CONDITION_OPERATORS[self.operator](value, self.threshold))
+        except (TypeError, ValueError):
+            return False
+
+
 @dataclass
 class AnimTransition:
     """A directed transition between two states."""
 
     stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     target_state: str = ""
-    condition: str = ""       # expression string evaluated at runtime
+    conditions: List[AnimCondition] = field(default_factory=list)
     duration: float = 0.0     # cross-fade / blend duration in seconds
 
     def __post_init__(self) -> None:
         if type(self.stable_id) is not str or not self.stable_id:
             raise ValueError("animation transition stable_id must be a non-empty string")
+        if type(self.conditions) is not list or any(
+            not isinstance(condition, AnimCondition)
+            for condition in self.conditions
+        ):
+            raise TypeError("animation transition conditions must be AnimCondition values")
+        condition_ids = [condition.stable_id for condition in self.conditions]
+        if len(condition_ids) != len(set(condition_ids)):
+            raise ValueError("animation transition condition stable_ids must be unique")
 
     def to_dict(self) -> dict:
         return {
             "stable_id": self.stable_id,
             "target_state": self.target_state,
-            "condition": self.condition,
+            "conditions": [condition.to_dict() for condition in self.conditions],
             "duration": self.duration,
         }
 
@@ -218,23 +290,24 @@ class AnimTransition:
     def from_dict(cls, d: dict) -> AnimTransition:
         _require_exact_fields(
             d,
-            {"stable_id", "target_state", "condition", "duration"},
+            {"stable_id", "target_state", "conditions", "duration"},
             "animation transition",
         )
         if (
             type(d["stable_id"]) is not str
             or not d["stable_id"]
             or type(d["target_state"]) is not str
-            or type(d["condition"]) is not str
         ):
-            raise TypeError("animation transition target_state and condition must be strings")
+            raise TypeError("animation transition identity fields must be strings")
+        if type(d["conditions"]) is not list:
+            raise TypeError("animation transition conditions must be an array")
         duration = _finite_number(d["duration"], "animation transition duration")
         if duration < 0.0:
             raise ValueError("animation transition duration must be non-negative")
         return cls(
             stable_id=d["stable_id"],
             target_state=d["target_state"],
-            condition=d["condition"],
+            conditions=[AnimCondition.from_dict(value) for value in d["conditions"]],
             duration=duration,
         )
 
@@ -400,6 +473,7 @@ class AnimStateMachine:
         state_names = [state.name for state in states]
         state_ids = [state.stable_id for state in states]
         GraphParameterCollection(params)
+        parameter_ids = {parameter.stable_id for parameter in params}
         transition_ids = [
             transition.stable_id
             for state in states
@@ -420,6 +494,15 @@ class AnimStateMachine:
             for transition in state.transitions
         ):
             raise ValueError("animation transitions must reference declared states")
+        if any(
+            condition.parameter_id not in parameter_ids
+            for state in states
+            for transition in state.transitions
+            for condition in transition.conditions
+        ):
+            raise ValueError(
+                "animation transition conditions must reference declared parameters"
+            )
         return cls(
             name=d["name"],
             default_state=d["default_state"],
@@ -435,6 +518,51 @@ class AnimStateMachine:
         if not isinstance(other, AnimStateMachine):
             return NotImplemented
         return self.to_dict() == other.to_dict()
+
+    def parameter_by_id(self, stable_id: str) -> Optional[AnimParameter]:
+        stable_id = str(stable_id or "")
+        return next(
+            (
+                parameter
+                for parameter in self.parameters
+                if parameter.stable_id == stable_id
+            ),
+            None,
+        )
+
+    def parameter_by_name(self, name: str) -> Optional[AnimParameter]:
+        name = str(name or "")
+        return next(
+            (parameter for parameter in self.parameters if parameter.name == name),
+            None,
+        )
+
+    def evaluate_transition_conditions(
+        self,
+        transition: AnimTransition,
+        values: Dict[str, object],
+    ) -> bool:
+        """Evaluate every structured condition against public name-keyed values."""
+        if not transition.conditions:
+            return False
+        for condition in transition.conditions:
+            parameter = self.parameter_by_id(condition.parameter_id)
+            if parameter is None:
+                return False
+            value = values.get(parameter.name, parameter.default)
+            if not condition.evaluate(value):
+                return False
+        return True
+
+    def transition_parameter_names(
+        self, transition: AnimTransition
+    ) -> tuple[str, ...]:
+        names = []
+        for condition in transition.conditions:
+            parameter = self.parameter_by_id(condition.parameter_id)
+            if parameter is not None and parameter.name not in names:
+                names.append(parameter.name)
+        return tuple(names)
 
     # ── File I/O ──────────────────────────────────────────────────────
 

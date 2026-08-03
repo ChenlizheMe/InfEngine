@@ -13,6 +13,7 @@ from Infernux.core.anim_state_machine import (
     AnimState,
     AnimTransition,
     AnimParameter,
+    AnimCondition,
     AnimConditionError,
     evaluate_anim_condition,
 )
@@ -195,21 +196,39 @@ def test_parameter_invalid_float_default_is_rejected():
 def test_transition_defaults():
     t = AnimTransition()
     assert t.target_state == ""
-    assert t.condition == ""
+    assert t.conditions == []
     assert t.duration == 0.0
 
 
 def test_transition_round_trip():
-    t = AnimTransition(target_state="Run", condition="speed > 1", duration=0.25)
+    condition = AnimCondition(parameter_id="speed-id", operator=">", threshold=1.0)
+    t = AnimTransition(target_state="Run", conditions=[condition], duration=0.25)
     t2 = AnimTransition.from_dict(t.to_dict())
     assert t2.target_state == "Run"
-    assert t2.condition == "speed > 1"
+    assert t2.conditions == [condition]
     assert t2.duration == 0.25
 
 
 def test_transition_incomplete_document_is_rejected():
     with pytest.raises(ValueError):
         AnimTransition.from_dict({})
+
+
+def test_fsm_rejects_condition_with_unknown_parameter_id():
+    condition = AnimCondition(parameter_id="missing-parameter")
+    document = AnimStateMachine(
+        states=[
+            AnimState(
+                name="Idle",
+                transitions=[AnimTransition(target_state="Run", conditions=[condition])],
+            ),
+            AnimState(name="Run"),
+        ],
+        default_state="Idle",
+    ).to_dict()
+
+    with pytest.raises(ValueError, match="declared parameters"):
+        AnimStateMachine.from_dict(document)
 
 
 # ── AnimState ───────────────────────────────────────────────────────────────
@@ -284,7 +303,10 @@ def test_state_invalid_header_color_is_rejected(value):
 
 def test_state_transitions_round_trip():
     s = AnimState(name="A", transitions=[
-        AnimTransition(target_state="B", condition="x"),
+        AnimTransition(
+            target_state="B",
+            conditions=[AnimCondition(parameter_id="x-id", operator="==", threshold=1.0)],
+        ),
         AnimTransition(target_state="C"),
     ])
     s2 = AnimState.from_dict(s.to_dict())

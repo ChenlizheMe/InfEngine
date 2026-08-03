@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable
 
 from Infernux.core.anim_state_machine import (
     AnimState,
@@ -23,11 +22,8 @@ class AnimFSMGraphAuthoringModel(NodeGraph):
     def __init__(
         self,
         fsm: AnimStateMachine,
-        *,
-        condition_parser: Callable[[str], list[dict]],
     ) -> None:
         super().__init__(graph_kind="anim_fsm")
-        self._condition_parser = condition_parser
         self.load_fsm(fsm)
 
     @staticmethod
@@ -54,9 +50,10 @@ class AnimFSMGraphAuthoringModel(NodeGraph):
 
     def transition_properties(self, transition: AnimTransition) -> dict:
         return {
-            "condition": transition.condition,
+            "conditions": [
+                condition.to_dict() for condition in transition.conditions
+            ],
             "duration": float(getattr(transition, "duration", 0.0) or 0.0),
-            "cond_terms": self._condition_parser(transition.condition),
             "fsm_transition": transition.to_dict(),
         }
 

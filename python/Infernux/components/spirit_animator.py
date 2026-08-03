@@ -22,7 +22,7 @@ from Infernux.components.serialized_field import serialized_field, FieldType
 from Infernux.components.decorators import require_component, disallow_multiple, add_component_menu
 from Infernux.components.builtin.sprite_renderer import SpriteRenderer
 from Infernux.core.anim_state_machine import (
-    AnimStateMachine, AnimState, AnimTransition, evaluate_anim_condition,
+    AnimStateMachine, AnimState, AnimTransition,
 )
 from Infernux.core.animation_clip import AnimationClip
 from Infernux.core.asset_ref import AnimStateMachineRef
@@ -511,51 +511,36 @@ class SpiritAnimator(InxComponent):
             return
         for tr in state.transitions:
             if self._evaluate_condition(tr):
-                self._consume_triggers(tr.condition)
+                self._consume_triggers(tr)
                 self._enter_state(tr.target_state)
                 return
 
     def _evaluate_condition(self, transition: AnimTransition) -> bool:
-        """Evaluate a transition's condition expression.
+        """Evaluate a transition's stable parameter predicates.
 
-        Empty condition means "transition when clip finishes" (only fires
+        No conditions means "transition when clip finishes" (only fires
         when the clip is non-looping and has reached its end).
         """
-        cond = transition.condition.strip()
-
-        # Empty condition → "on clip finished"
-        if not cond:
+        if not transition.conditions:
             state = self._get_current_state()
             should_loop = state.loop if state else (
                 self._current_clip.loop if self._current_clip else False)
             if self._current_clip and not should_loop:
                 return self._elapsed >= self._current_clip.duration
             return False
-
-        # Build the evaluation context (parameters + runtime read-only vars)
-        ctx = dict(self._parameters)
-        ctx["time"] = self._elapsed
-        ctx["normalized_time"] = self.normalized_time
-        ctx["state"] = self._current_state_name
-
-        # Safe structured evaluation — no eval()/builtins/attribute access.
-        try:
-            return evaluate_anim_condition(cond, ctx)
-        except Exception as exc:
-            Debug.log_warning(
-                f"[SpiritAnimator] Condition error in '{self._current_state_name}': "
-                f"'{cond}' -> {exc}"
+        return bool(
+            self._fsm
+            and self._fsm.evaluate_transition_conditions(
+                transition, self._parameters
             )
-            return False
+        )
 
-    def _consume_triggers(self, condition: str):
-        """Reset trigger parameters referenced (as identifiers) in the condition.
-
-        Identifier-boundary matching prevents a trigger named ``attack`` from
-        being consumed by a condition that only references ``is_attacking``.
-        """
-        import re
-        identifiers = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", condition or ""))
+    def _consume_triggers(self, transition: AnimTransition):
+        names = set(
+            self._fsm.transition_parameter_names(transition)
+            if self._fsm is not None
+            else ()
+        )
         for name, val in list(self._parameters.items()):
-            if val is True and name in identifiers:
+            if val is True and name in names:
                 self._parameters[name] = False
