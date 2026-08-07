@@ -164,35 +164,37 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
 
         ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
         ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
-        for index, entry in enumerate(valid_entries):
-            title = entry["label"]
-            if multiple_renderers and owner_name:
-                title = f"{owner_name} / {title}"
-            if not render_compact_section_header(
-                ctx, f"{title}##mat_entry_{index}", level="secondary", default_open=True
-            ):
-                continue
-            lock_inline_material_body = (
-                entry.get("renderer_type") == "SpriteRenderer"
-                and entry["is_default"]
-            ) or bool(entry.get("is_embedded", False))
-            ctx.push_id(index)
-            try:
-                if lock_inline_material_body:
-                    ctx.begin_disabled(True)
+        try:
+            for index, entry in enumerate(valid_entries):
+                title = entry["label"]
+                if multiple_renderers and owner_name:
+                    title = f"{owner_name} / {title}"
+                if not render_compact_section_header(
+                    ctx, f"{title}##mat_entry_{index}", level="secondary", default_open=True
+                ):
+                    continue
+                lock_inline_material_body = (
+                    entry.get("renderer_type") == "SpriteRenderer"
+                    and entry["is_default"]
+                ) or bool(entry.get("is_embedded", False))
+                ctx.push_id(index)
                 try:
-                    mat_ui.render_inline_material_body(
-                        ctx, inline_material_adapter, entry["material"],
-                        cache_key=f"obj_mat_{obj_id}_{index}")
-                finally:
                     if lock_inline_material_body:
-                        ctx.end_disabled()
-            finally:
-                ctx.pop_id()
+                        ctx.begin_disabled(True)
+                    try:
+                        mat_ui.render_inline_material_body(
+                            ctx, inline_material_adapter, entry["material"],
+                            cache_key=f"obj_mat_{obj_id}_{index}")
+                    finally:
+                        if lock_inline_material_body:
+                            ctx.end_disabled()
+                finally:
+                    ctx.pop_id()
 
-            if index != len(valid_entries) - 1:
-                ctx.separator()
-        ctx.pop_style_var(2)
+                if index != len(valid_entries) - 1:
+                    ctx.separator()
+        finally:
+            ctx.pop_style_var(2)
 
         try:
             native = engine.get_native_engine()

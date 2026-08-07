@@ -1,3 +1,5 @@
+import importlib
+
 import pytest
 
 from Infernux.engine.interaction import (
@@ -18,15 +20,43 @@ from Infernux.engine.interaction import (
 from Infernux.engine.undo import GraphDiffCommand, UndoManager
 
 
+def test_graph_snapshot_undo_legacy_api_is_removed():
+    undo = importlib.import_module("Infernux.engine.undo")
+
+    for name in (
+        "NodeGraphSnapshotCommand",
+        "record_node_graph_snapshot",
+        "AnimFSMSnapshotCommand",
+        "record_animfsm_snapshot",
+    ):
+        assert not hasattr(undo, name)
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("Infernux.engine.undo._animfsm_commands")
+
+
 class _View:
     def __init__(self):
         self.nodes = ()
         self.link = ""
 
-    def set_selection(self, nodes, link, *, notify):
-        assert notify is False
+    def project_selection(self, nodes, link):
         self.nodes = tuple(nodes)
         self.link = link
+
+
+def test_graph_selection_rejects_views_without_authoritative_projection():
+    class _LegacyView:
+        selected_nodes = []
+        selected_link = ""
+
+    with pytest.raises(TypeError, match="project_selection"):
+        GraphSelectionController(
+            owner_id="graph-panel",
+            document_id=lambda: "graph:one",
+            contains=lambda _item: True,
+            view=_LegacyView(),
+        )
 
 
 def test_graph_selection_projects_through_global_authority():

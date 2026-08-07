@@ -1131,6 +1131,14 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
                              m_sampleCount != VK_SAMPLE_COUNT_1_BIT ? VK_PIPELINE_STAGE_TRANSFER_BIT
                                                                     : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &toDst);
+    } else if (m_sampleCount != VK_SAMPLE_COUNT_1_BIT) {
+        // The resolve image is outside the render pass, so its first live
+        // preview use needs an explicit transition before vkCmdResolveImage.
+        VkImageMemoryBarrier toDst = vkrender::MakeImageBarrier(
+            displayImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &toDst);
     }
 
     vkCmdUpdateBuffer(cmd, sceneUBOBuf, 0, sizeof(sceneUBO), &sceneUBO);

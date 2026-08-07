@@ -2,6 +2,8 @@
 
 #include <function/editor/EditorPanel.h>
 #include <function/editor/EditorTheme.h>
+#include <function/editor/interaction/EditorCollectionModel.h>
+#include <function/editor/interaction/EditorSearchModel.h>
 #include <function/renderer/InxRenderer.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
@@ -12,6 +14,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace infernux
@@ -50,8 +53,7 @@ class ProjectPanel : public EditorPanel
     /// Invalidate the directory cache so listing refreshes next frame.
     void InvalidateDirCache();
 
-    /// Accept files dropped from the OS (e.g. Windows Explorer).
-    /// Copies each file/directory into the current directory.
+    /// Publish files dropped from the OS as one global asset import command.
     void ReceiveDroppedFiles(const std::vector<std::string> &paths);
 
     /// State persistence
@@ -59,109 +61,33 @@ class ProjectPanel : public EditorPanel
     {
         return m_currentPath;
     }
-    void SetCurrentPath(const std::string &path);
+    bool CanNavigateToPath(const std::string &path) const;
+    bool SetCurrentPath(const std::string &path);
+    [[nodiscard]] std::vector<std::string> GetFolderExpandedPaths() const;
+    void SetFolderExpandedPaths(const std::vector<std::string> &paths);
+    [[nodiscard]] std::vector<std::string> GetModelExpandedPaths() const;
+    void SetModelExpandedPaths(const std::vector<std::string> &paths);
 
-    // Unified editor-command adapters. Physical shortcuts and presentation
-    // surfaces must call these through EditorCommandRegistry.
-    bool CopySelectedAssets(bool cut);
-    bool PasteAssets();
-    bool RequestDeleteSelectedAssets();
+    // Presentation adapters. Domain mutations are owned by the global
+    // ProjectAssetInteractionService and reach this view only as projections.
     bool BeginRenameSelectedAsset(const std::string &path = "");
-    bool CreateFolderFromCommand();
     bool HasSelectedAssets() const;
     bool CanRenameSelectedAsset(const std::string &path = "") const;
-    bool CanPasteAssets() const;
-
-    // ── Focus callback ──────────────────────────────────────────────
-
-    std::function<void(bool)> onProjectPanelFocused;
+    std::vector<std::string> GetOSClipboardFiles() const;
 
     // Unified command presentation callbacks.
-    std::function<bool(const std::string &, const std::string &, const std::string &)> executeCommand;
-    std::function<bool(const std::string &, const std::string &)> canExecuteCommand;
-
-    // Shared EditorInteractionCore clipboard bridge. ProjectPanel executes
-    // filesystem operations but never owns clipboard state.
-    std::function<bool(const std::vector<std::string> &, bool)> writeAssetClipboard;
-    std::function<std::pair<std::vector<std::string>, bool>()> readAssetClipboard;
-    std::function<void()> consumeAssetClipboard;
-    std::function<bool(const std::vector<std::string> &, bool, const std::string &)> pasteAssetClipboard;
-    std::function<bool(const std::vector<std::string> &, const std::string &)> moveAssetPaths;
+    /// Draw the popup body from a frozen
+    /// (logicalTargetPath, revealPath, currentPath) snapshot.
+    std::function<void(InxGUIContext *, const std::string &, const std::string &, const std::string &)>
+        renderContextMenu;
 
     // ── Notification callbacks ───────────────────────────────────────
 
-    /// Authoritative Project selection snapshot: ordered paths and primary path.
+    /// User-authored Project selection intent. SelectionService owns the
+    /// authoritative snapshot and projects it back through SetSelectedFiles().
     std::function<void(const std::vector<std::string> &, const std::string &)> onSelectionChanged;
     /// Called when current_path changes between frames.
     std::function<void()> onStateChanged;
-
-    // ── File operation callbacks (delegated to Python) ───────────────
-
-    /// Create folder: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createFolder;
-    /// Create script: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createScript;
-    /// Create shader: (currentPath, name, type) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &, const std::string &)>
-        createShader;
-    /// Create material: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createMaterial;
-    /// Create physics material: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createPhysicMaterial;
-    /// Create scene: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createScene;
-    /// Create animation clip: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimClip;
-    /// Create 3D animation clip: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimClip3D;
-    /// Create animation state machine: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimFsm;
-    /// Create Particle Graph: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createParticleGraph;
-    /// Create Render Effect: (currentPath, name, featureType) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &, const std::string &)>
-        createRenderEffect;
-    /// Create Render Effect Group: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createRenderEffectGroup;
-    /// Create transform timeline: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimTimeline;
-    /// Create timeline state machine: (currentPath, name) → (ok, errorMsg)
-    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createTimelineFsm;
-    /// Create prefab from hierarchy gameobject: (objId, currentPath)
-    std::function<void(uint64_t, const std::string &)> createPrefabFromHierarchy;
-
-    /// Delete items: (paths) — shows confirmation dialog
-    std::function<void(const std::vector<std::string> &)> deleteItems;
-
-    /// Rename: (oldPath, newName) → newPath or empty on failure
-    std::function<std::string(const std::string &, const std::string &)> doRename;
-    /// Get unique name: (currentPath, baseName, extension) → uniqueName
-    std::function<std::string(const std::string &, const std::string &, const std::string &)> getUniqueName;
-
-    /// Copy item to exact path as a distinct asset: (itemPath, destinationPath) → newPath or empty
-    std::function<std::string(const std::string &, const std::string &)> copyItemToPath;
-
-    /// Open file: (filePath)
-    std::function<void(const std::string &)> openFile;
-    /// Open scene: (filePath)
-    std::function<void(const std::string &)> openScene;
-    /// Open prefab mode: (filePath)
-    std::function<void(const std::string &)> openPrefabMode;
-    /// Open animation clip: (filePath)
-    std::function<void(const std::string &)> openAnimClip;
-    /// Open animation state machine: (filePath)
-    std::function<void(const std::string &)> openAnimFsm;
-    /// Open Particle Graph: (filePath)
-    std::function<void(const std::string &)> openParticleGraph;
-    /// Open transform timeline: (filePath)
-    std::function<void(const std::string &)> openAnimTimeline;
-    /// Open timeline state machine: (filePath)
-    std::function<void(const std::string &)> openTimelineFsm;
-    /// Reveal in file explorer: (path)
-    std::function<void(const std::string &)> revealInExplorer;
-
-    /// Validate Python script for drag-drop: (filePath) → true if component
-    std::function<bool(const std::string &)> validateScriptComponent;
 
     /// Get GUID from path (delegates to AssetDatabase if callback not set)
     std::function<std::string(const std::string &)> getGuidFromPath;
@@ -369,8 +295,8 @@ class ProjectPanel : public EditorPanel
 
     // Project-wide search (Unity-style box on the Path bar)
     char m_searchBuf[256] = {};
-    std::string m_lastSearchQuery;
-    uint64_t m_lastSearchGeneration = UINT64_MAX;
+    EditorSearchModel m_search;
+    EditorSearchToken m_searchResultToken;
     uint64_t m_searchIndexGeneration = UINT64_MAX;
     std::string m_searchIndexRoot;
     std::vector<SearchIndexEntry> m_searchIndex;
@@ -380,9 +306,16 @@ class ProjectPanel : public EditorPanel
     // Selection
     std::string m_selectedFile;
     std::vector<std::string> m_selectedFiles;
-    std::unordered_set<std::string> m_selectedSet; // for O(1) lookup
+    std::unordered_set<std::string> m_selectedSet; // normalized asset/subresource identity keys for O(1) lookup
+
+    // Frozen when a right-click opens the popup. Menu rendering and command
+    // execution never read a later selection/current-path mutation.
+    std::string m_contextTargetPath;
+    std::string m_contextRevealPath;
+    std::string m_contextCurrentPath;
 
     void NotifySelectionChanged();
+    void PublishSelectionIntent(const std::vector<std::string> &paths, const std::string &primary) const;
     std::vector<std::string> GetSelectedPaths() const;
 
     // Double-click detection
@@ -404,11 +337,27 @@ class ProjectPanel : public EditorPanel
     // Model expand/collapse only needs augmented sub-asset rows rebuilt — not a full dir rescan.
     bool m_pendingAugmentedCacheInvalidation = false;
 
-    // ── Focus tracking ───────────────────────────────────────────────
-    bool m_wasFocused = false;
+    // Stable tree expansion projections. User toggles are submitted through
+    // TreeViewStateService; these models only drive native rendering.
+    EditorTreeProjectionModel<std::string> m_folderTreeProjection;
+    EditorTreeProjectionModel<std::string> m_modelTreeProjection;
 
-    // Model expansion
-    std::unordered_set<std::string> m_expandedModels;
+    // Folder rows are flattened only when the directory snapshot or expansion
+    // projection changes. Rendering then submits just the rows intersecting
+    // the child window's clipper range instead of recursively visiting every
+    // expanded directory on every GUI frame.
+    struct FolderTreeRow
+    {
+        std::string path;
+        std::string name;
+        int depth = 0;
+        bool hasSubdirs = false;
+        bool isRoot = false;
+    };
+    std::vector<FolderTreeRow> m_folderTreeRows;
+    uint64_t m_directoryRevision = 1;
+    uint64_t m_folderTreeRowsDirectoryRevision = 0;
+    uint64_t m_folderTreeRowsProjectionRevision = UINT64_MAX;
 
     // Visible items for shift-range select
     std::vector<FileItem> *m_visibleItems = nullptr;
@@ -428,8 +377,8 @@ class ProjectPanel : public EditorPanel
     void RebuildSearchIndex(uint64_t generation);
     void UpdateSearchResults();
     void RenderSearchResults(InxGUIContext *ctx);
+    void RebuildFolderTreeRows();
     void RenderFolderTree(InxGUIContext *ctx);
-    void RenderFolderTreeRecursive(InxGUIContext *ctx, const std::string &path, DirSnapshot *snapshot = nullptr);
     void RenderFileGrid(InxGUIContext *ctx);
     void RenderContextMenu(InxGUIContext *ctx);
     void RenderDragDropSource(InxGUIContext *ctx, const FileItem &item);
@@ -442,6 +391,7 @@ class ProjectPanel : public EditorPanel
     // ── Click & keyboard handling ────────────────────────────────────
     void HandleItemClick(const FileItem &item, InxGUIContext *ctx);
     void HandleExternalFileDrops();
+    bool ImportExternalAssetBatch(const std::vector<std::string> &paths, const std::string &source);
 
     [[nodiscard]] bool IsCtrl(InxGUIContext *ctx) const;
     [[nodiscard]] bool IsShift(InxGUIContext *ctx) const;
@@ -450,14 +400,12 @@ class ProjectPanel : public EditorPanel
     void BeginRename(const std::string &path);
     void CommitRename();
     void CancelRename();
-    bool CreateAndRename(const std::string &baseName, const std::string &extension,
-                         std::function<std::pair<bool, std::string>(const std::string &)> createFn);
     /// Immediately clear directory caches. Prefer InvalidateDirCache() which defers
     /// until the next OnRenderContent so mid-frame item pointers stay valid.
     void ClearDirCachesNow();
 
-    bool ExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;
-    bool CanExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;
+    bool ExecuteEditorCommand(const std::string &commandId, const std::string &argument = "",
+                              const std::string &source = "context_menu") const;
 
     // ── Move helpers ─────────────────────────────────────────────────
     std::vector<std::string> GetDragMoveSources(const std::string &draggedPath) const;
@@ -473,6 +421,8 @@ class ProjectPanel : public EditorPanel
     void ClampNavigationPath();
     void UpdateNavigationCache();
     void AssignCurrentPath(const std::string &path);
+    bool RequestDirectoryNavigation(const std::string &path, const std::string &source = "pointer") const;
+    bool RequestAssetLocation(const std::string &path, const std::string &source = "pointer") const;
     /// True when [..] may move to the parent folder (blocked at project-root subfolders).
     bool CanNavigateUpFromCurrent() const;
     static uint64_t GetMtimeNs(const std::string &path);

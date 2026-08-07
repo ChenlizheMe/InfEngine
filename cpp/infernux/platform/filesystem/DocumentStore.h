@@ -1,5 +1,7 @@
 #pragma once
 
+#include "AtomicFile.h"
+
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -30,15 +32,12 @@ class DocumentWriteCancelled final : public std::runtime_error
     using std::runtime_error::runtime_error;
 };
 
-struct DocumentFileState
-{
-    uint64_t size = 0;
-    int64_t modifiedNs = 0;
-};
+using DocumentFileState = AtomicFileState;
 
 struct DocumentWriteOptions
 {
     bool createBackup = false;
+    std::optional<DocumentFileState> expectedFileState;
 };
 
 struct DocumentPathMetrics
@@ -64,6 +63,7 @@ class DocumentWriteTicket final
 
     [[nodiscard]] bool IsComplete() const;
     [[nodiscard]] std::string GetStatusName() const;
+    [[nodiscard]] std::string GetError() const;
 
     void Wait() const;
     bool WaitFor(std::chrono::milliseconds timeout) const;
@@ -115,6 +115,7 @@ class DocumentStore final
     uint64_t WriteAndWait(const std::string &path, std::string content, DocumentWriteOptions options = {});
     bool Cancel(const std::shared_ptr<DocumentWriteTicket> &ticket);
     [[nodiscard]] DocumentPathMetrics GetMetrics(const std::string &path) const;
+    [[nodiscard]] DocumentFileState CaptureFileState(const std::string &path) const;
     void Flush();
     void Flush(const std::string &path);
     void Shutdown();

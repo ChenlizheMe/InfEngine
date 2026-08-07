@@ -1,7 +1,7 @@
 """SceneFileManager — scene load / save / new / prefab-mode lifecycle.
 
 Central authority for scene file operations: opening, saving, creating,
-prefab editing mode, save confirmation dialogs, and camera state
+prefab editing mode, document-aware close decisions, and camera state
 persistence.
 
 Example::
@@ -50,8 +50,6 @@ class SceneFileManager:
         """Mark the current scene as having unsaved changes."""
         ...
 
-    def clear_dirty(self) -> None: ...
-
     def set_on_scene_changed(self, cb: Callable[[], None]) -> None:
         """Register a callback fired after a new scene finishes loading.
 
@@ -68,7 +66,7 @@ class SceneFileManager:
         """
         ...
 
-    def save_scene_as(self) -> None:
+    def save_scene_as(self) -> bool:
         """Open a save-as dialog then save."""
         ...
 
@@ -100,17 +98,16 @@ class SceneFileManager:
         """Human-readable name for the current scene (filename sans extension)."""
         ...
 
-        """Render the "Save changes?" confirmation modal if active."""
-        ...
-
-    def open_prefab_mode(self, prefab_path: str) -> None:
+    def open_prefab_mode(
+        self,
+        prefab_path: str,
+        preserve_undo_history: bool = False,
+    ) -> bool:
         """Enter prefab editing mode for *prefab_path*."""
         ...
-
     def exit_prefab_mode(self) -> bool:
         """Leave prefab editing mode and return to the previous scene."""
         ...
-
     @property
     def is_prefab_mode(self) -> bool:
         """True when editing a prefab."""

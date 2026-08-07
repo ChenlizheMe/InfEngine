@@ -4,8 +4,11 @@ import json
 import os
 from types import SimpleNamespace
 
-from Infernux.core.asset_types import TextureImportSettings, TextureType
+import pytest
+
+from Infernux.core.asset_types import SpriteFrame, TextureImportSettings, TextureType
 from Infernux.engine.ui import asset_details_renderer as details
+from Infernux.engine.ui import inspector_material
 from Infernux.engine.ui import inspector_utils
 
 
@@ -68,6 +71,31 @@ class _StableFieldIdContext:
         return x, y
 
 
+def test_builtin_material_shader_sync_updates_readonly_cache_without_user_edit(monkeypatch):
+    material_document = {"properties": {}}
+    state = SimpleNamespace(extra={"cached_data": material_document})
+
+    def _sync(document, _state):
+        document["properties"]["BaseColor"] = {
+            "type": 7,
+            "value": [1.0, 1.0, 1.0, 1.0],
+        }
+        return True, True
+
+    monkeypatch.setattr(inspector_material, "_sync_shader_annotations", _sync)
+
+    changed, requires_deserialize = inspector_material._prepare_shader_annotations(
+        material_document,
+        state,
+        read_only=True,
+    )
+
+    assert changed is False
+    assert requires_deserialize is False
+    assert json.loads(state.extra["cached_json"]) == material_document
+    assert "_material_preview_pending" not in state.extra
+
+
 def test_serialized_bool_and_vector_fields_keep_stable_widget_ids(monkeypatch):
     from Infernux.components.serialized_field import FieldMetadata, FieldType
 
@@ -115,9 +143,10 @@ def test_serialized_bool_and_vector_fields_keep_stable_widget_ids(monkeypatch):
 
 
 class _FakeObjectFieldContext(_FakeSemanticContext):
-    def __init__(self):
+    def __init__(self, interaction=2):
         super().__init__()
         self.opened_popups = []
+        self.interaction = int(interaction)
 
     def push_id_str(self, _value):
         pass
@@ -171,13 +200,13 @@ class _FakeObjectFieldContext(_FakeSemanticContext):
         self, _field_id, display_text, _type_hint, _selected, clickable,
         has_picker, _picker_texture_id, semantic_id,
     ):
-        if has_picker:
+        if has_picker and (self.interaction & 2):
             self.open_popup("##obj_picker")
         if semantic_id:
             self.record_semantic_item(
                 "object_field", display_text, clickable, semantic_id
             )
-        return 1
+        return self.interaction
 
 
 def _text_component():
@@ -340,27 +369,49 @@ def test_ui_layout_vector_exposes_stable_axis_semantic_base(monkeypatch):
 
 
 def test_ui_size_edit_keeps_position_set_after_rect_was_cached():
+    from Infernux.engine.interaction import EditorInteractionCore
     from Infernux.engine.ui.inspector_ui_components import (
         _apply_size_preserve_top_left,
         _apply_visual_position,
     )
     from Infernux.ui import UIButton
     from Infernux.ui.inx_ui_screen_component import clear_rect_cache
+    from Infernux.engine.undo import UndoManager
 
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    core = EditorInteractionCore()
     canvas = SimpleNamespace(reference_width=1920, reference_height=1080)
     button = UIButton()
     button._get_parent_world_rect = lambda width, height: (0.0, 0.0, float(width), float(height))
     clear_rect_cache(1)
 
-    assert button.get_visual_rect(1920, 1080)[:2] == (0.0, 0.0)
-    _apply_visual_position(button, 820.0, 620.0, canvas)
-    _apply_size_preserve_top_left(button, 280.0, 72.0, canvas)
+    try:
+        initial_rect = button.get_visual_rect(1920, 1080)
+        assert initial_rect[:2] == (0.0, 0.0)
+        _apply_visual_position(button, 820.0, 620.0, canvas)
+        assert len(manager.action_journal.applied_entries()) == 1
+        _apply_size_preserve_top_left(button, 280.0, 72.0, canvas)
 
-    assert button.get_visual_rect(1920, 1080) == (820.0, 620.0, 280.0, 72.0)
-    assert (button.x, button.y) == (820.0, 620.0)
+        assert button.get_visual_rect(1920, 1080) == (820.0, 620.0, 280.0, 72.0)
+        assert (button.x, button.y) == (820.0, 620.0)
+        assert len(manager.action_journal.applied_entries()) == 2
+
+        manager.undo()
+        assert button.get_visual_rect(1920, 1080) == (
+            820.0,
+            620.0,
+            initial_rect[2],
+            initial_rect[3],
+        )
+        manager.undo()
+        assert button.get_visual_rect(1920, 1080) == initial_rect
+    finally:
+        core.shutdown()
+        UndoManager._instance = previous_manager
 
 
-def test_object_field_click_opens_picker_and_records_semantic(monkeypatch):
+def test_object_field_picker_button_opens_picker_and_records_semantic(monkeypatch):
     from Infernux.engine.ui.igui import IGUI
 
     monkeypatch.setattr(IGUI, "_mini_icon_button", lambda *_args, **_kwargs: False)
@@ -377,7 +428,7 @@ def test_object_field_click_opens_picker_and_records_semantic(monkeypatch):
         semantic_id="inspector.object.11.component.186.track_0.clip",
     )
 
-    assert clicked is True
+    assert clicked is False
     assert ctx.opened_popups == ["##obj_picker"]
     assert ctx.semantic_items == [(
         "object_field",
@@ -385,6 +436,135 @@ def test_object_field_click_opens_picker_and_records_semantic(monkeypatch):
         True,
         "inspector.object.11.component.186.track_0.clip",
     )]
+
+
+def test_object_field_body_locates_and_double_click_can_open(monkeypatch):
+    from Infernux.engine.ui.igui import IGUI
+
+    monkeypatch.setattr(IGUI, "_render_object_picker_popup", lambda *_args, **_kwargs: None)
+    located = []
+    opened = []
+
+    clicked = IGUI.object_field(
+        _FakeObjectFieldContext(interaction=1),
+        "material",
+        "Smoke",
+        "Material",
+        on_ping=lambda: located.append("material"),
+    )
+    assert clicked is True
+    assert located == ["material"]
+
+    IGUI.object_field(
+        _FakeObjectFieldContext(interaction=5),
+        "material",
+        "Smoke",
+        "Material",
+        on_ping=lambda: located.append("again"),
+        on_open=lambda: opened.append("material"),
+    )
+    assert located == ["material"]
+    assert opened == ["material"]
+
+
+def test_object_picker_executes_mutation_after_imgui_scopes_close(monkeypatch):
+    from Infernux.engine.ui.igui import IGUI
+
+    events = []
+
+    class _PickerContext(_FakeObjectFieldContext):
+        def __init__(self):
+            super().__init__(interaction=0)
+
+        def push_id_str(self, value):
+            events.append(("push", value))
+
+        def pop_id(self):
+            events.append(("pop", None))
+
+        def begin_popup(self, _popup_id):
+            return True
+
+        def end_popup(self):
+            events.append(("end_popup", None))
+
+        def input_text_with_hint(self, *_args):
+            return ""
+
+        def separator(self):
+            pass
+
+        def begin_child(self, *_args):
+            return True
+
+        def end_child(self):
+            events.append(("end_child", None))
+
+        def push_id(self, value):
+            events.append(("push_item", value))
+
+        def selectable(self, *_args):
+            return True
+
+        def close_current_popup(self):
+            events.append(("close_popup", None))
+
+    monkeypatch.setattr(IGUI, "_draw_item_outline", lambda *_args, **_kwargs: None)
+    IGUI.object_field(
+        _PickerContext(),
+        "texture",
+        "Smoke.png",
+        "Texture",
+        picker_asset_items=lambda _filter: [("Smoke.png", "Assets/Smoke.png")],
+        on_pick=lambda value: events.append(("callback", value)),
+    )
+
+    assert events[-3:] == [
+        ("end_popup", None),
+        ("pop", None),
+        ("callback", "Assets/Smoke.png"),
+    ]
+
+
+def test_inspector_property_edit_fails_closed_without_transaction_authority():
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.ui._inspector_undo import _record_property
+    from Infernux.engine.undo import UndoManager
+
+    previous = UndoManager._instance
+    core = EditorInteractionCore()
+    UndoManager._instance = None
+    target = SimpleNamespace(speed=1.0)
+    try:
+        with pytest.raises(RuntimeError, match="active UndoManager"):
+            _record_property(target, "speed", 1.0, 2.0, "Set Speed")
+        assert target.speed == 1.0
+    finally:
+        core.shutdown()
+        UndoManager._instance = previous
+
+
+def test_multi_builtin_inspector_edit_is_one_global_action():
+    from Infernux.components.serialized_field import FieldType
+    from Infernux.engine.ui.inspector_components import _apply_multi_builtin_change
+    from Infernux.engine.undo import UndoManager
+
+    first = SimpleNamespace(value=1.0)
+    second = SimpleNamespace(value=2.0)
+    metadata = SimpleNamespace(field_type=FieldType.FLOAT, readonly=False)
+    previous = UndoManager._instance
+    manager = UndoManager()
+    try:
+        _apply_multi_builtin_change(
+            (first, second), ("value", "value"), metadata, 5.0
+        )
+
+        assert (first.value, second.value) == (5.0, 5.0)
+        assert len(manager.action_journal.applied_entries()) == 1
+        manager.undo()
+        assert (first.value, second.value) == (1.0, 2.0)
+    finally:
+        UndoManager._instance = previous
 
 
 def test_python_asset_reference_field_uses_component_semantic(monkeypatch):
@@ -395,7 +575,7 @@ def test_python_asset_reference_field_uses_component_semantic(monkeypatch):
     monkeypatch.setattr(module, "field_label", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         module,
-        "render_object_field",
+        "render_asset_reference_field",
         lambda *_args, **kwargs: captured.update(kwargs),
     )
     component = SimpleNamespace(
@@ -412,25 +592,96 @@ def test_python_asset_reference_field_uses_component_semantic(monkeypatch):
     assert captured["semantic_id"] == "inspector.object.143.component.547.controller"
 
 
+def test_all_asset_reference_widgets_use_the_unified_typed_contract():
+    import ast
+    from pathlib import Path
+
+    package_root = Path(__file__).resolve().parents[1] / "Infernux"
+    issues = []
+    for source_path in package_root.rglob("*.py"):
+        tree = ast.parse(
+            source_path.read_text(encoding="utf-8-sig"),
+            filename=str(source_path),
+        )
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name):
+                function_name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                function_name = node.func.attr
+            else:
+                continue
+            if function_name not in {
+                "asset_reference_field",
+                "render_asset_reference_field",
+            }:
+                continue
+            keywords = {keyword.arg for keyword in node.keywords if keyword.arg}
+            if "asset_type" not in keywords:
+                issues.append(f"{source_path}:{node.lineno}: missing asset_type")
+            if "reference_value" not in keywords and "transaction" not in keywords:
+                issues.append(
+                    f"{source_path}:{node.lineno}: missing reference_value/transaction"
+                )
+
+    assert issues == []
+
+
+def test_scene_reference_fields_use_hierarchy_ping_contract(monkeypatch):
+    import Infernux.engine.ui._inspector_references as module
+    from Infernux.components.ref_wrappers import ComponentRef, GameObjectRef
+
+    captured = []
+    pinged = []
+    monkeypatch.setattr(module, "field_label", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "render_object_field",
+        lambda *_args, **kwargs: captured.append(kwargs),
+    )
+    monkeypatch.setattr(
+        module,
+        "ping_scene_object_in_hierarchy",
+        lambda object_id: pinged.append(int(object_id)),
+    )
+
+    component_ref = ComponentRef(go_id=41, component_type="Camera")
+    monkeypatch.setattr(ComponentRef, "resolve", lambda _self: None)
+    python_component = SimpleNamespace(
+        game_object=SimpleNamespace(id=9),
+        component_id=10,
+        target=component_ref,
+    )
+    metadata = SimpleNamespace(component_type="Camera")
+    module._render_component_ref_inline(
+        SimpleNamespace(), python_component, "target", metadata, 120.0
+    )
+    captured[-1]["on_ping"]()
+
+    game_object_ref = GameObjectRef(persistent_id=52)
+    monkeypatch.setattr(GameObjectRef, "resolve", lambda _self: None)
+    python_component.owner = game_object_ref
+    metadata = SimpleNamespace(required_component="")
+    module._render_gameobject_ref_inline(
+        SimpleNamespace(), python_component, "owner", metadata, game_object_ref, 120.0
+    )
+    captured[-1]["on_ping"]()
+
+    assert pinged == [41, 52]
+
+
 def test_builtin_asset_reference_field_records_native_property(monkeypatch):
     import Infernux.engine.ui._inspector_references as module
     from Infernux.components.serialized_field import FieldType
     from Infernux.core.asset_ref import PhysicMaterialRef
 
     captured = {}
-    recorded = []
     monkeypatch.setattr(module, "field_label", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         module,
-        "render_object_field",
+        "render_asset_reference_field",
         lambda *_args, **kwargs: captured.update(kwargs),
-    )
-    monkeypatch.setattr(
-        module,
-        "_record_builtin_property",
-        lambda comp, attr, old, new, description: recorded.append(
-            (comp, attr, old, new, description)
-        ),
     )
     component = SimpleNamespace(
         game_object=SimpleNamespace(id=21),
@@ -439,17 +690,26 @@ def test_builtin_asset_reference_field_records_native_property(monkeypatch):
     )
     metadata = SimpleNamespace(asset_type="PhysicMaterial")
 
-    module._render_asset_reference_field(
-        SimpleNamespace(), component, "physic_material", metadata,
-        component.physic_material, FieldType.ASSET, 120.0,
-        builtin_attr="physic_material",
-    )
-    captured["on_pick"]("C:/project/Assets/Bouncy.physicMaterial")
+    from Infernux.engine.undo import UndoManager
 
-    assert recorded[0][0] is component
-    assert recorded[0][1] == "physic_material"
-    assert isinstance(recorded[0][3], PhysicMaterialRef)
-    assert recorded[0][3].path_hint.endswith("Bouncy.physicMaterial")
+    previous = UndoManager._instance
+    manager = UndoManager()
+    try:
+        module._render_asset_reference_field(
+            SimpleNamespace(), component, "physic_material", metadata,
+            component.physic_material, FieldType.ASSET, 120.0,
+            builtin_attr="physic_material",
+        )
+        transaction = captured["transaction"]
+        assert transaction.commit(
+            "C:/project/Assets/Bouncy.physicMaterial"
+        ).value == "applied"
+
+        assert isinstance(component.physic_material, PhysicMaterialRef)
+        assert component.physic_material.path_hint.endswith("Bouncy.physicMaterial")
+        assert len(manager.action_journal.applied_entries()) == 1
+    finally:
+        UndoManager._instance = previous
 
 
 def test_inline_material_state_and_preview_query_are_reused(monkeypatch):
@@ -678,7 +938,11 @@ def test_audio_track_renderer_exposes_picker_callbacks_and_semantic(monkeypatch)
     captured = {}
     monkeypatch.setattr(module, "field_label", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "max_label_w", lambda *_args, **_kwargs: 120.0)
-    monkeypatch.setattr(module, "render_object_field", lambda *_args, **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(
+        module,
+        "render_asset_reference_field",
+        lambda *args, **kwargs: captured.update({"args": args, **kwargs}),
+    )
     monkeypatch.setattr(PlayModeManager, "instance", staticmethod(lambda: None))
 
     comp = SimpleNamespace(
@@ -698,8 +962,12 @@ def test_audio_track_renderer_exposes_picker_callbacks_and_semantic(monkeypatch)
 
     module._render_audio_source_extra(ctx, comp)
 
-    assert callable(captured["picker_asset_items"])
-    assert callable(captured["on_pick"])
+    assert captured["args"][3] == "AudioClip"
+    assert "picker_asset_items" not in captured
+    assert captured["has_value"] is False
+    assert callable(captured["on_assign"])
+    assert "on_pick" not in captured
+    assert "on_drop_callback" not in captured
     assert callable(captured["on_clear"])
     assert captured["semantic_id"] == "inspector.object.11.component.186.track_0.clip"
 
@@ -717,8 +985,11 @@ def test_particle_parameter_renderer_adapts_vector_storage(monkeypatch):
         return Vector3(4.0, 5.0, 6.0)
 
     monkeypatch.setattr(module, "render_serialized_field", _render)
-    monkeypatch.setattr(module, "_record_generic_component", lambda *_args: None)
-    monkeypatch.setattr(module, "_notify_scene_modified", lambda: None)
+    monkeypatch.setattr(
+        module,
+        "_record_python_component_document_edit",
+        lambda _component, edit, *_args, **_kwargs: edit(),
+    )
     updates = []
     comp = SimpleNamespace(
         exposed_parameter_schema=lambda: [{
@@ -796,10 +1067,14 @@ def test_particle_texture_parameter_renders_in_the_parameter_section(monkeypatch
     )
     monkeypatch.setattr(
         module,
-        "render_object_field",
+        "render_asset_reference_field",
         lambda _ctx, _field_id, _name, _label, **kwargs: captured.update(kwargs),
     )
-    monkeypatch.setattr(module, "_notify_scene_modified", lambda: None)
+    monkeypatch.setattr(
+        module,
+        "_record_python_component_document_edit",
+        lambda _component, edit, *_args, **_kwargs: edit(),
+    )
     monkeypatch.setattr(
         module, "_portable_asset_path_hint", lambda path: str(path).replace("\\", "/")
     )
@@ -807,7 +1082,7 @@ def test_particle_texture_parameter_renders_in_the_parameter_section(monkeypatch
     ctx = SimpleNamespace(separator=lambda: None)
 
     module._render_particle_system_parameters(ctx, component)
-    captured["on_pick"]("Assets/VFX/Smoke.png")
+    captured["on_assign"]("Assets/VFX/Smoke.png")
     captured["on_clear"]()
 
     assert captured["accept_drag_type"] == (
@@ -815,7 +1090,8 @@ def test_particle_texture_parameter_renders_in_the_parameter_section(monkeypatch
         "TEXTURE_FILE",
         "ASSET_FILE",
     )
-    assert callable(captured["picker_asset_items"])
+    assert "picker_asset_items" not in captured
+    assert captured["has_value"] is True
     assert component.path == ""
 
 
@@ -880,6 +1156,11 @@ def test_particle_emitter_playback_controls_edit_the_component_instance(monkeypa
         return not current if widget_id.endswith("_enabled") else current
 
     monkeypatch.setattr(module, "render_serialized_field", _render)
+    monkeypatch.setattr(
+        module,
+        "_record_python_component_document_edit",
+        lambda _component, edit, *_args, **_kwargs: edit(),
+    )
     component = SimpleNamespace(
         component_id=12,
         emitter_instance_schema=lambda: [
@@ -1085,7 +1366,14 @@ def test_texture_import_fields_publish_stable_semantics(monkeypatch):
 
 
 def test_sprite_slice_controls_are_distinct_and_report_values(monkeypatch):
-    settings = TextureImportSettings(texture_type=TextureType.SPRITE)
+    from Infernux.engine.undo import UndoManager
+
+    settings = TextureImportSettings(
+        texture_type=TextureType.SPRITE,
+        sprite_frames=[
+            SpriteFrame(name="frame_0", x=0, y=0, w=192, h=64),
+        ],
+    )
     ctx = _SpriteContext()
 
     details._sprite_state.reset()
@@ -1101,25 +1389,66 @@ def test_sprite_slice_controls_are_distinct_and_report_values(monkeypatch):
     monkeypatch.setattr(inspector_utils, "render_compact_section_header", lambda *_args, **_kwargs: True)
 
     state = details._State()
+    state.file_path = "C:/Project/Assets/SpriteSheet.png"
+    state.category = "texture"
+    state.meta = {"guid": "sprite-sheet-test"}
     state.settings = settings
+    state.disk_settings = settings.copy()
     applied = []
     state.exec_layer = SimpleNamespace(
         apply_import_settings=lambda value: applied.append(value.copy()) or True,
+        refresh_binding=lambda _category, _path: None,
     )
-    details._render_sprite_body(ctx, None, state)
+    previous_manager = UndoManager._instance
+    UndoManager()
+    try:
+        details._bind_import_settings_document(
+            state,
+            details._categories["texture"],
+        )
+        details._render_sprite_body(ctx, None, state)
+    finally:
+        UndoManager._instance = previous_manager
 
     by_id = {entry[3]: entry for entry in ctx.semantics}
     assert by_id["asset.texture.sprite.rows"][1].endswith(": 1")
     assert by_id["asset.texture.sprite.columns"][1].endswith(": 3")
     assert "asset.texture.sprite.auto_slice" in by_id
-    assert [(f.x, f.y, f.w, f.h) for f in settings.sprite_frames] == [
+    assert [(f.x, f.y, f.w, f.h) for f in state.settings.sprite_frames] == [
         (0, 0, 64, 64),
         (64, 0, 64, 64),
         (128, 0, 64, 64),
     ]
     assert len(applied) == 1
-    assert applied[0].sprite_frames == settings.sprite_frames
-    assert state.disk_settings == settings
+    assert applied[0].sprite_frames == state.settings.sprite_frames
+    assert state.disk_settings == state.settings
+
+
+def test_sprite_auto_slice_preserves_ids_for_unchanged_rectangles():
+    stable = SpriteFrame(
+        stable_id="a" * 32,
+        name="left",
+        x=0,
+        y=0,
+        w=64,
+        h=64,
+    )
+    settings = TextureImportSettings(
+        texture_type=TextureType.SPRITE,
+        sprite_frames=[stable],
+    )
+    sprite_state = details._SpriteEditorState()
+    sprite_state.tex_w = 128
+    sprite_state.tex_h = 64
+    sprite_state.slice_rows = 1
+    sprite_state.slice_cols = 2
+
+    details._auto_slice(settings, sprite_state)
+
+    assert settings.sprite_frames[0].stable_id == stable.stable_id
+    assert settings.sprite_frames[0].name == "left"
+    assert len(settings.sprite_frames[1].stable_id) == 32
+    assert settings.sprite_frames[1].stable_id != stable.stable_id
 
 
 def test_apply_revert_bar_publishes_stable_enabled_state():
@@ -1145,3 +1474,23 @@ def test_render_effect_asset_category_is_editable():
 
     assert category.access_mode == details.AssetAccessMode.READ_WRITE_RESOURCE
     assert category.custom_body_fn is details._render_render_effect_body
+
+
+def test_only_categories_with_shared_document_contract_are_read_write():
+    details._ensure_categories()
+
+    read_write = {
+        name
+        for name, category in details._categories.items()
+        if category.access_mode == details.AssetAccessMode.READ_WRITE_RESOURCE
+    }
+
+    assert read_write == {
+        "material",
+        "render_effect",
+        "physic_material",
+        "animclip",
+        "animclip3d",
+    }
+    assert details._categories["prefab"].access_mode == details.AssetAccessMode.READ_ONLY_RESOURCE
+    assert details._categories["animfsm"].access_mode == details.AssetAccessMode.READ_ONLY_RESOURCE

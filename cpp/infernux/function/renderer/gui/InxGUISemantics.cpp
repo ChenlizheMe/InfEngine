@@ -7,6 +7,8 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace infernux
@@ -20,9 +22,19 @@ std::atomic_uint64_t g_captureRequestSequence{0};
 std::atomic_uint64_t g_completedRequestSequence{0};
 std::atomic_uint64_t g_pendingInputSequence{0};
 std::mutex g_snapshotMutex;
+std::mutex g_focusMutex;
+std::mutex g_windowPresentationMutex;
 InxGUISemanticSnapshot g_workingSnapshot;
 InxGUISemanticSnapshot g_publishedSnapshot;
-uint64_t g_workingRequestSequence = 0;
+std::string g_focusedWindowId;
+std::unordered_set<std::string> g_presentedWindowIds;
+std::unordered_map<std::string, std::string> g_presentedDockPeerByWindowId;
+bool g_hasWindowPresentationSnapshot = false;
+std::atomic_uint64_t g_workingRequestSequence{0};
+std::atomic_uint64_t g_beginFrameCount{0};
+std::atomic_uint64_t g_endFrameCount{0};
+std::atomic_uint64_t g_abortFrameCount{0};
+std::atomic_uint64_t g_publishCount{0};
 
 struct PendingTargetSource
 {
@@ -88,11 +100,17 @@ bool IsWindowInteractable(const ImGuiWindow *window)
         return false;
 
 #ifdef IMGUI_HAS_DOCK
-    // Docked background tabs can still submit semantic records while their
-    // content is not reachable through the actual editor viewport.
+    // ImGui already resolves docking presentation on the docked panel window.
+    // Root dock hosts may have no VisibleWindow of their own, so inferring tab
+    // visibility from the host loses ordinary side panels such as Inspector.
+    // DockTabIsVisible is the authoritative selected-tab result for this frame.
     const ImGuiDockNode *dockNode = rootWindow->DockNode;
-    if (dockNode != nullptr && dockNode->VisibleWindow != nullptr && dockNode->VisibleWindow != rootWindow)
-        return false;
+    if (dockNode != nullptr) {
+        if (!rootWindow->DockNodeIsVisible || !rootWindow->DockTabIsVisible)
+            return false;
+        if (dockNode->VisibleWindow != nullptr && dockNode->VisibleWindow != rootWindow)
+            return false;
+    }
 #endif
 
     return true;
@@ -118,11 +136,19 @@ bool ReceivesPointerAt(const PendingTargetSource &source, const ImVec2 &point)
 
 #ifdef IMGUI_HAS_DOCK
     // A dock tab is drawn and hit-tested by its dock host, while its semantic
-    // controls belong to the docked panel. Treat that host as the panel's
-    // native interaction surface without admitting unrelated windows.
+    // controls may be submitted by a child window whose own DockNode is null.
+    // Resolve the node through the panel root and treat only that exact host
+    // as the native interaction surface, without admitting unrelated windows.
+    const ImGuiWindow *sourceRoot = RootWindow(source.window);
     const ImGuiDockNode *dockNode = source.window != nullptr ? source.window->DockNode : nullptr;
-    if (dockNode != nullptr && dockNode->HostWindow != nullptr)
-        return RootWindow(hoveredWindow) == RootWindow(dockNode->HostWindow);
+    if (dockNode == nullptr && sourceRoot != nullptr)
+        dockNode = sourceRoot->DockNode;
+    for (const ImGuiDockNode *node = dockNode; node != nullptr; node = node->ParentNode) {
+        if (node->HostWindow == hoveredWindow || hoveredWindow->DockNodeAsHost == node)
+            return true;
+        if (node->HostWindow != nullptr && RootWindow(hoveredWindow) == RootWindow(node->HostWindow))
+            return true;
+    }
 #endif
 
     return false;
@@ -132,6 +158,18 @@ bool FindSafeClickPoint(const InxGUISemanticTarget &target, const PendingTargetS
 {
     if (source.window == nullptr || target.width <= 0.0f || target.height <= 0.0f)
         return false;
+
+    // ImGui items can report their complete content width even when most of
+    // that item is clipped by a child window (long Console rows are a common
+    // example). Choosing the raw rectangle center can therefore target a
+    // different control in the same root panel. Restrict semantic pointer
+    // candidates to the portion a human can actually see and click.
+    ImRect clickable(ImVec2(target.x, target.y), ImVec2(target.x + target.width, target.y + target.height));
+    clickable.ClipWith(source.window->ClipRect);
+    if (clickable.Min.x >= clickable.Max.x || clickable.Min.y >= clickable.Max.y)
+        return false;
+    const float clickableWidth = clickable.GetWidth();
+    const float clickableHeight = clickable.GetHeight();
 
     // Try the ordinary center first, then representative points around it.
     // This retains normal button behavior while recovering visible portions
@@ -146,7 +184,8 @@ bool FindSafeClickPoint(const InxGUISemanticTarget &target, const PendingTargetS
                                                                       {0.2f, 0.8f},
                                                                       {0.8f, 0.8f}}};
     for (const auto &sample : kSamples) {
-        const ImVec2 candidate(target.x + target.width * sample[0], target.y + target.height * sample[1]);
+        const ImVec2 candidate(clickable.Min.x + clickableWidth * sample[0],
+                               clickable.Min.y + clickableHeight * sample[1]);
         if (ReceivesPointerAt(source, candidate)) {
             point = candidate;
             return true;
@@ -158,12 +197,10 @@ bool FindSafeClickPoint(const InxGUISemanticTarget &target, const PendingTargetS
     // incorrectly describe the target as unavailable even though a human can
     // still click the revealed canvas. Keep this fallback just inside each
     // edge, rather than on the resize border itself.
-    const float insetX = std::min(4.0f, std::max(1.0f, target.width * 0.01f));
-    const float insetY = std::min(4.0f, std::max(1.0f, target.height * 0.01f));
-    const std::array<float, 3> xSamples = {target.x + insetX, target.x + target.width * 0.5f,
-                                           target.x + target.width - insetX};
-    const std::array<float, 3> ySamples = {target.y + insetY, target.y + target.height * 0.5f,
-                                           target.y + target.height - insetY};
+    const float insetX = std::min(4.0f, std::max(1.0f, clickableWidth * 0.01f));
+    const float insetY = std::min(4.0f, std::max(1.0f, clickableHeight * 0.01f));
+    const std::array<float, 3> xSamples = {clickable.Min.x + insetX, clickable.GetCenter().x, clickable.Max.x - insetX};
+    const std::array<float, 3> ySamples = {clickable.Min.y + insetY, clickable.GetCenter().y, clickable.Max.y - insetY};
     for (float y : ySamples) {
         for (float x : xSamples) {
             const ImVec2 candidate(x, y);
@@ -229,11 +266,12 @@ void InxGUISemantics::SetCaptureEnabled(bool enabled)
     if (enabled)
         return;
 
-    g_captureEnabled.store(false, std::memory_order_release);
-    g_completedRequestSequence.store(g_captureRequestSequence.load(std::memory_order_acquire),
-                                     std::memory_order_release);
-    std::lock_guard<std::mutex> lock(g_snapshotMutex);
-    g_publishedSnapshot = {};
+    // Disabling continuous capture must not cancel an already queued one-shot
+    // request. MCP requests arrive from a worker thread and may race startup or
+    // tool-registration policy changes; treating "continuous off" as "complete
+    // every request" silently loses the exact frame the caller is waiting for.
+    if (!HasPendingCaptureRequest())
+        g_captureEnabled.store(false, std::memory_order_release);
 }
 
 bool InxGUISemantics::IsCaptureEnabled()
@@ -261,6 +299,7 @@ uint64_t InxGUISemantics::RequestSnapshot(uint64_t inputSequence)
 
 void InxGUISemantics::BeginFrame(uint64_t frame)
 {
+    g_beginFrameCount.fetch_add(1, std::memory_order_relaxed);
     const uint64_t requestedSequence = g_captureRequestSequence.load(std::memory_order_acquire);
     const bool captureFrame = g_continuousCapture.load(std::memory_order_acquire) ||
                               requestedSequence != g_completedRequestSequence.load(std::memory_order_acquire);
@@ -272,10 +311,16 @@ void InxGUISemantics::BeginFrame(uint64_t frame)
     g_workingSnapshot.frame = frame;
     g_workingSnapshot.requestSequence = requestedSequence;
     g_workingSnapshot.inputSequence = g_pendingInputSequence.exchange(0, std::memory_order_acq_rel);
-    g_workingRequestSequence = requestedSequence;
+    g_workingRequestSequence.store(requestedSequence, std::memory_order_release);
     g_workingSnapshot.mouseX = 0.0f;
     g_workingSnapshot.mouseY = 0.0f;
     g_workingSnapshot.wantsTextInput = false;
+    g_workingSnapshot.dragDropActive = false;
+    g_workingSnapshot.dragDropPreview = false;
+    g_workingSnapshot.dragDropDelivery = false;
+    g_workingSnapshot.dragDropPayloadType.clear();
+    g_workingSnapshot.dragDropSourceId = 0;
+    g_workingSnapshot.dragDropAcceptId = 0;
     g_workingSnapshot.focusedWindow.clear();
     g_workingSnapshot.focusedWindowId.clear();
     g_workingSnapshot.targets.clear();
@@ -284,18 +329,102 @@ void InxGUISemantics::BeginFrame(uint64_t frame)
 
 void InxGUISemantics::EndFrame()
 {
+    g_endFrameCount.fetch_add(1, std::memory_order_relaxed);
+    ImGuiContext *context = ImGui::GetCurrentContext();
+    std::string focusedWindow;
+    std::string focusedWindowId;
+    if (context != nullptr && context->NavWindow != nullptr)
+        SplitWindowName(context->NavWindow->Name, focusedWindow, focusedWindowId);
+    {
+        std::lock_guard<std::mutex> lock(g_focusMutex);
+        g_focusedWindowId = focusedWindowId;
+    }
+
+    std::unordered_set<std::string> presentedWindowIds;
+    std::unordered_map<std::string, std::string> presentedDockPeerByWindowId;
+    if (context != nullptr) {
+        for (ImGuiWindow *window : context->Windows) {
+            if (window == nullptr || window->LastFrameActive != context->FrameCount)
+                continue;
+            std::string displayName;
+            std::string windowId;
+            SplitWindowName(window->Name, displayName, windowId);
+            const ImGuiWindow *rootWindow = RootWindow(window);
+            std::string rootWindowId;
+            if (rootWindow != nullptr) {
+                SplitWindowName(rootWindow->Name, displayName, windowId);
+                rootWindowId = windowId;
+            }
+
+#ifdef IMGUI_HAS_DOCK
+            ImGuiDockNode *dockNode = window->DockNode;
+            if (dockNode == nullptr && rootWindow != nullptr)
+                dockNode = rootWindow->DockNode;
+            if (dockNode != nullptr) {
+                const ImGuiWindow *visibleWindow = dockNode->VisibleWindow;
+                if (visibleWindow != nullptr) {
+                    std::string visibleWindowId;
+                    SplitWindowName(visibleWindow->Name, displayName, visibleWindowId);
+                    if (!visibleWindowId.empty()) {
+                        // A hidden dock tab is not guaranteed to retain the
+                        // same root/DockNode projection as the selected tab.
+                        // Build the relation from the dock node's own tab
+                        // collection so every peer can resolve the page it
+                        // would displace before the current frame completes.
+                        for (const ImGuiWindow *tabWindow : dockNode->Windows) {
+                            if (tabWindow == nullptr)
+                                continue;
+                            std::string tabWindowId;
+                            SplitWindowName(tabWindow->Name, displayName, tabWindowId);
+                            if (!tabWindowId.empty())
+                                presentedDockPeerByWindowId[std::move(tabWindowId)] = visibleWindowId;
+                        }
+                        if (!rootWindowId.empty())
+                            presentedDockPeerByWindowId[rootWindowId] = visibleWindowId;
+                    }
+                }
+            }
+#endif
+
+            if (!IsWindowInteractable(window))
+                continue;
+            SplitWindowName(window->Name, displayName, windowId);
+            if (!windowId.empty())
+                presentedWindowIds.insert(std::move(windowId));
+
+            // Compound panels submit controls from child windows. Publish the
+            // stable panel id as well so all interaction producers ask the
+            // same presentation question regardless of which child focused.
+            if (!rootWindowId.empty())
+                presentedWindowIds.insert(std::move(rootWindowId));
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_windowPresentationMutex);
+        g_presentedWindowIds = std::move(presentedWindowIds);
+        g_presentedDockPeerByWindowId = std::move(presentedDockPeerByWindowId);
+        g_hasWindowPresentationSnapshot = context != nullptr;
+    }
+
     if (!IsCaptureEnabled())
         return;
 
-    ImGuiContext *context = ImGui::GetCurrentContext();
     if (context) {
         const ImGuiIO &io = ImGui::GetIO();
         g_workingSnapshot.mouseX = io.MousePos.x;
         g_workingSnapshot.mouseY = io.MousePos.y;
         g_workingSnapshot.wantsTextInput = io.WantTextInput;
-        if (context->NavWindow)
-            SplitWindowName(context->NavWindow->Name, g_workingSnapshot.focusedWindow,
-                            g_workingSnapshot.focusedWindowId);
+        g_workingSnapshot.dragDropActive = context->DragDropActive;
+        if (context->DragDropActive) {
+            const ImGuiPayload &payload = context->DragDropPayload;
+            g_workingSnapshot.dragDropPreview = payload.Preview;
+            g_workingSnapshot.dragDropDelivery = payload.Delivery;
+            g_workingSnapshot.dragDropPayloadType = payload.DataType;
+            g_workingSnapshot.dragDropSourceId = payload.SourceId;
+            g_workingSnapshot.dragDropAcceptId = context->DragDropAcceptIdCurr;
+        }
+        g_workingSnapshot.focusedWindow = std::move(focusedWindow);
+        g_workingSnapshot.focusedWindowId = focusedWindowId;
         FinalizeTargetReachability();
     } else {
         for (InxGUISemanticTarget &target : g_workingSnapshot.targets)
@@ -304,17 +433,46 @@ void InxGUISemantics::EndFrame()
     g_workingTargetSources.clear();
 
     std::lock_guard<std::mutex> lock(g_snapshotMutex);
-    if (IsCaptureEnabled())
+    if (IsCaptureEnabled()) {
         g_publishedSnapshot = g_workingSnapshot;
-    g_completedRequestSequence.store(g_workingRequestSequence, std::memory_order_release);
+        g_publishCount.fetch_add(1, std::memory_order_relaxed);
+    }
+    g_completedRequestSequence.store(g_workingRequestSequence.load(std::memory_order_acquire),
+                                     std::memory_order_release);
     g_captureEnabled.store(false, std::memory_order_release);
+}
+
+std::string InxGUISemantics::GetFocusedWindowId()
+{
+    std::lock_guard<std::mutex> lock(g_focusMutex);
+    return g_focusedWindowId;
+}
+
+std::optional<bool> InxGUISemantics::WasWindowContentPresented(const std::string &windowId)
+{
+    std::lock_guard<std::mutex> lock(g_windowPresentationMutex);
+    if (!g_hasWindowPresentationSnapshot)
+        return std::nullopt;
+    return g_presentedWindowIds.find(windowId) != g_presentedWindowIds.end();
+}
+
+std::optional<std::string> InxGUISemantics::PresentedDockPeerForWindow(const std::string &windowId)
+{
+    std::lock_guard<std::mutex> lock(g_windowPresentationMutex);
+    if (!g_hasWindowPresentationSnapshot)
+        return std::nullopt;
+    const auto it = g_presentedDockPeerByWindowId.find(windowId);
+    if (it == g_presentedDockPeerByWindowId.end())
+        return std::nullopt;
+    return it->second;
 }
 
 void InxGUISemantics::AbortFrame() noexcept
 {
+    g_abortFrameCount.fetch_add(1, std::memory_order_relaxed);
     g_workingSnapshot.targets.clear();
     g_workingTargetSources.clear();
-    g_workingRequestSequence = 0;
+    g_workingRequestSequence.store(0, std::memory_order_release);
     g_captureEnabled.store(false, std::memory_order_release);
 }
 
@@ -497,6 +655,22 @@ InxGUISemanticSnapshot InxGUISemantics::GetSnapshot()
 {
     std::lock_guard<std::mutex> lock(g_snapshotMutex);
     return g_publishedSnapshot;
+}
+
+InxGUISemanticCaptureState InxGUISemantics::GetCaptureState() noexcept
+{
+    InxGUISemanticCaptureState state;
+    state.continuous = g_continuousCapture.load(std::memory_order_acquire);
+    state.active = g_captureEnabled.load(std::memory_order_acquire);
+    state.requestedSequence = g_captureRequestSequence.load(std::memory_order_acquire);
+    state.completedSequence = g_completedRequestSequence.load(std::memory_order_acquire);
+    state.pendingInputSequence = g_pendingInputSequence.load(std::memory_order_acquire);
+    state.workingRequestSequence = g_workingRequestSequence.load(std::memory_order_acquire);
+    state.beginFrameCount = g_beginFrameCount.load(std::memory_order_relaxed);
+    state.endFrameCount = g_endFrameCount.load(std::memory_order_relaxed);
+    state.abortFrameCount = g_abortFrameCount.load(std::memory_order_relaxed);
+    state.publishCount = g_publishCount.load(std::memory_order_relaxed);
+    return state;
 }
 
 } // namespace infernux

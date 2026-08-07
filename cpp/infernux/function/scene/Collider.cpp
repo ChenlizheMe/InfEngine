@@ -323,10 +323,15 @@ void Collider::SetPhysicMaterialGuid(const std::string &guid)
         ClearPhysicMaterial();
         return;
     }
-    auto material = AssetRegistry::Instance().LoadAsset<PhysicMaterial>(guid, ResourceType::PhysicMaterial);
-    if (!material)
-        throw std::invalid_argument("PhysicMaterial GUID cannot be resolved: " + guid);
-    SetPhysicMaterial(std::move(material));
+    auto &graph = AssetDependencyGraph::Instance();
+    const std::string oldGuid = m_physicMaterial.GetGuid();
+    if (!oldGuid.empty() && oldGuid != guid)
+        graph.RemoveRuntimeDependency(GetInstanceGuid(), oldGuid);
+    m_physicMaterial.SetGuid(guid);
+    AssetRegistry::Instance().Resolve(m_physicMaterial, ResourceType::PhysicMaterial);
+    graph.AddRuntimeDependency(GetInstanceGuid(), guid);
+    ApplyMaterialToBody(this);
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
 
 void Collider::ClearPhysicMaterial()
@@ -337,13 +342,17 @@ void Collider::ClearPhysicMaterial()
 void Collider::OnPhysicMaterialAssetEvent(AssetEvent event)
 {
     if (event == AssetEvent::Deleted) {
-        ClearPhysicMaterial();
+        m_physicMaterial.Invalidate();
+        ApplyMaterialToBody(this);
+        PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
         return;
     }
-    if (event == AssetEvent::Modified)
+    if (event == AssetEvent::Modified) {
+        m_physicMaterial.MarkStale();
+        AssetRegistry::Instance().Resolve(m_physicMaterial, ResourceType::PhysicMaterial);
         ApplyMaterialToBody(this);
-    if (event == AssetEvent::Modified)
         PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
+    }
 }
 
 float Collider::GetFriction() const
@@ -705,19 +714,14 @@ bool Collider::DeserializeDocument(const nlohmann::json &j)
         const auto &center = j.at("center");
         staged.center = glm::vec3(center[0].get<float>(), center[1].get<float>(), center[2].get<float>());
         const std::string materialGuid = j.at("physic_material_guid").get<std::string>();
-        std::shared_ptr<PhysicMaterial> stagedMaterial;
-        if (!materialGuid.empty()) {
-            stagedMaterial =
-                AssetRegistry::Instance().LoadAsset<PhysicMaterial>(materialGuid, ResourceType::PhysicMaterial);
-            if (!stagedMaterial)
-                throw std::invalid_argument("physic_material_guid cannot be resolved: " + materialGuid);
-        }
-
         if (!Component::DeserializeDocument(j))
             return false;
         staged.deserialized = true;
         DataMut() = staged;
-        SetPhysicMaterial(std::move(stagedMaterial));
+        if (materialGuid.empty())
+            ClearPhysicMaterial();
+        else
+            SetPhysicMaterialGuid(materialGuid);
         // NOTE: RebuildShape() is called by derived classes after their own
         // fields are deserialized (so both base + derived changes are applied
         // in a single shape rebuild).
@@ -736,7 +740,10 @@ void Collider::CloneBaseColliderData(Collider &target) const
     auto &dst = target.DataMut();
     dst.isTrigger = src.isTrigger;
     dst.center = src.center;
-    target.SetPhysicMaterial(m_physicMaterial.Get());
+    if (m_physicMaterial.HasGuid())
+        target.SetPhysicMaterialGuid(m_physicMaterial.GetGuid());
+    else
+        target.SetPhysicMaterial(m_physicMaterial.Get());
 }
 
 } // namespace infernux

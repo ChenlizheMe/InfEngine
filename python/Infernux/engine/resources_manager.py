@@ -13,7 +13,7 @@ except ImportError:
     _HAS_WATCHDOG = False
 
 from Infernux.lib import Infernux
-from Infernux.engine.path_utils import path_key, portable_path, same_path
+from Infernux.engine.path_utils import path_key, portable_path
 from Infernux.engine.script_compiler import get_script_compiler
 from Infernux.engine.import_coordinator import (
     AssetFsEvent,
@@ -160,19 +160,22 @@ class ResourceChangeHandler(FileSystemEventHandler):
         ):
             Debug.log_internal(f"[AssetManager] suppressed watcher echo: {event}")
             return
-        if event.kind is AssetFsEventKind.CREATED:
-            self._commit_created(event.path)
-        elif event.kind is AssetFsEventKind.MODIFIED:
-            self._commit_modified(event.path)
-        elif event.kind is AssetFsEventKind.DELETED:
-            self._commit_deleted(event.path, guid_hint=event.guid_hint)
-        elif event.kind is AssetFsEventKind.MOVED:
-            self._commit_moved(event.path, event.destination)
-        elif event.kind is AssetFsEventKind.META_DELETED:
-            if not os.path.isfile(event.path + ".meta"):
-                self._process_meta_missing_rebuild(event.path)
-        else:
-            raise RuntimeError(f"Unhandled asset event kind: {event.kind}")
+        from Infernux.engine.interaction import ActionOrigin, action_origin_scope
+
+        with action_origin_scope(ActionOrigin.EXTERNAL):
+            if event.kind is AssetFsEventKind.CREATED:
+                self._commit_created(event.path)
+            elif event.kind is AssetFsEventKind.MODIFIED:
+                self._commit_modified(event.path)
+            elif event.kind is AssetFsEventKind.DELETED:
+                self._commit_deleted(event.path, guid_hint=event.guid_hint)
+            elif event.kind is AssetFsEventKind.MOVED:
+                self._commit_moved(event.path, event.destination)
+            elif event.kind is AssetFsEventKind.META_DELETED:
+                if not os.path.isfile(event.path + ".meta"):
+                    self._process_meta_missing_rebuild(event.path)
+            else:
+                raise RuntimeError(f"Unhandled asset event kind: {event.kind}")
 
     def _commit_created(self, path: str) -> None:
         if not os.path.isfile(path):
@@ -193,31 +196,46 @@ class ResourceChangeHandler(FileSystemEventHandler):
             self._check_script(path, catalog_event="created")
 
     def _commit_modified(self, path: str) -> None:
-        if (
-            path.lower().endswith(".scene")
-            and self._is_active_scene_file(path)
-            and self._asset_database.contains_path(path)
-        ):
-            Debug.log_internal(f"[Scene Modified] ignored watcher echo for active scene: {os.path.basename(path)}")
-            return
         if not os.path.isfile(path):
             raise _AssetImportNotReady(f"modified file is not ready: {path}")
         from Infernux.core.assets import AssetManager
-        if self._asset_database.contains_path(path):
-            result = AssetManager.reimport_asset(
-                path,
-                database=self._asset_database,
-                suppress_watcher_echo=False,
-            )
-            if not result:
-                detail = str(getattr(result, "error", "") or "unknown reimport error")
-                raise _AssetImportNotReady(f"reimport failed: {path}: {detail}")
-        else:
-            AssetManager.import_asset(
-                path,
-                database=self._asset_database,
-                suppress_watcher_echo=False,
-            )
+        from Infernux.engine.interaction import DocumentRegistry
+
+        documents = DocumentRegistry.instance()
+        if not documents.preflight_external_resource_change(path):
+            return
+        was_registered = self._asset_database.contains_path(path)
+        try:
+            if was_registered:
+                result = AssetManager.reimport_asset(
+                    path,
+                    database=self._asset_database,
+                    suppress_watcher_echo=False,
+                )
+                if not result:
+                    detail = str(
+                        getattr(result, "error", "") or "unknown reimport error"
+                    )
+                    raise _AssetImportNotReady(
+                        f"reimport failed: {path}: {detail}"
+                    )
+            else:
+                result = AssetManager.import_asset(
+                    path,
+                    database=self._asset_database,
+                    suppress_watcher_echo=False,
+                )
+                if not result:
+                    detail = str(
+                        getattr(result, "error", "") or "unknown import error"
+                    )
+                    raise _AssetImportNotReady(
+                        f"import failed: {path}: {detail}"
+                    )
+                documents.publish_external_resource_change(path)
+        except Exception as exc:
+            documents.fail_external_resource_change(path, message=str(exc))
+            raise
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
             self._check_script(path, catalog_event="modified")
         elif path.lower().endswith((".vert", ".frag")):
@@ -230,6 +248,13 @@ class ResourceChangeHandler(FileSystemEventHandler):
         # delete event remove a newly published asset from disk/database.
         if os.path.isfile(path):
             self._commit_modified(path)
+            return
+        from Infernux.engine.interaction import DocumentRegistry
+
+        if not DocumentRegistry.instance().preflight_external_resource_change(
+            path,
+            deleted=True,
+        ):
             return
         if not AssetManager.delete_asset(
             path,
@@ -256,6 +281,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             new_path,
             database=self._asset_database,
             suppress_watcher_echo=False,
+            origin="external",
         ):
             raise RuntimeError(f"asset move failed: {old_path} -> {new_path}")
         if new_path.lower().endswith(".py") and not _is_particle_script_path(new_path):
@@ -318,16 +344,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 f"failed to rebuild missing metadata: {owner_path}: {detail}"
             )
         AssetManager.invalidate_project_panel_cache()
-
-    @staticmethod
-    def _is_active_scene_file(path: str) -> bool:
-        try:
-            from Infernux.engine.scene_manager import SceneFileManager
-            sfm = SceneFileManager.instance()
-            active = getattr(sfm, "current_scene_path", "") if sfm else ""
-            return bool(active and same_path(path, active))
-        except Exception:
-            return False
 
     def _check_script(self, file_path: str, *, catalog_event: str | None = "modified"):
         """Check a Python script for syntax errors and hot-reload components."""

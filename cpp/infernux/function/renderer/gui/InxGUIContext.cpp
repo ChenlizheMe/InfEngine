@@ -32,6 +32,16 @@ bool InxGUIContext::CanRenderWidgets() const
     return stackWindow != nullptr && context->CurrentWindow == stackWindow;
 }
 
+void InxGUIContext::BeginFrameInteractionState()
+{
+    m_popupOwnedPointerAtFrameStart = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+}
+
+bool InxGUIContext::IsPointerActivationBlockedByPopup() const
+{
+    return m_popupOwnedPointerAtFrameStart || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+}
+
 MaterialTopInteraction
 InxGUIContext::RenderMaterialTop(const std::string &shaderSectionLabel, const std::string &vertexLabel,
                                  const std::string &vertexDisplay, const std::string &fragmentLabel,
@@ -114,7 +124,8 @@ InxGUIContext::RenderMaterialTop(const std::string &shaderSectionLabel, const st
 
     Separator();
     if (renderSectionHeader(surfaceSectionLabel) && surfacePlan)
-        result.surfaceChanges = RenderPropertyBatch(surfacePlan->descriptors, surfaceLabelWidth);
+        result.surfaceChanges = RenderPropertyBatch(surfacePlan->descriptors, surfaceLabelWidth,
+                                                    &result.activeSurfaceIndex, &result.deactivatedSurfaceIndex);
 
     if (readOnly)
         EndDisabled();
@@ -1235,6 +1246,29 @@ bool InxGUIContext::BeginWindow(const std::string &name, bool *open, int flags)
     return visible;
 }
 
+bool InxGUIContext::IsCurrentWindowContentPresented()
+{
+    ImGuiContext *context = ImGui::GetCurrentContext();
+    ImGuiWindow *window = context ? ImGui::GetCurrentWindowRead() : nullptr;
+    if (window == nullptr)
+        return false;
+
+    ImGuiWindow *root = window->RootWindow != nullptr ? window->RootWindow : window;
+    if (root->Hidden || root->Collapsed)
+        return false;
+
+#ifdef IMGUI_HAS_DOCK
+    if (const ImGuiDockNode *dockNode = root->DockNode; dockNode != nullptr) {
+        if (!root->DockNodeIsVisible || !root->DockTabIsVisible)
+            return false;
+        if (dockNode->VisibleWindow != nullptr)
+            return dockNode->VisibleWindow == root;
+    }
+#endif
+
+    return true;
+}
+
 void InxGUIContext::EndWindow()
 {
     ImGui::End();
@@ -1395,6 +1429,7 @@ int InxGUIContext::SearchableCombo(const std::string &id, int currentItem, const
         state.highlightedItem = safeCurrent;
         state.needsSearchFocus = true;
         state.scrollToHighlight = true;
+        state.closeRequested = false;
         ImGui::OpenPopup("##popup");
     }
     if (state.restoreTriggerFocus) {
@@ -1409,7 +1444,19 @@ int InxGUIContext::SearchableCombo(const std::string &id, int currentItem, const
     if (ImGui::BeginPopup("##popup")) {
         if (captureSemantics)
             RecordSemanticWindow("combo_popup", id, id);
-        state.wasOpen = true;
+        const std::string transientToken = "searchable_combo:" + id;
+        if (!state.wasOpen) {
+            state.wasOpen = true;
+            if (m_transientBegin) {
+                m_transientBegin(transientToken, "popup", 150, [this, id]() {
+                    auto it = m_searchableComboStates.find(id);
+                    if (it == m_searchableComboStates.end())
+                        return false;
+                    it->second.closeRequested = true;
+                    return true;
+                });
+            }
+        }
         if (state.needsSearchFocus) {
             ImGui::SetKeyboardFocusHere();
             state.needsSearchFocus = false;
@@ -1460,8 +1507,9 @@ int InxGUIContext::SearchableCombo(const std::string &id, int currentItem, const
         }
 
         bool closePopup = false;
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        if (state.closeRequested) {
             closePopup = true;
+            state.closeRequested = false;
         } else if (submitted && state.highlightedItem >= 0) {
             result = state.highlightedItem;
             closePopup = true;
@@ -1498,11 +1546,16 @@ int InxGUIContext::SearchableCombo(const std::string &id, int currentItem, const
             ImGui::CloseCurrentPopup();
             state.wasOpen = false;
             state.restoreTriggerFocus = true;
+            if (m_transientEnd)
+                m_transientEnd(transientToken);
         }
         ImGui::EndPopup();
     } else if (state.wasOpen) {
         state.wasOpen = false;
+        state.closeRequested = false;
         state.restoreTriggerFocus = true;
+        if (m_transientEnd)
+            m_transientEnd("searchable_combo:" + id);
     }
     ImGui::PopID();
     return result;
@@ -2261,9 +2314,14 @@ void InxGUIContext::PopDrawListClipRect()
 // ═════════════════════════════════════════════════════════════════════════
 
 std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector<PropertyDesc> &descriptors,
-                                                               float labelWidth)
+                                                               float labelWidth, int *activeIndex,
+                                                               int *deactivatedAfterEditIndex)
 {
     std::vector<PropertyChange> changes;
+    if (activeIndex)
+        *activeIndex = -1;
+    if (deactivatedAfterEditIndex)
+        *deactivatedAfterEditIndex = -1;
 
     constexpr float kMinLabelWidth = 156.0f;
 
@@ -2516,6 +2574,10 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
         // Tooltip for the last rendered widget (label hover is not tracked).
         if (!d.tooltip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("%s", d.tooltip.c_str());
+        if (activeIndex && ImGui::IsItemActive())
+            *activeIndex = i;
+        if (deactivatedAfterEditIndex && ImGui::IsItemDeactivatedAfterEdit())
+            *deactivatedAfterEditIndex = i;
     }
     return changes;
 }
@@ -2537,6 +2599,10 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
     const ImVec4 buttonActiveColor = EditorTheme::INSPECTOR_INLINE_BTN_ACTIVE;
     const float textInsetX = EditorThemeRegistry::Float("OBJECT_FIELD_TEXT_INSET_X", 12.0f);
 
+    if (fieldId.empty())
+        throw std::invalid_argument("ObjectField fieldId must not be empty.");
+    const std::string resolvedSemanticId = semanticId.empty() ? "object_field." + fieldId : semanticId;
+
     ImGui::PushID(fieldId.c_str());
 
     std::string fullText = displayText + " (" + typeHint + ")";
@@ -2555,11 +2621,28 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
     const bool bodyHovered = ImGui::IsItemHovered();
     const bool bodyPressed = ImGui::IsItemActive();
     uint32_t result = 0;
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && clickable)
+    // The body always reports navigation intent. `clickable` only describes
+    // whether the current reference can resolve to a useful target; it must
+    // not create a second hit-test contract for read-only fields.
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
         result |= 1u;
-    // Bit 4: body double-click — used by Inspector to ping the asset in Project.
+    // Bit 4: body double-click — domains may use this to open the reference.
     if (bodyHovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
         result |= 4u;
+    // Bit 8: keyboard activation mirrors a body double-click.  The Python
+    // interaction model decides whether that opens the resource or locates it.
+    if (ImGui::IsItemFocused() &&
+        (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)))
+        result |= 8u;
+    // Bit 16: focused ObjectField clear. Text editors retain Delete/Backspace
+    // because their active input owns WantTextInput instead of this field.
+    if (ImGui::IsItemFocused() && !ImGui::GetIO().WantTextInput &&
+        (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false)))
+        result |= 16u;
+    // Bit 32: shared ObjectField context menu request. Python opens the
+    // stable field-id popup after native batch rendering has completed.
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+        result |= 32u;
 
     bool pickerHovered = false;
     bool pickerPressed = false;
@@ -2575,24 +2658,27 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
             result |= 2u;
         pickerHovered = ImGui::IsItemHovered();
         pickerPressed = ImGui::IsItemActive();
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+            result |= 32u;
         pickerMin = ImGui::GetItemRectMin();
         pickerMax = ImGui::GetItemRectMax();
         if (InxGUISemantics::IsCaptureEnabled())
-            RecordSemanticItem("button", "Select " + typeHint, true, fieldId + ".picker");
+            RecordSemanticItem("button", "Select " + typeHint, true, resolvedSemanticId + ".picker");
         ImGui::PopStyleVar();
         ImGui::PopStyleColor(3);
     }
 
-    // Only the picker button opens the object selector. Body single-click is
-    // reserved / inert; body double-click (bit 4) is handled by callers as a
-    // "ping in Project" action — matching Unity ObjectField behaviour.
+    // Only the picker button opens the object selector. Python applies the
+    // shared ObjectField contract to the body flags: single-click locates the
+    // current reference, while double-click/Enter may open it when a domain
+    // supplies an opener.
     if ((result & 2u) != 0 && hasPicker)
         ImGui::OpenPopup("##obj_picker");
 
     ImGui::EndGroup();
     // Keep the whole ObjectField (body + picker) as the last item so drag-drop
     // targets and semantic outlines cover the Unity-aligned control bounds.
-    RecordSemanticItem("object_field", displayText, clickable, semanticId);
+    RecordSemanticItem("object_field", displayText, clickable || hasPicker, resolvedSemanticId);
 
     const ImVec2 end{start.x + totalWidth, start.y + fieldHeight};
     const bool groupHovered = bodyHovered || pickerHovered || ImGui::IsItemHovered();
@@ -2674,7 +2760,7 @@ std::vector<ObjectFieldInteraction> InxGUIContext::RenderMeshRendererInspectorFi
         label(fieldLabel);
         ObjectFieldInteraction interaction;
         interaction.index = index;
-        interaction.flags = RenderObjectFieldChrome(fieldId, display, typeHint, false, false, true, pickerTextureId);
+        interaction.flags = RenderObjectFieldChrome(fieldId, display, typeHint, false, true, true, pickerTextureId);
 
         ImGui::PushStyleColor(ImGuiCol_DragDropTarget, ImVec4(0, 0, 0, 0));
         if (ImGui::BeginDragDropTarget()) {

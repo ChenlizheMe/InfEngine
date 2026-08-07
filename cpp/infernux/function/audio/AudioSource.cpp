@@ -1,6 +1,7 @@
 #include "AudioSource.h"
 #include "AudioEngine.h"
 #include <core/log/InxLog.h>
+#include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/scene/ComponentDocumentValidation.h>
 #include <function/scene/ComponentFactory.h>
@@ -29,6 +30,7 @@ AudioSource::AudioSource()
 AudioSource::~AudioSource()
 {
     StopAll();
+    AssetDependencyGraph::Instance().ClearRuntimeDependenciesOf(GetInstanceGuid());
     AudioEngine::Instance().UnregisterSource(this);
 }
 
@@ -40,7 +42,8 @@ void AudioSource::Awake()
 
 void AudioSource::Start()
 {
-    if (m_playOnAwake && !m_tracks.empty() && m_tracks[0].clip && m_tracks[0].clip->IsLoaded()) {
+    const auto clip = m_tracks.empty() ? nullptr : m_tracks[0].GetClip();
+    if (m_playOnAwake && clip && clip->IsLoaded()) {
         Play(0);
     }
 }
@@ -146,9 +149,8 @@ nlohmann::json AudioSource::SerializeDocument() const
     for (const auto &track : m_tracks) {
         json tj;
         tj["volume"] = track.volume;
-        if (track.clip) {
-            tj["clip_guid"] = track.clip->GetGuid();
-        }
+        if (track.clipAsset.HasGuid())
+            tj["clip_guid"] = track.clipAsset.GetGuid();
         tracksJson.push_back(tj);
     }
     j["tracks"] = tracksJson;
@@ -209,14 +211,13 @@ bool AudioSource::DeserializeDocument(const nlohmann::json &j)
 
         auto &registry = AssetRegistry::Instance();
         const auto &tracksJson = j["tracks"];
+        std::vector<std::string> stagedGuids(tracksJson.size());
         std::vector<std::shared_ptr<AudioClip>> stagedClips(tracksJson.size());
         for (size_t index = 0; index < tracksJson.size(); ++index) {
             if (!tracksJson[index].contains("clip_guid"))
                 continue;
-            const std::string guid = tracksJson[index]["clip_guid"].get<std::string>();
-            stagedClips[index] = registry.LoadAsset<AudioClip>(guid, ResourceType::Audio);
-            if (!stagedClips[index])
-                throw std::invalid_argument("audio clip GUID cannot be resolved: " + guid);
+            stagedGuids[index] = tracksJson[index]["clip_guid"].get<std::string>();
+            stagedClips[index] = registry.LoadAsset<AudioClip>(stagedGuids[index], ResourceType::Audio);
         }
 
         if (!Component::DeserializeDocument(j))
@@ -234,12 +235,14 @@ bool AudioSource::DeserializeDocument(const nlohmann::json &j)
 
         // Deserialize tracks
         const int trackCount = j["track_count"].get<int>();
+        for (int i = 0; i < static_cast<int>(m_tracks.size()); ++i)
+            AssignTrackClipReference(i, {}, nullptr);
         SetTrackCount(trackCount);
 
         for (int i = 0; i < trackCount; ++i) {
             const auto &tj = tracksJson[i];
             m_tracks[i].volume = tj["volume"].get<float>();
-            m_tracks[i].clip = std::move(stagedClips[i]);
+            AssignTrackClipReference(i, stagedGuids[i], std::move(stagedClips[i]));
         }
 
         SetVolume(m_volume);
@@ -273,6 +276,9 @@ void AudioSource::SetTrackCount(int count)
     // Stop voices for tracks that are being removed
     for (int i = count; i < oldCount; ++i) {
         StopVoice(i);
+        if (m_tracks[i].clipAsset.HasGuid())
+            AssetDependencyGraph::Instance().RemoveRuntimeDependency(GetInstanceGuid(),
+                                                                     m_tracks[i].clipAsset.GetGuid());
     }
 
     m_tracks.resize(count);
@@ -285,11 +291,8 @@ void AudioSource::SetTrackClip(int trackIndex, std::shared_ptr<AudioClip> clip)
         return;
     }
 
-    // Stop current playback on this track
-    if (m_tracks[trackIndex].isPlaying) {
-        StopVoice(trackIndex);
-    }
-    m_tracks[trackIndex].clip = std::move(clip);
+    const std::string guid = clip ? clip->GetGuid() : std::string{};
+    AssignTrackClipReference(trackIndex, guid, std::move(clip));
 }
 
 std::shared_ptr<AudioClip> AudioSource::GetTrackClip(int trackIndex) const
@@ -297,7 +300,74 @@ std::shared_ptr<AudioClip> AudioSource::GetTrackClip(int trackIndex) const
     if (trackIndex < 0 || trackIndex >= static_cast<int>(m_tracks.size())) {
         return nullptr;
     }
-    return m_tracks[trackIndex].clip;
+    return m_tracks[trackIndex].GetClip();
+}
+
+void AudioSource::SetTrackClipGuid(int trackIndex, const std::string &guid)
+{
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(m_tracks.size())) {
+        INXLOG_WARN("AudioSource::SetTrackClipGuid: track index ", trackIndex, " out of range");
+        return;
+    }
+
+    std::shared_ptr<AudioClip> clip;
+    if (!guid.empty())
+        clip = AssetRegistry::Instance().LoadAsset<AudioClip>(guid, ResourceType::Audio);
+    AssignTrackClipReference(trackIndex, guid, std::move(clip));
+}
+
+std::string AudioSource::GetTrackClipGuid(int trackIndex) const
+{
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(m_tracks.size()))
+        return {};
+    return m_tracks[trackIndex].clipAsset.GetGuid();
+}
+
+void AudioSource::AssignTrackClipReference(int trackIndex, const std::string &guid, std::shared_ptr<AudioClip> clip)
+{
+    if (trackIndex < 0 || trackIndex >= static_cast<int>(m_tracks.size()))
+        return;
+
+    auto &track = m_tracks[trackIndex];
+    if (track.isPlaying)
+        StopVoice(trackIndex);
+
+    auto &graph = AssetDependencyGraph::Instance();
+    const std::string oldGuid = track.clipAsset.GetGuid();
+    if (!oldGuid.empty())
+        graph.RemoveRuntimeDependency(GetInstanceGuid(), oldGuid);
+
+    track.clipAsset.Clear();
+    track.transientClip.reset();
+    if (guid.empty()) {
+        track.transientClip = std::move(clip);
+        return;
+    }
+
+    track.clipAsset.SetGuid(guid);
+    if (clip) {
+        const uint64_t version = AssetRegistry::Instance().GetAssetVersion(guid);
+        if (version != 0)
+            track.clipAsset.SetCached(std::move(clip), version);
+        else
+            track.transientClip = std::move(clip);
+    }
+    graph.AddRuntimeDependency(GetInstanceGuid(), guid);
+}
+
+void AudioSource::OnAudioClipAssetEvent(const std::string &guid, AssetEvent event)
+{
+    for (int index = 0; index < static_cast<int>(m_tracks.size()); ++index) {
+        auto &track = m_tracks[index];
+        if (track.clipAsset.GetGuid() != guid)
+            continue;
+        if (track.isPlaying)
+            StopVoice(index);
+        track.clipAsset.Invalidate();
+        track.transientClip.reset();
+        if (event == AssetEvent::Modified)
+            AssetRegistry::Instance().Resolve(track.clipAsset, ResourceType::Audio);
+    }
 }
 
 void AudioSource::SetTrackVolume(int trackIndex, float volume)
@@ -333,7 +403,8 @@ void AudioSource::Play(int trackIndex)
     }
 
     auto &track = m_tracks[trackIndex];
-    if (!track.clip || !track.clip->IsLoaded()) {
+    const auto clip = track.GetClip();
+    if (!clip || !clip->IsLoaded()) {
         INXLOG_WARN("AudioSource::Play: no clip loaded on track ", trackIndex);
         return;
     }
@@ -616,7 +687,8 @@ void AudioSource::StartVoice(int trackIndex)
     }
 
     auto &track = m_tracks[trackIndex];
-    track.stream = engine.CreateVoice(this, track.clip.get());
+    const auto clip = track.GetClip();
+    track.stream = engine.CreateVoice(this, clip.get());
     if (!track.stream) {
         INXLOG_ERROR("AudioSource::StartVoice: failed to create voice for track ", trackIndex);
         return;

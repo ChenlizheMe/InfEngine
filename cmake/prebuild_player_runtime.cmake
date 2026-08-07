@@ -9,7 +9,7 @@ foreach(_required IN ITEMS INFERNUX_SOURCE_DIR PYTHON_EXECUTABLE NATIVE_MODULE_D
     endif()
 endforeach()
 
-message(STATUS "Prebuilding LTO Release Player Runtime Pack and optional parallel module with Deflate compression")
+message(STATUS "Prebuilding LTO Release Player Runtime Pack and optional parallel build cache")
 execute_process(
     COMMAND ${CMAKE_COMMAND} -E env
         "PYTHONPATH=${INFERNUX_SOURCE_DIR}/python"

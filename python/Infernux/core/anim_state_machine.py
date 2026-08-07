@@ -439,6 +439,7 @@ class AnimStateMachine:
     mode: str = "2d"                                 # "2d" or "3d"
     states: List[AnimState] = field(default_factory=list)
     parameters: List[AnimParameter] = field(default_factory=list)
+    entry_position: List[float] = field(default_factory=lambda: [-100.0, 50.0])
     file_path: str = field(default="", repr=False, compare=False)
 
     # ── Serialization ─────────────────────────────────────────────────
@@ -450,13 +451,14 @@ class AnimStateMachine:
             "mode": self.mode,
             "states": [s.to_dict() for s in self.states],
             "parameters": [p.to_dict() for p in self.parameters],
+            "entry_position": [float(self.entry_position[0]), float(self.entry_position[1])],
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> AnimStateMachine:
         _require_exact_fields(
             d,
-            {"name", "default_state", "mode", "states", "parameters"},
+            {"name", "default_state", "mode", "states", "parameters", "entry_position"},
             "animation state machine",
         )
         if type(d["name"]) is not str or type(d["default_state"]) is not str or type(d["mode"]) is not str:
@@ -469,6 +471,13 @@ class AnimStateMachine:
         if type(raw_params) is not list:
             raise TypeError("animation state machine parameters must be an array")
         params = [AnimParameter.from_dict(item) for item in raw_params]
+        entry_position = d["entry_position"]
+        if (
+            type(entry_position) is not list
+            or len(entry_position) != 2
+            or any(type(value) not in (int, float) for value in entry_position)
+        ):
+            raise TypeError("animation state machine entry_position must be vec2")
         states = [AnimState.from_dict(item) for item in d["states"]]
         state_names = [state.name for state in states]
         state_ids = [state.stable_id for state in states]
@@ -509,6 +518,7 @@ class AnimStateMachine:
             mode=d["mode"],
             states=states,
             parameters=params,
+            entry_position=[float(entry_position[0]), float(entry_position[1])],
         )
 
     def copy(self) -> AnimStateMachine:

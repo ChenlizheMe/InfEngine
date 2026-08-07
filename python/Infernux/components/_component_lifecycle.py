@@ -35,7 +35,21 @@ class ComponentLifecycleMixin:
     def _safe_lifecycle_call(self, method_name: str, *args) -> bool:
         """Call *method_name* on self, catching and logging any exception."""
         try:
-            getattr(self, method_name)(*args)
+            # Lifecycle entry points are stable for a component instance. A
+            # script reload publishes a new instance, so cache the bound
+            # method and avoid allocating a new bound method on every phase.
+            # Keep the owning class in the entry so unusual in-place class
+            # replacement still refreshes the cache conservatively.
+            cache = self.__dict__.get("_lifecycle_dispatch_cache")
+            if cache is None:
+                cache = {}
+                self.__dict__["_lifecycle_dispatch_cache"] = cache
+            entry = cache.get(method_name)
+            component_type = type(self)
+            if entry is None or entry[0] is not component_type:
+                entry = (component_type, getattr(self, method_name))
+                cache[method_name] = entry
+            entry[1](*args)
             return True
         except Exception as exc:
             # Route to DebugConsole so the Console Panel shows the error.
@@ -115,6 +129,9 @@ class ComponentLifecycleMixin:
         self._remove_from_active_registry()
         if self._awake_called:
             self._safe_lifecycle_call("on_destroy")
+        dispatch_cache = self.__dict__.get("_lifecycle_dispatch_cache")
+        if dispatch_cache is not None:
+            dispatch_cache.clear()
         # Clear references to help garbage collection
         self._cpp_component = None
         self._game_object = None

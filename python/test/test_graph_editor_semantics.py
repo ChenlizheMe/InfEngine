@@ -5,24 +5,92 @@ from types import SimpleNamespace
 import pytest
 
 from Infernux.core.anim_state_machine import AnimParameter, AnimStateMachine
-from Infernux.engine.interaction import GraphElementKind
+from Infernux.engine.interaction import (
+    EditorCommand,
+    EditorCommandRegistry,
+    FocusService,
+    GraphElementKind,
+    GraphElementRef,
+    SelectionService,
+)
 from Infernux.engine.ui import animfsm_editor_panel as animfsm_module
 from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
+from Infernux.engine.ui.animfsm_graph_authoring import (
+    FSM_ENTRY_NODE_DEF,
+    FSM_ENTRY_NODE_TYPE_ID,
+    FSM_STATE_NODE_DEF,
+    FSM_STATE_NODE_TYPE_ID,
+)
 from Infernux.engine.ui.node_graph_view import NodeCreationEntry, NodeGraphView
 from Infernux.engine.ui.graph_document_authoring import _canvas_definition
 from Infernux.graph.registry import COMMON_NODE_REGISTRY
 import Infernux.particle.nodes  # noqa: F401 - registers particle node definitions
 
 
+def test_animfsm_node_schema_has_one_strict_definition_authority():
+    from Infernux.core.node_graph import node_catalog
+
+    panel = AnimFSMEditorPanel()
+
+    assert FSM_STATE_NODE_DEF.type_id == FSM_STATE_NODE_TYPE_ID
+    assert FSM_ENTRY_NODE_DEF.type_id == FSM_ENTRY_NODE_TYPE_ID
+    assert panel._graph.get_type(FSM_STATE_NODE_TYPE_ID) is not None
+    assert panel._graph.get_type(FSM_ENTRY_NODE_TYPE_ID) is not None
+    assert panel._graph.get_type("anim_state") is None
+    assert node_catalog.get_type("anim_fsm", "anim_state") is None
+
+
+def test_node_graph_projects_parameter_transactions_to_exact_mutations():
+    from Infernux.engine.interaction import GraphMutationKind
+    from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
+    from Infernux.graph.parameter_transactions import GraphParameterTransaction
+    from Infernux.graph.parameters import (
+        GraphParameterCollection,
+        GraphParameterDefinition,
+    )
+
+    first = GraphParameterDefinition(stable_id="first", name="First")
+    second = GraphParameterDefinition(stable_id="second", name="Second")
+    updated = first.with_updates({"name": "Renamed"})
+    transaction = (
+        GraphParameterTransaction.begin(GraphParameterCollection((first,)))
+        .create(second)
+        .update(updated)
+        .move("second", 0)
+        .delete("first")
+    )
+
+    mutations = NodeGraphEditorPanel._node_graph_parameter_mutations(transaction)
+
+    assert [mutation.kind for mutation in mutations] == [
+        GraphMutationKind.INSERT,
+        GraphMutationKind.UPDATE,
+        GraphMutationKind.MOVE,
+        GraphMutationKind.REMOVE,
+    ]
+    assert [mutation.element.stable_id for mutation in mutations] == [
+        "second",
+        "first",
+        "second",
+        "first",
+    ]
+    assert mutations[2].before_index == 1
+    assert mutations[2].after_index == 0
+
+
 @pytest.fixture(autouse=True)
 def _isolate_animfsm_panel_dirty_tracking():
-    from Infernux.engine.project_context import clear_panel_tracking
+    from Infernux.engine.interaction import DocumentRegistry
+    from Infernux.engine.undo import UndoManager
 
-    clear_panel_tracking("animfsm_editor")
+    previous_manager = UndoManager.instance()
+    UndoManager()
+    DocumentRegistry.instance().close_view("animfsm_editor")
     try:
         yield
     finally:
-        clear_panel_tracking("animfsm_editor")
+        DocumentRegistry.instance().close_view("animfsm_editor")
+        UndoManager._instance = previous_manager
 
 
 class _ToolbarContext:
@@ -55,6 +123,14 @@ class _ToolbarContext:
 
     @staticmethod
     def pop_style_var(*_args) -> None:
+        pass
+
+    @staticmethod
+    def begin_disabled(*_args) -> None:
+        pass
+
+    @staticmethod
+    def end_disabled() -> None:
         pass
 
     @staticmethod
@@ -135,59 +211,37 @@ class _MenuContext:
         self.semantic_items.append((kind, label, enabled, semantic_id, values))
 
 
-class _ConfirmationContext:
-    def __init__(self, clicked: str = "") -> None:
-        self.clicked = clicked
-        self.semantic_items: list[tuple[str, str, bool, str]] = []
-        self.semantic_windows: list[tuple[str, str, str]] = []
-        self.opened = ""
-        self.closed = False
-
-    def open_popup(self, popup_id: str) -> None:
-        self.opened = popup_id
-
-    @staticmethod
-    def begin_popup_modal(_popup_id: str, _flags: int) -> bool:
-        return True
-
-    def record_semantic_window(self, kind: str, label: str, semantic_id: str) -> None:
-        self.semantic_windows.append((kind, label, semantic_id))
-
-    @staticmethod
-    def label(_text: str) -> None:
-        pass
-
-    @staticmethod
-    def text_wrapped(_text: str) -> None:
-        pass
-
-    @staticmethod
-    def spacing() -> None:
-        pass
-
-    @staticmethod
-    def separator() -> None:
-        pass
-
-    def button(self, label: str, callback, **_kwargs) -> bool:
-        if label.startswith(self.clicked):
-            callback()
-            return True
-        return False
-
-    def record_semantic_item(self, kind: str, label: str, enabled: bool, semantic_id: str) -> None:
-        self.semantic_items.append((kind, label, enabled, semantic_id))
-
-    @staticmethod
-    def same_line() -> None:
-        pass
-
-    def close_current_popup(self) -> None:
-        self.closed = True
-
     @staticmethod
     def end_popup() -> None:
         pass
+
+
+def _install_node_graph_context_commands() -> None:
+    registry = EditorCommandRegistry(
+        focus=FocusService(),
+        selection=SelectionService(),
+    )
+    for command_id, label, shortcut in (
+        ("edit.copy", "Copy", "Ctrl+C"),
+        ("edit.cut", "Cut", "Ctrl+X"),
+        ("edit.paste", "Paste", "Ctrl+V"),
+        ("edit.duplicate", "Duplicate", "Ctrl+D"),
+        ("edit.delete", "Delete", "Delete"),
+        ("graph.center_view", "Center View", ""),
+        ("graph.reset_zoom", "Reset Zoom", ""),
+        ("graph.add_node", "Add Node", ""),
+        ("graph.create_node", "Create Node", ""),
+        ("graph.workspace.add", "Add Graph Workspace Item", ""),
+    ):
+        registry.register(
+            EditorCommand(
+                command_id,
+                lambda _context: False,
+                display_name=label,
+                default_shortcut=shortcut,
+                can_execute=lambda _context: False,
+            )
+        )
 
 
 class _DetailCheckboxContext:
@@ -316,12 +370,59 @@ class _TransitionDetailContext:
         self.semantic_items.append(args)
 
 
+class _GraphParameterDetailContext:
+    def __init__(self, *, name: str, default: float) -> None:
+        self.name = name
+        self.default = float(default)
+
+    @staticmethod
+    def label(*_args) -> None:
+        pass
+
+    @staticmethod
+    def separator() -> None:
+        pass
+
+    @staticmethod
+    def set_next_item_width(*_args) -> None:
+        pass
+
+    def text_input(self, label: str, value: str, _length: int) -> str:
+        return self.name if "parameter_name" in label else value
+
+    @staticmethod
+    def combo(_label: str, index: int, *_args) -> int:
+        return index
+
+    def drag_float(self, label: str, value: float, *_args) -> float:
+        return self.default if "default" in label else value
+
+    @staticmethod
+    def checkbox(_label: str, value: bool) -> bool:
+        return value
+
+    @staticmethod
+    def input_int(_label: str, value: int) -> int:
+        return value
+
+    @staticmethod
+    def input_uint(_label: str, value: int) -> int:
+        return value
+
+    @staticmethod
+    def begin_disabled(_disabled: bool = True) -> None:
+        pass
+
+    @staticmethod
+    def end_disabled() -> None:
+        pass
+
+
 def test_animfsm_toolbar_exposes_stable_semantic_ids():
-    panel = AnimFSMEditorPanel.__new__(AnimFSMEditorPanel)
+    panel = AnimFSMEditorPanel()
     panel._fsm = AnimStateMachine(name="Locomotion")
     panel._fsm.mode = "3d"
     panel._file_path = "Assets/Locomotion.animfsm"
-    panel._dirty = True
     ctx = _ToolbarContext()
 
     panel._render_toolbar(ctx)
@@ -343,6 +444,7 @@ def test_animfsm_toolbar_exposes_stable_semantic_ids():
 
 
 def test_animfsm_parameter_add_exposes_stable_semantic_id():
+    _install_node_graph_context_commands()
     panel = AnimFSMEditorPanel()
     ctx = _ToolbarContext()
     ctx.push_style_color = lambda *_args: None
@@ -353,6 +455,59 @@ def test_animfsm_parameter_add_exposes_stable_semantic_id():
     panel._render_variables_panel(ctx)
 
     assert "animfsm.parameters.add" in {item[3] for item in ctx.semantic_items}
+
+
+def test_fsm_and_particle_parameters_share_the_base_detail_drawer():
+    from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from Infernux.graph.types import TypeRef, ValueType
+
+    fsm_panel = AnimFSMEditorPanel()
+    fsm_parameter = AnimParameter(
+        name="Speed",
+        value_type=TypeRef(ValueType.F32),
+        default=1.0,
+    )
+    fsm_panel._fsm.parameters.append(fsm_parameter)
+    fsm_panel._graph_selection.select(
+        (GraphElementRef(GraphElementKind.PARAMETER, fsm_parameter.stable_id),),
+        reason="test",
+        record_history=False,
+    )
+
+    particle_panel = ParticleGraphEditorPanel()
+    particle = particle_panel.add_authoring_parameter(
+        "Speed",
+        "f32",
+        1.0,
+    )
+    particle_panel._graph_selection.select(
+        (GraphElementRef(GraphElementKind.PARAMETER, particle["stable_id"]),),
+        reason="test",
+        record_history=False,
+    )
+
+    assert fsm_panel._render_node_graph_parameter_detail.__func__ is (
+        NodeGraphEditorPanel._render_node_graph_parameter_detail
+    )
+    assert particle_panel._render_node_graph_parameter_detail.__func__ is (
+        NodeGraphEditorPanel._render_node_graph_parameter_detail
+    )
+    assert fsm_panel._render_node_graph_parameter_detail(
+        _GraphParameterDetailContext(name="Velocity", default=2.5)
+    )
+    assert particle_panel._render_node_graph_parameter_detail(
+        _GraphParameterDetailContext(name="Velocity", default=2.5)
+    )
+
+    updated_fsm = fsm_panel._parameter_by_id(fsm_parameter.stable_id)
+    updated_particle = next(
+        value
+        for value in particle_panel.asset.parameters
+        if value.stable_id == particle["stable_id"]
+    )
+    assert (updated_fsm.name, updated_fsm.default) == ("Velocity", 2.5)
+    assert (updated_particle.name, updated_particle.default) == ("Velocity", 2.5)
 
 
 def test_node_graph_inline_overlay_submits_layout_item_after_cursor_restore():
@@ -669,56 +824,61 @@ def test_particle_sprite_canvas_preserves_enum_and_conditional_field_metadata():
     assert fields["alignment_axis"].visible_when_value == "axis"
 
 
-def test_animfsm_dirty_mode_switch_defers_to_editor_owned_confirmation():
-    panel = AnimFSMEditorPanel.__new__(AnimFSMEditorPanel)
-    panel._dirty = True
-    panel._pending_mode_switch = None
-    panel._mode_switch_confirm_requested = False
-    panel._mode_switch_waiting_for_save = False
+def test_animfsm_dirty_mode_switch_uses_global_document_replacement(monkeypatch):
+    from Infernux.engine.ui.dirty_panel_confirmation import (
+        DirtyPanelConfirmationCoordinator,
+    )
 
-    panel._switch_to_new_mode_resource("3d")
+    pending = {}
 
-    assert panel._pending_mode_switch == "3d"
-    assert panel._mode_switch_confirm_requested is True
-    assert panel._mode_switch_waiting_for_save is False
+    class _Coordinator:
+        @staticmethod
+        def request_document_replace(
+            document_id,
+            on_complete,
+            on_cancel=None,
+            *,
+            owner_id="",
+        ):
+            pending.update(
+                document_id=document_id,
+                on_complete=on_complete,
+                on_cancel=on_cancel,
+                owner_id=owner_id,
+            )
+            return True
 
+    monkeypatch.setattr(
+        DirtyPanelConfirmationCoordinator,
+        "instance",
+        classmethod(lambda cls: _Coordinator()),
+    )
+    panel = AnimFSMEditorPanel()
+    original = panel._fsm
 
-def test_animfsm_mode_switch_confirmation_is_semantic_and_cancelable():
-    panel = AnimFSMEditorPanel.__new__(AnimFSMEditorPanel)
-    panel._pending_mode_switch = "3d"
-    panel._mode_switch_confirm_requested = True
-    panel._mode_switch_waiting_for_save = False
-    ctx = _ConfirmationContext(clicked=animfsm_module.t("editor.unsaved.cancel"))
+    assert panel.command_switch_mode("3d")
 
-    panel._render_mode_switch_confirmation(ctx)
+    assert panel._fsm is original
+    assert pending["document_id"] == panel.document_id
+    assert pending["owner_id"] == panel._window_id
 
-    assert ctx.opened.endswith("###animfsm_mode_switch_confirm")
-    assert ctx.closed is True
-    assert panel._pending_mode_switch is None
-    assert {item[3] for item in ctx.semantic_items} == {
-        "animfsm.mode_switch.save",
-        "animfsm.mode_switch.discard",
-        "animfsm.mode_switch.cancel",
-    }
-    assert ctx.semantic_windows == [
-        (
-            "modal",
-            animfsm_module.t("animfsm.mode_switch.title"),
-            "animfsm.mode_switch.dialog",
-        )
-    ]
+    pending["on_complete"]()
+    assert panel._fsm is not original
+    assert panel._fsm.mode == "3d"
 
 
 def test_animfsm_clean_mode_switch_starts_blank_and_clears_stale_selection():
+    from Infernux.engine.interaction import DocumentRegistry
+
     panel = AnimFSMEditorPanel()
     panel._fsm.add_state("SavedState")
     panel._sync_graph_from_fsm()
     selected_uid = panel._name_to_uid["SavedState"]
     panel._view.selected_nodes = [selected_uid]
     panel._view.selected_link = "stale-link"
-    panel._dirty = False
+    DocumentRegistry.instance().mark_saved(panel.document_id)
 
-    panel._switch_to_new_mode_resource("3d")
+    assert panel.command_switch_mode("3d")
 
     assert panel._fsm.mode == "3d"
     assert panel._fsm.states == []
@@ -726,19 +886,53 @@ def test_animfsm_clean_mode_switch_starts_blank_and_clears_stale_selection():
     assert panel._view.selected_link == ""
 
 
+def test_animfsm_mode_switch_is_a_formal_panel_command():
+    from Infernux.engine.ui.animfsm_editor_panel import _ANIMFSM_PANEL_INTERACTION
+
+    command_ids = {spec.command_id for spec in _ANIMFSM_PANEL_INTERACTION.commands}
+    assert "animfsm.switch_mode" in command_ids
+
+
 def test_animfsm_selection_only_click_does_not_mark_resource_dirty():
     panel = AnimFSMEditorPanel()
     panel._fsm.add_state("State 0")
     panel._sync_graph_from_fsm()
     uid = panel._name_to_uid["State 0"]
-    panel._dirty = False
+    from Infernux.engine.interaction import DocumentRegistry
+
+    DocumentRegistry.instance().mark_saved(panel.document_id)
 
     panel._on_canvas_selection_changed((uid,), "", True)
     panel._on_node_drag_start(uid)
     panel._on_node_drag_end(uid)
 
     assert panel._graph_selection.primary_id(GraphElementKind.NODE) == uid
-    assert panel._dirty is False
+    assert panel._document_is_dirty() is False
+
+
+def test_animfsm_entry_move_uses_shared_node_graph_undo_and_persists():
+    from Infernux.engine.undo import UndoManager
+
+    panel = AnimFSMEditorPanel()
+    manager = UndoManager.instance()
+    entry = panel._graph.find_node(panel._entry_uid)
+    assert entry is not None
+    before = (entry.pos_x, entry.pos_y)
+
+    panel._on_node_drag_start(entry.uid)
+    entry.pos_x += 125.0
+    entry.pos_y -= 35.0
+    panel._on_node_drag_end(entry.uid)
+
+    assert panel._fsm.entry_position == pytest.approx([25.0, 15.0])
+    assert manager.can_undo
+    manager.undo()
+    restored = panel._graph.find_node(panel._entry_uid)
+    assert restored is not None
+    assert (restored.pos_x, restored.pos_y) == pytest.approx(before)
+    assert panel._fsm.entry_position == pytest.approx(list(before))
+    manager.redo()
+    assert panel._fsm.entry_position == pytest.approx([25.0, 15.0])
 
 
 def test_animfsm_detail_checkboxes_publish_distinct_values(monkeypatch):
@@ -773,7 +967,7 @@ def test_animfsm_clip_reference_publishes_domain_semantic(monkeypatch):
     monkeypatch.setattr(animfsm_module, "field_label", lambda *_args: None)
     monkeypatch.setattr(
         animfsm_module,
-        "render_object_field",
+        "render_asset_reference_field",
         lambda *_args, **kwargs: captured.update(kwargs) or False,
     )
 
@@ -809,7 +1003,7 @@ def test_animfsm_selected_link_renders_transition_detail_semantics():
     )
     ctx = _TransitionDetailContext(transition_exit_time=0.0)
 
-    panel._render_detail_panel(ctx)
+    panel._render_node_graph_detail_panel(ctx)
 
     semantic_ids = {item[3] for item in ctx.semantic_items}
     assert {
@@ -828,7 +1022,49 @@ def test_animfsm_selected_link_renders_transition_detail_semantics():
     assert panel._fsm.get_state("Countdown").exit_time_normalized == 0.0
 
 
+def test_graph_detail_host_orders_contributors_and_consumes_first_match():
+    from Infernux.engine.ui.graph_details import (
+        GraphDetailContributor,
+        GraphDetailHost,
+    )
+
+    rendered = []
+    contributors = (
+        GraphDetailContributor(
+            "fallback", 0, lambda: True, lambda _ctx: rendered.append("fallback")
+        ),
+        GraphDetailContributor(
+            "selected", 50, lambda: True, lambda _ctx: rendered.append("selected")
+        ),
+        GraphDetailContributor(
+            "inactive", 100, lambda: False, lambda _ctx: rendered.append("inactive")
+        ),
+    )
+
+    assert GraphDetailHost.render(SimpleNamespace(), contributors) == "selected"
+    assert rendered == ["selected"]
+
+
+def test_graph_detail_host_rejects_duplicate_contributor_ids():
+    from Infernux.engine.ui.graph_details import (
+        GraphDetailContributor,
+        GraphDetailHost,
+    )
+
+    duplicate = GraphDetailContributor("same", 0, lambda: True, lambda _ctx: None)
+    with pytest.raises(ValueError, match="unique"):
+        GraphDetailHost.ordered((duplicate, duplicate))
+
+
+def test_graph_domains_use_common_detail_host_instead_of_overriding_panel_dispatch():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    assert "_render_node_graph_detail_panel" not in AnimFSMEditorPanel.__dict__
+    assert "_render_node_graph_detail_panel" not in ParticleGraphEditorPanel.__dict__
+
+
 def test_node_graph_context_menu_uses_the_host_namespace():
+    _install_node_graph_context_commands()
     view = NodeGraphView()
     view.semantic_namespace = "animfsm.graph"
     view.graph = type("Graph", (), {"registered_types": lambda _self: []})()
@@ -980,7 +1216,8 @@ def test_node_graph_cancelled_reconnect_preserves_original_link():
     assert replaced == []
 
 
-def test_node_graph_open_add_menu_preserves_open_state_on_domain_semantic():
+def test_node_graph_add_command_exposes_unchecked_domain_semantic():
+    _install_node_graph_context_commands()
     view = NodeGraphView()
     view.semantic_namespace = "vfx.graph"
     view.graph = type("Graph", (), {"registered_types": lambda _self: []})()
@@ -989,15 +1226,17 @@ def test_node_graph_open_add_menu_preserves_open_state_on_domain_semantic():
     view._draw_context_menu(ctx)
 
     by_id = {item[3]: item for item in ctx.semantic_items}
-    assert by_id["vfx.graph.context.add_node"][4] == {"bool_value": True}
+    assert by_id["vfx.graph.context.add_node"][4] == {"bool_value": False}
 
 
 def test_animfsm_uses_shared_node_creation_palette_for_domain_variants():
+    from Infernux.core.node_graph import PinKind
+
     panel = AnimFSMEditorPanel()
 
     assert panel._view.on_link_dropped_empty is None
     entries = panel._view._creation_entries(
-        {"source_node": panel._entry_uid, "source_kind": animfsm_module.PinKind.OUTPUT}
+        {"source_node": panel._entry_uid, "source_kind": PinKind.OUTPUT}
     )
 
     assert [entry.key for entry in entries] == ["clip", "blend"]
@@ -1066,16 +1305,13 @@ def test_node_graph_exports_drawn_nodes_as_explicit_semantic_rects():
 
     view._draw_nodes(ctx)
 
-    assert recorded[0] == (
-        "node_graph_node",
-        "State 0",
-        12.0,
-        34.0,
-        140.0,
-        72.0,
-        True,
-        "animfsm.graph.node.state-uid",
-    )
+    assert recorded[0][0:2] == ("node_graph_node", "State 0")
+    assert recorded[0][4:6] == (12.0, 12.0)
+    assert recorded[0][6:] == (True, "animfsm.graph.node.state-uid")
+    node_center_x = recorded[0][2] + recorded[0][4] * 0.5
+    node_center_y = recorded[0][3] + recorded[0][5] * 0.5
+    assert node_center_x == 82.0
+    assert node_center_y < 34.0 + 36.0
     assert recorded[1][0] == "node_graph_node_drag_handle"
     assert recorded[1][6:] == (True, "animfsm.graph.node.state-uid.drag")
 
@@ -1112,7 +1348,10 @@ def test_node_graph_drag_handle_uses_a_reachable_point_when_nodes_overlap():
     view._draw_nodes(ctx)
 
     by_semantic_id = {item[7]: item for item in recorded}
-    assert by_semantic_id["animfsm.graph.node.countdown"][6] is False
+    countdown_target = by_semantic_id["animfsm.graph.node.countdown"]
+    assert countdown_target[6] is True
+    countdown_target_center_x = countdown_target[2] + countdown_target[4] * 0.5
+    assert countdown_target_center_x < upper.sx
     countdown_handle = by_semantic_id["animfsm.graph.node.countdown.drag"]
     assert countdown_handle[6] is True
     handle_center_x = countdown_handle[2] + countdown_handle[4] * 0.5
@@ -1206,13 +1445,15 @@ def test_node_graph_exports_link_hit_point_as_semantic_rect():
 
 def test_animfsm_3d_clip_picker_includes_embedded_model_takes(monkeypatch):
     from Infernux.core import asset_types
-    from Infernux.core.assets import AssetManager
+    from Infernux.engine.interaction import asset_reference_catalog
 
     model_path = "Assets/Models/Racer.fbx"
     monkeypatch.setattr(
-        AssetManager,
-        "find_assets",
-        classmethod(lambda _cls, pattern: [model_path] if pattern == "*.fbx" else []),
+        asset_reference_catalog,
+        "items",
+        lambda asset_type, _query: (("Racer.fbx", model_path),)
+        if asset_type == "Mesh"
+        else (),
     )
     monkeypatch.setattr(
         asset_types,
@@ -1227,30 +1468,44 @@ def test_animfsm_3d_clip_picker_includes_embedded_model_takes(monkeypatch):
 
     items = AnimFSMEditorPanel._embedded_clip3d_picker_items("drive")
 
-    assert items == [("Racer | Drive", f"{'a' * 32}::subanim:1")]
+    assert items == [(
+        "Racer | Drive",
+        {
+            "asset_type": "AnimationClip3D",
+            "builtin": "",
+            "guid": "",
+            "path_hint": f"{'a' * 32}::subanim:1",
+        },
+    )]
 
 
-def test_animfsm_new_document_and_dirty_draft_round_trip():
+def test_animfsm_new_document_and_dirty_draft_round_trip_through_registry_session():
+    from Infernux.engine.interaction import DocumentRegistry
+
     panel = AnimFSMEditorPanel()
-    assert panel._dirty is True
+    assert panel._document_is_dirty() is True
     panel._fsm.name = "Recovered FSM"
     panel._fsm.parameters.append(AnimParameter(name="speed"))
+    view_state = panel.save_state()
+    session_state = DocumentRegistry.instance().capture_session_state()
 
+    restored_registry = DocumentRegistry()
+    assert restored_registry.queue_session_restore(session_state) == 1
     restored = AnimFSMEditorPanel()
-    restored.load_state(panel.save_state())
+    assert restored.restore_persisted_session_document()
+    restored.load_state(view_state)
 
-    assert restored._dirty is True
+    assert restored._document_is_dirty() is True
     assert restored._fsm.name == "Recovered FSM"
     assert [parameter.name for parameter in restored._fsm.parameters] == ["speed"]
 
 
 def test_animfsm_entering_play_does_not_implicitly_save_dirty_draft(monkeypatch):
     panel = AnimFSMEditorPanel()
-    panel._dirty = True
     save_calls = []
     monkeypatch.setattr(panel, "_do_save", lambda: save_calls.append(True))
 
     panel._on_play_mode_changed(SimpleNamespace(new_state="playing"))
 
     assert save_calls == []
-    assert panel._dirty is True
+    assert panel._document_is_dirty() is True

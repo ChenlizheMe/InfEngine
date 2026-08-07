@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -139,6 +140,7 @@ class FilterMode(IntEnum):
 @dataclass
 class SpriteFrame:
     """One rectangular region inside a sprite-sheet texture."""
+    stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     name: str = ""
     x: int = 0
     y: int = 0
@@ -148,15 +150,24 @@ class SpriteFrame:
     pivot_y: float = 0.5
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"name": self.name, "x": self.x, "y": self.y,
+        return {"stable_id": self.stable_id,
+                "name": self.name, "x": self.x, "y": self.y,
                 "w": self.w, "h": self.h,
                 "pivot_x": self.pivot_x, "pivot_y": self.pivot_y}
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "SpriteFrame":
-        expected = {"name", "x", "y", "w", "h", "pivot_x", "pivot_y"}
+        expected = {
+            "stable_id", "name", "x", "y", "w", "h", "pivot_x", "pivot_y",
+        }
         if type(d) is not dict or set(d) != expected:
             raise ValueError("sprite frame must use the complete current field set")
+        if (
+            type(d["stable_id"]) is not str
+            or len(d["stable_id"]) != 32
+            or any(ch not in "0123456789abcdef" for ch in d["stable_id"])
+        ):
+            raise TypeError("sprite frame stable_id must be a 32-character lowercase UUID hex string")
         if type(d["name"]) is not str:
             raise TypeError("sprite frame name must be a string")
         if any(type(d[field]) is not int for field in ("x", "y", "w", "h")):
@@ -168,7 +179,8 @@ class SpriteFrame:
                for value in pivots):
             raise TypeError("sprite frame pivots must be finite numbers")
         return cls(
-            name=d["name"], x=d["x"], y=d["y"], w=d["w"], h=d["h"],
+            stable_id=d["stable_id"], name=d["name"],
+            x=d["x"], y=d["y"], w=d["w"], h=d["h"],
             pivot_x=float(d["pivot_x"]), pivot_y=float(d["pivot_y"]),
         )
 
@@ -214,6 +226,15 @@ class TextureImportSettings:
     # ── Serialization ──────────────────────────────────────────────────
 
     def to_dict(self) -> Dict[str, Any]:
+        frame_documents = [frame.to_dict() for frame in self.sprite_frames]
+        validated_frames = [
+            SpriteFrame.from_dict(document) for document in frame_documents
+        ]
+        stable_ids = [frame.stable_id for frame in validated_frames]
+        if len(stable_ids) != len(set(stable_ids)):
+            raise ValueError("texture sprite frame stable_id values must be unique")
+        if self.texture_type is TextureType.SPRITE and not self.sprite_frames:
+            raise ValueError("sprite textures must persist at least one sprite frame")
         d: Dict[str, Any] = {
             "texture_type": self.texture_type.name.lower(),
             "wrap_mode": self.wrap_mode.to_string(),
@@ -227,7 +248,7 @@ class TextureImportSettings:
             "texture_compression_quality": self.compression_quality.to_string(),
         }
         if self.sprite_frames:
-            d["sprite_frames"] = [f.to_dict() for f in self.sprite_frames]
+            d["sprite_frames"] = frame_documents
         return d
 
     @classmethod
@@ -271,6 +292,10 @@ class TextureImportSettings:
         if type(raw_frames) is not list:
             raise TypeError("texture sprite_frames must be an array")
         frames = [SpriteFrame.from_dict(f) for f in raw_frames] if raw_frames else []
+        if len({frame.stable_id for frame in frames}) != len(frames):
+            raise ValueError("texture sprite frame stable_id values must be unique")
+        if tt is TextureType.SPRITE and not frames:
+            raise ValueError("sprite textures must persist at least one sprite frame")
         enum_values = {
             "wrap_mode": {"repeat", "clamp", "mirror"},
             "filter_mode": {"point", "linear", "trilinear"},

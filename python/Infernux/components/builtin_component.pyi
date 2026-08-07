@@ -21,6 +21,8 @@ class CppProperty:
     metadata: FieldMetadata
     get_converter: Any
     set_converter: Any
+    native_getter: Any
+    native_setter: Any
 
     def __init__(
         self,
@@ -35,8 +37,11 @@ class CppProperty:
         enum_type: Any = ...,
         enum_labels: Optional[list] = ...,
         visible_when: Any = ...,
+        asset_type: Optional[str] = ...,
         get_converter: Any = ...,
         set_converter: Any = ...,
+        native_getter: Any = ...,
+        native_setter: Any = ...,
         hdr: bool = ...,
         slider: bool = ...,
     ) -> None: ...

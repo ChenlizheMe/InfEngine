@@ -34,9 +34,9 @@ from .theme import Theme, ImGuiCol
 
 # ── Sub-module imports (re-exported for backward compatibility) ──
 from ._inspector_undo import (  # noqa: F401
-    _notify_scene_modified, _is_python_component_entry,
+    _is_python_component_entry,
     _record_property, _record_material_slot, _record_generic_component,
-    _record_builtin_property, _TrackVolumeCommand, _record_track_volume,
+    _record_builtin_property, _record_track_volume,
 )
 from ._inspector_references import (  # noqa: F401
     _tooltip_and_info, _asset_guid_from_path, _resolve_guid_and_path,
@@ -47,8 +47,8 @@ from ._inspector_references import (  # noqa: F401
     _apply_reference_drop, _apply_gameobject_or_prefab_drop,
     _apply_builtin_audio_clip_drop,
     _game_object_has_required_component, _create_component_ref_from_go,
-    _picker_scene_gameobjects, _picker_assets,
-    render_object_field,
+    _picker_scene_gameobjects,
+    render_asset_reference_field, render_object_field,
 )
 from ._inspector_list_field import (  # noqa: F401
     _make_list_default_element, _infer_list_element_type,
@@ -238,6 +238,7 @@ def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields,
                 "py_name": py_name,
                 "cpp_attr": cpp_attr,
                 "display_name": display_name,
+                "current": current,
             })
             continue
 
@@ -313,14 +314,26 @@ def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entr
             continue
 
         if kind == "asset_clip":
+            from Infernux.engine.ui._inspector_references import (
+                _apply_builtin_audio_clip_drop,
+                _resolve_asset_disk_path,
+            )
+
+            current_clip = op["current"]
+            clip_path = _resolve_asset_disk_path(current_clip)
             field_label(ctx, pretty_field_name(op["py_name"]), lw)
-            render_object_field(
+            render_asset_reference_field(
                 ctx,
                 f"audio_clip_{op['py_name']}",
                 op["display_name"],
                 "AudioClip",
+                asset_type="AudioClip",
                 accept_drag_type="AUDIO_FILE",
-                on_drop_callback=lambda payload, _comp=comp, _attr=op["cpp_attr"]: _apply_builtin_audio_clip_drop(_comp, _attr, payload),
+                on_assign=lambda payload, _comp=comp, _attr=op["cpp_attr"]: _apply_builtin_audio_clip_drop(_comp, _attr, payload),
+                on_clear=lambda _comp=comp, _attr=op["cpp_attr"], _old=current_clip: _record_builtin_property(_comp, _attr, _old, None, f"Clear {_attr}"),
+                ping_path=clip_path or None,
+                has_value=current_clip is not None,
+                reference_value=current_clip,
             )
             continue
 
@@ -558,25 +571,42 @@ def _render_multi_batch(ctx: InxGUIContext, descriptors, label_width, apply_chan
 
 def _apply_multi_builtin_change(wrapped, token, metadata, new_value):
     py_name, cpp_attr = token
-    for comp in wrapped:
-        try:
-            old_value = getattr(comp, cpp_attr)
-        except Exception:
-            continue
-        if has_field_changed(metadata.field_type, old_value, new_value):
-            _record_builtin_property(comp, cpp_attr, old_value, new_value, f"Set {py_name}")
+    from Infernux.engine.interaction import make_attribute_property_transaction
+
+    transaction = make_attribute_property_transaction(
+        tuple(wrapped),
+        cpp_attr,
+        property_path=f"{type(wrapped[0]).__name__}.{cpp_attr}",
+        value_type=str(metadata.field_type),
+        description=f"Set {py_name}",
+        read_only=bool(getattr(metadata, "readonly", False)),
+        equivalent=lambda old, new: not has_field_changed(
+            metadata.field_type, old, new
+        ),
+    )
+    transaction.commit_or_raise(new_value)
+
+
+def _commit_python_component_field(comps, field_name, metadata, new_value):
+    from Infernux.engine.interaction import (
+        make_python_component_property_transaction,
+    )
+
+    transaction = make_python_component_property_transaction(
+        tuple(comps),
+        field_name,
+        value_type=str(metadata.field_type),
+        description=f"Set {field_name}",
+        read_only=bool(metadata.readonly),
+        equivalent=lambda old, new: not has_field_changed(
+            metadata.field_type, old, new
+        ),
+    )
+    return transaction.commit_or_raise(new_value)
 
 
 def _apply_multi_py_change(comps, field_name, metadata, new_value):
-    for comp in comps:
-        try:
-            old_value = getattr(comp, field_name, metadata.default)
-        except Exception:
-            old_value = metadata.default
-        if has_field_changed(metadata.field_type, old_value, new_value) and not metadata.readonly:
-            _record_property(comp, field_name, old_value, new_value, f"Set {field_name}")
-            if hasattr(comp, '_call_on_validate'):
-                comp._call_on_validate()
+    _commit_python_component_field(comps, field_name, metadata, new_value)
 
 
 def _metadata_for_json_value(value):
@@ -630,17 +660,18 @@ def _json_value_from_batch(metadata, new_value):
 
 def _apply_multi_json_change(comps, key, metadata, new_value):
     json_value = _json_value_from_batch(metadata, new_value)
-    for comp in comps:
-        try:
-            original_document = comp.serialize_document()
-            data = dict(original_document)
-        except Exception:
-            continue
-        old_value = data.get(key)
-        if _multi_value_equal(old_value, json_value):
-            continue
-        data[key] = json_value
-        _record_generic_component(comp, original_document, data)
+    from Infernux.engine.interaction import (
+        make_native_document_property_transaction,
+    )
+
+    transaction = make_native_document_property_transaction(
+        tuple(comps),
+        key,
+        value_type=str(metadata.field_type),
+        description=f"Set {key}",
+        equivalent=_multi_value_equal,
+    )
+    transaction.commit_or_raise(json_value)
 
 
 def render_multi_component(ctx: InxGUIContext, comps, *, is_native: bool):
@@ -961,13 +992,8 @@ def _apply_batch_changes_py(py_comp, changes: dict, batch_info: list):
         field_name, meta, old_value, enum_members = batch_info[idx]
         new_value = _convert_batch_value(meta.field_type, raw_value, enum_members)
         if has_field_changed(meta.field_type, old_value, new_value) and not meta.readonly:
-            from ._inspector_undo import _record_python_component_document_edit
-            _record_python_component_document_edit(
-                py_comp,
-                lambda _name=field_name, _value=new_value: setattr(py_comp, _name, _value),
-                f"Set {field_name}",
-                edit_key=field_name,
-                validate=True,
+            _commit_python_component_field(
+                (py_comp,), field_name, meta, new_value
             )
 
 
@@ -1031,10 +1057,6 @@ def render_cpp_component_generic(ctx: InxGUIContext, comp):
 
     if changed:
         _record_generic_component(comp, original_document, data)
-
-
-# ── Asset-type reference field configuration ──
-_ASSET_REF_CONFIG = None  # lazy-initialized (needs FieldType import)
 
 
 def _try_custom_py_renderer(ctx, py_comp):
@@ -1237,13 +1259,8 @@ def render_py_component(ctx: InxGUIContext, py_comp):
                 ctx, py_comp, field_name, "inspector_field", _serialized_field_label(field_name, metadata),
             )
             if has_field_changed(metadata.field_type, current_value, new_value) and not metadata.readonly:
-                from ._inspector_undo import _record_python_component_document_edit
-                _record_python_component_document_edit(
-                    py_comp,
-                    lambda _name=field_name, _value=new_value: setattr(py_comp, _name, _value),
-                    f"Set {field_name}",
-                    edit_key=field_name,
-                    validate=True,
+                _commit_python_component_field(
+                    (py_comp,), field_name, metadata, new_value
                 )
                 _invalidate_component_value_cache(cache_entry)
                 refresh_values = True

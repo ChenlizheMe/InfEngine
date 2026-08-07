@@ -17,6 +17,11 @@ from Infernux.core.node_graph import (
     NodeGraphMutation,
     NodeGraphMutationKind,
 )
+from Infernux.core.asset_reference_types import (
+    AssetReferenceCodec,
+    asset_type_registry,
+    resolve_asset_reference_path,
+)
 from Infernux.debug import Debug
 from Infernux.engine.i18n import t
 from Infernux.engine.path_utils import resolved_path, same_path
@@ -26,7 +31,8 @@ from Infernux.engine.interaction import (
     GraphElementRef,
     GraphMutation,
     GraphMutationKind,
-    GraphSelectionController,
+    PanelViewStateField,
+    PanelViewStateSchema,
 )
 from Infernux.graph.registry import (
     COMMON_NODE_REGISTRY,
@@ -34,7 +40,11 @@ from Infernux.graph.registry import (
     PortKind,
 )
 from Infernux.graph.expression_ir import ExpressionCompiler
-from Infernux.graph.parameters import GraphParameterCollection
+from Infernux.graph.parameters import (
+    GraphParameterAuthoringPolicy,
+    GraphParameterCollection,
+)
+from Infernux.graph.parameter_transactions import GraphParameterTransaction
 from Infernux.graph.ramp import CURVE_WRAP_MODES, GRADIENT_MODES, MAX_RAMP_KEYS, Curve, Gradient
 from Infernux.graph.types import (
     AssetReference,
@@ -63,7 +73,10 @@ from Infernux.particle.asset import (
     SimulationSpace,
     default_event_graph,
 )
-from Infernux.particle.artifact import ParticleArtifactRegistry
+from Infernux.particle.artifact import (
+    ParticleArtifactRegistry,
+    PreparedParticleGraphArtifact,
+)
 from Infernux.particle.data_interface import (
     SdfFilter,
     SdfVolume,
@@ -83,6 +96,7 @@ from .graph_document_authoring import (
     ParticleEmitterGraphAuthoringModel,
     particle_stage_definition_filter,
 )
+from .graph_details import GraphDetailContributor
 from .floating_workspace_panel import (
     render_compact_tab_bar,
     render_workspace_add_header,
@@ -90,10 +104,12 @@ from .floating_workspace_panel import (
 from .inspector_utils import preserve_ui_float_precision
 from .inspector_shader_utils import get_shader_property_generation
 from .node_graph_editor_panel import (
+    GraphParameterDetailConfig,
     GraphWorkspaceAddAction,
     GraphWorkspaceDrag,
     GraphWorkspaceEntry,
     GraphWorkspaceSection,
+    NODE_GRAPH_PANEL_INTERACTION,
     NodeGraphEditorPanel,
 )
 from .node_graph_view import NodeCreationEntry
@@ -101,12 +117,9 @@ from .panel_registry import editor_panel
 from .theme import Theme
 from ._inspector_references import (
     _asset_guid_from_path,
-    _picker_assets,
-    _picker_texture_assets,
     _portable_asset_path_hint,
-    _project_texture_guid_and_path,
     _resolve_project_asset_path,
-    render_object_field,
+    render_asset_reference_field,
 )
 
 _STAGES = (
@@ -183,20 +196,52 @@ def _mesh_reference_display(reference: AssetReference) -> str:
 def _builtin_mesh_picker_items(query: str) -> list[tuple[str, dict[str, str]]]:
     filter_text = str(query).strip().lower()
     return [
-        (f"Built-in/{name}", builtin_mesh_reference(name).to_dict())
+        (
+            f"Built-in/{name}",
+            {
+                "asset_type": "Mesh",
+                "builtin": name,
+                "guid": "",
+                "path_hint": "",
+            },
+        )
         for name in BUILTIN_MESH_NAMES
         if not filter_text or filter_text in name.lower() or filter_text in "built-in"
     ]
 
 
-def _selected_builtin_mesh(value) -> AssetReference | None:
-    if type(value) is not dict:
-        return None
-    try:
-        reference = AssetReference.from_dict(value)
-        return reference if builtin_mesh_name(reference) else None
-    except (TypeError, ValueError):
-        return None
+def _particle_reference_value(
+    asset_type: str,
+    reference: AssetReference,
+) -> dict[str, str]:
+    builtin = builtin_mesh_name(reference) if asset_type == "Mesh" else ""
+    return {
+        "asset_type": asset_type,
+        "builtin": builtin,
+        "guid": "" if builtin else reference.guid,
+        "path_hint": "" if builtin else reference.path_hint,
+    }
+
+
+def _particle_asset_reference(asset_type: str, value) -> AssetReference:
+    """Convert the shared editor reference into the particle AOT ABI value."""
+
+    descriptor = asset_type_registry.require(asset_type)
+    error = descriptor.incompatibility(value)
+    if error:
+        raise ValueError(error)
+    payload = AssetReferenceCodec.normalize(descriptor.type_id, value)
+    if payload["builtin"]:
+        if descriptor.type_id != "Mesh":
+            raise ValueError(f"{descriptor.display_name} does not support built-in values")
+        return builtin_mesh_reference(payload["builtin"])
+    path = resolve_asset_reference_path(descriptor.type_id, payload)
+    guid = payload["guid"] or _asset_guid_from_path(path)
+    if not guid:
+        raise ValueError(
+            f"{descriptor.display_name} must be a registered project asset"
+        )
+    return AssetReference(guid, _portable_asset_path_hint(path))
 
 
 def _event_field_default(value_type: ValueType):
@@ -221,6 +266,17 @@ def _event_field_default(value_type: ValueType):
         ValueType.MAT4: 16,
     }[value_type]
     return [0.0] * size
+
+
+_PARTICLE_PARAMETER_POLICY = GraphParameterAuthoringPolicy(
+    ParticleParameter,
+    _PARAMETER_VALUE_TYPES,
+    _event_field_default,
+    writable_types=frozenset(_EVENT_VALUE_TYPES),
+    allowed_spaces={
+        ValueType.VEC3: (CoordinateSpace.NONE, CoordinateSpace.WORLD),
+    },
+)
 
 
 def _record_scalar_node_property_semantics(
@@ -262,9 +318,21 @@ def _node_property_is_visible(node, key: str) -> bool:
     type_id="particle_graph_editor",
     title_key="panel.particle_graph_editor",
     menu_path="Rendering",
+    interaction=NODE_GRAPH_PANEL_INTERACTION,
 )
 class ParticleGraphEditorPanel(NodeGraphEditorPanel):
     window_id = "particle_graph_editor"
+    VIEW_STATE_SCHEMA = PanelViewStateSchema(
+        "particle_graph_editor.view",
+        (
+            PanelViewStateField("emitter_index", "_emitter_index", int),
+            PanelViewStateField("stage", "_stage", str),
+            PanelViewStateField("workspace_tab", "_workspace_tab_index", int),
+            PanelViewStateField("pan_x", "_view.pan_x", float),
+            PanelViewStateField("pan_y", "_view.pan_y", float),
+            PanelViewStateField("zoom", "_view.zoom", float),
+        ),
+    )
     _HIDDEN_INTERNAL_RESOURCE_NODE_TYPES = frozenset(
         {
             "particle.vector_field.sample",
@@ -280,31 +348,26 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             window_id=self.window_id,
             semantic_namespace="particle_graph.canvas",
         )
+        from Infernux.engine.interaction import AuthoringDocumentController
+
+        self._authoring_document_controller = AuthoringDocumentController(self)
         self._asset = ParticleGraphAsset()
         self._file_path = ""
         self._emitter_index = 0
         self._stage = "init"
-        self._dirty = True
         self._focus_detail_name = ""
         self._workspace_tab_index = 0
-        self._drag_snapshot: Optional[dict] = None
         self._pending_save_ticket_id = ""
         self._draft_compile_error = ""
-        self._event_type_dialog_requested = False
-        self._event_type_dialog_open = False
-        self._editing_event_type_id = ""
-        self._event_dialog_error = ""
-        self._event_type_draft = self._new_event_type_draft()
         self._save_as_dialog = AssetSaveAsDialog(
-            "particle_graph.save_as", "particle graph"
+            "particle_graph.save_as",
+            "particle graph",
+            owner_id=self._window_id,
         )
         self._shader_definition_generation = get_shader_property_generation()
         self._model: ParticleEmitterGraphAuthoringModel | None = None
-        self._graph_selection = GraphSelectionController(
-            owner_id=self.window_id,
-            document_id=lambda: self.document_id,
+        self._install_graph_selection_controller(
             contains=self._contains_graph_element,
-            view=self._view,
             element_from_view=self._graph_element_from_view,
             element_to_view=self._graph_element_to_view,
             on_changed=self._on_graph_selection_projected,
@@ -392,16 +455,54 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 | DocumentCapability.SAVE_AS
                 | DocumentCapability.DISCARD
             ),
-            controller=self,
+            controller=self._authoring_document_controller,
         )
-        self.bind_document(document.document_id)
-        self._dirty = document.is_dirty
+        self._bind_replaced_document(document.document_id, dirty=dirty)
         self._graph_selection.refresh()
 
     def _particle_document(self):
         from Infernux.engine.interaction import DocumentRegistry
 
         return DocumentRegistry.instance().get(self.document_id)
+
+    def capture_document_restore_state(self, document_id: str) -> dict:
+        if document_id != self.document_id:
+            raise ValueError("Particle Graph restore capture targeted another document")
+        self._sync_model_to_asset()
+        return {
+            "asset": self._asset.to_dict(),
+            "file_path": self._file_path,
+        }
+
+    def restore_document_restore_state(self, state: dict) -> None:
+        if not isinstance(state, dict) or set(state) != {"asset", "file_path"}:
+            raise ValueError("Particle Graph document restore state is invalid")
+        self._asset = ParticleGraphAsset.from_dict(copy.deepcopy(state["asset"]))
+        self._file_path = (
+            resolved_path(state["file_path"]) if state["file_path"] else ""
+        )
+        self._emitter_index = min(
+            max(0, self._emitter_index), len(self._asset.emitters) - 1
+        )
+        self._bind_stage()
+        self._graph_selection.clear(record_history=False)
+
+    def recover_incompatible_document_restore_state(
+        self,
+        state,
+        error: Exception,
+    ) -> bool:
+        del error
+        path = str(state.get("file_path", "")) if isinstance(state, dict) else ""
+        if path and os.path.isfile(path):
+            return self.open_document_resource_immediate(path)
+        self._asset = ParticleGraphAsset()
+        self._file_path = ""
+        self._emitter_index = 0
+        self._stage = "init"
+        self._bind_stage()
+        self._replace_particle_document(resource_path="", dirty=True)
+        return True
 
     def capture_graph_diff_checkpoint(self):
         """Capture an exception-only checkpoint for atomic diff replay."""
@@ -443,6 +544,69 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             self._selected_emitter().stable_id,
             stable_id,
         )
+
+    def _node_graph_clipboard_node_identity(
+        self, _old_id: str, payload: dict
+    ) -> str:
+        stage = str(payload.get("stage", ""))
+        if not stage:
+            raise ValueError("Particle Graph clipboard node has no lifecycle stage")
+        return ParticleEmitterGraphAuthoringModel._canvas_uid(
+            stage, uuid.uuid4().hex[:8]
+        )
+
+    def _node_graph_clipboard_link_identity(
+        self, _old_id: str, payload: dict
+    ) -> str:
+        stage = ParticleEmitterGraphAuthoringModel.stage_for_uid(
+            str(payload.get("source_node", ""))
+        )
+        if not stage:
+            raise ValueError("Particle Graph clipboard link has no lifecycle stage")
+        return ParticleEmitterGraphAuthoringModel._canvas_uid(
+            stage, uuid.uuid4().hex[:8]
+        )
+
+    def _node_graph_remap_clipboard_node(
+        self,
+        _old_id: str,
+        _new_id: str,
+        payload: dict,
+        node_id_map,
+    ) -> dict:
+        """Remap derived Attribute Cache/Capture IDs inside copied node data."""
+        from Infernux.particle.asset import (
+            particle_attribute_cache_id,
+            particle_attribute_capture_id,
+        )
+
+        derived: dict[str, str] = {}
+        for old_node_id, new_node_id in node_id_map.items():
+            old_stage = ParticleEmitterGraphAuthoringModel.stage_for_uid(old_node_id)
+            new_stage = ParticleEmitterGraphAuthoringModel.stage_for_uid(new_node_id)
+            if not old_stage or not new_stage:
+                continue
+            old_raw = ParticleEmitterGraphAuthoringModel._document_uid(old_node_id)
+            new_raw = ParticleEmitterGraphAuthoringModel._document_uid(new_node_id)
+            derived[
+                particle_attribute_cache_id(old_stage, old_raw)
+            ] = particle_attribute_cache_id(new_stage, new_raw)
+            derived[
+                particle_attribute_capture_id(old_stage, old_raw)
+            ] = particle_attribute_capture_id(new_stage, new_raw)
+
+        def remap(value):
+            if isinstance(value, str):
+                return derived.get(value, value)
+            if isinstance(value, list):
+                return [remap(item) for item in value]
+            if isinstance(value, tuple):
+                return tuple(remap(item) for item in value)
+            if isinstance(value, dict):
+                return {key: remap(item) for key, item in value.items()}
+            return value
+
+        return remap(payload)
 
     def _contains_graph_element(self, element: GraphElementRef) -> bool:
         if element.kind is GraphElementKind.GRAPH:
@@ -566,16 +730,6 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             reason=reason,
             record_history=record_history,
         )
-
-    def _particle_undo_enabled(self) -> bool:
-        from Infernux.engine.play_mode import PlayModeManager, PlayModeState
-        from Infernux.engine.undo import UndoManager
-
-        manager = UndoManager.instance()
-        if manager is None or not manager.enabled:
-            return False
-        play_mode = PlayModeManager.instance()
-        return play_mode is None or play_mode.state == PlayModeState.EDIT
 
     def _emitter_index_by_id(self, stable_id: str) -> int:
         return next(
@@ -1030,6 +1184,21 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                         )
                     parameters = list(self._asset.parameters)
                     parameters.pop(index)
+                elif mutation.kind is GraphMutationKind.MOVE:
+                    if index < 0:
+                        raise RuntimeError(
+                            f"Particle Graph parameter no longer exists: "
+                            f"{element.stable_id}"
+                        )
+                    target_index = int(mutation.after_index)
+                    if target_index < 0 or target_index >= len(self._asset.parameters):
+                        raise RuntimeError(
+                            f"Particle Graph parameter move target is invalid: "
+                            f"{target_index}"
+                        )
+                    parameters = list(self._asset.parameters)
+                    parameter = parameters.pop(index)
+                    parameters.insert(target_index, parameter)
                 else:
                     raise RuntimeError(
                         f"unsupported Particle parameter mutation: {mutation.kind.value}"
@@ -1076,80 +1245,13 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             self._bind_stage()
 
     def on_graph_diff_applied(self, _diff: GraphActionDiff) -> None:
-        document = self._particle_document()
-        self._dirty = bool(document and document.is_dirty)
         self._graph_selection.refresh()
-
-    def _execute_graph_mutations(
-        self,
-        description: str,
-        mutations: tuple[GraphMutation, ...],
-        *,
-        merge_key: str = "",
-        selection_after: Optional[tuple[GraphElementRef, ...]] = None,
-    ) -> bool:
-        from Infernux.engine.interaction import (
-            DocumentRegistry,
-            SelectionService,
-            SelectionSnapshot,
-        )
-        from Infernux.engine.undo import GraphDiffCommand, UndoManager
-
-        document = self._particle_document()
-        if document is None or not mutations:
-            return False
-        registry = DocumentRegistry.instance()
-        diff = GraphActionDiff(
-            document.document_id,
-            tuple(mutations),
-            before_revision=document.revision,
-            after_revision=registry.reserve_content_revision(document.document_id),
-        )
-        command = GraphDiffCommand(description, diff, merge_key=merge_key)
-        if selection_after is not None:
-            selection = SelectionService.instance()
-            command.before_selection_snapshot = selection.snapshot
-            targets = tuple(
-                element.selection_target(document.document_id)
-                for element in selection_after
-            )
-            command.after_selection_snapshot = SelectionSnapshot.create(
-                targets,
-                primary=targets[-1] if targets else None,
-                anchor=targets[0] if targets else None,
-                owner_id=self.window_id if targets else "",
-            )
-        manager = UndoManager.instance()
-        if manager is not None and self._particle_undo_enabled():
-            applied = manager.execute(command)
-        else:
-            try:
-                command.execute()
-                applied = True
-            except Exception as exc:
-                Debug.log_error(f"Particle Graph edit failed: {exc}")
-                applied = False
-            finally:
-                command.dispose()
-        if applied and selection_after is not None:
-            if selection_after:
-                self._graph_selection.select(
-                    selection_after,
-                    reason="particle_graph_edit_selection",
-                    record_history=False,
-                )
-            else:
-                self._graph_selection.clear(
-                    reason="particle_graph_edit_selection",
-                    record_history=False,
-                )
-        return applied
 
     def authoring_document_state(self) -> dict:
         """Return identity/dirty state without serializing the live graph model."""
         return {
             "file_path": str(self._file_path),
-            "dirty": bool(self._dirty),
+            "dirty": self._document_is_dirty(),
         }
 
     def authoring_snapshot(self, *, include_registered_types: bool = False) -> dict:
@@ -1181,7 +1283,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         return {
             "panel_id": self.window_id,
             "file_path": str(self._file_path),
-            "dirty": bool(self._dirty),
+            "dirty": self._document_is_dirty(),
             "emitter_index": int(self._emitter_index),
             "selected_node_uid": str(self._selected_node_uid),
             "emitters": [
@@ -1376,59 +1478,29 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 f"valid properties: {valid}"
             )
 
-        builtin_reference = _selected_builtin_mesh(file_path) if key == "mesh" else None
-        if builtin_reference is None and key == "mesh":
+        asset_type = (
+            "Mesh"
+            if key == "mesh"
+            or (
+                asset_port is not None
+                and asset_port.value_type.value_type is ValueType.MESH
+            )
+            else "Texture"
+            if asset_port is not None
+            and asset_port.value_type.value_type is ValueType.TEXTURE2D
+            else "Material"
+        )
+        candidate = file_path
+        if asset_type == "Mesh":
             token = str(file_path).strip()
             if token.startswith("builtin-mesh:"):
-                builtin_reference = builtin_mesh_reference(
-                    token.removeprefix("builtin-mesh:")
-                )
+                candidate = {
+                    "asset_type": "Mesh",
+                    "builtin": token.removeprefix("builtin-mesh:"),
+                }
             elif token in BUILTIN_MESH_NAMES:
-                builtin_reference = builtin_mesh_reference(token)
-        if builtin_reference is not None:
-            reference = builtin_reference.to_dict()
-            if node.data.get(key) == reference:
-                return copy.deepcopy(reference)
-            previous = copy.deepcopy(node.data.get(key))
-            self._on_node_data_changed(node.uid, key, previous, reference)
-            self._select_canvas_node(node.uid)
-            stage = self._model.stage_for_uid(node.uid)
-            if stage:
-                self._select_stage(stage)
-            return copy.deepcopy(reference)
-
-        target = resolved_path(file_path)
-        if not os.path.isfile(target):
-            raise FileNotFoundError(f"Particle Graph asset reference not found: {file_path}")
-        extension = os.path.splitext(target)[1].lower()
-        if key == "mesh":
-            from Infernux.core.asset_types import MESH_EXTENSIONS
-
-            if extension not in MESH_EXTENSIONS:
-                raise ValueError(
-                    f"Particle Graph Mesh property requires a model asset; got {extension!r}"
-                )
-        elif (
-            asset_port is not None
-            and asset_port.value_type.value_type is ValueType.TEXTURE2D
-        ):
-            from Infernux.core.asset_types import IMAGE_EXTENSIONS
-
-            if extension not in IMAGE_EXTENSIONS:
-                raise ValueError(
-                    "Particle Output shader Texture2D property requires an image "
-                    f"asset; got {extension!r}"
-                )
-
-        guid = _asset_guid_from_path(target)
-        if not guid:
-            raise RuntimeError(
-                f"Particle Graph asset reference is not imported and has no GUID: {file_path}"
-            )
-        reference = {
-            "guid": guid,
-            "path_hint": _portable_asset_path_hint(target),
-        }
+                candidate = {"asset_type": "Mesh", "builtin": token}
+        reference = _particle_asset_reference(asset_type, candidate).to_dict()
         if node.data.get(key) == reference:
             return copy.deepcopy(reference)
 
@@ -1689,11 +1761,11 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         return interface.texture
 
     @staticmethod
-    def _data_interface_asset_contract(interface) -> tuple[tuple[str, ...], str]:
+    def _data_interface_asset_contract(interface) -> str:
         if isinstance(interface, SdfVolume):
-            return (".inxsdf",), "Signed Distance Field"
+            return "Texture.SDF"
         if isinstance(interface, VectorField):
-            return (".inxvfield",), "Vector Field"
+            return "Texture.VectorField"
         raise TypeError("unsupported Particle Data Interface")
 
     def _replace_authoring_data_interface(
@@ -1753,24 +1825,8 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         )
         if interface is None:
             raise KeyError(f"Particle Data Interface not found: {interface_id!r}")
-        target = resolved_path(file_path)
-        if not os.path.isfile(target):
-            raise FileNotFoundError(f"Particle Data Interface asset not found: {file_path}")
-        required_extensions, asset_label = self._data_interface_asset_contract(interface)
-        extension = os.path.splitext(target)[1].lower()
-        if extension not in required_extensions:
-            raise ValueError(
-                f"{asset_label} Data Interface requires one of {required_extensions}; got {extension!r}"
-            )
-        guid = _asset_guid_from_path(target)
-        if not guid:
-            raise RuntimeError(
-                f"Particle Data Interface asset is not imported and has no GUID: {file_path}"
-            )
-        reference = AssetReference(
-            guid=guid,
-            path_hint=_portable_asset_path_hint(target),
-        )
+        asset_type = self._data_interface_asset_contract(interface)
+        reference = _particle_asset_reference(asset_type, file_path)
         replacement = replace(
             interface,
             texture=reference,
@@ -2131,26 +2187,24 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             raise ValueError(f"Unsupported Particle parameter type: {kind.value!r}")
         if default is None:
             default = _event_field_default(kind)
-        parameter = ParticleParameter(
-            stable_id=uuid.uuid4().hex,
+        edit = _PARTICLE_PARAMETER_POLICY.create(
+            GraphParameterCollection(self._asset.parameters),
             name=name,
             value_type=TypeRef(kind, CoordinateSpace(str(space))),
-            default=copy.deepcopy(default),
+            default=default,
             exposed=bool(exposed),
             writable=False,
         )
-        GraphParameterCollection(self._asset.parameters).insert(parameter)
+        parameter = edit.after
+        if not isinstance(parameter, ParticleParameter):
+            raise RuntimeError("Particle parameter policy returned an invalid value")
         selected = GraphElementRef(GraphElementKind.PARAMETER, parameter.stable_id)
-        if not self._execute_graph_mutations(
+        transaction = GraphParameterTransaction.begin(
+            GraphParameterCollection(self._asset.parameters)
+        ).create(parameter)
+        if not self._execute_graph_parameter_transaction(
             "Add Particle Graph parameter",
-            (
-                GraphMutation(
-                    GraphMutationKind.INSERT,
-                    selected,
-                    after=parameter.to_dict(),
-                    after_index=len(self._asset.parameters),
-                ),
-            ),
+            transaction,
             selection_after=(selected,),
         ):
             raise RuntimeError("Particle Graph parameter could not be created")
@@ -2168,14 +2222,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         if self._model is None:
             raise RuntimeError("Particle Graph editor has no active authoring model")
         parameter_id = str(parameter_id)
-        parameter = next(
-            (
-                item
-                for item in self._asset.parameters
-                if item.stable_id == parameter_id
-            ),
-            None,
-        )
+        parameter = GraphParameterCollection(self._asset.parameters).find(parameter_id)
         if parameter is None:
             raise KeyError(f"Particle parameter not found: {parameter_id!r}")
         if not math.isfinite(float(x)) or not math.isfinite(float(y)):
@@ -2216,88 +2263,32 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
 
     def update_authoring_parameter(self, parameter_id: str, values: dict) -> dict:
         """Update a complete typed Blackboard field without changing its identity."""
-        if type(values) is not dict or not values:
-            raise ValueError("Particle parameter update must be a non-empty object")
         parameter_id = str(parameter_id)
-        index = next(
-            (
-                index
-                for index, parameter in enumerate(self._asset.parameters)
-                if parameter.stable_id == parameter_id
-            ),
-            -1,
+        edit = _PARTICLE_PARAMETER_POLICY.update(
+            GraphParameterCollection(self._asset.parameters),
+            parameter_id,
+            values,
         )
-        if index < 0:
-            raise KeyError(f"Particle parameter not found: {parameter_id!r}")
-        current = self._asset.parameters[index]
-        allowed = {
-            "name",
-            "type",
-            "default",
-            "exposed",
-            "writable",
-            "category",
-            "tooltip",
-            "attributes",
-        }
-        unknown = set(values) - allowed
-        if unknown:
-            raise ValueError(f"Unknown Particle parameter fields: {sorted(unknown)}")
-        name = str(values.get("name", current.name)).strip()
-        if not name:
-            raise ValueError("Particle parameter name cannot be empty")
-        if any(
-            item.stable_id != parameter_id and item.name == name
-            for item in self._asset.parameters
+        current = edit.before
+        updated = edit.after
+        index = edit.index
+        if not isinstance(current, ParticleParameter) or not isinstance(
+            updated, ParticleParameter
         ):
-            raise ValueError(f"Particle parameter name already exists: {name!r}")
-        encoded_type = values.get("type", current.value_type.to_dict())
-        value_type = (
-            TypeRef.from_dict(encoded_type)
-            if type(encoded_type) is dict
-            else TypeRef(ValueType(str(encoded_type)))
-        )
-        writable = bool(values.get("writable", current.writable))
-        if value_type.value_type in {
-            ValueType.CURVE,
-            ValueType.GRADIENT,
-            ValueType.TEXTURE2D,
-            ValueType.MESH,
-        }:
-            writable = False
-        default = copy.deepcopy(values.get("default", current.default))
-        if value_type != current.value_type and "default" not in values:
-            default = _event_field_default(value_type.value_type)
-        updated = current.with_updates(
-            {
-                "name": name,
-                "value_type": value_type,
-                "default": default,
-                "exposed": values.get("exposed", current.exposed),
-                "writable": writable,
-                "category": values.get("category", current.category),
-                "tooltip": values.get("tooltip", current.tooltip),
-                "attributes": values.get("attributes", current.attributes),
-            }
-        )
-        GraphParameterCollection(self._asset.parameters).replace(updated)
-        if updated == current:
+            raise RuntimeError("Particle parameter policy returned an invalid value")
+        if not edit.changed:
             return {**current.to_dict(), "changed": False}
         if (
             updated.value_type == current.value_type
             and not (current.writable and not updated.writable)
         ):
             selected = GraphElementRef(GraphElementKind.PARAMETER, parameter_id)
-            if not self._execute_graph_mutations(
+            transaction = GraphParameterTransaction.begin(
+                GraphParameterCollection(self._asset.parameters)
+            ).update(updated)
+            if not self._execute_graph_parameter_transaction(
                 "Edit Particle Graph parameter",
-                (
-                    GraphMutation(
-                        GraphMutationKind.UPDATE,
-                        selected,
-                        before=current.to_dict(),
-                        after=updated.to_dict(),
-                    ),
-                ),
+                transaction,
                 merge_key=f"particle_parameter:{parameter_id}",
                 selection_after=(selected,),
             ):
@@ -2325,17 +2316,13 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         )
         graph_mutations = self._graph_mutations_between(before_asset, after_asset)
         selected = GraphElementRef(GraphElementKind.PARAMETER, parameter_id)
-        if not self._execute_graph_mutations(
+        transaction = GraphParameterTransaction.begin(
+            GraphParameterCollection(self._asset.parameters)
+        ).update(updated)
+        if not self._execute_graph_parameter_transaction(
             "Edit Particle Graph parameter",
-            (
-                *graph_mutations,
-                GraphMutation(
-                    GraphMutationKind.UPDATE,
-                    selected,
-                    before=current.to_dict(),
-                    after=updated.to_dict(),
-                ),
-            ),
+            transaction,
+            mutations_before=graph_mutations,
             selection_after=(selected,),
         ):
             raise RuntimeError("Particle Graph parameter could not be updated")
@@ -2344,17 +2331,10 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
     def remove_authoring_parameter(self, parameter_id: str) -> dict:
         """Remove a Blackboard field and every node that references it."""
         parameter_id = str(parameter_id)
-        removed = next(
-            (
-                parameter
-                for parameter in self._asset.parameters
-                if parameter.stable_id == parameter_id
-            ),
-            None,
-        )
-        if removed is None:
-            raise KeyError(f"Particle parameter not found: {parameter_id!r}")
-        GraphParameterCollection(self._asset.parameters).remove(parameter_id)
+        parameters = GraphParameterCollection(self._asset.parameters)
+        removed = parameters.require(parameter_id)
+        if not isinstance(removed, ParticleParameter):
+            raise RuntimeError("Particle parameter collection contains an invalid value")
         before_asset = self._asset
         emitters = tuple(
             self._remove_parameter_nodes(emitter, parameter_id)
@@ -2370,17 +2350,11 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             emitters=emitters,
         )
         graph_mutations = self._graph_mutations_between(before_asset, after_asset)
-        if not self._execute_graph_mutations(
+        transaction = GraphParameterTransaction.begin(parameters).delete(parameter_id)
+        if not self._execute_graph_parameter_transaction(
             "Remove Particle Graph parameter",
-            (
-                *graph_mutations,
-                GraphMutation(
-                    GraphMutationKind.REMOVE,
-                    GraphElementRef(GraphElementKind.PARAMETER, parameter_id),
-                    before=removed.to_dict(),
-                    before_index=self._asset.parameters.index(removed),
-                ),
-            ),
+            transaction,
+            mutations_before=graph_mutations,
             selection_after=(),
         ):
             raise RuntimeError("Particle Graph parameter could not be removed")
@@ -2471,26 +2445,6 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                     ),
                 )
         return replace(emitter, **updates) if updates else emitter
-
-    @staticmethod
-    def _new_event_type_draft() -> dict:
-        return {"name": "Event", "capacity": 32, "fields": []}
-
-    @staticmethod
-    def _draft_from_event_type(event_type: ParticleEventType) -> dict:
-        return {
-            "name": event_type.name,
-            "capacity": event_type.queue_capacity,
-            "fields": [
-                {
-                    "stable_id": field.stable_id,
-                    "name": field.name,
-                    "value_type": field.value_type.value_type.value,
-                    "default": copy.deepcopy(field.default),
-                }
-                for field in event_type.fields
-            ],
-        }
 
     @staticmethod
     def _decode_event_fields(
@@ -2935,26 +2889,41 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
 
     def reload_from_disk(self) -> bool:
         """Reload the current document after it has been saved cleanly."""
-        if self._dirty:
+        document = self._particle_document()
+        if document is not None and document.is_dirty:
             raise RuntimeError("Particle Graph must be saved before it can be reloaded")
         if not self._file_path:
             raise RuntimeError("Particle Graph has no source file to reload")
-        reloaded = self._open_particlegraph(self._file_path)
+        reloaded = self.open_document_resource_immediate(self._file_path)
         if reloaded:
             self._persist_panel_state()
         return reloaded
 
     def discard_unsaved_changes(self) -> dict:
         """Explicitly discard the live document through the Editor contract."""
+        from Infernux.engine.interaction import (
+            DocumentActionStatus,
+            DocumentRegistry,
+        )
+
         previous_path = self._file_path
-        was_dirty = self._dirty
-        if was_dirty and not self._discard_unsaved_changes():
-            raise RuntimeError("Particle Graph could not discard unsaved changes")
+        document = self._particle_document()
+        was_dirty = bool(document and document.is_dirty)
+        if was_dirty:
+            result = DocumentRegistry.instance().request_discard(document.document_id)
+            if result.status not in {
+                DocumentActionStatus.APPLIED,
+                DocumentActionStatus.NO_OP,
+            }:
+                raise RuntimeError(
+                    result.message or "Particle Graph could not discard unsaved changes"
+                )
+        document = self._particle_document()
         return {
             "discarded": bool(was_dirty),
             "previous_file_path": previous_path,
             "file_path": self._file_path,
-            "dirty": self._dirty,
+            "dirty": bool(document and document.is_dirty),
         }
 
     def _selected_emitter(self) -> ParticleEmitterAsset:
@@ -2984,9 +2953,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             self._resolve_dynamic_particle_definitions
         )
         self._model.set_authoring_stage(self._stage)
-        self._view.graph = self._model
-        self._view.reset_interaction_state()
-        self._graph_selection.refresh()
+        self._bind_node_graph_model(self._model)
 
     def _sync_model_to_asset(self) -> None:
         if self._model is None:
@@ -3056,14 +3023,11 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         generation = get_shader_property_generation()
         if generation == self._shader_definition_generation:
             return
-        selected_uid = self._selected_node_uid
         self._sync_model_to_asset()
         self._shader_definition_generation = generation
         self._bind_stage()
-        if selected_uid and self._model.find_node(selected_uid) is not None:
-            self._select_canvas_node(selected_uid)
 
-    def _open_particlegraph(self, file_path: str) -> bool:
+    def open_document_resource_immediate(self, file_path: str) -> bool:
         try:
             asset = ParticleGraphAsset.load(file_path)
         except (OSError, json.JSONDecodeError, ParticleGraphSchemaError, ValueError) as exc:
@@ -3073,73 +3037,40 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         self._file_path = resolved_path(file_path)
         self._emitter_index = 0
         self._stage = "init"
-        self._dirty = False
         self._draft_compile_error = ""
         self._bind_stage()
         self._replace_particle_document(resource_path=self._file_path, dirty=False)
         self._graph_selection.clear(record_history=False)
         return True
 
+    def resource_moved(
+        self,
+        *,
+        document_id: str,
+        source_path: str,
+        destination_path: str,
+        guid: str,
+    ) -> None:
+        del guid
+        if document_id != self.document_id:
+            return
+        if self._file_path and same_path(self._file_path, source_path):
+            self._file_path = resolved_path(destination_path)
+            self._persist_panel_state()
+
     def _save_to(self, file_path: str, *, ticket_id: str = "") -> bool:
-        self._sync_model_to_asset()
-        target = resolved_path(file_path)
-        current = resolved_path(self._file_path) if self._file_path else ""
-        if not current or not same_path(target, current):
-            self._asset = replace(
-                self._asset,
-                name=os.path.splitext(os.path.basename(target))[0],
-            )
-        try:
-            self._asset.save(target)
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            self._draft_compile_error = str(exc)
-            Debug.log_error(f"Failed to save Particle Graph '{target}': {exc}")
-            active_ticket_id = ticket_id or self._pending_save_ticket_id
-            if active_ticket_id:
-                from Infernux.engine.interaction import DocumentRegistry
-
-                DocumentRegistry.instance().complete_save(
-                    active_ticket_id,
-                    success=False,
-                    message=f"failed to save Particle Graph: {target}",
-                )
-                self._pending_save_ticket_id = ""
-            return False
-
-        self._file_path = target
-        self._draft_compile_error = ""
-        from Infernux.engine.interaction import DocumentRegistry
-
-        registry = DocumentRegistry.instance()
-        document = self._particle_document()
         active_ticket_id = ticket_id or self._pending_save_ticket_id
-        if active_ticket_id:
-            registry.complete_save(
-                active_ticket_id,
-                success=True,
-                key=self._particle_document_key(target),
-                resource_path=target,
-                title=self._asset.name,
+        if not active_ticket_id:
+            raise RuntimeError(
+                "Particle Graph saves require a DocumentRegistry SaveTicket"
             )
+        result = self._authoring_document_controller.continue_save_to_resource(
+            active_ticket_id,
+            file_path,
+        )
+        if result.accepted:
             self._pending_save_ticket_id = ""
-        elif document is not None:
-            registry.rekey(
-                document.document_id,
-                self._particle_document_key(target),
-                resource_path=target,
-            )
-            registry.update_metadata(document.document_id, title=self._asset.name)
-            registry.mark_saved(document.document_id)
-        document = self._particle_document()
-        self._dirty = bool(document and document.is_dirty)
-        self._persist_panel_state()
-        try:
-            from Infernux.core.assets import AssetManager
-
-            AssetManager.reimport_asset(target)
-        except Exception as exc:
-            Debug.log_suppressed("particle_graph_editor.reimport", exc)
-        return True
+        return result.accepted
 
     def _show_save_as_dialog(self) -> bool:
         safe_name = (self._asset.name or "ParticleGraph").replace(" ", "_")
@@ -3148,6 +3079,8 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             extension="particlegraph",
             default_name=safe_name,
             current_path=self._file_path,
+            save_callback=self._save_to,
+            cancel_callback=self._cancel_pending_save,
         ):
             Debug.log_warning(
                 "[ParticleGraphEditor] No project root set - cannot save Particle Graph."
@@ -3169,31 +3102,81 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             save_as=save_as,
         ).accepted
 
-    def save(self, *, ticket, save_as: bool = False):
+    def request_authoring_save_as(self, ticket):
         from Infernux.engine.interaction import (
             DocumentActionResult,
             DocumentActionStatus,
         )
 
-        target = self._file_path
-        if save_as or not target:
-            self._pending_save_ticket_id = ticket.ticket_id
-            if self._show_save_as_dialog():
-                return DocumentActionResult(DocumentActionStatus.PENDING)
-            self._pending_save_ticket_id = ""
-            return DocumentActionResult(
-                DocumentActionStatus.REJECTED,
-                "no project root is available",
-            )
-        return self._save_to(target, ticket_id=ticket.ticket_id)
+        self._pending_save_ticket_id = ticket.ticket_id
+        if self._show_save_as_dialog():
+            return DocumentActionResult(DocumentActionStatus.PENDING)
+        self._pending_save_ticket_id = ""
+        return DocumentActionResult(
+            DocumentActionStatus.REJECTED,
+            "no project root is available",
+        )
+
+    def capture_authoring_save_snapshot(self, target: str):
+        from Infernux.engine.interaction import (
+            AuthoringAssetSnapshot,
+            document_content_token,
+        )
+
+        self._sync_model_to_asset()
+        normalized = resolved_path(target)
+        if not normalized:
+            raise ValueError("Particle Graph save target is invalid")
+        title = os.path.splitext(os.path.basename(normalized))[0]
+        document = copy.deepcopy(self._asset.to_dict())
+        document["name"] = title
+        asset = ParticleGraphAsset.from_dict(document)
+        prepared = ParticleArtifactRegistry.prepare_graph_asset(asset, normalized)
+        return AuthoringAssetSnapshot(
+            normalized,
+            prepared.source_text,
+            document_content_token(asset.to_dict()),
+            title,
+            prepared,
+        )
+
+    def publish_authoring_save_snapshot(self, snapshot) -> str:
+        prepared = snapshot.payload
+        if not isinstance(prepared, PreparedParticleGraphArtifact):
+            raise TypeError("Particle Graph save snapshot has no prepared AOT artifact")
+
+        ParticleArtifactRegistry.publish_prepared_graph(prepared)
+        self._asset = replace(self._asset, name=snapshot.title)
+        self._file_path = snapshot.target_path
+        self._draft_compile_error = ""
+        self._persist_panel_state()
+
+        publication_error = ""
+        try:
+            from Infernux.core.assets import AssetManager
+
+            result = AssetManager.reimport_asset(snapshot.target_path)
+            if not result:
+                result = AssetManager.import_asset(snapshot.target_path)
+            if not result:
+                publication_error = str(
+                    getattr(result, "error", "")
+                    or f"Particle Graph publication failed: {snapshot.target_path}"
+                )
+        except Exception as exc:
+            publication_error = str(exc)
+        return publication_error
+
+    def current_authoring_content_token(self) -> str:
+        from Infernux.engine.interaction import document_content_token
+
+        self._sync_model_to_asset()
+        return document_content_token(self._asset.to_dict())
 
     def discard(self, *, document_id: str) -> bool:
         if document_id != self.document_id:
             return False
         return self._discard_unsaved_changes()
-
-    def handle_save_command(self, save_as: bool = False) -> bool:
-        return self._request_document_save(save_as=save_as)
 
     def _cancel_pending_save(self) -> None:
         ticket_id = self._pending_save_ticket_id
@@ -3211,23 +3194,32 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
 
     def _discard_unsaved_changes(self) -> bool:
         if self._file_path:
-            discarded = self._open_particlegraph(self._file_path)
-            if discarded:
-                self._persist_panel_state()
-            return discarded
+            try:
+                asset = ParticleGraphAsset.load(self._file_path)
+            except (
+                OSError,
+                json.JSONDecodeError,
+                ParticleGraphSchemaError,
+                ValueError,
+            ) as exc:
+                Debug.log_error(
+                    f"Failed to discard Particle Graph '{self._file_path}': {exc}"
+                )
+                return False
+            self._asset = asset
+            self._emitter_index = 0
+            self._stage = "init"
+            self._draft_compile_error = ""
+            self._bind_stage()
+            self._graph_selection.clear(record_history=False)
+            self._persist_panel_state()
+            return True
         self._asset = ParticleGraphAsset()
         self._emitter_index = 0
         self._stage = "init"
         self._draft_compile_error = ""
         self._bind_stage()
-        document = self._particle_document()
-        if document is not None:
-            from Infernux.engine.interaction import DocumentRegistry
-
-            DocumentRegistry.instance().restore_content_revision(
-                document.document_id, document.saved_revision
-            )
-        self._dirty = False
+        # The registry commits revision rollback after this model restore.
         self._graph_selection.clear(record_history=False)
         self._persist_panel_state()
         return True
@@ -3246,17 +3238,11 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             ),
         }
 
-    def _on_canvas_selection_changed(
+    def _on_node_graph_selection_accepted(
         self,
         node_ids: tuple[str, ...],
-        link_id: str,
-        record_history: bool,
+        _link_id: str,
     ) -> None:
-        self._graph_selection.accept_view_selection(
-            node_ids,
-            link_id,
-            record_history=record_history,
-        )
         node_uid = node_ids[-1] if node_ids else ""
         if self._model is not None and node_uid:
             stage = self._model.stage_for_uid(node_uid)
@@ -3367,7 +3353,9 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         if self._model is None:
             return
         before = self._model.capture_authoring_state()
-        changed = any(self._model.remove_node(uid) for uid in node_uids)
+        changed = False
+        for uid in node_uids:
+            changed = self._model.remove_node(uid) or changed
         if changed:
             selected = set(self._graph_selection.selected_ids(GraphElementKind.NODE))
             deleted = {
@@ -3414,22 +3402,11 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 before,
             )
 
-    def _on_node_drag_start(self, node_uid: str) -> None:
-        if self._model is None:
-            self._drag_snapshot = None
-            return
-        self._drag_snapshot = self._model.capture_authoring_state()
+    def _node_graph_drag_description(self, _stable_id: str) -> str:
+        return "Move Particle Graph node"
 
-    def _on_node_drag_end(self, _node_uid: str) -> None:
-        before = self._drag_snapshot
-        self._drag_snapshot = None
-        if self._model is None or before is None:
-            return
-        self._commit_node_graph_change(
-            "Move Particle Graph node",
-            before,
-            merge_key="particle_node:selection:position",
-        )
+    def _node_graph_drag_merge_key(self, _stable_id: str) -> str:
+        return "particle_node:selection:position"
 
     def _add_emitter(self) -> None:
         names = {emitter.name for emitter in self._asset.emitters}
@@ -3478,14 +3455,6 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         if self._model is not None:
             self._model.set_collision_enabled(settings.collision_enabled)
 
-    def _sync_project_dirty_flag(self) -> None:
-        document = self._particle_document()
-        self._dirty = bool(document and document.is_dirty)
-
-    def _window_title_suffix(self) -> str:
-        self._sync_project_dirty_flag()
-        return " *" if self._dirty else ""
-
     def _initial_size(self):
         return (1120, 700)
 
@@ -3494,73 +3463,32 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
 
     def _on_empty_state_drop(self, payload_type, payload):
         if payload_type == "PARTICLE_GRAPH_FILE" and payload:
-            self._open_particlegraph(payload)
+            from Infernux.engine.interaction import DocumentKind
+
+            self.request_document_resource_open(DocumentKind.PARTICLE_GRAPH, payload)
 
     def save_state(self) -> dict:
-        data = {
-            "file_path": self._file_path,
-            "emitter_index": self._emitter_index,
-            "stage": self._stage,
-            "pan_x": self._view.pan_x,
-            "pan_y": self._view.pan_y,
-            "zoom": self._view.zoom,
-            "dirty": bool(self._dirty),
-        }
-        if self._dirty:
-            data["draft"] = self._snapshot()["asset"]
-        return data
+        return super().save_state()
 
     def load_state(self, data: dict) -> None:
-        path = str(data.get("file_path", ""))
-        draft = data.get("draft")
-        document_replaced = False
-        if bool(data.get("dirty")) and isinstance(draft, dict):
-            try:
-                self._asset = ParticleGraphAsset.from_dict(draft)
-                self._file_path = resolved_path(path) if path else ""
-                self._dirty = True
-                self._replace_particle_document(
-                    resource_path=self._file_path,
-                    dirty=True,
-                )
-                document_replaced = True
-            except ParticleGraphSchemaError:
-                # Drafts are transient editor state, not versioned assets. A
-                # schema-breaking engine update discards them and restores the
-                # authoritative saved graph instead of retaining legacy data.
-                self._dirty = False
-                if path and os.path.isfile(path):
-                    document_replaced = self._open_particlegraph(path)
-        elif path and os.path.isfile(path):
-            document_replaced = self._open_particlegraph(path)
-        if not document_replaced:
-            self._replace_particle_document(
-                resource_path=self._file_path,
-                dirty=self._dirty,
-            )
+        super().load_state(data)
         self._emitter_index = min(
-            int(data.get("emitter_index", 0)), len(self._asset.emitters) - 1
+            max(0, self._emitter_index), len(self._asset.emitters) - 1
         )
-        stage = str(data.get("stage", "init"))
-        self._stage = stage if stage in _STAGES else "init"
+        if self._stage not in _STAGES:
+            raise ValueError(f"invalid Particle Graph stage View State: {self._stage}")
+        self._workspace_tab_index = max(0, min(self._workspace_tab_index, 3))
         self._bind_stage()
-        self._view.pan_x = float(data.get("pan_x", self._view.pan_x))
-        self._view.pan_y = float(data.get("pan_y", self._view.pan_y))
-        self._view.zoom = float(data.get("zoom", self._view.zoom))
         self._graph_selection.refresh()
-
-    def on_enable(self) -> None:
-        self._graph_selection.bind()
-
-    def on_disable(self) -> None:
-        self._graph_selection.unbind()
 
     def _record_document_semantics(self, ctx: InxGUIContext) -> None:
         if not bool(getattr(ctx, "semantic_capture_enabled", True)):
             return
+        document = self._particle_document()
+        document_title = document.title if document is not None else self._asset.name
         ctx.record_semantic_item(
-            "status", self._asset.name, False, "particle_graph.document.name",
-            string_value=self._asset.name,
+            "status", document_title, False, "particle_graph.document.name",
+            string_value=document_title,
         )
         ctx.record_semantic_item(
             "status", "Particle Graph Asset Path", False, "particle_graph.document.path",
@@ -3568,7 +3496,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         )
         ctx.record_semantic_item(
             "status", "Unsaved Changes", False, "particle_graph.document.dirty",
-            bool_value=self._dirty,
+            bool_value=self._document_is_dirty(),
         )
         ctx.record_semantic_item(
             "status",
@@ -3577,21 +3505,6 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             "particle_graph.document.compile_error",
             string_value=self._draft_compile_error,
         )
-
-    def _request_event_type_dialog(self, event_type_id: str = "") -> None:
-        self._editing_event_type_id = str(event_type_id)
-        if self._editing_event_type_id:
-            event_type = next(
-                value
-                for value in self._asset.event_types
-                if value.stable_id == self._editing_event_type_id
-            )
-            self._event_type_draft = self._draft_from_event_type(event_type)
-        else:
-            self._event_type_draft = self._new_event_type_draft()
-        self._event_dialog_error = ""
-        self._event_type_dialog_open = True
-        self._event_type_dialog_requested = True
 
     @staticmethod
     def _render_event_field_default(
@@ -3621,175 +3534,6 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             )
             for axis, component in zip("XYZW", value)
         ]
-
-    def _render_event_type_dialog(self, ctx: InxGUIContext) -> None:
-        from .editor_modal import (
-            EditorModalAction,
-            begin_editor_modal,
-            end_editor_modal,
-            render_editor_modal_actions,
-        )
-
-        if not self._event_type_dialog_open and not self._event_type_dialog_requested:
-            return
-        editing = bool(self._editing_event_type_id)
-        title_key = (
-            "particle_graph_editor.edit_event_type_title"
-            if editing
-            else "particle_graph_editor.add_event_type_title"
-        )
-        popup_id = f"{t(title_key)}###particle_graph_event_type"
-        request_open = self._event_type_dialog_requested
-        self._event_type_dialog_requested = False
-        if not begin_editor_modal(
-            ctx,
-            popup_id=popup_id,
-            title=t(title_key),
-            semantic_id="particle_graph.event_type.dialog",
-            request_open=request_open,
-            width=620.0,
-            height=560.0,
-        ):
-            if not request_open:
-                self._event_type_dialog_open = False
-            return
-
-        draft = self._event_type_draft
-        draft["name"] = ctx.text_input(
-            f"{t('particle_graph_editor.event_name')}##particle_event_type_name",
-            str(draft["name"]),
-            128,
-        )
-        draft["capacity"] = min(
-            64,
-            max(
-                1,
-            int(
-                ctx.input_uint(
-                    f"{t('particle_graph_editor.event_capacity')}##particle_event_capacity",
-                    int(draft["capacity"]),
-                )
-            ),
-            ),
-        )
-        ctx.separator()
-        ctx.label(t("particle_graph_editor.event_payload"))
-        fields_visible = ctx.begin_child("##particle_event_fields", 0.0, 320.0, True)
-        try:
-            if fields_visible:
-                remove_index = -1
-                for index, field in enumerate(draft["fields"]):
-                    ctx.label(f"{t('particle_graph_editor.event_field')} {index + 1}")
-                    field["name"] = ctx.text_input(
-                        f"{t('particle_graph_editor.event_field_name')}##particle_event_field_{index}_name",
-                        str(field["name"]),
-                        128,
-                    )
-                    current_type = ValueType(field["value_type"])
-                    type_index = ctx.combo(
-                        f"{t('particle_graph_editor.event_field_type')}##particle_event_field_{index}_type",
-                        _EVENT_VALUE_TYPES.index(current_type),
-                        [
-                            t(f"particle_graph_editor.event_type_{value.value}")
-                            for value in _EVENT_VALUE_TYPES
-                        ],
-                        -1,
-                    )
-                    selected_type = _EVENT_VALUE_TYPES[
-                        max(0, min(type_index, len(_EVENT_VALUE_TYPES) - 1))
-                    ]
-                    if selected_type is not current_type:
-                        field["value_type"] = selected_type.value
-                        field["default"] = _event_field_default(selected_type)
-                    field["default"] = self._render_event_field_default(
-                        ctx, index, selected_type, field["default"]
-                    )
-                    if ctx.button(
-                        f"{t('particle_graph_editor.remove_event_field')}##particle_event_field_{index}_remove"
-                    ):
-                        remove_index = index
-                    ctx.separator()
-                if remove_index >= 0:
-                    del draft["fields"][remove_index]
-                if ctx.button(t("particle_graph_editor.add_event_field")):
-                    draft["fields"].append(
-                        {
-                            "stable_id": uuid.uuid4().hex,
-                            "name": f"Value {len(draft['fields']) + 1}",
-                            "value_type": ValueType.F32.value,
-                            "default": 0.0,
-                        }
-                    )
-        finally:
-            ctx.end_child()
-
-        if self._event_dialog_error:
-            ctx.text_wrapped(self._event_dialog_error)
-
-        def _apply() -> None:
-            try:
-                fields = [
-                    {
-                        **(
-                            {"stable_id": str(field["stable_id"])}
-                            if editing
-                            else {}
-                        ),
-                        "name": str(field["name"]),
-                        "type": TypeRef(
-                            ValueType(field["value_type"])
-                        ).to_dict(),
-                        "default": copy.deepcopy(field["default"]),
-                    }
-                    for field in draft["fields"]
-                ]
-                if editing:
-                    self.update_event_type(
-                        self._editing_event_type_id,
-                        str(draft["name"]),
-                        int(draft["capacity"]),
-                        fields,
-                    )
-                else:
-                    self.add_event_type(
-                        str(draft["name"]),
-                        int(draft["capacity"]),
-                        fields,
-                    )
-            except (ParticleGraphSchemaError, TypeError, ValueError) as exc:
-                self._event_dialog_error = str(exc)
-                return
-            self._event_dialog_error = ""
-            self._event_type_dialog_open = False
-            self._editing_event_type_id = ""
-            ctx.close_current_popup()
-
-        def _cancel() -> None:
-            self._event_type_dialog_open = False
-            self._editing_event_type_id = ""
-            ctx.close_current_popup()
-
-        render_editor_modal_actions(
-            ctx,
-            [
-                EditorModalAction(
-                    t(
-                        "particle_graph_editor.save_changes"
-                        if editing
-                        else "particle_graph_editor.create"
-                    ),
-                    "save" if editing else "create",
-                    _apply,
-                ),
-                EditorModalAction(
-                    t("editor.unsaved.cancel"),
-                    "cancel",
-                    _cancel,
-                ),
-            ],
-            semantic_prefix="particle_graph.event_type",
-        )
-        end_editor_modal(ctx)
 
     def _add_default_event_type(self) -> None:
         existing = {item.name for item in self._asset.event_types}
@@ -3901,6 +3645,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 "particle_event_type",
                 entries,
                 add_actions=(GraphWorkspaceAddAction("default", "Event"),),
+                add_semantic_id="particle_graph.workspace.events.add",
                 rename_label=t("particle_graph_editor.rename"),
                 delete_label=t("particle_graph_editor.delete"),
             ),
@@ -3951,6 +3696,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                     )
                     for value_type in _PARAMETER_CREATE_TYPES
                 ),
+                add_semantic_id="particle_graph.workspace.parameters.add",
                 rename_label=t("particle_graph_editor.rename_parameter"),
                 delete_label=t("particle_graph_editor.remove_parameter"),
             ),
@@ -3977,6 +3723,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 "particle_emitter",
                 entries,
                 add_actions=(GraphWorkspaceAddAction("default", "Emitter"),),
+                add_semantic_id="particle_graph.workspace.emitters.add",
                 rename_label=t("particle_graph_editor.rename"),
                 delete_label=t("particle_graph_editor.delete"),
             ),
@@ -3988,12 +3735,20 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             (t("particle_graph_editor.parameters"), "parameters"),
             (t("particle_graph_editor.events"), "events"),
         )
+        previous_tab = self._workspace_tab_index
         self._workspace_tab_index = render_compact_tab_bar(
             ctx,
             "particle_graph_workspace",
             tabs,
             self._workspace_tab_index,
+            semantic_prefix="particle_graph.workspace",
         )
+        if self._workspace_tab_index != previous_tab:
+            self.publish_child_context(
+                self.current_child_context_id(),
+                reason="particle_graph_workspace_tab",
+                record_history=True,
+            )
         if self._workspace_tab_index == 0:
             self._render_emitter_page(ctx)
         elif self._workspace_tab_index == 1:
@@ -4001,140 +3756,89 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         else:
             self._render_event_page(ctx)
 
-    def _render_parameter_properties(self, ctx: InxGUIContext) -> None:
-        parameter = next(
-            (
-                item
-                for item in self._asset.parameters
-                if item.stable_id == self._selected_parameter_id
+    def current_child_context_id(self) -> str:
+        pages = ("emitters", "parameters", "events")
+        index = max(0, min(int(self._workspace_tab_index), len(pages) - 1))
+        return f"particle_graph.workspace.{pages[index]}"
+
+    def restore_child_context(self, context_id: str) -> bool:
+        context_id = str(context_id or "")
+        if not context_id:
+            return True
+        pages = {
+            "particle_graph.workspace.emitters": 0,
+            "particle_graph.workspace.parameters": 1,
+            "particle_graph.workspace.events": 2,
+        }
+        index = pages.get(context_id)
+        if index is None:
+            return False
+        self._workspace_tab_index = index
+        return True
+
+    def _node_graph_parameter_policy(self):
+        return _PARTICLE_PARAMETER_POLICY
+
+    def _node_graph_parameter_collection(self):
+        return GraphParameterCollection(self._asset.parameters)
+
+    def _node_graph_parameter_detail_config(self) -> GraphParameterDetailConfig:
+        return GraphParameterDetailConfig(
+            title=t("particle_graph_editor.parameter_settings"),
+            name_label=t("particle_graph_editor.name"),
+            type_label=t("particle_graph_editor.parameter_type"),
+            space_label=t("particle_graph_editor.parameter_space"),
+            default_label=t("particle_graph_editor.parameter_default"),
+            exposed_label=t("particle_graph_editor.parameter_exposed"),
+            writable_label=t("particle_graph_editor.parameter_writable"),
+            tooltip_label=t("particle_graph_editor.parameter_tooltip"),
+            semantic_prefix="particle_graph.parameter",
+            value_type_label=lambda kind: t(
+                f"particle_graph_editor.type_{kind.value}"
             ),
-            None,
+            coordinate_space_label=lambda space: t(
+                "particle_graph_editor.space_world"
+                if space is CoordinateSpace.WORLD
+                else "particle_graph_editor.space_none"
+            ),
         )
-        if parameter is None:
-            self._graph_selection.clear(
-                reason="particle_graph_drop_missing_parameter",
-                record_history=False,
-            )
-            return
-        ctx.label(t("particle_graph_editor.parameter_settings"))
-        ctx.separator()
-        changes = {}
-        ctx.label(t("particle_graph_editor.name"))
-        name = ctx.text_input(
-            "##particle_parameter_name",
-            parameter.name,
-            128,
-        ).strip()
-        if name and name != parameter.name:
-            changes["name"] = name
-        type_index = _PARAMETER_VALUE_TYPES.index(parameter.value_type.value_type)
-        selected_type_index = ctx.combo(
-            f"{t('particle_graph_editor.parameter_type')}##particle_parameter_type",
-            type_index,
-            [t(f"particle_graph_editor.type_{kind.value}") for kind in _PARAMETER_VALUE_TYPES],
-            -1,
-        )
-        selected_kind = _PARAMETER_VALUE_TYPES[
-            max(0, min(selected_type_index, len(_PARAMETER_VALUE_TYPES) - 1))
-        ]
-        if selected_kind is not parameter.value_type.value_type:
-            changes["type"] = TypeRef(selected_kind).to_dict()
-            changes["default"] = _event_field_default(selected_kind)
 
-        selected_space = (
-            parameter.value_type.space
-            if selected_kind is ValueType.VEC3
-            and parameter.value_type.value_type is ValueType.VEC3
-            else CoordinateSpace.NONE
-        )
-        if selected_kind is ValueType.VEC3:
-            parameter_spaces = (CoordinateSpace.NONE, CoordinateSpace.WORLD)
-            space_index = ctx.combo(
-                f"{t('particle_graph_editor.parameter_space')}##particle_parameter_space",
-                parameter_spaces.index(selected_space),
-                [
-                    t("particle_graph_editor.space_none"),
-                    t("particle_graph_editor.space_world"),
-                ],
-                -1,
-            )
-            edited_space = parameter_spaces[
-                max(0, min(space_index, len(parameter_spaces) - 1))
-            ]
-            if edited_space is not selected_space:
-                changes["type"] = TypeRef(ValueType.VEC3, edited_space).to_dict()
+    def _node_graph_commit_parameter_changes(
+        self,
+        stable_id: str,
+        changes: dict,
+    ) -> bool:
+        self.update_authoring_parameter(stable_id, changes)
+        return True
 
-        default = changes.get("default", copy.deepcopy(parameter.default))
-        kind = selected_kind
-        label = t("particle_graph_editor.parameter_default")
-        ctx.label(label)
-        if kind is ValueType.BOOL:
-            edited_default = bool(
-                ctx.checkbox("##particle_parameter_default_bool", bool(default))
-            )
-        elif kind in {ValueType.I32, ValueType.U32}:
-            method = ctx.input_uint if kind is ValueType.U32 else ctx.input_int
-            edited_default = int(method("##particle_parameter_default_int", int(default)))
-        elif kind is ValueType.F32:
-            edited_default = float(
-                ctx.drag_float(
-                    "##particle_parameter_default_float",
-                    float(default),
-                    0.05,
-                    -1.0e7,
-                    1.0e7,
-                )
-            )
-        elif kind in {ValueType.TEXTURE2D, ValueType.MESH}:
+    def _render_node_graph_parameter_default(
+        self,
+        ctx: InxGUIContext,
+        parameter: ParticleParameter,
+        value_type: ValueType,
+        value,
+        *,
+        label: str,
+        semantic_prefix: str,
+    ):
+        if value_type in {ValueType.TEXTURE2D, ValueType.MESH}:
+            default = value
+            kind = value_type
             reference = AssetReference.from_dict(default)
             selected_references: list[AssetReference] = []
             is_mesh = kind is ValueType.MESH
-            mesh_extensions = (".fbx", ".obj", ".gltf", ".glb", ".dae")
+            asset_type = "Mesh" if is_mesh else "Texture"
+            descriptor = asset_type_registry.require(asset_type)
 
-            def _select_resource(path):
-                from Infernux.core.asset_types import IMAGE_EXTENSIONS
-
-                if is_mesh and (builtin := _selected_builtin_mesh(path)) is not None:
-                    selected_references.append(builtin)
-                    return
-                target = resolved_path(str(path)) if is_mesh else ""
-                texture_guid = ""
-                if not is_mesh:
-                    texture_guid, target = _project_texture_guid_and_path(path)
-                extensions = mesh_extensions if is_mesh else IMAGE_EXTENSIONS
-                if os.path.splitext(target)[1].lower() not in extensions:
-                    Debug.log_warning(
-                        f"Particle {kind.value} parameter received an incompatible asset: {path}"
+            def _select_resource(value):
+                try:
+                    selected_references.append(
+                        _particle_asset_reference(asset_type, value)
                     )
-                    return
-                if not is_mesh and not texture_guid:
-                    Debug.log_warning(
-                        f"Particle texture parameter must use a project asset: {path}"
+                except (KeyError, TypeError, ValueError) as exc:
+                    Debug.log_error(
+                        f"Particle {kind.value} parameter assignment rejected: {exc}"
                     )
-                    return
-                guid = _asset_guid_from_path(target) if is_mesh else texture_guid
-                if not guid:
-                    Debug.log_warning(
-                        f"Particle {kind.value} parameter asset is not imported: {path}"
-                    )
-                    return
-                selected_references.append(
-                    AssetReference(guid, _portable_asset_path_hint(target))
-                )
-
-            def _resource_picker(query):
-                from Infernux.core.asset_types import IMAGE_EXTENSIONS
-
-                items = []
-                extensions = mesh_extensions if is_mesh else IMAGE_EXTENSIONS
-                if is_mesh:
-                    items.extend(_builtin_mesh_picker_items(query))
-                if is_mesh:
-                    for extension in sorted(extensions):
-                        items.extend(_picker_assets(query, f"*{extension}"))
-                else:
-                    items.extend(_picker_texture_assets(query))
-                return items
 
             ping_path = str(reference.path_hint or "").strip()
             if ping_path:
@@ -4142,7 +3846,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                     ping_path = resolved_path(ping_path) or ping_path
                 except Exception:
                     pass
-            render_object_field(
+            render_asset_reference_field(
                 ctx,
                 f"particle_parameter_default_{kind.value}",
                 _mesh_reference_display(reference)
@@ -4150,103 +3854,46 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 else os.path.basename(reference.path_hint)
                 if reference.path_hint
                 else t("igui.none"),
-                "Mesh" if is_mesh else "Texture",
-                accept_drag_type=(
-                    ("MODEL_GUID", "MODEL_FILE", "ASSET_FILE")
-                    if is_mesh
-                    else ("TEXTURE_GUID", "TEXTURE_FILE", "ASSET_FILE")
-                ),
-                on_drop_callback=_select_resource,
-                picker_asset_items=_resource_picker,
-                on_pick=_select_resource,
+                descriptor.display_name,
+                asset_type=descriptor.type_id,
+                accept_drag_type=descriptor.drag_types,
+                on_assign=_select_resource,
+                additional_asset_items=_builtin_mesh_picker_items if is_mesh else None,
                 on_clear=lambda: selected_references.append(AssetReference()),
                 ping_path=ping_path or None,
-                semantic_id=f"particle_graph.parameter.{parameter.stable_id}.default",
+                has_value=bool(reference.guid or reference.path_hint or builtin_mesh_name(reference)),
+                reference_value=_particle_reference_value(asset_type, reference),
+                semantic_id=semantic_prefix,
             )
-            edited_default = (
+            return (
                 selected_references[-1].to_dict()
                 if selected_references
                 else reference.to_dict()
             )
-        elif kind is ValueType.CURVE:
-            edited_default = self._render_curve_property(
+        if value_type is ValueType.CURVE:
+            return self._render_curve_property(
                 ctx,
                 f"parameter_{parameter.stable_id}",
                 "default",
-                default,
-                semantic_prefix=(
-                    f"particle_graph.parameter.{parameter.stable_id}.default"
-                ),
+                value,
+                semantic_prefix=semantic_prefix,
             )
-        elif kind is ValueType.GRADIENT:
-            edited_default = self._render_gradient_property(
+        if value_type is ValueType.GRADIENT:
+            return self._render_gradient_property(
                 ctx,
                 f"parameter_{parameter.stable_id}",
                 "default",
-                default,
-                semantic_prefix=(
-                    f"particle_graph.parameter.{parameter.stable_id}.default"
-                ),
+                value,
+                semantic_prefix=semantic_prefix,
             )
-        else:
-            edited_default = [
-                float(
-                    ctx.drag_float(
-                        f"{label} {axis}##particle_parameter_default_{axis}",
-                        float(component),
-                        0.05,
-                        -1.0e7,
-                        1.0e7,
-                    )
-                )
-                for axis, component in zip("XYZW", default)
-            ]
-        if kind not in {
-            ValueType.TEXTURE2D,
-            ValueType.MESH,
-            ValueType.CURVE,
-            ValueType.GRADIENT,
-        }:
-            edited_default = preserve_ui_float_precision(edited_default, default)
-        if edited_default != default:
-            changes["default"] = edited_default
-
-        exposed = bool(
-            ctx.checkbox(
-                f"{t('particle_graph_editor.parameter_exposed')}##particle_parameter_exposed",
-                parameter.exposed,
-            )
+        return super()._render_node_graph_parameter_default(
+            ctx,
+            parameter,
+            value_type,
+            value,
+            label=label,
+            semantic_prefix=semantic_prefix,
         )
-        if exposed != parameter.exposed:
-            changes["exposed"] = exposed
-        writable_supported = kind not in {
-            ValueType.CURVE,
-            ValueType.GRADIENT,
-            ValueType.TEXTURE2D,
-            ValueType.MESH,
-        }
-        writable = bool(
-            ctx.checkbox(
-                f"{t('particle_graph_editor.parameter_writable')}##particle_parameter_writable",
-                parameter.writable if writable_supported else False,
-            )
-        )
-        if writable_supported and writable != parameter.writable:
-            changes["writable"] = writable
-        elif not writable_supported and parameter.writable:
-            changes["writable"] = False
-        tooltip = ctx.text_input(
-            f"{t('particle_graph_editor.parameter_tooltip')}##particle_parameter_tooltip",
-            parameter.tooltip,
-            512,
-        )
-        if tooltip != parameter.tooltip:
-            changes["tooltip"] = tooltip
-        if changes:
-            try:
-                self.update_authoring_parameter(parameter.stable_id, changes)
-            except (TypeError, ValueError) as exc:
-                Debug.log_warning(f"Particle parameter edit rejected: {exc}")
 
     def _render_event_type_properties(self, ctx: InxGUIContext) -> None:
         event_type = next(
@@ -4568,33 +4215,13 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             )
         if kind is EmitterShapeKind.MESH:
             selected_meshes: list[AssetReference] = []
+            descriptor = asset_type_registry.require("Mesh")
 
-            def _select_mesh(path):
-                from Infernux.core.asset_types import MESH_EXTENSIONS
-
-                if (builtin := _selected_builtin_mesh(path)) is not None:
-                    selected_meshes.append(builtin)
-                    return
-                target = resolved_path(str(path))
-                if os.path.splitext(target)[1].lower() not in MESH_EXTENSIONS:
-                    Debug.log_warning(f"Particle emitter shape requires a model asset: {path}")
-                    return
-                guid = _asset_guid_from_path(target)
-                if not guid:
-                    Debug.log_warning(f"Particle emitter shape asset is not imported: {path}")
-                    return
-                selected_meshes.append(
-                    AssetReference(guid, _portable_asset_path_hint(target))
-                )
-
-            def _mesh_picker(query):
-                from Infernux.core.asset_types import MESH_EXTENSIONS
-
-                items = []
-                items.extend(_builtin_mesh_picker_items(query))
-                for extension in sorted(MESH_EXTENSIONS):
-                    items.extend(_picker_assets(query, f"*{extension}"))
-                return items
+            def _select_mesh(value):
+                try:
+                    selected_meshes.append(_particle_asset_reference("Mesh", value))
+                except (KeyError, TypeError, ValueError) as exc:
+                    Debug.log_error(f"Particle emitter shape assignment rejected: {exc}")
 
             _mesh_ping = str(mesh.path_hint or "").strip()
             if _mesh_ping:
@@ -4602,17 +4229,19 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                     _mesh_ping = resolved_path(_mesh_ping) or _mesh_ping
                 except Exception:
                     pass
-            render_object_field(
+            render_asset_reference_field(
                 ctx,
                 "particle_emitter_shape_mesh",
                 _mesh_reference_display(mesh),
-                "Mesh",
-                accept_drag_type=("MODEL_GUID", "MODEL_FILE", "ASSET_FILE"),
-                on_drop_callback=_select_mesh,
-                picker_asset_items=_mesh_picker,
-                on_pick=_select_mesh,
+                descriptor.display_name,
+                asset_type=descriptor.type_id,
+                accept_drag_type=descriptor.drag_types,
+                on_assign=_select_mesh,
+                additional_asset_items=_builtin_mesh_picker_items,
                 on_clear=lambda: selected_meshes.append(AssetReference()),
                 ping_path=_mesh_ping or None,
+                has_value=bool(mesh.guid or mesh.path_hint or builtin_mesh_name(mesh)),
+                reference_value=_particle_reference_value("Mesh", mesh),
                 semantic_id="particle_graph.emitter.shape.mesh",
             )
             if selected_meshes:
@@ -4786,29 +4415,18 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             reference = self._data_interface_reference(replacement)
             path_hint = str(reference.path_hint or "")
             selected_references: list[AssetReference] = []
-            required_extensions, asset_label = self._data_interface_asset_contract(
-                replacement
-            )
+            asset_type = self._data_interface_asset_contract(replacement)
+            descriptor = asset_type_registry.require(asset_type)
 
-            def _select_asset(path, *, _extensions=required_extensions):
-                target = resolved_path(str(path))
-                if os.path.splitext(target)[1].lower() not in _extensions:
-                    Debug.log_warning(
-                        f"Particle Data Interface requires one of {_extensions}: {path}"
+            def _select_asset(value):
+                try:
+                    selected_references.append(
+                        _particle_asset_reference(asset_type, value)
                     )
-                    return
-                guid = _asset_guid_from_path(target)
-                if not guid:
-                    Debug.log_warning(
-                        f"Particle Data Interface asset is not imported: {path}"
+                except (KeyError, TypeError, ValueError) as exc:
+                    Debug.log_error(
+                        f"Particle Data Interface assignment rejected: {exc}"
                     )
-                    return
-                selected_references.append(
-                    AssetReference(
-                        guid=guid,
-                        path_hint=_portable_asset_path_hint(target),
-                    )
-                )
 
             _iface_ping = str(path_hint or "").strip()
             if _iface_ping:
@@ -4816,21 +4434,18 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                     _iface_ping = resolved_path(_iface_ping) or _iface_ping
                 except Exception:
                     pass
-            render_object_field(
+            render_asset_reference_field(
                 ctx,
                 f"particle_interface_asset_{interface.stable_id}",
                 os.path.basename(path_hint) if path_hint else t("igui.none"),
-                asset_label,
-                accept_drag_type=("TEXTURE_GUID", "TEXTURE_FILE", "ASSET_FILE"),
-                on_drop_callback=_select_asset,
-                picker_asset_items=lambda query: [
-                    item
-                    for item in _picker_assets(query, "*.*")
-                    if os.path.splitext(str(item[1]))[1].lower() in required_extensions
-                ],
-                on_pick=_select_asset,
+                descriptor.display_name,
+                accept_drag_type=descriptor.drag_types,
+                on_assign=_select_asset,
                 on_clear=lambda: selected_references.append(AssetReference()),
                 ping_path=_iface_ping or None,
+                has_value=bool(reference.guid or reference.path_hint),
+                asset_type=descriptor.type_id,
+                reference_value=_particle_reference_value(asset_type, reference),
                 semantic_id=f"particle_graph.interface.{interface.stable_id}.asset",
             )
             if selected_references:
@@ -5111,22 +4726,17 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             elif value_type is ValueType.TEXTURE2D:
                 reference = AssetReference.from_dict(value)
                 selected_references: list[AssetReference] = []
+                descriptor = asset_type_registry.require("Texture")
 
-                def _select_texture(path):
-                    from Infernux.core.asset_types import IMAGE_EXTENSIONS
-
-                    guid, target = _project_texture_guid_and_path(path)
-                    if not guid:
-                        Debug.log_warning(
-                            f"Particle Output texture must use a project asset: {path}"
+                def _select_texture(candidate):
+                    try:
+                        selected_references.append(
+                            _particle_asset_reference("Texture", candidate)
                         )
-                        return
-                    selected_references.append(
-                        AssetReference(guid, _portable_asset_path_hint(target))
-                    )
-
-                def _texture_picker(query):
-                    return _picker_texture_assets(query)
+                    except (KeyError, TypeError, ValueError) as exc:
+                        Debug.log_error(
+                            f"Particle Output texture assignment rejected: {exc}"
+                        )
 
                 ping_path = str(reference.path_hint or "").strip()
                 if ping_path:
@@ -5134,19 +4744,20 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                         ping_path = _resolve_project_asset_path(ping_path) or ping_path
                     except Exception:
                         pass
-                render_object_field(
+                render_asset_reference_field(
                     ctx,
                     f"particle_node_{key}",
                     os.path.basename(reference.path_hint)
                     if reference.path_hint
                     else (reference.guid or t("igui.none")),
-                    "Texture",
-                    accept_drag_type=("TEXTURE_GUID", "TEXTURE_FILE", "ASSET_FILE"),
-                    on_drop_callback=_select_texture,
-                    picker_asset_items=_texture_picker,
-                    on_pick=_select_texture,
+                    descriptor.display_name,
+                    asset_type=descriptor.type_id,
+                    accept_drag_type=descriptor.drag_types,
+                    on_assign=_select_texture,
                     on_clear=lambda: selected_references.append(AssetReference()),
                     ping_path=ping_path or None,
+                    has_value=bool(reference.guid or reference.path_hint),
+                    reference_value=_particle_reference_value("Texture", reference),
                     semantic_id=semantic_id,
                 )
                 if selected_references:
@@ -5168,30 +4779,17 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                     else os.path.basename(path_hint) if path_hint else t("igui.none")
                 )
                 asset_kind = "Mesh" if is_mesh else "Material"
-                drag_types = (
-                    ("MODEL_GUID", "MODEL_FILE", "ASSET_FILE")
-                    if is_mesh
-                    else ("MATERIAL_FILE", "ASSET_FILE")
-                )
+                descriptor = asset_type_registry.require(asset_kind)
 
-                def _select_asset(path):
-                    if is_mesh and (builtin := _selected_builtin_mesh(path)) is not None:
-                        selected_reference.append(builtin.to_dict())
-                        return
-                    normalized = str(path).replace("\\", "/")
-                    selected_reference.append(
-                        {"guid": _asset_guid_from_path(str(path)), "path_hint": normalized}
-                    )
-
-                def _picker(query):
-                    if not is_mesh:
-                        return _picker_assets(query, "*.mat")
-                    from Infernux.core.asset_types import MESH_EXTENSIONS
-
-                    items = _builtin_mesh_picker_items(query)
-                    for extension in sorted(MESH_EXTENSIONS):
-                        items.extend(_picker_assets(query, f"*{extension}"))
-                    return items
+                def _select_asset(candidate):
+                    try:
+                        selected_reference.append(
+                            _particle_asset_reference(asset_kind, candidate).to_dict()
+                        )
+                    except (KeyError, TypeError, ValueError) as exc:
+                        Debug.log_error(
+                            f"Particle node {asset_kind} assignment rejected: {exc}"
+                        )
 
                 _node_ping = str(path_hint or "").strip()
                 if _node_ping:
@@ -5199,17 +4797,25 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                         _node_ping = resolved_path(_node_ping) or _node_ping
                     except Exception:
                         pass
-                render_object_field(
+                render_asset_reference_field(
                     ctx,
                     f"particle_node_{key}",
                     display,
-                    asset_kind,
-                    accept_drag_type=drag_types,
-                    on_drop_callback=_select_asset,
-                    picker_asset_items=_picker,
-                    on_pick=_select_asset,
+                    descriptor.display_name,
+                    asset_type=descriptor.type_id,
+                    accept_drag_type=descriptor.drag_types,
+                    on_assign=_select_asset,
+                    additional_asset_items=(
+                        _builtin_mesh_picker_items if is_mesh else None
+                    ),
                     on_clear=lambda: selected_reference.append({"guid": "", "path_hint": ""}),
                     ping_path=_node_ping or None,
+                    has_value=bool(reference.get("guid") or path_hint),
+                    reference_value=(
+                        _particle_reference_value(asset_kind, mesh_reference)
+                        if mesh_reference is not None
+                        else AssetReferenceCodec.normalize(asset_kind, reference)
+                    ),
                     semantic_id=f"particle_graph.node.{node.uid}.property.{key}",
                 )
                 if selected_reference:
@@ -5536,7 +5142,9 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
     def _render_node_graph_toolbar(self, ctx: InxGUIContext) -> None:
         save_label = t("particle_graph_editor.save")
         if ctx.button(save_label):
-            self._do_save()
+            from Infernux.engine.interaction import CommandSource
+
+            self._execute_node_graph_command("file.save", source=CommandSource.TOOLBAR)
         if bool(getattr(ctx, "semantic_capture_enabled", True)):
             ctx.record_semantic_item("button", save_label, True, "particle_graph.toolbar.save")
         ctx.same_line(0, 12)
@@ -5551,25 +5159,37 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
     def _render_node_graph_left_panel(self, ctx: InxGUIContext) -> None:
         self._render_emitter_list(ctx)
 
-    def _render_node_graph_detail_panel(self, ctx: InxGUIContext) -> None:
-        if self._selected_node_uid:
-            self._render_node_properties(ctx)
-        elif self._selected_parameter_id:
-            self._render_parameter_properties(ctx)
-        elif self._selected_event_type_id:
-            self._render_event_type_properties(ctx)
-        else:
-            self._render_emitter_settings(ctx)
+    def _node_graph_detail_contributors(
+        self,
+    ) -> tuple[GraphDetailContributor, ...]:
+        return (
+            GraphDetailContributor(
+                "particle.node",
+                400,
+                lambda: bool(self._selected_node_uid),
+                self._render_node_properties,
+            ),
+            GraphDetailContributor(
+                "parameter",
+                300,
+                self._is_node_graph_parameter_detail_active,
+                lambda ctx: self._render_node_graph_parameter_detail(ctx),
+            ),
+            GraphDetailContributor(
+                "particle.event",
+                200,
+                lambda: bool(self._selected_event_type_id),
+                self._render_event_type_properties,
+            ),
+            GraphDetailContributor(
+                "particle.emitter",
+                0,
+                lambda: True,
+                self._render_emitter_settings,
+            ),
+        )
 
     def _node_graph_defer_canvas_drop_target(self) -> bool:
         return True
-
-    def _after_node_graph_render(self, ctx: InxGUIContext) -> None:
-        self._save_as_dialog.render(
-            ctx,
-            self._save_to,
-            cancel_callback=self._cancel_pending_save,
-        )
-
 
 __all__ = ["ParticleGraphEditorPanel"]

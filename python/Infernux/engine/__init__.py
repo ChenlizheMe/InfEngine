@@ -29,7 +29,7 @@ _EDITOR_UI_EXPORTS = {
     "InspectorPanel", "ConsolePanel", "SceneViewPanel", "GameViewPanel",
     "ProjectPanel", "WindowManager", "TagLayerSettingsPanel", "StatusBarPanel",
     "BuildSettingsPanel", "UIEditorPanel", "EditorPanel", "EditorServices",
-    "EditorEventBus", "EditorEvent", "PanelRegistry", "editor_panel",
+    "PanelRegistry", "editor_panel",
 }
 
 
@@ -336,8 +336,6 @@ if not _PLAYER_MODE:
         # Panel framework
         "EditorPanel",
         "EditorServices",
-        "EditorEventBus",
-        "EditorEvent",
         "PanelRegistry",
         "editor_panel",
     ]

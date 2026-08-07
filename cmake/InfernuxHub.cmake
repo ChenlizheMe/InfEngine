@@ -23,6 +23,7 @@ add_custom_target(infernux_hub
         --dist-dir "${CMAKE_SOURCE_DIR}/dist"
         --cmake-generator "${CMAKE_GENERATOR}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/packaging"
+    DEPENDS prepare_bundled_python_runtime
     COMMENT "Build MSVC-compiled Infernux Hub via MSBuild → dist/Infernux Hub/"
 )
 

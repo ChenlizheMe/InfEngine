@@ -14,6 +14,7 @@ from .documents import (
     DocumentActionStatus,
     DocumentKind,
     DocumentRegistry,
+    DocumentState,
     EditorDocument,
 )
 
@@ -30,6 +31,7 @@ class CloseState(str, Enum):
     IDLE = "idle"
     AWAITING_DECISION = "awaiting_decision"
     WAITING_FOR_SAVE = "waiting_for_save"
+    WAITING_FOR_CONFLICT = "waiting_for_conflict"
 
 
 class CloseIssue(str, Enum):
@@ -155,10 +157,19 @@ class CloseCoordinator:
             return
         intent = self._intent
         if intent is not None and intent.kind in {
-            CloseIntentKind.REPLACE_DOCUMENT,
             CloseIntentKind.CLOSE_PROJECT,
             CloseIntentKind.EXIT_EDITOR,
-            CloseIntentKind.RESET_LAYOUT,
+        }:
+            try:
+                self.registry.abandon_session_changes(document.document_id)
+            except Exception as exc:
+                self._set_issue(CloseIssue.DISCARD_FAILED, str(exc))
+                return
+            self._cursor += 1
+            self._advance()
+            return
+        if intent is not None and intent.kind in {
+            CloseIntentKind.REPLACE_DOCUMENT,
         }:
             self._cursor += 1
             self._advance()
@@ -177,6 +188,21 @@ class CloseCoordinator:
         self._advance()
 
     def poll(self) -> None:
+        if self._state is CloseState.WAITING_FOR_CONFLICT:
+            document = self.active_document
+            if document is None:
+                self._cursor += 1
+                self._advance()
+                return
+            if document.state is DocumentState.CONFLICT:
+                return
+            if document.is_dirty:
+                self._state = CloseState.AWAITING_DECISION
+                self._clear_issue()
+                return
+            self._cursor += 1
+            self._advance()
+            return
         if self._state is not CloseState.WAITING_FOR_SAVE:
             return
         document = self.active_document
@@ -202,7 +228,12 @@ class CloseCoordinator:
 
     def _resolve_document_ids(self, intent: CloseIntent) -> tuple[str, ...]:
         candidates: Iterable[str]
-        if intent.document_ids:
+        if intent.kind is CloseIntentKind.RESET_LAYOUT:
+            # Reset Layout always carries an explicit view-derived scope. An
+            # empty tuple means no document loses its final View; it must not
+            # fall through to the EXIT/CLOSE_PROJECT meaning of "all dirty".
+            candidates = intent.document_ids
+        elif intent.document_ids:
             candidates = intent.document_ids
         elif intent.view_id:
             document = self.registry.document_for_view(intent.view_id)
@@ -216,7 +247,12 @@ class CloseCoordinator:
                 candidates = (document.document_id,) if document is not None else ()
         else:
             documents = sorted(
-                self.registry.dirty_documents(),
+                (
+                    document
+                    for document in self.registry.documents
+                    if document.is_dirty
+                    or document.state is DocumentState.CONFLICT
+                ),
                 key=lambda document: {
                     DocumentKind.PREFAB: 1,
                     DocumentKind.SCENE: 2,
@@ -229,7 +265,10 @@ class CloseCoordinator:
             if document_id in seen:
                 continue
             document = self.registry.get(document_id)
-            if document is None or not document.is_dirty:
+            if document is None or (
+                not document.is_dirty
+                and document.state is not DocumentState.CONFLICT
+            ):
                 continue
             seen.add(document_id)
             result.append(document_id)
@@ -238,6 +277,10 @@ class CloseCoordinator:
     def _advance(self) -> None:
         while self._cursor < len(self._document_ids):
             document = self.registry.get(self._document_ids[self._cursor])
+            if document is not None and document.state is DocumentState.CONFLICT:
+                self._state = CloseState.WAITING_FOR_CONFLICT
+                self._clear_issue()
+                return
             if document is not None and document.is_dirty:
                 self._state = CloseState.AWAITING_DECISION
                 self._clear_issue()

@@ -52,6 +52,12 @@ int main()
         Require(initial->GetGeneration() == 0 && initial->GetEdgeCount() == 0,
                 "retained dependency snapshot changed after publication");
 
+        graph.RemoveAsset("dependency-a-0");
+        Require(graph.HasDependency("asset-0", "dependency-a-0"),
+                "asset deletion discarded a serialized missing reference");
+        Require(graph.HasDependency("runtime-object", "dependency-a-0"),
+                "asset deletion discarded a runtime missing reference");
+
         bool rejectedStale = false;
         try {
             graph.InstallAssetSnapshot(built);
@@ -62,7 +68,7 @@ int main()
 
         auto replacement = dependencies;
         replacement.erase("asset-0");
-        graph.InstallAssetSnapshot(AssetDependencyGraph::BuildAssetSnapshot(replacement, 2));
+        graph.InstallAssetSnapshot(AssetDependencyGraph::BuildAssetSnapshot(replacement, 3));
         Require(!graph.HasDependency("asset-0", "dependency-a-0"), "replacement retained a removed asset edge");
         Require(graph.HasDependency("runtime-object", "dependency-a-0"), "replacement removed runtime usage");
         Require(built->GetEdgeCount() == userCount * 2, "retained generation changed after replacement");

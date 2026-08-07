@@ -528,6 +528,7 @@ def test_particle_system_deserialize_repairs_missing_runtime_override_cache(
 def test_particle_system_inspector_document_edits_undo_fields_parameters_and_emitters(
     scene, monkeypatch, tmp_path
 ):
+    from Infernux.engine.interaction import EditorInteractionCore
     from Infernux.engine.ui._inspector_undo import (
         _record_python_component_document_edit,
     )
@@ -554,7 +555,7 @@ def test_particle_system_inspector_document_edits_undo_fields_parameters_and_emi
 
     previous_manager = UndoManager.instance()
     manager = UndoManager()
-    manager._sync_dirty = lambda: None
+    core = EditorInteractionCore()
     try:
         _record_python_component_document_edit(
             component,
@@ -593,6 +594,7 @@ def test_particle_system_inspector_document_edits_undo_fields_parameters_and_emi
         manager.redo()
         assert component.emitter_instance_schema()[0]["enabled"] is False
     finally:
+        core.shutdown()
         UndoManager._instance = previous_manager
 
 

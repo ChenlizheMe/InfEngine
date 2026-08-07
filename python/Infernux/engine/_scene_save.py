@@ -16,12 +16,19 @@ This module orchestrates those primitives into a complete workflow.
 """
 from __future__ import annotations
 
+import json
 import os
 from typing import Optional
 
 from Infernux.debug import Debug
 from Infernux.engine.project_context import get_project_root
-from Infernux.engine.path_utils import is_path_within, path_key, resolved_path, safe_path as _safe_path
+from Infernux.engine.path_utils import (
+    is_path_within,
+    path_key,
+    resolved_path,
+    safe_path as _safe_path,
+    same_path,
+)
 from .scene_manager import (
     SCENE_EXTENSION,
     DEFAULT_SCENE_FILE_BASE,
@@ -48,6 +55,37 @@ def save_file_dialog(**kwargs):
 
 class SceneSaveMixin:
     """SceneSaveMixin method group for SceneFileManager."""
+
+    _SAVE_AS_MODAL_ID = "scene.save_as"
+    _SAVE_AS_ALLOWED_PARENT_IDS = ("editor.unsaved_changes",)
+
+    def _ensure_save_as_modal_presenter(self):
+        """Lazily bind Scene Save As to the current Editor session."""
+        from Infernux.engine.interaction import EditorInteractionCore
+
+        core = EditorInteractionCore.instance()
+        if core is None:
+            return None
+        service = core.modals
+        if self._save_as_modal_service is service:
+            return service
+        if self._save_as_modal_service is not None:
+            self._save_as_modal_service.unregister(
+                self._SAVE_AS_MODAL_ID,
+                cancel=True,
+            )
+        self._save_as_modal_service = service
+        service.register(
+            self._SAVE_AS_MODAL_ID,
+            is_active=lambda: bool(
+                self._save_as_popup_open
+                or self._save_as_native_dialog_pending
+            ),
+            render=self.render_save_as_popup,
+            cancel=self._cancel_save_as,
+            allowed_parent_ids=self._SAVE_AS_ALLOWED_PARENT_IDS,
+        )
+        return service
 
     def save_current_scene(self) -> bool:
         """Save the current scene.  If no file is associated, show a Save-As dialog.
@@ -134,6 +172,33 @@ class SceneSaveMixin:
             ticket_id=ticket.ticket_id,
         )
 
+    def save_to_resource(self, *, ticket, resource_path: str):
+        """Persist an automation-selected path under the normal save contract."""
+        from Infernux.engine.interaction import (
+            DocumentActionResult,
+            DocumentActionStatus,
+            DocumentKind,
+            DocumentRegistry,
+        )
+
+        if self._is_play_mode():
+            return DocumentActionResult(
+                DocumentActionStatus.REJECTED,
+                "cannot save a scene while in Play mode",
+            )
+        document = DocumentRegistry.instance().get(ticket.document_id)
+        if document is None or document.document_id != self.document_id:
+            return DocumentActionResult(
+                DocumentActionStatus.REJECTED,
+                "the scene document is not active",
+            )
+        if document.kind is not DocumentKind.SCENE:
+            return DocumentActionResult(
+                DocumentActionStatus.REJECTED,
+                "explicit resource save only supports Scene documents",
+            )
+        return self._do_save(resource_path, ticket_id=ticket.ticket_id)
+
     def discard(self, *, document_id: str) -> bool:
         from Infernux.engine.interaction import DocumentKind, DocumentRegistry
 
@@ -151,9 +216,12 @@ class SceneSaveMixin:
             # a live Prefab in-place requires its own command transaction.
             return False
         if self._current_scene_path:
-            return bool(self._do_open_scene(self._current_scene_path))
-        if document.is_dirty:
-            registry.mark_saved(document.document_id)
+            return bool(
+                self._do_open_scene(
+                    self._current_scene_path,
+                    record_navigation=False,
+                )
+            )
         return True
 
     def _save_prefab(self, *, ticket_id: str = "") -> bool:
@@ -163,7 +231,14 @@ class SceneSaveMixin:
             return False
 
         from Infernux.lib import SceneManager
-        from Infernux.engine.prefab_manager import save_prefab
+        from Infernux.engine.prefab_manager import (
+            save_prefab_document,
+            serialize_prefab_document,
+        )
+        from Infernux.engine.interaction import (
+            DocumentRegistry,
+            document_content_token,
+        )
 
         scene = SceneManager.instance().get_active_scene()
         roots = _get_scene_root_objects(scene)
@@ -174,36 +249,61 @@ class SceneSaveMixin:
         source_canvas_name = ""
         if isinstance(self.prefab_envelope, dict):
             source_canvas_name = self.prefab_envelope.get("source_canvas_name", "")
-        if not save_prefab(
-            roots[0],
-            self.prefab_mode_path,
-            asset_database=self._asset_database,
-            source_canvas_name=source_canvas_name,
-        ):
-            if ticket_id:
-                from Infernux.engine.interaction import DocumentRegistry
-
-                DocumentRegistry.instance().complete_save(
-                    ticket_id,
-                    success=False,
-                    message=f"failed to save prefab: {self.prefab_mode_path}",
-                )
-            return False
-
-        from Infernux.engine.interaction import DocumentRegistry
-
         registry = DocumentRegistry.instance()
         document = registry.get(self.document_id)
-        if ticket_id:
-            registry.complete_save(
-                ticket_id,
-                success=True,
-                key=self._document_key("prefab", self.prefab_mode_path),
-                resource_path=self.prefab_mode_path,
-                title=os.path.splitext(os.path.basename(self.prefab_mode_path))[0],
+        active_ticket_id = str(ticket_id or "")
+        if document is None:
+            Debug.log_error("Prefab save requires a bound editor document.")
+            return False
+        if not active_ticket_id:
+            active_ticket_id = registry.begin_save(document.document_id).ticket_id
+        try:
+            prefab_document = serialize_prefab_document(
+                roots[0],
+                source_canvas_name=source_canvas_name,
             )
-        elif document is not None and document.is_dirty:
-            registry.mark_saved(document.document_id)
+            serialized_token = document_content_token(prefab_document)
+            registry.capture_save_revision(
+                active_ticket_id,
+                content_token=serialized_token,
+            )
+        except Exception as exc:
+            registry.complete_save(
+                active_ticket_id,
+                success=False,
+                message=f"failed to serialize prefab: {exc}",
+            )
+            return False
+        if not save_prefab_document(
+            prefab_document,
+            self.prefab_mode_path,
+            asset_database=self._asset_database,
+        ):
+            registry.complete_save(
+                active_ticket_id,
+                success=False,
+                message=f"failed to save prefab: {self.prefab_mode_path}",
+            )
+            return False
+
+        current_token = None
+        try:
+            current_token = document_content_token(
+                serialize_prefab_document(
+                    roots[0],
+                    source_canvas_name=source_canvas_name,
+                )
+            )
+        except Exception as exc:
+            Debug.log_suppressed("prefab_save.current_content_token", exc)
+        registry.complete_save(
+            active_ticket_id,
+            success=True,
+            key=self._document_key("prefab", self.prefab_mode_path),
+            resource_path=self.prefab_mode_path,
+            title=os.path.splitext(os.path.basename(self.prefab_mode_path))[0],
+            content_token=current_token,
+        )
         Debug.log_internal(f"Prefab saved: {self.prefab_mode_path}")
         return True
 
@@ -224,52 +324,62 @@ class SceneSaveMixin:
     def _do_save(self, path: str, *, ticket_id: str = "") -> bool:
         """Actually write the scene to *path*."""
         from Infernux.engine.ui.engine_status import EngineStatus
-        ok = self._do_save_inner(path)
-        if ok:
-            from Infernux.engine.interaction import DocumentRegistry
+        target_path = str(path or "")
+        if not target_path.lower().endswith(SCENE_EXTENSION):
+            target_path += SCENE_EXTENSION
+        active_ticket_id = ticket_id or self._pending_save_ticket_id
+        from Infernux.engine.interaction import (
+            DocumentRegistry,
+            document_content_token,
+        )
 
-            registry = DocumentRegistry.instance()
-            document = registry.get(self.document_id)
-            active_ticket_id = ticket_id or self._pending_save_ticket_id
-            normalized = resolved_path(path)
-            if active_ticket_id:
-                registry.complete_save(
-                    active_ticket_id,
-                    success=True,
-                    key=self._document_key("scene", normalized),
-                    resource_path=normalized,
-                    title=os.path.splitext(os.path.basename(normalized))[0],
-                )
-                self._pending_save_ticket_id = ""
-                self._pending_save_document_id = ""
-            elif document is not None:
-                registry.rekey(
-                    document.document_id,
-                    self._document_key("scene", normalized),
-                    resource_path=normalized,
-                )
-                registry.update_metadata(
-                    document.document_id,
-                    title=os.path.splitext(os.path.basename(normalized))[0],
-                )
-                registry.mark_saved(document.document_id)
+        registry = DocumentRegistry.instance()
+        document = registry.get(self.document_id)
+        if document is None:
+            Debug.log_error("Scene save requires a bound editor document.")
+            return False
+        if not active_ticket_id:
+            current = resolved_path(self._current_scene_path) if self._current_scene_path else ""
+            target = resolved_path(target_path)
+            active_ticket_id = registry.begin_save(
+                document.document_id,
+                save_as=not current or not same_path(target, current),
+            ).ticket_id
+        ok = self._do_save_inner(target_path, ticket_id=active_ticket_id)
+        if ok:
+            normalized = resolved_path(target_path)
+            current_token = None
+            try:
+                from Infernux.lib import SceneManager
+
+                scene = SceneManager.instance().get_active_scene()
+                if scene is not None:
+                    current_token = document_content_token(json.loads(scene.serialize()))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                Debug.log_suppressed("scene_save.current_content_token", exc)
+            registry.complete_save(
+                active_ticket_id,
+                success=True,
+                key=self._document_key("scene", normalized),
+                resource_path=normalized,
+                title=os.path.splitext(os.path.basename(normalized))[0],
+                content_token=current_token,
+            )
+            self._pending_save_ticket_id = ""
+            self._pending_save_document_id = ""
             EngineStatus.flash("保存完成 Saved", 1.0, duration=1.5)
         else:
-            active_ticket_id = ticket_id or self._pending_save_ticket_id
-            if active_ticket_id:
-                from Infernux.engine.interaction import DocumentRegistry
-
-                DocumentRegistry.instance().complete_save(
-                    active_ticket_id,
-                    success=False,
-                    message=f"failed to save scene: {path}",
-                )
-                self._pending_save_ticket_id = ""
-                self._pending_save_document_id = ""
+            registry.complete_save(
+                active_ticket_id,
+                success=False,
+                message=f"failed to save scene: {target_path}",
+            )
+            self._pending_save_ticket_id = ""
+            self._pending_save_document_id = ""
             EngineStatus.flash("保存失败 Save Failed", 0.0, duration=2.0)
         return ok
 
-    def _do_save_inner(self, path: str) -> bool:
+    def _do_save_inner(self, path: str, *, ticket_id: str = "") -> bool:
         """Internal save implementation.
 
         Serializes the scene on the main thread, then durably replaces the file
@@ -311,6 +421,22 @@ class SceneSaveMixin:
             Debug.log_error("Scene serialization returned empty data.")
             return False
 
+        if ticket_id:
+            try:
+                from Infernux.engine.interaction import (
+                    DocumentRegistry,
+                    document_content_token,
+                )
+
+                DocumentRegistry.instance().capture_save_revision(
+                    ticket_id,
+                    content_token=document_content_token(json.loads(json_str)),
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                scene.name = previous_scene_name
+                Debug.log_error(f"Scene serialization produced an invalid document: {exc}")
+                return False
+
         # Step 2: durably replace the scene file. The old daemon+immediate-join
         # path was synchronous in practice and could outlive a timeout.
         abs_path = resolved_path(path)
@@ -338,12 +464,6 @@ class SceneSaveMixin:
                     Debug.log_warning(f"Scene saved but asset registration is pending: {detail}")
             except Exception as exc:
                 Debug.log_warning(f"Scene saved but asset registration is pending: {exc}")
-
-        # Notify undo system of clean state
-        from Infernux.engine.undo import UndoManager
-        mgr = UndoManager.instance()
-        if mgr:
-            mgr.mark_save_point()
 
         # Persist editor camera state for this scene
         self._save_camera_state(self._current_scene_path)
@@ -375,9 +495,21 @@ class SceneSaveMixin:
 
     def _show_save_as_dialog(self, *, document_id: str = "") -> bool:
         """Open the appropriate Save As workflow for a user or automation agent."""
+        if self._save_as_popup_open or self._save_as_native_dialog_pending:
+            return False
         root = _effective_project_root()
         if not root:
             Debug.log_warning("No project root set — cannot save scene.")
+            return False
+
+        modal_service = self._ensure_save_as_modal_presenter()
+        if modal_service is None:
+            Debug.log_warning("Scene Save As requires an active Editor interaction session.")
+            return False
+        if not modal_service.activate(
+            self._SAVE_AS_MODAL_ID,
+            owner_id="scene",
+        ):
             return False
 
         from Infernux.engine.interaction import DocumentRegistry
@@ -400,7 +532,7 @@ class SceneSaveMixin:
         return True
 
     def render_save_as_popup(self, ctx) -> None:
-        """Render the scene Save As workflow inside the Editor process."""
+        """Render Scene Save As through the global ModalPortal."""
         if self._save_as_native_dialog_pending:
             self._save_as_native_dialog_pending = False
             self._save_with_native_dialog()
@@ -409,16 +541,24 @@ class SceneSaveMixin:
         if not self._save_as_popup_open:
             return
 
-        popup_id = "Save Scene As###scene_save_as"
-        if self._save_as_popup_requested:
-            ctx.open_popup(popup_id)
-            self._save_as_popup_requested = False
+        from Infernux.engine.ui.editor_modal import (
+            EditorModalAction,
+            begin_editor_modal,
+            end_editor_modal,
+            render_editor_modal_actions,
+        )
 
-        # ImGuiWindowFlags_AlwaysAutoResize = 1 << 6 = 64.
-        if not ctx.begin_popup_modal(popup_id, 64):
+        request_open = self._save_as_popup_requested
+        self._save_as_popup_requested = False
+        if not begin_editor_modal(
+            ctx,
+            popup_id="Save Scene As###scene_save_as",
+            title="Save Scene As",
+            semantic_id="scene.save_as",
+            request_open=request_open,
+            height=280.0,
+        ):
             return
-
-        ctx.record_semantic_window("modal", "Save Scene As", "scene.save_as")
         ctx.label("保存场景到项目 Assets 目录")
         ctx.label("Save the scene under this project's Assets directory.")
         ctx.spacing()
@@ -453,15 +593,18 @@ class SceneSaveMixin:
             self._close_save_as_popup(ctx)
 
         def _cancel() -> None:
-            self._close_save_as_popup(ctx)
+            ctx.close_current_popup()
             self._cancel_save_as()
 
-        ctx.button("Save##scene_save_as_confirm", _save)
-        ctx.record_semantic_item("button", "Save", True, "scene.save_as.confirm")
-        ctx.same_line()
-        ctx.button("Cancel##scene_save_as_cancel", _cancel)
-        ctx.record_semantic_item("button", "Cancel", True, "scene.save_as.cancel")
-        ctx.end_popup()
+        render_editor_modal_actions(
+            ctx,
+            [
+                EditorModalAction("Save", "confirm", _save),
+                EditorModalAction("Cancel", "cancel", _cancel),
+            ],
+            semantic_prefix="scene.save_as",
+        )
+        end_editor_modal(ctx)
 
     def _resolve_save_as_path(self) -> tuple[str, str]:
         root = _effective_project_root()
@@ -524,6 +667,7 @@ class SceneSaveMixin:
             Debug.log_warning(message)
             self._cancel_save_as(message=message)
             return
+        self._finish_save_as()
 
     def _save_as_path(self, path: str) -> bool:
         from Infernux.engine.interaction import DocumentRegistry
@@ -565,11 +709,20 @@ class SceneSaveMixin:
         target = resolved_path(path)
         if not target.lower().endswith(SCENE_EXTENSION):
             target += SCENE_EXTENSION
-        try:
-            import json
+        from Infernux.engine.interaction import (
+            DocumentRegistry,
+            document_content_token,
+        )
 
+        registry = DocumentRegistry.instance()
+        try:
             payload = dict(self._previous_scene_document)
             payload["name"] = os.path.splitext(os.path.basename(target))[0]
+            serialized_token = document_content_token(payload)
+            registry.capture_save_revision(
+                ticket_id,
+                content_token=serialized_token,
+            )
             from Infernux.core.document_store import DocumentStore
 
             DocumentStore.instance().write_and_wait(
@@ -577,9 +730,7 @@ class SceneSaveMixin:
                 json.dumps(payload, ensure_ascii=False),
             )
         except Exception as exc:
-            from Infernux.engine.interaction import DocumentRegistry
-
-            DocumentRegistry.instance().complete_save(
+            registry.complete_save(
                 ticket_id,
                 success=False,
                 message=str(exc),
@@ -592,15 +743,13 @@ class SceneSaveMixin:
                 AssetManager.import_asset(target, database=self._asset_database)
             except Exception as exc:
                 Debug.log_warning(f"Scene saved but asset registration is pending: {exc}")
-        from Infernux.engine.interaction import DocumentRegistry
-
-        registry = DocumentRegistry.instance()
         registry.complete_save(
             ticket_id,
             success=True,
             key=self._document_key("scene", target),
             resource_path=target,
             title=os.path.splitext(os.path.basename(target))[0],
+            content_token=serialized_token,
         )
         self._previous_scene_path = target
         self._pending_save_ticket_id = ""
@@ -608,15 +757,10 @@ class SceneSaveMixin:
         return True
 
     def _cancel_save_as(self, *, message: str = "save was cancelled") -> None:
-        self._save_as_popup_open = False
-        self._save_as_popup_requested = False
-        self._save_as_focus_name = False
-        self._save_as_agent_modal = False
-        self._save_as_native_dialog_pending = False
-        self._save_as_error = ""
         ticket_id = self._pending_save_ticket_id
         self._pending_save_ticket_id = ""
         self._pending_save_document_id = ""
+        self._reset_save_as_state()
         if ticket_id:
             from Infernux.engine.interaction import DocumentRegistry
 
@@ -628,13 +772,21 @@ class SceneSaveMixin:
             )
 
     def _close_save_as_popup(self, ctx) -> None:
+        ctx.close_current_popup()
+        self._finish_save_as()
+
+    def _finish_save_as(self) -> None:
+        self._reset_save_as_state()
+
+    def _reset_save_as_state(self) -> None:
         self._save_as_popup_open = False
         self._save_as_popup_requested = False
         self._save_as_focus_name = False
         self._save_as_agent_modal = False
         self._save_as_native_dialog_pending = False
         self._save_as_error = ""
-        ctx.close_current_popup()
+        if self._save_as_modal_service is not None:
+            self._save_as_modal_service.deactivate(self._SAVE_AS_MODAL_ID)
 
     def _is_under_assets(self, path: str) -> bool:
         """Check if *path* is within the project's Assets/ directory."""

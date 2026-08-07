@@ -10,7 +10,6 @@
 #include "function/audio/AudioEngine.h"
 #include "function/audio/AudioListener.h"
 #include "function/audio/AudioSource.h"
-#include "function/resources/AssetRegistry/AssetRegistry.h"
 #include "function/scene/Component.h"
 #include "function/scene/GameObject.h"
 
@@ -66,28 +65,10 @@ void RegisterAudioBindings(py::module_ &m)
              "Assign an AudioClip to a specific track")
         .def("get_track_clip", &AudioSource::GetTrackClip, py::arg("track_index"),
              "Get the AudioClip on a specific track")
-        .def(
-            "get_track_clip_guid",
-            [](const AudioSource &src, int trackIndex) -> std::string {
-                auto clip = src.GetTrackClip(trackIndex);
-                return clip ? clip->GetGuid() : "";
-            },
-            py::arg("track_index"), "Get the GUID of the AudioClip on a specific track")
-        .def(
-            "set_track_clip_by_guid",
-            [](AudioSource &src, int trackIndex, const std::string &guid) {
-                if (guid.empty()) {
-                    src.SetTrackClip(trackIndex, nullptr);
-                    return;
-                }
-                auto &registry = AssetRegistry::Instance();
-                if (!registry.IsInitialized())
-                    return;
-                auto clip = registry.LoadAsset<AudioClip>(guid, ResourceType::Audio);
-                if (clip)
-                    src.SetTrackClip(trackIndex, std::move(clip));
-            },
-            py::arg("track_index"), py::arg("guid"), "Set the AudioClip on a track by asset GUID")
+        .def("get_track_clip_guid", &AudioSource::GetTrackClipGuid, py::arg("track_index"),
+             "Get the GUID of the AudioClip on a specific track")
+        .def("set_track_clip_by_guid", &AudioSource::SetTrackClipGuid, py::arg("track_index"), py::arg("guid"),
+             "Set the AudioClip on a track by asset GUID")
         .def("set_track_volume", &AudioSource::SetTrackVolume, py::arg("track_index"), py::arg("volume"),
              "Set per-track volume (0.0–1.0)")
         .def("get_track_volume", &AudioSource::GetTrackVolume, py::arg("track_index"), "Get per-track volume")

@@ -56,6 +56,24 @@ class ImGuiBuildFrameGuard
     bool m_active = true;
 };
 
+void BringDockTreeToDisplayFront(ImGuiWindow *window)
+{
+    if (window == nullptr)
+        return;
+
+    ImGuiWindow *root = window->RootWindowDockTree != nullptr ? window->RootWindowDockTree : window;
+    ImGuiContext &imgui = *ImGui::GetCurrentContext();
+
+    // Dear ImGui's BringWindowToDisplayFront() moves only the supplied root
+    // pointer. A dock tree is represented by several entries in g.Windows;
+    // moving only its root destroys their established relative order and can
+    // leave a DockNode host above a sibling such as the editor toolbar. Move
+    // the complete presentation group instead, preserving its internal order.
+    std::stable_partition(imgui.Windows.begin(), imgui.Windows.end(), [root](ImGuiWindow *candidate) {
+        return candidate == nullptr || candidate->RootWindowDockTree != root;
+    });
+}
+
 } // namespace
 
 InxGUI::InxGUI(InxVkCoreModular *vkCore) : m_vkCore_ptr(vkCore)
@@ -375,8 +393,12 @@ void InxGUI::BuildFrame()
 
 bool InxGUI::BuildFrameIfDue(bool force)
 {
-    if (!m_editorFrameScheduler.Consume(EditorGuiFrameScheduler::Clock::now(), force || m_playerMode))
+    const auto now = EditorGuiFrameScheduler::Clock::now();
+    if (m_playerMode) {
+        (void)m_editorFrameScheduler.ConsumeUnthrottled(now, true);
+    } else if (!m_editorFrameScheduler.Consume(now, force)) {
         return false;
+    }
 
     BuildFrameInternal();
     return true;
@@ -444,6 +466,7 @@ void InxGUI::BuildFrameInternal()
         ImGui::GetIO().AddMousePosEvent(syntheticMouseX, syntheticMouseY);
     }
     ImGui::NewFrame();
+    ctx->BeginFrameInteractionState();
     InxGUISemantics::BeginFrame(m_guiFrameCounter);
     ImGuiBuildFrameGuard frameGuard;
 
@@ -551,9 +574,6 @@ void InxGUI::BuildFrameInternal()
             ImGui::DockBuilderDockWindow("###project", dockBottom);
 
             ImGui::DockBuilderFinish(dockspaceId);
-
-            // Ensure Scene tab is the active/selected tab after initial layout
-            ImGui::SetWindowFocus("###scene_view");
         }
 
         ImGui::End();
@@ -629,16 +649,20 @@ void InxGUI::BuildFrameInternal()
     m_hasDrawData = drawData != nullptr && drawData->Valid;
 }
 
-void InxGUI::QueueDockTabSelection(const std::string &windowId)
+void InxGUI::QueueDockTabSelection(const std::string &windowId, bool allowDuringModal)
 {
     if (windowId.empty()) {
         return;
     }
-    if (std::find(m_pendingDockTabSelections.begin(), m_pendingDockTabSelections.end(), windowId) ==
-        m_pendingDockTabSelections.end()) {
-        m_pendingDockTabSelections.push_back(windowId);
-        RequestFrame();
+    auto existing =
+        std::find_if(m_pendingDockTabSelections.begin(), m_pendingDockTabSelections.end(),
+                     [&windowId](const PendingDockTabSelection &selection) { return selection.windowId == windowId; });
+    if (existing == m_pendingDockTabSelections.end()) {
+        m_pendingDockTabSelections.push_back({windowId, allowDuringModal});
+    } else if (allowDuringModal) {
+        existing->allowDuringModal = true;
     }
+    RequestFrame();
 }
 
 void InxGUI::ApplyPendingDockTabSelections()
@@ -647,41 +671,85 @@ void InxGUI::ApplyPendingDockTabSelections()
         return;
     }
 
-    // A late dock-tab focus request runs after all GUI renderables, including
-    // Editor-owned confirmation dialogs. Applying it while a modal is open
-    // can move an undocked authoring window back above the confirmation (and
-    // may also disturb the popup stack). Keep the request queued until the
-    // modal transaction has finished.
-    if (ImGui::GetTopMostPopupModal() != nullptr) {
-        RequestFrame();
-        return;
-    }
-
-    std::vector<std::string> pending;
+    const bool modalOpen = ImGui::GetTopMostPopupModal() != nullptr;
+    std::vector<PendingDockTabSelection> pending;
     pending.swap(m_pendingDockTabSelections);
 
-    for (const auto &windowId : pending) {
+    for (const auto &selection : pending) {
+        if (modalOpen && !selection.allowDuringModal) {
+            m_pendingDockTabSelections.push_back(selection);
+            continue;
+        }
+        const auto &windowId = selection.windowId;
         const std::string imguiName = "###" + windowId;
         ImGuiWindow *window = ImGui::FindWindowByName(imguiName.c_str());
         if (window == nullptr) {
-            m_pendingDockTabSelections.push_back(windowId);
+            m_pendingDockTabSelections.push_back(selection);
             continue;
         }
 
         ImGuiDockNode *dockNode = window->DockNode;
-        if (dockNode != nullptr) {
-            dockNode->SelectedTabId = window->TabId;
-            dockNode->VisibleWindow = window;
-            if (dockNode->TabBar != nullptr) {
-                dockNode->TabBar->SelectedTabId = window->TabId;
-                dockNode->TabBar->NextSelectedTabId = window->TabId;
-                dockNode->TabBar->VisibleTabId = window->TabId;
+        if (dockNode == nullptr) {
+            // Ordinary floating editor windows have no dock node.  Treat the
+            // same request as a presentation request and raise the root window
+            // instead of retrying forever.  A docked tab whose close is being
+            // vetoed can temporarily lose DockNode while retaining DockId;
+            // that case still waits for the next Begin() to reattach it.
+            if (window->DockId == 0) {
+                ImGuiWindow *rootWindow = window->RootWindow != nullptr ? window->RootWindow : window;
+                ImGui::FocusWindow(window);
+                ImGui::BringWindowToFocusFront(rootWindow);
+                ImGui::BringWindowToDisplayFront(rootWindow);
+                continue;
             }
-            ImGui::MarkIniSettingsDirty(window);
+            // A title-bar close removes the window from its dock node for the
+            // remainder of that frame even when the application vetoes the
+            // close. Keep the request alive until the next Begin() attaches
+            // the restored panel again; consuming it here leaves a sibling
+            // tab visible underneath the confirmation modal.
+            m_pendingDockTabSelections.push_back(selection);
+            continue;
         }
 
-        ImGui::FocusWindow(window);
+        if (selection.allowDuringModal) {
+            // Docking records a title-bar close in WantCloseTabId and applies
+            // it at the start of the next frame. Setting the caller-owned
+            // p_open value back to true only vetoes Begin() for the current
+            // frame; without clearing this native intent the tab is still
+            // removed before its next Begin(). Confirmation sources use this
+            // flag to complete the veto on both sides of the API boundary.
+            if (dockNode->WantCloseTabId == window->TabId)
+                dockNode->WantCloseTabId = 0;
+            window->DockTabWantClose = false;
+        }
+
+        dockNode->SelectedTabId = window->TabId;
+        dockNode->VisibleWindow = window;
+        if (dockNode->TabBar != nullptr) {
+            dockNode->TabBar->SelectedTabId = window->TabId;
+            dockNode->TabBar->NextSelectedTabId = window->TabId;
+            dockNode->TabBar->VisibleTabId = window->TabId;
+        }
+        ImGui::MarkIniSettingsDirty(window);
+
+        // Selecting a dock tab is also a presentation request. A detached
+        // editor window can overlap the main dock host, and DockSpaceWindow
+        // deliberately carries NoBringToFrontOnFocus. FocusWindow() therefore
+        // updates navigation focus without necessarily changing the visible
+        // Z order. Raise the dock tree explicitly so logical focus and the
+        // pixels presented to the user cannot disagree.
+        //
+        // A close-confirmation source only needs its dock tab restored. The
+        // modal is promoted immediately after this pass and remains the final
+        // keyboard/input focus owner.
+        if (!modalOpen) {
+            ImGui::FocusWindow(window);
+            BringDockTreeToDisplayFront(window);
+        }
     }
+
+    if (!m_pendingDockTabSelections.empty())
+        RequestFrame();
 }
 
 void InxGUI::PromoteActiveModal()

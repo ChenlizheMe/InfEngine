@@ -17,6 +17,7 @@ No undo, no selection, no hierarchy, no inspector, no docking layout.
 from __future__ import annotations
 
 import logging
+import json
 import os
 from typing import Dict, List, Optional
 
@@ -85,6 +86,7 @@ class PlayerBootstrap:
         self._enter_play_mode()
 
     def _ensure_project_requirements(self):
+        self._validate_runtime_manifest()
         try:
             from Infernux.engine.project_requirements import ensure_project_requirements
 
@@ -93,6 +95,38 @@ class PlayerBootstrap:
             # Optional packaging helper missing — runtime continues without
             # auto-install; happens in slim distribution variants.
             pass
+
+    def _validate_runtime_manifest(self) -> None:
+        """Reject stale or legacy Player payloads before engine startup."""
+        candidates = [
+            os.path.join(self.project_path, "PlayerRuntimeManifest.json"),
+            os.path.join(
+                os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", ""),
+                "PlayerRuntimeManifest.json",
+            ),
+        ]
+        manifest_path = next((path for path in candidates if path and os.path.isfile(path)), "")
+        if not manifest_path:
+            return
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as stream:
+                manifest = json.load(stream)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Player runtime manifest is unreadable: {manifest_path}") from exc
+
+        if manifest.get("$schema") != "infernux.player_runtime_manifest":
+            raise RuntimeError("Unsupported Player runtime manifest schema")
+        audit = manifest.get("audit", {})
+        if audit.get("passed") is not True:
+            raise RuntimeError("Player runtime package audit did not pass")
+        if audit.get("legacy_zip_files"):
+            raise RuntimeError(
+                "Legacy ZIP Player containers are not supported: "
+                + ", ".join(audit["legacy_zip_files"][:4])
+            )
+        product = manifest.get("product", {})
+        if product.get("single_entry_point") is not True:
+            raise RuntimeError("Player package must have exactly one executable entry point")
 
     def _init_engine(self):
         self.engine = Engine(self.engine_log_level)
@@ -187,7 +221,10 @@ class PlayerBootstrap:
             raise RuntimeError(f"First scene file not found: {first_scene}")
 
         if self.scene_file_manager:
-            if not self.scene_file_manager._do_open_scene(first_scene):
+            if not self.scene_file_manager._do_open_scene(
+                first_scene,
+                record_navigation=False,
+            ):
                 raise RuntimeError(f"Failed to load initial scene: {first_scene}")
             from Infernux.lib import SceneManager as _NativeSM
 

@@ -9,9 +9,9 @@ to .pyc with ``py_compile`` for source protection.
 Windows output layout::
 
     <OutputDir>/
-        <GameName>.exe          ← small native launcher with the engine icon
+    <GameName>.exe          ← the single native Player entry point
         <GameName>_Data/
-            Content.inxpkg      ← Deflate-compressed project content
+        Content.inxpack      ← deterministic Player content container
             Content.json        ← integrity and cache manifest
             BuildManifest.json  ← display mode and boot settings
             Runtime/            ← private CPython/Nuitka/native engine payload
@@ -34,7 +34,6 @@ import subprocess
 import sys
 import threading
 import time
-import zipfile
 from typing import Callable, Dict, List, Optional
 
 import Infernux._jit_kernels as _jit_kernels
@@ -43,6 +42,8 @@ from Infernux.debug import Debug
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.i18n import t
 from Infernux.engine.nuitka_builder import NuitkaBuilder
+from Infernux.engine.player_package_audit import audit_player_package
+from Infernux.engine.player_package_format import write_pack
 from Infernux.engine.path_utils import (
     path_fingerprint,
     portable_path,
@@ -135,7 +136,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         ".particle.pyc",
         ".particle.pyc.meta",
     )
-    _CONTENT_ARCHIVE_FILENAME = "Content.inxpkg"
+    _CONTENT_ARCHIVE_FILENAME = "Content.inxpack"
     _CONTENT_MANIFEST_FILENAME = "Content.json"
     _PARTICLE_RUNTIME_INDEX_FILENAME = "RuntimeIndex.json"
     def __init__(
@@ -287,6 +288,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         _p("Packing core runtime data", 0.9805)
         self._pack_core_runtime_archive(final_dir)
 
+        _p("Packing optional parallel runtime data", 0.9807)
+        self._pack_parallel_runtime_archive(final_dir)
+
         _p("Packing project content", 0.981)
         self._pack_content_archive(final_dir)
 
@@ -295,6 +299,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
 
         _p("Organizing Player distribution", 0.9845)
         self._organize_player_layout(final_dir)
+
+        _p("Auditing Player service and package manifest", 0.9847)
+        audit_player_package(final_dir, write_manifest=True)
 
         _p(t("build.step.writing_marker"), 0.985)
         self._write_output_marker(final_dir)
@@ -357,6 +364,8 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             names = ", ".join(os.path.basename(m) for m in missing)
             raise FileNotFoundError(f"Scene file(s) not found: {names}")
 
+        self._validate_animation_clip_assets()
+
         if self.icon_path:
             if not os.path.isfile(self.icon_path):
                 raise FileNotFoundError(f"Build icon not found: {self.icon_path}")
@@ -367,6 +376,32 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 )
 
         self._validate_output_directory()
+
+    def _validate_animation_clip_assets(self) -> None:
+        """Reject dangling SpriteFrame references before packaging content."""
+        from Infernux.core.animation_clip import AnimationClip
+
+        guid_paths = self._build_asset_guid_index()
+        assets_root = os.path.join(self.project_path, "Assets")
+        for root, _directories, filenames in os.walk(assets_root):
+            for filename in filenames:
+                if not filename.casefold().endswith(".animclip2d"):
+                    continue
+                clip_path = os.path.join(root, filename)
+                clip = AnimationClip.load(clip_path)
+                if clip is None:
+                    raise ValueError(
+                        f"AnimationClip is not valid current JSON: {clip_path}"
+                    )
+                try:
+                    clip.validate_sprite_frame_references(
+                        project_root=self.project_path,
+                        guid_paths=guid_paths,
+                    )
+                except (OSError, TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"AnimationClip build validation failed for '{clip_path}': {exc}"
+                    ) from exc
 
     def _output_marker_path(self, directory: Optional[str] = None) -> str:
         target_dir = resolved_path(directory or self.output_dir)
@@ -474,11 +509,11 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
 import hashlib
 import json
 import os
-from pathlib import PurePosixPath
 import shutil
+import struct
 import sys
 import traceback
-import zipfile
+import lzma
 
 # Activate player mode BEFORE any Infernux imports so the engine
 # package skips heavy editor-only UI panels and watchdog file watcher.
@@ -522,6 +557,23 @@ def _read_json(path):
     with open(path, "r", encoding="utf-8") as source:
         return json.load(source)
 
+_PLAYER_PACK_MAGIC = b"INXPCK1\\x00"
+
+def _read_player_pack_manifest(archive_path):
+    with open(archive_path, "rb") as source:
+        if source.read(len(_PLAYER_PACK_MAGIC)) != _PLAYER_PACK_MAGIC:
+            raise RuntimeError("Unsupported Player container: " + archive_path)
+        raw_length = source.read(8)
+        if len(raw_length) != 8:
+            raise RuntimeError("Truncated Player container header: " + archive_path)
+        header_length = struct.unpack("<Q", raw_length)[0]
+        if header_length > 128 * 1024 * 1024:
+            raise RuntimeError("Player container header is too large: " + archive_path)
+        header = json.loads(source.read(header_length).decode("utf-8"))
+    if not isinstance(header, dict) or header.get("format") != "infernux-player-pack":
+        raise RuntimeError("Invalid Player container manifest: " + archive_path)
+    return header, len(_PLAYER_PACK_MAGIC) + 8 + header_length
+
 def _extract_cached_archive(archive_path, manifest_path, cache_kind, allowed_roots=None):
     manifest = _read_json(manifest_path)
     expected_hash = str(manifest.get("archive_sha256", ""))
@@ -556,23 +608,45 @@ def _extract_cached_archive(archive_path, manifest_path, cache_kind, allowed_roo
     shutil.rmtree(temporary, ignore_errors=True)
     os.makedirs(temporary, exist_ok=False)
     try:
-        with zipfile.ZipFile(archive_path, "r") as archive:
-            entries = archive.infolist()
-            files = [entry for entry in entries if not entry.is_dir()]
-            if (
-                len(files) != int(manifest.get("file_count", -1))
-                or sum(entry.file_size for entry in files)
-                != int(manifest.get("uncompressed_bytes", -1))
-            ):
-                raise RuntimeError("Packaged archive does not match its manifest")
+        header, payload_base = _read_player_pack_manifest(archive_path)
+        entries = header.get("files", [])
+        if (
+            len(entries) != int(manifest.get("file_count", -1))
+            or int(header.get("raw_bytes", -1))
+            != int(manifest.get("uncompressed_bytes", -1))
+        ):
+            raise RuntimeError("Packaged archive does not match its manifest")
+        package_size = os.path.getsize(archive_path)
+        with open(archive_path, "rb") as source:
             for entry in entries:
-                normalized = entry.filename.replace("\\\\", "/")
-                parts = PurePosixPath(normalized).parts
-                if normalized.startswith("/") or not parts or ".." in parts or ":" in parts[0]:
-                    raise RuntimeError("Unsafe packaged archive entry: " + entry.filename)
+                normalized = str(entry.get("path", "")).replace("\\\\", "/")
+                parts = tuple(normalized.split("/"))
+                if normalized.startswith("/") or not parts or any(
+                    part in {"", ".", ".."} for part in parts
+                ) or ":" in parts[0]:
+                    raise RuntimeError("Unsafe packaged archive entry: " + normalized)
                 if allowed_roots is not None and parts[0] not in allowed_roots:
-                    raise RuntimeError("Unexpected runtime module entry: " + entry.filename)
-            archive.extractall(temporary)
+                    raise RuntimeError("Unexpected runtime module entry: " + normalized)
+                offset = int(entry.get("offset", -1))
+                stored_bytes = int(entry.get("stored_bytes", -1))
+                raw_bytes = int(entry.get("raw_bytes", -1))
+                if offset < 0 or stored_bytes < 0 or payload_base + offset + stored_bytes > package_size:
+                    raise RuntimeError("Out-of-range packaged entry: " + normalized)
+                source.seek(payload_base + offset)
+                data = source.read(stored_bytes)
+                if entry.get("codec") == "lzma":
+                    data = lzma.decompress(data)
+                elif entry.get("codec") != "store":
+                    raise RuntimeError("Unknown packaged codec: " + normalized)
+                if len(data) != raw_bytes:
+                    raise RuntimeError("Packaged entry size mismatch: " + normalized)
+                digest = hashlib.sha256(data).hexdigest()
+                if digest != entry.get("sha256"):
+                    raise RuntimeError("Packaged entry checksum mismatch: " + normalized)
+                output = os.path.join(temporary, *parts)
+                os.makedirs(os.path.dirname(output), exist_ok=True)
+                with open(output, "wb") as destination:
+                    destination.write(data)
         with open(os.path.join(temporary, ".ready"), "w", encoding="ascii") as marker:
             marker.write(expected_hash)
         os.makedirs(os.path.dirname(cache_root), exist_ok=True)
@@ -595,7 +669,7 @@ def _extract_cached_archive(archive_path, manifest_path, cache_kind, allowed_roo
 
 _CORE_ROOT = os.path.join(_MODULE_ROOT, "core")
 _CORE_MANIFEST = os.path.join(_CORE_ROOT, "core-module.json")
-_CORE_ARCHIVE = os.path.join(_CORE_ROOT, "core-module.zip")
+_CORE_ARCHIVE = os.path.join(_CORE_ROOT, "core-module.inxpack")
 _CORE_RUNTIME_DIR = ""
 if os.path.isfile(_CORE_MANIFEST) and os.path.isfile(_CORE_ARCHIVE):
     _core_data = _read_json(_CORE_MANIFEST)
@@ -612,7 +686,7 @@ if os.path.isfile(_CORE_MANIFEST) and os.path.isfile(_CORE_ARCHIVE):
     )
 
 _DATA_DIR = _DATA_ROOT
-_CONTENT_ARCHIVE = os.path.join(_DATA_DIR, "Content.inxpkg")
+_CONTENT_ARCHIVE = os.path.join(_DATA_DIR, "Content.inxpack")
 _CONTENT_MANIFEST = os.path.join(_DATA_DIR, "Content.json")
 if os.path.isfile(_CONTENT_ARCHIVE) and os.path.isfile(_CONTENT_MANIFEST):
     _DATA_DIR = _extract_cached_archive(
@@ -627,7 +701,7 @@ if os.path.isfile(_CONTENT_ARCHIVE) and os.path.isfile(_CONTENT_MANIFEST):
 
 _PARALLEL_ROOT = os.path.join(_MODULE_ROOT, "parallel")
 _PARALLEL_MANIFEST = os.path.join(_PARALLEL_ROOT, "parallel-module.json")
-_PARALLEL_ARCHIVE = os.path.join(_PARALLEL_ROOT, "parallel-module.zip")
+_PARALLEL_ARCHIVE = os.path.join(_PARALLEL_ROOT, "parallel-module.inxpack")
 _RUNTIME_MODULE_DIR = ""
 if os.path.isfile(_PARALLEL_MANIFEST) and os.path.isfile(_PARALLEL_ARCHIVE):
     _parallel_data = _read_json(_PARALLEL_MANIFEST)
@@ -844,14 +918,10 @@ finally:
         return dist_dir
 
     def _player_launcher_path(self) -> str:
-        if sys.platform != "win32":
-            return ""
-        candidate = os.path.join(
-            _resources.get_package_resources_path(),
-            "player",
-            "InfernuxLauncher.exe",
-        )
-        return candidate if os.path.isfile(candidate) else ""
+        # PlayerRelease is a single-process/single-entry product.  The old
+        # thin launcher remains available as a legacy CMake target for
+        # migration diagnostics, but it must never be copied into a game.
+        return ""
 
     # ------------------------------------------------------------------
     # Organize output: move dist contents to the final output directory
@@ -1587,9 +1657,8 @@ finally:
         """Compress always-required Python data that can load from cache."""
         module_root = os.path.join(final_dir, "RuntimeModules", "core")
         os.makedirs(module_root, exist_ok=True)
-        archive_path = os.path.join(module_root, "core-module.zip")
+        archive_path = os.path.join(module_root, "core-module.inxpack")
         manifest_path = os.path.join(module_root, "core-module.json")
-        temporary_archive = archive_path + f".{os.getpid()}.tmp"
         roots = [
             os.path.join(final_dir, "numpy"),
             os.path.join(final_dir, "numpy.libs"),
@@ -1609,34 +1678,16 @@ finally:
         if not files:
             raise RuntimeError("Core Runtime Module contains no files")
 
-        try:
-            with zipfile.ZipFile(
-                temporary_archive,
-                "w",
-                compression=zipfile.ZIP_DEFLATED,
-                compresslevel=6,
-                allowZip64=True,
-            ) as archive:
-                for source_path, relative in sorted(files, key=lambda item: item[1]):
-                    archive.write(source_path, relative)
-            os.replace(temporary_archive, archive_path)
-        finally:
-            try:
-                os.remove(temporary_archive)
-            except FileNotFoundError:
-                pass
-
-        archive_bytes = os.path.getsize(archive_path)
-        manifest = {
+        manifest = write_pack(
+            ((relative, source_path) for source_path, relative in files),
+            archive_path,
+        )
+        manifest.update({
             "module": "core",
-            "archive": "core-module.zip",
-            "archive_sha256": self._sha256_file(archive_path),
-            "archive_bytes": archive_bytes,
-            "uncompressed_bytes": uncompressed_bytes,
-            "file_count": len(files),
-            "compression": "zip-deflate-6",
+            "uncompressed_bytes": manifest["raw_bytes"],
+            "compression": "lzma-or-store",
             "allowed_roots": ["Infernux", "numpy", "numpy.libs"],
-        }
+        })
         with open(manifest_path, "w", encoding="utf-8") as manifest_file:
             json.dump(manifest, manifest_file, indent=2, sort_keys=True)
             manifest_file.write("\n")
@@ -1644,11 +1695,67 @@ finally:
         for payload_root in roots:
             shutil.rmtree(payload_root, ignore_errors=True)
 
+        archive_bytes = os.path.getsize(archive_path)
         ratio = archive_bytes / max(1, uncompressed_bytes)
         Debug.log_internal(
             f"Packed core runtime data into {archive_bytes / (1024 * 1024):.1f} MB "
             f"({ratio:.1%} of {uncompressed_bytes / (1024 * 1024):.1f} MB)"
         )
+
+    def _pack_parallel_runtime_archive(self, final_dir: str) -> None:
+        """Convert the optional legacy module cache into an InxPack."""
+        module_root = os.path.join(final_dir, "RuntimeModules", "parallel")
+        legacy_archive = os.path.join(module_root, "parallel-module.zip")
+        if not os.path.isfile(legacy_archive):
+            return
+
+        # The legacy cache is read only during build conversion.  It is never
+        # copied to the final Player directory or loaded by PlayerBootstrap.
+        import zipfile
+
+        temporary_root = os.path.join(
+            final_dir,
+            self._BUILD_TEMP_DIR_NAME,
+            "parallel-module-conversion",
+        )
+        shutil.rmtree(temporary_root, ignore_errors=True)
+        os.makedirs(temporary_root, exist_ok=True)
+        try:
+            with zipfile.ZipFile(legacy_archive, "r") as archive:
+                archive.extractall(temporary_root)
+            files: list[tuple[str, str]] = []
+            for root, _dirs, filenames in os.walk(temporary_root):
+                for filename in filenames:
+                    source = os.path.join(root, filename)
+                    relative = relative_path(source, temporary_root)
+                    files.append((source, relative))
+            if not files:
+                raise RuntimeError("Parallel Runtime Module contains no files")
+
+            archive_path = os.path.join(module_root, "parallel-module.inxpack")
+            manifest = write_pack(
+                ((relative, source) for source, relative in files),
+                archive_path,
+            )
+            manifest.update({
+                "module": "parallel",
+                "packages": ["llvmlite", "numba"],
+                "uncompressed_bytes": manifest["raw_bytes"],
+                "compression": "lzma-or-store",
+            })
+            with open(
+                os.path.join(module_root, "parallel-module.json"),
+                "w",
+                encoding="utf-8",
+            ) as manifest_file:
+                json.dump(manifest, manifest_file, indent=2, sort_keys=True)
+                manifest_file.write("\n")
+        finally:
+            shutil.rmtree(temporary_root, ignore_errors=True)
+            try:
+                os.remove(legacy_archive)
+            except FileNotFoundError:
+                pass
 
     def _pack_content_archive(self, final_dir: str) -> None:
         """Pack runtime content into one validated Player content archive."""
@@ -1658,7 +1765,6 @@ finally:
 
         archive_path = os.path.join(data_root, self._CONTENT_ARCHIVE_FILENAME)
         manifest_path = os.path.join(data_root, self._CONTENT_MANIFEST_FILENAME)
-        temporary_archive = archive_path + f".{os.getpid()}.tmp"
         retained = {
             "BuildManifest.json",
             "BuildPayload.json",
@@ -1686,6 +1792,11 @@ finally:
                     excluded_files.append(path)
                     continue
                 suffix = os.path.splitext(filename)[1].lower()
+                if suffix == ".meta":
+                    # Metadata is consumed during Editor-side GUID resolution;
+                    # it is never a Player runtime payload.
+                    excluded_files.append(path)
+                    continue
                 if relative.startswith("Assets/") and suffix == ".py":
                     plaintext_project_scripts.append(relative)
                 elif relative.startswith("Assets/") and suffix == ".pyc":
@@ -1703,34 +1814,16 @@ finally:
         if not files:
             raise RuntimeError("Player content archive would be empty")
 
-        try:
-            with zipfile.ZipFile(
-                temporary_archive,
-                "w",
-                compression=zipfile.ZIP_DEFLATED,
-                compresslevel=6,
-                allowZip64=True,
-            ) as archive:
-                for source_path, relative in sorted(files, key=lambda item: item[1]):
-                    archive.write(source_path, relative)
-            os.replace(temporary_archive, archive_path)
-        finally:
-            try:
-                os.remove(temporary_archive)
-            except FileNotFoundError:
-                pass
-
-        archive_bytes = os.path.getsize(archive_path)
-        manifest = {
-            "archive": self._CONTENT_ARCHIVE_FILENAME,
-            "archive_sha256": self._sha256_file(archive_path),
-            "archive_bytes": archive_bytes,
-            "uncompressed_bytes": uncompressed_bytes,
-            "file_count": len(files),
-            "compression": "zip-deflate-6",
+        manifest = write_pack(
+            ((relative, source_path) for source_path, relative in files),
+            archive_path,
+        )
+        manifest.update({
+            "uncompressed_bytes": manifest["raw_bytes"],
+            "compression": "lzma-or-store",
             "project_bytecode_count": project_bytecode_count,
-            "project_metadata_count": project_metadata_count,
-        }
+            "project_metadata_count": 0,
+        })
         with open(manifest_path, "w", encoding="utf-8") as manifest_file:
             json.dump(manifest, manifest_file, indent=2, sort_keys=True)
             manifest_file.write("\n")
@@ -1749,6 +1842,7 @@ finally:
                 except OSError:
                     pass
 
+        archive_bytes = os.path.getsize(archive_path)
         ratio = archive_bytes / max(1, uncompressed_bytes)
         Debug.log_internal(
             f"Packed {len(files)} content files into {archive_bytes / (1024 * 1024):.1f} MB "
@@ -1790,7 +1884,7 @@ finally:
                     ".pyc",
                     ".pyi",
                     ".pyo",
-                } and not (in_assets and suffix in {".meta", ".pyc"}):
+                } and not (in_assets and suffix == ".pyc"):
                     forbidden_runtime_files.append(relative)
                 if in_assets and suffix == ".py":
                     user_source_files.append(relative)

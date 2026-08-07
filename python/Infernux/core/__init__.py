@@ -32,7 +32,7 @@ from .texture import Texture
 from .shader import Shader
 from .audio_clip import AudioClip
 from .physic_material import PhysicMaterial
-from .animation_clip import AnimationClip
+from .animation_clip import AnimationClip, AnimationFrame
 from .animation_clip3d import AnimationClip3D
 from .anim_state_machine import (
     AnimStateMachine,
@@ -70,6 +70,11 @@ from .asset_ref import (
     ParticleGraphRef,
     RenderEffectRef,
 )
+from .asset_reference_types import (
+    AssetReferenceType,
+    AssetTypeRegistry,
+    asset_type_registry,
+)
 
 __all__ = [
     "Material",
@@ -78,6 +83,7 @@ __all__ = [
     "AudioClip",
     "PhysicMaterial",
     "AnimationClip",
+    "AnimationFrame",
     "AnimationClip3D",
     "AnimStateMachine",
     "AnimState",
@@ -96,6 +102,7 @@ __all__ = [
     "TextureType",
     "WrapMode",
     "FilterMode",
+    "SpriteFrame",
     "ShaderAssetInfo",
     "FontAssetInfo",
     "AudioImportSettings",
@@ -110,4 +117,7 @@ __all__ = [
     "PhysicMaterialRef",
     "ParticleGraphRef",
     "RenderEffectRef",
+    "AssetReferenceType",
+    "AssetTypeRegistry",
+    "asset_type_registry",
 ]

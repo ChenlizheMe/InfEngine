@@ -2,23 +2,16 @@
 
 #include <function/editor/EditorPanel.h>
 #include <function/editor/EditorTheme.h>
+#include <function/editor/interaction/EditorCollectionModel.h>
+#include <function/editor/interaction/EditorSearchModel.h>
 
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
-
-/// A single data-driven entry for the Hierarchy "Create" context menu.
-/// Python registers these via ``add_create_entry()`` — no C++ changes
-/// needed when adding new component types.
-struct HierarchyCreateEntry
-{
-    std::string category;                   ///< Menu section: "Rendering", "UI", etc.
-    std::string localeKey;                  ///< Translation key, e.g. "hierarchy.camera"
-    std::function<void(uint64_t)> callback; ///< (parentId) → void
-};
 
 namespace infernux
 {
@@ -50,6 +43,8 @@ class HierarchyPanel : public EditorPanel
     void ClearSelectionAndNotify();
     void SetSelectedObjectById(uint64_t id, bool clearSearch = false);
     void SetSelectionSnapshot(const std::vector<uint64_t> &ids, uint64_t primary);
+    [[nodiscard]] std::vector<uint64_t> GetExpandedObjectIds() const;
+    void SetExpandedObjectIds(const std::vector<uint64_t> &ids);
     void SetRuntimeHiddenIds(const std::unordered_set<uint64_t> &ids);
     void SetSceneHeaderSnapshot(const std::string &sceneDisplayName, bool prefabMode,
                                 const std::string &prefabDisplayName);
@@ -63,7 +58,7 @@ class HierarchyPanel : public EditorPanel
         m_pendingExpandId = id;
     }
 
-    // ── Selection callbacks (wrap Python SelectionManager) ───────────
+    // ── Selection callbacks (project typed SelectionService) ─────────
 
     std::function<bool(uint64_t)> isSelected;
     std::function<void(uint64_t)> selectId;
@@ -75,19 +70,6 @@ class HierarchyPanel : public EditorPanel
     std::function<int()> selectionCount;
     std::function<bool()> isSelectionEmpty;
     std::function<void(const std::vector<uint64_t> &)> setOrderedIds;
-
-    // ── Notification callbacks ───────────────────────────────────────
-
-    /// Called on double-click (receives object ID to focus camera on).
-    std::function<void(uint64_t)> onDoubleClickFocus;
-
-    // ── Undo callbacks ───────────────────────────────────────────────
-
-    std::function<void(uint64_t, const std::string &)> undoRecordCreate;
-    std::function<void(uint64_t, const std::string &)> undoRecordDelete;
-    std::function<void(uint64_t, const std::string &, const std::string &)> undoRecordRename;
-    /// (objId, oldParentId, newParentId, oldSibIdx, newSibIdx)
-    std::function<void(uint64_t, uint64_t, uint64_t, int, int)> undoRecordMove;
 
     // ── Scene info callbacks ─────────────────────────────────────────
 
@@ -107,50 +89,11 @@ class HierarchyPanel : public EditorPanel
     std::function<bool(uint64_t)> hasCanvasDescendant;
     std::function<std::vector<uint64_t>()> getCanvasRootIds;
 
-    // ── Context-menu action callbacks ────────────────────────────────
-
-    std::function<void(int, uint64_t)> createPrimitive; // (typeIdx, parentId)
-    std::function<void(int, uint64_t)> createLight;     // (typeIdx, parentId)
-    std::function<void(uint64_t)> createEmpty;
-    /// Create an empty parent around the current selection (multi-select aware).
-    std::function<void()> createEmptyParent;
-
-    /// Data-driven create-menu entries (populated from Python).
-    std::vector<HierarchyCreateEntry> createEntries;
-    void AddCreateEntry(const std::string &category, const std::string &localeKey,
-                        std::function<void(uint64_t)> callback);
-    void ClearCreateEntries();
-
-    std::function<void(uint64_t)> saveAsPrefab;
-    std::function<void(uint64_t)> prefabSelectAsset;
-    std::function<void(uint64_t)> prefabOpenAsset;
-    std::function<void(uint64_t)> prefabApplyOverrides;
-    std::function<void(uint64_t)> prefabRevertOverrides;
-    std::function<void(uint64_t)> prefabUnpack;
-
-    // ── Focus callback ──────────────────────────────────────────────
-
-    std::function<void(bool)> onHierarchyPanelFocused;
-
     // ── Unified editor command entry points ─────────────────────────
 
-    std::function<bool(const std::string &, const std::string &, const std::string &)> executeCommand;
-    std::function<bool(const std::string &, const std::string &)> canExecuteCommand;
-
-    // ── Clipboard callbacks ──────────────────────────────────────────
-
-    std::function<bool(bool)> copySelected; // (cut) → success
-    std::function<bool()> pasteClipboard;
-    std::function<bool()> hasClipboardData;
-
-    // ── External drop callbacks (from Project panel) ─────────────────
-
-    std::function<void(const std::string &, uint64_t, bool)> instantiatePrefab;
-    std::function<void(const std::string &, uint64_t, bool)> createModelObject;
-
-    // ── Delete-selected callback ─────────────────────────────────────
-
-    std::function<void()> deleteSelectedObjects;
+    /// Draw the popup body from a frozen
+    /// (targetId, targetIsPrefab, createParentId, uiMode) snapshot.
+    std::function<void(InxGUIContext *, uint64_t, bool, uint64_t, bool)> renderContextMenu;
 
     // ── Translation ──────────────────────────────────────────────────
 
@@ -213,8 +156,7 @@ class HierarchyPanel : public EditorPanel
 
     // ── Search ───────────────────────────────────────────────────────
     char m_searchBuf[256] = {};
-    std::string m_searchQuery;
-    std::string m_searchQueryNorm;
+    EditorSearchModel m_search;
     std::unordered_map<uint64_t, bool> m_searchVisCache;
 
     // ── UI mode ──────────────────────────────────────────────────────
@@ -232,7 +174,7 @@ class HierarchyPanel : public EditorPanel
         bool hasVisibleChildren;
     };
     std::vector<FlatItem> m_flatItems;
-    std::unordered_set<uint64_t> m_expandedNodes;
+    EditorTreeProjectionModel<uint64_t> m_treeProjection;
     std::unordered_set<uint64_t> m_forceExpandIds; // one-shot SetNextItemOpen
     bool m_flatListDirty = true;                   // rebuild flat list when true
 
@@ -264,9 +206,6 @@ class HierarchyPanel : public EditorPanel
     // ── Right-click tracking ─────────────────────────────────────────
     uint64_t m_rightClickedObjId = 0;
 
-    // ── Focus tracking ───────────────────────────────────────────────
-    bool m_wasFocused = false;
-
     // ── Split sub-timings (accumulated ms, consumed by profile) ────
     double m_subPreHidden = 0.0;
     double m_subPreSelection = 0.0;
@@ -293,7 +232,7 @@ class HierarchyPanel : public EditorPanel
     void SetSearchQuery(const char *text);
     [[nodiscard]] bool HasActiveSearch() const
     {
-        return !m_searchQueryNorm.empty();
+        return m_search.IsActive();
     }
     [[nodiscard]] bool MatchesSearch(GameObject *obj) const;
     bool IsVisibleInSearch(GameObject *obj);
@@ -304,7 +243,6 @@ class HierarchyPanel : public EditorPanel
     void RefreshCanvasRootIds(const std::vector<GameObject *> &roots);
 
     // Tree rendering
-    void RenderGameObjectTree(InxGUIContext *ctx, GameObject *obj);
     void RenderRenameInput(InxGUIContext *ctx, GameObject *obj);
     void RenderItemContextMenu(InxGUIContext *ctx, GameObject *obj);
     void RenderReorderSep(InxGUIContext *ctx, const char *sepId, std::function<void(uint64_t)> onDrop,
@@ -335,19 +273,9 @@ class HierarchyPanel : public EditorPanel
     // Ordered IDs
     std::vector<uint64_t> CollectOrderedIds(const std::vector<GameObject *> &roots) const;
 
-    bool ExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;
-    bool CanExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;
-
+    bool ExecuteEditorCommand(const std::string &commandId, const std::string &argument = "",
+                              const std::string &source = "context_menu") const;
     // Context menus
-    void ShowStandardCreateMenus(InxGUIContext *ctx, uint64_t parentId, const char *semanticRoot);
-    void ShowCreatePrimitiveMenu(InxGUIContext *ctx, uint64_t parentId);
-    void ShowCreateLightMenu(InxGUIContext *ctx, uint64_t parentId);
-    void ShowCreateEffectMenu(InxGUIContext *ctx, uint64_t parentId);
-    void ShowCreate2DMenu(InxGUIContext *ctx, uint64_t parentId);
-    void ShowPostProcessingMenu(InxGUIContext *ctx, uint64_t parentId);
-    void ShowUiMenu(InxGUIContext *ctx, uint64_t parentId);
-    void ShowUiModeContextMenu(InxGUIContext *ctx, uint64_t parentId);
-    void ShowCreateEntriesForCategory(InxGUIContext *ctx, uint64_t parentId, const std::string &category);
 };
 
 } // namespace infernux

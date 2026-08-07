@@ -42,6 +42,19 @@ from Infernux.engine.prefab_manager import PrefabDocumentError, _strip_prefab_ru
 from Infernux.instantiate import Instantiate
 
 
+@pytest.fixture
+def editor_history():
+    from Infernux.engine.undo import UndoManager
+
+    previous = UndoManager._instance
+    manager = UndoManager()
+    try:
+        yield manager
+    finally:
+        manager.clear()
+        UndoManager._instance = previous
+
+
 class _ExplodingSerializationComponent(InxComponent):
     def _serialize_fields_document(self) -> dict:
         raise RuntimeError("intentional serialization failure")
@@ -1040,7 +1053,9 @@ class TestInstantiate:
         assert restored.settings.gain == pytest.approx(4.0)
         assert restored.settings.label == "copied"
 
-    def test_hierarchy_copy_paste_preserves_rich_fields_and_references(self, scene):
+    def test_hierarchy_copy_paste_preserves_rich_fields_and_references(
+        self, scene, editor_history
+    ):
         original = scene.create_game_object("HierarchyClipboardSource")
         child = scene.create_game_object("HierarchyClipboardChild")
         child.set_parent(original)
@@ -1056,39 +1071,26 @@ class TestInstantiate:
             component_type="_StrictSceneComponent",
         )
 
-        class Selection:
-            def __init__(self):
-                self.ids = [original.id]
+        from Infernux.engine.interaction import SelectionService
 
-            def get_ids(self):
-                return list(self.ids)
-
-            def get_primary(self):
-                return self.ids[-1] if self.ids else 0
-
-            def count(self):
-                return len(self.ids)
-
-            def set_ids(self, ids):
-                self.ids = list(ids)
-
-            def clear(self):
-                self.ids.clear()
-
-        selection = Selection()
-        hierarchy = SimpleNamespace(on_selection_changed=None)
-        bootstrap = SimpleNamespace(
-            scene_file_manager=None,
-            scene_view=None,
-            engine=None,
+        selection = SelectionService.instance()
+        selection.replace_scene_objects(
+            [original.id], owner_id="hierarchy", record_history=False
         )
-        from Infernux.engine.bootstrap_hierarchy._prefab_clipboard import wire_clipboard
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+        )
 
-        wire_clipboard(SimpleNamespace(hp=hierarchy, bs=bootstrap, sel=selection))
-        assert hierarchy.copy_selected(False) is True
-        assert hierarchy.paste_clipboard() is True
+        commands = SceneObjectCommandService(selection, ClipboardService())
+        context = SimpleNamespace(
+            selection=selection.snapshot,
+            focus=SimpleNamespace(active_view_id="hierarchy", active_panel_id="hierarchy"),
+        )
+        assert commands.copy(context, cut=False) is True
+        assert commands.paste(context) is True
 
-        pasted = scene.find_by_id(selection.get_primary())
+        pasted = scene.find_by_id(selection.primary_scene_object_id())
         pasted_child = pasted.get_child(0)
         restored = pasted.get_py_component(_RichCloneComponent)
         assert restored.count == 29
@@ -1099,7 +1101,241 @@ class TestInstantiate:
         assert restored.target_object is pasted_child
         assert restored.target_component is pasted_child.get_py_component(_StrictSceneComponent)
 
-    def test_hierarchy_copy_paste_preserves_external_python_references(self, scene):
+    def test_hierarchy_rename_is_one_global_command(self, scene, editor_history):
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+            SelectionService,
+        )
+
+        obj = scene.create_game_object("Before")
+        commands = SceneObjectCommandService(SelectionService(), ClipboardService())
+
+        assert commands.rename(obj.id, "After") is True
+        assert obj.name == "After"
+        assert len(editor_history.action_journal.entries) == 1
+
+        editor_history.undo()
+        assert obj.name == "Before"
+        editor_history.redo()
+        assert obj.name == "After"
+
+    def test_hierarchy_copy_uses_the_frozen_command_selection(
+        self, scene, editor_history
+    ):
+        from Infernux.engine.interaction import (
+            ClipboardDomain,
+            ClipboardService,
+            SceneObjectCommandService,
+            SelectionService,
+        )
+
+        first = scene.create_game_object("FrozenTarget")
+        second = scene.create_game_object("CurrentTarget")
+        selection = SelectionService()
+        clipboard = ClipboardService()
+        commands = SceneObjectCommandService(selection, clipboard)
+        selection.replace_scene_objects(
+            [first.id], owner_id="hierarchy", record_history=False
+        )
+        frozen = SimpleNamespace(selection=selection.snapshot, payload={})
+        selection.replace_scene_objects(
+            [second.id], owner_id="hierarchy", record_history=False
+        )
+
+        assert commands.copy(frozen, cut=False)
+
+        payload = clipboard.peek(ClipboardDomain.SCENE_OBJECT)
+        assert payload is not None
+        assert tuple(item.target_id for item in payload.items) == (str(first.id),)
+
+    def test_inspector_object_property_is_one_global_command(
+        self, scene, editor_history
+    ):
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+            SelectionService,
+        )
+
+        obj = scene.create_game_object("Before")
+        commands = SceneObjectCommandService(SelectionService(), ClipboardService())
+        published = []
+        commands.set_change_publisher(lambda: published.append(obj.name))
+
+        assert commands.set_object_property(obj.id, "name", "After") is True
+        assert obj.name == "After"
+        assert published == ["After"]
+        assert len(editor_history.action_journal.entries) == 1
+
+        editor_history.undo()
+        assert obj.name == "Before"
+        editor_history.redo()
+        assert obj.name == "After"
+
+        assert commands.set_object_property(obj.id, "unknown", 1) is False
+        assert commands.set_object_property(obj.id, "layer", 32) is False
+        assert commands.set_object_property("invalid", "active", True) is False
+        assert len(editor_history.action_journal.entries) == 1
+
+    @staticmethod
+    def _transform_values(position, rotation=(0.0, 0.0, 0.0), scale=(1.0, 1.0, 1.0)):
+        return {
+            "position": position,
+            "rotation": rotation,
+            "scale": scale,
+        }
+
+    def test_inspector_transform_edit_undo_redo_and_merge(
+        self, scene, editor_history
+    ):
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+            SelectionService,
+        )
+
+        obj = scene.create_game_object("TransformTarget")
+        commands = SceneObjectCommandService(SelectionService(), ClipboardService())
+
+        assert commands.set_transforms(
+            [obj.id], [self._transform_values((1.0, 2.0, 3.0))]
+        )
+        assert commands.set_transforms(
+            [obj.id], [self._transform_values((4.0, 5.0, 6.0))]
+        )
+        assert obj.transform.local_position.to_tuple() == pytest.approx((4.0, 5.0, 6.0))
+        assert len(editor_history.action_journal.entries) == 1
+
+        editor_history.undo()
+        assert obj.transform.local_position.to_tuple() == pytest.approx((0.0, 0.0, 0.0))
+        editor_history.redo()
+        assert obj.transform.local_position.to_tuple() == pytest.approx((4.0, 5.0, 6.0))
+
+    def test_inspector_multi_transform_is_one_atomic_command(
+        self, scene, editor_history
+    ):
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+            SelectionService,
+        )
+
+        first = scene.create_game_object("FirstTransform")
+        second = scene.create_game_object("SecondTransform")
+        second.transform.local_position = Vector3(8.0, 0.0, 0.0)
+        commands = SceneObjectCommandService(SelectionService(), ClipboardService())
+
+        assert commands.set_transforms(
+            [first.id, second.id],
+            [
+                self._transform_values((1.0, 2.0, 3.0)),
+                self._transform_values((9.0, 5.0, 6.0)),
+            ],
+        )
+        assert first.transform.local_position.to_tuple() == pytest.approx((1.0, 2.0, 3.0))
+        assert second.transform.local_position.to_tuple() == pytest.approx((9.0, 5.0, 6.0))
+        assert len(editor_history.action_journal.entries) == 1
+
+        editor_history.undo()
+        assert first.transform.local_position.to_tuple() == pytest.approx((0.0, 0.0, 0.0))
+        assert second.transform.local_position.to_tuple() == pytest.approx((8.0, 0.0, 0.0))
+        editor_history.redo()
+        assert first.transform.local_position.to_tuple() == pytest.approx((1.0, 2.0, 3.0))
+        assert second.transform.local_position.to_tuple() == pytest.approx((9.0, 5.0, 6.0))
+
+    def test_hierarchy_multi_move_is_one_atomic_layout_command(
+        self, scene, editor_history
+    ):
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+            SelectionService,
+        )
+
+        first = scene.create_game_object("First")
+        second = scene.create_game_object("Second")
+        third = scene.create_game_object("Third")
+        anchor = scene.create_game_object("Anchor")
+        commands = SceneObjectCommandService(SelectionService(), ClipboardService())
+
+        assert commands.move_hierarchy(
+            [second.id, third.id], "adjacent", anchor.id, True
+        ) is True
+        assert [obj.id for obj in scene.get_root_objects()] == [
+            first.id,
+            anchor.id,
+            second.id,
+            third.id,
+        ]
+        assert len(editor_history.action_journal.entries) == 1
+
+        editor_history.undo()
+        assert [obj.id for obj in scene.get_root_objects()] == [
+            first.id,
+            second.id,
+            third.id,
+            anchor.id,
+        ]
+        editor_history.redo()
+        assert [obj.id for obj in scene.get_root_objects()] == [
+            first.id,
+            anchor.id,
+            second.id,
+            third.id,
+        ]
+
+    def test_hierarchy_move_ignores_selected_descendants(
+        self, scene, editor_history
+    ):
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+            SelectionService,
+        )
+
+        parent = scene.create_game_object("Parent")
+        child = scene.create_game_object("Child")
+        child.set_parent(parent)
+        destination = scene.create_game_object("Destination")
+        commands = SceneObjectCommandService(SelectionService(), ClipboardService())
+
+        assert commands.move_hierarchy(
+            [parent.id, child.id], "parent", destination.id
+        ) is True
+        assert parent.get_parent() is destination
+        assert child.get_parent() is parent
+        assert len(editor_history.action_journal.entries) == 1
+
+        editor_history.undo()
+        assert parent.get_parent() is None
+        assert child.get_parent() is parent
+        editor_history.redo()
+        assert parent.get_parent() is destination
+        assert child.get_parent() is parent
+
+    def test_hierarchy_cycle_rejection_does_not_record_history(
+        self, scene, editor_history
+    ):
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+            SelectionService,
+        )
+
+        parent = scene.create_game_object("Parent")
+        child = scene.create_game_object("Child")
+        child.set_parent(parent)
+        commands = SceneObjectCommandService(SelectionService(), ClipboardService())
+
+        assert commands.move_hierarchy([parent.id], "parent", child.id) is False
+        assert parent.get_parent() is None
+        assert child.get_parent() is parent
+        assert editor_history.action_journal.entries == ()
+
+    def test_hierarchy_copy_paste_preserves_external_python_references(
+        self, scene, editor_history
+    ):
         external = scene.create_game_object("ClipboardExternalTarget")
         external_component = external.add_py_component(_StrictSceneComponent())
         original = scene.create_game_object("ClipboardExternalSource")
@@ -1110,31 +1346,33 @@ class TestInstantiate:
             component_type="_StrictSceneComponent",
         )
 
-        class Selection:
-            def __init__(self):
-                self.ids = [original.id]
+        from Infernux.engine.interaction import SelectionService
 
-            def get_ids(self): return list(self.ids)
-            def get_primary(self): return self.ids[-1] if self.ids else 0
-            def count(self): return len(self.ids)
-            def set_ids(self, ids): self.ids = list(ids)
-            def clear(self): self.ids.clear()
+        selection = SelectionService.instance()
+        selection.replace_scene_objects(
+            [original.id], owner_id="hierarchy", record_history=False
+        )
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+        )
 
-        selection = Selection()
-        hierarchy = SimpleNamespace(on_selection_changed=None)
-        bootstrap = SimpleNamespace(scene_file_manager=None, scene_view=None, engine=None)
-        from Infernux.engine.bootstrap_hierarchy._prefab_clipboard import wire_clipboard
+        commands = SceneObjectCommandService(selection, ClipboardService())
+        context = SimpleNamespace(
+            selection=selection.snapshot,
+            focus=SimpleNamespace(active_view_id="hierarchy", active_panel_id="hierarchy"),
+        )
+        assert commands.copy(context, cut=False) is True
+        assert commands.paste(context) is True
 
-        wire_clipboard(SimpleNamespace(hp=hierarchy, bs=bootstrap, sel=selection))
-        assert hierarchy.copy_selected(False) is True
-        assert hierarchy.paste_clipboard() is True
-
-        pasted = scene.find_by_id(selection.get_primary())
+        pasted = scene.find_by_id(selection.primary_scene_object_id())
         restored = pasted.get_py_component(_RichCloneComponent)
         assert restored.target_object is external
         assert restored.target_component is external_component
 
-    def test_multi_root_clipboard_remaps_cross_root_python_references(self, scene):
+    def test_multi_root_clipboard_remaps_cross_root_python_references(
+        self, scene, editor_history
+    ):
         first = scene.create_game_object("ClipboardGroupFirst")
         first_refs = first.add_py_component(_RichCloneComponent())
         second = scene.create_game_object("ClipboardGroupSecond")
@@ -1145,25 +1383,28 @@ class TestInstantiate:
             component_type="_StrictSceneComponent",
         )
 
-        class Selection:
-            def __init__(self): self.ids = [first.id, second.id]
-            def get_ids(self): return list(self.ids)
-            def get_primary(self): return self.ids[-1] if self.ids else 0
-            def count(self): return len(self.ids)
-            def set_ids(self, ids): self.ids = list(ids)
-            def clear(self): self.ids.clear()
+        from Infernux.engine.interaction import SelectionService
 
-        selection = Selection()
-        hierarchy = SimpleNamespace(on_selection_changed=None)
-        bootstrap = SimpleNamespace(scene_file_manager=None, scene_view=None, engine=None)
-        from Infernux.engine.bootstrap_hierarchy._prefab_clipboard import wire_clipboard
+        selection = SelectionService.instance()
+        selection.replace_scene_objects(
+            [first.id, second.id], owner_id="hierarchy", record_history=False
+        )
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+        )
 
-        wire_clipboard(SimpleNamespace(hp=hierarchy, bs=bootstrap, sel=selection))
-        assert hierarchy.copy_selected(False) is True
-        assert hierarchy.paste_clipboard() is True
+        commands = SceneObjectCommandService(selection, ClipboardService())
+        context = SimpleNamespace(
+            selection=selection.snapshot,
+            focus=SimpleNamespace(active_view_id="hierarchy", active_panel_id="hierarchy"),
+        )
+        assert commands.copy(context, cut=False) is True
+        assert commands.paste(context) is True
 
-        copied_first = scene.find_by_id(selection.ids[0])
-        copied_second = scene.find_by_id(selection.ids[1])
+        selected_ids = selection.scene_object_ids()
+        copied_first = scene.find_by_id(selected_ids[0])
+        copied_second = scene.find_by_id(selected_ids[1])
         copied_refs = copied_first.get_py_component(_RichCloneComponent)
         assert copied_refs.target_object is copied_second
         assert copied_refs.target_object is not second
@@ -1321,6 +1562,123 @@ class TestInstantiate:
         finally:
             UndoManager._instance = previous_manager
 
+    def test_component_add_transaction_preserves_exact_insertion_point(self, scene):
+        from Infernux.engine.undo import AddComponentTransactionCommand, UndoManager
+
+        owner = scene.create_game_object("ComponentInsertionOwner")
+        light = owner.add_component("Light")
+        camera = owner.add_component("Camera")
+        before = tuple(owner.get_component_order())
+        command = AddComponentTransactionCommand(
+            owner.id,
+            "BoxCollider",
+            target_component_id=int(camera.component_id),
+            insert_after=False,
+        )
+
+        previous_manager = UndoManager._instance
+        manager = UndoManager()
+        try:
+            assert manager.execute(command)
+            added = command.result_component
+            expected = (
+                int(light.component_id),
+                int(added.component_id),
+                int(camera.component_id),
+            )
+            assert tuple(owner.get_component_order()) == expected
+
+            manager.undo()
+            assert tuple(owner.get_component_order()) == before
+            manager.redo()
+            assert tuple(owner.get_component_order()) == expected
+        finally:
+            UndoManager._instance = previous_manager
+
+    def test_component_add_transaction_can_insert_at_component_list_start(self, scene):
+        from Infernux.engine.undo import AddComponentTransactionCommand, UndoManager
+
+        owner = scene.create_game_object("ComponentStartInsertionOwner")
+        light = owner.add_component("Light")
+        camera = owner.add_component("Camera")
+        before = tuple(owner.get_component_order())
+        command = AddComponentTransactionCommand(
+            owner.id,
+            "BoxCollider",
+            insert_at_start=True,
+        )
+
+        previous_manager = UndoManager._instance
+        manager = UndoManager()
+        try:
+            assert manager.execute(command)
+            added = command.result_component
+            expected = (
+                int(added.component_id),
+                int(light.component_id),
+                int(camera.component_id),
+            )
+            assert tuple(owner.get_component_order()) == expected
+
+            manager.undo()
+            assert tuple(owner.get_component_order()) == before
+            manager.redo()
+            assert tuple(owner.get_component_order()) == expected
+        finally:
+            UndoManager._instance = previous_manager
+
+    def test_component_add_rejects_conflicting_insertion_contract(self, scene):
+        from Infernux.engine.undo import AddComponentTransactionCommand
+
+        owner = scene.create_game_object("ConflictingComponentInsertionOwner")
+        camera = owner.add_component("Camera")
+        with pytest.raises(ValueError, match="both an anchor and the list start"):
+            AddComponentTransactionCommand(
+                owner.id,
+                "BoxCollider",
+                target_component_id=int(camera.component_id),
+                insert_at_start=True,
+            )
+
+    def test_component_add_inserts_required_components_as_one_block(self, scene):
+        from Infernux.engine.undo import AddComponentTransactionCommand, UndoManager
+
+        owner = scene.create_game_object("RequiredComponentInsertionOwner")
+        light = owner.add_component("Light")
+        camera = owner.add_component("Camera")
+        prototype = _RequiresRigidbodyComponent()
+        command = AddComponentTransactionCommand(
+            owner.id,
+            type(prototype).__name__,
+            python_instance=prototype,
+            target_component_id=int(camera.component_id),
+            insert_after=False,
+        )
+
+        previous_manager = UndoManager._instance
+        manager = UndoManager()
+        try:
+            assert manager.execute(command)
+            rigidbody = owner.get_component("Rigidbody")
+            attached = owner.get_py_component(_RequiresRigidbodyComponent)
+            expected = (
+                int(light.component_id),
+                int(rigidbody.component_id),
+                int(attached.component_id),
+                int(camera.component_id),
+            )
+            assert tuple(owner.get_component_order()) == expected
+
+            manager.undo()
+            assert tuple(owner.get_component_order()) == (
+                int(light.component_id),
+                int(camera.component_id),
+            )
+            manager.redo()
+            assert tuple(owner.get_component_order()) == expected
+        finally:
+            UndoManager._instance = previous_manager
+
     def test_component_add_transaction_rolls_back_failed_python_callback(self, scene):
         from Infernux.engine.undo import AddComponentTransactionCommand, UndoManager
 
@@ -1414,15 +1772,15 @@ class TestInstantiate:
     def test_ui_prefab_drop_with_implicit_canvas_is_one_atomic_action(
         self, scene, tmp_path
     ):
-        from Infernux.engine.bootstrap_hierarchy._wire import _wire_drop_and_delete
         from Infernux.engine.interaction import (
+            ClipboardService,
             EditorContextSnapshot,
+            SceneObjectCommandService,
             SelectionService,
             SelectionTarget,
         )
         from Infernux.engine.prefab_manager import save_prefab
-        from Infernux.engine.ui.selection_manager import SelectionManager
-        from Infernux.engine.undo import HierarchyUndoTracker, UndoManager
+        from Infernux.engine.undo import UndoManager
         from Infernux.ui import UICanvas
 
         source = scene.create_game_object("AtomicUIPrefab")
@@ -1449,17 +1807,13 @@ class TestInstantiate:
             lambda: EditorContextSnapshot(selection=selection.snapshot),
             restore_context,
         )
-        hierarchy = SimpleNamespace()
-        context = SimpleNamespace(
-            hp=hierarchy,
-            bs=SimpleNamespace(scene_file_manager=None),
-            sel=SelectionManager.instance(),
-            undo=HierarchyUndoTracker(),
+        commands = SceneObjectCommandService(
+            selection,
+            ClipboardService.instance(),
         )
 
         try:
-            _wire_drop_and_delete(context)
-            hierarchy.instantiate_prefab(str(prefab_path), 0, False)
+            assert commands.instantiate_prefab(str(prefab_path), 0, False)
 
             assert len(manager.action_journal.entries) == 1
             assert manager.undo_description == "Instantiate Prefab"
@@ -1489,11 +1843,14 @@ class TestInstantiate:
     def test_failed_ui_prefab_drop_rolls_back_implicit_canvas(
         self, scene, tmp_path, monkeypatch
     ):
-        from Infernux.engine.bootstrap_hierarchy._wire import _wire_drop_and_delete
-        from Infernux.engine.interaction import SelectionService, SelectionTarget
+        from Infernux.engine.interaction import (
+            ClipboardService,
+            SceneObjectCommandService,
+            SelectionService,
+            SelectionTarget,
+        )
         from Infernux.engine.prefab_manager import save_prefab
-        from Infernux.engine.ui.selection_manager import SelectionManager
-        from Infernux.engine.undo import HierarchyUndoTracker, UndoManager
+        from Infernux.engine.undo import UndoManager
 
         source = scene.create_game_object("BrokenUIPrefab")
         prefab_path = tmp_path / "broken_ui.prefab"
@@ -1511,12 +1868,9 @@ class TestInstantiate:
         )
         previous_manager = UndoManager.instance()
         manager = UndoManager()
-        hierarchy = SimpleNamespace()
-        context = SimpleNamespace(
-            hp=hierarchy,
-            bs=SimpleNamespace(scene_file_manager=None),
-            sel=SelectionManager.instance(),
-            undo=HierarchyUndoTracker(),
+        commands = SceneObjectCommandService(
+            selection,
+            ClipboardService.instance(),
         )
 
         def fail_instantiation(**_kwargs):
@@ -1527,8 +1881,7 @@ class TestInstantiate:
             fail_instantiation,
         )
         try:
-            _wire_drop_and_delete(context)
-            hierarchy.instantiate_prefab(str(prefab_path), 0, False)
+            assert commands.instantiate_prefab(str(prefab_path), 0, False) is False
 
             assert all(
                 obj.name != "RollbackCanvas" for obj in scene.get_root_objects()
@@ -1807,7 +2160,7 @@ class TestSceneSerialization:
         assert loaded is not None
         assert "sourceModelGuid" not in loaded.serialize_document()
 
-    @pytest.mark.parametrize("failure", ["missing_guid", "wrong_type", "embedded_material"])
+    @pytest.mark.parametrize("failure", ["wrong_type", "embedded_material"])
     def test_resource_preflight_failure_preserves_live_scene(self, scene, tmp_path, failure):
         existing = scene.create_game_object("ResourcePreflightExisting")
         renderer = existing.add_component("MeshRenderer")
@@ -1815,9 +2168,7 @@ class TestSceneSerialization:
         candidate = json.loads(json.dumps(original_document))
         renderer_document = candidate["objects"][0]["components"][0]["data"]
 
-        if failure == "missing_guid":
-            renderer_document["meshAssetGuid"] = "missing-scene-resource-guid"
-        elif failure == "wrong_type":
+        if failure == "wrong_type":
             asset_database = AssetRegistry.instance().get_asset_database()
             asset_path = Path(asset_database.assets_root) / f"{tmp_path.name}-wrong-type.physicMaterial"
             asset_path.write_text(
@@ -1850,6 +2201,23 @@ class TestSceneSerialization:
         assert scene.serialize_document() == original_document
         assert scene.find("ResourcePreflightExisting") is existing
         assert existing.get_component("MeshRenderer") is renderer
+
+    def test_resource_preflight_preserves_missing_renderer_references(self, scene, tmp_path):
+        existing = scene.create_game_object("MissingResourceReference")
+        existing.add_component("MeshRenderer")
+        document = scene.serialize_document()
+        renderer_document = document["objects"][0]["components"][0]["data"]
+        renderer_document["meshAssetGuid"] = "missing-scene-mesh-guid"
+        renderer_document["materials"] = ["missing-scene-material-guid"]
+        path = tmp_path / "missing-resources.scene"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        transaction = SceneDocumentTransaction(scene, path=path)
+
+        assert transaction.run_to_completion(raise_on_failure=False) is True
+        restored = scene.find("MissingResourceReference").get_component("MeshRenderer")
+        restored_document = restored.serialize_document()
+        assert restored_document["meshAssetGuid"] == "missing-scene-mesh-guid"
+        assert restored_document["materials"] == ["missing-scene-material-guid"]
 
     def test_resource_preflight_accepts_matching_asset_type(self, scene, tmp_path):
         existing = scene.create_game_object("ResourcePreflightSuccess")
@@ -1949,6 +2317,123 @@ class TestSceneSerialization:
             assert manager._deferred_load_path == "first.scene"
         finally:
             SceneFileManager._instance = previous_manager
+
+    def test_each_scene_content_mutation_allocates_a_revision(self):
+        from Infernux.engine.interaction import DocumentRegistry
+
+        previous_manager = SceneFileManager._instance
+        try:
+            manager = SceneFileManager()
+            registry = DocumentRegistry.instance()
+            document = registry.require(manager.document_id)
+            initial_revision = document.revision
+
+            manager.mark_dirty()
+            first_revision = document.revision
+            manager.mark_dirty()
+            second_revision = document.revision
+
+            assert first_revision > initial_revision
+            assert second_revision > first_revision
+            assert document.is_dirty
+        finally:
+            SceneFileManager._instance = previous_manager
+
+    def test_scene_history_restores_unsaved_session_snapshot(
+        self,
+        scene,
+        monkeypatch,
+    ):
+        previous_manager = SceneFileManager._instance
+        try:
+            manager = SceneFileManager()
+            monkeypatch.setattr(manager, "_prepare_native_scene_swap", lambda: None)
+            monkeypatch.setattr(manager, "_restore_camera_state", lambda _path: None)
+            monkeypatch.setattr(manager, "sync_all_prefab_instances", lambda _scene: None)
+
+            scene.create_game_object("HistoryOnlyObject")
+            manager.mark_dirty()
+            snapshot = manager._archive_active_scene()
+            assert snapshot is not None
+            locator = snapshot.locator
+
+            assert manager._do_new_scene() is True
+            assert scene.find("HistoryOnlyObject") is None
+            assert manager.restore_document_locator(locator) is True
+            assert scene.find("HistoryOnlyObject") is not None
+
+            from Infernux.engine.interaction import DocumentRegistry
+
+            restored = DocumentRegistry.instance().get(manager.document_id)
+            assert restored is not None
+            assert restored.stable_id == locator.stable_id
+            assert restored.is_dirty is True
+        finally:
+            SceneFileManager._instance = previous_manager
+
+    def test_scene_navigation_undo_redo_restores_both_session_scenes(
+        self,
+        scene,
+        monkeypatch,
+    ):
+        from Infernux.engine.interaction import (
+            ContextRestoreStatus,
+            DocumentOpenStatus,
+            DocumentKind,
+            EditorInteractionCore,
+        )
+        from Infernux.engine.undo import UndoManager
+
+        previous_core = EditorInteractionCore._instance
+        previous_manager = SceneFileManager._instance
+        previous_undo = UndoManager._instance
+        core = EditorInteractionCore()
+        manager = SceneFileManager()
+        undo = UndoManager(core.action_journal)
+        try:
+            monkeypatch.setattr(manager, "_prepare_native_scene_swap", lambda: None)
+            monkeypatch.setattr(manager, "_restore_camera_state", lambda _path: None)
+            monkeypatch.setattr(manager, "sync_all_prefab_instances", lambda _scene: None)
+            core.document_open.register(
+                DocumentKind.SCENE,
+                manager.restore_document_locator,
+            )
+
+            def restore_context(context, _phase):
+                if context.scene is None:
+                    return ContextRestoreStatus.READY
+                result = core.document_open.resolve_or_open(context.scene)
+                return (
+                    ContextRestoreStatus.READY
+                    if result.status is DocumentOpenStatus.READY
+                    else ContextRestoreStatus.FAILED
+                )
+
+            undo.set_context_hooks(core.capture_context, restore_context)
+            scene.create_game_object("SceneAOnly")
+            manager.mark_dirty()
+            scene_a_id = manager.document_id
+
+            manager._stage_scene_navigation()
+            assert manager._do_new_scene() is True
+            scene.create_game_object("SceneBOnly")
+            manager.mark_dirty()
+            scene_b_id = manager.document_id
+            assert scene_b_id != scene_a_id
+            assert undo.undo_description == "New Scene"
+
+            undo.undo()
+            assert scene.find("SceneAOnly") is not None
+            assert scene.find("SceneBOnly") is None
+
+            undo.redo()
+            assert scene.find("SceneAOnly") is None
+            assert scene.find("SceneBOnly") is not None
+        finally:
+            core.shutdown()
+            EditorInteractionCore._instance = previous_core
+            SceneFileManager._instance = previous_manager
+            UndoManager._instance = previous_undo
 
     def test_runtime_scene_manager_retains_pending_transaction_until_commit(
         self,

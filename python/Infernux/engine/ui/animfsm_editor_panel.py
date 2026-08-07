@@ -11,12 +11,13 @@ in the Project panel.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import threading
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-from Infernux.engine.path_utils import path_key, relative_path, resolved_path, same_path
+from Infernux.engine.path_utils import path_key, resolved_path, same_path
 from Infernux.core.anim_state_machine import (
     AnimStateMachine,
     AnimState,
@@ -24,7 +25,12 @@ from Infernux.core.anim_state_machine import (
     AnimCondition,
     AnimParameter,
 )
-from Infernux.core.asset_ref import AnimationClipRef, AnimationClip3DRef, get_asset_type_config
+from Infernux.core.asset_ref import AnimationClipRef, AnimationClip3DRef
+from Infernux.core.asset_reference_types import (
+    AssetReferenceCodec,
+    asset_type_registry,
+    resolve_asset_reference_path,
+)
 from Infernux.core.node_graph import (
     GraphLink,
     GraphNode,
@@ -33,43 +39,104 @@ from Infernux.core.node_graph import (
     NodeGraphElementKind,
     NodeGraphMutation,
     NodeGraphMutationKind,
-    NodeTypeDef,
-    PinCategory,
-    PinDef,
     PinKind,
-    node_catalog,
 )
 from Infernux.debug import Debug
-from Infernux.graph.parameters import GraphParameterCollection
+from Infernux.graph.parameters import (
+    GraphParameterAuthoringPolicy,
+    GraphParameterCollection,
+)
+from Infernux.graph.parameter_transactions import GraphParameterTransaction
 from Infernux.graph.types import TypeRef, ValueType
 from Infernux.engine.i18n import t
 from Infernux.engine.interaction import (
-    ClipboardDomain,
-    ClipboardItem,
-    ClipboardService,
+    BoundPanelCommand,
     GraphActionDiff,
     GraphElementKind,
     GraphElementRef,
     GraphMutation,
     GraphMutationKind,
-    GraphSelectionController,
+    PanelCommandAdapter,
+    PanelCommandSpec,
+    PanelInteractionDescriptor,
+    PanelViewStateField,
+    PanelViewStateSchema,
 )
 from Infernux.lib import InxGUIContext
 
 from .asset_save_dialog import AssetSaveAsDialog
-from .animfsm_graph_authoring import AnimFSMGraphAuthoringModel
+from .animfsm_graph_authoring import (
+    AnimFSMGraphAuthoringModel,
+    FSM_ENTRY_NODE_TYPE_ID,
+    FSM_STATE_NODE_TYPE_ID,
+)
+from .graph_details import GraphDetailContributor
 from .node_graph_editor_panel import (
+    GraphParameterDetailConfig,
     GraphWorkspaceAddAction,
     GraphWorkspaceEntry,
     GraphWorkspaceSection,
+    NODE_GRAPH_PANEL_INTERACTION,
     NodeGraphEditorPanel,
 )
 from .node_graph_view import NodeCreationEntry
-from ._inspector_references import render_object_field, _picker_assets
+from ._inspector_references import render_asset_reference_field
 from .inspector_utils import field_label, max_label_w
 from .panel_registry import editor_panel
 from .theme import ImGuiCol, Theme
 from .igui import IGUI
+
+
+def _bind_animfsm_panel(panel: object) -> PanelCommandAdapter:
+    required = (
+        "command_new_fsm",
+        "can_new_fsm",
+        "command_switch_mode",
+        "can_switch_mode",
+    )
+    missing = tuple(
+        name for name in required if not callable(getattr(panel, name, None))
+    )
+    if missing:
+        raise TypeError(f"animation FSM panel interaction contract is missing: {missing}")
+
+    base_factory = NODE_GRAPH_PANEL_INTERACTION.adapter_factory
+    if base_factory is None:
+        raise RuntimeError("node graph panel interaction has no adapter factory")
+    base = base_factory(panel)
+    handlers = {
+        spec.command_id: base.handler(spec.command_id)
+        for spec in NODE_GRAPH_PANEL_INTERACTION.commands
+    }
+    if any(handler is None for handler in handlers.values()):
+        raise RuntimeError("node graph panel interaction adapter is incomplete")
+    handlers["animfsm.new"] = BoundPanelCommand(
+        lambda _context: panel.command_new_fsm(),
+        lambda _context: panel.can_new_fsm(),
+    )
+    handlers["animfsm.switch_mode"] = BoundPanelCommand(
+        lambda context: panel.command_switch_mode(
+            str(context.payload.get("mode", "") or "")
+        ),
+        lambda context: panel.can_switch_mode(
+            str(context.payload.get("mode", "") or "")
+        ),
+    )
+    return PanelCommandAdapter(handlers)
+
+
+_ANIMFSM_PANEL_INTERACTION = PanelInteractionDescriptor(
+    commands=NODE_GRAPH_PANEL_INTERACTION.commands
+    + (
+        PanelCommandSpec("animfsm.new"),
+        PanelCommandSpec("animfsm.switch_mode"),
+    ),
+    shortcuts=NODE_GRAPH_PANEL_INTERACTION.shortcuts,
+    owned_selection_domains=NODE_GRAPH_PANEL_INTERACTION.owned_selection_domains,
+    records_focus_history=NODE_GRAPH_PANEL_INTERACTION.records_focus_history,
+    document_backed=NODE_GRAPH_PANEL_INTERACTION.document_backed,
+    adapter_factory=_bind_animfsm_panel,
+)
 
 
 _FSM_ENTRY_NODE_ID = "animfsm.entry"
@@ -80,50 +147,42 @@ _FSM_GRAPH_ID = "animfsm.graph"
 _OPS = ["<", ">", "<=", ">=", "==", "!="]
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Node type definition for animation states
-# ═══════════════════════════════════════════════════════════════════════════
+def _sanitize_animation_parameter_name(raw: str) -> str:
+    """Keep ``[A-Za-z_][A-Za-z0-9_]*`` for condition variable names."""
 
-_STATE_TYPE = NodeTypeDef(
-    type_id="anim_state",
-    label="State",
-    header_color=(0.20, 0.20, 0.22, 1.0),
-    pins=[
-        PinDef(
-            id="in", label="In", kind=PinKind.INPUT,
-            color=(0.50, 0.52, 0.55, 1.0), pin_category=PinCategory.EXEC,
-        ),
-        PinDef(
-            id="out", label="Out", kind=PinKind.OUTPUT,
-            color=(0.52, 0.54, 0.56, 1.0), pin_category=PinCategory.EXEC,
-        ),
-    ],
-    min_width=172.0,
-    body_bottom_pad=0.0,
+    value = str(raw or "").strip()
+    return "".join(
+        character
+        for index, character in enumerate(value)
+        if (
+            (index == 0 and (character.isalpha() or character == "_"))
+            or (index > 0 and (character.isalnum() or character == "_"))
+        )
+    )
+
+
+def _animation_parameter_default(kind: ValueType):
+    return {
+        ValueType.BOOL: False,
+        ValueType.I32: 0,
+        ValueType.F32: 0.0,
+    }[ValueType(kind)]
+
+
+_ANIMATION_PARAMETER_POLICY = GraphParameterAuthoringPolicy(
+    AnimParameter,
+    (ValueType.BOOL, ValueType.F32, ValueType.I32),
+    _animation_parameter_default,
+    writable_types=frozenset({ValueType.BOOL, ValueType.F32, ValueType.I32}),
+    normalize_name=_sanitize_animation_parameter_name,
 )
 
-_ENTRY_TYPE = NodeTypeDef(
-    type_id="anim_entry",
-    label="Entry",
-    header_color=(0.22, 0.21, 0.23, 1.0),
-    pins=[
-        PinDef(
-            id="out", label="Start", kind=PinKind.OUTPUT,
-            color=Theme.APPLY_BUTTON, pin_category=PinCategory.EXEC,
-        ),
-    ],
-    min_width=88.0,
-    deletable=False,
-)
 
 _FSM_PARAM_COLORS = {
     "bool": (0.78, 0.25, 0.31, 1.0),
     "float": (0.34, 0.72, 0.42, 1.0),
     "int": (0.30, 0.68, 0.52, 1.0),
 }
-
-node_catalog.register("anim_fsm", [_STATE_TYPE, _ENTRY_TYPE])
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Panel
@@ -134,8 +193,17 @@ node_catalog.register("anim_fsm", [_STATE_TYPE, _ENTRY_TYPE])
     type_id="animfsm_editor",
     title_key="panel.animfsm_editor",
     menu_path="Animation",
+    interaction=_ANIMFSM_PANEL_INTERACTION,
 )
 class AnimFSMEditorPanel(NodeGraphEditorPanel):
+    VIEW_STATE_SCHEMA = PanelViewStateSchema(
+        "animfsm_editor.view",
+        (
+            PanelViewStateField("pan_x", "_view.pan_x", float),
+            PanelViewStateField("pan_y", "_view.pan_y", float),
+            PanelViewStateField("zoom", "_view.zoom", float),
+        ),
+    )
     """Node-graph editor for animation state machines."""
 
     window_id = "animfsm_editor"
@@ -146,26 +214,26 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             window_id=self.window_id,
             semantic_namespace="animfsm.graph",
         )
+        from Infernux.engine.interaction import AuthoringDocumentController
+
+        self._authoring_document_controller = AuthoringDocumentController(self)
         self._fsm: Optional[AnimStateMachine] = None
         self._file_path: str = ""
-        self._dirty: bool = True
-        self._save_as_dialog = AssetSaveAsDialog("animfsm.save_as", "state machine")
-        self._pending_mode_switch: Optional[str] = None
-        self._mode_switch_confirm_requested: bool = False
-        self._mode_switch_waiting_for_save: bool = False
+        self._save_as_dialog = AssetSaveAsDialog(
+            "animfsm.save_as",
+            "state machine",
+            owner_id=self._window_id,
+        )
 
         # Node graph
         self._graph = AnimFSMGraphAuthoringModel(
             AnimStateMachine(name="New State Machine"),
         )
 
-        self._view.graph = self._graph
+        self._bind_node_graph_model(self._graph, preserve_selection=False)
 
-        self._graph_selection = GraphSelectionController(
-            owner_id=self.window_id,
-            document_id=lambda: self.document_id,
+        self._install_graph_selection_controller(
             contains=self._contains_graph_element,
-            view=self._view,
         )
         # Maps: state name ↔ node uid
         self._name_to_uid: Dict[str, str] = {}
@@ -174,14 +242,10 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         # Entry node uid
         self._entry_uid: str = ""
 
-        # Panel persistence: ``load_state`` may run from bootstrap or first render
-        self._panel_state_restored_once: bool = False
-        self._panel_restore_data: Optional[dict] = None
-        self._undo_drag_graph_state: Optional[NodeGraphAuthoringState] = None
         self._pending_save_ticket_id: str = ""
 
         # Start with a blank FSM
-        self._new_fsm()
+        self._new_fsm_immediate()
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -242,16 +306,61 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 | DocumentCapability.SAVE_AS
                 | DocumentCapability.DISCARD
             ),
-            controller=self,
+            controller=self._authoring_document_controller,
         )
-        self.bind_document(document.document_id)
-        self._dirty = document.is_dirty
+        self._bind_replaced_document(document.document_id, dirty=dirty)
         self._graph_selection.refresh()
+
+    def resource_moved(
+        self,
+        *,
+        document_id: str,
+        source_path: str,
+        destination_path: str,
+        guid: str,
+    ) -> None:
+        del guid
+        if document_id != self.document_id:
+            return
+        if self._file_path and same_path(self._file_path, source_path):
+            self._file_path = resolved_path(destination_path)
+            if self._fsm is not None:
+                self._fsm.file_path = self._file_path
+                self._fsm.name = os.path.splitext(os.path.basename(self._file_path))[0]
+            self._persist_panel_state()
 
     def _fsm_document(self):
         from Infernux.engine.interaction import DocumentRegistry
 
         return DocumentRegistry.instance().get(self.document_id)
+
+    def capture_document_restore_state(self, document_id: str) -> dict:
+        if document_id != self.document_id or self._fsm is None:
+            raise ValueError("FSM restore capture targeted another document")
+        self._sync_fsm_from_graph()
+        return {
+            "fsm": self._fsm.to_dict(),
+            "file_path": self._file_path,
+        }
+
+    def restore_document_restore_state(self, state: dict) -> None:
+        self._fsm = AnimStateMachine.from_dict(copy.deepcopy(state["fsm"]))
+        self._file_path = self._normalize_fsm_path(state.get("file_path", ""))
+        self._fsm.file_path = self._file_path
+        self._sync_graph_from_fsm()
+        self._graph_selection.clear(record_history=False)
+
+    def recover_incompatible_document_restore_state(
+        self,
+        state,
+        error: Exception,
+    ) -> bool:
+        del error
+        path = str(state.get("file_path", "")) if isinstance(state, dict) else ""
+        if path and os.path.isfile(path):
+            return self.open_document_resource_immediate(path)
+        self._new_fsm_immediate()
+        return True
 
     def capture_graph_diff_checkpoint(self):
         """Capture an exception-only checkpoint for atomic diff replay."""
@@ -260,8 +369,54 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
     def restore_graph_diff_checkpoint(self, checkpoint) -> None:
         self._fsm, graph_state = checkpoint
         self._graph.restore_authoring_state(graph_state)
-        self._view.graph = self._graph
-        self._graph_selection.refresh()
+        self._bind_node_graph_model(self._graph)
+
+    def _node_graph_remap_clipboard_node(
+        self,
+        _old_id: str,
+        new_id: str,
+        payload: dict,
+        _node_id_map,
+    ) -> dict:
+        properties = payload.get("properties")
+        if not isinstance(properties, dict):
+            raise ValueError("Animation FSM clipboard node has no property payload")
+        state_document = properties.get("fsm_state")
+        if not isinstance(state_document, dict):
+            raise ValueError("Animation FSM clipboard node has no state payload")
+        state_document = copy.deepcopy(state_document)
+        state_document["stable_id"] = new_id
+        state_document["name"] = self._unique_state_name(
+            str(state_document.get("name", "State"))
+        )
+        state_document["transitions"] = []
+        properties = copy.deepcopy(properties)
+        properties["fsm_state"] = state_document
+        properties["label"] = state_document["name"]
+        payload = copy.deepcopy(payload)
+        payload["properties"] = properties
+        return payload
+
+    def _node_graph_remap_clipboard_link(
+        self,
+        _old_id: str,
+        new_id: str,
+        payload: dict,
+        _node_id_map,
+    ) -> dict:
+        properties = payload.get("properties")
+        if not isinstance(properties, dict):
+            raise ValueError("Animation FSM clipboard link has no property payload")
+        transition = properties.get("fsm_transition")
+        if not isinstance(transition, dict):
+            raise ValueError("Animation FSM clipboard link has no transition payload")
+        transition = copy.deepcopy(transition)
+        transition["stable_id"] = new_id
+        properties = copy.deepcopy(properties)
+        properties["fsm_transition"] = transition
+        payload = copy.deepcopy(payload)
+        payload["properties"] = properties
+        return payload
 
     def _contains_graph_element(self, element: GraphElementRef) -> bool:
         if element.kind is GraphElementKind.GRAPH:
@@ -304,26 +459,13 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
     def _parameter_by_id(self, stable_id: str) -> Optional[AnimParameter]:
         if self._fsm is None:
             return None
-        return next(
-            (
-                parameter
-                for parameter in self._fsm.parameters
-                if parameter.stable_id == stable_id
-            ),
-            None,
-        )
+        parameter = GraphParameterCollection(self._fsm.parameters).find(stable_id)
+        return parameter if isinstance(parameter, AnimParameter) else None
 
     def _parameter_index_by_id(self, stable_id: str) -> int:
         if self._fsm is None:
             return -1
-        return next(
-            (
-                index
-                for index, parameter in enumerate(self._fsm.parameters)
-                if parameter.stable_id == stable_id
-            ),
-            -1,
-        )
+        return GraphParameterCollection(self._fsm.parameters).index_of(stable_id)
 
     def _selected_parameter(self) -> Optional[AnimParameter]:
         return self._parameter_by_id(
@@ -334,41 +476,34 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
     def _parameter_document_for_kind(
         parameter: AnimParameter, kind: ValueType
     ) -> dict:
-        kind = ValueType(kind)
-        defaults = {
-            ValueType.BOOL: False,
-            ValueType.I32: 0,
-            ValueType.F32: 0.0,
-        }
-        if kind not in defaults:
-            raise ValueError(f"unsupported animation parameter kind: {kind}")
-        return parameter.with_updates(
-            {
-                "value_type": TypeRef(kind),
-                "default": defaults[kind],
-            }
-        ).to_dict()
+        edit = _ANIMATION_PARAMETER_POLICY.update(
+            GraphParameterCollection((parameter,)),
+            parameter.stable_id,
+            {"value_type": TypeRef(ValueType(kind))},
+        )
+        if not isinstance(edit.after, AnimParameter):
+            raise RuntimeError("animation parameter policy returned an invalid value")
+        return edit.after.to_dict()
 
     def _insert_parameter(self) -> bool:
         if self._fsm is None:
             return False
-        parameter = AnimParameter(
+        edit = _ANIMATION_PARAMETER_POLICY.create(
+            GraphParameterCollection(self._fsm.parameters),
             name=f"var_{len(self._fsm.parameters)}",
-            value_type=TypeRef(ValueType.F32),
-            default=0.0,
+            value_type=ValueType.F32,
+            writable=True,
         )
-        GraphParameterCollection(self._fsm.parameters).insert(parameter)
+        parameter = edit.after
+        if not isinstance(parameter, AnimParameter):
+            raise RuntimeError("animation parameter policy returned an invalid value")
         ref = GraphElementRef(GraphElementKind.PARAMETER, parameter.stable_id)
-        return self._execute_graph_mutations(
+        transaction = GraphParameterTransaction.begin(
+            GraphParameterCollection(self._fsm.parameters)
+        ).create(parameter)
+        return self._execute_graph_parameter_transaction(
             "Add parameter",
-            (
-                GraphMutation(
-                    GraphMutationKind.INSERT,
-                    ref,
-                    after=parameter.to_dict(),
-                    after_index=len(self._fsm.parameters),
-                ),
-            ),
+            transaction,
             selection_after=(ref,),
         )
 
@@ -397,17 +532,13 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         graph_mutations = self._node_graph_mutations(graph_before, graph_after)
         self._graph.restore_authoring_state(graph_before)
         selected = self._graph_selection.primary_id(GraphElementKind.PARAMETER)
-        return self._execute_graph_mutations(
+        transaction = GraphParameterTransaction.begin(
+            GraphParameterCollection(self._fsm.parameters)
+        ).delete(stable_id)
+        return self._execute_graph_parameter_transaction(
             "Remove parameter",
-            (
-                *graph_mutations,
-                GraphMutation(
-                    GraphMutationKind.REMOVE,
-                    GraphElementRef(GraphElementKind.PARAMETER, stable_id),
-                    before=parameter.to_dict(),
-                    before_index=index,
-                ),
-            ),
+            transaction,
+            mutations_before=graph_mutations,
             selection_after=() if selected == stable_id else None,
         )
 
@@ -422,20 +553,27 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         before = parameter.to_dict()
         if after == before:
             return False
-        replacement = AnimParameter.from_dict(after)
-        GraphParameterCollection(self._fsm.parameters).replace(replacement)
-        return self._execute_graph_mutations(
+        values = {
+            key: copy.deepcopy(value)
+            for key, value in after.items()
+            if key != "stable_id" and before.get(key) != value
+        }
+        if not values:
+            return False
+        edit = _ANIMATION_PARAMETER_POLICY.update(
+            GraphParameterCollection(self._fsm.parameters),
+            parameter.stable_id,
+            values,
+        )
+        replacement = edit.after
+        if not isinstance(replacement, AnimParameter):
+            raise RuntimeError("animation parameter policy returned an invalid value")
+        transaction = GraphParameterTransaction.begin(
+            GraphParameterCollection(self._fsm.parameters)
+        ).update(replacement)
+        return self._execute_graph_parameter_transaction(
             description,
-            (
-                GraphMutation(
-                    GraphMutationKind.UPDATE,
-                    GraphElementRef(
-                        GraphElementKind.PARAMETER, parameter.stable_id
-                    ),
-                    before=before,
-                    after=after,
-                ),
-            ),
+            transaction,
             merge_key=merge_key,
         )
 
@@ -554,7 +692,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             raise ValueError(f"animation state name already exists: {state.name}")
         before = self._graph.capture_authoring_state()
         self._graph.add_node(
-            "anim_state",
+            FSM_STATE_NODE_TYPE_ID,
             canvas_x=float(state.position[0]),
             canvas_y=float(state.position[1]),
             uid=state.stable_id,
@@ -708,7 +846,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 (
                     node.uid
                     for node in self._graph.nodes
-                    if node.type_id == "anim_state"
+                    if node.type_id == FSM_STATE_NODE_TYPE_ID
                 ),
                 "",
             )
@@ -760,6 +898,18 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                     if replacement.stable_id != stable_id:
                         raise RuntimeError("animation parameter update changed stable identity")
                     fsm.parameters[index] = replacement
+                elif mutation.kind is GraphMutationKind.MOVE:
+                    if index < 0:
+                        raise RuntimeError(
+                            f"animation parameter no longer exists: {stable_id}"
+                        )
+                    target_index = int(mutation.after_index)
+                    if target_index < 0 or target_index >= len(fsm.parameters):
+                        raise RuntimeError(
+                            f"animation parameter move target is invalid: {target_index}"
+                        )
+                    parameter = fsm.parameters.pop(index)
+                    fsm.parameters.insert(target_index, parameter)
                 else:
                     raise RuntimeError(
                         f"unsupported animation parameter mutation: {mutation.kind.value}"
@@ -806,76 +956,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         flush_graph()
 
     def on_graph_diff_applied(self, _diff: GraphActionDiff) -> None:
-        document = self._fsm_document()
-        self._dirty = bool(document and document.is_dirty)
         self._graph_selection.refresh()
 
-    def _execute_graph_mutations(
-        self,
-        description: str,
-        mutations: Tuple[GraphMutation, ...],
-        *,
-        merge_key: str = "",
-        selection_after: Optional[Tuple[GraphElementRef, ...]] = None,
-    ) -> bool:
-        from Infernux.engine.interaction import (
-            DocumentRegistry,
-            SelectionService,
-            SelectionSnapshot,
-        )
-        from Infernux.engine.undo import GraphDiffCommand, UndoManager
-
-        document = self._fsm_document()
-        if document is None or not mutations:
-            return False
-        registry = DocumentRegistry.instance()
-        diff = GraphActionDiff(
-            document.document_id,
-            tuple(mutations),
-            before_revision=document.revision,
-            after_revision=registry.reserve_content_revision(document.document_id),
-        )
-        command = GraphDiffCommand(description, diff, merge_key=merge_key)
-        if selection_after is not None:
-            service = SelectionService.instance()
-            command.before_selection_snapshot = service.snapshot
-            targets = tuple(
-                element.selection_target(document.document_id)
-                for element in selection_after
-            )
-            command.after_selection_snapshot = SelectionSnapshot.create(
-                targets,
-                primary=targets[-1] if targets else None,
-                anchor=targets[0] if targets else None,
-                owner_id=self.window_id if targets else "",
-            )
-        manager = UndoManager.instance()
-        if manager is not None and self._animfsm_undo_enabled():
-            applied = manager.execute(command)
-        else:
-            try:
-                command.execute()
-                applied = True
-            except Exception as exc:
-                Debug.log_error(f"Animation FSM graph edit failed: {exc}")
-                applied = False
-            finally:
-                command.dispose()
-        if applied and selection_after is not None:
-            if selection_after:
-                self._graph_selection.select(
-                    selection_after,
-                    reason="animfsm_graph_edit_selection",
-                    record_history=False,
-                )
-            else:
-                self._graph_selection.clear(
-                    reason="animfsm_graph_edit_selection",
-                    record_history=False,
-                )
-        return applied
-
-    def _open_animfsm(self, file_path: str):
+    def open_document_resource_immediate(self, file_path: str):
         """Load an .animfsm file into the editor."""
         normalized_path = self._normalize_fsm_path(file_path)
         target_path = normalized_path or file_path
@@ -883,9 +966,10 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         if fsm is None:
             Debug.log_warning(f"Failed to load animfsm: {target_path}")
             return
+        if self.document_id:
+            self.unbind_document()
         self._fsm = fsm
         self._file_path = target_path
-        self._dirty = False
         for state in fsm.states:
             if not state.clip_guid and state.clip_path:
                 state.clip_guid = self._resolve_guid(state.clip_path)
@@ -895,97 +979,72 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         self._replace_fsm_document(resource_path=target_path, dirty=False)
         self._graph_selection.clear(record_history=False)
 
-    def _new_fsm(self):
+    def can_new_fsm(self) -> bool:
+        from Infernux.engine.interaction import (
+            DocumentRegistry,
+            EditorInteractionCore,
+        )
+
+        document = DocumentRegistry.instance().get(self.document_id)
+        if (
+            self._fsm is None
+            or document is None
+            or self.window_id not in document.view_ids
+            or self._save_as_dialog.is_open
+            or bool(self._pending_save_ticket_id)
+        ):
+            return False
+        core = EditorInteractionCore.instance()
+        return core is None or not core.close_coordinator.is_active
+
+    def command_new_fsm(self) -> bool:
+        if not self.can_new_fsm():
+            return False
+        return self.request_document_replacement(self._new_fsm_immediate)
+
+    def _new_fsm_immediate(self, *, mode: str = "2d"):
         """Create a blank FSM for editing."""
-        self._fsm = AnimStateMachine(name="New State Machine")
+        if mode not in {"2d", "3d", "timeline"}:
+            raise ValueError(f"unsupported animation FSM mode: {mode!r}")
+        if self.document_id:
+            self.unbind_document()
+        self._fsm = AnimStateMachine(name="New State Machine", mode=mode)
         self._file_path = ""
-        self._dirty = True
         self._sync_graph_from_fsm()
         self._replace_fsm_document(resource_path="", dirty=True)
         self._graph_selection.clear(record_history=False)
 
-    def _switch_to_new_mode_resource(self, mode: str) -> None:
+    def can_switch_mode(self, mode: str) -> bool:
+        return (
+            mode in {"2d", "3d", "timeline"}
+            and self._fsm is not None
+            and self._fsm.mode != mode
+            and self.can_new_fsm()
+        )
+
+    def command_switch_mode(self, mode: str) -> bool:
+        if not self.can_switch_mode(mode):
+            return False
+        return self._switch_to_new_mode_resource(mode)
+
+    def _switch_to_new_mode_resource(self, mode: str) -> bool:
         """Leave the current asset and start a new resource in *mode*."""
-        if self._dirty:
-            self._pending_mode_switch = mode
-            self._mode_switch_confirm_requested = True
-            return
-        self._commit_mode_switch(mode)
+        accepted = self.request_document_replacement(
+            lambda target_mode=mode: self._commit_mode_switch(target_mode),
+        )
+        if not accepted:
+            Debug.log_warning(
+                "[AnimFSM] Mode switch is waiting for another Editor modal."
+            )
+        return bool(accepted)
 
     def _commit_mode_switch(self, mode: str) -> None:
-        self._pending_mode_switch = None
-        self._mode_switch_confirm_requested = False
-        self._mode_switch_waiting_for_save = False
-        self._new_fsm()
-        self._fsm.mode = mode
-        self._sync_graph_from_fsm()
-        self._sync_project_dirty_flag()
-
-    def _cancel_pending_mode_switch(self) -> None:
-        self._pending_mode_switch = None
-        self._mode_switch_confirm_requested = False
-        self._mode_switch_waiting_for_save = False
-
-    def _render_mode_switch_confirmation(self, ctx: InxGUIContext) -> None:
-        target_mode = self._pending_mode_switch
-        if not target_mode or self._mode_switch_waiting_for_save:
-            return
-
-        from .editor_modal import (
-            EditorModalAction,
-            begin_editor_modal,
-            end_editor_modal,
-            render_editor_modal_actions,
-        )
-
-        popup_id = f"{t('animfsm.mode_switch.title')}###animfsm_mode_switch_confirm"
-        request_open = self._mode_switch_confirm_requested
-        self._mode_switch_confirm_requested = False
-        if not begin_editor_modal(
-            ctx,
-            popup_id=popup_id,
-            title=t("animfsm.mode_switch.title"),
-            semantic_id="animfsm.mode_switch.dialog",
-            request_open=request_open,
-        ):
-            return
-
-        ctx.text_wrapped(t("animfsm.mode_switch.message"))
-        ctx.text_wrapped(t("animfsm.mode_switch.question"))
-
-        def _save() -> None:
-            self._mode_switch_waiting_for_save = True
-            self._do_save()
-            ctx.close_current_popup()
-
-        def _discard() -> None:
-            mode = self._pending_mode_switch
-            if mode:
-                self._commit_mode_switch(mode)
-            ctx.close_current_popup()
-
-        def _cancel() -> None:
-            self._cancel_pending_mode_switch()
-            ctx.close_current_popup()
-
-        render_editor_modal_actions(
-            ctx,
-            [
-                EditorModalAction(t("editor.unsaved.save"), "save", _save),
-                EditorModalAction(t("editor.unsaved.dont_save"), "discard", _discard),
-                EditorModalAction(t("editor.unsaved.cancel"), "cancel", _cancel),
-            ],
-            semantic_prefix="animfsm.mode_switch",
-        )
-        end_editor_modal(ctx)
+        self._new_fsm_immediate(mode=mode)
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
     def on_enable(self) -> None:
-        from .event_bus import EditorEventBus, EditorEvent
-        self._graph_selection.bind()
-        bus = EditorEventBus.instance()
-        bus.subscribe(EditorEvent.FILE_SELECTED, self._on_file_selected)
+        super().on_enable()
         try:
             from Infernux.engine.play_mode import PlayModeManager
             pmm = PlayModeManager.instance()
@@ -995,10 +1054,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             pass
 
     def on_disable(self) -> None:
-        from .event_bus import EditorEventBus, EditorEvent
-        self._graph_selection.unbind()
-        bus = EditorEventBus.instance()
-        bus.unsubscribe(EditorEvent.FILE_SELECTED, self._on_file_selected)
+        super().on_disable()
         try:
             from Infernux.engine.play_mode import PlayModeManager
             pmm = PlayModeManager.instance()
@@ -1007,145 +1063,13 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         except Exception:
             pass
 
-    def _window_title_suffix(self) -> str:
-        self._sync_project_dirty_flag()
-        return " *" if self._dirty else ""
-
-    def _sync_project_dirty_flag(self) -> None:
-        from Infernux.engine.interaction import DocumentRegistry
-
-        document = DocumentRegistry.instance().get(self.document_id)
-        if document is None:
-            return
-        if self._dirty and not document.is_dirty:
-            DocumentRegistry.instance().mark_changed(document.document_id)
-        self._dirty = document.is_dirty
-
     # ── State persistence ──────────────────────────────────────────────
 
     def save_state(self) -> dict:
-        """Persist open file path even if ``_open_animfsm`` is deferred to first frame."""
-        data: dict = {}
-        fp = self._normalize_fsm_path(self._file_path)
-        if not fp and self._fsm is not None:
-            fp = self._normalize_fsm_path(getattr(self._fsm, "file_path", "") or "")
-        rel_fallback = ""
-        if not fp and self._panel_restore_data:
-            fp = self._normalize_fsm_path(self._panel_restore_data.get("file_path") or "")
-            rel_fallback = (self._panel_restore_data.get("file_path_rel") or "").strip()
-        if not fp and not rel_fallback:
-            # Startup/load ordering can trigger a save before this panel has
-            # finished restoring; preserve any existing persisted target path.
-            try:
-                from Infernux.engine.ui import panel_state as _ps
-
-                prev = _ps.get(f"panel:{self.window_id}")
-                if prev:
-                    fp = self._normalize_fsm_path(prev.get("file_path") or "")
-                    rel_fallback = (prev.get("file_path_rel") or "").strip()
-            except Exception:
-                pass
-        if fp:
-            data["file_path"] = fp
-            try:
-                from Infernux.engine.project_context import get_project_root
-
-                root = get_project_root()
-                if root:
-                    data["file_path_rel"] = relative_path(fp, root)
-            except (ValueError, OSError):
-                pass
-        elif rel_fallback:
-            data["file_path_rel"] = rel_fallback
-        if self._view:
-            data["pan_x"] = self._view.pan_x
-            data["pan_y"] = self._view.pan_y
-            data["zoom"] = self._view.zoom
-        data["dirty"] = bool(self._dirty)
-        if self._dirty and self._fsm is not None:
-            data["draft"] = self._fsm.to_dict()
-        return data
-
-    def _resolve_saved_fsm_path(self, data: dict) -> str:
-        """Resolve persisted path using absolute path, then project-relative."""
-        fp = self._normalize_fsm_path(data.get("file_path") or "")
-        rel = (data.get("file_path_rel") or "").strip()
-        if fp and os.path.isfile(fp):
-            return fp
-        if rel:
-            try:
-                from Infernux.engine.project_context import get_project_root
-
-                root = get_project_root()
-                if root:
-                    cand = resolved_path(os.path.join(root, rel))
-                    if os.path.isfile(cand):
-                        return cand
-            except (OSError, ValueError):
-                pass
-        return ""
+        return super().save_state()
 
     def load_state(self, data: dict) -> None:
-        if not data:
-            self._panel_restore_data = None
-            self._panel_state_restored_once = True
-            return
-        self._panel_restore_data = dict(data)
-        if self._view:
-            self._view.pan_x = float(data.get("pan_x", self._view.pan_x))
-            self._view.pan_y = float(data.get("pan_y", self._view.pan_y))
-            self._view.zoom = float(data.get("zoom", self._view.zoom))
-        draft = data.get("draft")
-        if bool(data.get("dirty")) and isinstance(draft, dict):
-            self._fsm = AnimStateMachine.from_dict(draft)
-            self._file_path = self._normalize_fsm_path(data.get("file_path") or "")
-            self._fsm.file_path = self._file_path
-            self._dirty = True
-            self._sync_graph_from_fsm()
-            self._graph_selection.clear(record_history=False)
-            self._panel_state_restored_once = True
-            return
-        self._panel_state_restored_once = False
-
-    def _apply_pending_panel_restore(self) -> None:
-        """Open saved .animfsm once project root can resolve relative paths."""
-        if self._panel_state_restored_once:
-            return
-        data = self._panel_restore_data
-        if not data:
-            self._panel_state_restored_once = True
-            return
-        to_open = self._resolve_saved_fsm_path(data)
-        if to_open:
-            self._open_animfsm(to_open)
-            self._panel_state_restored_once = True
-            return
-        fp = (data.get("file_path") or "").strip()
-        rel = (data.get("file_path_rel") or "").strip()
-        if not fp and not rel:
-            self._panel_state_restored_once = True
-            return
-        try:
-            from Infernux.engine.project_context import get_project_root
-
-            root = get_project_root()
-        except Exception:
-            root = None
-        if root is None:
-            return
-        self._panel_state_restored_once = True
-
-    def _animfsm_undo_enabled(self) -> bool:
-        from Infernux.engine.play_mode import PlayModeManager, PlayModeState
-        from Infernux.engine.undo import UndoManager
-
-        mgr = UndoManager.instance()
-        if not mgr or not mgr.enabled:
-            return False
-        pmm = PlayModeManager.instance()
-        if pmm and pmm.state != PlayModeState.EDIT:
-            return False
-        return True
+        super().load_state(data)
 
     def _initial_size(self):
         return (900, 600)
@@ -1158,7 +1082,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     def _on_empty_state_drop(self, payload_type, payload):
         if payload_type in ("ANIMFSM_FILE", "TIMELINEFSM_FILE") and payload:
-            self._open_animfsm(payload)
+            from Infernux.engine.interaction import DocumentKind
+
+            self.request_document_resource_open(DocumentKind.ANIMATION_FSM, payload)
 
     # ═══════════════════════════════════════════════════════════════════
     # Rendering
@@ -1166,16 +1092,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     def _before_node_graph_render(self, ctx: InxGUIContext) -> None:
         del ctx
-        if not self._panel_state_restored_once:
-            if self._panel_restore_data is None:
-                from Infernux.engine.ui import panel_state as _ps
-
-                data = _ps.get(f"panel:{self.window_id}")
-                if data:
-                    self.load_state(data)
-                else:
-                    self._panel_state_restored_once = True
-            self._apply_pending_panel_restore()
 
     def _render_node_graph_toolbar(self, ctx: InxGUIContext) -> None:
         self._render_toolbar(ctx)
@@ -1183,24 +1099,45 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
     def _render_node_graph_left_panel(self, ctx: InxGUIContext) -> None:
         self._render_variables_panel(ctx)
 
-    def _render_node_graph_detail_panel(self, ctx: InxGUIContext) -> None:
-        self._render_detail_panel(ctx)
+    def _node_graph_detail_contributors(
+        self,
+    ) -> tuple[GraphDetailContributor, ...]:
+        return (
+            GraphDetailContributor(
+                "animfsm.transition",
+                300,
+                lambda: bool(
+                    self._graph_selection.primary_id(GraphElementKind.LINK)
+                ),
+                lambda ctx: self._render_selected_transition_detail(ctx),
+            ),
+            GraphDetailContributor(
+                "parameter",
+                200,
+                self._is_node_graph_parameter_detail_active,
+                lambda ctx: self._render_node_graph_parameter_detail(ctx),
+            ),
+            GraphDetailContributor(
+                "animfsm.state",
+                0,
+                lambda: True,
+                self._render_fsm_state_detail,
+            ),
+        )
 
     def _after_node_graph_render(self, ctx: InxGUIContext) -> None:
         # Accept .animfsm / .timelinefsm file drops
         payload = ctx.accept_drag_drop_payload("ANIMFSM_FILE")
         if payload:
-            self._open_animfsm(payload)
+            from Infernux.engine.interaction import DocumentKind
+
+            self.request_document_resource_open(DocumentKind.ANIMATION_FSM, payload)
         payload_tl = ctx.accept_drag_drop_payload("TIMELINEFSM_FILE")
         if payload_tl:
-            self._open_animfsm(payload_tl)
+            from Infernux.engine.interaction import DocumentKind
 
-        self._render_mode_switch_confirmation(ctx)
-        self._save_as_dialog.render(
-            ctx,
-            self._save_to,
-            cancel_callback=self._cancel_pending_save,
-        )
+            self.request_document_resource_open(DocumentKind.ANIMATION_FSM, payload_tl)
+
 
     # ── Toolbar ───────────────────────────────────────────────────────
 
@@ -1242,9 +1179,16 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
         new_label = t("animfsm_editor.new")
         new_pressed = ctx.button(new_label)
-        ctx.record_semantic_item("button", new_label, True, "animfsm.toolbar.new")
+        ctx.record_semantic_item(
+            "button", new_label, self.can_new_fsm(), "animfsm.toolbar.new"
+        )
         if new_pressed:
-            self._new_fsm()
+            from Infernux.engine.interaction import CommandSource
+
+            self._execute_node_graph_command(
+                "animfsm.new",
+                source=CommandSource.TOOLBAR,
+            )
             return
 
         ctx.same_line(0, 8)
@@ -1252,7 +1196,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         save_pressed = ctx.button(save_label)
         ctx.record_semantic_item("button", save_label, True, "animfsm.toolbar.save")
         if save_pressed:
-            self._do_save()
+            from Infernux.engine.interaction import CommandSource
+
+            self._execute_node_graph_command("file.save", source=CommandSource.TOOLBAR)
 
         ctx.same_line(0, 16)
         ctx.label(f"{t('animfsm_editor.name')}:")
@@ -1292,10 +1238,16 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             None, None, self._file_path,
         )
         ctx.record_semantic_item(
-            "status", "Dirty", True, "animfsm.document.dirty", bool(self._dirty),
+            "status", "Dirty", True, "animfsm.document.dirty", self._document_is_dirty(),
         )
         if new_mode_idx != mode_idx:
-            self._switch_to_new_mode_resource(_MODES[new_mode_idx])
+            from Infernux.engine.interaction import CommandSource
+
+            self._execute_node_graph_command(
+                "animfsm.switch_mode",
+                source=CommandSource.TOOLBAR,
+                payload={"mode": _MODES[new_mode_idx]},
+            )
 
         if self._file_path:
             ctx.same_line(0, 12)
@@ -1303,17 +1255,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     @staticmethod
     def _sanitize_param_identifier(raw: str) -> str:
-        """Keep ``[A-Za-z_][A-Za-z0-9_]*`` for condition variable names."""
-        s = (raw or "").strip()
-        out: List[str] = []
-        for i, ch in enumerate(s):
-            if i == 0:
-                if ch.isalpha() or ch == "_":
-                    out.append(ch)
-            else:
-                if ch.isalnum() or ch == "_":
-                    out.append(ch)
-        return "".join(out)
+        return _sanitize_animation_parameter_name(raw)
 
     def _default_compare_term(self, fsm: AnimStateMachine) -> dict:
         p0 = fsm.parameters[0]
@@ -1581,98 +1523,49 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             return True
         return super()._node_graph_workspace_delete(element)
 
-    def _render_parameter_detail_panel(self, ctx: InxGUIContext) -> bool:
-        fsm = self._fsm
-        if fsm is None:
-            return False
-        p = self._selected_parameter()
-        if p is None:
-            return False
+    def _node_graph_parameter_policy(self):
+        return _ANIMATION_PARAMETER_POLICY
 
-        kinds = [ValueType.BOOL, ValueType.F32, ValueType.I32]
-        if p.value_type.value_type not in kinds:
-            raise RuntimeError(
-                f"invalid animation parameter type: {p.value_type.value_type.value}"
-            )
-
-        ctx.label(t("animfsm_editor.section_parameters"))
-        ctx.separator()
-
-        ctx.label(t("animfsm_editor.state_name"))
-        ctx.set_next_item_width(-1)
-        raw_name = ctx.text_input("##animfsm_param_name", p.name, 64)
-        san = self._sanitize_param_identifier(raw_name)
-        if san and san != p.name:
-            after = p.to_dict()
-            after["name"] = san
-            self._update_parameter_document(
-                p,
-                after,
-                "Rename parameter",
-                merge_key=f"parameter:{p.stable_id}:name",
-            )
-            p = self._parameter_by_id(p.stable_id) or p
-
-        ctx.label(t("particle_graph_editor.parameter_type"))
-        ctx.set_next_item_width(-1)
-        ki = kinds.index(p.value_type.value_type)
-        new_ki = ctx.combo(
-            "##animfsm_param_kind",
-            ki,
-            [kind.value for kind in kinds],
-            len(kinds),
+    def _node_graph_parameter_collection(self):
+        return (
+            GraphParameterCollection(self._fsm.parameters)
+            if self._fsm is not None
+            else None
         )
-        if new_ki != ki:
-            self._update_parameter_document(
-                p,
-                self._parameter_document_for_kind(p, kinds[new_ki]),
-                "Change parameter type",
-                merge_key=f"parameter:{p.stable_id}:kind",
-            )
-            p = self._parameter_by_id(p.stable_id) or p
 
-        ctx.label(t("particle_graph_editor.parameter_default"))
-        ctx.set_next_item_width(-1)
-        if p.value_type.value_type is ValueType.BOOL:
-            nb = ctx.checkbox("##animfsm_param_def_bool", bool(p.default))
-            if nb != p.default:
-                after = p.to_dict()
-                after["default"] = nb
-                self._update_parameter_document(
-                    p,
-                    after,
-                    "Parameter default",
-                    merge_key=f"parameter:{p.stable_id}:default",
-                )
-        elif p.value_type.value_type is ValueType.F32:
-            nf = ctx.drag_float(
-                "##animfsm_param_def_float",
-                float(p.default),
-                0.01,
-                -1.0e9,
-                1.0e9,
-            )
-            if nf != p.default:
-                after = p.to_dict()
-                after["default"] = nf
-                self._update_parameter_document(
-                    p,
-                    after,
-                    "Parameter default",
-                    merge_key=f"parameter:{p.stable_id}:default",
-                )
-        else:
-            ni = ctx.input_int("##animfsm_param_def_int", int(p.default))
-            if ni != p.default:
-                after = p.to_dict()
-                after["default"] = ni
-                self._update_parameter_document(
-                    p,
-                    after,
-                    "Parameter default",
-                    merge_key=f"parameter:{p.stable_id}:default",
-                )
-        return True
+    def _node_graph_parameter_detail_config(self) -> GraphParameterDetailConfig:
+        return GraphParameterDetailConfig(
+            title=t("animfsm_editor.section_parameters"),
+            name_label=t("animfsm_editor.state_name"),
+            type_label=t("particle_graph_editor.parameter_type"),
+            default_label=t("particle_graph_editor.parameter_default"),
+            semantic_prefix="animfsm.parameter",
+            show_exposed=False,
+            show_writable=False,
+            show_tooltip=False,
+        )
+
+    def _node_graph_commit_parameter_changes(
+        self,
+        stable_id: str,
+        changes: dict,
+    ) -> bool:
+        parameter = self._parameter_by_id(stable_id)
+        if parameter is None or self._fsm is None:
+            return False
+        edit = _ANIMATION_PARAMETER_POLICY.update(
+            GraphParameterCollection(self._fsm.parameters),
+            stable_id,
+            changes,
+        )
+        if not isinstance(edit.after, AnimParameter):
+            raise RuntimeError("animation parameter policy returned an invalid value")
+        return self._update_parameter_document(
+            parameter,
+            edit.after.to_dict(),
+            "Edit animation parameter",
+            merge_key=f"parameter:{stable_id}:{','.join(sorted(changes))}",
+        )
 
     # ── Detail panel (right side) ─────────────────────────────────────
 
@@ -1685,19 +1578,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         fsm = self._fsm
         return getattr(fsm, "mode", "2d") == "timeline" if fsm is not None else False
 
-    def _clip_path_matches_fsm_mode(self, p: str) -> bool:
-        """True if *p* is valid for current FSM mode: .animclip2d / .animclip3d file, or virtual ``::subanim:``."""
-        p = (p or "").strip()
-        if not p:
-            return True
-        expected_ext = ".animclip3d" if self._fsm_clip_asset_type() == "AnimationClip3D" else ".animclip2d"
-        if os.path.splitext(p)[1].lower() == expected_ext:
-            return True
-        # FBX embedded take from Project panel — not a disk file, no file extension on the full path
-        if expected_ext == ".animclip3d" and "::subanim:" in p:
-            return True
-        return False
-
     @staticmethod
     def _embedded_clip3d_picker_items(filter_text: str) -> List[Tuple[str, str]]:
         """List model-embedded takes alongside standalone ``.animclip3d`` assets.
@@ -1706,42 +1586,38 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         Returning that same public virtual reference keeps object-picker assignment,
         drag-and-drop assignment, and runtime loading on one contract.
         """
-        from Infernux.core.asset_types import MESH_EXTENSIONS, read_meta_file, read_meta_guid
-        from Infernux.core.assets import AssetManager
+        from Infernux.core.asset_types import read_meta_file, read_meta_guid
+        from Infernux.engine.interaction import asset_reference_catalog
 
         filt = (filter_text or "").strip().lower()
         items: List[Tuple[str, str]] = []
         seen: set[str] = set()
-        for ext in sorted(MESH_EXTENSIONS):
-            for model_path in AssetManager.find_assets(f"*{ext}"):
-                normalized = path_key(model_path)
-                if normalized in seen:
+        for _label, model_path in asset_reference_catalog.items("Mesh", ""):
+            normalized = path_key(model_path)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            meta = read_meta_file(model_path) or {}
+            names_csv = meta.get("animation_names_csv") or ""
+            if not isinstance(names_csv, str):
+                continue
+            take_names = [name.strip() for name in names_csv.split(",") if name.strip()]
+            if not take_names:
+                continue
+            model_name = os.path.splitext(os.path.basename(model_path))[0]
+            base = read_meta_guid(model_path) or model_path
+            for index, take_name in enumerate(take_names):
+                display = f"{model_name} | {take_name}"
+                if filt and filt not in display.lower():
                     continue
-                seen.add(normalized)
-                meta = read_meta_file(model_path) or {}
-                names_csv = meta.get("animation_names_csv") or ""
-                if not isinstance(names_csv, str):
-                    continue
-                take_names = [name.strip() for name in names_csv.split(",") if name.strip()]
-                if not take_names:
-                    continue
-                model_name = os.path.splitext(os.path.basename(model_path))[0]
-                base = read_meta_guid(model_path) or model_path
-                for index, take_name in enumerate(take_names):
-                    display = f"{model_name} | {take_name}"
-                    if filt and filt not in display.lower():
-                        continue
-                    items.append((display, f"{base}::subanim:{index}"))
+                virtual_path = f"{base}::subanim:{index}"
+                items.append((display, {
+                    "asset_type": "AnimationClip3D",
+                    "guid": "",
+                    "path_hint": virtual_path,
+                    "builtin": "",
+                }))
         return items
-
-    def _clip_picker_items(self, filter_text: str, extensions) -> List[Tuple[str, str]]:
-        """Return compatible standalone clips and, for 3D FSMs, embedded takes."""
-        result: List[Tuple[str, str]] = []
-        for pattern in extensions:
-            result.extend(_picker_assets(filter_text, pattern, assets_only=False))
-        if self._fsm_clip_asset_type() == "AnimationClip3D":
-            result.extend(self._embedded_clip3d_picker_items(filter_text))
-        return result
 
     def _clip_ref_for_state(self, state: AnimState):
         """Build a clip ref (2D/3D) with path hint resolved for Inspector-style labels."""
@@ -1821,9 +1697,11 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         cache[ckey] = name
         return name
 
-    def _assign_clip_b_to_state(self, state: AnimState, clip_path: str, node=None, *, record_undo: bool = True):
-        p = (clip_path or "").strip()
-        if p and not self._clip_path_matches_fsm_mode(p):
+    def _assign_clip_b_to_state(self, state: AnimState, clip_path, node=None, *, record_undo: bool = True):
+        try:
+            p = resolve_asset_reference_path(self._fsm_clip_asset_type(), clip_path)
+        except (KeyError, TypeError, ValueError) as exc:
+            Debug.log_error(f"Animation state clip B assignment rejected: {exc}")
             return
         guid = self._resolve_guid(p) if p else ""
         path = "" if guid else (p or "")
@@ -1855,16 +1733,12 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         self._clip_name_cache = {}
 
     def _render_clip_b_reference_row(self, ctx: InxGUIContext, state: AnimState, node, lw: float) -> None:
-        cfg = get_asset_type_config(self._fsm_clip_asset_type()) or {}
-        type_hint = str(cfg.get("display", "AnimClip"))
-        drag_type = cfg.get("drag_type", "ANIMCLIP_FILE")
-        extensions = cfg.get("extensions", ("*.animclip2d", "*.animclip3d"))
-        prefix = str(cfg.get("prefix", "aclip"))
+        descriptor = asset_type_registry.require(self._fsm_clip_asset_type())
+        type_hint = descriptor.display_name
+        drag_type = descriptor.drag_types
+        prefix = descriptor.widget_prefix
         ref = self._clip_b_ref_for_state(state)
         display = self._clip_b_display_name(state, ref)
-
-        def _picker(filt: str):
-            return self._clip_picker_items(filt, extensions)
 
         field_label(ctx, t("animfsm_editor.clip_b"), lw)
         clip_b_ping = str(getattr(ref, "path_hint", "") or getattr(state, "clip_b_path", "") or "").strip()
@@ -1877,17 +1751,23 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                     clip_b_ping = adb.get_path_from_guid(guid_b) or ""
             except Exception:
                 pass
-        render_object_field(
+        render_asset_reference_field(
             ctx,
             f"{prefix}_fsm_clipb_{node.uid}",
             display,
             type_hint,
             accept_drag_type=drag_type,
-            on_drop_callback=lambda p, _st=state, _nd=node: self._assign_clip_b_to_state(_st, str(p), _nd),
-            picker_asset_items=_picker,
-            on_pick=lambda path, _st=state, _nd=node: self._assign_clip_b_to_state(_st, path, _nd),
+            asset_type=descriptor.type_id,
+            on_assign=lambda p, _st=state, _nd=node: self._assign_clip_b_to_state(_st, p, _nd),
+            additional_asset_items=(
+                self._embedded_clip3d_picker_items
+                if self._fsm_clip_asset_type() == "AnimationClip3D"
+                else None
+            ),
             on_clear=lambda _st=state, _nd=node: self._clear_clip_b_from_state(_st, _nd),
             ping_path=clip_b_ping or None,
+            has_value=bool(state.clip_b_guid or state.clip_b_path),
+            reference_value=AssetReferenceCodec.normalize(descriptor.type_id, ref),
             semantic_id="animfsm.state.clip_b",
         )
 
@@ -1948,57 +1828,50 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         semantic_id: str = "animfsm.state.clip",
     ) -> None:
         """Same object-field UX as the main Inspector (basename, picker, drag-drop, clear)."""
-        cfg = get_asset_type_config(self._fsm_clip_asset_type()) or {}
-        type_hint = str(cfg.get("display", "AnimClip"))
-        drag_type = cfg.get("drag_type", "ANIMCLIP_FILE")
-        extensions = cfg.get("extensions", ("*.animclip2d", "*.animclip3d"))
-        prefix = str(cfg.get("prefix", "aclip"))
+        descriptor = asset_type_registry.require(self._fsm_clip_asset_type())
+        type_hint = descriptor.display_name
+        drag_type = descriptor.drag_types
+        prefix = descriptor.widget_prefix
 
         ref = self._clip_ref_for_state(state)
         display = self._clip_display_name(state, ref)
-
-        def _picker(filt: str):
-            return self._clip_picker_items(filt, extensions)
-
-        def _on_pick(path: str, _st=state, _nd=node):
-            self._assign_clip_to_state(_st, path, _nd)
 
         def _on_clear(_st=state, _nd=node):
             self._clear_clip_from_state(_st, _nd)
 
         field_label(ctx, label or t("animfsm_editor.clip_ref"), lw)
         clip_ping = self._resolved_clip_path_for_state(state)
-        render_object_field(
+        render_asset_reference_field(
             ctx,
             f"{prefix}_fsm_clip_{node.uid}",
             display,
             type_hint,
+            asset_type=descriptor.type_id,
             accept_drag_type=drag_type,
-            on_drop_callback=lambda p, _st=state, _nd=node: self._assign_clip_to_state(
-                _st, str(p), _nd,
+            on_assign=lambda p, _st=state, _nd=node: self._assign_clip_to_state(
+                _st, p, _nd,
             ),
-            picker_asset_items=_picker,
-            on_pick=_on_pick,
+            additional_asset_items=(
+                self._embedded_clip3d_picker_items
+                if self._fsm_clip_asset_type() == "AnimationClip3D"
+                else None
+            ),
             on_clear=_on_clear,
             ping_path=clip_ping or None,
+            has_value=bool(state.clip_guid or state.clip_path),
+            reference_value=AssetReferenceCodec.normalize(descriptor.type_id, ref),
             semantic_id=semantic_id,
         )
 
-    def _render_detail_panel(self, ctx: InxGUIContext):
+    def _render_fsm_state_detail(self, ctx: InxGUIContext):
         fsm = self._fsm
         if fsm is None:
-            return
-
-        if self._render_selected_transition_detail(ctx):
-            return
-
-        if self._render_parameter_detail_panel(ctx):
             return
 
         node = self._graph.find_node(
             self._graph_selection.primary_id(GraphElementKind.NODE)
         )
-        if node is None or node.type_id != "anim_state":
+        if node is None or node.type_id != FSM_STATE_NODE_TYPE_ID:
             ctx.push_style_color(ImGuiCol.Text, 0.50, 0.51, 0.53, 1.0)
             ctx.label(t("animfsm_editor.no_state_selected"))
             ctx.pop_style_color(1)
@@ -2279,7 +2152,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     def _graph_state_document(self, stable_id: str) -> Optional[dict]:
         node = self._graph.find_node(stable_id)
-        if node is None or node.type_id != "anim_state":
+        if node is None or node.type_id != FSM_STATE_NODE_TYPE_ID:
             return None
         document = node.data.get("fsm_state")
         if not isinstance(document, dict):
@@ -2299,7 +2172,10 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         if not wanted:
             return ""
         for node in self._graph.nodes:
-            if node.type_id == "anim_state" and self._graph_state_name(node.uid) == wanted:
+            if (
+                node.type_id == FSM_STATE_NODE_TYPE_ID
+                and self._graph_state_name(node.uid) == wanted
+            ):
                 return node.uid
         return ""
 
@@ -2375,148 +2251,19 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         base = (want or "State").strip() or "State"
         if not self._graph_state_uid_by_name(base):
             return base
-        n = sum(node.type_id == "anim_state" for node in self._graph.nodes)
+        n = sum(
+            node.type_id == FSM_STATE_NODE_TYPE_ID for node in self._graph.nodes
+        )
         while True:
             cand = f"{base} {n}"
             if not self._graph_state_uid_by_name(cand):
                 return cand
             n += 1
 
-    def _on_graph_copy(self) -> None:
-        if self._fsm is None:
-            return
-        uids = [
-            uid
-            for uid in self._graph_selection.selected_ids(GraphElementKind.NODE)
-            if uid != self._entry_uid
-        ]
-        selected_ids = set(uids)
-        if not selected_ids:
-            return
-        items: List[ClipboardItem] = []
-        for uid in uids:
-            document = self._graph_state_document(uid)
-            if document is None:
-                continue
-            document["transitions"] = []
-            for link in self._graph.links:
-                if (
-                    link.uid != _FSM_ENTRY_LINK_ID
-                    and link.source_node == uid
-                    and link.target_node in selected_ids
-                ):
-                    transition = self._graph_transition_document(link.uid)
-                    if transition is not None:
-                        document["transitions"].append(transition)
-            items.append(
-                ClipboardItem(
-                    uid,
-                    self.document_id,
-                    "animfsm_state",
-                    document,
-                )
-            )
-        if items:
-            ClipboardService.instance().write(
-                ClipboardDomain.GRAPH_ELEMENT,
-                items,
-                source_owner_id=self.window_id,
-                reason="animfsm_copy_states",
-            )
-
-    def _on_graph_paste(self) -> None:
-        payload = ClipboardService.instance().peek(ClipboardDomain.GRAPH_ELEMENT)
-        if payload is None or self._fsm is None:
-            return
-        state_documents = [
-            copy.deepcopy(item.data)
-            for item in payload.items
-            if item.sub_kind == "animfsm_state" and isinstance(item.data, dict)
-        ]
-        if not state_documents:
-            return
-        old_names = [str(document.get("name") or "") for document in state_documents]
-        if any(not name for name in old_names):
-            return
-        name_map: Dict[str, str] = {}
-        for old in old_names:
-            name_map[old] = self._unique_state_name(old)
-        before = self._graph.capture_authoring_state()
-        states_by_old_name: Dict[str, AnimState] = {}
-        selection: List[GraphElementRef] = []
-        pending_transitions: List[Tuple[str, dict]] = []
-        for sd in state_documents:
-            old_name = sd["name"]
-            new_n = name_map[old_name]
-            state = AnimState.from_dict(sd)
-            for transition in state.transitions:
-                pending_transitions.append((old_name, transition.to_dict()))
-            state.stable_id = uuid.uuid4().hex
-            state.name = new_n
-            state.transitions = []
-            pos = list(sd.get("position", [0.0, 0.0]))
-            if len(pos) < 2:
-                pos = [0.0, 0.0]
-            state.position = [float(pos[0]) + 48.0, float(pos[1]) + 48.0]
-            states_by_old_name[sd["name"]] = state
-            self._graph.add_node(
-                "anim_state",
-                state.position[0],
-                state.position[1],
-                uid=state.stable_id,
-                **self._state_graph_properties(state),
-            )
-            selection.append(GraphElementRef(GraphElementKind.NODE, state.stable_id))
-        for source_name, tr_d in pending_transitions:
-            source = states_by_old_name.get(source_name)
-            if source is None:
-                continue
-            tr = AnimTransition.from_dict(tr_d)
-            tr.stable_id = uuid.uuid4().hex
-            tgt_old = tr.target_state
-            tr.target_state = name_map.get(tgt_old, tgt_old)
-            target = states_by_old_name.get(tgt_old)
-            if target is None:
-                target_uid = self._graph_state_uid_by_name(tr.target_state)
-            else:
-                target_uid = target.stable_id
-            if not target_uid:
-                continue
-            self._graph.add_link(
-                source.stable_id,
-                "out",
-                target_uid,
-                "in",
-                uid=tr.stable_id,
-                **self._transition_graph_properties(tr),
-            )
-        self._commit_node_graph_change(
-            "Paste states",
-            before,
-            selection_after=tuple(selection),
-        )
-
     # ── Callbacks from NodeGraphView ──────────────────────────────────
 
-    def _on_node_drag_start(self, uid: str) -> None:
-        if uid == self._entry_uid:
-            self._undo_drag_graph_state = None
-            return
-        self._undo_drag_graph_state = self._graph.capture_authoring_state()
-
-    def _on_node_drag_end(self, uid: str) -> None:
-        if uid == self._entry_uid:
-            self._undo_drag_graph_state = None
-            return
-        before = self._undo_drag_graph_state
-        self._undo_drag_graph_state = None
-        if before is None:
-            return
-        self._commit_node_graph_change(
-            "Move state node",
-            before,
-            merge_key=f"node:{uid}:position",
-        )
+    def _node_graph_drag_description(self, _stable_id: str) -> str:
+        return "Move state node"
 
     def _on_node_header_color_changed(
         self,
@@ -2642,12 +2389,14 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             self._remove_states(stable_ids)
 
     def _on_node_add_request(self, type_id: str, x: float, y: float):
-        if type_id != "anim_state":
+        if type_id != FSM_STATE_NODE_TYPE_ID:
             return
         fsm = self._fsm
         if fsm is None:
             return
-        state_count = sum(node.type_id == "anim_state" for node in self._graph.nodes)
+        state_count = sum(
+            node.type_id == FSM_STATE_NODE_TYPE_ID for node in self._graph.nodes
+        )
         state = AnimState(name=self._unique_state_name(f"State {state_count}"))
         state.position = [x, y]
         if self._is_timeline_mode():
@@ -2697,7 +2446,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             state.kind = kind
         before = self._graph.capture_authoring_state()
         self._graph.add_node(
-            "anim_state",
+            FSM_STATE_NODE_TYPE_ID,
             gx,
             gy,
             uid=state.stable_id,
@@ -2726,23 +2475,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 GraphElementRef(GraphElementKind.NODE, state.stable_id),
             ),
         )
-
-    def _on_canvas_selection_changed(
-        self,
-        node_ids: Tuple[str, ...],
-        link_id: str,
-        record_history: bool,
-    ) -> None:
-        self._graph_selection.accept_view_selection(
-            node_ids,
-            link_id,
-            record_history=record_history,
-        )
-
-    def _on_file_selected(self, path):
-        """EditorEvent.FILE_SELECTED — project panel selected a file."""
-        if path:
-            self._graph_selection.refresh()
 
     def _on_play_mode_changed(self, event):
         """Keep editor drafts in memory when Play Mode changes.
@@ -2819,9 +2551,11 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 make_default=not bool(self._fsm.default_state),
             )
 
-    def _assign_timeline_to_state(self, state: AnimState, path: str, node=None, *, record_undo: bool = True):
-        p = (path or "").strip()
-        if p and not p.lower().endswith(".animtimeline"):
+    def _assign_timeline_to_state(self, state: AnimState, path, node=None, *, record_undo: bool = True):
+        try:
+            p = resolve_asset_reference_path("AnimationTimeline", path)
+        except (KeyError, TypeError, ValueError) as exc:
+            Debug.log_error(f"Animation timeline assignment rejected: {exc}")
             return
         guid = self._resolve_guid(p) if p else ""
         resolved_path = "" if guid else (p or "")
@@ -2875,9 +2609,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
     def _render_timeline_reference_row(self, ctx: InxGUIContext, state: AnimState, node, lw: float) -> None:
         display = self._timeline_display_name(state)
 
-        def _picker(filt: str):
-            return _picker_assets(filt, "*.animtimeline", assets_only=False)
-
         field_label(ctx, t("animfsm_editor.timeline_ref"), lw)
         tl_ping = str(getattr(state, "timeline_path", "") or "").strip()
         if not tl_ping:
@@ -2889,17 +2620,22 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                     tl_ping = adb.get_path_from_guid(tl_guid) or ""
             except Exception:
                 pass
-        render_object_field(
+        render_asset_reference_field(
             ctx,
             f"atl_fsm_tl_{node.uid}",
             display,
             "Timeline",
-            accept_drag_type="ANIMTIMELINE_FILE",
-            on_drop_callback=lambda p, _st=state, _nd=node: self._assign_timeline_to_state(_st, str(p), _nd),
-            picker_asset_items=_picker,
-            on_pick=lambda path, _st=state, _nd=node: self._assign_timeline_to_state(_st, path, _nd),
+            asset_type="AnimationTimeline",
+            accept_drag_type=asset_type_registry.require("AnimationTimeline").drag_types,
+            on_assign=lambda p, _st=state, _nd=node: self._assign_timeline_to_state(_st, p, _nd),
             on_clear=lambda _st=state, _nd=node: self._clear_timeline_from_state(_st, _nd),
             ping_path=tl_ping or None,
+            has_value=bool(state.timeline_guid or state.timeline_path),
+            reference_value={
+                "asset_type": "AnimationTimeline",
+                "guid": str(getattr(state, "timeline_guid", "") or ""),
+                "path_hint": tl_ping,
+            },
             semantic_id="animfsm.state.timeline",
         )
 
@@ -2929,10 +2665,12 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             state.clip_path = ""
         self._clip_name_cache = {}
 
-    def _assign_clip_to_state(self, state: AnimState, clip_path: str, node=None, *, record_undo: bool = True):
+    def _assign_clip_to_state(self, state: AnimState, clip_path, node=None, *, record_undo: bool = True):
         """Assign a clip path/guid to a state."""
-        p = (clip_path or "").strip()
-        if p and not self._clip_path_matches_fsm_mode(p):
+        try:
+            p = resolve_asset_reference_path(self._fsm_clip_asset_type(), clip_path)
+        except (KeyError, TypeError, ValueError) as exc:
+            Debug.log_error(f"Animation state clip assignment rejected: {exc}")
             return
         guid = self._resolve_guid(p) if p else ""
         path = "" if guid else (p or "")
@@ -2965,33 +2703,25 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             save_as=save_as,
         ).accepted
 
-    def save(self, *, ticket, save_as: bool = False):
+    def request_authoring_save_as(self, ticket):
         from Infernux.engine.interaction import (
             DocumentActionResult,
             DocumentActionStatus,
         )
 
-        target = self._file_path or (
-            self._fsm.file_path if self._fsm is not None else ""
+        self._pending_save_ticket_id = ticket.ticket_id
+        if self._show_save_as_dialog():
+            return DocumentActionResult(DocumentActionStatus.PENDING)
+        self._pending_save_ticket_id = ""
+        return DocumentActionResult(
+            DocumentActionStatus.REJECTED,
+            "no project root is available",
         )
-        if save_as or not target:
-            self._pending_save_ticket_id = ticket.ticket_id
-            if self._show_save_as_dialog():
-                return DocumentActionResult(DocumentActionStatus.PENDING)
-            self._pending_save_ticket_id = ""
-            return DocumentActionResult(
-                DocumentActionStatus.REJECTED,
-                "no project root is available",
-            )
-        return self._save_to(target, ticket_id=ticket.ticket_id)
 
     def discard(self, *, document_id: str) -> bool:
         if document_id != self.document_id:
             return False
         return self._discard_unsaved_changes()
-
-    def handle_save_command(self, save_as: bool = False) -> bool:
-        return self._request_document_save(save_as=save_as)
 
     def _show_save_as_dialog(self) -> bool:
         safe_name = (self._fsm.name or "NewStateMachine").replace(" ", "_")
@@ -3007,62 +2737,82 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             extension=ext,
             default_name=safe_name,
             current_path=self._file_path,
+            save_callback=self._save_to,
+            cancel_callback=self._cancel_pending_save,
         ):
             Debug.log_warning("[AnimFSM] No project root set - cannot save state machine.")
             return False
         return True
 
     def _save_to(self, target: str, *, ticket_id: str = "") -> bool:
+        active_ticket_id = ticket_id or self._pending_save_ticket_id
+        if not active_ticket_id:
+            raise RuntimeError(
+                "Animation FSM saves require a DocumentRegistry SaveTicket"
+            )
+        result = self._authoring_document_controller.continue_save_to_resource(
+            active_ticket_id,
+            target,
+        )
+        if result.accepted:
+            self._pending_save_ticket_id = ""
+        return result.accepted
+
+    def capture_authoring_save_snapshot(self, target: str):
+        from Infernux.engine.interaction import (
+            AuthoringAssetSnapshot,
+            document_content_token,
+        )
+
         fsm = self._fsm
         if fsm is None:
-            return False
-        if fsm.save(target):
-            normalized = self._normalize_fsm_path(target)
-            self._file_path = normalized
-            fsm.file_path = normalized
-            fsm.name = os.path.splitext(os.path.basename(normalized))[0]
-            from Infernux.engine.interaction import DocumentRegistry
+            raise RuntimeError("Animation FSM has no authoring model")
+        normalized = self._normalize_fsm_path(target)
+        if not normalized:
+            raise ValueError("Animation FSM save target is invalid")
+        title = os.path.splitext(os.path.basename(normalized))[0]
+        document = copy.deepcopy(fsm.to_dict())
+        document["name"] = title
+        AnimStateMachine.from_dict(document)
+        return AuthoringAssetSnapshot(
+            normalized,
+            json.dumps(document, indent=2, ensure_ascii=False) + "\n",
+            document_content_token(document),
+            title,
+            document,
+        )
 
-            registry = DocumentRegistry.instance()
-            document = self._fsm_document()
-            active_ticket_id = ticket_id or self._pending_save_ticket_id
-            if active_ticket_id:
-                registry.complete_save(
-                    active_ticket_id,
-                    success=True,
-                    key=self._fsm_document_key(normalized),
-                    resource_path=normalized,
-                    title=fsm.name,
-                )
-                self._pending_save_ticket_id = ""
-            elif document is not None:
-                registry.rekey(
-                    document.document_id,
-                    self._fsm_document_key(normalized),
-                    resource_path=normalized,
-                )
-                registry.update_metadata(document.document_id, title=fsm.name)
-                registry.mark_saved(document.document_id)
-            document = self._fsm_document()
-            self._dirty = bool(document and document.is_dirty)
-            Debug.log(f"Saved animfsm: {target}")
-            self._hot_reload_animators(normalized)
-            if self._mode_switch_waiting_for_save and self._pending_mode_switch:
-                self._commit_mode_switch(self._pending_mode_switch)
-            return True
-        else:
-            Debug.log_error(f"Failed to save animfsm: {target}")
-            active_ticket_id = ticket_id or self._pending_save_ticket_id
-            if active_ticket_id:
-                from Infernux.engine.interaction import DocumentRegistry
+    def publish_authoring_save_snapshot(self, snapshot) -> str:
+        if self._fsm is None:
+            return "Animation FSM authoring model disappeared before publication"
+        self._fsm.name = snapshot.title
+        self._fsm.file_path = snapshot.target_path
+        self._file_path = snapshot.target_path
+        self._persist_panel_state()
+        Debug.log(f"Saved animfsm: {snapshot.target_path}")
+        publication_error = ""
+        try:
+            from Infernux.core.assets import AssetManager
 
-                DocumentRegistry.instance().complete_save(
-                    active_ticket_id,
-                    success=False,
-                    message=f"failed to save animation FSM: {target}",
+            result = AssetManager.reimport_asset(snapshot.target_path)
+            if not result:
+                result = AssetManager.import_asset(snapshot.target_path)
+            if not result:
+                publication_error = str(
+                    getattr(result, "error", "")
+                    or f"animation FSM publication failed: {snapshot.target_path}"
                 )
-                self._pending_save_ticket_id = ""
-            return False
+        except Exception as exc:
+            publication_error = str(exc)
+        self._hot_reload_animators(snapshot.target_path)
+        return publication_error
+
+    def current_authoring_content_token(self) -> str:
+        from Infernux.engine.interaction import document_content_token
+
+        if self._fsm is None:
+            return ""
+        return document_content_token(self._fsm.to_dict())
 
     def _cancel_pending_save(self) -> None:
         ticket_id = self._pending_save_ticket_id
@@ -3076,26 +2826,29 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 cancelled=True,
                 message="save was cancelled",
             )
-        if self._mode_switch_waiting_for_save:
-            self._cancel_pending_mode_switch()
-
     def _discard_unsaved_changes(self) -> bool:
         target = self._file_path or (self._fsm.file_path if self._fsm is not None else "")
         if target:
-            self._open_animfsm(target)
-            return not self._dirty
+            fsm = AnimStateMachine.load(target)
+            if fsm is None:
+                Debug.log_warning(f"Failed to discard animfsm changes: {target}")
+                return False
+            self._fsm = fsm
+            self._file_path = self._normalize_fsm_path(target) or target
+            for state in fsm.states:
+                if not state.clip_guid and state.clip_path:
+                    state.clip_guid = self._resolve_guid(state.clip_path)
+                if state.clip_guid:
+                    state.clip_path = ""
+            self._sync_graph_from_fsm()
+            self._graph_selection.clear(record_history=False)
+            return True
         self._fsm = AnimStateMachine(name="New State Machine")
         self._file_path = ""
         self._sync_graph_from_fsm()
         self._graph_selection.clear(record_history=False)
-        from Infernux.engine.interaction import DocumentRegistry
-
-        document = self._fsm_document()
-        if document is not None:
-            DocumentRegistry.instance().restore_content_revision(
-                document.document_id, document.saved_revision
-            )
-        self._dirty = False
+        # DocumentRegistry.request_discard() restores the saved revision after
+        # this controller has successfully restored its model.
         return True
 
     def _hot_reload_animators(self, fsm_path: str):

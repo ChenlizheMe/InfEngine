@@ -77,6 +77,7 @@ from Infernux.core import Texture as Texture
 from Infernux.core import Shader as Shader
 from Infernux.core import AudioClip as AudioClip
 from Infernux.core import AnimationClip as AnimationClip
+from Infernux.core import AnimationFrame as AnimationFrame
 from Infernux.core import AnimStateMachine as AnimStateMachine
 from Infernux.core import AnimState as AnimState
 from Infernux.core import AnimTransition as AnimTransition

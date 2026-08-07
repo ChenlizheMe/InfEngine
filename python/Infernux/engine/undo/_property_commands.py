@@ -401,3 +401,64 @@ class SetMaterialSlotCommand(UndoCommand):
     def merge(self, other: SetMaterialSlotCommand) -> None:
         self._new_guid = other._new_guid
         self.timestamp = other.timestamp
+
+
+class SceneEnvironmentCommand(UndoCommand):
+    """Apply one environment delta to the scene document owning the action."""
+
+    _is_property_edit = True
+    MERGE_WINDOW: float = 0.3
+
+    def __init__(self, old_values: dict, new_values: dict,
+                 description: str = "Edit Environment"):
+        super().__init__(description)
+        self._old_values = copy.deepcopy(old_values)
+        self._new_values = copy.deepcopy(new_values)
+        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.scene_manager import SceneFileManager
+
+        sfm = SceneFileManager.instance()
+        document_id = sfm.document_id if sfm is not None else ""
+        locator = DocumentRegistry.instance().locate(document_id) if document_id else None
+        self._scene_stable_id = locator.stable_id if locator is not None else ""
+
+    def _scene(self):
+        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.scene_manager import SceneFileManager
+        from Infernux.lib import SceneManager
+
+        sfm = SceneFileManager.instance()
+        document_id = sfm.document_id if sfm is not None else ""
+        locator = DocumentRegistry.instance().locate(document_id) if document_id else None
+        if not self._scene_stable_id or locator is None:
+            raise RuntimeError("environment command has no live scene document")
+        if locator.stable_id != self._scene_stable_id:
+            raise RuntimeError("environment command resolved to a different scene document")
+        scene = SceneManager.instance().get_active_scene()
+        if scene is None:
+            raise RuntimeError("environment command has no active scene")
+        return scene
+
+    def _apply(self, values: dict) -> None:
+        self._scene().set_environment(copy.deepcopy(values))
+
+    def execute(self) -> None:
+        self._apply(self._new_values)
+
+    def undo(self) -> None:
+        self._apply(self._old_values)
+
+    def redo(self) -> None:
+        self._apply(self._new_values)
+
+    def can_merge(self, other: UndoCommand) -> bool:
+        return (
+            isinstance(other, SceneEnvironmentCommand)
+            and self._scene_stable_id == other._scene_stable_id
+            and tuple(sorted(self._new_values)) == tuple(sorted(other._new_values))
+            and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW
+        )
+
+    def merge(self, other: SceneEnvironmentCommand) -> None:
+        self._new_values = copy.deepcopy(other._new_values)
+        self.timestamp = other.timestamp

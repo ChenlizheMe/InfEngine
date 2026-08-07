@@ -32,14 +32,32 @@ class DocumentStore:
             store.flush_path(path)
 
 
-def write_document_text(path: str, content: str, *, create_backup: bool = False) -> int:
+def capture_document_file_state(path: str):
+    """Capture the durable target state used by conditional atomic writes."""
+    return NativeDocumentStore.instance().capture_file_state(path)
+
+
+def write_document_text(
+    path: str,
+    content: str,
+    *,
+    create_backup: bool = False,
+    expected_file_state=None,
+) -> int:
     """Write one UTF-8 document and return its path generation."""
     options = DocumentWriteOptions()
     options.create_backup = create_backup
+    options.expected_file_state = expected_file_state
     return NativeDocumentStore.instance().write_and_wait(path, content, options)
 
 
-def submit_document_text(path: str, content: str, *, create_backup: bool = False) -> DocumentWriteTicket:
+def submit_document_text(
+    path: str,
+    content: str,
+    *,
+    create_backup: bool = False,
+    expected_file_state=None,
+) -> DocumentWriteTicket:
     """Queue one UTF-8 document write without blocking the caller.
 
     The native store coalesces newer generations for the same path and writes
@@ -48,6 +66,7 @@ def submit_document_text(path: str, content: str, *, create_backup: bool = False
     """
     options = DocumentWriteOptions()
     options.create_backup = create_backup
+    options.expected_file_state = expected_file_state
     return NativeDocumentStore.instance().submit(path, content, options)
 
 
@@ -57,6 +76,7 @@ __all__ = [
     "DocumentWriteOptions",
     "DocumentWriteSuperseded",
     "DocumentWriteTicket",
+    "capture_document_file_state",
     "submit_document_text",
     "write_document_text",
 ]

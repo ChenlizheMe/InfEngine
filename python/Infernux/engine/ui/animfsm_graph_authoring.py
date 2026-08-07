@@ -10,10 +10,59 @@ from Infernux.core.anim_state_machine import (
     AnimTransition,
 )
 from Infernux.core.node_graph import NodeGraph
+from Infernux.graph.registry import (
+    NodeDef,
+    NodePresentation,
+    PortDef,
+    PortDirection,
+    PortKind,
+)
+
+from .graph_document_authoring import _canvas_definition
 
 
 FSM_ENTRY_NODE_ID = "animfsm.entry"
 FSM_ENTRY_LINK_ID = "animfsm.entry-link"
+FSM_STATE_NODE_TYPE_ID = "animfsm.state"
+FSM_ENTRY_NODE_TYPE_ID = "animfsm.entry"
+
+FSM_STATE_NODE_DEF = NodeDef(
+    type_id=FSM_STATE_NODE_TYPE_ID,
+    display_name="State",
+    ports=(
+        PortDef(
+            "in",
+            PortDirection.INPUT,
+            PortKind.EXEC,
+            display_name="In",
+            max_connections=-1,
+        ),
+        PortDef("out", PortDirection.OUTPUT, PortKind.EXEC, display_name="Out"),
+    ),
+    presentation=NodePresentation(
+        header_color=(0.20, 0.20, 0.22, 1.0),
+        min_width=172.0,
+        body_bottom_pad=0.0,
+        visual_style="graph",
+        show_header_color_swatch=False,
+    ),
+)
+
+FSM_ENTRY_NODE_DEF = NodeDef(
+    type_id=FSM_ENTRY_NODE_TYPE_ID,
+    display_name="Entry",
+    ports=(
+        PortDef("out", PortDirection.OUTPUT, PortKind.EXEC, display_name="Start"),
+    ),
+    presentation=NodePresentation(
+        header_color=(0.22, 0.21, 0.23, 1.0),
+        min_width=88.0,
+        deletable=False,
+        body_bottom_pad=0.0,
+        visual_style="graph",
+        show_header_color_swatch=False,
+    ),
+)
 
 
 class AnimFSMGraphAuthoringModel(NodeGraph):
@@ -24,6 +73,8 @@ class AnimFSMGraphAuthoringModel(NodeGraph):
         fsm: AnimStateMachine,
     ) -> None:
         super().__init__(graph_kind="anim_fsm")
+        self.register_type(_canvas_definition(FSM_STATE_NODE_DEF))
+        self.register_type(_canvas_definition(FSM_ENTRY_NODE_DEF))
         self.load_fsm(fsm)
 
     @staticmethod
@@ -61,9 +112,9 @@ class AnimFSMGraphAuthoringModel(NodeGraph):
         """Replace authoring state from a loaded/saved domain asset."""
         self.clear()
         self.add_node(
-            "anim_entry",
-            canvas_x=-100.0,
-            canvas_y=50.0,
+            FSM_ENTRY_NODE_TYPE_ID,
+            canvas_x=float(fsm.entry_position[0]),
+            canvas_y=float(fsm.entry_position[1]),
             uid=FSM_ENTRY_NODE_ID,
             label="Entry",
         )
@@ -75,7 +126,7 @@ class AnimFSMGraphAuthoringModel(NodeGraph):
                 px, py = 100.0, y_offset
                 y_offset += 80.0
             self.add_node(
-                "anim_state",
+                FSM_STATE_NODE_TYPE_ID,
                 canvas_x=px,
                 canvas_y=py,
                 uid=state.stable_id,
@@ -119,7 +170,7 @@ class AnimFSMGraphAuthoringModel(NodeGraph):
         states: list[AnimState] = []
         states_by_id: dict[str, AnimState] = {}
         for node in self.nodes:
-            if node.uid == FSM_ENTRY_NODE_ID or node.type_id != "anim_state":
+            if node.uid == FSM_ENTRY_NODE_ID or node.type_id != FSM_STATE_NODE_TYPE_ID:
                 continue
             document = node.data.get("fsm_state")
             if not isinstance(document, dict):
@@ -161,10 +212,18 @@ class AnimFSMGraphAuthoringModel(NodeGraph):
 
         fsm.states = states
         fsm.default_state = default_state
+        entry = self.find_node(FSM_ENTRY_NODE_ID)
+        if entry is None:
+            raise RuntimeError("animation FSM graph has no Entry node")
+        fsm.entry_position = [float(entry.pos_x), float(entry.pos_y)]
 
 
 __all__ = [
     "AnimFSMGraphAuthoringModel",
     "FSM_ENTRY_LINK_ID",
     "FSM_ENTRY_NODE_ID",
+    "FSM_ENTRY_NODE_DEF",
+    "FSM_ENTRY_NODE_TYPE_ID",
+    "FSM_STATE_NODE_DEF",
+    "FSM_STATE_NODE_TYPE_ID",
 ]

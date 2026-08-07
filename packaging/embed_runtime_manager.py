@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from hub_utils import get_bundle_dir, get_hub_data_dir, is_frozen, merge_child_env_utf8
+from private_python_runtime import (
+    extract_runtime_archive,
+    is_current_private_runtime_root,
+    runtime_archive_for_machine,
+    verify_runtime_archive,
+)
 from runtime_requirements import runtime_modules, runtime_packages
 import logging
 
@@ -53,35 +59,6 @@ def _default_runtime_dir() -> str:
 def _emit_status(callback: Optional[Callable[[str], None]], message: str) -> None:
     if callback is not None:
         callback(message)
-
-
-def _runtime_installer_info_for_machine() -> tuple[str, str]:
-    machine = (platform.machine() or os.environ.get("PROCESSOR_ARCHITECTURE") or "").lower()
-    if sys.platform == "darwin":
-        # macOS universal2 installer from python.org
-        return (
-            "python-3.12.8-macos11.pkg",
-            "https://www.python.org/ftp/python/3.12.8/python-3.12.8-macos11.pkg",
-        )
-    if machine in {"amd64", "x86_64"}:
-        return (
-            "python-3.12.8-amd64.exe",
-            "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe",
-        )
-    if machine in {"arm64", "aarch64"}:
-        return (
-            "python-3.12.8-arm64.exe",
-            "https://www.python.org/ftp/python/3.12.8/python-3.12.8-arm64.exe",
-        )
-    if machine in {"x86", "i386", "i686"}:
-        return (
-            "python-3.12.8.exe",
-            "https://www.python.org/ftp/python/3.12.8/python-3.12.8.exe",
-        )
-    return (
-        "python-3.12.8-amd64.exe",
-        "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe",
-    )
 
 
 def _run_command(args: list[str], *, timeout: int, raise_on_error: bool = False) -> subprocess.CompletedProcess:
@@ -423,13 +400,10 @@ class PythonRuntimeManager:
             return os.path.join(self.private_runtime_root(), "python.exe")
         return os.path.join(self.private_runtime_root(), "bin", "python")
 
-    def runtime_installer_path(self) -> str:
-        installer_name, _installer_url = _runtime_installer_info_for_machine()
-        return os.path.join(self.installed_runtime_dir(), installer_name)
-
-    def bundled_installer_paths(self) -> list[str]:
-        installer_name, _installer_url = _runtime_installer_info_for_machine()
-        return [os.path.join(path, installer_name) for path in self.bundled_runtime_dirs()]
+    def runtime_archive_path(self) -> str:
+        return os.path.join(
+            self.installed_runtime_dir(), runtime_archive_for_machine().name
+        )
 
     def bundled_runtime_bundle_paths(self) -> list[str]:
         bundle_name = _runtime_bundle_name()
@@ -442,7 +416,12 @@ class PythonRuntimeManager:
         roots = [self.private_runtime_root()]
         for root in roots:
             candidate = _find_python_in_root(root)
-            if candidate and _is_python312(candidate) and not _is_embedded_root(root):
+            if (
+                candidate
+                and _is_python312(candidate)
+                and not _is_embedded_root(root)
+                and is_current_private_runtime_root(root)
+            ):
                 return candidate
         return None
 
@@ -475,7 +454,7 @@ class PythonRuntimeManager:
             if allow_frozen_repair and is_frozen() and (not has_build_support or not has_required_modules):
                 repaired_python = self._seed_runtime_from_bundle(overwrite=True, on_status=on_status)
                 if not repaired_python:
-                    repaired_python = self._install_runtime_to_root(
+                    repaired_python = self._extract_runtime_to_root(
                         self.private_runtime_root(),
                         overwrite=True,
                         on_status=on_status,
@@ -530,7 +509,9 @@ class PythonRuntimeManager:
             self._prepare_managed_runtime(bundled_python, on_status=on_status)
             return bundled_python
 
-        python_exe = self._install_runtime_to_root(self.private_runtime_root(), overwrite=True, on_status=on_status)
+        python_exe = self._extract_runtime_to_root(
+            self.private_runtime_root(), overwrite=True, on_status=on_status
+        )
         self._prepare_managed_runtime(python_exe, on_status=on_status)
         return python_exe
 
@@ -544,7 +525,10 @@ class PythonRuntimeManager:
         target_python = self.private_runtime_python()
 
         for source_root in self.bundled_runtime_dirs():
-            bundled_python = _find_python_in_root(os.path.join(source_root, "python312"))
+            bundled_root = os.path.join(source_root, "python312")
+            if not is_current_private_runtime_root(bundled_root):
+                continue
+            bundled_python = _find_python_in_root(bundled_root)
             if not bundled_python or not _is_python312(bundled_python):
                 continue
             if _is_embedded_root(os.path.dirname(bundled_python)):
@@ -554,20 +538,30 @@ class PythonRuntimeManager:
 
             _emit_status(on_status, "Copying bundled Python 3.12 runtime...")
             _copy_runtime_payload(source_root, target_root, overwrite=overwrite)
-            if os.path.isfile(target_python) and _is_python312(target_python) and not _is_embedded_root(os.path.dirname(target_python)):
+            if (
+                os.path.isfile(target_python)
+                and _is_python312(target_python)
+                and not _is_embedded_root(os.path.dirname(target_python))
+                and is_current_private_runtime_root(self.private_runtime_root())
+            ):
                 return target_python
 
         for bundle_path in self.bundled_runtime_bundle_paths():
             if not os.path.isfile(bundle_path):
                 continue
             _emit_status(on_status, "Extracting bundled Python 3.12 runtime...")
-            if overwrite:
-                _remove_tree(target_root)
+            _remove_tree(self.private_runtime_root())
             os.makedirs(target_root, exist_ok=True)
             with zipfile.ZipFile(bundle_path, "r") as zf:
                 zf.extractall(target_root)
-            if os.path.isfile(target_python) and _is_python312(target_python) and not _is_embedded_root(os.path.dirname(target_python)):
+            if (
+                os.path.isfile(target_python)
+                and _is_python312(target_python)
+                and not _is_embedded_root(os.path.dirname(target_python))
+                and is_current_private_runtime_root(self.private_runtime_root())
+            ):
                 return target_python
+            _remove_tree(self.private_runtime_root())
         return None
 
     def _prepare_managed_runtime(self, python_exe: str, *, on_status: Optional[Callable[[str], None]] = None) -> None:
@@ -580,134 +574,98 @@ class PythonRuntimeManager:
         self._ensure_pip(python_exe, on_status=on_status)
         self._ensure_runtime_packages(python_exe, on_status=on_status)
 
-    def _ensure_runtime_installer(self, *, on_status: Optional[Callable[[str], None]] = None) -> str:
-        installer_path = self.runtime_installer_path()
-        _installer_name, installer_url = _runtime_installer_info_for_machine()
+    def _ensure_runtime_archive(self, *, on_status: Optional[Callable[[str], None]] = None) -> str:
+        archive = runtime_archive_for_machine()
+        archive_path = self.runtime_archive_path()
         os.makedirs(self.installed_runtime_dir(), exist_ok=True)
 
-        if os.path.isfile(installer_path):
-            return installer_path
+        if os.path.isfile(archive_path):
+            try:
+                verify_runtime_archive(archive_path, archive.sha256)
+                return archive_path
+            except RuntimeError:
+                os.remove(archive_path)
 
-        for candidate in self.bundled_installer_paths():
-            if os.path.isfile(candidate):
-                shutil.copy2(candidate, installer_path)
-                return installer_path
-
-        _emit_status(on_status, f"Downloading Python 3.12 installer for {platform.machine()}...")
-        tmp_path = installer_path + ".tmp"
+        _emit_status(
+            on_status,
+            f"Downloading isolated Python 3.12 runtime for {platform.machine()}...",
+        )
+        tmp_path = archive_path + ".tmp"
         try:
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)
             _download_file(
-                installer_url,
+                archive.url,
                 tmp_path,
                 user_agent="Infernux-Hub/1.0",
             )
+            verify_runtime_archive(tmp_path, archive.sha256)
+            os.replace(tmp_path, archive_path)
         except urllib.error.URLError as exc:
             if "unknown url type: https" in str(exc).lower():
                 raise PythonRuntimeError(
-                    "Failed to download the Python 3.12 installer because HTTPS support is unavailable in the packaged Hub."
+                    "Failed to download the private Python 3.12 runtime because HTTPS support is unavailable in the packaged Hub."
                 ) from exc
-            raise PythonRuntimeError(f"Failed to download the Python 3.12 installer.\n{exc}") from exc
+            raise PythonRuntimeError(f"Failed to download the private Python 3.12 runtime.\n{exc}") from exc
         except OSError as exc:
-            raise PythonRuntimeError(f"Failed to download the Python 3.12 installer.\n{exc}") from exc
+            raise PythonRuntimeError(f"Failed to download the private Python 3.12 runtime.\n{exc}") from exc
+        except RuntimeError as exc:
+            raise PythonRuntimeError(str(exc)) from exc
+        finally:
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)
 
-        os.replace(tmp_path, installer_path)
-        return installer_path
+        return archive_path
 
-    def _install_runtime_to_root(
+    def _extract_runtime_to_root(
         self,
         runtime_root: str,
         *,
         overwrite: bool = False,
         on_status: Optional[Callable[[str], None]] = None,
     ) -> str:
+        expected_root = os.path.normcase(os.path.realpath(self.private_runtime_root()))
+        requested_root = os.path.normcase(os.path.realpath(runtime_root))
+        if requested_root != expected_root:
+            raise PythonRuntimeError(
+                "Refusing to deploy the private Python runtime outside the Hub-owned python312 directory."
+            )
         if overwrite:
             shutil.rmtree(runtime_root, ignore_errors=True)
 
-        if sys.platform == "darwin":
-            return self._install_runtime_to_root_macos(runtime_root, on_status=on_status)
-
-        if sys.platform != "win32":
-            raise PythonRuntimeError("Infernux Hub currently supports managed Python installation on Windows and macOS only.")
-
-        installer_path = self._ensure_runtime_installer(on_status=on_status)
+        archive_path = self._ensure_runtime_archive(on_status=on_status)
         os.makedirs(os.path.dirname(runtime_root), exist_ok=True)
-        _emit_status(on_status, "Installing managed Python 3.12 runtime...")
-        completed = _run_command(
-            [
-                installer_path,
-                "/quiet",
-                "InstallAllUsers=0",
-                f"TargetDir={runtime_root}",
-                "AssociateFiles=0",
-                "PrependPath=0",
-                "Shortcuts=0",
-                "CompileAll=0",
-                "Include_test=0",
-                "Include_launcher=0",
-                "InstallLauncherAllUsers=0",
-                "Include_pip=1",
-                "Include_dev=1",
-            ],
-            timeout=3600,
-            raise_on_error=False,
-        )
-        if completed.returncode != 0:
-            raise PythonRuntimeError(
-                "Failed to install the managed Python 3.12 runtime.\n"
-                f"{(completed.stderr or completed.stdout or '').strip()}"
+        _emit_status(on_status, "Extracting private Python 3.12 runtime...")
+        try:
+            archive = runtime_archive_for_machine()
+            extract_runtime_archive(
+                archive_path, runtime_root, expected_sha256=archive.sha256
             )
+        except RuntimeError as exc:
+            raise PythonRuntimeError(str(exc)) from exc
 
         python_exe = _find_python_in_root(runtime_root)
         if not python_exe or not _is_python312(python_exe) or _is_embedded_root(runtime_root):
             raise PythonRuntimeError(
-                "Python 3.12 installation completed, but a valid full python.exe was not found afterwards."
+                "Private Python 3.12 extraction completed, but a valid full runtime was not found afterwards."
             )
         return python_exe
 
-    def _install_runtime_to_root_macos(
-        self,
-        runtime_root: str,
-        *,
-        on_status: Optional[Callable[[str], None]] = None,
+    def reinstall_runtime(
+        self, *, on_status: Optional[Callable[[str], None]] = None
     ) -> str:
-        """Install Python 3.12 on macOS using the python.org .pkg installer."""
-        installer_path = self._ensure_runtime_installer(on_status=on_status)
-        os.makedirs(runtime_root, exist_ok=True)
-        _emit_status(on_status, "Installing managed Python 3.12 runtime (macOS)...")
-
-        # Install the .pkg to a custom location via installer(8)
-        completed = _run_command(
-            ["installer", "-pkg", installer_path, "-target", "CurrentUserHomeDirectory"],
-            timeout=3600,
-            raise_on_error=False,
+        """Replace the Hub-owned runtime from a verified bundled/downloaded archive."""
+        python_exe = self._seed_runtime_from_bundle(
+            overwrite=True, on_status=on_status
         )
-        if completed.returncode != 0:
-            raise PythonRuntimeError(
-                "Failed to install the managed Python 3.12 runtime on macOS.\n"
-                f"{(completed.stderr or completed.stdout or '').strip()}"
+        if not python_exe:
+            python_exe = self._extract_runtime_to_root(
+                self.private_runtime_root(),
+                overwrite=True,
+                on_status=on_status,
             )
-
-        # The python.org .pkg installs into /Library/Frameworks/Python.framework
-        # or ~/Library/Frameworks/Python.framework for CurrentUserHomeDirectory.
-        # Locate the installed python3.12 binary.
-        framework_candidates = [
-            os.path.expanduser("~/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12"),
-            "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12",
-            "/usr/local/bin/python3.12",
-        ]
-        for candidate in framework_candidates:
-            if os.path.isfile(candidate) and _is_python312(candidate):
-                # Symlink the framework python into our runtime root
-                dest_bin = os.path.join(runtime_root, "bin")
-                os.makedirs(dest_bin, exist_ok=True)
-                link_path = os.path.join(dest_bin, "python")
-                if not os.path.exists(link_path):
-                    os.symlink(candidate, link_path)
-                return candidate
-
-        raise PythonRuntimeError(
-            "Python 3.12 .pkg installation completed, but python3.12 was not found afterwards."
-        )
+        self._prepare_managed_runtime(python_exe, on_status=on_status)
+        return python_exe
 
     def _get_pip_script_path(self, *, on_status: Optional[Callable[[str], None]] = None) -> str:
         target_path = os.path.join(self.installed_runtime_dir(), "get-pip.py")

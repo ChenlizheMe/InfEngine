@@ -667,7 +667,17 @@ def register_particle_runtime_tools(mcp) -> None:
         def _set():
             obj = find_game_object(object_id)
             component = _require_particle_system(obj, int(ordinal))
-            component.set_parameter(str(name), value)
+            from Infernux.engine.interaction import EditorInteractionCore
+
+            core = EditorInteractionCore.instance()
+            if core is None:
+                raise RuntimeError("Editor interaction core is unavailable.")
+            core.components.edit_document(
+                component,
+                lambda: component.set_parameter(str(name), value),
+                description=f"Set Particle Parameter {name}",
+                edit_key=f"particle_parameter:{name}",
+            )
             return {
                 "object_id": int(obj.id),
                 "object_name": str(obj.name),
@@ -700,16 +710,26 @@ def register_particle_runtime_tools(mcp) -> None:
         def _set():
             obj = find_game_object(object_id)
             component = _require_particle_system(obj, int(ordinal))
-            changed = component.set_emitter_options(
-                str(emitter),
-                enabled=enabled,
-                play_on_start=play_on_start,
+            from Infernux.engine.interaction import EditorInteractionCore
+
+            core = EditorInteractionCore.instance()
+            if core is None:
+                raise RuntimeError("Editor interaction core is unavailable.")
+            edit = core.components.edit_document(
+                component,
+                lambda: component.set_emitter_options(
+                    str(emitter),
+                    enabled=enabled,
+                    play_on_start=play_on_start,
+                ),
+                description=f"Set Particle Emitter {emitter}",
+                edit_key=f"particle_emitter:{emitter}",
             )
             return {
                 "object_id": int(obj.id),
                 "object_name": str(obj.name),
                 "emitter": str(emitter),
-                "changed": bool(changed),
+                "changed": bool(edit.changed),
                 "emitters": component.emitter_instance_schema(),
             }
 
@@ -1038,13 +1058,12 @@ def _require_particle_system(obj, ordinal: int):
     return component
 
 
-def _notify_particle_component_modified() -> None:
-    from Infernux.engine.ui._inspector_undo import _notify_scene_modified
-
-    _notify_scene_modified()
-
-
 def _open_particle_graph_panel(file_path: str):
+    from Infernux.engine.interaction import (
+        DocumentKind,
+        DocumentOpenStatus,
+        EditorInteractionCore,
+    )
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
     from Infernux.engine.ui.window_manager import WindowManager
 
@@ -1064,23 +1083,30 @@ def _open_particle_graph_panel(file_path: str):
                 "Particle Graph Editor has unsaved changes; save or discard them before opening another asset"
             )
 
-    panel = manager.open_window("particle_graph_editor")
+    core = EditorInteractionCore.instance()
+    if core is None:
+        raise RuntimeError("EditorInteractionCore is not initialized")
+    result = core.document_open.open_resource(
+        DocumentKind.PARTICLE_GRAPH,
+        file_path,
+    )
+    if result.status is DocumentOpenStatus.PENDING:
+        raise RuntimeError(
+            "Particle Graph open is waiting for the editor's unsaved-change decision"
+        )
+    if result.status is DocumentOpenStatus.FAILED:
+        raise RuntimeError(
+            result.message or f"ParticleGraph asset could not be opened: {file_path}"
+        )
+    panel = manager.get_window_instance("particle_graph_editor")
     if not isinstance(panel, ParticleGraphEditorPanel):
         raise RuntimeError("Particle Graph Editor window could not be opened")
-    if not panel._open_particlegraph(file_path):
-        raise RuntimeError(f"ParticleGraph asset could not be opened: {file_path}")
     _focus_particle_graph_panel(manager)
     return panel
 
 
 def _focus_particle_graph_panel(manager) -> None:
-    from Infernux.engine.ui.closable_panel import ClosablePanel
-
-    ClosablePanel.focus_panel_by_id("particle_graph_editor")
-    try:
-        manager._engine.select_docked_window("particle_graph_editor")
-    except Exception:
-        pass
+    manager.focus_window("particle_graph_editor")
 
 
 def _portable_snapshot(

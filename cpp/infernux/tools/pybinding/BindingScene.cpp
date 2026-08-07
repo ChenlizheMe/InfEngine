@@ -1108,8 +1108,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def(py::init<>())
         .def_property("sprite_guid", &SpriteRenderer::GetSpriteGuid, &SpriteRenderer::SetSpriteGuid,
                       "Asset GUID of the sprite texture")
-        .def_property("frame_index", &SpriteRenderer::GetFrameIndex, &SpriteRenderer::SetFrameIndex,
-                      "Index of the sprite frame to display")
+        .def_property("frame_id", &SpriteRenderer::GetFrameId, &SpriteRenderer::SetFrameId,
+                      "Stable ID of the sprite frame to display")
         .def_property(
             "sprite_color",
             [](const SpriteRenderer &sr) -> py::tuple {

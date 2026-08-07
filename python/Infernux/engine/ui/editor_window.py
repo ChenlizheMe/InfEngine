@@ -6,9 +6,14 @@ that appear in the editor's *Window* menu.
 
 Usage::
 
+    from Infernux.engine.interaction import PanelInteractionDescriptor
     from Infernux.engine.ui.editor_window import EditorWindow, editor_window
 
-    @editor_window("My Tool", menu_path="Window/Tools")
+    @editor_window(
+        "My Tool",
+        menu_path="Window/Tools",
+        interaction=PanelInteractionDescriptor(),
+    )
     class MyToolWindow(EditorWindow):
 
         def on_render_content(self, ctx):
@@ -21,8 +26,9 @@ from __future__ import annotations
 
 from typing import Optional, Callable, Type, TYPE_CHECKING
 
+from Infernux.engine.interaction import PanelInteractionDescriptor
 from .editor_panel import EditorPanel
-from .panel_registry import PanelRegistry, _PanelRegistration
+from .panel_registry import editor_panel
 
 if TYPE_CHECKING:
     from Infernux.lib import InxGUIContext
@@ -81,6 +87,7 @@ def editor_window(
     title_key: Optional[str] = None,
     menu_path: str = "Window",
     singleton: bool = True,
+    interaction: PanelInteractionDescriptor,
 ) -> Callable[[Type[EditorWindow]], Type[EditorWindow]]:
     """Class decorator that registers an :class:`EditorWindow` subclass.
 
@@ -93,10 +100,15 @@ def editor_window(
         title_key:    Optional i18n translation key for the title.
         menu_path:    Menu path (e.g. ``"Window/Tools"``).  Default ``"Window"``.
         singleton:    If ``True`` (default), only one instance allowed at a time.
+        interaction:  Required Interaction Core capability descriptor.
 
     Example::
 
-        @editor_window("Shader Graph", menu_path="Window/Rendering")
+        @editor_window(
+            "Shader Graph",
+            menu_path="Window/Rendering",
+            interaction=PanelInteractionDescriptor(),
+        )
         class ShaderGraphWindow(EditorWindow):
             INITIAL_SIZE = (800, 600)
 
@@ -111,27 +123,17 @@ def editor_window(
                 f"got {cls!r}"
             )
 
-        tid = type_id or cls.__name__.lower()
-
-        # Stamp class-level metadata (mirrors @editor_panel behaviour)
-        cls.WINDOW_TYPE_ID = tid
-        cls.WINDOW_DISPLAY_NAME = display_name
-        cls.WINDOW_TITLE_KEY = title_key
-        cls.WINDOW_MENU_PATH = menu_path
-        cls._panel_menu_path = menu_path
-        cls._panel_singleton = singleton
-
-        PanelRegistry._register(
-            _PanelRegistration(
-                panel_class=cls,
-                type_id=tid,
-                display_name=display_name,
-                menu_path=menu_path,
-                factory=None,
-                singleton=singleton,
-                title_key=title_key,
+        if not isinstance(interaction, PanelInteractionDescriptor):
+            raise TypeError(
+                "@editor_window requires a PanelInteractionDescriptor"
             )
-        )
-        return cls
+        return editor_panel(
+            display_name,
+            type_id=type_id,
+            title_key=title_key,
+            menu_path=menu_path,
+            singleton=singleton,
+            interaction=interaction,
+        )(cls)
 
     return decorator

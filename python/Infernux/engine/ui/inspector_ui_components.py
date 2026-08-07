@@ -6,15 +6,17 @@ import math
 import os
 import copy
 
-import time
-
 from Infernux.ui import UICanvas, UIText, UIImage, UIButton
 from Infernux.ui.enums import TextResizeMode
 from Infernux.ui.enums import RenderMode, TextAlignH, TextAlignV
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.path_utils import relative_path, resolved_path
 
-from .inspector_components import _record_property, register_py_component_renderer
+from ._inspector_undo import (
+    _record_property,
+    _record_python_component_document_edit,
+)
+from .inspector_components import register_py_component_renderer
 from Infernux.engine.i18n import t
 from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 from .inspector_utils import (
@@ -49,8 +51,6 @@ def _apply_if_changed(comp, field_name: str, current, new_value):
     if new_value == current:
         return
     _record_property(comp, field_name, current, new_value, f"Set {field_name}")
-    if hasattr(comp, "_call_on_validate"):
-        comp._call_on_validate()
 
 
 def _render_color_field(ctx, comp, field_name: str, label: str, lw: float,
@@ -77,18 +77,11 @@ def _render_texture_picker(ctx, comp, field_name: str, label: str, lw: float,
                            imgui_id: str):
     """Render a texture object-field picker and apply changes."""
     IGUI = _igui()
-    from .inspector_components import _picker_assets
-
     tex_path = str(getattr(comp, field_name, "") or "")
     display = os.path.basename(tex_path) if tex_path else t("igui.none")
 
-    def _on_drop(payload):
-        new_path = str(payload).replace("\\", "/")
-        if new_path != tex_path:
-            _apply_if_changed(comp, field_name, tex_path, new_path)
-
-    def _on_pick(picked_path):
-        new_path = str(picked_path).replace("\\", "/")
+    def _assign(payload):
+        new_path = _project_asset_reference_path("Texture", payload)
         if new_path != tex_path:
             _apply_if_changed(comp, field_name, tex_path, new_path)
 
@@ -96,21 +89,14 @@ def _render_texture_picker(ctx, comp, field_name: str, label: str, lw: float,
         if tex_path:
             _apply_if_changed(comp, field_name, tex_path, "")
 
-    def _asset_items(filt):
-        from Infernux.core.asset_types import IMAGE_EXTENSIONS
-        patterns = tuple(f"*{extension}" for extension in sorted(IMAGE_EXTENSIONS))
-        items = []
-        for pattern in patterns:
-            items += _picker_assets(filt, pattern, assets_only=True)
-        return items
-
     field_label(ctx, label, lw)
-    IGUI.object_field(
+    IGUI.asset_reference_field(
         ctx, imgui_id, display, "Texture",
-        clickable=False, accept="TEXTURE_FILE",
-        on_drop=_on_drop, picker_asset_items=_asset_items,
-        on_pick=_on_pick, on_clear=_on_clear,
+        asset_type="Texture", accept="TEXTURE_FILE",
+        on_assign=_assign, on_clear=_on_clear,
         ping_path=tex_path or None,
+        has_value=bool(tex_path),
+        reference_value={"asset_type": "Texture", "path_hint": tex_path},
     )
     _record_field(ctx, comp, field_name, "object_field", label)
 
@@ -133,48 +119,15 @@ def _get_serializable_raw_field(obj, field_name: str, default=None):
     return default
 
 
-_font_cache = None
-_font_cache_time = 0.0
-_FONT_CACHE_TTL = 2.0  # seconds
+def _project_asset_reference_path(asset_type: str, payload) -> str:
+    from Infernux.core.asset_reference_types import resolve_asset_reference_path
 
-_FONT_EXCLUDE_DIRS = {'.venv', '.runtime', '__pycache__', 'build', '.git', 'node_modules', 'external'}
-
-
-def _get_project_font_options():
-    global _font_cache, _font_cache_time
-    now = time.monotonic()
-    if _font_cache is not None and (now - _font_cache_time) < _FONT_CACHE_TTL:
-        return _font_cache
-
+    path = resolve_asset_reference_path(asset_type, payload)
     root = get_project_root()
-    options = [(t("ui_comp.default_font"), "")]
-    if not root or not os.path.isdir(root):
-        _font_cache = options
-        _font_cache_time = now
-        return options
-
-    seen_names = set()
-    found = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _FONT_EXCLUDE_DIRS]
-        for filename in filenames:
-            ext = os.path.splitext(filename)[1].lower()
-            if ext not in (".ttf", ".otf"):
-                continue
-            # Deduplicate by filename (case-insensitive)
-            name_lower = filename.lower()
-            if name_lower in seen_names:
-                continue
-            seen_names.add(name_lower)
-            abs_path = os.path.join(dirpath, filename)
-            rel_path = relative_path(abs_path, root)
-            found.append((filename, rel_path))
-
-    found.sort(key=lambda item: item[0].lower())
-    options.extend(found)
-    _font_cache = options
-    _font_cache_time = now
-    return options
+    if not root:
+        return str(path).replace("\\", "/")
+    absolute = path if os.path.isabs(path) else os.path.join(root, path)
+    return relative_path(absolute, root)
 
 
 def _find_canvas(comp):
@@ -223,39 +176,32 @@ def _apply_visual_position(comp, vis_x, vis_y, canvas):
     """Move element so its visual AABB top-left is at (vis_x, vis_y), with undo."""
     cw = float(canvas.reference_width)
     ch = float(canvas.reference_height)
-    # Temporarily apply to compute parent-aware target values, then restore & record undo
-    old_x = comp.x
-    old_y = comp.y
-    comp.set_visual_position(vis_x, vis_y, cw, ch)
-    new_x = comp.x
-    new_y = comp.y
-    comp.x = old_x
-    comp.y = old_y
-    _apply_if_changed(comp, "x", old_x, new_x)
-    _apply_if_changed(comp, "y", old_y, new_y)
+    _record_python_component_document_edit(
+        comp,
+        lambda: comp.set_visual_position(vis_x, vis_y, cw, ch),
+        "Set Visual Position",
+        edit_key="visual_position",
+        validate=True,
+    )
 
 
 def _apply_size_with_undo(comp, width, height, canvas, resize_fn):
-    """Apply *resize_fn(comp, w, h, cw, ch)*, then record undo for x/y/w/h."""
+    """Apply one layout resize as an atomic component document edit."""
     cw = float(canvas.reference_width)
     ch = float(canvas.reference_height)
-    old_x = comp.x
-    old_y = comp.y
-    old_w = comp.width
-    old_h = comp.height
-    resize_fn(comp, float(width), float(height), cw, ch)
-    new_x = comp.x
-    new_y = comp.y
-    new_w = comp.width
-    new_h = comp.height
-    comp.x = old_x
-    comp.y = old_y
-    comp.width = old_w
-    comp.height = old_h
-    _apply_if_changed(comp, "x", old_x, new_x)
-    _apply_if_changed(comp, "y", old_y, new_y)
-    _apply_if_changed(comp, "width", old_w, new_w)
-    _apply_if_changed(comp, "height", old_h, new_h)
+    _record_python_component_document_edit(
+        comp,
+        lambda: resize_fn(
+            comp,
+            float(width),
+            float(height),
+            cw,
+            ch,
+        ),
+        "Set Layout Size",
+        edit_key="layout_size",
+        validate=True,
+    )
 
 
 def _apply_size_preserve_visual_position(comp, width, height, canvas):
@@ -639,26 +585,38 @@ def _render_common_appearance(ctx, comp):
 
 
 def _render_font_picker(ctx, comp, field_name: str, lw: float, imgui_id: str):
-    """Render a searchable font combo and apply changes.  Returns True when changed."""
+    """Render the shared Font resource field and apply one Undo command."""
     IGUI = _igui()
     font_path = str(getattr(comp, field_name, "") or "")
-    font_options = _get_project_font_options()
-    font_values = [value for _, value in font_options]
-    font_labels = [label_str for label_str, _ in font_options]
-    if font_path not in font_values and font_path:
-        font_labels.append(font_path)
-        font_values.append(font_path)
-    try:
-        current_font_index = font_values.index(font_path)
-    except ValueError:
-        current_font_index = 0
-    new_font_index = IGUI.searchable_combo(ctx, imgui_id, current_font_index, font_labels)
-    _record_field(ctx, comp, field_name, "searchable_combo", t("ui_comp.font"))
-    new_font_path = font_values[new_font_index] if 0 <= new_font_index < len(font_values) else font_path
-    if new_font_path != font_path:
-        _apply_if_changed(comp, field_name, font_path, new_font_path)
-        return True
-    return False
+    changed = False
+
+    def _assign(payload):
+        nonlocal changed
+        new_path = _project_asset_reference_path("Font", payload)
+        if new_path != font_path:
+            _apply_if_changed(comp, field_name, font_path, new_path)
+            changed = True
+
+    def _clear():
+        nonlocal changed
+        if font_path:
+            _apply_if_changed(comp, field_name, font_path, "")
+            changed = True
+
+    IGUI.asset_reference_field(
+        ctx,
+        imgui_id,
+        os.path.basename(font_path) if font_path else t("ui_comp.default_font"),
+        "Font",
+        asset_type="Font",
+        on_assign=_assign,
+        on_clear=_clear,
+        ping_path=font_path or None,
+        has_value=bool(font_path),
+        reference_value={"asset_type": "Font", "path_hint": font_path},
+    )
+    _record_field(ctx, comp, field_name, "object_field", t("ui_comp.font"))
+    return changed
 
 
 def _render_text_alignment_row(ctx, comp, lw: float, imgui_id: str,
@@ -1000,6 +958,7 @@ def _render_onclick_arg_go(ctx, btn_comp, entries, i, arg_index, arg, lw, label,
                 lambda: _set(GameObjectRef(persistent_id=0)))
 
     go_drop, go_pick, go_clear = _make_cbs()
+    object_id = int(getattr(target_ref, "persistent_id", 0) or 0)
     field_label(ctx, label, lw)
     render_object_field(
         ctx, f"onclick_arg_go_{i}_{arg_index}", display, "GameObject",
@@ -1009,6 +968,9 @@ def _render_onclick_arg_go(ctx, btn_comp, entries, i, arg_index, arg, lw, label,
         picker_scene_items=lambda filt: _picker_scene_gameobjects(filt),
         on_pick=go_pick,
         on_clear=go_clear,
+        on_ping=(
+            lambda _id=object_id: _ping_scene_object(_id)
+        ) if object_id > 0 else None,
     )
 
 
@@ -1045,6 +1007,7 @@ def _render_onclick_arg_comp(ctx, btn_comp, entries, i, arg_index, spec, arg, lw
                 lambda: _set(ComponentRef(component_type=_comp_type or "")))
 
     comp_drop, comp_pick, comp_clear = _make_cbs()
+    object_id = int(getattr(comp_ref, "go_id", 0) or 0)
     field_label(ctx, label, lw)
     render_object_field(
         ctx, f"onclick_arg_comp_{i}_{arg_index}", display, type_hint,
@@ -1054,6 +1017,9 @@ def _render_onclick_arg_comp(ctx, btn_comp, entries, i, arg_index, spec, arg, lw
         picker_scene_items=lambda filt, _ct=spec.component_type: _picker_scene_gameobjects(filt, required_component=_ct),
         on_pick=comp_pick,
         on_clear=comp_clear,
+        on_ping=(
+            lambda _id=object_id: _ping_scene_object(_id)
+        ) if object_id > 0 else None,
     )
 
 
@@ -1166,6 +1132,12 @@ def _resolve_onclick_go(payload):
     return scene.find_by_id(obj_id)
 
 
+def _ping_scene_object(object_id: int) -> None:
+    from ._inspector_references import ping_scene_object_in_hierarchy
+
+    ping_scene_object_in_hierarchy(int(object_id))
+
+
 def _render_onclick_target_field(ctx, btn_comp, entries, i, entry, lw):
     """Render the target GameObject field for one On Click entry.
 
@@ -1189,8 +1161,6 @@ def _render_onclick_target_field(ctx, btn_comp, entries, i, entry, lw):
             new_entries[_idx].method_name = ""
             _record_property(btn_comp, "on_click_entries",
                              old_entries, new_entries, "Set on_click_entries")
-            if hasattr(btn_comp, "_call_on_validate"):
-                btn_comp._call_on_validate()
 
         def _on_drop(payload):
             go = _resolve_onclick_go(payload)
@@ -1202,6 +1172,7 @@ def _render_onclick_target_field(ctx, btn_comp, entries, i, entry, lw):
                 lambda: _set(GameObjectRef(persistent_id=0)))
 
     on_drop, on_pick, on_clear = _make_target_cbs()
+    object_id = int(getattr(target_ref, "persistent_id", 0) or 0)
 
     field_label(ctx, t("ui_comp.target"), lw)
     render_object_field(
@@ -1212,6 +1183,9 @@ def _render_onclick_target_field(ctx, btn_comp, entries, i, entry, lw):
         picker_scene_items=lambda filt: _picker_scene_gameobjects(filt),
         on_pick=on_pick,
         on_clear=on_clear,
+        on_ping=(
+            lambda _id=object_id: _ping_scene_object(_id)
+        ) if object_id > 0 else None,
     )
     return resolved_go
 
@@ -1360,8 +1334,6 @@ def _render_on_click_events(ctx, btn_comp):
         new_entries.append(UIEventEntry())
         _record_property(btn_comp, "on_click_entries",
                          old_entries, new_entries, "Set on_click_entries")
-        if hasattr(btn_comp, "_call_on_validate"):
-            btn_comp._call_on_validate()
 
     header_open = IGUI.list_header(
         ctx, t("ui_comp.on_click"), len(entries),
@@ -1399,8 +1371,6 @@ def _render_on_click_events(ctx, btn_comp):
         new_entries = [_clone_onclick_entry(e) for j, e in enumerate(old_entries) if j != remove_index]
         _record_property(btn_comp, "on_click_entries",
                          old_entries, new_entries, "Set on_click_entries")
-        if hasattr(btn_comp, "_call_on_validate"):
-            btn_comp._call_on_validate()
 
 
 register_py_component_renderer("UIButton", _render_button_inspector)

@@ -12,6 +12,7 @@ from Infernux.engine.interaction import (
     CloseIntentKind,
     CloseIssue,
     CloseState,
+    ModalService,
 )
 
 
@@ -19,27 +20,56 @@ class DirtyPanelConfirmationCoordinator:
     """Present one shared save/discard/cancel modal for CloseCoordinator."""
 
     _instance: Optional["DirtyPanelConfirmationCoordinator"] = None
+    MODAL_ID = "editor.unsaved_changes"
 
-    def __init__(self, close_coordinator: Optional[CloseCoordinator] = None) -> None:
+    def __init__(
+        self,
+        close_coordinator: Optional[CloseCoordinator] = None,
+        modal_service: Optional[ModalService] = None,
+    ) -> None:
         if close_coordinator is None:
-            from Infernux.engine.interaction import EditorInteractionCore, DocumentRegistry
+            from Infernux.engine.interaction import EditorInteractionCore
 
             core = EditorInteractionCore.instance()
-            close_coordinator = (
-                core.close_coordinator
-                if core is not None
-                and core.documents is DocumentRegistry.instance()
-                else None
+            if core is None:
+                raise RuntimeError(
+                    "DirtyPanelConfirmationCoordinator requires EditorInteractionCore"
+                )
+            close_coordinator = core.close_coordinator
+            modal_service = modal_service or core.modals
+        elif modal_service is None:
+            raise ValueError(
+                "modal_service is required with an explicit close_coordinator"
             )
-        self._close = close_coordinator or CloseCoordinator()
+        self._close = close_coordinator
+        self._modals = modal_service
         self._scope = ""
         self._panel_id = ""
         self._show_popup = False
+        self._defer_panel_popup_once = False
+        self._presented_document_id = ""
+        self._modals.register(
+            self.MODAL_ID,
+            is_active=lambda: self.is_active,
+            render=self.render,
+            cancel=self.choose_cancel,
+        )
 
     @classmethod
     def instance(cls) -> "DirtyPanelConfirmationCoordinator":
-        if cls._instance is None:
-            cls._instance = cls()
+        from Infernux.engine.interaction import EditorInteractionCore
+
+        core = EditorInteractionCore.instance()
+        if core is None:
+            if cls._instance is not None:
+                return cls._instance
+            raise RuntimeError(
+                "DirtyPanelConfirmationCoordinator requires EditorInteractionCore"
+            )
+        if cls._instance is None or cls._instance._modals is not core.modals:
+            if cls._instance is not None and cls._instance.is_active:
+                cls._instance.choose_cancel()
+            cls._instance = cls(core.close_coordinator, core.modals)
         return cls._instance
 
     @property
@@ -51,7 +81,7 @@ class DirtyPanelConfirmationCoordinator:
         if self._scope == "panel":
             return self._panel_id
         document = self._close.active_document
-        return sorted(document.view_ids)[0] if document and document.view_ids else ""
+        return self._preferred_document_view(document)
 
     @property
     def active_document_id(self) -> str:
@@ -61,6 +91,10 @@ class DirtyPanelConfirmationCoordinator:
     @property
     def waiting_for_save(self) -> bool:
         return self._close.state is CloseState.WAITING_FOR_SAVE
+
+    @property
+    def waiting_for_conflict(self) -> bool:
+        return self._close.state is CloseState.WAITING_FOR_CONFLICT
 
     def request_exit(
         self,
@@ -97,16 +131,44 @@ class DirtyPanelConfirmationCoordinator:
             panel_id=identifier,
         )
 
+    def request_reset_layout(
+        self,
+        document_ids: tuple[str, ...],
+        on_complete: Callable[[], None],
+        on_cancel: Optional[Callable[[], None]] = None,
+    ) -> bool:
+        """Resolve documents that lose their final View before resetting layout."""
+        if self.is_active:
+            return False
+        return self._request(
+            "reset_layout",
+            CloseIntent(
+                CloseIntentKind.RESET_LAYOUT,
+                document_ids=tuple(document_ids),
+            ),
+            on_complete,
+            on_cancel,
+        )
+
     def request_document_replace(
         self,
         document_id: str,
         on_complete: Callable[[], None],
         on_cancel: Optional[Callable[[], None]] = None,
+        *,
+        owner_id: str = "",
     ) -> bool:
         """Resolve one dirty document before replacing its in-memory content."""
         identifier = str(document_id or "").strip()
         if not identifier or self.is_active:
             return False
+        owner = str(owner_id or "").strip()
+        if not owner:
+            from Infernux.engine.interaction import DocumentRegistry
+
+            document = DocumentRegistry.instance().get(identifier)
+            if document is not None and document.view_ids:
+                owner = sorted(document.view_ids)[0]
         return self._request(
             "replace",
             CloseIntent(
@@ -115,16 +177,30 @@ class DirtyPanelConfirmationCoordinator:
             ),
             on_complete,
             on_cancel,
+            panel_id=owner,
         )
 
-    def render(self, ctx, *, panel_host_id: Optional[str] = None) -> None:
-        """Poll saves and render from the window that owns the transaction."""
+    def render(self, ctx) -> None:
+        """Poll saves and render through the global modal portal."""
         if not self.is_active:
             return
-        if self._scope == "panel":
-            if str(panel_host_id or "") != self._panel_id:
+
+        if self.waiting_for_conflict:
+            self._close.poll()
+            if not self.is_active or self.waiting_for_conflict:
                 return
-        elif panel_host_id is not None:
+            self._show_popup = True
+
+        self._present_active_document()
+
+        # ImGui consumes a dock tab's close request before the panel can veto
+        # it. Give WindowManager one modal-free frame to restore the source
+        # tab, then open the shared confirmation from that visible panel on
+        # the following frame. Opening the modal immediately leaves whatever
+        # neighboring tab ImGui selected underneath it.
+        if self._defer_panel_popup_once:
+            self._defer_panel_popup_once = False
+            self._show_popup = self.is_active
             return
 
         if self.waiting_for_save:
@@ -132,6 +208,10 @@ class DirtyPanelConfirmationCoordinator:
             if not self.is_active:
                 return
             if self.waiting_for_save:
+                return
+            if self._present_active_document():
+                self._defer_panel_popup_once = True
+                self._show_popup = False
                 return
             self._show_popup = True
 
@@ -182,6 +262,11 @@ class DirtyPanelConfirmationCoordinator:
         *,
         panel_id: str = "",
     ) -> bool:
+        if not self._modals.activate(
+            self.MODAL_ID,
+            owner_id=panel_id,
+        ):
+            return False
         self._scope = scope
         self._panel_id = panel_id
         self._show_popup = False
@@ -199,13 +284,54 @@ class DirtyPanelConfirmationCoordinator:
         if not accepted:
             self._reset_presentation()
             return False
-        self._show_popup = self.is_active
+        self._present_active_document(force=True)
+        self._defer_panel_popup_once = self.is_active
+        self._show_popup = self.is_active and not self._defer_panel_popup_once
         return True
 
     def _sync_presentation_after_decision(self) -> None:
         if not self.is_active:
             return
-        self._show_popup = self._close.state is CloseState.AWAITING_DECISION
+        changed = self._present_active_document()
+        self._defer_panel_popup_once = changed
+        self._show_popup = (
+            self._close.state is CloseState.AWAITING_DECISION and not changed
+        )
+
+    @staticmethod
+    def _preferred_document_view(document) -> str:
+        if document is None:
+            return ""
+        owners = sorted(document.dirty_owner_view_ids())
+        for view_id in owners:
+            if view_id in document.view_ids:
+                return view_id
+        if document.kind.value == "scene" and "scene_view" in document.view_ids:
+            return "scene_view"
+        return sorted(document.view_ids)[0] if document.view_ids else ""
+
+    def _present_active_document(self, *, force: bool = False) -> bool:
+        document = self._close.active_document
+        document_id = document.document_id if document is not None else ""
+        if not force and document_id == self._presented_document_id:
+            return False
+        self._presented_document_id = document_id
+        view_id = (
+            self._panel_id
+            if self._scope == "panel" and self._panel_id
+            else self._preferred_document_view(document)
+        )
+        if not view_id:
+            return bool(document_id)
+
+        from Infernux.engine.interaction import FocusService
+        from .window_manager import WindowManager
+
+        FocusService.instance().request_panel_focus(view_id)
+        manager = WindowManager.instance()
+        if manager is not None and manager.is_window_open(view_id):
+            manager.restore_close_confirmation_source(view_id)
+        return True
 
     def _localized_issue(self) -> str:
         issue = self._close.issue
@@ -221,6 +347,9 @@ class DirtyPanelConfirmationCoordinator:
         }.get(issue, self._close.message)
 
     def _reset_presentation(self) -> None:
+        self._modals.deactivate(self.MODAL_ID)
         self._scope = ""
         self._panel_id = ""
         self._show_popup = False
+        self._defer_panel_popup_once = False
+        self._presented_document_id = ""

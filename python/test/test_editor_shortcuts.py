@@ -8,6 +8,7 @@ from Infernux.engine.interaction import (
     FocusService,
     InputContext,
     KeyChord,
+    ModalService,
     SelectionService,
     ShortcutBinding,
     ShortcutEvent,
@@ -97,6 +98,33 @@ def test_capture_owner_in_focus_blocks_editor_binding_without_event_hint():
     focus.set_capture_owner("game_view")
 
     assert router.route(ShortcutEvent(chord)).status is ShortcutRouteStatus.BLOCKED
+
+
+def test_authoritative_modal_service_blocks_before_imgui_popup_is_presented():
+    focus = FocusService()
+    selection = SelectionService()
+    commands = EditorCommandRegistry(focus=focus, selection=selection)
+    modals = ModalService()
+    router = ShortcutRouter(commands, focus, modals)
+    executed = []
+    chord = KeyChord.parse("Delete")
+    commands.register(EditorCommand("edit.delete", lambda _ctx: executed.append(True)))
+    router.register(ShortcutBinding("edit.delete", chord))
+    modals.register(
+        "confirm.delete",
+        is_active=lambda: True,
+        render=lambda _ctx: None,
+        cancel=lambda: None,
+    )
+    assert modals.activate("confirm.delete", owner_id="hierarchy") is True
+
+    result = router.route(ShortcutEvent(chord, modal_active=False))
+
+    assert result.status is ShortcutRouteStatus.BLOCKED
+    assert result.consumed is True
+    assert router.last_event is not None
+    assert router.last_event.modal_active is True
+    assert executed == []
 
 
 def test_equal_context_conflict_is_reported_without_executing_either_command():

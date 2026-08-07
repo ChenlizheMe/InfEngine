@@ -237,10 +237,8 @@ void ToolbarPanel::PopupGizmos(InxGUIContext *ctx)
     const bool gridChanged = ImGui::Checkbox(gridLabel.c_str(), &grid);
     if (InxGUISemantics::IsCaptureEnabled())
         ctx->RecordSemanticItem("toolbar_show_grid", gridLabel, true, "toolbar.gizmos.show_grid");
-    if (gridChanged) {
-        if (setShowGrid)
-            setShowGrid(grid);
-    }
+    if (gridChanged && executeCommand)
+        executeCommand("scene.toggle_grid", "toolbar", "");
     ImGui::Dummy(ImVec2(0.0f, 4.0f));
 }
 
@@ -266,8 +264,15 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
     const std::string perspective = T("toolbar.perspective");
     const std::string orthographic = T("toolbar.orthographic");
     const char *projectionItems[] = {perspective.c_str(), orthographic.c_str()};
-    bool changed = ImGui::Combo("##camera_projection", &projection, projectionItems, 2);
+    const CameraSettings projectionBefore = m_cameraSettings;
+    const bool projectionChanged = ImGui::Combo("##camera_projection", &projection, projectionItems, 2);
     m_cameraSettings.orthographic = projection == 1;
+    if (ImGui::IsItemActivated() && beginCameraEdit)
+        beginCameraEdit("projection", projectionBefore);
+    if (projectionChanged && applyCameraToEngine)
+        applyCameraToEngine(m_cameraSettings);
+    if (ImGui::IsItemDeactivatedAfterEdit() && endCameraEdit)
+        endCameraEdit("projection", m_cameraSettings);
     ImGui::Dummy(ImVec2(0.0f, 4.0f));
 
     struct CamParam
@@ -308,21 +313,34 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
             char sliderId[64];
             snprintf(sliderId, sizeof(sliderId), "##%s_slider", p.key);
             ImGui::SetNextItemWidth(120.0f);
-            float prev = *p.value;
+            const CameraSettings sliderBefore = m_cameraSettings;
+            const float sliderValueBefore = *p.value;
             ImGui::SliderFloat(sliderId, p.value, p.mn, p.mx);
+            *p.value = (std::min)((std::max)(*p.value, p.mn), p.mx);
+            const bool sliderChanged = *p.value != sliderValueBefore;
+            if (ImGui::IsItemActivated() && beginCameraEdit)
+                beginCameraEdit(p.key, sliderBefore);
+            if (sliderChanged && applyCameraToEngine)
+                applyCameraToEngine(m_cameraSettings);
+            if (ImGui::IsItemDeactivatedAfterEdit() && endCameraEdit)
+                endCameraEdit(p.key, m_cameraSettings);
 
             ImGui::SameLine(0.0f, 6.0f);
 
             char inputId[64];
             snprintf(inputId, sizeof(inputId), "##%s_input", p.key);
             ImGui::SetNextItemWidth(72.0f);
+            const CameraSettings inputBefore = m_cameraSettings;
+            const float inputValueBefore = *p.value;
             ImGui::InputFloat(inputId, p.value, p.step, p.stepFast, "%.3f");
-
-            // Clamp
             *p.value = (std::min)((std::max)(*p.value, p.mn), p.mx);
-
-            if (*p.value != prev)
-                changed = true;
+            const bool inputChanged = *p.value != inputValueBefore;
+            if (ImGui::IsItemActivated() && beginCameraEdit)
+                beginCameraEdit(p.key, inputBefore);
+            if (inputChanged && applyCameraToEngine)
+                applyCameraToEngine(m_cameraSettings);
+            if (ImGui::IsItemDeactivatedAfterEdit() && endCameraEdit)
+                endCameraEdit(p.key, m_cameraSettings);
 
             ImGui::Dummy(ImVec2(0.0f, 4.0f));
         }
@@ -337,6 +355,9 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
     // Reset button
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
     if (ImGui::Button(T("toolbar.reset_camera_settings").c_str(), ImVec2(-1.0f, 0.0f))) {
+        const CameraSettings resetBefore = m_cameraSettings;
+        if (beginCameraEdit)
+            beginCameraEdit("reset", resetBefore);
         m_cameraSettings.fov = CAMERA_DEFAULTS_FOV;
         m_cameraSettings.orthographic = false;
         m_cameraSettings.orthographicSize = CAMERA_DEFAULTS_ORTHOGRAPHIC_SIZE;
@@ -345,12 +366,12 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
         m_cameraSettings.zoomSpeed = CAMERA_DEFAULTS_ZOOM;
         m_cameraSettings.moveSpeed = CAMERA_DEFAULTS_MOVE;
         m_cameraSettings.moveSpeedBoost = CAMERA_DEFAULTS_BOOST;
-        changed = true;
+        if (applyCameraToEngine)
+            applyCameraToEngine(m_cameraSettings);
+        if (endCameraEdit)
+            endCameraEdit("reset", m_cameraSettings);
     }
     ImGui::Dummy(ImVec2(0.0f, 4.0f));
-
-    if (changed && applyCameraToEngine)
-        applyCameraToEngine(m_cameraSettings);
 }
 
 } // namespace infernux

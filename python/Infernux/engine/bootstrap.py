@@ -29,8 +29,6 @@ from Infernux.engine.ui import (
     UIEditorPanel,
     EditorPanel,
     EditorServices,
-    EditorEventBus,
-    EditorEvent,
     PanelRegistry,
     editor_panel,
 )
@@ -89,9 +87,9 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.scene_file_manager: Optional[SceneFileManager] = None
         self.window_manager: Optional[WindowManager] = None
         self.services: Optional[EditorServices] = None
-        self.event_bus: Optional[EditorEventBus] = None
 
         # Panels
+        self.shortcut_input = None
         self.menu_bar = None
         self.toolbar = None
         self.hierarchy = None
@@ -285,6 +283,15 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         from Infernux.engine.undo import UndoManager
 
         self.interaction_core = EditorInteractionCore()
+        from Infernux.particle.artifact import ParticleArtifactRegistry
+        from Infernux.engine.ui import project_file_ops
+
+        self.interaction_core.asset_mutations.add_listener(
+            ParticleArtifactRegistry.on_asset_mutation
+        )
+        self.interaction_core.asset_mutations.add_listener(
+            project_file_ops.on_asset_mutation
+        )
         self.undo_manager = UndoManager(self.interaction_core.action_journal)
 
         self.scene_file_manager = SceneFileManager()
@@ -295,7 +302,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         self.services = EditorServices()
         self.services._engine = self.engine
-        self.services._undo_manager = self.undo_manager
         self.services._scene_file_manager = self.scene_file_manager
         self.services._play_mode_manager = self.engine._play_mode_manager
         self.services._window_manager = self.window_manager
@@ -311,42 +317,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             EditorIcons.preload(self.engine.get_native_engine())
         except Exception as exc:
             Debug.log_warning(f"EditorIcons preload skipped: {exc}")
-
-        self.event_bus = EditorEventBus()
-
-        # Inject serialized-field callbacks (breaks circular dep chain)
-        self._inject_field_change_hooks()
-
-    def _inject_field_change_hooks(self):
-        """Wire serialized-field undo/dirty callbacks without circular imports."""
-        from Infernux.engine.undo import UndoManager, SetPropertyCommand
-        from Infernux.engine.play_mode import PlayModeManager, PlayModeState
-
-        def will_change(instance, field_name, old_value, new_value):
-            mgr = UndoManager.instance()
-            # Do not use hasattr(instance, "game_object"): the property raises
-            # RuntimeError when unbound; hasattr only catches AttributeError.
-            try_go = getattr(instance, "_try_get_game_object", None)
-            bound_go = try_go() if callable(try_go) else None
-            if (mgr and not mgr.is_executing and mgr.enabled and bound_go is not None):
-                pmm = PlayModeManager.instance()
-                if pmm is None or pmm.is_edit_mode:
-                    mgr.execute(SetPropertyCommand(
-                        instance, field_name,
-                        old_value, new_value, f"Set {field_name}"))
-                    return True
-            return False
-
-        def did_change(instance, field_name, old_value, new_value):
-            # Scene dirty state is managed exclusively by UndoManager._sync_dirty().
-            # No direct mark_dirty() call needed here — every edited property
-            # either went through will_change (undo-recorded → _sync_dirty)
-            # or is a play-mode / undo-driven write that shouldn't dirty.
-            pass
-
-        from Infernux.components.serialized_field import set_field_change_hooks
-        set_field_change_hooks(will_change=will_change, did_change=did_change)
-
 
     def _wire_toolbar_callbacks_on(self, tb, engine):
         """Shared helper: attach play/camera/grid callbacks to a ToolbarPanel."""
@@ -371,6 +341,13 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         from Infernux.engine.interaction import CommandSource
 
         command_registry = self.interaction_core.commands
+        camera_view_id = self.interaction_core.panels.view_command_target(
+            type_id="toolbar"
+        )
+        if not camera_view_id:
+            raise RuntimeError(
+                "toolbar interaction descriptor must declare its View Command target"
+            )
         tb.execute_command = lambda command_id, source, _argument: command_registry.execute(
             command_id,
             source=CommandSource(source),
@@ -387,7 +364,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         native = engine.get_native_engine() if engine else None
         if native:
             tb.is_show_grid = lambda: native.is_show_grid()
-            tb.set_show_grid = lambda v: native.set_show_grid(v)
 
         def _sync_camera():
             cam = engine.editor_camera if engine else None
@@ -403,21 +379,86 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
                 "move_speed": float(cam.move_speed),
                 "move_speed_boost": float(cam.move_speed_boost),
             }
+        def _camera_snapshot(settings):
+            return {
+                "orthographic": bool(settings["orthographic"]),
+                "fov": float(settings["fov"]),
+                "orthographic_size": float(settings["orthographic_size"]),
+                "rotation_speed": float(settings["rotation_speed"]),
+                "pan_speed": float(settings["pan_speed"]),
+                "zoom_speed": float(settings["zoom_speed"]),
+                "move_speed": float(settings["move_speed"]),
+                "move_speed_boost": float(settings["move_speed_boost"]),
+            }
+
+        active_camera_edits = set()
+
         def _apply_camera(settings):
             cam = engine.editor_camera if engine else None
             if not cam:
                 return
-            cam.orthographic = settings["orthographic"]
-            cam.fov = settings["fov"]
-            cam.orthographic_size = settings["orthographic_size"]
-            cam.rotation_speed = settings["rotation_speed"]
-            cam.pan_speed = settings["pan_speed"]
-            cam.zoom_speed = settings["zoom_speed"]
-            cam.move_speed = settings["move_speed"]
-            cam.move_speed_boost = settings["move_speed_boost"]
+            snapshot = _camera_snapshot(settings)
+            cam.orthographic = snapshot["orthographic"]
+            cam.fov = snapshot["fov"]
+            cam.orthographic_size = snapshot["orthographic_size"]
+            cam.rotation_speed = snapshot["rotation_speed"]
+            cam.pan_speed = snapshot["pan_speed"]
+            cam.zoom_speed = snapshot["zoom_speed"]
+            cam.move_speed = snapshot["move_speed"]
+            cam.move_speed_boost = snapshot["move_speed_boost"]
+            edits = self.interaction_core.continuous_edits
+            for edit_key in tuple(active_camera_edits):
+                edits.update(edit_key, snapshot)
+
+        def _camera_edit_key(field_name):
+            return f"toolbar.camera.{str(field_name or '').strip()}"
+
+        def _begin_camera_edit(field_name, initial_settings):
+            edit_key = _camera_edit_key(field_name)
+            if not edit_key.rsplit(".", 1)[-1]:
+                raise ValueError("camera edit field must not be empty")
+            initial = _camera_snapshot(initial_settings)
+            descriptions = {
+                "projection": "Change Scene Camera Projection",
+                "toolbar.field_of_view": "Change Scene Camera Field of View",
+                "toolbar.orthographic_size": "Change Scene Camera Orthographic Size",
+                "toolbar.rotation_sensitivity": "Change Scene Camera Rotation Sensitivity",
+                "toolbar.pan_speed": "Change Scene Camera Pan Speed",
+                "toolbar.zoom_speed": "Change Scene Camera Zoom Speed",
+                "toolbar.move_speed": "Change Scene Camera Move Speed",
+                "toolbar.speed_boost": "Change Scene Camera Speed Boost",
+                "reset": "Reset Scene Camera Settings",
+            }
+            description = descriptions.get(str(field_name), "Change Scene Camera Settings")
+            self.interaction_core.continuous_edits.begin(
+                edit_key,
+                owner_id="toolbar",
+                description=description,
+                initial_value=initial,
+                on_commit=lambda session: self.interaction_core.view_commands.set_value(
+                    session.initial_value,
+                    session.current_value,
+                    _apply_camera,
+                    description=session.description,
+                    owner_view_id=camera_view_id,
+                ),
+                on_cancel=lambda session: _apply_camera(session.initial_value),
+            )
+            active_camera_edits.add(edit_key)
+
+        def _end_camera_edit(field_name, final_settings):
+            edit_key = _camera_edit_key(field_name)
+            self.interaction_core.continuous_edits.update(
+                edit_key,
+                _camera_snapshot(final_settings),
+            )
+            active_camera_edits.discard(edit_key)
+            self.interaction_core.continuous_edits.commit(edit_key)
 
         tb.sync_camera_from_engine = _sync_camera
         tb.apply_camera_to_engine = _apply_camera
+        tb.begin_camera_edit = _begin_camera_edit
+        tb.end_camera_edit = _end_camera_edit
 
 
     # ── Native panel callback wiring ───────────────────────────────────
@@ -442,8 +483,8 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         def on_scene_changed():
             document_id = self.scene_file_manager.document_id
             if document_id:
-                self.scene_view.bind_document(document_id)
-                self.game_view.bind_document(document_id)
+                for view in (self.scene_view, self.game_view, self.ui_editor):
+                    view.bind_document(document_id)
             from Infernux.engine.interaction import SelectionService
             SelectionService.instance().clear(
                 reason="scene_changed",
@@ -532,6 +573,18 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
                 _panel_state.delete("scene_session")
         elif self.scene_file_manager and not self.scene_file_manager.is_dirty:
             _panel_state.delete("scene_session")
+        if include_scene_draft:
+            # This is the only persistence boundary allowed to capture the
+            # global authoring session. Individual panels publish view state
+            # only; they never serialize documents or flush panel_state.
+            from Infernux.engine.interaction import DocumentRegistry
+
+            documents = DocumentRegistry.instance()
+            document_session = documents.capture_session_state()
+            if document_session["documents"]:
+                _panel_state.put("document_session", document_session)
+            else:
+                _panel_state.delete("document_session")
         # Scene/Game views are runtime-driven and must not persist panel payloads.
         _panel_state.delete("panel:scene_view")
         _panel_state.delete("panel:game_view")
@@ -540,12 +593,32 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         # (singletons live in _default_instances; dynamically opened ids may only
         # appear in _window_instances until closed — those must still save).
         wm = self.window_manager
+        from Infernux.engine.interaction import DocumentRegistry
+
+        documents = DocumentRegistry.instance()
+
+        _panel_state.prune_document_view_states(
+            is_document_backed=lambda view_id: wm.is_document_backed_view(
+                view_id,
+                wm.window_type_id(view_id),
+            ),
+            has_restorable_document=lambda view_id: (
+                documents.document_for_view(view_id) is not None
+                and not documents.is_session_restore_suppressed(view_id)
+            ) or documents.has_pending_session_document(view_id),
+        )
         seen_ids: set[str] = set()
         for wid in set(wm._default_instances.keys()) | set(wm._window_instances.keys()):
             if wid in seen_ids:
                 continue
             seen_ids.add(wid)
             if wid in {"scene_view", "game_view"}:
+                continue
+            if (
+                wm.is_document_backed_view(wid)
+                and documents.is_session_restore_suppressed(wid)
+            ):
+                _panel_state.delete(f"panel:{wid}")
                 continue
             inst = wm._window_instances.get(wid) or wm._default_instances.get(wid)
             if inst is None:
@@ -555,6 +628,8 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
                     data = inst.save_state()
                     if data:
                         _panel_state.put(f"panel:{wid}", data)
+                    else:
+                        _panel_state.delete(f"panel:{wid}")
                 except Exception:
                     pass
 

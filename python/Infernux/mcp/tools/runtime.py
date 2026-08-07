@@ -1807,12 +1807,12 @@ def _editor_state() -> dict[str, Any]:
     from Infernux.engine.deferred_task import DeferredTaskRunner
     from Infernux.engine.play_mode import PlayModeManager
     from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.ui.selection_manager import SelectionManager
+    from Infernux.engine.interaction import SelectionService
     from Infernux.lib import AudioEngine, SceneManager
 
     pmm = PlayModeManager.instance()
     sfm = SceneFileManager.instance()
-    sel = SelectionManager.instance()
+    selection = SelectionService.instance()
     runner = DeferredTaskRunner.instance()
     scene = SceneManager.instance().get_active_scene()
     return {
@@ -1820,7 +1820,7 @@ def _editor_state() -> dict[str, Any]:
         "audio_paused": bool(AudioEngine.instance().is_paused),
         "deferred_task_busy": bool(getattr(runner, "is_busy", False)),
         "scene_loading": bool(getattr(sfm, "is_loading", False)) if sfm else False,
-        "selected_ids": sel.get_ids() if sel else [],
+        "selected_ids": list(selection.scene_object_ids()),
         "scene_dirty": bool(sfm.is_dirty) if sfm else False,
         "is_prefab_mode": bool(getattr(sfm, "is_prefab_mode", False)) if sfm else False,
         "scene_name": str(getattr(scene, "name", "") or ""),

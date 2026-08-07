@@ -19,6 +19,7 @@ from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.game_builder import BuildOutputDirectoryError, GameBuilder
 from Infernux.engine import nuitka_builder as nuitka_builder_module
 from Infernux.engine.nuitka_builder import NuitkaBuilder
+from Infernux.engine.player_package_format import read_manifest
 
 
 def _make_project(tmp_path):
@@ -76,6 +77,136 @@ def _reference_particle_graph(project_root: Path, stable_id: str) -> Path:
         encoding="utf-8",
     )
     return graph_path
+
+
+def _write_animation_texture_asset(
+    texture_path: Path,
+    *,
+    guid: str,
+    sprite_frame_ids=(),
+    sprite: bool = True,
+) -> None:
+    from Infernux.core.asset_types import SpriteFrame, TextureImportSettings, TextureType
+
+    texture_path.parent.mkdir(parents=True, exist_ok=True)
+    texture_path.write_bytes(b"test texture")
+    settings = TextureImportSettings(
+        texture_type=TextureType.SPRITE if sprite else TextureType.DEFAULT,
+        sprite_frames=[
+            SpriteFrame(stable_id=stable_id, name=f"frame_{index}", w=16, h=16)
+            for index, stable_id in enumerate(sprite_frame_ids)
+        ],
+    )
+
+    def tagged(value):
+        if type(value) is bool:
+            tag = "bool"
+        elif type(value) is int:
+            tag = "int"
+        elif type(value) is list:
+            tag = "json_array"
+        else:
+            tag = "string"
+        return {"type": tag, "value": value}
+
+    metadata = {"guid": tagged(guid)}
+    metadata.update({key: tagged(value) for key, value in settings.to_dict().items()})
+    texture_path.with_name(texture_path.name + ".meta").write_text(
+        json.dumps({"metadata": metadata}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _write_animation_clip(
+    clip_path: Path,
+    *,
+    texture_guid: str,
+    texture_path: str,
+    sprite_frame_id: str,
+) -> None:
+    from Infernux.core.animation_clip import AnimationClip, AnimationFrame
+
+    clip_path.parent.mkdir(parents=True, exist_ok=True)
+    clip = AnimationClip(
+        name=clip_path.stem,
+        authoring_texture_guid=texture_guid,
+        authoring_texture_path=texture_path,
+        frames=[AnimationFrame(sprite_frame_id=sprite_frame_id)],
+    )
+    clip_path.write_text(json.dumps(clip.to_dict(), indent=2), encoding="utf-8")
+
+
+class TestGameBuilderAnimationClipPreflight:
+    TEXTURE_GUID = "b" * 32
+    FRAME_ID = "3" * 32
+
+    def test_validate_runs_animation_preflight_and_resolves_texture_by_guid(self, tmp_path):
+        project = _make_project(tmp_path)
+        texture = project / "Assets" / "Sprites" / "sheet.png"
+        _write_animation_texture_asset(
+            texture,
+            guid=self.TEXTURE_GUID,
+            sprite_frame_ids=(self.FRAME_ID,),
+        )
+        _write_animation_clip(
+            project / "Assets" / "Animations" / "walk.animclip2d",
+            texture_guid=self.TEXTURE_GUID,
+            texture_path="Assets/Sprites/stale-path.png",
+            sprite_frame_id=self.FRAME_ID,
+        )
+        builder = GameBuilder(
+            str(project), str(tmp_path / "build_output"), game_name="TestGame"
+        )
+
+        builder._validate()
+
+    def test_preflight_rejects_missing_sprite_frame_with_clip_context(self, tmp_path):
+        project = _make_project(tmp_path)
+        texture = project / "Assets" / "Sprites" / "sheet.png"
+        _write_animation_texture_asset(
+            texture,
+            guid=self.TEXTURE_GUID,
+            sprite_frame_ids=(self.FRAME_ID,),
+        )
+        missing_id = "4" * 32
+        clip_path = project / "Assets" / "Animations" / "broken.animclip2d"
+        _write_animation_clip(
+            clip_path,
+            texture_guid=self.TEXTURE_GUID,
+            texture_path="Assets/Sprites/sheet.png",
+            sprite_frame_id=missing_id,
+        )
+        builder = GameBuilder(
+            str(project), str(tmp_path / "build_output"), game_name="TestGame"
+        )
+
+        with pytest.raises(ValueError, match="AnimationClip build validation failed") as exc:
+            builder._validate_animation_clip_assets()
+
+        assert str(clip_path) in str(exc.value)
+        assert missing_id in str(exc.value)
+
+    def test_preflight_rejects_texture_not_imported_as_sprite(self, tmp_path):
+        project = _make_project(tmp_path)
+        texture = project / "Assets" / "Textures" / "albedo.png"
+        _write_animation_texture_asset(
+            texture,
+            guid=self.TEXTURE_GUID,
+            sprite=False,
+        )
+        clip_path = project / "Assets" / "Animations" / "broken.animclip2d"
+        _write_animation_clip(
+            clip_path,
+            texture_guid=self.TEXTURE_GUID,
+            texture_path="Assets/Textures/albedo.png",
+            sprite_frame_id=self.FRAME_ID,
+        )
+        builder = GameBuilder(
+            str(project), str(tmp_path / "build_output"), game_name="TestGame"
+        )
+
+        with pytest.raises(ValueError, match="not imported as Sprite"):
+            builder._validate_animation_clip_assets()
 
 
 def test_validate_accepts_project_relative_build_scene_paths(tmp_path):
@@ -643,9 +774,10 @@ def test_build_branding_assets_are_manifested_and_packed(tmp_path):
     assert manifest["icon_path"] == "Branding/icon.png"
     assert manifest["splash_items"][0]["path"] == "Splash/opening.png"
     builder._pack_content_archive(str(final_dir))
-    with zipfile.ZipFile(final_dir / "Data" / "Content.inxpkg") as archive:
-        assert "Branding/icon.png" in archive.namelist()
-        assert "Splash/opening.png" in archive.namelist()
+    header, _ = read_manifest(final_dir / "Data" / "Content.inxpack")
+    names = {entry["path"] for entry in header["files"]}
+    assert "Branding/icon.png" in names
+    assert "Splash/opening.png" in names
 
 
 def test_requirements_install_is_skipped_when_content_is_unchanged(tmp_path, monkeypatch):
@@ -736,8 +868,10 @@ def test_game_data_includes_render_effect_artifacts(tmp_path):
     assert shipped.read_text(encoding="utf-8") == artifact.read_text(encoding="utf-8")
 
     builder._pack_content_archive(str(final_dir))
-    with zipfile.ZipFile(final_dir / "Data" / builder._CONTENT_ARCHIVE_FILENAME) as archive:
-        assert "Library/Artifacts/RenderEffect/bloom.inxeffect" in archive.namelist()
+    header, _ = read_manifest(final_dir / "Data" / builder._CONTENT_ARCHIVE_FILENAME)
+    assert "Library/Artifacts/RenderEffect/bloom.inxeffect" in {
+        entry["path"] for entry in header["files"]
+    }
 
 
 def test_game_data_includes_particle_artifacts(tmp_path):
@@ -784,9 +918,10 @@ def test_game_data_includes_particle_artifacts(tmp_path):
     }
 
     builder._pack_content_archive(str(final_dir))
-    with zipfile.ZipFile(final_dir / "Data" / builder._CONTENT_ARCHIVE_FILENAME) as archive:
-        assert "Library/Artifacts/Particle/smoke.inxparticle" in archive.namelist()
-        assert "Library/Artifacts/Particle/RuntimeIndex.json" in archive.namelist()
+    header, _ = read_manifest(final_dir / "Data" / builder._CONTENT_ARCHIVE_FILENAME)
+    names = {entry["path"] for entry in header["files"]}
+    assert "Library/Artifacts/Particle/smoke.inxparticle" in names
+    assert "Library/Artifacts/Particle/RuntimeIndex.json" in names
 
 
 def test_game_data_excludes_unreachable_particle_artifacts(tmp_path):
@@ -910,19 +1045,15 @@ def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
     assert not (shipped / "Texture" / unused_artifact.name).exists()
 
 
-def test_payload_manifest_allows_project_asset_metadata(tmp_path):
+def test_payload_manifest_rejects_project_asset_metadata(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"
     metadata = final_dir / "Data" / "Assets" / "Materials" / "wave.mat.meta"
     metadata.parent.mkdir(parents=True)
     metadata.write_text("metadata", encoding="utf-8")
 
-    builder._write_payload_manifest(str(final_dir))
-
-    payload = json.loads(
-        (final_dir / "Data" / "BuildPayload.json").read_text(encoding="utf-8")
-    )
-    assert payload["code_protection"]["project_metadata_count"] == 1
+    with pytest.raises(RuntimeError, match="build-time artifacts"):
+        builder._write_payload_manifest(str(final_dir))
 
 
 def test_content_archive_replaces_loose_project_files(tmp_path):
@@ -944,22 +1075,21 @@ def test_content_archive_replaces_loose_project_files(tmp_path):
 
     builder._pack_content_archive(str(final_dir))
 
-    archive_path = data / "Content.inxpkg"
+    archive_path = data / "Content.inxpack"
     manifest = json.loads((data / "Content.json").read_text(encoding="utf-8"))
     assert archive_path.is_file()
     assert build_manifest.is_file()
     assert not assets.exists()
     assert not settings.exists()
-    assert manifest["compression"] == "zip-deflate-6"
+    assert manifest["compression"] == "lzma-or-store"
     assert manifest["project_bytecode_count"] == 1
-    assert manifest["project_metadata_count"] == 1
-    with zipfile.ZipFile(archive_path) as archive:
-        assert set(archive.namelist()) == {
-            "Assets/Main.scene",
-            "Assets/Player.py.meta",
-            "Assets/Player.pyc",
-            "ProjectSettings/BuildSettings.json",
-        }
+    assert manifest["project_metadata_count"] == 0
+    header, _ = read_manifest(archive_path)
+    assert {entry["path"] for entry in header["files"]} == {
+        "Assets/Main.scene",
+        "Assets/Player.pyc",
+        "ProjectSettings/BuildSettings.json",
+    }
 
 
 def test_content_archive_excludes_particle_authoring_and_keeps_aot(tmp_path):
@@ -988,8 +1118,8 @@ def test_content_archive_excludes_particle_authoring_and_keeps_aot(tmp_path):
 
     builder._pack_content_archive(str(tmp_path / "dist"))
 
-    with zipfile.ZipFile(data / builder._CONTENT_ARCHIVE_FILENAME) as archive:
-        names = set(archive.namelist())
+    header, _ = read_manifest(data / builder._CONTENT_ARCHIVE_FILENAME)
+    names = {entry["path"] for entry in header["files"]}
     assert "Library/Artifacts/Particle/smoke.inxparticle" in names
     assert "Library/Artifacts/Particle/RuntimeIndex.json" in names
     assert not any(name.casefold().endswith(".particlegraph") for name in names)
@@ -1025,16 +1155,16 @@ def test_core_runtime_archive_replaces_loose_numpy_and_resources(tmp_path):
 
     module = final_dir / "RuntimeModules" / "core"
     manifest = json.loads((module / "core-module.json").read_text(encoding="utf-8"))
-    assert manifest["compression"] == "zip-deflate-6"
+    assert manifest["compression"] == "lzma-or-store"
     assert not (final_dir / "numpy").exists()
     assert not (final_dir / "numpy.libs").exists()
     assert not (final_dir / "Infernux" / "resources").exists()
-    with zipfile.ZipFile(module / "core-module.zip") as archive:
-        assert set(archive.namelist()) == {
-            "Infernux/resources/fonts/engine.otf",
-            "numpy.libs/openblas.dll",
-            "numpy/core.py",
-        }
+    header, _ = read_manifest(module / "core-module.inxpack")
+    assert {entry["path"] for entry in header["files"]} == {
+        "Infernux/resources/fonts/engine.otf",
+        "numpy.libs/openblas.dll",
+        "numpy/core.py",
+    }
 
 
 def test_payload_manifest_rejects_plaintext_project_scripts(tmp_path):

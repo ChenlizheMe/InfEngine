@@ -89,12 +89,16 @@ class CppProperty:
         asset_type: Optional[str] = None,
         get_converter=None,
         set_converter=None,
+        native_getter=None,
+        native_setter=None,
         hdr: bool = False,
         slider: bool = False,
     ):
         self.cpp_attr = cpp_attr
         self.get_converter = get_converter
         self.set_converter = set_converter
+        self.native_getter = native_getter
+        self.native_setter = native_setter
         self.metadata = FieldMetadata(
             name="",  # filled by __set_name__ / __init_subclass__
             field_type=field_type,
@@ -121,7 +125,11 @@ class CppProperty:
             return self
         cpp = instance._require_cpp_component()
         try:
-            value = getattr(cpp, self.cpp_attr)
+            value = (
+                self.native_getter(cpp)
+                if self.native_getter is not None
+                else getattr(cpp, self.cpp_attr)
+            )
         except RuntimeError as exc:
             instance._invalidate_native_binding()
             raise ReferenceError(
@@ -164,7 +172,10 @@ class CppProperty:
             value = self.set_converter(value)
         cpp = instance._require_cpp_component()
         try:
-            setattr(cpp, self.cpp_attr, value)
+            if self.native_setter is not None:
+                self.native_setter(cpp, value)
+            else:
+                setattr(cpp, self.cpp_attr, value)
         except RuntimeError as exc:
             instance._invalidate_native_binding()
             raise ReferenceError(

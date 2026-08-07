@@ -600,6 +600,12 @@ class InxVkCoreModular
     /// cross-graph queue-family ownership is fully published.
     void SetFrameComputeExecutor(std::function<void(VkCommandBuffer cmdBuf)> executor);
 
+    /// Publish whether the optional frame compute callback has work for the
+    /// current frame.  The executor is installed for the lifetime of the
+    /// renderer, so the predicate prevents an empty compute submission from
+    /// introducing a needless queue dependency on frames without particles.
+    void SetFrameComputeWorkPredicate(std::function<bool()> predicate);
+
     /// Configure a pipelined async-compute frame: simulation overlaps the
     /// current Graphics frame, export runs after Graphics and is consumed by
     /// the next frame.
@@ -1295,6 +1301,7 @@ class InxVkCoreModular
     std::function<void(VkCommandBuffer cmdBuf)> m_renderGraphExecutor;
     FrameSubmissionBuildCallback m_frameSubmissionBuilder;
     std::function<void(VkCommandBuffer cmdBuf)> m_frameComputeExecutor;
+    std::function<bool()> m_frameComputeWorkPredicate;
     std::function<bool(VkCommandBuffer cmdBuf)> m_frameAsyncSimulationExecutor;
     std::function<bool(VkCommandBuffer cmdBuf)> m_frameAsyncExportExecutor;
     std::function<bool()> m_frameAsyncComputeReady;

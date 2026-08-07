@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, IntFlag, auto
 from typing import Optional
 import uuid
@@ -14,6 +14,7 @@ from .commands import (
     EditorCommandRegistry,
 )
 from .contexts import FocusService
+from .modals import ModalService
 
 
 class ShortcutModifier(IntFlag):
@@ -174,11 +175,16 @@ class ShortcutRouter:
         self,
         commands: Optional[EditorCommandRegistry] = None,
         focus: Optional[FocusService] = None,
+        modals: Optional[ModalService] = None,
     ) -> None:
         self._commands = commands
         self._focus = focus
+        self._modals = modals
         self._bindings: dict[str, ShortcutBinding] = {}
         self._revision = 0
+        self._route_revision = 0
+        self._last_event: Optional[ShortcutEvent] = None
+        self._last_result: Optional[ShortcutRouteResult] = None
         ShortcutRouter._instance = self
 
     @classmethod
@@ -194,6 +200,18 @@ class ShortcutRouter:
     @property
     def bindings(self) -> tuple[ShortcutBinding, ...]:
         return tuple(self._bindings.values())
+
+    @property
+    def route_revision(self) -> int:
+        return self._route_revision
+
+    @property
+    def last_event(self) -> Optional[ShortcutEvent]:
+        return self._last_event
+
+    @property
+    def last_result(self) -> Optional[ShortcutRouteResult]:
+        return self._last_result
 
     def register(self, binding: ShortcutBinding, *, replace: bool = False) -> None:
         existing = self._bindings.get(binding.binding_id)
@@ -221,13 +239,26 @@ class ShortcutRouter:
         )
 
     def route(self, event: ShortcutEvent) -> ShortcutRouteResult:
+        # The native adapter only knows whether ImGui has presented a popup.
+        # ModalService is authoritative from activation onward, including the
+        # frame before the popup is first drawn.
+        modals = self._modals
+        if (
+            not event.modal_active
+            and modals is not None
+            and bool(modals.active_modal_id)
+        ):
+            event = replace(event, modal_active=True)
         matching = [
             binding
             for binding in self._bindings.values()
             if binding.chord == event.chord and binding.phase is event.phase
         ]
         if not matching:
-            return ShortcutRouteResult(ShortcutRouteStatus.NO_MATCH)
+            return self._publish_route(
+                event,
+                ShortcutRouteResult(ShortcutRouteStatus.NO_MATCH),
+            )
 
         focus = self._focus or FocusService.instance()
         snapshot = focus.snapshot
@@ -247,8 +278,11 @@ class ShortcutRouter:
             ranked.append(((scope_rank, binding.priority, -index), binding))
 
         if not ranked:
-            return ShortcutRouteResult(
-                ShortcutRouteStatus.BLOCKED if blocked else ShortcutRouteStatus.NO_MATCH,
+            return self._publish_route(
+                event,
+                ShortcutRouteResult(
+                    ShortcutRouteStatus.BLOCKED if blocked else ShortcutRouteStatus.NO_MATCH,
+                ),
             )
 
         best_rank = max(rank for rank, _binding in ranked)[:2]
@@ -259,9 +293,12 @@ class ShortcutRouter:
         ]
         command_ids = tuple(dict.fromkeys(binding.command_id for binding in best))
         if len(command_ids) != 1:
-            return ShortcutRouteResult(
-                ShortcutRouteStatus.CONFLICT,
-                conflicts=command_ids,
+            return self._publish_route(
+                event,
+                ShortcutRouteResult(
+                    ShortcutRouteStatus.CONFLICT,
+                    conflicts=command_ids,
+                ),
             )
 
         binding = best[0]
@@ -274,12 +311,25 @@ class ShortcutRouter:
             CommandStatus.FAILED: ShortcutRouteStatus.FAILED,
             CommandStatus.NOT_FOUND: ShortcutRouteStatus.FAILED,
         }[result.status]
-        return ShortcutRouteResult(
-            status,
-            command_id=binding.command_id,
-            binding_id=binding.binding_id,
-            command_result=result,
+        return self._publish_route(
+            event,
+            ShortcutRouteResult(
+                status,
+                command_id=binding.command_id,
+                binding_id=binding.binding_id,
+                command_result=result,
+            ),
         )
+
+    def _publish_route(
+        self,
+        event: ShortcutEvent,
+        result: ShortcutRouteResult,
+    ) -> ShortcutRouteResult:
+        self._last_event = event
+        self._last_result = result
+        self._route_revision += 1
+        return result
 
     @staticmethod
     def _scope_rank(binding, snapshot, context_priorities) -> Optional[int]:
@@ -308,7 +358,9 @@ class ShortcutRouter:
         return False
 
     def clear(self) -> None:
-        if not self._bindings:
-            return
-        self._bindings.clear()
-        self._revision += 1
+        if self._bindings:
+            self._bindings.clear()
+            self._revision += 1
+        self._last_event = None
+        self._last_result = None
+        self._route_revision = 0

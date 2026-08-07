@@ -56,7 +56,7 @@ class ScenePrefabMixin:
             _read_prefab_document,
             _strip_prefab_runtime_fields,
         )
-        from Infernux.engine.ui.selection_manager import SelectionManager
+        from Infernux.engine.interaction import SelectionService
 
         active_scene = SceneManager.instance().get_active_scene()
         if active_scene is None:
@@ -139,8 +139,10 @@ class ScenePrefabMixin:
 
         roots = _get_scene_root_objects(new_scene)
         if roots:
-            SelectionManager.instance().select(
+            SelectionService.instance().select_scene_object(
                 roots[0].id,
+                owner_id="hierarchy",
+                reason="enter_prefab_mode",
                 record_history=False,
             )
 
@@ -155,25 +157,22 @@ class ScenePrefabMixin:
             preserve_previous=True,
         )
         if not preserve_undo_history:
-            self._reset_undo_history(scene_is_dirty=False)
+            self._reset_undo_history()
 
         if self._on_scene_changed:
             self._on_scene_changed()
         return True
 
-    def open_prefab_mode_with_undo(self, prefab_path: str) -> bool:
-        from Infernux.engine.undo import UndoManager, PrefabModeCommand
-        mgr = UndoManager.instance()
-        if mgr and mgr.enabled and not mgr.is_executing:
-            mgr.execute(PrefabModeCommand(prefab_path, enter_mode=True))
-            return True
-        return bool(self.open_prefab_mode(prefab_path))
-
     def exit_prefab_mode(self):
         """Resolve the Prefab document, then schedule its deferred exit."""
         return self._request_prefab_exit()
 
-    def _request_prefab_exit(self, on_complete: Optional[Callable[[], None]] = None) -> bool:
+    def _request_prefab_exit(
+        self,
+        on_complete: Optional[Callable[[], None]] = None,
+        *,
+        preserve_undo_history: bool = False,
+    ) -> bool:
         """Route every Prefab replacement through the shared close transaction."""
         if not self.is_prefab_mode:
             return False
@@ -184,12 +183,17 @@ class ScenePrefabMixin:
 
         return DirtyPanelConfirmationCoordinator.instance().request_document_replace(
             self.document_id,
-            on_complete=lambda: self._schedule_prefab_exit(on_complete),
+            on_complete=lambda: self._schedule_prefab_exit(
+                on_complete,
+                preserve_undo_history=preserve_undo_history,
+            ),
         )
 
     def _schedule_prefab_exit(
         self,
         on_complete: Optional[Callable[[], None]] = None,
+        *,
+        preserve_undo_history: bool = False,
     ) -> bool:
         """Schedule exit from Prefab Mode on a later frame.
 
@@ -212,25 +216,37 @@ class ScenePrefabMixin:
 
         self._deferred_exit_prefab = True
         self._post_prefab_exit_callback = on_complete
-        runner.submit(
+        submitted = runner.submit(
             "Exit Prefab Mode",
-            [("Exiting Prefab Mode...", 0.6, self._run_deferred_exit_prefab_task)],
+            [
+                (
+                    "Exiting Prefab Mode...",
+                    0.6,
+                    lambda: self._run_deferred_exit_prefab_task(
+                        preserve_undo_history=preserve_undo_history,
+                    ),
+                )
+            ],
         )
-        return True
+        if not submitted:
+            self._deferred_exit_prefab = False
+            self._post_prefab_exit_callback = None
+        return bool(submitted)
 
-    def exit_prefab_mode_with_undo(self) -> bool:
-        if not self.is_prefab_mode:
-            return False
-        # Exiting can require an asynchronous Save/Discard/Cancel decision.
-        # It cannot be represented by the legacy synchronous UndoCommand.
-        return self.exit_prefab_mode()
-
-    def _run_deferred_exit_prefab_task(self):
+    def _run_deferred_exit_prefab_task(
+        self,
+        *,
+        preserve_undo_history: bool = False,
+    ):
         """DeferredTaskRunner step wrapper for prefab-mode exit."""
         self._deferred_exit_prefab = False
         callback = self._post_prefab_exit_callback
         self._post_prefab_exit_callback = None
-        succeeded = bool(self._do_exit_prefab_mode())
+        succeeded = bool(
+            self._do_exit_prefab_mode(
+                preserve_undo_history=preserve_undo_history,
+            )
+        )
         if succeeded and callable(callback):
             callback()
         return succeeded
@@ -336,7 +352,7 @@ class ScenePrefabMixin:
         if prefab_document is not None and not prefab_document.view_ids:
             registry.unregister(prefab_document_id)
         if not preserve_undo_history:
-            self._reset_undo_history(scene_is_dirty=self._dirty)
+            self._reset_undo_history()
 
         if self._on_scene_changed:
             self._on_scene_changed()

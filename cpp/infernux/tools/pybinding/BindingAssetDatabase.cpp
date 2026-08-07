@@ -92,6 +92,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def("delete_asset", &AssetDatabase::DeleteAsset, py::arg("path"), "Delete asset and its meta")
         .def("move_asset", &AssetDatabase::MoveAsset, py::arg("old_path"), py::arg("new_path"),
              "Move/rename asset preserving GUID")
+        .def("move_assets_batch", &AssetDatabase::MoveAssetsBatch, py::arg("moves"),
+             "Commit a preflighted asset relocation batch with one catalog publication")
         .def("contains_guid", &AssetDatabase::ContainsGuid, py::arg("guid"), py::call_guard<py::gil_scoped_release>(),
              "Check if GUID exists")
         .def("contains_path", &AssetDatabase::ContainsPath, py::arg("path"), py::call_guard<py::gil_scoped_release>(),

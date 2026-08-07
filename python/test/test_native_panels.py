@@ -6,8 +6,11 @@ from Infernux.lib import (
     StatusBarPanel,
     ToolbarPanel,
     MenuBarPanel,
+    EditorShortcutInput,
     ConsolePanel,
     HierarchyPanel,
+    InspectorPanel,
+    ProjectPanel,
     PlayState,
     LogLevel,
     WindowTypeInfo,
@@ -35,8 +38,43 @@ class TestStatusBarPanel:
         console = ConsolePanel()
         sb.set_console_panel(console)
 
+    def test_console_click_uses_global_command_instead_of_direct_selection(self):
+        source = Path("cpp/infernux/function/editor/StatusBarPanel.cpp").read_text(encoding="utf-8")
+        header = Path("cpp/infernux/function/editor/StatusBarPanel.h").read_text(encoding="utf-8")
+        binding = Path("cpp/infernux/tools/pybinding/BindingGUI.cpp").read_text(encoding="utf-8")
+        bootstrap = Path("python/Infernux/engine/_bootstrap_panels.py").read_text(encoding="utf-8")
+
+        assert 'executeCommand("console.open_entry", "pointer"' in source
+        assert "m_console->SelectEntry(m_latestUid)" not in source
+        assert "executeCommand" in header
+        assert 'def_readwrite("execute_command", &StatusBarPanel::executeCommand)' in binding
+        assert "self.status_bar.execute_command" in bootstrap
+
 
 class TestConsolePanel:
+
+    def test_all_native_editor_panels_share_the_base_command_bridge(self):
+        for panel in (
+            ConsolePanel(),
+            ToolbarPanel(),
+            HierarchyPanel(),
+            InspectorPanel(),
+            ProjectPanel(),
+        ):
+            calls = []
+            panel.execute_command = (
+                lambda command_id, source, argument, _calls=calls: _calls.append(
+                    (command_id, source, argument)
+                )
+                or True
+            )
+            panel.can_execute_command = lambda command_id, argument: bool(
+                command_id and not argument
+            )
+
+            assert panel.execute_command("test.command", "api", "")
+            assert panel.can_execute_command("test.command", "")
+            assert calls == [("test.command", "api", "")]
 
     def test_status_snapshot_is_exact_before_panel_render(self):
         console = ConsolePanel()
@@ -55,9 +93,14 @@ class TestConsolePanel:
         assert (info, warning, error) == (1, 1, 1)
         assert uid > 0
 
-        console._select_entry(uid)
-        assert console._selected_uid == uid
+        console.select_entry(uid)
         assert selection_changes == [(uid, True)]
+        assert console._selected_uid == 0
+
+        # Native panels publish selection intent. SelectionService owns the
+        # authoritative value and projects the accepted snapshot back.
+        console.set_selection_snapshot(uid)
+        assert console._selected_uid == uid
 
         console.set_selection_snapshot(0)
         assert console._selected_uid == 0
@@ -97,6 +140,36 @@ class TestConsolePanel:
         console.on_request_focus = lambda: calls.append("focus")
         console.select_latest_entry()
         assert calls == ["focus"]
+
+    def test_source_navigation_uses_global_command_without_private_callback(self):
+        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(
+            encoding="utf-8"
+        )
+        header = Path("cpp/infernux/function/editor/ConsolePanel.h").read_text(
+            encoding="utf-8"
+        )
+        binding = Path("cpp/infernux/tools/pybinding/BindingGUI.cpp").read_text(
+            encoding="utf-8"
+        )
+
+        assert 'ExecuteEditorCommand("console.open_source"' in source
+        assert "onDoubleClickEntry" not in source + header + binding
+        assert "on_double_click_entry" not in binding
+
+    def test_view_state_projection_api_is_complete(self):
+        console = ConsolePanel()
+        assert console.has_view_option("collapse")
+        assert not console.get_view_option("collapse")
+        console.set_view_option("collapse", True)
+        assert console.get_view_option("collapse")
+
+        console.set_search_query("validation")
+        assert console.get_search_query() == "validation"
+
+        console.set_detail_height(123.0)
+        assert console.get_detail_height() == pytest.approx(123.0)
+        console.set_detail_height(1.0)
+        assert console.get_detail_height() == pytest.approx(40.0)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -185,14 +258,20 @@ class TestToolbarPanel:
         # Callback is invoked during render; just verify wiring
         assert tb.translate is not None
 
-    def test_grid_callbacks(self):
+    def test_grid_state_is_read_only_and_mutation_uses_global_command(self):
         tb = ToolbarPanel()
-        grid_state = {"on": True}
-        tb.is_show_grid = lambda: grid_state["on"]
-        tb.set_show_grid = lambda v: grid_state.__setitem__("on", v)
+        tb.is_show_grid = lambda: True
         assert tb.is_show_grid()
-        tb.set_show_grid(False)
-        assert not tb.is_show_grid()
+
+        source = Path("cpp/infernux/function/editor/ToolbarPanel.cpp").read_text(encoding="utf-8")
+        header = Path("cpp/infernux/function/editor/ToolbarPanel.h").read_text(encoding="utf-8")
+        binding = Path("cpp/infernux/tools/pybinding/BindingGUI.cpp").read_text(encoding="utf-8")
+        bootstrap = Path("python/Infernux/engine/bootstrap.py").read_text(encoding="utf-8")
+
+        assert 'executeCommand("scene.toggle_grid", "toolbar", "")' in source
+        assert "setShowGrid" not in header
+        assert 'def_readwrite("set_show_grid"' not in binding
+        assert "tb.set_show_grid" not in bootstrap
 
     def test_sync_camera_from_engine(self):
         tb = ToolbarPanel()
@@ -237,20 +316,17 @@ class TestMenuBarPanel:
         mb.is_command_checked = lambda command_id, argument: (
             command_id == "window.open" and argument == "console"
         )
-        mb.route_shortcut = lambda chord, text_input, modal: calls.append(
-            (chord, text_input, modal)
-        ) or True
         mb.on_request_close = lambda: calls.append("close")
 
         assert mb.execute_command("file.save", "menu", "") is True
         assert mb.can_execute_command("file.save", "") is True
         assert mb.can_execute_command("window.open", "console") is True
         assert mb.is_command_checked("window.open", "console") is True
-        assert mb.route_shortcut("Ctrl+S", False, False) is True
         mb.on_request_close()
         assert calls == [
-            ("file.save", "menu", ""), ("Ctrl+S", False, False), "close"
+            ("file.save", "menu", ""), "close"
         ]
+
 
     def test_window_management_callbacks(self):
         mb = MenuBarPanel()
@@ -280,6 +356,41 @@ class TestMenuBarPanel:
         mb = MenuBarPanel()
         mb.translate = lambda key: f"<<{key}>>"
         assert mb.translate("menu.project") == "<<menu.project>>"
+
+
+class TestEditorShortcutInput:
+
+    def test_creation_and_route_callback(self):
+        shortcut_input = EditorShortcutInput()
+        calls = []
+        shortcut_input.route_shortcut = lambda chord, text_input, modal: calls.append(
+            (chord, text_input, modal)
+        ) or True
+
+        assert shortcut_input.route_shortcut("Ctrl+S", False, False) is True
+        assert calls == [("Ctrl+S", False, False)]
+
+    def test_popup_capture_is_latched_across_the_escape_frame(self):
+        root = Path(__file__).parents[2] / "cpp" / "infernux" / "function" / "editor"
+        source = (root / "EditorShortcutInput.cpp").read_text(encoding="utf-8")
+        header = (root / "EditorShortcutInput.h").read_text(encoding="utf-8")
+
+        assert "m_popupActivePreviousFrame" in header
+        assert "popupActiveNow || m_popupActivePreviousFrame" in source
+        assert "m_popupActivePreviousFrame = popupActiveNow" in source
+
+    def test_default_dock_layout_does_not_bypass_window_focus_core(self):
+        source = (
+            Path(__file__).parents[2]
+            / "cpp"
+            / "infernux"
+            / "function"
+            / "renderer"
+            / "gui"
+            / "InxGUI.cpp"
+        ).read_text(encoding="utf-8")
+
+        assert 'SetWindowFocus("###scene_view")' not in source
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -326,6 +437,39 @@ class TestWindowTypeInfo:
 # ═══════════════════════════════════════════════════════════════════════
 
 class TestHierarchyPanel:
+
+    def test_double_click_frame_selected_uses_global_command(self):
+        source = Path("cpp/infernux/function/editor/HierarchyPanel.cpp").read_text(
+            encoding="utf-8"
+        )
+        header = Path("cpp/infernux/function/editor/HierarchyPanel.h").read_text(
+            encoding="utf-8"
+        )
+        binding = Path("cpp/infernux/tools/pybinding/BindingGUI.cpp").read_text(
+            encoding="utf-8"
+        )
+
+        # Hierarchy has one authoritative flat-tree render path.  The removed
+        # recursive renderer must not leave a second interaction entry point.
+        assert source.count('ExecuteEditorCommand("scene.frame_selected"') == 1
+        assert "onDoubleClickFocus" not in source + header + binding
+        assert "on_double_click_focus" not in binding
+
+    def test_external_asset_drops_publish_global_commands_only(self):
+        source = Path("cpp/infernux/function/editor/HierarchyPanel.cpp").read_text(
+            encoding="utf-8"
+        )
+        header = Path("cpp/infernux/function/editor/HierarchyPanel.h").read_text(
+            encoding="utf-8"
+        )
+
+        assert 'ExecuteEditorCommand("scene.instantiate_prefab"' in source
+        assert 'ExecuteEditorCommand("scene.create_model"' in source
+        assert '"drag_drop"' in source
+        assert "instantiatePrefab" not in source + header
+        assert "createModelObject" not in source + header
+        assert "undoRecordCreate" not in source + header
+        assert "undoRecordDelete" not in source + header
 
     def test_inline_rename_survives_context_menu_dismissal(self):
         source = Path("cpp/infernux/function/editor/HierarchyPanel.cpp").read_text(encoding="utf-8")
@@ -393,30 +537,20 @@ class TestHierarchyPanel:
         hp.set_runtime_hidden_ids({30, 40})
         hp.set_scene_header_snapshot("Sample *", False, "")
 
-    def test_notification_callbacks(self):
-        hp = HierarchyPanel()
-        double_click = []
-        hp.on_double_click_focus = lambda oid: double_click.append(oid)
-        # Callback is stored; can't trigger from outside render loop
-        assert hp.on_double_click_focus is not None
-
-    def test_undo_callbacks(self):
+    def test_scene_mutation_callbacks(self):
         hp = HierarchyPanel()
         records = []
-        hp.undo_record_create = lambda oid, desc: records.append(("create", oid, desc))
-        hp.undo_record_delete = lambda oid, desc: records.append(("delete", oid, desc))
-        hp.undo_record_rename = lambda oid, old, new: records.append(("rename", oid, old, new))
-        hp.undo_record_move = lambda oid, op, np, oi, ni: records.append(("move", oid, op, np, oi, ni))
+        hp.rename_object = lambda oid, new: records.append(("rename", oid, new))
+        hp.move_objects = lambda ids, mode, target, after: records.append(
+            ("move", list(ids), mode, target, after)
+        )
 
-        hp.undo_record_create(1, "Create")
-        hp.undo_record_delete(2, "Delete")
-        hp.undo_record_rename(3, "Old", "New")
-        hp.undo_record_move(3, 0, 1, 0, 2)
-        assert len(records) == 4
-        assert records[0] == ("create", 1, "Create")
-        assert records[1] == ("delete", 2, "Delete")
-        assert records[2] == ("rename", 3, "Old", "New")
-        assert records[3] == ("move", 3, 0, 1, 0, 2)
+        hp.rename_object(3, "New")
+        hp.move_objects([3, 4], "adjacent", 1, True)
+        assert records == [
+            ("rename", 3, "New"),
+            ("move", [3, 4], "adjacent", 1, True),
+        ]
 
     def test_scene_info_callbacks(self):
         hp = HierarchyPanel()
@@ -433,49 +567,35 @@ class TestHierarchyPanel:
         hp.translate = lambda key: f"[{key}]"
         assert hp.translate("hierarchy.search_placeholder") == "[hierarchy.search_placeholder]"
 
-    def test_clipboard_callbacks(self):
-        hp = HierarchyPanel()
-        hp.copy_selected = lambda cut: True
-        hp.paste_clipboard = lambda: True
-        hp.has_clipboard_data = lambda: False
-
-        assert hp.copy_selected(False) is True
-        assert hp.paste_clipboard() is True
-        assert hp.has_clipboard_data() is False
-
     def test_command_callbacks(self):
         hp = HierarchyPanel()
         calls = []
         hp.execute_command = lambda command_id, source, argument: calls.append(
             (command_id, source, argument)
         ) or True
-        hp.can_execute_command = lambda command_id, argument: (
-            command_id == "edit.rename" and argument == "42"
-        )
-
         assert hp.execute_command("edit.rename", "context_menu", "42") is True
-        assert hp.can_execute_command("edit.rename", "42") is True
+        assert hp.execute_command(
+            "scene.instantiate_prefab",
+            "drag_drop",
+            "prefab-guid\t7\t1",
+        ) is True
         hp.begin_rename_object(0)
-        assert calls == [("edit.rename", "context_menu", "42")]
+        assert calls == [
+            ("edit.rename", "context_menu", "42"),
+            (
+                "scene.instantiate_prefab",
+                "drag_drop",
+                "prefab-guid\t7\t1",
+            ),
+        ]
 
-    def test_creation_callbacks(self):
+    def test_hierarchy_context_menu_is_owned_by_shared_python_presenter(self):
         hp = HierarchyPanel()
-        created = []
-        hp.create_primitive = lambda t, p: created.append(("prim", t, p))
-        hp.create_light = lambda t, p: created.append(("light", t, p))
-        hp.create_camera = lambda p: created.append(("cam", p))
-        hp.create_render_stack = lambda p: created.append(("rs", p))
-        hp.create_empty = lambda p: created.append(("empty", p))
-
-        hp.create_primitive(0, 0)
-        hp.create_light(1, 42)
-        hp.create_camera(0)
-        hp.create_render_stack(7)
-        hp.create_empty(0)
-
-        assert len(created) == 5
-        assert created[0] == ("prim", 0, 0)
-        assert created[1] == ("light", 1, 42)
+        calls = []
+        callback = lambda *_args: calls.append(_args)
+        hp.render_context_menu = callback
+        hp.render_context_menu(None, 42, True, 42, False)
+        assert calls == [(None, 42, True, 42, False)]
 
     def test_canvas_query_callbacks(self):
         hp = HierarchyPanel()
@@ -487,38 +607,6 @@ class TestHierarchyPanel:
         assert hp.go_has_canvas(10) is True
         assert hp.go_has_canvas(11) is False
         assert hp.has_canvas_descendant(1) is True
-
-    def test_delete_callback(self):
-        hp = HierarchyPanel()
-        deleted = []
-        hp.delete_selected_objects = lambda: deleted.append(True)
-        hp.delete_selected_objects()
-        assert deleted == [True]
-
-    def test_external_drop_callbacks(self):
-        hp = HierarchyPanel()
-        drops = []
-        hp.instantiate_prefab = lambda ref, pid, is_guid: drops.append(("prefab", ref, pid, is_guid))
-        hp.create_model_object = lambda ref, pid, is_guid: drops.append(("model", ref, pid, is_guid))
-
-        hp.instantiate_prefab("abc-guid", 0, True)
-        hp.create_model_object("/path/to/model.fbx", 42, False)
-        assert len(drops) == 2
-
-    def test_prefab_action_callbacks(self):
-        hp = HierarchyPanel()
-        actions = []
-        hp.save_as_prefab = lambda oid: actions.append(("save", oid))
-        hp.prefab_select_asset = lambda oid: actions.append(("select", oid))
-        hp.prefab_open_asset = lambda oid: actions.append(("open", oid))
-        hp.prefab_apply_overrides = lambda oid: actions.append(("apply", oid))
-        hp.prefab_revert_overrides = lambda oid: actions.append(("revert", oid))
-        hp.prefab_unpack = lambda oid: actions.append(("unpack", oid))
-
-        hp.save_as_prefab(1)
-        hp.prefab_unpack(2)
-        assert ("save", 1) in actions
-        assert ("unpack", 2) in actions
 
     def test_set_pending_expand_id(self):
         hp = HierarchyPanel()

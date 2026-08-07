@@ -14,6 +14,7 @@ from Infernux.core.asset_types import (
     FontAssetInfo,
     MeshImportSettings,
     ShaderAssetInfo,
+    SpriteFrame,
     TextureImportSettings,
     TextureCompression,
     TextureCompressionQuality,
@@ -99,6 +100,28 @@ class TestAudioCompressionFormat:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestTextureImportSettings:
+    def test_sprite_frame_uses_full_stable_identity(self):
+        frame = SpriteFrame(name="idle", x=0, y=0, w=64, h=64)
+        assert len(frame.stable_id) == 32
+        assert SpriteFrame.from_dict(frame.to_dict()) == frame
+
+    def test_sprite_texture_requires_persisted_frame(self):
+        settings = TextureImportSettings(texture_type=TextureType.SPRITE)
+        with pytest.raises(ValueError, match="at least one sprite frame"):
+            settings.to_dict()
+
+    def test_sprite_frame_ids_must_be_unique(self):
+        stable_id = "1" * 32
+        settings = TextureImportSettings(
+            texture_type=TextureType.SPRITE,
+            sprite_frames=[
+                SpriteFrame(stable_id=stable_id, name="a", w=16, h=16),
+                SpriteFrame(stable_id=stable_id, name="b", x=16, w=16, h=16),
+            ],
+        )
+        with pytest.raises(ValueError, match="must be unique"):
+            settings.to_dict()
+
     def test_defaults(self):
         s = TextureImportSettings()
         assert s.texture_type == TextureType.DEFAULT

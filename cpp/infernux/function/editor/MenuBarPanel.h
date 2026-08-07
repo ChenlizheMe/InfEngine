@@ -22,7 +22,7 @@ struct WindowTypeInfo
     bool singleton = true;
 };
 
-/// C++ native menu bar — Project / dynamic menus / Window + keyboard shortcuts.
+/// C++ native menu bar — Project / dynamic menus / Window.
 /// Not dockable (inherits InxGUIRenderable directly).
 ///
 /// Menus between Project and Window are built dynamically from panel
@@ -43,11 +43,10 @@ class MenuBarPanel : public InxGUIRenderable
 
     // ── Callbacks set from Python ────────────────────────────────────
 
-    // Unified editor command and shortcut entry points.
+    // Unified editor command entry points.
     std::function<bool(const std::string &, const std::string &, const std::string &)> executeCommand;
     std::function<bool(const std::string &, const std::string &)> canExecuteCommand;
     std::function<bool(const std::string &, const std::string &)> isCommandChecked;
-    std::function<bool(const std::string &, bool, bool)> routeShortcut;
     std::function<void()> onRequestClose;
 
     // Window management
@@ -63,7 +62,6 @@ class MenuBarPanel : public InxGUIRenderable
     void OnRender(InxGUIContext *ctx) override;
 
   private:
-    void HandleShortcuts(InxGUIContext *ctx);
     void RenderProjectMenu(InxGUIContext *ctx);
     void RenderEditMenu(InxGUIContext *ctx);
     void RenderSceneMenu(InxGUIContext *ctx);
@@ -83,7 +81,6 @@ class MenuBarPanel : public InxGUIRenderable
     bool CanExecuteCommand(const std::string &commandId, const std::string &argument = "") const;
     bool IsCommandChecked(const std::string &commandId, const std::string &argument = "") const;
 
-    int m_lastShortcutFrame = -1;
     std::vector<WindowTypeInfo> m_cachedWindowTypes;
     std::vector<std::string> m_cachedTopMenus;
     bool m_windowTypesDirty = true;

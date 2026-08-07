@@ -65,7 +65,36 @@ def render_object_field(
     picker_asset_items: Optional[object] = None,
     on_pick: Optional[object] = None,
     on_clear: Optional[object] = None,
+    on_ping: Optional[object] = None,
+    on_open: Optional[object] = None,
+    ping_path: Optional[str] = None,
+    has_value: Optional[bool] = None,
     semantic_id: str = "",
 ) -> bool:
     """Render an object reference field with drag-drop and picker support."""
     ...
+
+def render_asset_reference_field(
+    ctx: InxGUIContext,
+    field_id: str,
+    display_text: str,
+    type_hint: str,
+    selected: bool = False,
+    clickable: bool = True,
+    accept_drag_type: Optional[str | list[str] | tuple[str, ...]] = None,
+    on_assign: Optional[object] = None,
+    picker_scene_items: Optional[object] = None,
+    additional_asset_items: Optional[object] = None,
+    on_clear: Optional[object] = None,
+    on_ping: Optional[object] = None,
+    on_open: Optional[object] = None,
+    ping_path: Optional[str] = None,
+    semantic_id: str = "",
+    asset_type: str = "",
+    on_rejected: Optional[object] = None,
+    has_value: Optional[bool] = None,
+    reference_value: object = None,
+    transaction: object = None,
+    alternate_compatibility: Optional[object] = None,
+    read_only: bool = False,
+) -> bool: ...

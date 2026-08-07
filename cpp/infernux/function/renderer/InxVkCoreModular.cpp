@@ -589,6 +589,11 @@ void InxVkCoreModular::SetFrameComputeExecutor(std::function<void(VkCommandBuffe
     m_frameComputeExecutor = std::move(executor);
 }
 
+void InxVkCoreModular::SetFrameComputeWorkPredicate(std::function<bool()> predicate)
+{
+    m_frameComputeWorkPredicate = std::move(predicate);
+}
+
 void InxVkCoreModular::SetFrameAsyncComputeExecutors(std::function<bool(VkCommandBuffer)> simulation,
                                                      std::function<bool(VkCommandBuffer)> exportPhase,
                                                      std::function<bool()> ready, std::function<uint64_t()> generation)

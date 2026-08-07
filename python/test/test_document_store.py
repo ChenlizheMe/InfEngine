@@ -1,6 +1,11 @@
 import pytest
 
-from Infernux.core.document_store import DocumentStore, write_document_text
+from Infernux.core.document_store import (
+    DocumentStore,
+    capture_document_file_state,
+    submit_document_text,
+    write_document_text,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -63,3 +68,22 @@ def test_native_write_failure_reaches_ticket(tmp_path):
     with pytest.raises(RuntimeError, match="atomic write failed"):
         ticket.wait()
     assert ticket.status == "failed"
+    assert "atomic write failed" in ticket.error
+
+
+def test_conditional_write_does_not_overwrite_external_content(tmp_path):
+    path = tmp_path / "conditional.json"
+    path.write_text("before", encoding="utf-8")
+    expected = capture_document_file_state(str(path))
+    path.write_text("extern", encoding="utf-8")
+
+    ticket = submit_document_text(
+        str(path),
+        "editor",
+        expected_file_state=expected,
+    )
+
+    with pytest.raises(RuntimeError, match="changed outside the editor"):
+        ticket.wait()
+    assert ticket.status == "failed"
+    assert path.read_text(encoding="utf-8") == "extern"

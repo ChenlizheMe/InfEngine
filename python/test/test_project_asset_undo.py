@@ -2,19 +2,28 @@ from __future__ import annotations
 
 import os
 import shutil
+import wave
 
 import pytest
 
+from Infernux.lib import InxMaterial
 from Infernux.engine.interaction import EditorActionJournal
 from Infernux.engine.undo import (
+    ProjectAssetCreateCommand,
+    ProjectPrefabCreateCommand,
     ProjectAssetCopyCommand,
     ProjectAssetDeleteCommand,
+    ProjectAssetMoveBatchCommand,
     ProjectAssetMoveCommand,
     ProjectAssetPasteCommand,
     ProjectAssetRenameCommand,
     UndoManager,
 )
 from Infernux.engine.ui.project_file_ops import plan_asset_paste
+from Infernux.engine.ui.asset_execution_layer import (
+    AssetAccessMode,
+    AssetExecutionLayer,
+)
 
 
 def _filesystem_move(source: str, destination: str, _database):
@@ -40,6 +49,135 @@ def _successful_import(_path: str, _database):
 def _filesystem_copy(source: str, destination: str, _database):
     shutil.copy2(source, destination)
     return destination
+
+
+def test_asset_manager_delete_does_not_evict_before_database_commit(monkeypatch):
+    from Infernux.core.assets import AssetManager
+
+    events: list[str] = []
+
+    class _Database:
+        @staticmethod
+        def get_guid_from_path(_path):
+            events.append("resolve-guid")
+            return "stable-guid"
+
+        @staticmethod
+        def delete_asset(_path):
+            events.append("database-delete")
+            return False
+
+    class _Registry:
+        @staticmethod
+        def remove_asset(_guid):
+            events.append("registry-evict")
+
+    monkeypatch.setattr(AssetManager, "_registry", _Registry())
+
+    assert AssetManager.delete_asset("Assets/Rejected.mat", database=_Database()) is False
+    assert events == ["resolve-guid", "database-delete"]
+
+
+def test_project_asset_create_preserves_file_and_meta_identity(tmp_path):
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    asset = assets / "Created.mat"
+    meta = assets / "Created.mat.meta"
+
+    def create():
+        asset.write_text("material", encoding="utf-8")
+        meta.write_text("stable-guid", encoding="utf-8")
+        return True, ""
+
+    command = ProjectAssetCreateCommand(
+        str(assets),
+        create,
+        project_root=str(tmp_path),
+        backup_root=str(tmp_path / "Library" / "EditorUndo"),
+        delete_fn=_filesystem_delete,
+        import_fn=_successful_import,
+    )
+
+    command.execute()
+    assert command.created_path == str(asset.resolve())
+    assert command.result == (True, "")
+    assert asset.read_text(encoding="utf-8") == "material"
+    assert meta.read_text(encoding="utf-8") == "stable-guid"
+
+    command.undo()
+    assert not asset.exists()
+    assert not meta.exists()
+
+    command.redo()
+    assert asset.read_text(encoding="utf-8") == "material"
+    assert meta.read_text(encoding="utf-8") == "stable-guid"
+    command.dispose()
+
+
+def test_project_asset_create_redo_refuses_external_destination(tmp_path):
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    asset = assets / "Created.mat"
+
+    def create():
+        asset.write_text("created", encoding="utf-8")
+        return True, ""
+
+    command = ProjectAssetCreateCommand(
+        str(assets),
+        create,
+        project_root=str(tmp_path),
+        backup_root=str(tmp_path / "Library" / "EditorUndo"),
+        delete_fn=_filesystem_delete,
+        import_fn=_successful_import,
+    )
+    command.execute()
+    command.undo()
+    asset.write_text("external", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="occupied by an external change"):
+        command.redo()
+    assert asset.read_text(encoding="utf-8") == "external"
+    command.dispose()
+
+
+def test_project_prefab_create_owns_asset_and_source_linkage(tmp_path):
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    prefab = assets / "Created.prefab"
+    linkage = {"guid": "", "is_root": False}
+
+    def create():
+        prefab.write_text("prefab", encoding="utf-8")
+        linkage.update(guid="prefab-guid", is_root=True)
+        return True, str(prefab)
+
+    asset_command = ProjectAssetCreateCommand(
+        str(assets),
+        create,
+        project_root=str(tmp_path),
+        backup_root=str(tmp_path / "Library" / "EditorUndo"),
+        delete_fn=_filesystem_delete,
+        import_fn=_successful_import,
+    )
+    command = ProjectPrefabCreateCommand(
+        asset_command,
+        lambda: dict(linkage),
+        lambda snapshot: linkage.update(snapshot),
+    )
+
+    command.execute()
+    assert prefab.exists()
+    assert linkage == {"guid": "prefab-guid", "is_root": True}
+
+    command.undo()
+    assert not prefab.exists()
+    assert linkage == {"guid": "", "is_root": False}
+
+    command.redo()
+    assert prefab.exists()
+    assert linkage == {"guid": "prefab-guid", "is_root": True}
+    command.dispose()
 
 
 def test_project_asset_rename_command_replays_both_directions(tmp_path):
@@ -263,6 +401,76 @@ def test_project_asset_delete_restores_real_asset_database_guid(tmp_path, engine
     command.dispose()
 
 
+def test_project_asset_delete_restores_live_material_reference(tmp_path, engine, scene):
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    database = engine.get_asset_database()
+    asset = assets / "LiveReference.mat"
+    material = InxMaterial.create_default_unlit()
+    material.name = "LiveReference"
+    assert material.save_to(str(asset))
+    guid = database.import_asset(str(asset)).guid
+    assert guid
+
+    owner = scene.create_game_object("MaterialOwner")
+    renderer = owner.add_component("MeshRenderer")
+    renderer.set_material(0, guid)
+    assert renderer.get_material_guids() == [guid]
+    assert renderer.get_material(0) is not None
+
+    command = ProjectAssetDeleteCommand(
+        [str(asset)],
+        project_root=str(tmp_path),
+        asset_database=database,
+    )
+    command.execute()
+
+    assert renderer.get_material_guids() == [guid]
+    assert renderer.get_material(0) is None
+
+    command.undo()
+    assert database.get_guid_from_path(str(asset)) == guid
+    assert renderer.get_material_guids() == [guid]
+    assert renderer.get_material(0) is not None
+    command.dispose()
+
+
+def test_project_asset_delete_restores_live_audio_reference(tmp_path, engine, scene):
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    database = engine.get_asset_database()
+    asset = assets / "LiveReference.wav"
+    with wave.open(str(asset), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(8000)
+        stream.writeframes(b"\x00\x00" * 80)
+    guid = database.import_asset(str(asset)).guid
+    assert guid
+
+    owner = scene.create_game_object("AudioOwner")
+    source = owner.add_component("AudioSource")
+    source.set_track_clip_by_guid(0, guid)
+    assert source.get_track_clip_guid(0) == guid
+    assert source.get_track_clip(0) is not None
+
+    command = ProjectAssetDeleteCommand(
+        [str(asset)],
+        project_root=str(tmp_path),
+        asset_database=database,
+    )
+    command.execute()
+
+    assert source.get_track_clip_guid(0) == guid
+    assert source.get_track_clip(0) is None
+
+    command.undo()
+    assert database.get_guid_from_path(str(asset)) == guid
+    assert source.get_track_clip_guid(0) == guid
+    assert source.get_track_clip(0) is not None
+    command.dispose()
+
+
 def test_plan_asset_paste_deduplicates_roots_and_reserves_unique_names(tmp_path):
     assets = tmp_path / "Assets"
     source = assets / "Source"
@@ -323,6 +531,77 @@ def test_project_asset_move_rolls_back_a_partial_failure(tmp_path):
         (str(source), str(destination)),
         (str(destination), str(source)),
     ]
+
+
+def test_project_asset_move_uses_command_operation_identity(tmp_path, monkeypatch):
+    source = tmp_path / "Source.mat"
+    destination = tmp_path / "Destination.mat"
+    source.write_text("material", encoding="utf-8")
+    calls = []
+
+    def _move(old, new, database, **kwargs):
+        calls.append((old, new, database, kwargs))
+        os.replace(old, new)
+        return new
+
+    from Infernux.engine.ui import project_file_ops
+
+    monkeypatch.setattr(project_file_ops, "move_path", _move)
+    database = object()
+    command = ProjectAssetMoveCommand(
+        str(source),
+        str(destination),
+        asset_database=database,
+    )
+
+    command.execute()
+
+    assert calls == [
+        (
+            str(source),
+            str(destination),
+            database,
+            {"origin": "user", "operation_id": command.operation_id},
+        )
+    ]
+
+
+def test_project_asset_move_batch_uses_one_operation_and_one_workspace_call(tmp_path):
+    first = tmp_path / "First.mat"
+    second = tmp_path / "Second.mat"
+    target = tmp_path / "Target"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    target.mkdir()
+    moves = (
+        (str(first), str(target / first.name)),
+        (str(second), str(target / second.name)),
+    )
+    calls = []
+
+    def _move_batch(entries, database, **kwargs):
+        calls.append((tuple(entries), database, kwargs))
+        for source, destination in entries:
+            os.replace(source, destination)
+        return tuple(destination for _source, destination in entries)
+
+    batch = ProjectAssetMoveBatchCommand(moves, move_fn=_move_batch)
+    command = ProjectAssetPasteCommand(
+        [batch],
+        [destination for _source, destination in moves],
+    )
+    manager = UndoManager(EditorActionJournal())
+
+    assert manager.execute(command)
+
+    assert len(calls) == 1
+    assert calls[0][0] == moves
+    assert calls[0][2] == {
+        "origin": "user",
+        "operation_id": command.operation_id,
+    }
+    assert batch.operation_id == command.operation_id
+    assert manager.action_journal.entries[0].operation_id == command.operation_id
 
 
 def test_project_asset_copy_preserves_generated_identity_across_replay(tmp_path):
@@ -439,3 +718,22 @@ def test_project_asset_paste_rolls_back_when_selection_commit_fails(tmp_path):
 
     assert source.exists()
     assert not destination.exists()
+
+
+def test_asset_inspector_move_rejects_when_global_history_is_disabled(tmp_path):
+    source = tmp_path / "Source.mat"
+    destination = tmp_path / "Destination.mat"
+    source.write_text("material", encoding="utf-8")
+    manager = UndoManager(EditorActionJournal())
+    manager.enabled = False
+    layer = AssetExecutionLayer(
+        "Material",
+        str(source),
+        AssetAccessMode.READ_WRITE_RESOURCE,
+    )
+
+    assert not layer.move_asset_path(str(destination))
+    assert source.exists()
+    assert not destination.exists()
+    assert layer.file_path == str(source)
+    assert manager.action_journal.entries == ()

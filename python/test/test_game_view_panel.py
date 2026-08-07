@@ -279,3 +279,132 @@ def test_hidden_game_view_disables_rendering_without_runtime_acceptance(monkeypa
 
     assert engine.game_camera_enabled == [False]
     assert panel._game_camera_was_enabled is False
+
+
+def test_game_view_resolution_and_fit_are_non_dirty_undoable_view_actions(monkeypatch):
+    from Infernux.engine.interaction import ViewCommandService
+    from Infernux.engine.undo import UndoManager
+
+    previous_manager = UndoManager._instance
+    previous_service = ViewCommandService._instance
+    manager = UndoManager()
+    service = ViewCommandService()
+    panel = GameViewPanel(engine=_Engine())
+    persisted = []
+    monkeypatch.setattr(
+        panel,
+        "_save_resolution_settings",
+        lambda: persisted.append(panel._capture_view_state()),
+    )
+    try:
+        initial = panel._capture_view_state()
+        assert panel._set_resolution_preset(2)
+        resolution_state = panel._capture_view_state()
+        assert resolution_state[0] == 2
+        assert len(persisted) == 1
+
+        first_entry = manager.action_journal.applied_entries()[0]
+        assert first_entry.action.description == "Change Game View Resolution"
+        assert first_entry.action.marks_dirty is False
+
+        manager.undo()
+        assert panel._capture_view_state() == initial
+        manager.redo()
+        assert panel._capture_view_state() == resolution_state
+
+        panel._fit_mode = False
+        panel._display_scale = 1.25
+        before_fit = panel._capture_view_state()
+        panel._fit_scale()
+        fitted = panel._capture_view_state()
+        assert fitted[-1] is True
+        assert len(manager.action_journal.applied_entries()) == 2
+        fit_entry = manager.action_journal.applied_entries()[-1]
+        assert fit_entry.action.description == "Fit Game View"
+        assert fit_entry.action.marks_dirty is False
+
+        manager.undo()
+        assert panel._capture_view_state() == before_fit
+        manager.redo()
+        assert panel._capture_view_state() == fitted
+    finally:
+        service.shutdown()
+        ViewCommandService._instance = previous_service
+        UndoManager._instance = previous_manager
+
+
+def test_game_view_scale_drag_persists_once_after_gesture(monkeypatch):
+    from Infernux.engine.interaction import ViewCommandService
+    from Infernux.engine.undo import UndoManager
+
+    class _GestureState:
+        def __init__(self):
+            self.active = True
+            self.deactivated = False
+
+        def is_item_active(self):
+            return self.active
+
+        def is_item_deactivated_after_edit(self):
+            return self.deactivated
+
+    previous_manager = UndoManager._instance
+    previous_service = ViewCommandService._instance
+    manager = UndoManager()
+    service = ViewCommandService()
+    panel = GameViewPanel(engine=_Engine())
+    gesture = _GestureState()
+    persisted = []
+    monkeypatch.setattr(
+        panel,
+        "_save_resolution_settings",
+        lambda: persisted.append(panel._capture_view_state()),
+    )
+    try:
+        initial = panel._capture_view_state()
+        panel._display_scale = 0.75
+        panel._fit_mode = False
+        panel._track_continuous_view_edit(
+            gesture,
+            "display_scale",
+            initial,
+            changed=True,
+            description="Change Game View Scale",
+        )
+        panel._display_scale = 1.1
+        panel._track_continuous_view_edit(
+            gesture,
+            "display_scale",
+            panel._capture_view_state(),
+            changed=True,
+            description="Change Game View Scale",
+        )
+
+        assert persisted == []
+        assert manager.action_journal.applied_entries() == ()
+
+        gesture.active = False
+        gesture.deactivated = True
+        panel._track_continuous_view_edit(
+            gesture,
+            "display_scale",
+            panel._capture_view_state(),
+            changed=False,
+            description="Change Game View Scale",
+        )
+
+        final = panel._capture_view_state()
+        assert len(persisted) == 1
+        entries = manager.action_journal.applied_entries()
+        assert len(entries) == 1
+        assert entries[0].action.description == "Change Game View Scale"
+        assert entries[0].action.marks_dirty is False
+
+        manager.undo()
+        assert panel._capture_view_state() == initial
+        manager.redo()
+        assert panel._capture_view_state() == final
+    finally:
+        service.shutdown()
+        ViewCommandService._instance = previous_service
+        UndoManager._instance = previous_manager

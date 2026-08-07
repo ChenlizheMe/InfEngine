@@ -34,6 +34,22 @@ from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
 from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
+from Infernux.engine.interaction.object_fields import (
+    ASSET_REFERENCE_CLEAR_COMMAND,
+    ASSET_REFERENCE_COPY_COMMAND,
+    ASSET_REFERENCE_OPEN_COMMAND,
+    ASSET_REFERENCE_PASTE_COMMAND,
+    ASSET_REFERENCE_REVEAL_COMMAND,
+    AssetReferenceFieldModel,
+    ObjectFieldGesture,
+    ObjectReferenceFieldModel,
+    asset_reference_command_payload,
+    object_picker_model,
+)
+from Infernux.engine.interaction.context_menus import (
+    ContextMenuBuilder,
+    ContextMenuCommand,
+)
 from .editor_icons import EditorIcons
 from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiTreeNodeFlags
 
@@ -56,12 +72,6 @@ _INLINE_BTN_W: float = 24.0
 _PICKER_DOT_W: float = 20.0
 _MINI_ICON_BTN_SIDE: float = _PICKER_DOT_W
 _MINI_ICON_DRAW_SIZE: float = 10.0
-
-# Picker popup filter state (keyed by field_id)
-_picker_filters: dict = {}
-
-# Track which popups need auto-focus on the search input
-_popup_needs_focus: set = set()
 
 # Cache list body heights from previous frame so the fill can be drawn behind
 # the next frame's content while the border uses exact bounds every frame.
@@ -194,8 +204,10 @@ class IGUI:
         on_pick: Optional[Callable[[Any], None]] = None,
         on_clear: Optional[Callable[[], None]] = None,
         on_ping: Optional[Callable[[], None]] = None,
+        on_open: Optional[Callable[[], None]] = None,
         ping_path: Optional[str] = None,
         semantic_id: str = "",
+        has_value: Optional[bool] = None,
     ) -> bool:
         """Render a Unity-style object-reference field with optional drop target
         and picker popup.
@@ -203,60 +215,241 @@ class IGUI:
         *picker_scene_items* / *picker_asset_items*: ``filter_text -> [(label, value), ...]``
         *on_pick*: called with the selected value when user picks an item.
         *on_clear*: called when user picks "None" to clear the field.
-        *on_ping*: called on body double-click (e.g. reveal asset in Project).
+        *on_ping*: called on body single-click (e.g. reveal asset in Project).
+        *on_open*: called on body double-click. When omitted, double-click uses
+        the same locate action as a single-click.
         *ping_path*: when *on_ping* is omitted, auto-reveals this asset path in
-        Project on body double-click.
+        Project from the body navigation action.
 
         Returns True if the field selectable was clicked.
         """
-        has_picker = (picker_scene_items is not None
-                      or picker_asset_items is not None)
+        model = ObjectReferenceFieldModel(
+            field_id=field_id,
+            display_text=display_text,
+            type_hint=type_hint,
+            selected=selected,
+            clickable=clickable,
+            accept=accept,
+            scene_items=picker_scene_items,
+            asset_items=picker_asset_items,
+            on_drop=on_drop,
+            on_pick=on_pick,
+            on_clear=on_clear,
+            on_locate=on_ping,
+            on_open=on_open,
+            ping_path=ping_path,
+            semantic_id=semantic_id,
+            has_value=has_value,
+        )
+        return IGUI.object_field_model(ctx, model)
+
+    @staticmethod
+    def object_field_model(
+        ctx: InxGUIContext,
+        model: ObjectReferenceFieldModel,
+    ) -> bool:
+        """Render an ObjectField from its shared interaction model."""
+
+        has_picker = model.has_picker
         picker_texture = EditorIcons.get_cached(Theme.ICON_IMG_PICKER) if has_picker else 0
         interaction = int(ctx.render_object_field_chrome(
-            field_id,
-            display_text,
-            type_hint,
-            selected,
-            clickable,
+            model.field_id,
+            model.display_text,
+            model.type_hint,
+            model.selected,
+            model.clickable,
             has_picker,
             int(picker_texture or 0),
-            semantic_id,
+            model.semantic_id,
         ))
-        clicked = bool(interaction & 1)
-        doubled = bool(interaction & 4)
-        # Only the picker button (bit 2) opens the selector — body double-click
-        # (bit 4) pings the asset in Project instead.
-        if (interaction & 2) and has_picker:
-            _popup_needs_focus.add(field_id)
-            _picker_filters.pop(f"_igui_filter_{field_id}", None)
-        if doubled:
-            if on_ping is not None:
-                on_ping()
-            else:
-                path = str(ping_path or "").strip()
-                if path and path.lower() not in {"none", "null"}:
-                    from ._inspector_references import ping_asset_in_project
-                    ping_asset_in_project(path)
 
-        if accept and on_drop:
-            if isinstance(accept, str):
-                IGUI.drop_target(ctx, accept, on_drop)
+        # Drag/drop must bind to the ObjectField group before rendering either
+        # popup, because popup rows become ImGui's last submitted item.
+        if model.accept and model.can_accept_drop:
+            if isinstance(model.accept, str):
+                IGUI.drop_target(ctx, model.accept, model.dispatch_drop)
             else:
-                IGUI.multi_drop_target(ctx, list(accept),
-                                       lambda _dt, payload: on_drop(payload))
+                IGUI.multi_drop_target(
+                    ctx,
+                    list(model.accept),
+                    lambda _drop_type, payload: model.dispatch_drop(payload),
+                )
 
-        if has_picker:
-            ctx.push_id_str(field_id)
+        IGUI.process_object_field_interaction(ctx, model, interaction)
+
+        return bool(interaction & int(ObjectFieldGesture.LOCATE))
+
+    @staticmethod
+    def asset_reference_field(
+        ctx: InxGUIContext,
+        field_id: str,
+        display_text: str,
+        type_hint: str,
+        *,
+        selected: bool = False,
+        clickable: bool = True,
+        accept: Optional[Union[str, Sequence[str]]] = None,
+        on_assign: Optional[Callable[[Any], None]] = None,
+        picker_scene_items: Optional[Callable[[str], Sequence[tuple]]] = None,
+        additional_asset_items: Optional[Callable[[str], Sequence[tuple]]] = None,
+        on_clear: Optional[Callable[[], None]] = None,
+        on_ping: Optional[Callable[[], None]] = None,
+        on_open: Optional[Callable[[], None]] = None,
+        ping_path: Optional[str] = None,
+        semantic_id: str = "",
+        has_value: Optional[bool] = None,
+        asset_type: str = "",
+        on_rejected: Optional[Callable[[str], None]] = None,
+        reference_value: Any = None,
+        transaction=None,
+        alternate_compatibility: Optional[Callable[[Any], str]] = None,
+        read_only: bool = False,
+    ) -> bool:
+        """Render an asset reference through the shared asset-field model."""
+
+        from Infernux.engine.interaction import property_drawer_registry
+
+        return IGUI.object_field_model(
+            ctx,
+            property_drawer_registry.create(
+                "asset_reference",
+                field_id=field_id,
+                display_text=display_text,
+                type_hint=type_hint,
+                selected=selected,
+                clickable=clickable,
+                accept=accept,
+                scene_items=picker_scene_items,
+                additional_asset_items=additional_asset_items,
+                on_assign=on_assign,
+                on_clear=on_clear,
+                on_locate=on_ping,
+                on_open=on_open,
+                ping_path=ping_path,
+                semantic_id=semantic_id,
+                has_value=has_value,
+                asset_type=asset_type,
+                on_rejected=on_rejected,
+                reference_value=reference_value,
+                transaction=transaction,
+                alternate_compatibility=alternate_compatibility,
+                field_read_only=read_only,
+            ),
+        )
+
+    @staticmethod
+    def _render_asset_reference_context_menu(
+        ctx: InxGUIContext,
+        model: AssetReferenceFieldModel,
+    ):
+        """Render and execute the shared command menu after popup scopes close."""
+
+        semantic_root = str(model.semantic_id or "").strip() or (
+            f"object_field.{model.field_id}"
+        )
+        specs = (
+            ContextMenuCommand(
+                ASSET_REFERENCE_OPEN_COMMAND,
+                label=t("asset_reference.open"),
+                semantic_id=f"{semantic_root}.context.open",
+            ),
+            ContextMenuCommand(
+                ASSET_REFERENCE_REVEAL_COMMAND,
+                label=t("asset_reference.reveal"),
+                semantic_id=f"{semantic_root}.context.reveal",
+            ),
+            ContextMenuCommand(
+                ASSET_REFERENCE_COPY_COMMAND,
+                label=t("asset_reference.copy"),
+                separator_before=True,
+                semantic_id=f"{semantic_root}.context.copy",
+            ),
+            ContextMenuCommand(
+                ASSET_REFERENCE_PASTE_COMMAND,
+                label=t("asset_reference.paste"),
+                semantic_id=f"{semantic_root}.context.paste",
+            ),
+            ContextMenuCommand(
+                ASSET_REFERENCE_CLEAR_COMMAND,
+                label=t("asset_reference.clear"),
+                separator_before=True,
+                semantic_id=f"{semantic_root}.context.clear",
+            ),
+        )
+        builder = ContextMenuBuilder()
+        request = None
+        ctx.push_id_str(model.field_id)
+        try:
+            if not ctx.begin_popup("##asset_reference_context"):
+                return None
             try:
-                IGUI._render_object_picker_popup(
-                    ctx, field_id,
-                    picker_scene_items, picker_asset_items,
-                    on_pick, on_clear,
+                request = builder.render_deferred(
+                    ctx,
+                    specs,
+                    payload=asset_reference_command_payload(
+                        model,
+                        clipboard_text=str(ctx.get_clipboard_text() or ""),
+                        clipboard_writer=ctx.set_clipboard_text,
+                    ),
                 )
             finally:
-                ctx.pop_id()
+                ctx.end_popup()
+        finally:
+            ctx.pop_id()
+        return builder.execute_resolved(request) if request is not None else None
 
-        return clicked
+    @staticmethod
+    def process_object_field_interaction(
+        ctx: InxGUIContext,
+        model: ObjectReferenceFieldModel,
+        interaction: int,
+        *,
+        picker_open: bool = False,
+        poll_picker: bool = True,
+        context_open: bool = False,
+        poll_context: bool = True,
+    ) -> None:
+        """Apply native chrome/picker output through one shared contract."""
+
+        gesture = model.dispatch_chrome(interaction)
+        if gesture & ObjectFieldGesture.OPEN_PICKER:
+            object_picker_model.request_open(model.field_id)
+
+        if isinstance(model, AssetReferenceFieldModel):
+            context_requested = bool(gesture & ObjectFieldGesture.CONTEXT_MENU)
+            if context_requested:
+                ctx.push_id_str(model.field_id)
+                try:
+                    ctx.open_popup("##asset_reference_context")
+                finally:
+                    ctx.pop_id()
+            if poll_context or context_open or context_requested:
+                IGUI._render_asset_reference_context_menu(ctx, model)
+
+        if not model.has_picker:
+            return
+        if not poll_picker and not (
+            picker_open or gesture & ObjectFieldGesture.OPEN_PICKER
+        ):
+            return
+
+        picker_intent = None
+        ctx.push_id_str(model.field_id)
+        try:
+            picker_intent = IGUI._render_object_picker_popup(
+                ctx,
+                model.field_id,
+                model.scene_items,
+                model.asset_items,
+                (
+                    model.can_clear
+                    if isinstance(model, AssetReferenceFieldModel)
+                    else model.on_clear is not None
+                ),
+            )
+        finally:
+            ctx.pop_id()
+        model.dispatch_picker(picker_intent)
 
     # ------------------------------------------------------------------
     #  Picker popup (internal)
@@ -268,92 +461,100 @@ class IGUI:
         field_id: str,
         scene_items: Optional[Callable[[str], Sequence[tuple]]],
         asset_items: Optional[Callable[[str], Sequence[tuple]]],
-        on_pick: Optional[Callable[[Any], None]],
-        on_clear: Optional[Callable[[], None]],
-    ) -> None:
-        """Render the object picker popup with Scene / Assets tabs."""
+        allow_clear: bool,
+    ) -> Optional[tuple[str, Any]]:
+        """Render the picker and return an intent after all ImGui scopes close."""
         if not ctx.begin_popup("##obj_picker"):
-            return
+            return None
 
-        # Auto-focus the search input on first frame
-        if field_id in _popup_needs_focus:
-            ctx.set_keyboard_focus_here()
-            _popup_needs_focus.discard(field_id)
+        intent = None
+        try:
+            if object_picker_model.consume_focus_request(field_id):
+                ctx.set_keyboard_focus_here()
 
-        # Filter input
-        key = f"_igui_filter_{field_id}"
-        prev_filter = _picker_filters.get(key, "")
-        new_filter = ctx.input_text_with_hint("##filter", t("igui.search_hint"), prev_filter, 256)
-        _picker_filters[key] = new_filter
+            prev_filter = object_picker_model.query(field_id)
+            new_filter = ctx.input_text_with_hint(
+                "##filter", t("igui.search_hint"), prev_filter, 256
+            )
+            object_picker_model.set_query(field_id, new_filter)
+            ctx.separator()
 
-        ctx.separator()
-
-        # "None" option at top
-        if on_clear is not None:
-            if ctx.selectable(t("igui.none"), False):
-                on_clear()
+            if allow_clear and ctx.selectable(t("igui.none"), False):
+                intent = ("clear", None)
                 ctx.close_current_popup()
 
-        # Constrain the item list height (min 80, max 300)
-        _PICKER_MIN_H = 80.0
-        _PICKER_MAX_H = 300.0
+            picker_height = 300.0
+            has_scene = scene_items is not None
+            has_assets = asset_items is not None
 
-        # Tabs
-        has_scene = scene_items is not None
-        has_assets = asset_items is not None
-
-        if has_scene and has_assets:
-            if ctx.begin_tab_bar("##picker_tabs"):
+            if intent is None and has_scene and has_assets:
+                if ctx.begin_tab_bar("##picker_tabs"):
+                    try:
+                        if ctx.begin_tab_item(t("igui.tab_scene")):
+                            try:
+                                visible = ctx.begin_child(
+                                    "##picker_list_scene", 0, picker_height, False
+                                )
+                                try:
+                                    if visible:
+                                        intent = IGUI._render_picker_items(
+                                            ctx, scene_items, new_filter
+                                        )
+                                finally:
+                                    ctx.end_child()
+                            finally:
+                                ctx.end_tab_item()
+                        if intent is None and ctx.begin_tab_item(t("igui.tab_assets")):
+                            try:
+                                visible = ctx.begin_child(
+                                    "##picker_list_assets", 0, picker_height, False
+                                )
+                                try:
+                                    if visible:
+                                        intent = IGUI._render_picker_items(
+                                            ctx, asset_items, new_filter
+                                        )
+                                finally:
+                                    ctx.end_child()
+                            finally:
+                                ctx.end_tab_item()
+                    finally:
+                        ctx.end_tab_bar()
+            elif intent is None and has_scene:
+                visible = ctx.begin_child("##picker_list", 0, picker_height, False)
                 try:
-                    if ctx.begin_tab_item(t("igui.tab_scene")):
-                        try:
-                            visible = ctx.begin_child("##picker_list_scene", 0, _PICKER_MAX_H, False)
-                            try:
-                                if visible:
-                                    IGUI._render_picker_items(ctx, scene_items, new_filter, on_pick)
-                            finally:
-                                ctx.end_child()
-                        finally:
-                            ctx.end_tab_item()
-                    if ctx.begin_tab_item(t("igui.tab_assets")):
-                        try:
-                            visible = ctx.begin_child("##picker_list_assets", 0, _PICKER_MAX_H, False)
-                            try:
-                                if visible:
-                                    IGUI._render_picker_items(ctx, asset_items, new_filter, on_pick)
-                            finally:
-                                ctx.end_child()
-                        finally:
-                            ctx.end_tab_item()
+                    if visible:
+                        intent = IGUI._render_picker_items(ctx, scene_items, new_filter)
                 finally:
-                    ctx.end_tab_bar()
-        elif has_scene:
-            if ctx.begin_child("##picker_list", 0, _PICKER_MAX_H, False):
-                IGUI._render_picker_items(ctx, scene_items, new_filter, on_pick)
-            ctx.end_child()
-        elif has_assets:
-            if ctx.begin_child("##picker_list", 0, _PICKER_MAX_H, False):
-                IGUI._render_picker_items(ctx, asset_items, new_filter, on_pick)
-            ctx.end_child()
-
-        ctx.end_popup()
+                    ctx.end_child()
+            elif intent is None and has_assets:
+                visible = ctx.begin_child("##picker_list", 0, picker_height, False)
+                try:
+                    if visible:
+                        intent = IGUI._render_picker_items(ctx, asset_items, new_filter)
+                finally:
+                    ctx.end_child()
+        finally:
+            ctx.end_popup()
+        return intent
 
     @staticmethod
     def _render_picker_items(
         ctx: InxGUIContext,
         items_fn: Callable[[str], Sequence[tuple]],
         filter_text: str,
-        on_pick: Optional[Callable[[Any], None]],
-    ) -> None:
-        """Render the clickable items list inside the picker."""
+    ) -> Optional[tuple[str, Any]]:
+        """Render picker rows and return the selected value without mutating it."""
         items = items_fn(filter_text)
         for idx, (label, value) in enumerate(items):
             ctx.push_id(idx)
-            if ctx.selectable(label, False):
-                if on_pick is not None:
-                    on_pick(value)
-                ctx.close_current_popup()
-            ctx.pop_id()
+            try:
+                if ctx.selectable(label, False):
+                    ctx.close_current_popup()
+                    return ("pick", value)
+            finally:
+                ctx.pop_id()
+        return None
 
     # ------------------------------------------------------------------
     #  Reorder separator (white-line drop indicator between list items)

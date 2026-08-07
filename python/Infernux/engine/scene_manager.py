@@ -18,7 +18,8 @@ This module orchestrates those primitives into a complete workflow.
 import os
 from Infernux.engine.path_utils import path_key, resolved_path
 import json
-from typing import Optional, Callable
+from dataclasses import dataclass
+from typing import Any, Optional, Callable
 
 from Infernux.debug import Debug
 from Infernux.engine.project_context import get_project_root
@@ -34,6 +35,16 @@ DEFAULT_SCENE_NAME = "Untitled Scene"
 DEFAULT_SCENE_FILE_BASE = "UntitledScene"
 PREFAB_MODE_SCENE_NAME = "__PrefabMode__"
 PREFAB_RESTORE_SCENE_NAME = "__PrefabRestore__"
+
+
+@dataclass(slots=True)
+class _SceneRestoreSnapshot:
+    locator: Any
+    document: dict
+    resource_path: str
+    title: str
+    revision: int
+    saved_revision: int
 
 
 def _empty_scene_document(name: str) -> dict:
@@ -150,6 +161,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._save_as_folder: str = "Assets"
         self._save_as_name: str = ""
         self._save_as_error: str = ""
+        self._save_as_modal_service = None
         self._asset_database = None  # Set via set_asset_database()
         self._engine = None  # set via set_engine()
 
@@ -162,6 +174,8 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._post_prefab_exit_callback: Optional[Callable[[], None]] = None
         self._scene_transaction = None
         self._scene_transaction_path: Optional[str] = None
+        self._scene_restore_snapshots: dict[str, _SceneRestoreSnapshot] = {}
+        self._pending_scene_before_context = None
 
         # True while _do_open_scene / _do_new_scene is running.
         # Prevents stacking deferred loads from rapid user clicks.
@@ -242,19 +256,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         document = DocumentRegistry.instance().get(self._scene_document_id)
         return bool(document and document.is_dirty)
 
-    @_dirty.setter
-    def _dirty(self, value: bool) -> None:
-        from Infernux.engine.interaction import DocumentRegistry
-
-        registry = DocumentRegistry.instance()
-        document = registry.get(self._scene_document_id)
-        if document is None:
-            return
-        if bool(value) and not document.is_dirty:
-            registry.mark_changed(document.document_id)
-        elif not bool(value) and document.is_dirty:
-            registry.mark_saved(document.document_id)
-
     @property
     def is_loading(self) -> bool:
         """True while a deferred scene load is pending."""
@@ -266,6 +267,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         )
 
     def mark_dirty(self):
+        """Record one real scene-content mutation."""
         if self._is_play_mode():
             return
         from Infernux.engine.interaction import DocumentRegistry
@@ -273,14 +275,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         document = DocumentRegistry.instance().get(self._scene_document_id)
         if document is not None:
             DocumentRegistry.instance().mark_changed(document.document_id)
-
-    def clear_dirty(self):
-        """Clear the dirty flag (e.g. when undo returns to save point)."""
-        from Infernux.engine.interaction import DocumentRegistry
-
-        document = DocumentRegistry.instance().get(self._scene_document_id)
-        if document is not None and document.is_dirty:
-            DocumentRegistry.instance().mark_saved(document.document_id)
 
     def _document_key(self, kind: str, resource_path: str):
         from Infernux.engine.interaction import DocumentKey, DocumentKind
@@ -306,7 +300,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         title: str,
         dirty: bool,
         preserve_previous: bool = False,
-    ) -> None:
+        key_override=None,
+        revision: Optional[int] = None,
+        saved_revision: Optional[int] = None,
+    ):
         from Infernux.engine.interaction import (
             DocumentCapability,
             DocumentRegistry,
@@ -319,24 +316,72 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if kind == "scene":
             capabilities |= DocumentCapability.SAVE_AS
         document, created = registry.open_or_create(
-            self._document_key(kind, path),
+            key_override or self._document_key(kind, path),
             title,
             resource_path=path,
-            revision=1 if dirty else 0,
-            saved_revision=0,
+            revision=(1 if dirty else 0) if revision is None else int(revision),
+            saved_revision=(
+                0 if saved_revision is None else int(saved_revision)
+            ),
             capabilities=capabilities,
             controller=self,
         )
         self._scene_document_id = document.document_id
         if not created:
-            if dirty and not document.is_dirty:
+            if revision is not None or saved_revision is not None:
+                registry.restore_revision_state(
+                    document.document_id,
+                    revision=(document.revision if revision is None else int(revision)),
+                    saved_revision=(
+                        document.saved_revision
+                        if saved_revision is None
+                        else int(saved_revision)
+                    ),
+                )
+            elif dirty and not document.is_dirty:
                 registry.mark_changed(document.document_id)
             elif not dirty and document.is_dirty:
-                registry.mark_saved(document.document_id)
+                registry.establish_loaded_baseline(document.document_id)
         if previous_id and previous_id != document.document_id and not preserve_previous:
             previous = registry.get(previous_id)
             if previous is not None and not previous.view_ids:
                 registry.unregister(previous_id)
+        if previous_id and previous_id != document.document_id:
+            try:
+                from Infernux.engine.interaction import FocusService
+
+                focus = FocusService.instance()
+                snapshot = focus.snapshot
+                if snapshot.active_document_id == previous_id:
+                    focus.activate_panel(
+                        snapshot.active_panel_id,
+                        view_id=snapshot.active_view_id,
+                        document_id=document.document_id,
+                        child_context_id=snapshot.child_context_id,
+                        reason="scene_document_replaced",
+                        record_history=False,
+                    )
+            except (AttributeError, ImportError, RuntimeError):
+                pass
+        return document
+
+    def resource_moved(
+        self,
+        *,
+        document_id: str,
+        source_path: str,
+        destination_path: str,
+        guid: str,
+    ) -> None:
+        del guid
+        if document_id != self._scene_document_id:
+            return
+        if (
+            self._current_scene_path
+            and path_key(self._current_scene_path) == path_key(source_path)
+        ):
+            self._current_scene_path = resolved_path(destination_path)
+            self._remember_last_scene(self._current_scene_path)
 
     def save_session_state(self) -> dict:
         """Capture a recoverable editor-session draft for an unsaved scene."""
@@ -397,7 +442,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             ),
             dirty=True,
         )
-        self._reset_undo_history(scene_is_dirty=True)
+        self._reset_undo_history()
         if self._on_scene_changed:
             self._on_scene_changed()
         return True
@@ -405,6 +450,80 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
     def set_on_scene_changed(self, cb: Callable[[], None]):
         """Register callback invoked after a scene is opened/created."""
         self._on_scene_changed = cb
+
+    def _capture_active_scene_snapshot(self) -> Optional[_SceneRestoreSnapshot]:
+        if self.is_prefab_mode or self._is_play_mode():
+            return None
+        try:
+            from Infernux.engine.interaction import DocumentRegistry
+            from Infernux.lib import SceneManager
+
+            registry = DocumentRegistry.instance()
+            document = registry.get(self._scene_document_id)
+            locator = registry.locate(self._scene_document_id)
+            scene = SceneManager.instance().get_active_scene()
+            payload = scene.serialize_document() if scene is not None else None
+            if document is None or locator is None or not isinstance(payload, dict):
+                return None
+            return _SceneRestoreSnapshot(
+                locator=locator,
+                document=payload,
+                resource_path=self._current_scene_path or "",
+                title=document.title,
+                revision=document.revision,
+                saved_revision=document.saved_revision,
+            )
+        except Exception as exc:
+            Debug.log_suppressed("SceneFileManager.capture_history_snapshot", exc)
+            return None
+
+    def _archive_active_scene(self) -> Optional[_SceneRestoreSnapshot]:
+        snapshot = self._capture_active_scene_snapshot()
+        if snapshot is not None:
+            self._scene_restore_snapshots[snapshot.locator.stable_id] = snapshot
+        return snapshot
+
+    def _stage_scene_navigation(self) -> None:
+        """Capture the departure Scene before a save/discard decision mutates it."""
+        if self._pending_scene_before_context is not None:
+            return
+        self._archive_active_scene()
+        try:
+            from Infernux.engine.interaction import EditorInteractionCore
+
+            core = EditorInteractionCore.instance()
+            self._pending_scene_before_context = (
+                core.capture_context() if core is not None else None
+            )
+        except (AttributeError, ImportError, RuntimeError):
+            self._pending_scene_before_context = None
+
+    def _cancel_scene_navigation(self) -> None:
+        self._pending_scene_before_context = None
+
+    def _publish_scene_navigation(self, description: str) -> None:
+        before = self._pending_scene_before_context
+        self._pending_scene_before_context = None
+        if before is None:
+            return
+        try:
+            from Infernux.engine.interaction import EditorInteractionCore
+            from Infernux.engine.undo import GlobalContextCommand, UndoManager
+
+            manager = UndoManager.instance()
+            core = EditorInteractionCore.instance()
+            if manager is None or core is None or manager.is_executing:
+                return
+            after = core.capture_context()
+            if before == after:
+                return
+            manager.record(
+                GlobalContextCommand(before, after, description=description),
+                before_context=before,
+                after_context=after,
+            )
+        except Exception as exc:
+            Debug.log_suppressed("SceneFileManager.publish_scene_navigation", exc)
 
     # ------------------------------------------------------------------
     # Core operations
@@ -443,6 +562,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         """Resolve the active Scene document before scheduling a replacement."""
         if self.is_prefab_mode:
             return False
+        self._stage_scene_navigation()
 
         # Save current camera state before switching
         if self._current_scene_path:
@@ -455,6 +575,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             DirtyPanelConfirmationCoordinator.instance().request_document_replace(
                 self.document_id,
                 on_complete=lambda: self._begin_deferred_open(path),
+                on_cancel=self._cancel_scene_navigation,
             )
             return False
         self._begin_deferred_open(path)
@@ -476,6 +597,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         """Resolve the active Scene document before creating a replacement."""
         if self.is_prefab_mode:
             return
+        self._stage_scene_navigation()
 
         # Persist camera state before switching away
         if self._current_scene_path:
@@ -488,6 +610,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             DirtyPanelConfirmationCoordinator.instance().request_document_replace(
                 self.document_id,
                 on_complete=self._begin_deferred_new,
+                on_cancel=self._cancel_scene_navigation,
             )
             return
         self._begin_deferred_new()
@@ -559,7 +682,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         settings = _load_editor_settings()
         last_scene = settings.get("lastOpenedScene")
         if last_scene and os.path.isfile(last_scene):
-            if self._do_open_scene(last_scene):
+            if self._do_open_scene(last_scene, record_navigation=False):
                 return
             Debug.log_warning(f"Last scene file missing or invalid: {last_scene}")
 
@@ -605,6 +728,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 self._finish_open_scene(path)
             else:
                 Debug.log_error(f"Scene load failed for '{path}': {transaction.error}")
+                self._cancel_scene_navigation()
             return
 
         if self._load_in_progress:
@@ -617,6 +741,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 transaction = self._create_open_scene_transaction(path)
                 if transaction is None:
                     self._load_in_progress = False
+                    self._cancel_scene_navigation()
                     return
                 transaction.start()
                 self._scene_transaction = transaction
@@ -624,6 +749,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             except Exception as exc:
                 Debug.log_error(f"Scene load failed: {exc}")
                 self._load_in_progress = False
+                self._cancel_scene_navigation()
         elif self._deferred_new_scene:
             self._deferred_new_scene = False
             self._load_in_progress = True
@@ -631,6 +757,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 self._do_new_scene()
             except Exception as exc:
                 Debug.log_error(f"New scene failed: {exc}")
+                self._cancel_scene_navigation()
             finally:
                 self._load_in_progress = False
 
@@ -647,10 +774,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if self._dirty:
             name += " *"
         return name
-
-    # ------------------------------------------------------------------
-    # Save-confirmation popup (rendered from menu_bar every frame)
-    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # Internal — actual scene operations (no dirty check)
@@ -716,7 +839,13 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             before_commit=before_commit,
         )
 
-    def _finish_open_scene(self, path: str, *, runtime_load: bool = False) -> None:
+    def _finish_open_scene(
+        self,
+        path: str,
+        *,
+        runtime_load: bool = False,
+        record_navigation: bool = True,
+    ) -> None:
         """Publish bookkeeping after a successful Scene transaction.
 
         Runtime scene transitions update the live path for diagnostics and
@@ -731,7 +860,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 title=os.path.splitext(os.path.basename(self._current_scene_path))[0],
                 dirty=False,
             )
-            self._reset_undo_history(scene_is_dirty=False)
 
         from Infernux.lib import SceneManager
         scene = SceneManager.instance().get_active_scene()
@@ -757,8 +885,12 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         Debug.log_internal(f"Scene loaded: {os.path.basename(path)}")
         if self._on_scene_changed:
             self._on_scene_changed()
+        if not runtime_load and record_navigation:
+            self._publish_scene_navigation(
+                f"Open Scene {os.path.splitext(os.path.basename(path))[0]}"
+            )
 
-    def _do_open_scene(self, path: str) -> bool:
+    def _do_open_scene(self, path: str, *, record_navigation: bool = True) -> bool:
         """Synchronously run the same transaction used by deferred loading."""
         transaction = self._create_open_scene_transaction(path)
         if transaction is None:
@@ -767,7 +899,95 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if not transaction.succeeded:
             Debug.log_error(f"Scene load failed for '{path}': {transaction.error}")
             return False
-        self._finish_open_scene(path)
+        self._finish_open_scene(path, record_navigation=record_navigation)
+        return True
+
+    def restore_document_locator(self, locator) -> bool:
+        """Restore a Scene required by the global history replay barrier."""
+        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+
+        if locator is None or locator.key_hint.kind is not DocumentKind.SCENE:
+            return False
+        registry = DocumentRegistry.instance()
+        active = registry.get(self._scene_document_id)
+        if active is not None and active.stable_id == locator.stable_id:
+            return True
+        if self.is_loading or self.is_prefab_mode or self._is_play_mode():
+            return False
+
+        snapshot = self._scene_restore_snapshots.get(locator.stable_id)
+        path = str(
+            (snapshot.resource_path if snapshot is not None else locator.resource_path)
+            or ""
+        ).strip()
+        if snapshot is None and (not path or not os.path.isfile(path)):
+            return False
+
+        self._archive_active_scene()
+        from Infernux.lib import SceneManager
+
+        scene = SceneManager.instance().get_active_scene()
+        if scene is None:
+            scene = SceneManager.instance().create_scene(locator.title or DEFAULT_SCENE_NAME)
+
+        def before_commit():
+            self._prepare_native_scene_swap()
+            from Infernux.renderstack.render_stack import RenderStack
+
+            RenderStack._active_instance = None
+
+        from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
+
+        transaction = SceneDocumentTransaction(
+            scene,
+            document=snapshot.document if snapshot is not None else None,
+            path=None if snapshot is not None else path,
+            asset_database=self._asset_database,
+            clear_registries=True,
+            before_commit=before_commit,
+        )
+        if not transaction.run_to_completion(raise_on_failure=False):
+            Debug.log_error(
+                f"Scene history restore failed for '{path or locator.title}': "
+                f"{transaction.error}"
+            )
+            return False
+
+        self._current_scene_path = resolved_path(path) if path else None
+        dirty = bool(snapshot and snapshot.revision != snapshot.saved_revision)
+        document = self._replace_scene_document(
+            kind="scene",
+            resource_path=self._current_scene_path or "",
+            title=(snapshot.title if snapshot is not None else locator.title)
+            or DEFAULT_SCENE_NAME,
+            dirty=dirty,
+            key_override=locator.key_hint,
+            revision=snapshot.revision if snapshot is not None else 0,
+            saved_revision=snapshot.saved_revision if snapshot is not None else 0,
+        )
+        if document.stable_id != locator.stable_id:
+            Debug.log_error(
+                "Scene history restore resolved a different stable document identity"
+            )
+            return False
+
+        from Infernux.renderstack.render_stack import RenderStack
+
+        RenderStack.refresh_active_instance(scene)
+        try:
+            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+
+            SpriteRenderer.init_all_in_scene(scene)
+        except Exception as exc:
+            Debug.log_internal(f"SpriteRenderer init after history restore: {exc}")
+        if self._current_scene_path:
+            self._restore_camera_state(self._current_scene_path)
+        self.sync_all_prefab_instances(scene)
+        from Infernux.gizmos.collector import notify_scene_changed
+
+        notify_scene_changed()
+        if self._on_scene_changed:
+            self._on_scene_changed()
         return True
 
 
@@ -809,7 +1029,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             title=DEFAULT_SCENE_NAME,
             dirty=True,
         )
-        self._reset_undo_history(scene_is_dirty=True)
 
         # Invalidate gizmos icon cache (scene objects are new)
         from Infernux.gizmos.collector import notify_scene_changed
@@ -818,6 +1037,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         Debug.log_internal("New scene created")
         if self._on_scene_changed:
             self._on_scene_changed()
+        self._publish_scene_navigation("New Scene")
 
         try:
             from Infernux.components.builtin.sprite_renderer import SpriteRenderer
@@ -858,14 +1078,13 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
     # Internal
     # ------------------------------------------------------------------
 
-    def _reset_undo_history(self, scene_is_dirty: bool = False):
-        """Reset undo/redo history to match the newly active scene state."""
+    def _reset_undo_history(self):
+        """Reset undo/redo history after a non-historical scene replacement."""
         from Infernux.engine.undo import UndoManager
         mgr = UndoManager.instance()
         if not mgr:
             return
-        mgr.clear(scene_is_dirty=scene_is_dirty)
-        mgr.sync_dirty_state()
+        mgr.clear()
 
 
     def _save_camera_state(self, scene_path: str):

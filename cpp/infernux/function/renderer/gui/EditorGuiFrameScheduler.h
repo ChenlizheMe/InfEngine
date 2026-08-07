@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 
 namespace infernux
 {
@@ -21,36 +23,102 @@ class EditorGuiFrameScheduler
 
     [[nodiscard]] bool Consume(TimePoint now, bool force = false)
     {
-        if (!m_started) {
-            m_started = true;
-            m_requested = false;
-            m_nextBuild = now + m_interval;
-            return true;
-        }
+        return ConsumeInternal(now, force, false);
+    }
 
-        const bool due = m_interval == Clock::duration::zero() || now >= m_nextBuild;
-        if (!force && !m_requested && !due)
-            return false;
-
-        m_requested = false;
-        if (due && m_interval != Clock::duration::zero()) {
-            do {
-                m_nextBuild += m_interval;
-            } while (m_nextBuild <= now);
-        }
-        return true;
+    // Standalone Player builds do not have authoring panels to throttle. Keep
+    // this path explicit so Editor Play cannot accidentally inherit Player's
+    // unthrottled cadence through the generic force flag.
+    [[nodiscard]] bool ConsumeUnthrottled(TimePoint now, bool force = false)
+    {
+        return ConsumeInternal(now, force, true);
     }
 
     void Request() noexcept
     {
-        m_requested = true;
+        m_requested.store(true, std::memory_order_release);
+        m_requestCount.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    struct Snapshot
+    {
+        bool started = false;
+        bool requested = false;
+        double intervalMs = 0.0;
+        double untilDueMs = 0.0;
+        uint64_t consumeCount = 0;
+        uint64_t approvedCount = 0;
+        uint64_t forcedCount = 0;
+        uint64_t requestCount = 0;
+        bool forceActive = false;
+    };
+
+    [[nodiscard]] Snapshot Inspect(TimePoint now = Clock::now()) const noexcept
+    {
+        Snapshot snapshot;
+        snapshot.started = m_started;
+        snapshot.requested = m_requested.load(std::memory_order_acquire);
+        snapshot.intervalMs = std::chrono::duration<double, std::milli>(m_interval).count();
+        snapshot.untilDueMs = m_started ? std::chrono::duration<double, std::milli>(m_nextBuild - now).count() : 0.0;
+        snapshot.consumeCount = m_consumeCount;
+        snapshot.approvedCount = m_approvedCount;
+        snapshot.forcedCount = m_forcedCount;
+        snapshot.requestCount = m_requestCount.load(std::memory_order_relaxed);
+        snapshot.forceActive = m_forceActive;
+        return snapshot;
     }
 
   private:
+    [[nodiscard]] bool ConsumeInternal(TimePoint now, bool force, bool unthrottled)
+    {
+        ++m_consumeCount;
+        const bool requested = m_requested.exchange(false, std::memory_order_acq_rel);
+        // Input events can keep the renderer's immediate-refresh flag high
+        // for a run of consecutive frames (for example while a held key is
+        // being repeated).  A force request is an edge-triggered refresh;
+        // once that edge has been serviced, the normal cadence still applies.
+        // This keeps editor Play responsive without turning every gameplay
+        // frame into a full ImGui/Python rebuild.  Explicit Request() calls
+        // remain a deliberate invalidation path and may still bypass the
+        // cadence.
+        const bool forceEdge = force && !m_forceActive;
+        m_forceActive = force;
+        if (!m_started) {
+            m_started = true;
+            m_nextBuild = now + m_interval;
+            ++m_approvedCount;
+            if (force)
+                ++m_forcedCount;
+            return true;
+        }
+
+        const bool due = m_interval == Clock::duration::zero() || now >= m_nextBuild;
+        if (!unthrottled && !requested && !due && !(force && forceEdge))
+            return false;
+
+        if (unthrottled && m_interval != Clock::duration::zero()) {
+            // Leave a sensible cadence marker behind if the process switches
+            // back to an editor-owned GUI scheduler after Player mode.
+            m_nextBuild = now + m_interval;
+        } else if (due && m_interval != Clock::duration::zero()) {
+            do {
+                m_nextBuild += m_interval;
+            } while (m_nextBuild <= now);
+        }
+        ++m_approvedCount;
+        if (force)
+            ++m_forcedCount;
+        return true;
+    }
     Clock::duration m_interval;
     TimePoint m_nextBuild{};
     bool m_started = false;
-    bool m_requested = false;
+    std::atomic_bool m_requested{false};
+    uint64_t m_consumeCount = 0;
+    uint64_t m_approvedCount = 0;
+    uint64_t m_forcedCount = 0;
+    bool m_forceActive = false;
+    std::atomic_uint64_t m_requestCount{0};
 };
 
 } // namespace infernux

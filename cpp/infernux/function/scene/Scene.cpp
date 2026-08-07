@@ -4,6 +4,7 @@
 #include "ComponentRecord.h"
 #include "Light.h"
 #include "MeshRenderer.h"
+#include "PyComponentProxy.h"
 #include "SceneManager.h"
 #include "TransformECSStore.h"
 #include "core/threading/JobSystem.h"
@@ -558,6 +559,8 @@ void Scene::Start()
     m_isLoaded = true;
     m_hasStarted = true;
 
+    PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
+
     // ---- Unity-correct 2-pass lifecycle ----
     // Pass 1: Awake + OnEnable on every object/component
     for (size_t i = 0; i < m_rootObjects.size(); ++i) {
@@ -620,6 +623,12 @@ void Scene::Update(float deltaTime)
 
     TransformECSStore::Instance().SyncSceneWorldMatrices(this);
 
+    // Keep one GIL ownership interval for the ordered phase. PyComponentProxy
+    // still owns the boundary guard, so direct native lifecycle calls remain
+    // safe, but the common path no longer transitions the interpreter lock
+    // once per component.
+    PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
+
     // Flush deferred Start() calls for components that were added/enabled
     // during previous callbacks.
     ProcessPendingStarts();
@@ -638,6 +647,8 @@ void Scene::FixedUpdate(float fixedDeltaTime)
         return;
 
     TransformECSStore::Instance().SyncSceneWorldMatrices(this);
+
+    PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
 
     const size_t rootCount = m_rootObjects.size();
     for (size_t i = 0; i < rootCount && i < m_rootObjects.size(); ++i) {
@@ -676,6 +687,8 @@ void Scene::LateUpdate(float deltaTime)
 
     TransformECSStore::Instance().SyncSceneWorldMatrices(this);
 
+    PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
+
     const size_t rootCount = m_rootObjects.size();
     for (size_t i = 0; i < rootCount && i < m_rootObjects.size(); ++i) {
         LateUpdateObject(m_rootObjects[i].get(), deltaTime);
@@ -688,6 +701,8 @@ void Scene::EditorUpdate(float deltaTime)
         return;
 
     TransformECSStore::Instance().SyncSceneWorldMatrices(this);
+
+    PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
 
     const size_t rootCount = m_rootObjects.size();
     for (size_t i = 0; i < rootCount && i < m_rootObjects.size(); ++i) {

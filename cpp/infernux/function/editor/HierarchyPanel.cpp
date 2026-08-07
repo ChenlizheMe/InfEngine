@@ -7,7 +7,6 @@
 #include <function/scene/Transform.h>
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
 #include <cstring>
 
@@ -16,8 +15,6 @@ static constexpr int kKeyLeftCtrl = ImGuiKey_LeftCtrl;
 static constexpr int kKeyRightCtrl = ImGuiKey_RightCtrl;
 static constexpr int kKeyLeftShift = ImGuiKey_LeftShift;
 static constexpr int kKeyRightShift = ImGuiKey_RightShift;
-static constexpr int kKeyEnter = ImGuiKey_Enter;
-static constexpr int kKeyEscape = ImGuiKey_Escape;
 
 namespace infernux
 {
@@ -26,13 +23,31 @@ namespace infernux
 // Helpers — casefold for search
 // ════════════════════════════════════════════════════════════════════
 
-static std::string CaseFold(const std::string &s)
+static std::string ExternalDropCommandArgument(const std::string &reference, uint64_t parentId, bool isGuid)
 {
-    std::string out;
-    out.reserve(s.size());
-    for (unsigned char c : s)
-        out.push_back(static_cast<char>(std::tolower(c)));
-    return out;
+    return reference + "\t" + std::to_string(parentId) + "\t" + (isGuid ? "1" : "0");
+}
+
+static std::string RenameCommandArgument(uint64_t objectId, const std::string &name)
+{
+    return std::to_string(objectId) + "\t" + name;
+}
+
+static std::string TreeExpandedCommandArgument(uint64_t objectId, bool expanded)
+{
+    return std::to_string(objectId) + "\t" + (expanded ? "1" : "0");
+}
+
+static std::string MoveCommandArgument(const std::vector<uint64_t> &objectIds, const std::string &mode,
+                                       uint64_t targetId, bool after)
+{
+    std::string ids;
+    for (const uint64_t objectId : objectIds) {
+        if (!ids.empty())
+            ids.push_back(',');
+        ids += std::to_string(objectId);
+    }
+    return ids + "\t" + mode + "\t" + std::to_string(targetId) + "\t" + (after ? "1" : "0");
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -98,6 +113,8 @@ const std::string &HierarchyPanel::Tr(const std::string &key)
 
 void HierarchyPanel::SetUiMode(bool enabled)
 {
+    if (m_uiMode == enabled)
+        return;
     m_uiMode = enabled;
     InvalidateSceneStructureCache();
 }
@@ -176,7 +193,6 @@ void HierarchyPanel::SetSelectedObjectById(uint64_t id, bool clearSearchFirst)
             }
         }
     }
-
 }
 
 void HierarchyPanel::ExpandToObject(uint64_t objId)
@@ -192,7 +208,7 @@ void HierarchyPanel::ExpandToObject(uint64_t objId)
     GameObject *parent = go->GetParent();
     while (parent) {
         uint64_t pid = parent->GetID();
-        if (m_expandedNodes.insert(pid).second)
+        if (m_treeProjection.SetExpanded(pid, true))
             m_flatListDirty = true;
         m_forceExpandIds.insert(pid);
         parent = parent->GetParent();
@@ -226,6 +242,22 @@ void HierarchyPanel::SetSelectionSnapshot(const std::vector<uint64_t> &ids, uint
     m_selIds.insert(ids.begin(), ids.end());
     m_selPrimary = primary;
     m_selCount = static_cast<int>(ids.size());
+}
+
+std::vector<uint64_t> HierarchyPanel::GetExpandedObjectIds() const
+{
+    std::vector<uint64_t> ids(m_treeProjection.ExpandedIds().begin(), m_treeProjection.ExpandedIds().end());
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
+void HierarchyPanel::SetExpandedObjectIds(const std::vector<uint64_t> &ids)
+{
+    const std::unordered_set<uint64_t> expanded(ids.begin(), ids.end());
+    if (m_treeProjection.ReplaceExpanded(expanded)) {
+        m_flatListDirty = true;
+        m_orderedIdsDirty = true;
+    }
 }
 
 void HierarchyPanel::SetRuntimeHiddenIds(const std::unordered_set<uint64_t> &ids)
@@ -316,33 +348,20 @@ void HierarchyPanel::RefreshRootObjects(Scene *scene, bool allowStale, bool forc
 
 void HierarchyPanel::SetSearchQuery(const char *text)
 {
-    std::string s(text ? text : "");
-    std::string norm = CaseFold(s);
-    // Trim
-    while (!norm.empty() && norm.front() == ' ')
-        norm.erase(norm.begin());
-    while (!norm.empty() && norm.back() == ' ')
-        norm.pop_back();
-
-    if (s == m_searchQuery && norm == m_searchQueryNorm)
+    if (!m_search.SetQuery(text ? text : ""))
         return;
-    m_searchQuery = std::move(s);
-    m_searchQueryNorm = std::move(norm);
     m_searchVisCache.clear();
     m_flatListDirty = true;
 }
 
 bool HierarchyPanel::MatchesSearch(GameObject *obj) const
 {
-    if (m_searchQueryNorm.empty())
-        return true;
-    std::string name = CaseFold(obj->GetName());
-    return name.find(m_searchQueryNorm) != std::string::npos;
+    return m_search.Matches(obj->GetName());
 }
 
 bool HierarchyPanel::IsVisibleInSearch(GameObject *obj)
 {
-    if (m_searchQueryNorm.empty())
+    if (!m_search.IsActive())
         return true;
     uint64_t id = obj->GetID();
     auto it = m_searchVisCache.find(id);
@@ -418,7 +437,7 @@ void HierarchyPanel::BuildFlatListRecurse(GameObject *obj, int depth)
     m_flatItems.push_back({obj, depth, hasVisibleChildren});
 
     // Determine expanded state
-    bool isExpanded = m_expandedNodes.count(objId) > 0;
+    bool isExpanded = m_treeProjection.IsExpanded(objId);
 
     // Search expansion is transient.  Do not write it into the persistent
     // user-authored expansion set, otherwise clearing a search permanently
@@ -627,6 +646,7 @@ void HierarchyPanel::ReparentObject(uint64_t draggedId, uint64_t newParentId)
     auto dragIds = GetDragIds(draggedId);
     auto sorted = TopoSortIds(scene, dragIds);
 
+    std::vector<uint64_t> validIds;
     for (uint64_t did : sorted) {
         if (did == newParentId)
             continue;
@@ -638,20 +658,12 @@ void HierarchyPanel::ReparentObject(uint64_t draggedId, uint64_t newParentId)
         if (!ValidateReparent(obj, newParentId, newParent))
             continue;
 
-        auto *oldP = obj->GetParent();
-        uint64_t oldPid = oldP ? oldP->GetID() : 0;
-        int oldIdx = obj->GetTransform() ? obj->GetTransform()->GetSiblingIndex() : 0;
-        int newIdx = static_cast<int>(newParent->GetChildren().size());
-        if (oldPid == newParentId && oldIdx < newIdx)
-            newIdx--;
-
-        if (oldPid == newParentId && oldIdx == newIdx)
-            continue;
-
-        if (undoRecordMove)
-            undoRecordMove(did, oldPid, newParentId, oldIdx, newIdx);
+        validIds.push_back(did);
     }
-    m_pendingExpandId = newParentId;
+    if (!validIds.empty() &&
+        ExecuteEditorCommand("scene.move_hierarchy", MoveCommandArgument(validIds, "parent", newParentId, false),
+                             "drag_drop"))
+        m_pendingExpandId = newParentId;
 }
 
 void HierarchyPanel::MoveObjectAdjacent(uint64_t draggedId, uint64_t targetId, bool after)
@@ -685,31 +697,9 @@ void HierarchyPanel::MoveObjectAdjacent(uint64_t draggedId, uint64_t targetId, b
     if (validIds.empty())
         return;
 
-    int anchorIdx = targetObj->GetTransform() ? targetObj->GetTransform()->GetSiblingIndex() : 0;
-    int insertIdx = anchorIdx + (after ? 1 : 0);
-
-    for (uint64_t did : validIds) {
-        auto *obj = scene->FindByID(did);
-        if (!obj)
-            continue;
-        auto *oldP = obj->GetParent();
-        uint64_t oldPid = oldP ? oldP->GetID() : 0;
-        int oldIdx = obj->GetTransform() ? obj->GetTransform()->GetSiblingIndex() : 0;
-
-        int effIdx = insertIdx;
-        if (oldPid == newParentId && oldIdx < effIdx)
-            effIdx--;
-        if (oldPid == newParentId && oldIdx == effIdx) {
-            insertIdx++;
-            continue;
-        }
-
-        if (undoRecordMove)
-            undoRecordMove(did, oldPid, newParentId, oldIdx, effIdx);
-        insertIdx = effIdx + 1;
-    }
-
-    if (newParentId != 0)
+    if (ExecuteEditorCommand("scene.move_hierarchy", MoveCommandArgument(validIds, "adjacent", targetId, after),
+                             "drag_drop") &&
+        newParentId != 0)
         m_pendingExpandId = newParentId;
 }
 
@@ -722,6 +712,7 @@ void HierarchyPanel::ReparentToRoot(uint64_t draggedId)
     auto dragIds = GetDragIds(draggedId);
     auto sorted = TopoSortIds(scene, dragIds);
 
+    std::vector<uint64_t> validIds;
     for (uint64_t did : sorted) {
         auto *obj = scene->FindByID(did);
         if (!obj)
@@ -744,16 +735,10 @@ void HierarchyPanel::ReparentToRoot(uint64_t draggedId)
             continue;
         }
 
-        auto *oldParent = obj->GetParent();
-        uint64_t oldPid = oldParent ? oldParent->GetID() : 0;
-        int oldIdx = obj->GetTransform() ? obj->GetTransform()->GetSiblingIndex() : 0;
-        int rootCount = static_cast<int>(scene->GetRootObjects().size());
-        int newIdx = (std::max)(0, rootCount - (oldPid == 0 ? 1 : 0));
-        if (oldPid != 0 || oldIdx != newIdx) {
-            if (undoRecordMove)
-                undoRecordMove(did, oldPid, 0, oldIdx, newIdx);
-        }
+        validIds.push_back(did);
     }
+    if (!validIds.empty())
+        ExecuteEditorCommand("scene.move_hierarchy", MoveCommandArgument(validIds, "root", 0, false), "drag_drop");
 }
 
 void HierarchyPanel::HandleExternalDrop(const std::string &dropType, uint64_t payload, uint64_t parentId)
@@ -783,13 +768,12 @@ void HierarchyPanel::HandleExternalDropStr(const std::string &dropType, const st
     }
 
     if (dropType == "PREFAB_GUID" || dropType == "PREFAB_FILE") {
-        bool isGuid = (dropType == "PREFAB_GUID");
-        if (instantiatePrefab)
-            instantiatePrefab(payload, parentId, isGuid);
+        const bool isGuid = (dropType == "PREFAB_GUID");
+        ExecuteEditorCommand("scene.instantiate_prefab", ExternalDropCommandArgument(payload, parentId, isGuid),
+                             "drag_drop");
     } else if (dropType == "MODEL_GUID" || dropType == "MODEL_FILE") {
-        bool isGuid = (dropType == "MODEL_GUID");
-        if (createModelObject)
-            createModelObject(payload, parentId, isGuid);
+        const bool isGuid = (dropType == "MODEL_GUID");
+        ExecuteEditorCommand("scene.create_model", ExternalDropCommandArgument(payload, parentId, isGuid), "drag_drop");
     }
 }
 
@@ -810,6 +794,10 @@ void HierarchyPanel::BeginRename(uint64_t objId)
     m_renameBuf[sizeof(m_renameBuf) - 1] = '\0';
     m_renameFocus = true;
     m_renameSkipDeactivateFrames = 2;
+    BeginTransientInteraction("rename", "inline_rename", 100, [this]() {
+        CancelRename();
+        return true;
+    });
 }
 
 void HierarchyPanel::BeginRenameObject(uint64_t objId)
@@ -832,10 +820,7 @@ void HierarchyPanel::CommitRename()
         if (scene) {
             auto *obj = scene->FindByID(m_renameId);
             if (obj && obj->GetName() != newName) {
-                const std::string oldName = obj->GetName();
-                obj->SetName(newName);
-                if (undoRecordRename)
-                    undoRecordRename(m_renameId, oldName, newName);
+                ExecuteEditorCommand("scene.rename_object", RenameCommandArgument(m_renameId, newName), "inline_edit");
             }
         }
     }
@@ -843,6 +828,7 @@ void HierarchyPanel::CommitRename()
     m_renameBuf[0] = '\0';
     m_renameFocus = false;
     m_renameSkipDeactivateFrames = 0;
+    EndTransientInteraction("rename");
 }
 
 void HierarchyPanel::CancelRename()
@@ -851,6 +837,7 @@ void HierarchyPanel::CancelRename()
     m_renameBuf[0] = '\0';
     m_renameFocus = false;
     m_renameSkipDeactivateFrames = 0;
+    EndTransientInteraction("rename");
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -935,264 +922,15 @@ void HierarchyPanel::RenderMultiDropTarget(InxGUIContext *ctx, uint64_t parentId
 
 void HierarchyPanel::RenderItemContextMenu(InxGUIContext *ctx, GameObject *obj)
 {
-    if (!obj)
+    if (!obj || !renderContextMenu)
         return;
-
-    const uint64_t objId = obj->GetID();
-    const bool isPrefab = obj->IsPrefabInstance();
-
-    const std::string &createChildLabel = Tr("hierarchy.create_child");
-    const bool createChildOpen = ctx->BeginMenu(createChildLabel, true, "hierarchy.context.create_child");
-    if (createChildOpen) {
-        ShowStandardCreateMenus(ctx, objId, "hierarchy.context.create_child");
-        ctx->EndMenu();
-    }
-    if (m_selCount > 0) {
-        const std::string &createParentLabel = Tr("hierarchy.create_empty_parent");
-        const bool createParentSelected = ctx->Selectable(createParentLabel, false, 0, 0, 0);
-        ctx->RecordSemanticItem("menu_item", createParentLabel, true, "hierarchy.context.create_empty_parent");
-        if (createParentSelected && createEmptyParent)
-            createEmptyParent();
-    }
-    ctx->Separator();
-    const bool canCopy = CanExecuteEditorCommand("edit.copy");
-    if (ctx->Selectable(Tr("project.copy"), false, canCopy ? 0 : ImGuiSelectableFlags_Disabled, 0, 0))
-        ExecuteEditorCommand("edit.copy");
-    const bool canCut = CanExecuteEditorCommand("edit.cut");
-    if (ctx->Selectable(Tr("project.cut"), false, canCut ? 0 : ImGuiSelectableFlags_Disabled, 0, 0))
-        ExecuteEditorCommand("edit.cut");
-    const bool canPaste = CanExecuteEditorCommand("edit.paste");
-    if (ctx->Selectable(Tr("project.paste"), false, canPaste ? 0 : ImGuiSelectableFlags_Disabled, 0, 0))
-        ExecuteEditorCommand("edit.paste");
-    ctx->Separator();
-    const std::string objectArgument = std::to_string(objId);
-    const bool canRename = CanExecuteEditorCommand("edit.rename", objectArgument);
-    if (ctx->Selectable(Tr("hierarchy.rename"), false, canRename ? 0 : ImGuiSelectableFlags_Disabled, 0, 0))
-        ExecuteEditorCommand("edit.rename", objectArgument);
-    ctx->Separator();
-    if (ctx->Selectable(Tr("hierarchy.save_as_prefab"), false, 0, 0, 0)) {
-        if (saveAsPrefab)
-            saveAsPrefab(objId);
-    }
-
-    if (isPrefab) {
-        ctx->Separator();
-        ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::PREFAB_TEXT.x, EditorTheme::PREFAB_TEXT.y,
-                            EditorTheme::PREFAB_TEXT.z, EditorTheme::PREFAB_TEXT.w);
-        ctx->Label(Tr("hierarchy.prefab_label"));
-        ctx->PopStyleColor(1);
-        const bool selectPrefabAsset = ctx->Selectable(Tr("hierarchy.select_prefab_asset"), false, 0, 0, 0);
-        ctx->RecordSemanticItem("menu_item", Tr("hierarchy.select_prefab_asset"), true,
-                                "hierarchy.context.prefab.select_asset");
-        if (selectPrefabAsset) {
-            if (prefabSelectAsset)
-                prefabSelectAsset(objId);
-        }
-        const bool openPrefab = ctx->Selectable(Tr("hierarchy.open_prefab"), false, 0, 0, 0);
-        ctx->RecordSemanticItem("menu_item", Tr("hierarchy.open_prefab"), true, "hierarchy.context.prefab.open");
-        if (openPrefab) {
-            if (prefabOpenAsset)
-                prefabOpenAsset(objId);
-        }
-        const bool applyPrefab = ctx->Selectable(Tr("hierarchy.apply_all_overrides"), false, 0, 0, 0);
-        ctx->RecordSemanticItem("menu_item", Tr("hierarchy.apply_all_overrides"), true,
-                                "hierarchy.context.prefab.apply");
-        if (applyPrefab) {
-            if (prefabApplyOverrides)
-                prefabApplyOverrides(objId);
-        }
-        const bool revertPrefab = ctx->Selectable(Tr("hierarchy.revert_all_overrides"), false, 0, 0, 0);
-        ctx->RecordSemanticItem("menu_item", Tr("hierarchy.revert_all_overrides"), true,
-                                "hierarchy.context.prefab.revert");
-        if (revertPrefab) {
-            if (prefabRevertOverrides)
-                prefabRevertOverrides(objId);
-        }
-        ctx->Separator();
-        const bool unpackPrefab = ctx->Selectable(Tr("hierarchy.unpack_prefab"), false, 0, 0, 0);
-        ctx->RecordSemanticItem("menu_item", Tr("hierarchy.unpack_prefab"), true, "hierarchy.context.prefab.unpack");
-        if (unpackPrefab) {
-            if (prefabUnpack)
-                prefabUnpack(objId);
-        }
-    }
-
-    ctx->Separator();
-    const bool canDelete = CanExecuteEditorCommand("edit.delete", objectArgument);
-    if (ctx->Selectable(Tr("hierarchy.delete"), false, canDelete ? 0 : ImGuiSelectableFlags_Disabled, 0, 0))
-        ExecuteEditorCommand("edit.delete", objectArgument);
+    renderContextMenu(ctx, obj->GetID(), obj->IsPrefabInstance(), obj->GetID(), false);
 }
 
-bool HierarchyPanel::ExecuteEditorCommand(const std::string &commandId, const std::string &argument) const
+bool HierarchyPanel::ExecuteEditorCommand(const std::string &commandId, const std::string &argument,
+                                          const std::string &source) const
 {
-    return executeCommand && executeCommand(commandId, "context_menu", argument);
-}
-
-bool HierarchyPanel::CanExecuteEditorCommand(const std::string &commandId, const std::string &argument) const
-{
-    return canExecuteCommand && canExecuteCommand(commandId, argument);
-}
-
-void HierarchyPanel::ShowStandardCreateMenus(InxGUIContext *ctx, uint64_t parentId, const char *semanticRoot)
-{
-    // Empty sits at the top of the create list (Unity-style).
-    const std::string &emptyLabel = Tr("hierarchy.empty_object");
-    const bool createEmptySelected = ctx->Selectable(emptyLabel, false, 0, 0, 0);
-    ctx->RecordSemanticItem("menu_item", emptyLabel, true, std::string(semanticRoot) + ".empty");
-    if (createEmptySelected && createEmpty)
-        createEmpty(parentId);
-
-    ShowCreateEntriesForCategory(ctx, parentId, "Camera");
-
-    const std::string &create3dLabel = Tr("hierarchy.create_3d_object");
-    if (ctx->BeginMenu(create3dLabel, true, std::string(semanticRoot) + ".create_3d")) {
-        ShowCreatePrimitiveMenu(ctx, parentId);
-        ctx->EndMenu();
-    }
-    const std::string &create2dLabel = Tr("hierarchy.create_2d_object");
-    if (ctx->BeginMenu(create2dLabel, true, std::string(semanticRoot) + ".create_2d")) {
-        ShowCreate2DMenu(ctx, parentId);
-        ctx->EndMenu();
-    }
-    const std::string &lightLabel = Tr("hierarchy.light_menu");
-    if (ctx->BeginMenu(lightLabel, true, std::string(semanticRoot) + ".light")) {
-        ShowCreateLightMenu(ctx, parentId);
-        ctx->EndMenu();
-    }
-    const std::string &effectLabel = Tr("hierarchy.effect_menu");
-    if (ctx->BeginMenu(effectLabel, true, std::string(semanticRoot) + ".effect")) {
-        ShowCreateEffectMenu(ctx, parentId);
-        ctx->EndMenu();
-    }
-    const std::string &postProcessingLabel = Tr("hierarchy.post_processing_menu");
-    if (ctx->BeginMenu(postProcessingLabel, true, std::string(semanticRoot) + ".post_processing")) {
-        ShowPostProcessingMenu(ctx, parentId);
-        ctx->EndMenu();
-    }
-    const std::string &uiLabel = Tr("hierarchy.ui_menu");
-    if (ctx->BeginMenu(uiLabel, true, std::string(semanticRoot) + ".ui")) {
-        ShowUiMenu(ctx, parentId);
-        ctx->EndMenu();
-    }
-}
-
-void HierarchyPanel::ShowCreatePrimitiveMenu(InxGUIContext *ctx, uint64_t parentId)
-{
-    struct PrimEntry
-    {
-        const char *key;
-        int typeIdx;
-        const char *semanticId;
-    };
-    static const PrimEntry entries[] = {
-        {"hierarchy.primitive_cube", 0, "hierarchy.context.create_3d.cube"},
-        {"hierarchy.primitive_sphere", 1, "hierarchy.context.create_3d.sphere"},
-        {"hierarchy.primitive_capsule", 2, "hierarchy.context.create_3d.capsule"},
-        {"hierarchy.primitive_cylinder", 3, "hierarchy.context.create_3d.cylinder"},
-        {"hierarchy.primitive_plane", 4, "hierarchy.context.create_3d.plane"},
-        {"hierarchy.primitive_quad", 5, "hierarchy.context.create_3d.quad"},
-    };
-    for (auto &e : entries) {
-        const std::string &label = Tr(e.key);
-        const bool selected = ctx->Selectable(label, false, 0, 0, 0);
-        ctx->RecordSemanticItem("menu_item", label, true, e.semanticId);
-        if (selected) {
-            if (createPrimitive)
-                createPrimitive(e.typeIdx, parentId);
-        }
-    }
-}
-
-void HierarchyPanel::ShowCreateLightMenu(InxGUIContext *ctx, uint64_t parentId)
-{
-    struct LightEntry
-    {
-        const char *key;
-        int typeIdx;
-        const char *semanticId;
-    };
-    static const LightEntry entries[] = {
-        {"hierarchy.light_directional", 0, "hierarchy.context.light.directional"},
-        {"hierarchy.light_point", 1, "hierarchy.context.light.point"},
-        {"hierarchy.light_spot", 2, "hierarchy.context.light.spot"},
-    };
-    for (auto &e : entries) {
-        const std::string &label = Tr(e.key);
-        const bool selected = ctx->Selectable(label, false, 0, 0, 0);
-        ctx->RecordSemanticItem("menu_item", label, true, e.semanticId);
-        if (selected) {
-            if (createLight)
-                createLight(e.typeIdx, parentId);
-        }
-    }
-}
-
-void HierarchyPanel::ShowCreateEffectMenu(InxGUIContext *ctx, uint64_t parentId)
-{
-    ShowCreateEntriesForCategory(ctx, parentId, "Effect");
-}
-
-void HierarchyPanel::ShowCreateEntriesForCategory(InxGUIContext *ctx, uint64_t parentId, const std::string &category)
-{
-    for (auto &entry : createEntries) {
-        if (entry.category == category) {
-            const std::string &label = Tr(entry.localeKey);
-            const bool selected = ctx->Selectable(label, false, 0, 0, 0);
-            ctx->RecordSemanticItem("menu_item", label, true,
-                                    "hierarchy.context." + CaseFold(category) + "." + entry.localeKey);
-            if (selected) {
-                if (entry.callback)
-                    entry.callback(parentId);
-            }
-        }
-    }
-}
-
-void HierarchyPanel::ShowCreate2DMenu(InxGUIContext *ctx, uint64_t parentId)
-{
-    ShowCreateEntriesForCategory(ctx, parentId, "2D");
-}
-
-void HierarchyPanel::ShowPostProcessingMenu(InxGUIContext *ctx, uint64_t parentId)
-{
-    ShowCreateEntriesForCategory(ctx, parentId, "PostProcessing");
-}
-
-void HierarchyPanel::ShowUiMenu(InxGUIContext *ctx, uint64_t parentId)
-{
-    for (auto &entry : createEntries) {
-        if (entry.category != "UI")
-            continue;
-
-        std::string semanticSuffix = CaseFold(entry.localeKey);
-        constexpr const char *prefix = "hierarchy.ui_";
-        if (entry.localeKey.rfind(prefix, 0) == 0)
-            semanticSuffix = entry.localeKey.substr(std::char_traits<char>::length(prefix));
-
-        const std::string &label = Tr(entry.localeKey);
-        const bool selected = ctx->Selectable(label, false, 0, 0, 0);
-        ctx->RecordSemanticItem("menu_item", label, true, "hierarchy.context.ui." + semanticSuffix);
-        if (selected) {
-            if (entry.callback)
-                entry.callback(parentId);
-        }
-    }
-}
-
-void HierarchyPanel::ShowUiModeContextMenu(InxGUIContext *ctx, uint64_t parentId)
-{
-    ShowUiMenu(ctx, parentId);
-}
-
-void HierarchyPanel::AddCreateEntry(const std::string &category, const std::string &localeKey,
-                                    std::function<void(uint64_t)> callback)
-{
-    createEntries.push_back({category, localeKey, std::move(callback)});
-}
-
-void HierarchyPanel::ClearCreateEntries()
-{
-    createEntries.clear();
+    return executeCommand && executeCommand(commandId, source, argument);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1208,19 +946,17 @@ void HierarchyPanel::RenderRenameInput(InxGUIContext *ctx, GameObject *obj)
 
     float availW = ctx->GetContentRegionAvailWidth();
     ctx->SetNextItemWidth(availW);
-    ctx->InputTextWithHint("##rename", "", m_renameBuf, sizeof(m_renameBuf), 0);
+    const bool submitted =
+        ctx->InputTextWithHint("##rename", "", m_renameBuf, sizeof(m_renameBuf), ImGuiInputTextFlags_EnterReturnsTrue);
     ctx->RecordSemanticItem("hierarchy_rename", obj->GetName(), true,
-                            "hierarchy.object." + std::to_string(obj->GetID()) + ".rename");
+                            "hierarchy.object." + std::to_string(obj->GetID()) + ".rename", std::nullopt, std::nullopt,
+                            std::string(m_renameBuf));
 
     if (m_renameSkipDeactivateFrames > 0)
         --m_renameSkipDeactivateFrames;
 
-    if (ctx->IsKeyPressed(kKeyEnter)) {
+    if (submitted) {
         CommitRename();
-        return;
-    }
-    if (ctx->IsKeyPressed(kKeyEscape)) {
-        CancelRename();
         return;
     }
     if (m_renameSkipDeactivateFrames == 0 && ctx->IsItemDeactivated())
@@ -1268,7 +1004,7 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
     // Keep our stable object-ID set authoritative. ImGui normally owns tree
     // state by widget ID; rows disappearing during reparenting or changing
     // their visible labels during rename must not reset that state.
-    const bool requestedOpen = HasActiveSearch() || m_expandedNodes.count(objId) > 0;
+    const bool requestedOpen = HasActiveSearch() || m_treeProjection.IsExpanded(objId);
     ctx->SetNextItemOpen(requestedOpen, ImGuiCond_Always);
     m_forceExpandIds.erase(objId);
 
@@ -1316,7 +1052,8 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
     stableLabel += std::to_string(objId);
     bool isOpen = ctx->TreeNodeEx(stableLabel, nodeFlags);
     if (InxGUISemantics::IsCaptureEnabled())
-        ctx->RecordSemanticItem("hierarchy_object", objectName, true, "hierarchy.object." + std::to_string(objId));
+        ctx->RecordSemanticItem("hierarchy_object", objectName, true, "hierarchy.object." + std::to_string(objId),
+                                m_selIds.count(objId) > 0);
 
     if (indentPx > 0)
         ImGui::Unindent(indentPx);
@@ -1326,15 +1063,8 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
 
     // Search forces matching branches open only for presentation. Preserve the
     // user's pre-search expansion choices until normal tree interaction resumes.
-    if (!HasActiveSearch()) {
-        if (isOpen && !isLeaf) {
-            if (m_expandedNodes.insert(objId).second)
-                m_flatListDirty = true; // newly expanded
-        } else {
-            if (m_expandedNodes.erase(objId) > 0)
-                m_flatListDirty = true; // newly collapsed
-        }
-    }
+    if (!HasActiveSearch() && !isLeaf && ImGui::IsItemToggledOpen())
+        ExecuteEditorCommand("hierarchy.set_expanded", TreeExpandedCommandArgument(objId, isOpen), "pointer");
 
     // ── Selection ───────────────────────────────────────────────
     if (ctx->IsItemClicked(0)) {
@@ -1359,10 +1089,9 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
         ctx->PushID(std::to_string(objId));
     }
 
-    // Double-click focus
+    // Double-click frame selected through the shared editor command path.
     if (ctx->IsMouseDoubleClicked(0) && ctx->IsItemHovered()) {
-        if (onDoubleClickFocus)
-            onDoubleClickFocus(objId);
+        ExecuteEditorCommand("scene.frame_selected", std::to_string(objId), "pointer");
     }
 
     // ── Drag source ─────────────────────────────────────────────
@@ -1378,146 +1107,6 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
 
     // ── Drop target on body → reparent as child ─────────────────
     RenderMultiDropTarget(ctx, objId);
-
-    ctx->PopID();
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Tree node rendering (legacy recursive — kept for reference)
-// ════════════════════════════════════════════════════════════════════
-
-void HierarchyPanel::RenderGameObjectTree(InxGUIContext *ctx, GameObject *obj)
-{
-    if (!obj)
-        return;
-    if (HasActiveSearch() && !IsVisibleInSearch(obj))
-        return;
-
-    uint64_t objId = obj->GetID();
-    ctx->PushID(std::to_string(objId));
-
-    // ── Inline rename mode ──────────────────────────────────────
-    if (m_renameId == objId) {
-        RenderRenameInput(ctx, obj);
-        ctx->PopID();
-        return;
-    }
-
-    // Tree node flags
-    int nodeFlags =
-        ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding;
-
-    if (m_selIds.count(objId))
-        nodeFlags |= ImGuiTreeNodeFlags_Selected;
-
-    // Filter children
-    std::vector<GameObject *> children = FilterHidden(obj->GetChildren());
-    if (HasActiveSearch())
-        children = FilterForSearch(children);
-    bool isLeaf = children.empty();
-    if (isLeaf)
-        nodeFlags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-
-    // Auto-expansion
-    if (m_pendingExpandId == objId) {
-        ctx->SetNextItemOpen(true);
-        m_pendingExpandId = 0;
-    }
-    if (m_pendingExpandIds.count(objId)) {
-        ctx->SetNextItemOpen(true);
-        m_pendingExpandIds.erase(objId);
-    } else if (HasActiveSearch() && !children.empty()) {
-        ctx->SetNextItemOpen(true);
-    }
-
-    // Display name with prefab decoration
-    bool isPrefab = obj->IsPrefabInstance();
-    std::string displayName = isPrefab ? std::string(EditorTheme::PREFAB_ICON) + " " + obj->GetName() : obj->GetName();
-
-    // Dim objects that don't belong to the current mode's domain
-    bool inCanvas = IsInCanvasTree(obj);
-    bool uiDimmed = (m_uiMode && !inCanvas) || (!m_uiMode && inCanvas);
-    const bool inactiveDimmed = !obj->IsActiveInHierarchy();
-    int textColorPushed = 0;
-    if (uiDimmed || inactiveDimmed) {
-        ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::TEXT_DISABLED.x, EditorTheme::TEXT_DISABLED.y,
-                            EditorTheme::TEXT_DISABLED.z, EditorTheme::TEXT_DISABLED.w);
-        textColorPushed = 1;
-    } else if (isPrefab) {
-        ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::PREFAB_TEXT.x, EditorTheme::PREFAB_TEXT.y,
-                            EditorTheme::PREFAB_TEXT.z, EditorTheme::PREFAB_TEXT.w);
-        textColorPushed = 1;
-    }
-
-    bool isOpen = ctx->TreeNodeEx(displayName, nodeFlags);
-
-    if (textColorPushed)
-        ctx->PopStyleColor(1);
-
-    // ── Selection ───────────────────────────────────────────────
-    if (ctx->IsItemClicked(0)) {
-        if (m_renameId && m_renameId != objId)
-            CancelRename();
-        m_pendingSelectId = objId;
-        m_pendingCtrl = IsCtrl(ctx);
-        m_pendingShift = IsShift(ctx);
-    }
-    if (ctx->IsItemClicked(1)) {
-        if (!m_selIds.count(objId)) {
-            if (selectId)
-                selectId(objId);
-            SyncSelectionCache();
-        }
-    }
-
-    // Double-click focus
-    if (ctx->IsMouseDoubleClicked(0) && ctx->IsItemHovered()) {
-        if (onDoubleClickFocus)
-            onDoubleClickFocus(objId);
-    }
-
-    // ── Context menu ────────────────────────────────────────────
-    std::string ctxMenuId = "ctx_menu_" + std::to_string(objId);
-    if (ctx->BeginPopupContextItem(ctxMenuId, 1)) {
-        m_rightClickedObjId = objId;
-        RenderItemContextMenu(ctx, obj);
-        ctx->EndPopup();
-    }
-
-    // ── Drag source ─────────────────────────────────────────────
-    // Always allow drag initiation regardless of UI mode so the object
-    // can be dragged to the project panel.  Cross-mode hierarchy drops
-    // are still blocked by ValidateReparent / ValidateMoveAdjacent.
-    if (ctx->BeginDragDropSource(0)) {
-        ctx->SetDragDropPayload(DRAG_DROP_TYPE, objId);
-        int n = m_selIds.count(objId) ? m_selCount : 1;
-        if (n > 1)
-            ctx->Label(obj->GetName() + " (+" + std::to_string(n - 1) + ")");
-        else
-            ctx->Label(obj->GetName());
-        ctx->EndDragDropSource();
-    }
-
-    // ── Drop target on body → reparent as child ─────────────────
-    RenderMultiDropTarget(ctx, objId);
-
-    if (isOpen && !isLeaf) {
-        // Separator before first child
-        if (!children.empty()) {
-            uint64_t firstId = children[0]->GetID();
-            std::string sepId = "##sep_before_first_" + std::to_string(objId);
-            RenderReorderSep(ctx, sepId.c_str(),
-                             [this, firstId](uint64_t payload) { MoveObjectAdjacent(payload, firstId, false); });
-        }
-        for (auto *child : children)
-            RenderGameObjectTree(ctx, child);
-        ctx->TreePop();
-    }
-
-    // Separator after this node
-    std::string sepAfterId = "##sep_after_" + std::to_string(objId);
-    RenderReorderSep(ctx, sepAfterId.c_str(),
-                     [this, objId](uint64_t payload) { MoveObjectAdjacent(payload, objId, true); });
 
     ctx->PopID();
 }
@@ -1622,16 +1211,6 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
     };
 
-    // ── Focus transition detection ──────────────────────────────
-    {
-        bool focused = ctx->IsWindowFocused(0);
-        if (focused != m_wasFocused) {
-            m_wasFocused = focused;
-            if (onHierarchyPanelFocused)
-                onHierarchyPanelFocused(focused);
-        }
-    }
-
     // ── Header: scene name / prefab mode / ui mode ──────────────
     auto headerStart = Clock::now();
     if (m_uiMode) {
@@ -1656,7 +1235,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
     // ── Search bar ──────────────────────────────────────────────
     auto searchStart = Clock::now();
     ctx->SetNextItemWidth(ctx->GetContentRegionAvailWidth());
-    std::strncpy(m_searchBuf, m_searchQuery.c_str(), sizeof(m_searchBuf) - 1);
+    std::strncpy(m_searchBuf, m_search.Query().c_str(), sizeof(m_searchBuf) - 1);
     m_searchBuf[sizeof(m_searchBuf) - 1] = '\0';
     ctx->InputTextWithHint("##HierarchySearch", Tr("hierarchy.search_placeholder").c_str(), m_searchBuf,
                            sizeof(m_searchBuf), 0);
@@ -1692,14 +1271,14 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
 
         // Transfer legacy pending-expand IDs into the new expand tracking
         if (m_pendingExpandId) {
-            m_expandedNodes.insert(m_pendingExpandId);
+            m_treeProjection.SetExpanded(m_pendingExpandId, true);
             m_forceExpandIds.insert(m_pendingExpandId);
             m_pendingExpandId = 0;
             m_flatListDirty = true;
         }
         if (!m_pendingExpandIds.empty()) {
             for (uint64_t eid : m_pendingExpandIds) {
-                m_expandedNodes.insert(eid);
+                m_treeProjection.SetExpanded(eid, true);
                 m_forceExpandIds.insert(eid);
             }
             m_pendingExpandIds.clear();
@@ -1975,49 +1554,8 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
     }
     if (backgroundContextOpen) {
         ctx->RecordSemanticWindow("context_menu", "Hierarchy Create", "hierarchy.context.root");
-        if (m_uiMode) {
-            ShowUiModeContextMenu(ctx, parentIdForNew);
-        } else {
-            ShowStandardCreateMenus(ctx, parentIdForNew, "hierarchy.context");
-        }
-        if (m_selCount > 0) {
-            const std::string &createParentLabel = Tr("hierarchy.create_empty_parent");
-            const bool createParentSelected = ctx->Selectable(createParentLabel, false, 0, 0, 0);
-            ctx->RecordSemanticItem("menu_item", createParentLabel, true, "hierarchy.context.create_empty_parent");
-            if (createParentSelected && createEmptyParent)
-                createEmptyParent();
-        }
-
-        bool hasClip = hasClipboardData && hasClipboardData();
-        if (m_selCount > 0 || hasClip) {
-            ctx->Separator();
-            if (m_selCount > 0) {
-                if (ctx->Selectable(Tr("project.copy"), false, 0, 0, 0)) {
-                    if (copySelected)
-                        copySelected(false);
-                }
-                if (ctx->Selectable(Tr("project.cut"), false, 0, 0, 0)) {
-                    if (copySelected)
-                        copySelected(true);
-                }
-            }
-            if (hasClip) {
-                if (ctx->Selectable(Tr("project.paste"), false, 0, 0, 0)) {
-                    if (pasteClipboard)
-                        pasteClipboard();
-                }
-            }
-        }
-
-        if (m_selCount > 0) {
-            ctx->Separator();
-            if (ctx->Selectable(Tr("hierarchy.delete_selected"), false, 0, 0, 0)) {
-                if (deleteSelectedObjects)
-                    deleteSelectedObjects();
-                SyncSelectionCache();
-            }
-        }
-
+        if (renderContextMenu)
+            renderContextMenu(ctx, 0, false, parentIdForNew, m_uiMode);
         ctx->EndPopup();
     }
 }

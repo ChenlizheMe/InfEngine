@@ -12,10 +12,19 @@ from operator import attrgetter
 from typing import Optional
 from Infernux.lib import InxGUIContext, SceneManager as _SM
 from Infernux.engine.i18n import t
+from Infernux.engine.interaction import (
+    ContinuousEditService,
+    PanelInteractionDescriptor,
+    ViewCommandService,
+)
 from Infernux.input import Input, KeyCode
 from Infernux.timing import Time
 from Infernux.engine.play_mode import PlayModeManager
 from Infernux.engine.project_context import get_project_root
+from Infernux.engine.project_view_settings import (
+    load_project_view_settings,
+    write_project_view_settings_section,
+)
 from Infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
 from Infernux.ui.ui_render_dispatch import (
     dispatch as _ui_dispatch,
@@ -39,7 +48,12 @@ _GAME_VIEW_FPS_SEMANTIC_ID = "game_view.fps"
 _GAME_UI_BUTTON_SEMANTIC_PREFIX = "game_view.ui_button."
 
 
-@editor_panel("Game", type_id="game_view", title_key="panel.game")
+@editor_panel(
+    "Game",
+    type_id="game_view",
+    title_key="panel.game",
+    interaction=PanelInteractionDescriptor(),
+)
 class GameViewPanel(EditorPanel):
     """
     Unity-style Game View panel that renders the scene's main Camera output.
@@ -52,21 +66,9 @@ class GameViewPanel(EditorPanel):
     WINDOW_TYPE_ID = "game_view"
     WINDOW_DISPLAY_NAME = "Game"
 
-    # Runtime-only cache fields must not be persisted across sessions.
-    _AUTO_STATE_SKIP_KEYS = EditorPanel._AUTO_STATE_SKIP_KEYS | {
-        "_last_game_width",
-        "_last_game_height",
-        "_game_camera_was_enabled",
-        "_fps_sample_time",
-        "_fps_sample_frame",
-        "_display_fps",
-        "_display_frame_ms",
-        "_display_game_fps",
-        "_display_game_frame_ms",
-        "_cached_fps_text",
-        "_cached_fps_text_w",
-        "_was_focused",
-    }
+    def _document_is_dirty(self) -> bool:
+        """Game View is a read-only projection of the Scene document."""
+        return False
 
     _RESOLUTION_PRESETS = [
         ("1920\u00d71080", 1920, 1080),
@@ -158,25 +160,6 @@ class GameViewPanel(EditorPanel):
             return self._play_mode_manager.is_paused
         return False
     
-    def _on_play_stop_clicked(self):
-        if self._play_mode_manager:
-            if self._play_mode_manager.is_playing:
-                self._play_mode_manager.exit_play_mode()
-            else:
-                if self._play_mode_manager.enter_play_mode():
-                    self._focus_game_panel()
-        else:
-            self.__is_playing = not self.__is_playing
-
-    def _focus_game_panel(self):
-        ClosablePanel.focus_panel_by_id(self.window_id)
-        if self._engine:
-            self._engine.select_docked_window(self.window_id)
-    
-    def _on_pause_clicked(self):
-        if self._play_mode_manager and self._play_mode_manager.is_playing:
-            self._play_mode_manager.toggle_pause()
-
     def _settings_ini_path(self) -> Optional[str]:
         root = get_project_root()
         if not root:
@@ -195,10 +178,8 @@ class GameViewPanel(EditorPanel):
             self._save_resolution_settings()
             return
 
-        cp = configparser.ConfigParser()
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                cp.read_string(f.read())
+            cp = load_project_view_settings(path)
         except (OSError, configparser.Error) as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
@@ -218,20 +199,107 @@ class GameViewPanel(EditorPanel):
         if not path:
             return
 
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        cp = configparser.ConfigParser()
-        cp["GameView"] = {
+        write_project_view_settings_section(path, "GameView", {
             "preset_index": str(self._selected_resolution_idx),
             "custom_width": str(max(64, int(self._custom_width))),
             "custom_height": str(max(64, int(self._custom_height))),
             "display_scale": f"{self._display_scale:.3f}",
             "fit_mode": str(self._fit_mode),
-        }
-        from io import StringIO
-        from Infernux.core.document_store import write_document_text
-        output = StringIO()
-        cp.write(output)
-        write_document_text(path, output.getvalue())
+        })
+
+    def _capture_view_state(self):
+        return (
+            int(self._selected_resolution_idx),
+            int(self._custom_width),
+            int(self._custom_height),
+            round(float(self._display_scale), 3),
+            bool(self._fit_mode),
+        )
+
+    def _apply_view_state(self, state, *, persist: bool = True):
+        preset, width, height, scale, fit_mode = state
+        self._selected_resolution_idx = max(
+            0,
+            min(len(self._RESOLUTION_PRESETS) - 1, int(preset)),
+        )
+        self._custom_width = max(64, min(8192, int(width)))
+        self._custom_height = max(64, min(8192, int(height)))
+        self._display_scale = max(0.1, min(2.0, round(float(scale), 3)))
+        self._fit_mode = bool(fit_mode)
+        if persist:
+            self._save_resolution_settings()
+
+    def _commit_view_state(self, before, description: str) -> bool:
+        after = self._capture_view_state()
+        if before == after:
+            return False
+        recorded = ViewCommandService.require().set_value(
+            before,
+            after,
+            self._apply_view_state,
+            description=description,
+        )
+        if not recorded:
+            # Keep persistence functional when editor history is unavailable.
+            self._save_resolution_settings()
+        return True
+
+    def _track_continuous_view_edit(
+        self,
+        ctx,
+        key: str,
+        before,
+        *,
+        changed: bool,
+        description: str,
+    ) -> None:
+        is_active = getattr(ctx, "is_item_active", None)
+        is_deactivated = getattr(ctx, "is_item_deactivated_after_edit", None)
+        active = bool(is_active()) if callable(is_active) else False
+        deactivated = bool(is_deactivated()) if callable(is_deactivated) else False
+        edits = ContinuousEditService.instance()
+        session_key = f"{self.window_id}:view:{key}"
+        session = edits.get(session_key)
+
+        if active and session is None:
+            edits.commit_owner(self.window_id)
+            session = edits.begin(
+                session_key,
+                owner_id=self.window_id,
+                description=description,
+                initial_value=before,
+                on_commit=self._commit_continuous_view_edit,
+                on_cancel=self._cancel_continuous_view_edit,
+            )
+        if changed and session is not None:
+            edits.update(session_key, self._capture_view_state())
+
+        if deactivated:
+            if edits.get(session_key) is not None:
+                edits.commit(session_key)
+            elif changed:
+                self._commit_view_state(before, description)
+        elif changed and not active:
+            # Keyboard submission and lightweight test contexts are discrete.
+            self._commit_view_state(before, description)
+
+    def _commit_continuous_view_edit(self, session) -> bool:
+        self._apply_view_state(session.current_value, persist=False)
+        return self._commit_view_state(session.initial_value, session.description)
+
+    def _cancel_continuous_view_edit(self, session) -> None:
+        self._apply_view_state(session.initial_value, persist=False)
+
+    def _commit_pending_view_edits(self) -> None:
+        ContinuousEditService.instance().commit_owner(self.window_id)
+
+    def _set_resolution_preset(self, preset_index: int) -> bool:
+        before = self._capture_view_state()
+        self._selected_resolution_idx = max(
+            0,
+            min(len(self._RESOLUTION_PRESETS) - 1, int(preset_index)),
+        )
+        return self._commit_view_state(before, "Change Game View Resolution")
 
     def _current_target_resolution(self):
         _, w, h = self._RESOLUTION_PRESETS[self._selected_resolution_idx]
@@ -241,8 +309,9 @@ class GameViewPanel(EditorPanel):
 
     def _fit_scale(self):
         """Toggle Fit mode on."""
+        before = self._capture_view_state()
         self._fit_mode = True
-        self._save_resolution_settings()
+        self._commit_view_state(before, "Fit Game View")
 
     @staticmethod
     def _fit_into_region(src_w: int, src_h: int, region_w: float, region_h: float):
@@ -276,9 +345,11 @@ class GameViewPanel(EditorPanel):
         self._game_camera_was_enabled = False
 
     def on_disable(self):
+        self._commit_pending_view_edits()
         self._set_game_render_active(False)
 
     def _on_not_visible(self, ctx):
+        self._commit_pending_view_edits()
         self._was_focused = False
         Input.set_game_focused(False)
         self._ui_event_processor.reset()
@@ -298,7 +369,7 @@ class GameViewPanel(EditorPanel):
 
     def _on_visible_pre(self, ctx):
         self._load_resolution_settings()
-        focused = (ClosablePanel.get_active_panel_id() == self.window_id) or self._is_window_or_child_focused(ctx)
+        focused = ClosablePanel.get_active_view_id() == self.window_id
         if focused and not self._was_focused:
             if self._on_focus_gained:
                 self._on_focus_gained()
@@ -326,23 +397,39 @@ class GameViewPanel(EditorPanel):
         """Resolution preset combo and optional custom width/height inputs."""
         old_idx = self._selected_resolution_idx
         ctx.set_next_item_width(140)
-        self._selected_resolution_idx = ctx.combo("##Resolution", self._selected_resolution_idx, self._PRESET_NAMES, -1)
-        if self._selected_resolution_idx != old_idx:
-            self._save_resolution_settings()
+        selected_idx = ctx.combo("##Resolution", old_idx, self._PRESET_NAMES, -1)
+        if selected_idx != old_idx:
+            self._set_resolution_preset(selected_idx)
 
         if self._selected_resolution_idx == len(self._RESOLUTION_PRESETS) - 1:
             ctx.same_line(0, 8)
-            w_old = self._custom_width
-            h_old = self._custom_height
+            width_before = self._capture_view_state()
             ctx.set_next_item_width(56)
-            self._custom_width = int(ctx.drag_int("##CW", self._custom_width, 1.0, 64, 8192))
+            new_width = int(ctx.drag_int("##CW", self._custom_width, 1.0, 64, 8192))
+            width_changed = new_width != self._custom_width
+            self._custom_width = new_width
+            self._track_continuous_view_edit(
+                ctx,
+                "custom_width",
+                width_before,
+                changed=width_changed,
+                description="Change Game View Width",
+            )
             ctx.same_line(0, 2)
             ctx.label(Theme.ICON_REMOVE)
             ctx.same_line(0, 2)
+            height_before = self._capture_view_state()
             ctx.set_next_item_width(56)
-            self._custom_height = int(ctx.drag_int("##CH", self._custom_height, 1.0, 64, 8192))
-            if self._custom_width != w_old or self._custom_height != h_old:
-                self._save_resolution_settings()
+            new_height = int(ctx.drag_int("##CH", self._custom_height, 1.0, 64, 8192))
+            height_changed = new_height != self._custom_height
+            self._custom_height = new_height
+            self._track_continuous_view_edit(
+                ctx,
+                "custom_height",
+                height_before,
+                changed=height_changed,
+                description="Change Game View Height",
+            )
 
     def _render_scale_toolbar(self, ctx):
         """Scale slider, percentage label, and Fit button.
@@ -368,12 +455,20 @@ class GameViewPanel(EditorPanel):
         ctx.label(f"{pct}%")
         ctx.same_line(scale_label_x + scale_label_w + 4.0)
         ctx.set_next_item_width(230)
+        scale_before = self._capture_view_state()
         old_scale = self._display_scale
-        self._display_scale = ctx.float_slider("##Scale", self._display_scale, 0.10, 2.0)
-        self._display_scale = round(self._display_scale, 3)
-        if abs(old_scale - self._display_scale) > 0.001:
+        new_scale = round(ctx.float_slider("##Scale", old_scale, 0.10, 2.0), 3)
+        scale_changed = abs(old_scale - new_scale) > 0.001
+        self._display_scale = new_scale
+        if scale_changed:
             self._fit_mode = False
-            self._save_resolution_settings()
+        self._track_continuous_view_edit(
+            ctx,
+            "display_scale",
+            scale_before,
+            changed=scale_changed,
+            description="Change Game View Scale",
+        )
         ctx.same_line(0, 6)
         ctx.align_text_to_frame_padding()
         fit_label = t("game_view.fit")
@@ -446,7 +541,7 @@ class GameViewPanel(EditorPanel):
             self._activate_panel(ctx, focus_window=True)
 
         is_playing = self._is_playing()
-        panel_focused = (ClosablePanel.get_active_panel_id() == self.window_id) or self._is_window_or_child_focused(ctx)
+        panel_focused = ClosablePanel.get_active_view_id() == self.window_id
 
         cursor_locked = Input.is_cursor_locked()
         if cursor_locked:

@@ -133,7 +133,13 @@ def _canvas_definition(
                     else CanvasPinKind.OUTPUT
                 ),
                 color=_PIN_COLORS.get(data_type, (0.72, 0.72, 0.74, 1.0)),
-                max_connections=(1 if port.direction is PortDirection.INPUT else -1),
+                max_connections=(
+                    port.max_connections
+                    if port.max_connections is not None
+                    else 1
+                    if port.direction is PortDirection.INPUT
+                    else -1
+                ),
                 data_type=data_type,
                 pin_category=(
                     PinCategory.DATA if port.kind is PortKind.VALUE else PinCategory.EXEC
@@ -228,18 +234,40 @@ def _canvas_definition(
         root_header = (0.46, 0.24, 0.28, 1.0)
     elif is_event_root:
         root_header = (0.48, 0.28, 0.54, 1.0)
+    presentation = definition.presentation
+    default_header = root_header if is_root else (0.28, 0.31, 0.36, 1.0)
+    default_min_width = 248.0 if is_root else 210.0
+    default_deletable = not is_mandatory_root
+    default_body_bottom_pad = detached_fields * 24.0
+    default_visual_style = "context" if is_root else "graph"
     return NodeTypeDef(
         type_id=definition.type_id,
         label=display_name_override or definition.display_name,
-        header_color=root_header if is_root else (0.28, 0.31, 0.36, 1.0),
+        header_color=presentation.header_color or default_header,
         pins=pins,
-        min_width=248.0 if is_root else 210.0,
-        deletable=not is_mandatory_root,
-        body_bottom_pad=detached_fields * 24.0,
-        visual_style="context" if is_root else "graph",
+        min_width=(
+            default_min_width
+            if presentation.min_width is None
+            else presentation.min_width
+        ),
+        deletable=(
+            default_deletable
+            if presentation.deletable is None
+            else presentation.deletable
+        ),
+        body_bottom_pad=(
+            default_body_bottom_pad
+            if presentation.body_bottom_pad is None
+            else presentation.body_bottom_pad
+        ),
+        visual_style=presentation.visual_style or default_visual_style,
         # Node chrome shows only the display name — no MATH/COMMON chips.
-        category_label="",
-        show_header_color_swatch=False,
+        category_label=presentation.category_label,
+        show_header_color_swatch=(
+            False
+            if presentation.show_header_color_swatch is None
+            else presentation.show_header_color_swatch
+        ),
         inline_fields=inline_fields,
     )
 

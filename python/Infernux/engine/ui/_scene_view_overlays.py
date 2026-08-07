@@ -75,7 +75,7 @@ class SceneViewOverlaysMixin:
                     "scene_view.prefab.exit",
                 )
             if exit_clicked:
-                scene_file_manager.exit_prefab_mode_with_undo()
+                self._execute_scene_command("prefab.exit")
             if ctx.is_item_hovered() and ctx.is_mouse_button_down(0):
                 overlay_hovered = True
 
@@ -90,22 +90,16 @@ class SceneViewOverlaysMixin:
             scene_height,
         ) or overlay_hovered
 
-        # Unity-style tool switching shortcuts (Q/W/E/R)
-        if not ctx.want_text_input() and not ctx.is_mouse_button_down(1):
-            if ctx.is_key_pressed(self.KEY_Q):
-                self._set_tool_mode(TOOL_NONE)
-            elif ctx.is_key_pressed(self.KEY_W):
-                self._set_tool_mode(TOOL_TRANSLATE)
-            elif ctx.is_key_pressed(self.KEY_E):
-                self._set_tool_mode(TOOL_ROTATE)
-            elif ctx.is_key_pressed(self.KEY_R):
-                self._set_tool_mode(TOOL_SCALE)
-
-            ctrl = ctx.is_key_down(_keys.KEY_LEFT_CTRL) or ctx.is_key_down(_keys.KEY_RIGHT_CTRL)
-            if ctrl and ctx.is_key_pressed(_keys.KEY_F):
-                self._align_object_to_camera()
-
         return overlay_hovered
+
+    @staticmethod
+    def _execute_scene_command(command_id: str) -> bool:
+        from Infernux.engine.interaction import CommandSource, EditorCommandRegistry
+
+        return EditorCommandRegistry.instance().execute(
+            command_id,
+            source=CommandSource.TOOLBAR,
+        ).accepted
 
     @staticmethod
     def _particle_component_from_object(game_object):
@@ -171,14 +165,18 @@ class SceneViewOverlaysMixin:
             return
         try:
             from Infernux.lib import SceneManager
-            from Infernux.engine.ui.selection_manager import SelectionManager
+            from Infernux.engine.interaction import SelectionService
 
-            object_id = int(SelectionManager.instance().get_primary() or 0)
+            object_id = int(SelectionService.instance().primary_scene_object_id() or 0)
             scene = SceneManager.instance().get_active_scene()
             selected = scene.find_by_id(object_id) if scene and object_id else None
         except (AttributeError, ReferenceError, RuntimeError):
             selected = None
         self._on_particle_preview_selection(selected)
+
+    def _on_particle_preview_selection_changed(self, _change) -> None:
+        """Project the authoritative typed selection into the edit preview."""
+        self._restore_particle_preview_selection()
 
     def _restore_particle_preview_if_ready(self) -> None:
         if not self._particle_preview_restore_pending:
@@ -608,12 +606,23 @@ class SceneViewOverlaysMixin:
         ctx.pop_style_var(2)
         ctx.pop_style_color(3)
         if new_val != self._coord_space:
-            self._coord_space = new_val
-            # Sync local mode to C++ so gizmo visuals align to object rotation
-            if self._engine:
-                self._engine.set_editor_tool_local_mode(self._coord_space == 1)
+            from Infernux.engine.interaction import CommandSource
+
+            self.execute_owned_command(
+                "scene.set_coordinate_space",
+                source=CommandSource.POINTER,
+                payload={"value": int(new_val)},
+            )
         ctx.pop_id()
         return hovered
+
+    def _set_coordinate_space(self, value: int) -> None:
+        space = int(value)
+        if space not in (0, 1):
+            raise ValueError("Scene coordinate space must be Global or Local")
+        self._coord_space = space
+        if self._engine:
+            self._engine.set_editor_tool_local_mode(space == 1)
 
     def _ensure_tool_icons(self):
         """Lazily resolve pinned tool icon textures via EditorIcons."""
@@ -642,10 +651,10 @@ class SceneViewOverlaysMixin:
         """Draw horizontally aligned gizmo-tool icon buttons matching the combo height."""
         self._ensure_tool_icons()
         items = [
-            (TOOL_NONE,      t("scene_view.tool_select"), "##tool_none"),
-            (TOOL_TRANSLATE, t("scene_view.tool_move"),   "##tool_move"),
-            (TOOL_ROTATE,    t("scene_view.tool_rotate"), "##tool_rotate"),
-            (TOOL_SCALE,     t("scene_view.tool_scale"),  "##tool_scale"),
+            (TOOL_NONE,      t("scene_view.tool_select"), "##tool_none", "scene.tool.select"),
+            (TOOL_TRANSLATE, t("scene_view.tool_move"),   "##tool_move", "scene.tool.move"),
+            (TOOL_ROTATE,    t("scene_view.tool_rotate"), "##tool_rotate", "scene.tool.rotate"),
+            (TOOL_SCALE,     t("scene_view.tool_scale"),  "##tool_scale", "scene.tool.scale"),
         ]
         pad = Theme.SCENE_GIZMO_TOOL_BTN_PAD
         icon_size = max(combo_h - pad[1] * 2, 8.0)
@@ -653,7 +662,7 @@ class SceneViewOverlaysMixin:
         hovered = False
         ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *pad)
         ctx.push_style_var_float(ImGuiStyleVar.FrameRounding, Theme.SCENE_OVERLAY_ROUNDING)
-        for i, (mode, label, btn_id) in enumerate(items):
+        for i, (mode, label, btn_id, command_id) in enumerate(items):
             if i > 0:
                 ctx.same_line(0, gap)
             active = (self._gizmo_tool_mode == mode)
@@ -670,10 +679,9 @@ class SceneViewOverlaysMixin:
             if tex_id != 0:
                 clicked = ctx.image_button(btn_id, tex_id, icon_size, icon_size)
             else:
-                clicked = ctx.button(label, lambda m=mode: self._set_tool_mode(m),
-                                     width=combo_h, height=combo_h)
+                clicked = ctx.button(label, width=combo_h, height=combo_h)
             if clicked:
-                self._set_tool_mode(mode)
+                self._execute_scene_command(command_id)
             hovered = ctx.is_item_hovered() or hovered
             ctx.pop_style_color(3)
         ctx.pop_style_var(2)

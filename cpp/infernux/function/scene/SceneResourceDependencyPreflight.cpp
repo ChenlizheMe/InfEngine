@@ -77,8 +77,13 @@ class ResourcePreflight
         AssetDatabase &database = GetDatabase(path);
 
         const auto metadata = database.GetMetaByGuid(guid);
-        if (!metadata)
-            throw std::invalid_argument(path + " references missing asset GUID '" + guid + "'");
+        if (!metadata) {
+            // Missing references are valid authoring state.  The field itself
+            // provides the expected type and the stable GUID allows Undo or a
+            // later import to reconnect without rewriting the scene.
+            m_assetTypes.emplace(guid, expectedType);
+            return;
+        }
         const ResourceType actualType = metadata->GetResourceType();
         if (actualType != expectedType) {
             throw std::invalid_argument(path + " expects " + ResourceTypeName(expectedType) + " but GUID '" + guid +

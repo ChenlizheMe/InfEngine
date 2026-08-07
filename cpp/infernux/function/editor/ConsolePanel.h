@@ -2,6 +2,7 @@
 
 #include "EditorPanel.h"
 #include "EditorTheme.h"
+#include "interaction/EditorSearchModel.h"
 #include <core/log/InxLog.h>
 
 #include <imgui.h>
@@ -57,9 +58,16 @@ class ConsolePanel : public EditorPanel
                               int &outErrorCount, uint64_t &outUid);
     [[nodiscard]] uint64_t GetRevision() const noexcept;
     [[nodiscard]] uint64_t GetSelectedUid() const noexcept;
+    [[nodiscard]] bool HasSelectedEntry() const noexcept;
+    bool CopySelectedEntry();
+    [[nodiscard]] bool HasViewOption(const std::string &option) const noexcept;
+    [[nodiscard]] bool GetViewOption(const std::string &option) const noexcept;
+    void SetViewOption(const std::string &option, bool enabled);
+    [[nodiscard]] std::string GetSearchQuery() const;
+    void SetSearchQuery(const std::string &query);
+    [[nodiscard]] float GetDetailHeight() const noexcept;
+    void SetDetailHeight(float height) noexcept;
 
-    /// Python callback: invoked on double-click with (sourceFile, sourceLine).
-    std::function<void(const std::string &, int)> onDoubleClickEntry;
     std::function<void()> onErrorPause;
     std::function<void()> onRequestFocus;
     std::function<void(uint64_t, bool)> onSelectionChanged;
@@ -122,22 +130,26 @@ class ConsolePanel : public EditorPanel
     bool m_prevShowWarnings = true;
     bool m_prevShowErrors = true;
     bool m_prevCollapse = false;
-    std::string m_prevSearch;
+    EditorSearchModel m_searchModel;
     std::vector<VisibleEntry> m_visible;
     std::unordered_map<std::string, size_t> m_collapseLookup;
     int m_cachedInfoCount = 0;
     int m_cachedWarnCount = 0;
     int m_cachedErrorCount = 0;
 
-    // ── Selection & scroll ──
+    // ── Selection projection & scroll ──
+    // m_selectedUid mirrors SelectionService for drawing only. User actions
+    // publish intent and never mutate this field directly.
     uint64_t m_selectedUid = 0;
     uint64_t m_requestedUid = 0;
     bool m_followTail = true;
     bool m_scrollToBottom = false;
     std::array<char, 256> m_search{};
+    std::string m_searchEditStart;
     float m_rowHeight = 22.0f;
     bool m_rowHeightMeasured = false;
     float m_detailHeight = 90.0f;
+    float m_detailResizeStart = 90.0f;
 
     double m_subFlush = 0.0;
     double m_subCache = 0.0;

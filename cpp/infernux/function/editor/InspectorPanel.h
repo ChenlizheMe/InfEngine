@@ -73,7 +73,7 @@ class InspectorPanel : public EditorPanel
     void SetSelectedComponentIds(const std::vector<uint64_t> &componentIds);
     void ClearSelectedComponents();
 
-    // ── Selection callbacks (wrap Python SelectionManager) ───────────
+    // ── Selection callbacks (project typed SelectionService) ─────────
 
     std::function<bool()> isMultiSelection;
     std::function<std::vector<uint64_t>()> getSelectedIds;
@@ -94,9 +94,6 @@ class InspectorPanel : public EditorPanel
     };
     std::function<ObjectInfo(uint64_t)> getObjectInfo;
 
-    /// Set object property: (objId, propName, newValueStr)
-    std::function<void(uint64_t, const std::string &, const std::string &)> setObjectProperty;
-
     // ── Transform callbacks ──────────────────────────────────────────
 
     struct TransformData
@@ -106,7 +103,6 @@ class InspectorPanel : public EditorPanel
         float sx = 1, sy = 1, sz = 1; // local scale
     };
     std::function<TransformData(uint64_t)> getTransformData;
-    std::function<void(uint64_t, const TransformData &)> setTransformData;
 
     // ── Component enumeration callbacks ──────────────────────────────
 
@@ -138,17 +134,6 @@ class InspectorPanel : public EditorPanel
     /// Returns true if an action consumed the frame (caller should bail).
     std::function<bool(InxGUIContext *, uint64_t, const std::string &, uint64_t, bool)> renderComponentContextMenu;
 
-    /// Publish a component-header drag reorder intent. The three ID arrays are
-    /// parallel, allowing one multi-selection gesture to remain one command.
-    /// Parameters: (objectIds, draggedComponentIds, targetComponentIds, insertAfter)
-    std::function<void(const std::vector<uint64_t> &, const std::vector<uint64_t> &, const std::vector<uint64_t> &,
-                       bool)>
-        reorderComponent;
-
-    // ── Component enabled toggle ─────────────────────────────────────
-
-    std::function<void(uint64_t, uint64_t, bool, bool)> setComponentEnabled;
-
     // ── Add Component callbacks ──────────────────────────────────────
 
     struct AddComponentEntry
@@ -159,8 +144,6 @@ class InspectorPanel : public EditorPanel
         std::string scriptPath; // only for scripts
     };
     std::function<std::vector<AddComponentEntry>()> getAddComponentEntries;
-    std::function<void(const std::string &, bool, const std::string &)>
-        addComponent; // (typeName/path, isNative, scriptPath)
 
     // ── Asset / File preview callbacks ───────────────────────────────
 
@@ -183,13 +166,6 @@ class InspectorPanel : public EditorPanel
         bool isTransformReadonly = false;
     };
     std::function<PrefabInfo(uint64_t)> getPrefabInfo;
-    std::function<void(uint64_t, const std::string &)> prefabAction; // (objId, "select"|"open"|"apply"|"revert")
-
-    // ── Undo callbacks ───────────────────────────────────────────────
-
-    std::function<void()> undoBeginFrame;
-    std::function<void(bool)> undoEndFrame; // (anyItemActive)
-    std::function<void()> undoInvalidateAll;
 
     // ── Tag & Layer info ─────────────────────────────────────────────
 
@@ -201,12 +177,6 @@ class InspectorPanel : public EditorPanel
     std::function<std::string(const std::string &)> translate;
 
     // ── Script drop on PropertiesModule ──────────────────────────────
-
-    std::function<void(const std::string &)> handleScriptDrop;
-
-    // ── Window manager integration ───────────────────────────────────
-
-    std::function<void(const std::string &)> openWindow;
 
     std::unordered_map<std::string, double> ConsumeSubTimings() override;
 
@@ -241,6 +211,8 @@ class InspectorPanel : public EditorPanel
     char m_addCompSearch[256] = {};
     std::vector<AddComponentEntry> m_addCompEntries;
     bool m_addCompNeedsFocus = false;
+    bool m_addCompPopupOpen = false;
+    bool m_addCompCloseRequested = false;
 
     // ── Timing ───────────────────────────────────────────────────────
     float m_frameTimeNow = 0.0f;
@@ -318,13 +290,12 @@ class InspectorPanel : public EditorPanel
     [[nodiscard]] bool AreComponentsSelected(const std::vector<uint64_t> &componentIds) const;
 
     /// Render one component header (icon + enabled + collapsing).
-    ComponentHeaderResult RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName,
-                                                const std::string &headerId, uint64_t iconId, bool showEnabled,
-                                                bool isEnabled, const std::string &suffix = "", bool defaultOpen = true,
-                                                const std::string &semanticId = "",
-                                                const std::string &contextPopupId = "", bool selected = false,
-                                                const std::vector<uint64_t> &dragObjectIds = {},
-                                                const std::vector<uint64_t> &dragComponentIds = {});
+    ComponentHeaderResult
+    RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName, const std::string &headerId, uint64_t iconId,
+                          bool showEnabled, bool isEnabled, const std::string &suffix = "", bool defaultOpen = true,
+                          const std::string &semanticId = "", const std::string &contextPopupId = "",
+                          bool selected = false, const std::vector<uint64_t> &dragObjectIds = {},
+                          const std::vector<uint64_t> &dragComponentIds = {}, bool allowComponentReorder = true);
 
     bool RenderInspectorCheckbox(InxGUIContext *ctx, const char *label, bool value);
 
@@ -332,6 +303,9 @@ class InspectorPanel : public EditorPanel
     void RenderAddComponentPopup(InxGUIContext *ctx);
 
     void RefreshTagLayerCache();
+    bool ExecuteEditorCommand(const std::string &commandId, const std::string &argument = "",
+                              const std::string &source = "context_menu") const;
+    bool CanExecuteEditorCommand(const std::string &commandId, const std::string &argument = "") const;
 };
 
 } // namespace infernux

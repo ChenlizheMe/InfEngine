@@ -15,7 +15,12 @@ from time import perf_counter as _pc
 from typing import Optional
 from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
+from Infernux.engine.interaction import ContinuousEditService, ViewCommandService
 from Infernux.engine.project_context import get_project_root
+from Infernux.engine.project_view_settings import (
+    load_project_view_settings,
+    write_project_view_settings_section,
+)
 from Infernux.ui.enums import TextResizeMode
 from Infernux.ui.inx_ui_screen_component import clear_rect_cache
 from Infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
@@ -27,11 +32,6 @@ from .editor_icons import EditorIcons
 from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiMouseCursor
 from .ui_editor_shortcuts import UIEditorInput
 from Infernux.debug import Debug
-from .imgui_keys import (
-    KEY_LEFT_ARROW, KEY_RIGHT_ARROW, KEY_UP_ARROW, KEY_DOWN_ARROW,
-)
-
-
 from ._ui_editor_canvas_ops import UIEditorCanvasOps
 from ._ui_editor_geometry import UIEditorGeometryMixin
 from ._ui_editor_alignment import UIEditorAlignmentMixin
@@ -54,8 +54,12 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         self._pan_y: float = 0.0
         self._is_panning: bool = False
 
-        # ── Selection state ──
-        self._selected_element_comp = None   # Currently selected screen-space UI component
+        # ── Selection projection ──
+        # SelectionService owns the selection.  The panel only caches the
+        # resolved screen component for the current service revision.
+        self._selected_element_cache_revision: int = -1
+        self._selected_element_cache_object_id: int = 0
+        self._selected_element_cache = None
         self._dragging: bool = False
         self._drag_start_x: float = 0.0
         self._drag_start_y: float = 0.0
@@ -76,16 +80,11 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         self._rotate_center_sx: float = 0.0
         self._rotate_center_sy: float = 0.0
 
-        # ── Undo snapshots for continuous interactions ──
-        self._undo_pre_drag: tuple = (0.0, 0.0)        # (elem.x, elem.y) before drag
-        self._undo_pre_resize: tuple = (0.0, 0.0, 0.0, 0.0)  # (x, y, w, h) before resize
-        self._undo_pre_resize_mode = None               # resize_mode before resize (TextUI only)
-        self._undo_pre_rotate: float = 0.0              # elem.rotation before rotate
+        # One core-owned session covers each cross-frame element manipulation.
+        self._active_element_edit_key: str = ""
 
         # ── External references ──
         self._engine = None                  # Engine instance (for game texture)
-        self._on_selection_changed = None    # Callback(go_or_None)
-        self._hierarchy_panel = None
         self._on_request_ui_mode = None      # Callback(bool) to toggle hierarchy UI mode
 
         # ── Focus tracking ──
@@ -114,13 +113,6 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
     # Public API
     # ------------------------------------------------------------------
 
-    def set_on_selection_changed(self, callback):
-        """Set callback when a UI element is selected.  Receives the GameObject."""
-        self._on_selection_changed = callback
-
-    def set_hierarchy_panel(self, panel):
-        self._hierarchy_panel = panel
-
     def set_engine(self, engine):
         """Set engine instance (needed for Game background mode)."""
         self._engine = engine
@@ -129,16 +121,103 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         """callback(enter: bool) — ask hierarchy to enter/exit UI mode."""
         self._on_request_ui_mode = callback
 
-    def notify_hierarchy_selection(self, go):
-        """Sync UI editor selection when hierarchy selection changes.
+    def current_child_context_id(self) -> str:
+        return (
+            f"canvas:{int(self._focused_canvas_id)}"
+            if self._focused_canvas_id
+            else ""
+        )
+
+    def restore_child_context(self, context_id: str) -> bool:
+        value = str(context_id or "").strip()
+        if not value:
+            self._focused_canvas_id = 0
+            return True
+        prefix, separator, object_id = value.partition(":")
+        if prefix != "canvas" or not separator:
+            return False
+        try:
+            resolved = int(object_id)
+        except ValueError:
+            return False
+        if resolved <= 0 or all(
+            int(go.id) != resolved for go, _canvas in self._get_all_canvases()
+        ):
+            return False
+        self._focused_canvas_id = resolved
+        return True
+
+    def _apply_focused_canvas_id(self, object_id: int) -> None:
+        self._focused_canvas_id = max(0, int(object_id or 0))
+        self.publish_child_context(
+            self.current_child_context_id(),
+            reason="ui_editor_canvas_focus",
+            record_history=False,
+        )
+
+    def _set_focused_canvas_id(
+        self,
+        object_id: int,
+        *,
+        record_history: bool,
+        description: str,
+    ) -> bool:
+        before = int(self._focused_canvas_id or 0)
+        after = max(0, int(object_id or 0))
+        if before == after:
+            return True
+        if not record_history:
+            self._apply_focused_canvas_id(after)
+            return True
+        return ViewCommandService.require().set_value(
+            before,
+            after,
+            self._apply_focused_canvas_id,
+            description=description,
+        )
+
+    def can_nudge_selected(self) -> bool:
+        return bool(
+            self._selected_element_comp is not None
+            and not self._dragging
+            and not self._resizing
+            and not self._rotating
+        )
+
+    def command_nudge_selected(self, dx: int, dy: int) -> bool:
+        """Move the selected UI element through the global action journal."""
+        elem = self._selected_element_comp
+        dx = int(dx)
+        dy = int(dy)
+        if elem is None or (dx == 0 and dy == 0) or not self.can_nudge_selected():
+            return False
+
+        from Infernux.engine.interaction import ComponentCommandService
+
+        changes = []
+        if dx:
+            old_x = float(elem.x)
+            changes.append((elem, "x", old_x, old_x + dx, "Set x"))
+        if dy:
+            old_y = float(elem.y)
+            changes.append((elem, "y", old_y, old_y + dy, "Set y"))
+        return ComponentCommandService.require().execute_property_changes(
+            changes,
+            description="Nudge UI Element",
+        )
+
+    def project_global_selection(self, go):
+        """Project the global scene selection into the UI Editor.
 
         If *go* has an InxUIScreenComponent, select it; if it's a Canvas,
         focus that canvas; otherwise clear element selection but keep canvas
         focus if the object is inside a canvas tree.
         """
+        self._finish_element_manipulation(commit=True)
         if go is None:
             self._clear_interaction_state()
             return
+        self._invalidate_selected_element_cache()
         self._focus_canvas_for_object(go)
         # Reset interaction state but keep focused canvas
         self._dragging = False
@@ -146,25 +225,73 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         self._resize_handle_idx = -1
         self._rotating = False
         self._active_alignment_guides = []
-        self._selected_element_comp = None
         from Infernux.ui import UICanvas
         from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent
         for comp in go.get_py_components():
             if isinstance(comp, UICanvas):
-                self._focused_canvas_id = go.id
+                self._set_focused_canvas_id(
+                    go.id,
+                    record_history=False,
+                    description="Focus UI Canvas",
+                )
                 return
             if isinstance(comp, InxUIScreenComponent):
-                self._selected_element_comp = comp
                 return
 
     def _clear_interaction_state(self):
-        """Reset all selection / drag / resize state."""
-        self._selected_element_comp = None
+        """Reset transient manipulation state without owning selection."""
+        self._finish_element_manipulation(commit=True)
+        self._invalidate_selected_element_cache()
         self._dragging = False
         self._resizing = False
         self._resize_handle_idx = -1
         self._rotating = False
         self._active_alignment_guides = []
+
+    def _invalidate_selected_element_cache(self) -> None:
+        self._selected_element_cache_revision = -1
+        self._selected_element_cache_object_id = 0
+        self._selected_element_cache = None
+
+    @staticmethod
+    def _element_object_id(element) -> int:
+        game_object = getattr(element, "game_object", None)
+        return int(getattr(game_object, "id", 0) or 0)
+
+    @property
+    def _selected_element_comp(self):
+        """Project the global GameObject selection onto one UI component."""
+        from Infernux.engine.interaction import SelectionService
+
+        selection = SelectionService.instance()
+        object_id = selection.primary_scene_object_id()
+        if (
+            self._selected_element_cache_revision == selection.revision
+            and self._selected_element_cache_object_id == object_id
+        ):
+            return self._selected_element_cache
+
+        component = None
+        if object_id > 0:
+            from Infernux.lib import SceneManager
+            from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent
+
+            scene = SceneManager.instance().get_active_scene()
+            game_object = scene.find_by_id(object_id) if scene is not None else None
+            if game_object is not None:
+                component = next(
+                    (
+                        candidate
+                        for candidate in game_object.get_py_components()
+                        if isinstance(candidate, InxUIScreenComponent)
+                    ),
+                    None,
+                )
+
+        self._selected_element_cache_revision = selection.revision
+        self._selected_element_cache_object_id = object_id
+        self._selected_element_cache = component
+        return component
 
     def _settings_ini_path(self) -> Optional[str]:
         root = get_project_root()
@@ -184,10 +311,8 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             self._save_view_settings()
             return
 
-        cp = configparser.ConfigParser()
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                cp.read_string(f.read())
+            cp = load_project_view_settings(path)
         except (OSError, configparser.Error) as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
@@ -220,28 +345,96 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         if not path:
             return
 
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        cp = configparser.ConfigParser()
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    cp.read_string(f.read())
-            except (OSError, configparser.Error):
-                cp = configparser.ConfigParser()
-
-        cp["UIEditor"] = {
+        values = {
             "zoom": f"{self._zoom:.6f}",
             "pan_x": f"{self._pan_x:.3f}",
             "pan_y": f"{self._pan_y:.3f}",
         }
         # Persist canvas panel positions
         for go_id, pos in self._canvas_panel_positions.items():
-            cp["UIEditor"][f"canvas_pos_{go_id}"] = f"{pos[0]:.1f},{pos[1]:.1f}"
-        from io import StringIO
-        from Infernux.core.document_store import write_document_text
-        output = StringIO()
-        cp.write(output)
-        write_document_text(path, output.getvalue())
+            values[f"canvas_pos_{go_id}"] = f"{pos[0]:.1f},{pos[1]:.1f}"
+        write_project_view_settings_section(path, "UIEditor", values)
+
+    @property
+    def _view_edit_owner(self) -> str:
+        return f"{self.window_id}:view"
+
+    def _view_edit_key(self, kind: str) -> str:
+        return f"{self._view_edit_owner}:{str(kind or '').strip()}"
+
+    def _capture_view_state(self):
+        return (
+            float(self._zoom),
+            float(self._pan_x),
+            float(self._pan_y),
+            tuple(
+                sorted(
+                    (
+                        int(go_id),
+                        float(position[0]),
+                        float(position[1]),
+                    )
+                    for go_id, position in self._canvas_panel_positions.items()
+                )
+            ),
+        )
+
+    def _apply_view_state(self, state, *, persist: bool = True) -> None:
+        zoom, pan_x, pan_y, canvas_positions = state
+        self._zoom = max(
+            Theme.UI_EDITOR_MIN_ZOOM,
+            min(Theme.UI_EDITOR_MAX_ZOOM, float(zoom)),
+        )
+        self._pan_x = float(pan_x)
+        self._pan_y = float(pan_y)
+        self._canvas_panel_positions = {
+            int(go_id): [float(x), float(y)]
+            for go_id, x, y in canvas_positions
+        }
+        if persist:
+            self._save_view_settings()
+
+    def _commit_view_state(self, before, description: str) -> bool:
+        after = self._capture_view_state()
+        if before == after:
+            return False
+        recorded = ViewCommandService.require().set_value(
+            before,
+            after,
+            self._apply_view_state,
+            description=description,
+        )
+        if not recorded:
+            self._save_view_settings()
+        return True
+
+    def _commit_continuous_view_edit(self, session) -> bool:
+        self._apply_view_state(session.current_value, persist=False)
+        return self._commit_view_state(session.initial_value, session.description)
+
+    def _cancel_continuous_view_edit(self, session) -> None:
+        self._apply_view_state(session.initial_value, persist=False)
+
+    def _begin_continuous_view_edit(self, kind: str, description: str) -> str:
+        edits = ContinuousEditService.instance()
+        key = self._view_edit_key(kind)
+        if edits.get(key) is None:
+            edits.commit_owner(self._view_edit_owner)
+            edits.begin(
+                key,
+                owner_id=self._view_edit_owner,
+                description=description,
+                initial_value=self._capture_view_state(),
+                on_commit=self._commit_continuous_view_edit,
+                on_cancel=self._cancel_continuous_view_edit,
+            )
+        return key
+
+    def _update_continuous_view_edit(self, key: str) -> None:
+        ContinuousEditService.instance().update(key, self._capture_view_state())
+
+    def _commit_pending_view_edits(self) -> None:
+        ContinuousEditService.instance().commit_owner(self._view_edit_owner)
 
     # ------------------------------------------------------------------
     # Helpers — canvas / element discovery
@@ -339,9 +532,14 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         self._was_focused = self._is_window_or_child_focused(ctx)
 
     def _on_not_visible(self, ctx):
+        self._commit_pending_view_edits()
+        self._finish_element_manipulation(commit=True)
         if self._on_request_ui_mode:
             self._on_request_ui_mode(False)
         self._was_focused = False
+
+    def on_disable(self) -> None:
+        self._commit_pending_view_edits()
 
     def on_render_content(self, ctx: InxGUIContext):
         all_canvases = self._get_all_canvases()
@@ -470,7 +668,6 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         ctx.pop_draw_list_clip_rect()
 
         self._update_hover_cursor(ctx, area_hovered, inp.mouse_x, inp.mouse_y)
-        self._process_keyboard_input(ctx, inp, focused_canvas, foc_ref_w, foc_ref_h)
         self._handle_canvas_click(
             ctx, inp, all_canvases,
             hovered_canvas_id, hovered_elem, hovered_all,
@@ -497,8 +694,12 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
 
     def _process_zoom_input(self, inp, area_min_x, area_min_y):
         """Apply mouse-wheel zoom."""
+        edits = ContinuousEditService.instance()
+        key = self._view_edit_key("zoom")
         if abs(inp.wheel_delta) <= 0.01:
+            edits.commit_if_idle(key, idle_seconds=0.12)
             return
+        key = self._begin_continuous_view_edit("zoom", "Zoom UI Editor View")
         old_zoom = self._zoom
         self._zoom = max(Theme.UI_EDITOR_MIN_ZOOM,
                          min(Theme.UI_EDITOR_MAX_ZOOM,
@@ -506,13 +707,17 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         factor = self._zoom / old_zoom
         self._pan_x = inp.mouse_x - area_min_x - factor * (inp.mouse_x - area_min_x - self._pan_x)
         self._pan_y = inp.mouse_y - area_min_y - factor * (inp.mouse_y - area_min_y - self._pan_y)
-        self._save_view_settings()
+        self._update_continuous_view_edit(key)
 
     def _process_canvas_drag_input(self, inp, all_canvases):
         """Continue or finish dragging a canvas panel around the workspace."""
         if not self._dragging_canvas:
             return
         if inp.lmb_down:
+            key = self._begin_continuous_view_edit(
+                "canvas",
+                "Move UI Editor Canvas",
+            )
             dx = (inp.mouse_x - self._drag_canvas_start_mx) / self._zoom
             dy = (inp.mouse_y - self._drag_canvas_start_my) / self._zoom
             new_wx = self._drag_canvas_start_wx + dx
@@ -520,41 +725,48 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             new_wx, new_wy = self._clamp_canvas_no_overlap(
                 self._drag_canvas_id, new_wx, new_wy, all_canvases)
             self._canvas_panel_positions[self._drag_canvas_id] = [new_wx, new_wy]
+            self._update_continuous_view_edit(key)
         else:
             self._dragging_canvas = False
             self._drag_canvas_id = 0
-            self._save_view_settings()
+            ContinuousEditService.instance().commit(self._view_edit_key("canvas"))
 
     def _process_workspace_pan(self, ctx, inp):
         """Handle workspace panning via Space+LMB or MMB."""
         if inp.wants_pan and not self._dragging_canvas:
             if not self._is_panning:
                 self._is_panning = True
+                self._begin_continuous_view_edit("pan", "Pan UI Editor View")
             drag_btn = inp.pan_drag_button
             dx = ctx.get_mouse_drag_delta_x(drag_btn)
             dy = ctx.get_mouse_drag_delta_y(drag_btn)
             self._pan_x += dx
             self._pan_y += dy
             ctx.reset_mouse_drag_delta(drag_btn)
-            self._save_view_settings()
+            self._update_continuous_view_edit(self._view_edit_key("pan"))
         else:
+            if self._is_panning:
+                ContinuousEditService.instance().commit(self._view_edit_key("pan"))
             self._is_panning = False
 
     def _process_ongoing_interactions(self, inp, foc_ref_w, foc_ref_h, focused_canvas):
         """Continue in-progress resize / rotate / drag each frame."""
         if self._resizing:
             if inp.lmb_down:
-                self._apply_resize_suppressed(inp)
+                if not self._apply_resize_suppressed(inp):
+                    self._resizing = False
+                    self._resize_handle_idx = -1
             else:
-                self._record_resize_undo()
+                self._finish_element_manipulation(commit=True)
                 self._resizing = False
                 self._resize_handle_idx = -1
 
         if self._rotating:
             if inp.lmb_down:
-                self._apply_rotation_drag_suppressed(inp)
+                if not self._apply_rotation_drag_suppressed(inp):
+                    self._rotating = False
             else:
-                self._record_rotate_undo()
+                self._finish_element_manipulation(commit=True)
                 self._rotating = False
 
         if self._dragging:
@@ -574,9 +786,12 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
                         focused_canvas, self._selected_element_comp,
                         new_vis_x, new_vis_y, foc_ref_w, foc_ref_h,
                     )
-                self._apply_drag_suppressed(new_vis_x, new_vis_y, foc_ref_w, foc_ref_h)
+                if not self._apply_drag_suppressed(
+                    new_vis_x, new_vis_y, foc_ref_w, foc_ref_h
+                ):
+                    self._dragging = False
             else:
-                self._record_drag_undo()
+                self._finish_element_manipulation(commit=True)
                 self._dragging = False
                 self._active_alignment_guides = []
         elif not self._resizing and not self._rotating:
@@ -716,6 +931,9 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         area_min_x, area_min_y, area_max_x, area_max_y = area
         elements = list(canvas.iter_ui_elements())
 
+        selected_element = self._selected_element_comp
+        selected_object_id = self._element_object_id(selected_element)
+        hovered_object_id = self._element_object_id(hovered_elem)
         for elem in elements:
             if isinstance(elem, UIText):
                 self._sync_text_layout(ctx, elem)
@@ -740,8 +958,9 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             s_x = round(s_x); s_y = round(s_y)
             s_w = round(s_w); s_h = round(s_h)
 
-            is_hovered = (elem is hovered_elem)
-            is_selected = (elem is self._selected_element_comp)
+            element_object_id = self._element_object_id(elem)
+            is_hovered = bool(element_object_id and element_object_id == hovered_object_id)
+            is_selected = bool(element_object_id and element_object_id == selected_object_id)
 
             cx0 = max(s_x, area_min_x)
             cy0 = max(s_y, area_min_y)
@@ -834,29 +1053,6 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         else:
             self._selection_geometry = None
 
-    def _process_keyboard_input(self, ctx, inp, focused_canvas, foc_ref_w, foc_ref_h):
-        """Handle keyboard shortcuts (deselect, delete, nudge)."""
-        if inp.wants_deselect():
-            self._select_element(None)
-        if inp.wants_delete() and self._selected_element_comp is not None:
-            self._delete_selected_element()
-
-        if (self._selected_element_comp is not None
-                and focused_canvas is not None
-                and self._is_window_or_child_focused(ctx)
-                and not ctx.want_text_input()):
-            dx = dy = 0
-            if ctx.is_key_pressed(KEY_LEFT_ARROW):
-                dx = -1
-            elif ctx.is_key_pressed(KEY_RIGHT_ARROW):
-                dx = 1
-            if ctx.is_key_pressed(KEY_UP_ARROW):
-                dy = -1
-            elif ctx.is_key_pressed(KEY_DOWN_ARROW):
-                dy = 1
-            if dx != 0 or dy != 0:
-                self._nudge_selected(dx, dy, foc_ref_w, foc_ref_h)
-
     def _begin_element_interaction(self, inp, all_canvases, hovered_canvas_id,
                                     hovered_elem, foc_origin_x, foc_origin_y,
                                     area_min_x, area_min_y):
@@ -872,48 +1068,56 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
 
         clicked_kind, clicked_handle = self._hit_test_handle(inp.mouse_x, inp.mouse_y)
         if clicked_kind in ("corner", "edge") and self._selected_element_comp is not None:
+            sel = self._selected_element_comp
+            if not self._begin_element_manipulation("resize", sel):
+                return
             self._resizing = True
             self._resize_handle_idx = clicked_handle
             self._resize_start_mx = inp.mouse_x
             self._resize_start_my = inp.mouse_y
-            sel = self._selected_element_comp
-            self._prepare_resize_element(sel)
+            if not self._mutate_element_manipulation(
+                lambda: self._prepare_resize_element(sel)
+            ):
+                self._resizing = False
+                self._resize_handle_idx = -1
+                return
             self._resize_start_rect = sel.get_rect(foc_ref_w, foc_ref_h)
             self._resize_start_rotation = float(getattr(sel, 'rotation', 0.0))
             self._resize_start_corners = sel.get_rotated_corners(foc_ref_w, foc_ref_h)
-            self._undo_pre_resize = (float(sel.x), float(sel.y),
-                                     float(sel.width), float(sel.height))
         elif clicked_kind == "rotate" and self._selected_element_comp is not None:
+            sel = self._selected_element_comp
+            if not self._begin_element_manipulation("rotate", sel):
+                return
             self._rotating = True
             self._dragging = False
             self._resizing = False
             self._resize_handle_idx = -1
-            sel = self._selected_element_comp
             center_x, center_y = self._selection_geometry['center']
             self._rotate_center_sx = center_x
             self._rotate_center_sy = center_y
             self._rotate_start_angle = math.degrees(
                 math.atan2(inp.mouse_y - center_y, inp.mouse_x - center_x))
             self._rotate_start_rotation = float(getattr(sel, 'rotation', 0.0))
-            self._undo_pre_rotate = float(getattr(sel, 'rotation', 0.0))
         elif clicked_kind == "inside" and self._selected_element_comp is not None:
             sel = self._selected_element_comp
+            if not self._begin_element_manipulation("drag", sel):
+                return
             self._dragging = True
             self._drag_start_x = inp.mouse_x
             self._drag_start_y = inp.mouse_y
             drag_x, drag_y, _, _ = sel.get_visual_rect(foc_ref_w, foc_ref_h)
             self._drag_elem_start_x = drag_x
             self._drag_elem_start_y = drag_y
-            self._undo_pre_drag = (float(sel.x), float(sel.y))
         elif hovered_elem is not None:
             self._select_element(hovered_elem)
+            if not self._begin_element_manipulation("drag", hovered_elem):
+                return
             self._dragging = True
             self._drag_start_x = inp.mouse_x
             self._drag_start_y = inp.mouse_y
             drag_x, drag_y, _, _ = hovered_elem.get_visual_rect(foc_ref_w, foc_ref_h)
             self._drag_elem_start_x = drag_x
             self._drag_elem_start_y = drag_y
-            self._undo_pre_drag = (float(hovered_elem.x), float(hovered_elem.y))
         elif hovered_canvas_id:
             for cgo, _cv in all_canvases:
                 if cgo.id == hovered_canvas_id:
@@ -934,22 +1138,32 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             and not inp.space_down and hovered_all and len(hovered_all) > 1
         )
         if _cycle_trigger:
-            if hovered_canvas_id:
-                self._focused_canvas_id = hovered_canvas_id
             _CYCLE_TOL = 3.0 / self._zoom
             cx, cy = self._screen_to_canvas(inp.mouse_x, inp.mouse_y,
                                             foc_origin_x, foc_origin_y)
             lx, ly = self._pick_cycle_last_canvas_pos
             same_spot = (abs(cx - lx) < _CYCLE_TOL and abs(cy - ly) < _CYCLE_TOL)
-            if same_spot and self._pick_cycle_candidates == hovered_all:
+            candidate_ids = tuple(self._element_object_id(item) for item in hovered_all)
+            previous_ids = tuple(
+                self._element_object_id(item) for item in self._pick_cycle_candidates
+            )
+            if same_spot and previous_ids == candidate_ids:
                 self._pick_cycle_index = (self._pick_cycle_index + 1) % len(hovered_all)
             else:
                 self._pick_cycle_candidates = hovered_all
-                try:
-                    cur_idx = hovered_all.index(self._selected_element_comp)
-                    self._pick_cycle_index = (cur_idx + 1) % len(hovered_all)
-                except ValueError:
-                    self._pick_cycle_index = 0
+                selected_id = self._element_object_id(self._selected_element_comp)
+                cur_idx = next(
+                    (
+                        index
+                        for index, element in enumerate(hovered_all)
+                        if selected_id
+                        and self._element_object_id(element) == selected_id
+                    ),
+                    -1,
+                )
+                self._pick_cycle_index = (
+                    (cur_idx + 1) % len(hovered_all) if cur_idx >= 0 else 0
+                )
             self._pick_cycle_last_canvas_pos = (cx, cy)
             self._select_element(hovered_all[self._pick_cycle_index])
 
@@ -975,15 +1189,24 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
                         self._drag_canvas_start_wy = pp[1]
                     break
 
-            if hovered_canvas_id:
-                self._focused_canvas_id = hovered_canvas_id
-
             if clicked_canvas_header is not None:
                 self._select_canvas(clicked_canvas_header)
             elif not self._dragging_canvas:
-                self._begin_element_interaction(
-                    inp, all_canvases, hovered_canvas_id, hovered_elem,
-                    foc_origin_x, foc_origin_y, area_min_x, area_min_y)
+                from Infernux.engine.interaction import EditorInteractionCore
+
+                core = EditorInteractionCore.instance()
+                if core is None:
+                    raise RuntimeError("UI Editor interaction requires Interaction Core")
+                with core.user_action("Select UI Editor Target"):
+                    if hovered_canvas_id:
+                        self._set_focused_canvas_id(
+                            hovered_canvas_id,
+                            record_history=True,
+                            description="Focus UI Canvas",
+                        )
+                    self._begin_element_interaction(
+                        inp, all_canvases, hovered_canvas_id, hovered_elem,
+                        foc_origin_x, foc_origin_y, area_min_x, area_min_y)
 
     # ------------------------------------------------------------------
     # Snap helpers
@@ -1045,99 +1268,165 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             ctx.set_mouse_cursor(ImGuiMouseCursor.Hand)
 
     # ------------------------------------------------------------------
-    # Suppressed interaction wrappers (undo batching)
+    # Core-owned continuous element manipulation
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _get_undo_mgr():
-        from Infernux.engine.undo import UndoManager
-        return UndoManager.instance()
+    def _component_commands():
+        from Infernux.engine.interaction import ComponentCommandService
 
-    def _nudge_selected(self, dx: int, dy: int, ref_w: float, ref_h: float):
-        """Move selected element by (dx, dy) pixels and record undo."""
-        elem = self._selected_element_comp
-        if elem is None:
-            return
-        vx, vy, _, _ = elem.get_visual_rect(ref_w, ref_h)
-        old_x, old_y = float(elem.x), float(elem.y)
-        elem.set_visual_position(vx + dx, vy + dy, ref_w, ref_h)
-        new_x, new_y = float(elem.x), float(elem.y)
-        if old_x == new_x and old_y == new_y:
-            return
-        from Infernux.engine.undo import SetPropertyCommand, CompoundCommand
-        cmds = []
-        if old_x != new_x:
-            cmds.append(SetPropertyCommand(elem, 'x', old_x, new_x, 'Set x'))
-        if old_y != new_y:
-            cmds.append(SetPropertyCommand(elem, 'y', old_y, new_y, 'Set y'))
-        if cmds:
-            mgr = self._get_undo_mgr()
-            if mgr:
-                mgr.record(CompoundCommand(cmds, "Nudge UI Element"))
+        return ComponentCommandService.require()
 
-    def _record_drag_undo(self):
-        """Record a single compound undo command for the completed drag."""
-        elem = self._selected_element_comp
-        if elem is None:
-            return
-        old_x, old_y = self._undo_pre_drag
-        new_x, new_y = float(elem.x), float(elem.y)
-        if old_x == new_x and old_y == new_y:
-            return
-        from Infernux.engine.undo import SetPropertyCommand, CompoundCommand
-        cmds = []
-        if old_x != new_x:
-            cmds.append(SetPropertyCommand(elem, 'x', old_x, new_x, 'Set x'))
-        if old_y != new_y:
-            cmds.append(SetPropertyCommand(elem, 'y', old_y, new_y, 'Set y'))
-        if cmds:
-            mgr = self._get_undo_mgr()
-            if mgr:
-                mgr.record(CompoundCommand(cmds, "Move UI Element"))
+    @staticmethod
+    def _element_manipulation_snapshot(kind: str, elem) -> dict:
+        if kind == "drag":
+            fields = ("x", "y")
+        elif kind == "rotate":
+            fields = ("rotation",)
+        elif kind == "resize":
+            fields = ("resize_mode", "x", "y", "width", "height")
+        else:
+            raise ValueError(f"unsupported UI element manipulation '{kind}'")
+        return {
+            field: getattr(elem, field)
+            for field in fields
+            if hasattr(elem, field)
+        }
 
-    def _record_resize_undo(self):
-        """Record a single compound undo command for the completed resize."""
-        elem = self._selected_element_comp
-        if elem is None:
-            return
-        old_x, old_y, old_w, old_h = self._undo_pre_resize
-        new_x, new_y = float(elem.x), float(elem.y)
-        new_w, new_h = float(elem.width), float(elem.height)
-        from Infernux.engine.undo import SetPropertyCommand, CompoundCommand
-        cmds = []
-        # Include resize_mode change when a TextUI was switched to FixedSize
-        old_mode = self._undo_pre_resize_mode
-        if old_mode is not None:
-            new_mode = getattr(elem, 'resize_mode', None)
-            if old_mode != new_mode:
-                cmds.append(SetPropertyCommand(elem, 'resize_mode', old_mode, new_mode, 'Set resize_mode'))
-        if old_x != new_x:
-            cmds.append(SetPropertyCommand(elem, 'x', old_x, new_x, 'Set x'))
-        if old_y != new_y:
-            cmds.append(SetPropertyCommand(elem, 'y', old_y, new_y, 'Set y'))
-        if old_w != new_w:
-            cmds.append(SetPropertyCommand(elem, 'width', old_w, new_w, 'Set width'))
-        if old_h != new_h:
-            cmds.append(SetPropertyCommand(elem, 'height', old_h, new_h, 'Set height'))
-        if cmds:
-            mgr = self._get_undo_mgr()
-            if mgr:
-                mgr.record(CompoundCommand(cmds, "Resize UI Element"))
+    @staticmethod
+    def _element_manipulation_description(kind: str) -> str:
+        return {
+            "drag": "Move UI Element",
+            "resize": "Resize UI Element",
+            "rotate": "Rotate UI Element",
+        }[kind]
 
-    def _record_rotate_undo(self):
-        """Record a single undo command for the completed rotation."""
+    def _release_element_manipulation_ownership(self, key: str) -> None:
+        if self._active_element_edit_key == key:
+            self._active_element_edit_key = ""
+        from Infernux.engine.interaction import FocusService
+
+        focus = FocusService.instance()
+        if focus.snapshot.capture_owner_id == "ui_editor.manipulation":
+            focus.set_capture_owner("")
+
+    def _restore_element_manipulation(self, commands, elem, state: dict) -> None:
+        scope = commands.suppress_replay() if commands.can_record() else _nullcontext()
+        with scope:
+            for field, value in state.items():
+                setattr(elem, field, value)
+
+    def _begin_element_manipulation(self, kind: str, elem) -> bool:
+        from Infernux.engine.interaction import EditorInteractionCore
+        commands_service = self._component_commands()
+        core = EditorInteractionCore.instance()
+        if (
+            elem is None
+            or not commands_service.can_record()
+            or core is None
+            or bool(core.focus.snapshot.capture_owner_id)
+        ):
+            return False
+
+        self._finish_element_manipulation(commit=True)
+        initial = self._element_manipulation_snapshot(kind, elem)
+        object_id = int(getattr(getattr(elem, "game_object", None), "id", 0) or 0)
+        key = f"ui_editor:{kind}:{object_id or id(elem)}"
+        description = self._element_manipulation_description(kind)
+        before_context = core.capture_context()
+
+        def on_commit(session):
+            current = self._element_manipulation_snapshot(kind, elem)
+            if not commands_service.can_record():
+                return False
+            changes = [
+                (elem, field, old_value, current[field], f"Set {field}")
+                for field, old_value in session.initial_value.items()
+                if field in current and old_value != current[field]
+            ]
+            # Input capture is transient gesture state. It must never be stored
+            # in the command's replayable after-context.
+            self._release_element_manipulation_ownership(key)
+            if changes:
+                return commands_service.record_applied_property_changes(
+                    changes,
+                    description=description,
+                    before_context=before_context,
+                    after_context=core.capture_context(),
+                )
+            return True
+
+        def on_cancel(session):
+            self._restore_element_manipulation(
+                commands_service, elem, session.initial_value
+            )
+            self._release_element_manipulation_ownership(key)
+
+        core.continuous_edits.begin(
+            key,
+            owner_id=self.WINDOW_TYPE_ID,
+            document_id=core.focus.snapshot.active_document_id,
+            description=description,
+            initial_value=initial,
+            on_commit=on_commit,
+            on_cancel=on_cancel,
+        )
+        self._active_element_edit_key = key
+        core.focus.set_capture_owner("ui_editor.manipulation")
+        return True
+
+    def _mutate_element_manipulation(self, mutation) -> bool:
+        from Infernux.engine.interaction import EditorInteractionCore
+
+        key = self._active_element_edit_key
+        core = EditorInteractionCore.instance()
+        commands = self._component_commands()
+        if (
+            not key
+            or core is None
+            or core.continuous_edits.get(key) is None
+            or not commands.can_record()
+        ):
+            self._finish_element_manipulation(commit=False)
+            return False
+        with commands.suppress_replay():
+            mutation()
         elem = self._selected_element_comp
-        if elem is None:
-            return
-        old_rot = self._undo_pre_rotate
-        new_rot = float(elem.rotation)
-        if old_rot == new_rot:
-            return
-        from Infernux.engine.undo import SetPropertyCommand
-        mgr = self._get_undo_mgr()
-        if mgr:
-            mgr.record(SetPropertyCommand(elem, 'rotation', old_rot, new_rot,
-                                           'Rotate UI Element'))
+        session = core.continuous_edits.get(key)
+        if elem is None or session is None:
+            self._finish_element_manipulation(commit=False)
+            return False
+        return core.continuous_edits.update(
+            key,
+            self._element_manipulation_snapshot(
+                str(key).split(":", 2)[1], elem
+            ),
+        )
+
+    def _finish_element_manipulation(self, *, commit: bool) -> bool:
+        from Infernux.engine.interaction import EditorInteractionCore
+
+        key = self._active_element_edit_key
+        if not key:
+            return False
+        core = EditorInteractionCore.instance()
+        if core is None:
+            self._release_element_manipulation_ownership(key)
+            return False
+        elem = self._selected_element_comp
+        session = core.continuous_edits.get(key)
+        if commit and elem is not None and session is not None:
+            kind = str(key).split(":", 2)[1]
+            core.continuous_edits.update(
+                key, self._element_manipulation_snapshot(kind, elem)
+            )
+        handled = (
+            core.continuous_edits.commit(key)
+            if commit
+            else core.continuous_edits.cancel(key)
+        )
+        self._release_element_manipulation_ownership(key)
+        return handled
 
     # ------------------------------------------------------------------
     # Selection
@@ -1162,6 +1451,7 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         if not all_canvases:
             return
         self._ensure_canvas_layout(all_canvases)
+        before = self._capture_view_state()
         min_x = float('inf')
         min_y = float('inf')
         max_x = float('-inf')
@@ -1188,4 +1478,4 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         # Center all canvases
         self._pan_x = (avail_w - bbox_w * self._zoom) / 2 - min_x * self._zoom
         self._pan_y = (avail_h - bbox_h * self._zoom) / 2 - min_y * self._zoom
-        self._save_view_settings()
+        self._commit_view_state(before, "Fit UI Editor View")

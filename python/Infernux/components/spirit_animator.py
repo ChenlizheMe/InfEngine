@@ -27,6 +27,7 @@ from Infernux.core.anim_state_machine import (
 from Infernux.core.animation_clip import AnimationClip
 from Infernux.core.asset_ref import AnimStateMachineRef
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import same_path
 from Infernux.graph.types import ValueType
 
 
@@ -136,6 +137,10 @@ class SpiritAnimator(InxComponent):
         self._current_clip = None
         self._elapsed = 0.0
         self._playing = False
+        self._subscribe_asset_events()
+
+    def on_destroy(self):
+        self._unsubscribe_asset_events()
 
     def start(self):
         self._sprite_renderer = self.game_object.get_component(SpriteRenderer)
@@ -195,7 +200,7 @@ class SpiritAnimator(InxComponent):
             self._dispatch_clip_events(clip, prev_norm, curr_norm, False)
             self._prev_event_norm = curr_norm
 
-        # Compute and apply frame index. Only touch the renderer when the
+        # Compute and apply the stable source-frame ID. Only touch the renderer when the
         # frame actually changed — sync_visual() walks the material-sync
         # chain and is wasteful to run every tick for unchanged frames.
         clip = self._current_clip
@@ -203,9 +208,9 @@ class SpiritAnimator(InxComponent):
             return
         raw_frame = int(self._elapsed * clip.fps)
         raw_frame = min(raw_frame, clip.frame_count - 1)
-        sprite_frame = clip.frame_indices[raw_frame]
+        sprite_frame = clip.frames[raw_frame].sprite_frame_id
         if sprite_frame != getattr(self, "_last_applied_frame", None):
-            self._sprite_renderer.frame_index = sprite_frame
+            self._sprite_renderer.frame_id = sprite_frame
             self._sprite_renderer.sync_visual()
             self._last_applied_frame = sprite_frame
 
@@ -306,6 +311,179 @@ class SpiritAnimator(InxComponent):
 
     # ── Internals ───────────────────────────────────────────────────
 
+    def _subscribe_asset_events(self) -> None:
+        try:
+            from Infernux.engine.interaction import AssetMutationService
+
+            previous = getattr(self, "_asset_mutation_service", None)
+            if previous is not None:
+                previous.remove_listener(self._on_asset_changed)
+            service = AssetMutationService.instance()
+            self._asset_mutation_service = service
+            if service is not None:
+                service.add_listener(self._on_asset_changed)
+        except (AttributeError, ImportError, RuntimeError):
+            pass
+
+    def _unsubscribe_asset_events(self) -> None:
+        try:
+            service = getattr(self, "_asset_mutation_service", None)
+            if service is not None:
+                service.remove_listener(self._on_asset_changed)
+            self._asset_mutation_service = None
+        except (AttributeError, ImportError, RuntimeError):
+            pass
+
+    @staticmethod
+    def _event_asset_path(file_path: str) -> str:
+        path = str(file_path or "").strip()
+        return path[:-5] if path.casefold().endswith(".meta") else path
+
+    @staticmethod
+    def _state_clip_reference_path(state: AnimState) -> str:
+        if state.clip_guid:
+            database = _get_asset_database()
+            if database is not None:
+                try:
+                    path = str(
+                        database.get_path_from_guid(state.clip_guid) or ""
+                    ).strip()
+                    if path:
+                        return path
+                except (KeyError, RuntimeError, TypeError, ValueError):
+                    pass
+        return str(state.clip_path or "").strip()
+
+    def _apply_current_clip_frame(self) -> None:
+        clip = self._current_clip
+        renderer = self._sprite_renderer
+        if clip is None or renderer is None or clip.frame_count <= 0 or clip.fps <= 0:
+            return
+        frame_index = min(
+            max(0, int(self._elapsed * clip.fps)),
+            clip.frame_count - 1,
+        )
+        frame_id = clip.frames[frame_index].sprite_frame_id
+        renderer.frame_id = frame_id
+        renderer.sync_visual()
+        self._last_applied_frame = frame_id
+
+    def _reload_clip_asset(self, asset_path: str) -> bool:
+        fsm = self._fsm
+        if fsm is None:
+            return False
+        affected = tuple(
+            state
+            for state in fsm.states
+            if getattr(state, "kind", "clip") != "timeline"
+            and same_path(self._state_clip_reference_path(state), asset_path)
+        )
+        if not affected:
+            return False
+        replacement = AnimationClip.load(asset_path)
+        if replacement is None:
+            Debug.log_error(
+                f"[SpiritAnimator] AnimationClip hot reload rejected; "
+                f"the previous runtime clip remains active: {asset_path}"
+            )
+            return True
+
+        normalized = self.normalized_time
+        playing = self._playing
+        current_name = self._current_state_name
+        for state in affected:
+            self._clip_cache[state.name] = replacement
+        if any(state.name == current_name for state in affected):
+            self._current_clip = replacement
+            duration = replacement.duration
+            self._elapsed = min(max(0.0, normalized) * duration, duration)
+            self._prev_event_norm = min(max(0.0, normalized), 1.0)
+            self._playing = playing
+            self._last_applied_frame = None
+            self._apply_current_clip_frame()
+        return True
+
+    def _reload_controller_asset(self, asset_path: str) -> bool:
+        fsm = self._fsm
+        if fsm is None or not same_path(getattr(fsm, "file_path", ""), asset_path):
+            return False
+        replacement = AnimStateMachine.load(asset_path)
+        if replacement is None:
+            Debug.log_error(
+                f"[SpiritAnimator] controller hot reload rejected; "
+                f"the previous runtime controller remains active: {asset_path}"
+            )
+            return True
+
+        state_name = self._current_state_name
+        normalized = self.normalized_time
+        playing = self._playing
+        parameters = dict(self._parameters)
+        self._fsm = replacement
+        self._clip_cache = {}
+        self._timeline_cache = {}
+        self._seed_parameters_from_fsm(replacement)
+        self._parameters.update(
+            (name, value)
+            for name, value in parameters.items()
+            if name in self._parameters
+        )
+        for candidate in replacement.states:
+            self._precache_state_asset(candidate)
+
+        state = replacement.get_state(state_name) if state_name else None
+        preserved_state = state is not None
+        if state is None:
+            state_name = replacement.default_state
+            state = replacement.get_state(state_name) if state_name else None
+            normalized = 0.0
+        self._current_state_name = state_name or ""
+        self._current_clip = None
+        self._current_timeline = None
+        if state is not None and getattr(state, "kind", "clip") == "timeline":
+            self._current_timeline = self._resolve_timeline(state)
+            duration = (
+                float(self._current_timeline.duration)
+                if self._current_timeline is not None
+                else 0.0
+            )
+            if not preserved_state:
+                self._capture_timeline_base()
+        else:
+            self._current_clip = self._resolve_clip(state) if state is not None else None
+            duration = (
+                self._current_clip.duration
+                if self._current_clip is not None
+                else 0.0
+            )
+        self._elapsed = min(max(0.0, normalized) * duration, duration)
+        self._prev_event_norm = min(max(0.0, normalized), 1.0)
+        self._playing = bool(playing and state is not None)
+        self._last_applied_frame = None
+        if self._current_timeline is not None:
+            self._apply_timeline(self._current_timeline, self._elapsed)
+        else:
+            self._apply_current_clip_frame()
+        return True
+
+    def _on_asset_changed(self, change) -> None:
+        from Infernux.engine.interaction import AssetMutationKind, iter_asset_mutations
+
+        for mutation in iter_asset_mutations(change):
+            if mutation.kind is AssetMutationKind.DELETED:
+                continue
+            asset_path = self._event_asset_path(mutation.path)
+            if not asset_path:
+                continue
+            try:
+                if self._reload_controller_asset(asset_path):
+                    continue
+                self._reload_clip_asset(asset_path)
+            except Exception as exc:
+                Debug.log_error(
+                    f"[SpiritAnimator] asset hot reload failed for '{asset_path}': {exc}"
+                )
+
     def _load_controller(self):
         """Load the AnimStateMachine from the *controller* asset reference."""
         self._fsm = None
@@ -324,8 +502,14 @@ class SpiritAnimator(InxComponent):
             )
         self._fsm = fsm
         self._seed_parameters_from_fsm(fsm)
-        # Pre-cache all clips
+        # Pre-cache the state-owned asset without treating Timeline states as clips.
         for state in fsm.states:
+            self._precache_state_asset(state)
+
+    def _precache_state_asset(self, state: AnimState) -> None:
+        if getattr(state, "kind", "clip") == "timeline":
+            self._resolve_timeline(state)
+        else:
             self._resolve_clip(state)
 
     def _seed_parameters_from_fsm(self, fsm: AnimStateMachine) -> None:
@@ -477,7 +661,7 @@ class SpiritAnimator(InxComponent):
 
         # Apply first frame immediately
         if clip and clip.frame_count > 0 and self._sprite_renderer:
-            self._sprite_renderer.frame_index = clip.frame_indices[0]
+            self._sprite_renderer.frame_id = clip.frames[0].sprite_frame_id
             self._sprite_renderer.sync_visual()
 
         return True

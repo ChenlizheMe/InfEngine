@@ -264,54 +264,51 @@ def read_prefab_source_canvas(file_path: str = None, guid: str = None,
         return ""
 
 
-def save_prefab(game_object, file_path: str, asset_database=None,
-               source_canvas_name: str = "", root_document_template: dict = None) -> bool:
-    """Serialize a GameObject hierarchy to a .prefab file.
-
-    Returns True on success, False on failure.
-    """
+def serialize_prefab_document(
+    game_object,
+    *,
+    source_canvas_name: str = "",
+    root_document_template: dict = None,
+) -> dict:
+    """Capture the exact strict prefab document owned by a GameObject tree."""
     if game_object is None:
-        Debug.log_warning("Cannot save prefab: no GameObject provided.")
-        return False
+        raise ValueError("cannot serialize prefab without a GameObject")
 
-    if not file_path.lower().endswith(PREFAB_EXTENSION):
-        file_path += PREFAB_EXTENSION
+    from Infernux.engine.component_restore import (
+        serialize_game_object_document_authoritatively,
+    )
 
-    try:
-        from Infernux.engine.component_restore import (
-            serialize_game_object_document_authoritatively,
-        )
-
-        go_data = serialize_game_object_document_authoritatively(game_object)
-        if not isinstance(go_data, dict):
-            raise TypeError("GameObject.serialize_document() did not return a dict")
-        if isinstance(root_document_template, dict):
-            for key in ("name", "active", "is_static", "tag", "layer"):
-                if key in root_document_template:
-                    go_data[key] = copy.deepcopy(root_document_template[key])
-            root_transform = go_data.get("transform")
-            template_transform = root_document_template.get("transform")
-            if isinstance(root_transform, dict) and isinstance(template_transform, dict):
-                for key in ("position", "rotation"):
-                    if key in template_transform:
-                        root_transform[key] = copy.deepcopy(template_transform[key])
-    except Exception as exc:
-        Debug.log_error(f"Failed to serialize GameObject for prefab: {exc}")
-        return False
+    go_data = serialize_game_object_document_authoritatively(game_object)
+    if not isinstance(go_data, dict):
+        raise TypeError("GameObject.serialize_document() did not return a dict")
+    if isinstance(root_document_template, dict):
+        for key in ("name", "active", "is_static", "tag", "layer"):
+            if key in root_document_template:
+                go_data[key] = copy.deepcopy(root_document_template[key])
+        root_transform = go_data.get("transform")
+        template_transform = root_document_template.get("transform")
+        if isinstance(root_transform, dict) and isinstance(template_transform, dict):
+            for key in ("position", "rotation"):
+                if key in template_transform:
+                    root_transform[key] = copy.deepcopy(template_transform[key])
 
     # Strip linkage and convert runtime IDs/references to prefab-local IDs.
-    try:
-        _strip_prefab_fields(go_data)
-        _strip_prefab_runtime_fields(go_data)
-    except PrefabDocumentError as exc:
-        Debug.log_error(f"Refusing to save invalid prefab: {exc}")
-        return False
+    _strip_prefab_fields(go_data)
+    _strip_prefab_runtime_fields(go_data)
 
     prefab_data = {
         "root_object": go_data,
     }
     if source_canvas_name:
         prefab_data["source_canvas_name"] = source_canvas_name
+    _validate_prefab_document(prefab_data)
+    return prefab_data
+
+
+def save_prefab_document(prefab_data: dict, file_path: str, asset_database=None) -> bool:
+    """Durably publish an already captured strict prefab document."""
+    if not file_path.lower().endswith(PREFAB_EXTENSION):
+        file_path += PREFAB_EXTENSION
 
     try:
         _validate_prefab_document(prefab_data, file_path)
@@ -345,6 +342,21 @@ def save_prefab(game_object, file_path: str, asset_database=None,
 
     Debug.log_internal(f"Prefab saved: {file_path}")
     return True
+
+
+def save_prefab(game_object, file_path: str, asset_database=None,
+               source_canvas_name: str = "", root_document_template: dict = None) -> bool:
+    """Serialize and durably publish a GameObject hierarchy as a prefab."""
+    try:
+        prefab_data = serialize_prefab_document(
+            game_object,
+            source_canvas_name=source_canvas_name,
+            root_document_template=root_document_template,
+        )
+    except Exception as exc:
+        Debug.log_error(f"Failed to serialize GameObject for prefab: {exc}")
+        return False
+    return save_prefab_document(prefab_data, file_path, asset_database)
 
 
 def instantiate_prefab(file_path: str = None, guid: str = None,
@@ -439,11 +451,6 @@ def _link_created_prefab_source(game_object, file_path: str, asset_database) -> 
         Debug.log_warning(f"Failed to link created prefab source: {exc}")
         return False
 
-    from Infernux.engine.scene_manager import SceneFileManager
-
-    manager = SceneFileManager.instance()
-    if manager is not None:
-        manager.mark_dirty()
     return True
 
 

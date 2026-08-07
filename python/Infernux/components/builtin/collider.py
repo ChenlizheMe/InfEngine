@@ -34,31 +34,36 @@ class PhysicsMaterialCombine(IntEnum):
     Maximum = 3
 
 
-def _wrap_physic_material(native) -> PhysicMaterialRef:
-    if native is None:
-        return PhysicMaterialRef()
-    ref = PhysicMaterialRef(guid=native.guid, path_hint=native.file_path)
-    from Infernux.core.physic_material import PhysicMaterial
-    ref._cached = PhysicMaterial(native)
+def _wrap_physic_material_state(state) -> PhysicMaterialRef:
+    guid, native = state
+    ref = PhysicMaterialRef(guid=str(guid or ""))
+    if native is not None:
+        from Infernux.core.physic_material import PhysicMaterial
+
+        ref._cached = PhysicMaterial(native)
     return ref
 
 
-def _unwrap_physic_material(value):
+def _set_native_physic_material(cpp, value) -> None:
     if value is None:
-        return None
+        cpp.physic_material = None
+        return
     if isinstance(value, PhysicMaterialRef):
-        if not value.guid and not value.path_hint:
-            return None
-        resolved = value.resolve()
-        if resolved is None:
-            raise ValueError(f"PhysicMaterial reference cannot be resolved: {value.guid}")
-        return resolved.native
+        if value._cached is not None:
+            cpp.physic_material = value._cached.native
+        elif value.guid:
+            cpp.physic_material_guid = str(value.guid)
+        else:
+            cpp.physic_material = None
+        return
     from Infernux.core.physic_material import PhysicMaterial
     if isinstance(value, PhysicMaterial):
-        return value.native
+        cpp.physic_material = value.native
+        return
     from Infernux.lib import InxPhysicMaterial as NativePhysicMaterial
     if isinstance(value, NativePhysicMaterial):
-        return value
+        cpp.physic_material = value
+        return
     raise TypeError("physic_material must be PhysicMaterial, PhysicMaterialRef, or None")
 
 
@@ -97,6 +102,7 @@ class Collider(BuiltinComponent):
         default=PhysicMaterialRef(),
         asset_type="PhysicMaterial",
         tooltip="Shared physics surface material.",
-        get_converter=_wrap_physic_material,
-        set_converter=_unwrap_physic_material,
+        native_getter=lambda cpp: (cpp.physic_material_guid, cpp.physic_material),
+        get_converter=_wrap_physic_material_state,
+        native_setter=_set_native_physic_material,
     )

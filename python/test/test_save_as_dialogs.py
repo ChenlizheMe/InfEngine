@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from Infernux.core.animation_timeline import TimelineKeyframe
+from Infernux.engine.interaction import ModalService
 from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 from Infernux.engine.ui.asset_save_dialog import AssetSaveAsDialog
 
@@ -70,13 +72,18 @@ class _SemanticContext:
 
 
 def test_asset_save_dialog_resolves_project_relative_asset_path(tmp_path):
-    dialog = AssetSaveAsDialog("animtimeline.save_as", "timeline")
+    dialog = AssetSaveAsDialog(
+        "animtimeline.save_as",
+        "timeline",
+        modal_service=ModalService(),
+    )
 
     assert dialog.request(
         title="Save Timeline",
         extension="animtimeline",
         default_name="Results Light Lift.animtimeline",
         project_root=str(tmp_path),
+        save_callback=lambda _path: True,
     )
 
     dialog.folder = "Assets/Animation"
@@ -88,12 +95,17 @@ def test_asset_save_dialog_resolves_project_relative_asset_path(tmp_path):
 
 
 def test_asset_save_dialog_rejects_paths_outside_assets(tmp_path):
-    dialog = AssetSaveAsDialog("animtimeline.save_as", "timeline")
+    dialog = AssetSaveAsDialog(
+        "animtimeline.save_as",
+        "timeline",
+        modal_service=ModalService(),
+    )
     dialog.request(
         title="Save Timeline",
         extension="animtimeline",
         default_name="Lift",
         project_root=str(tmp_path),
+        save_callback=lambda _path: True,
     )
 
     dialog.folder = "../outside"
@@ -119,7 +131,7 @@ def test_timeline_authoring_controls_publish_stable_semantics():
         scale=[1.0, 1.0, 1.0],
     )
     panel._timeline.keyframes.append(key)
-    panel._selected_key_id = key.stable_id
+    panel._select_key(key, record_history=False)
     ctx = _SemanticContext()
 
     panel._render_toolbar(ctx)
@@ -149,6 +161,7 @@ def test_timeline_authoring_controls_publish_stable_semantics():
     assert ctx.semantic_values["animtimeline.keyframe.time"] == 0.0
     assert ctx.semantic_values["animtimeline.keyframe.interpolation"] == key.interp
     assert ctx.semantic_values["animtimeline.keyframe.scl.z"] == 1.0
+    panel._clear_key_selection(record_history=False)
 
 
 def test_timeline_authoring_skips_semantics_outside_requested_capture():
@@ -160,7 +173,7 @@ def test_timeline_authoring_skips_semantics_outside_requested_capture():
         scale=[1.0, 1.0, 1.0],
     )
     panel._timeline.keyframes.append(key)
-    panel._selected_key_id = key.stable_id
+    panel._select_key(key, record_history=False)
     ctx = _SemanticContext()
     ctx.semantic_capture_enabled = False
 
@@ -169,6 +182,7 @@ def test_timeline_authoring_skips_semantics_outside_requested_capture():
     panel._render_keyframe_inspector(ctx)
 
     assert ctx.semantic_ids == []
+    panel._clear_key_selection(record_history=False)
 
 
 def test_timeline_playback_requests_full_speed_editor_frames():
@@ -188,28 +202,39 @@ def test_timeline_playback_requests_full_speed_editor_frames():
     assert panel._needs_full_speed_frames() is True
 
 
-def test_timeline_new_document_and_dirty_draft_round_trip():
+def test_timeline_new_document_and_dirty_draft_round_trip_through_registry_session():
+    from Infernux.engine.interaction import DocumentRegistry
+
     panel = AnimTimelineEditorPanel()
-    assert panel._dirty is True
+    assert panel._document_is_dirty() is True
     panel._timeline.duration = 7.5
     panel._timeline.keyframes.append(TimelineKeyframe(time=1.25))
 
+    view_state = panel.save_state()
+    session_state = DocumentRegistry.instance().capture_session_state()
+    restored_registry = DocumentRegistry()
+    assert restored_registry.queue_session_restore(session_state) == 1
     restored = AnimTimelineEditorPanel()
-    restored.load_state(panel.save_state())
+    assert restored.restore_persisted_session_document()
+    restored.load_state(view_state)
 
-    assert restored._dirty is True
+    assert restored._document_is_dirty() is True
     assert restored._timeline.duration == 7.5
     assert [key.time for key in restored._timeline.keyframes] == [1.25]
 
 
 def test_timeline_discard_cleans_an_unsaved_draft():
+    from Infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
+
     panel = AnimTimelineEditorPanel()
     panel._timeline.keyframes.append(TimelineKeyframe(time=1.25))
 
-    assert panel._discard_unsaved_changes() is True
+    result = DocumentRegistry.instance().request_discard(panel.document_id)
+
+    assert result.status is DocumentActionStatus.APPLIED
     assert panel._file_path == ""
     assert panel._timeline.keyframes == []
-    assert panel._dirty is False
+    assert panel._document_is_dirty() is False
 
 
 def test_timeline_gpu_preview_is_polled_until_first_texture(monkeypatch):
@@ -318,18 +343,29 @@ class _AnimClipSaveAsContext:
     def end_popup() -> None:
         pass
 
+    def close_current_popup(self) -> None:
+        self.events.append(("close_popup", ""))
+
+
+class _ConfirmSaveAsContext(_AnimClipSaveAsContext):
+    def button(self, label: str, callback, **_kwargs) -> bool:
+        if label.endswith("##confirm"):
+            callback()
+            return True
+        return False
+
 
 def test_animclip_agent_save_as_uses_editor_modal_and_focuses_name(tmp_path, monkeypatch):
     monkeypatch.setattr(asset_save_dialog, "get_project_root", lambda: str(tmp_path))
     monkeypatch.setattr(asset_save_dialog, "is_synthetic_input_frame", lambda: True)
     panel = AnimClip2DEditorPanel()
+    modals = ModalService()
+    panel._save_as_dialog.bind_modal_service(modals)
     clip = _ClipState(name="Player / Idle")
     ctx = _AnimClipSaveAsContext()
-    monkeypatch.setattr(panel, "_render_texture_slot", lambda *_args: None)
-    monkeypatch.setattr(panel, "_render_empty_state", lambda *_args: None)
 
     panel._show_save_as_dialog(clip)
-    panel.on_render_content(ctx)
+    modals.render(ctx)
 
     assert panel._save_as_dialog.is_open is True
     assert panel._pending_save_as_clip is clip
@@ -352,7 +388,12 @@ def test_animclip_agent_save_as_uses_editor_modal_and_focuses_name(tmp_path, mon
 
 
 def test_asset_save_as_uses_native_dialog_for_user_input(tmp_path, monkeypatch):
-    dialog = AssetSaveAsDialog("animtimeline.save_as", "timeline")
+    modals = ModalService()
+    dialog = AssetSaveAsDialog(
+        "animtimeline.save_as",
+        "timeline",
+        modal_service=modals,
+    )
     target = tmp_path / "Assets" / "Animation" / "Lift.animtimeline"
     saved: list[str] = []
     monkeypatch.setattr(asset_save_dialog, "is_synthetic_input_frame", lambda: False)
@@ -363,12 +404,157 @@ def test_asset_save_as_uses_native_dialog_for_user_input(tmp_path, monkeypatch):
         extension="animtimeline",
         default_name="Lift",
         project_root=str(tmp_path),
+        save_callback=lambda path: saved.append(path) or True,
     )
     assert dialog.is_open is True
 
-    dialog.render(None, lambda path: saved.append(path) or True)
+    modals.render(None)
 
     assert saved == [str(target)]
+
+
+def test_asset_save_as_nests_under_unsaved_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setattr(asset_save_dialog, "is_synthetic_input_frame", lambda: True)
+    modals = ModalService()
+    parent_active = {"value": True}
+    modals.register(
+        "editor.unsaved_changes",
+        is_active=lambda: parent_active["value"],
+        render=lambda _ctx: None,
+        cancel=lambda: parent_active.update(value=False),
+    )
+    assert modals.activate("editor.unsaved_changes", owner_id="particle_graph_editor")
+
+    dialog = AssetSaveAsDialog(
+        "particle_graph.save_as",
+        "particle graph",
+        owner_id="particle_graph_editor",
+        modal_service=modals,
+    )
+    assert dialog.request(
+        title="Save Particle Graph",
+        extension="particlegraph",
+        default_name="Smoke",
+        project_root=str(tmp_path),
+        save_callback=lambda _path: True,
+    )
+    assert [entry.modal_id for entry in modals.active_stack] == [
+        "editor.unsaved_changes",
+        "asset.save_as:particle_graph.save_as",
+    ]
+
+
+def test_asset_save_as_nests_under_external_document_conflict(tmp_path, monkeypatch):
+    monkeypatch.setattr(asset_save_dialog, "is_synthetic_input_frame", lambda: True)
+    modals = ModalService()
+    modals.register(
+        "editor.external_document_conflict",
+        is_active=lambda: True,
+        render=lambda _ctx: None,
+        cancel=lambda: None,
+    )
+    assert modals.activate(
+        "editor.external_document_conflict",
+        owner_id="particle_graph_editor",
+    )
+    dialog = AssetSaveAsDialog(
+        "particle_graph.save_as",
+        "particle graph",
+        owner_id="particle_graph_editor",
+        modal_service=modals,
+    )
+
+    assert dialog.request(
+        title="Save Particle Graph",
+        extension="particlegraph",
+        default_name="Smoke Copy",
+        project_root=str(tmp_path),
+        save_callback=lambda _path: True,
+    )
+    assert [entry.modal_id for entry in modals.active_stack] == [
+        "editor.external_document_conflict",
+        "asset.save_as:particle_graph.save_as",
+    ]
+
+
+def test_asset_save_as_is_rejected_while_unrelated_root_modal_is_active(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(asset_save_dialog, "is_synthetic_input_frame", lambda: True)
+    modals = ModalService()
+    modals.register(
+        "project.delete",
+        is_active=lambda: True,
+        render=lambda _ctx: None,
+        cancel=lambda: None,
+    )
+    assert modals.activate("project.delete", owner_id="project")
+    dialog = AssetSaveAsDialog(
+        "particle_graph.save_as",
+        "particle graph",
+        modal_service=modals,
+    )
+
+    assert not dialog.request(
+        title="Save Particle Graph",
+        extension="particlegraph",
+        default_name="Smoke",
+        project_root=str(tmp_path),
+        save_callback=lambda _path: True,
+    )
+    assert dialog.is_open is False
+    assert modals.active_modal_id == "project.delete"
+
+
+def test_particle_graph_save_as_clears_document_dirty_state(
+    tmp_path,
+    monkeypatch,
+):
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.interaction import (
+        DocumentActionStatus,
+        EditorInteractionCore,
+    )
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        ParticleGraphEditorPanel,
+    )
+
+    previous_core = EditorInteractionCore._instance
+    core = EditorInteractionCore()
+    monkeypatch.setattr(asset_save_dialog, "get_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(asset_save_dialog, "is_synthetic_input_frame", lambda: True)
+    monkeypatch.setattr(
+        AssetManager,
+        "reimport_asset",
+        classmethod(lambda cls, _path: None),
+    )
+    try:
+        panel = ParticleGraphEditorPanel()
+        result = core.documents.request_save(panel.document_id)
+        assert result.status is DocumentActionStatus.PENDING
+        assert core.documents.require(panel.document_id).is_dirty is True
+
+        panel._save_as_dialog.folder = "Assets/VFX"
+        panel._save_as_dialog.name = "Smoke"
+        core.modals.render(_ConfirmSaveAsContext())
+
+        from Infernux.core.document_store import DocumentStore
+
+        target = tmp_path / "Assets" / "VFX" / "Smoke.particlegraph"
+        DocumentStore.flush(str(target))
+        panel._authoring_document_controller.poll_pending_writes()
+
+        document = core.documents.require(panel.document_id)
+        assert document.is_dirty is False
+        assert panel._document_is_dirty() is False
+        assert panel._file_path == str(
+            target.resolve()
+        )
+        assert core.modals.active_modal_id == ""
+    finally:
+        core.shutdown()
+        EditorInteractionCore._instance = previous_core
 
 
 def test_animclip_save_as_callback_keeps_the_requested_clip_target():
@@ -376,7 +562,9 @@ def test_animclip_save_as_callback_keeps_the_requested_clip_target():
     requested = _ClipState(name="Requested")
     panel._pending_save_as_clip = requested
     saved: list[tuple[_ClipState, str]] = []
-    panel._do_save_clip = lambda clip, path: saved.append((clip, path)) or True
+    panel._do_save_clip = (
+        lambda clip, path, **_kwargs: saved.append((clip, path)) or True
+    )
 
     assert panel._save_pending_clip("C:/project/Assets/Requested.animclip2d") is True
     assert saved == [(requested, "C:/project/Assets/Requested.animclip2d")]
@@ -386,20 +574,81 @@ def test_animclip_save_as_callback_keeps_the_requested_clip_target():
 import os
 
 from Infernux.engine.scene_manager import SceneFileManager
-from Infernux.engine.project_context import clear_panel_tracking, set_panel_dirty
+from Infernux.engine.interaction import (
+    DocumentCapability,
+    DocumentKind,
+    DocumentRegistry,
+    EditorInteractionCore,
+)
 from Infernux.engine.ui.dirty_panel_confirmation import DirtyPanelConfirmationCoordinator
 import Infernux.engine._scene_save as scene_save
 
 
+class _TestResourceDocumentController:
+    def __init__(self, discard=None) -> None:
+        self._discard = discard
+
+    def discard(self, *, document_id):
+        del document_id
+        if not callable(self._discard):
+            return False
+        return self._discard()
+
+
+def _open_test_dirty_document(panel_id: str, title: str, *, discard=None):
+    registry = DocumentRegistry.instance()
+    registry.close_view(panel_id)
+    document = registry.create(
+        DocumentKind.GENERIC,
+        title,
+        revision=1,
+        saved_revision=0,
+        capabilities=(
+            DocumentCapability.DISCARD
+            if callable(discard)
+            else DocumentCapability.NONE
+        ),
+        controller=_TestResourceDocumentController(discard),
+    )
+    registry.attach_view(document.document_id, panel_id)
+    return document
+
+
+def _mark_test_document_saved(panel_id: str) -> None:
+    registry = DocumentRegistry.instance()
+    document = registry.document_for_view(panel_id)
+    assert document is not None
+    registry.mark_saved(document.document_id)
+
+
 def _scene_manager() -> SceneFileManager:
     previous = SceneFileManager._instance
+    previous_core = EditorInteractionCore._instance
+    previous_confirmation = DirtyPanelConfirmationCoordinator._instance
+    core = EditorInteractionCore()
+    DirtyPanelConfirmationCoordinator._instance = None
     manager = SceneFileManager()
     manager._test_previous_instance = previous
+    manager._test_interaction_core = core
+    manager._test_previous_interaction_core = previous_core
+    manager._test_previous_confirmation = previous_confirmation
     return manager
 
 
 def _restore_scene_manager(manager: SceneFileManager) -> None:
+    DirtyPanelConfirmationCoordinator._instance = manager._test_previous_confirmation
+    manager._test_interaction_core.shutdown()
+    EditorInteractionCore._instance = manager._test_previous_interaction_core
     SceneFileManager._instance = manager._test_previous_instance
+
+
+def _set_scene_dirty(manager: SceneFileManager, dirty: bool) -> None:
+    registry = DocumentRegistry.instance()
+    document = registry.require(manager.document_id)
+    if dirty and not document.is_dirty:
+        registry.mark_changed(document.document_id)
+    elif not dirty and document.is_dirty:
+        registry.restore_saved_revision(document.document_id)
 
 
 def test_unsaved_scene_agent_save_uses_editor_owned_save_as_state(tmp_path, monkeypatch):
@@ -415,6 +664,7 @@ def test_unsaved_scene_agent_save_uses_editor_owned_save_as_state(tmp_path, monk
         assert manager._save_as_focus_name is True
         assert manager._save_as_folder == "Assets"
         assert manager._save_as_name == "UntitledScene"
+        assert manager._test_interaction_core.modals.active_modal_id == "scene.save_as"
     finally:
         _restore_scene_manager(manager)
 
@@ -434,9 +684,10 @@ def test_unsaved_scene_user_save_uses_native_dialog(tmp_path, monkeypatch):
         assert manager._save_as_popup_open is False
         assert manager._save_as_native_dialog_pending is True
 
-        manager.render_save_as_popup(None)
+        manager._test_interaction_core.modals.render(None)
 
         assert saved == [str(target)]
+        assert manager._test_interaction_core.modals.active_modal_id == ""
     finally:
         _restore_scene_manager(manager)
 
@@ -515,7 +766,7 @@ def test_dirty_scene_close_uses_editor_owned_confirmation(tmp_path, monkeypatch)
         if coordinator.is_active:
             coordinator.choose_cancel()
         manager._engine = native
-        manager._dirty = True
+        _set_scene_dirty(manager, True)
         manager._current_scene_path = str(tmp_path / "Assets" / "UnsavedChanges.scene")
         monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
         monkeypatch.setattr(manager, "_save_camera_state", camera_paths.append)
@@ -531,6 +782,29 @@ def test_dirty_scene_close_uses_editor_owned_confirmation(tmp_path, monkeypatch)
     finally:
         if coordinator.is_active:
             coordinator.choose_cancel()
+        _restore_scene_manager(manager)
+
+
+def test_scene_save_as_nests_under_unsaved_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setattr(scene_save, "_effective_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(scene_save, "is_synthetic_input_frame", lambda: True)
+    manager = _scene_manager()
+    parent_active = {"value": True}
+    modals = manager._test_interaction_core.modals
+    modals.register(
+        "editor.unsaved_changes",
+        is_active=lambda: parent_active["value"],
+        render=lambda _ctx: None,
+        cancel=lambda: parent_active.update(value=False),
+    )
+    try:
+        assert modals.activate("editor.unsaved_changes", owner_id="scene")
+        assert manager._show_save_as_dialog()
+        assert [entry.modal_id for entry in modals.active_stack] == [
+            "editor.unsaved_changes",
+            "scene.save_as",
+        ]
+    finally:
         _restore_scene_manager(manager)
 
 
@@ -553,15 +827,19 @@ def test_dirty_panel_confirmation_precedes_dirty_scene_confirmation(tmp_path, mo
     try:
         assert coordinator.is_active is False
         manager._engine = native
-        manager._dirty = True
+        _set_scene_dirty(manager, True)
         manager._current_scene_path = str(tmp_path / "Assets" / "Ordered.scene")
         monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
         monkeypatch.setattr(manager, "_save_camera_state", lambda _path: None)
 
         def discard_panel() -> None:
-            set_panel_dirty(panel_id, False)
+            _mark_test_document_saved(panel_id)
 
-        set_panel_dirty(panel_id, True, title="Animation Editor", discard_handler=discard_panel)
+        _open_test_dirty_document(
+            panel_id,
+            "Animation Editor",
+            discard=discard_panel,
+        )
         manager.request_close()
 
         assert coordinator.active_panel_id == panel_id
@@ -576,7 +854,7 @@ def test_dirty_panel_confirmation_precedes_dirty_scene_confirmation(tmp_path, mo
     finally:
         if coordinator.is_active:
             coordinator.choose_cancel()
-        clear_panel_tracking(panel_id)
+        DocumentRegistry.instance().close_view(panel_id)
         _restore_scene_manager(manager)
 
 
@@ -586,7 +864,7 @@ def test_dirty_scene_open_uses_replace_document_transaction(monkeypatch):
     try:
         if coordinator.is_active:
             coordinator.choose_cancel()
-        manager._dirty = True
+        _set_scene_dirty(manager, True)
         manager._current_scene_path = "current.scene"
         monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
         monkeypatch.setattr(manager, "_save_camera_state", lambda _path: None)
@@ -635,13 +913,16 @@ def test_dirty_prefab_exit_waits_for_explicit_close_decision(tmp_path, monkeypat
         monkeypatch.setattr(
             manager,
             "_schedule_prefab_exit",
-            lambda callback=None: scheduled.append(callback) or True,
+            lambda callback=None, **_kwargs: scheduled.append(callback) or True,
         )
-        monkeypatch.setattr(
-            manager,
-            "_save_prefab",
-            lambda *, ticket_id="": saved.append(ticket_id) or True,
-        )
+        def save_prefab(*, ticket_id=""):
+            saved.append(ticket_id)
+            registry = DocumentRegistry.instance()
+            registry.capture_save_revision(ticket_id)
+            registry.complete_save(ticket_id, success=True)
+            return True
+
+        monkeypatch.setattr(manager, "_save_prefab", save_prefab)
 
         assert manager.exit_prefab_mode() is True
         assert coordinator.active_document_id == prefab_id
@@ -680,7 +961,7 @@ def test_open_from_prefab_resolves_prefab_then_previous_scene(tmp_path, monkeypa
         if coordinator.is_active:
             coordinator.choose_cancel()
         manager._current_scene_path = str(tmp_path / "Assets" / "Current.scene")
-        manager._dirty = True
+        _set_scene_dirty(manager, True)
         previous_id, prefab_id = _enter_fake_prefab_mode(
             manager,
             str(tmp_path / "Assets" / "Interaction.prefab"),
@@ -688,7 +969,7 @@ def test_open_from_prefab_resolves_prefab_then_previous_scene(tmp_path, monkeypa
         monkeypatch.setattr(
             manager,
             "_schedule_prefab_exit",
-            lambda callback=None: scheduled.append(callback) or True,
+            lambda callback=None, **_kwargs: scheduled.append(callback) or True,
         )
         monkeypatch.setattr(
             manager,
@@ -727,6 +1008,81 @@ def test_open_from_prefab_resolves_prefab_then_previous_scene(tmp_path, monkeypa
         _restore_scene_manager(manager)
 
 
+def test_prefab_exit_records_history_only_after_deferred_transition_completes(
+    tmp_path,
+    monkeypatch,
+):
+    from Infernux.engine.interaction import EditorContextSnapshot, PrefabCommandService
+    from Infernux.engine.undo import PrefabModeCommand, UndoManager
+
+    manager = _scene_manager()
+    previous_undo = UndoManager._instance
+    undo = UndoManager()
+    previous_service = PrefabCommandService._instance
+    service = PrefabCommandService(
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        context_provider=lambda: EditorContextSnapshot(),
+    )
+    requested: list[tuple[object, bool]] = []
+    try:
+        prefab_path = str(tmp_path / "Assets" / "Interaction.prefab")
+        _enter_fake_prefab_mode(manager, prefab_path)
+        monkeypatch.setattr(
+            manager,
+            "_request_prefab_exit",
+            lambda on_complete=None, *, preserve_undo_history=False: (
+                requested.append((on_complete, preserve_undo_history)) or True
+            ),
+        )
+
+        assert service.exit() is True
+        assert undo.action_journal.applied_entries() == ()
+        assert len(requested) == 1
+        callback, preserve_history = requested[0]
+        assert preserve_history is True
+
+        manager.is_prefab_mode = False
+        callback()
+
+        entries = undo.action_journal.applied_entries()
+        assert len(entries) == 1
+        assert isinstance(entries[0].action, PrefabModeCommand)
+        assert entries[0].action.description == "Exit Prefab Mode"
+    finally:
+        service.shutdown()
+        PrefabCommandService._instance = previous_service
+        UndoManager._instance = previous_undo
+        _restore_scene_manager(manager)
+
+
+def test_deferred_prefab_exit_preserves_history_for_tracked_transition(monkeypatch):
+    manager = _scene_manager()
+    calls: list[bool] = []
+    completed: list[bool] = []
+    try:
+        manager._deferred_exit_prefab = True
+        manager._post_prefab_exit_callback = lambda: completed.append(True)
+        monkeypatch.setattr(
+            manager,
+            "_do_exit_prefab_mode",
+            lambda preserve_undo_history=False: (
+                calls.append(bool(preserve_undo_history)) or True
+            ),
+        )
+
+        assert manager._run_deferred_exit_prefab_task(
+            preserve_undo_history=True,
+        ) is True
+        assert calls == [True]
+        assert completed == [True]
+        assert manager._deferred_exit_prefab is False
+    finally:
+        _restore_scene_manager(manager)
+
+
 def test_dirty_panel_cancel_releases_native_close_request(monkeypatch):
     manager = _scene_manager()
     panel_id = "scene_close_dirty_panel_cancel"
@@ -746,9 +1102,9 @@ def test_dirty_panel_cancel_releases_native_close_request(monkeypatch):
     try:
         assert coordinator.is_active is False
         manager._engine = native
-        manager._dirty = False
+        _set_scene_dirty(manager, False)
         monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
-        set_panel_dirty(panel_id, True, title="Animation Editor")
+        _open_test_dirty_document(panel_id, "Animation Editor")
         manager.request_close()
         coordinator.choose_cancel()
 
@@ -758,7 +1114,7 @@ def test_dirty_panel_cancel_releases_native_close_request(monkeypatch):
     finally:
         if coordinator.is_active:
             coordinator.choose_cancel()
-        clear_panel_tracking(panel_id)
+        DocumentRegistry.instance().close_view(panel_id)
         _restore_scene_manager(manager)
 
 
@@ -782,7 +1138,7 @@ def test_play_mode_still_confirms_dirty_resource_panels(monkeypatch):
         assert coordinator.is_active is False
         manager._engine = native
         monkeypatch.setattr(manager, "_is_play_mode", lambda: True)
-        set_panel_dirty(panel_id, True, title="Timeline")
+        _open_test_dirty_document(panel_id, "Timeline")
         manager.request_close()
 
         assert coordinator.active_panel_id == panel_id
@@ -792,5 +1148,5 @@ def test_play_mode_still_confirms_dirty_resource_panels(monkeypatch):
     finally:
         if coordinator.is_active:
             coordinator.choose_cancel()
-        clear_panel_tracking(panel_id)
+        DocumentRegistry.instance().close_view(panel_id)
         _restore_scene_manager(manager)

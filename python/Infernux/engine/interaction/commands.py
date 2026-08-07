@@ -20,6 +20,8 @@ class CommandSource(str, Enum):
     TOOLBAR = "toolbar"
     CONTEXT_MENU = "context_menu"
     DRAG_DROP = "drag_drop"
+    POINTER = "pointer"
+    INLINE_EDIT = "inline_edit"
     PALETTE = "palette"
     AUTOMATION = "automation"
     API = "api"
@@ -56,6 +58,7 @@ class CommandResult:
 
 CommandHandler = Callable[[CommandContext], Any]
 CommandPredicate = Callable[[CommandContext], bool]
+CommandDisabledReason = Callable[[CommandContext], str]
 
 
 @dataclass(slots=True)
@@ -67,6 +70,10 @@ class EditorCommand:
     can_execute: Optional[CommandPredicate] = None
     is_checked: Optional[CommandPredicate] = None
     default_shortcut: str = ""
+    disabled_reason: Optional[CommandDisabledReason] = None
+    palette_visible: bool = True
+    palette_keywords: tuple[str, ...] = ()
+    creates_user_action: bool = True
 
     def __post_init__(self) -> None:
         self.command_id = str(self.command_id or "").strip()
@@ -74,6 +81,13 @@ class EditorCommand:
             raise ValueError("editor command_id must not be empty")
         if not callable(self.execute):
             raise TypeError("editor command execute handler must be callable")
+        self.palette_visible = bool(self.palette_visible)
+        self.creates_user_action = bool(self.creates_user_action)
+        self.palette_keywords = tuple(
+            str(keyword or "").strip()
+            for keyword in self.palette_keywords
+            if str(keyword or "").strip()
+        )
 
 
 class EditorCommandRegistry:
@@ -168,6 +182,29 @@ class EditorCommandRegistry:
             Debug.log_suppressed(f"EditorCommand.is_checked[{command.command_id}]", exc)
             return False
 
+    def disabled_reason(
+        self,
+        command_id: str,
+        context: Optional[CommandContext] = None,
+    ) -> str:
+        command = self.get(command_id)
+        if command is None:
+            return "Command is not registered"
+        resolved_context = context or self.context()
+        if self.can_execute(command.command_id, resolved_context):
+            return ""
+        if command.disabled_reason is None:
+            return "Command is unavailable in the current context"
+        try:
+            return str(command.disabled_reason(resolved_context) or "").strip() or (
+                "Command is unavailable in the current context"
+            )
+        except Exception as exc:
+            Debug.log_suppressed(
+                f"EditorCommand.disabled_reason[{command.command_id}]", exc
+            )
+            return "Command is unavailable in the current context"
+
     def execute(
         self,
         command_id: str,
@@ -175,15 +212,56 @@ class EditorCommandRegistry:
         source: CommandSource = CommandSource.API,
         payload: Optional[Mapping[str, Any]] = None,
     ) -> CommandResult:
+        return self.execute_context(
+            command_id,
+            self.context(source, payload),
+        )
+
+    def execute_context(
+        self,
+        command_id: str,
+        context: CommandContext,
+    ) -> CommandResult:
+        """Execute against an already captured editor context.
+
+        Deferred UI such as context menus must retain the focus, selection,
+        input capture and payload that owned the original user gesture. Calling
+        :meth:`execute` later would rebuild that context from unrelated current
+        state and could mutate a different target.
+        """
+
+        if not isinstance(context, CommandContext):
+            raise TypeError("execute_context requires a CommandContext")
         identifier = str(command_id or "").strip()
         command = self.get(identifier)
         if command is None:
             return CommandResult(identifier, CommandStatus.NOT_FOUND, "command is not registered")
-        context = self.context(source, payload)
         if not self.can_execute(identifier, context):
             return CommandResult(identifier, CommandStatus.DISABLED)
         try:
-            value = command.execute(context)
+            from Infernux.engine.undo import UndoManager
+
+            manager = UndoManager.instance()
+            if (
+                manager is None
+                or identifier in {"edit.undo", "edit.redo"}
+                or not command.creates_user_action
+            ):
+                value = command.execute(context)
+            else:
+                from .action_journal import ActionOrigin
+
+                origin = (
+                    ActionOrigin.AUTOMATION
+                    if context.source is CommandSource.AUTOMATION
+                    else ActionOrigin.USER
+                )
+                with manager.user_action(
+                    command.display_name or identifier,
+                    origin=origin,
+                    command_id=identifier,
+                ):
+                    value = command.execute(context)
         except Exception as exc:
             Debug.log_suppressed(f"EditorCommand.execute[{identifier}]", exc)
             return CommandResult(identifier, CommandStatus.FAILED, str(exc))

@@ -62,9 +62,12 @@ class AssetManager:
         ...
     @classmethod
     def move_asset(cls, old_path: str, new_path: str, *, database: Any = ...,
-                   suppress_watcher_echo: bool = ...) -> AssetMutationResult:
+                     suppress_watcher_echo: bool = ..., origin: Any = ...,
+                     operation_id: str = ..., publish_interaction: bool = ...) -> AssetMutationResult:
         """Move or rename an asset, updating all references."""
         ...
+    @classmethod
+    def move_assets_batch(cls, moves: Any, *, database: Any = ..., suppress_watcher_echo: bool = ...) -> Any: ...
     @classmethod
     def delete_asset(cls, path: str, *, database: Any = ..., suppress_watcher_echo: bool = ..., guid_hint: str = ...) -> AssetMutationResult:
         """Delete an asset after evicting loaded state."""
@@ -84,9 +87,15 @@ class AssetManager:
         """Schedule a debounced save for a specific asset."""
         ...
     @classmethod
-    def flush_scheduled_saves(cls, key: Optional[str] = ...) -> None:
+    def cancel_scheduled_save(cls, key: str) -> bool: ...
+    @classmethod
+    def flush_scheduled_saves(cls, key: Optional[str] = ..., *, force: bool = ...) -> object:
         """Flush pending scheduled saves immediately."""
         ...
+    @classmethod
+    def poll_pending_asset_writes(cls) -> None: ...
+    @classmethod
+    def flush_all_asset_writes(cls) -> None: ...
     @classmethod
     def on_material_saved(cls, path: str) -> None:
         """Invalidate caches that depend on a material asset's file contents."""

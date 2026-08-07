@@ -697,6 +697,9 @@ void InxRenderer::PreparePipeline()
             UpdateParticleCollisionScene();
             m_particleGpuSystemManager->Execute(cmdBuf);
         });
+        m_vkCore->SetFrameComputeWorkPredicate([this] {
+            return m_particleGpuSystemManager && m_particleGpuSystemManager->HasPendingGpuWork();
+        });
         m_vkCore->SetFrameAsyncComputeExecutors(
             [this](VkCommandBuffer cmdBuf) {
                 if (!m_particleGpuSystemManager)
@@ -2432,10 +2435,10 @@ void InxRenderer::SetGUIPlayerMode(bool enabled)
     }
 }
 
-void InxRenderer::QueueDockTabSelection(const char *windowId)
+void InxRenderer::QueueDockTabSelection(const char *windowId, bool allowDuringModal)
 {
     if (m_gui) {
-        m_gui->QueueDockTabSelection(windowId != nullptr ? windowId : "");
+        m_gui->QueueDockTabSelection(windowId != nullptr ? windowId : "", allowDuringModal);
     } else {
         INXLOG_ERROR("InxGUI is not initialized.");
     }
@@ -2850,6 +2853,15 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
     snapshot.guiBuildMs = m_guiBuildMs;
     snapshot.prepareFrameMs = m_prepareFrameMs;
     if (m_gui) {
+        const auto scheduler = m_gui->GetFrameSchedulerSnapshot();
+        snapshot.guiFrame = m_gui->GetFrameCounter();
+        snapshot.guiFrameRequested = scheduler.requested;
+        snapshot.guiFrameIntervalMs = scheduler.intervalMs;
+        snapshot.guiFrameUntilDueMs = scheduler.untilDueMs;
+        snapshot.guiFrameConsumeCount = scheduler.consumeCount;
+        snapshot.guiFrameApprovedCount = scheduler.approvedCount;
+        snapshot.guiFrameForcedCount = scheduler.forcedCount;
+        snapshot.guiFrameRequestCount = scheduler.requestCount;
         snapshot.guiPanelTimesMs = m_gui->GetLastPanelTimesMs();
         snapshot.guiPanelSubTimesMs = m_gui->GetLastPanelSubTimesMs();
     }

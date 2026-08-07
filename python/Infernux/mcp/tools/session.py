@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from Infernux.mcp import session
-from Infernux.mcp.tools.common import fail, main_thread, ok, register_tool_metadata
+from Infernux.mcp.tools.common import (
+    fail,
+    main_thread,
+    ok,
+    register_tool_metadata,
+    write_external_source_text,
+)
 
 
 BlockerCategory = Literal[
@@ -89,7 +95,26 @@ def register_session_tools(mcp, project_path: str) -> None:
         @mcp.tool(name="project_script_write")
         def project_script_write(path: str, content: str) -> dict:
             """Write a lint-clean project-local Python script under Assets/."""
-            return ok(session.write_project_script(path, content))
+            prepared = session.prepare_project_script_write(path, content)
+
+            def _write() -> dict[str, Any]:
+                result = write_external_source_text(
+                    session.current().project_root,
+                    prepared["absolute_path"],
+                    content,
+                    overwrite=True,
+                )
+                result["lint"] = prepared["lint"]
+                return result
+
+            return main_thread(
+                "project_script_write",
+                _write,
+                arguments={
+                    "path": path,
+                    "content_bytes": len(str(content or "").encode("utf-8")),
+                },
+            )
 
         @mcp.tool(name="release_whl_read_source")
         def release_whl_read_source(wheel_path: str, member: str) -> dict:

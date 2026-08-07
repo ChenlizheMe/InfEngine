@@ -121,7 +121,11 @@ endif()
 find_package(pybind11 CONFIG REQUIRED)
 find_package(Vulkan REQUIRED)
 
-if(WIN32)
+option(INFERNUX_BUILD_LEGACY_PLAYER_LAUNCHER
+    "Build the deprecated two-process Player launcher for migration diagnostics"
+    OFF
+)
+if(WIN32 AND INFERNUX_BUILD_LEGACY_PLAYER_LAUNCHER)
     include(InstallRequiredSystemLibraries)
 endif()
 
@@ -137,7 +141,7 @@ add_library(InfernuxVulkanBackend SHARED ${INFERNUX_VULKAN_BACKEND_SOURCES})
 add_library(InfernuxRuntime SHARED ${INFERNUX_RUNTIME_SOURCES})
 pybind11_add_module(_Infernux MODULE NO_EXTRAS ${BINDING_SOURCES})
 
-if(WIN32)
+if(WIN32 AND INFERNUX_BUILD_LEGACY_PLAYER_LAUNCHER)
     add_executable(InfernuxPlayerLauncher WIN32
         cpp/infernux/tools/launcher/InfernuxPlayerLauncher.cpp
         cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc
@@ -413,6 +417,28 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_path_tests PRIVATE /utf-8)
     endif()
     add_test(NAME infernux.path COMMAND infernux_path_tests)
+
+    add_executable(infernux_editor_search_model_tests
+        cpp/tests/EditorSearchModelTests.cpp
+    )
+    target_include_directories(infernux_editor_search_model_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_editor_search_model_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.editor_search_model COMMAND infernux_editor_search_model_tests)
+
+    add_executable(infernux_editor_collection_model_tests
+        cpp/tests/EditorCollectionModelTests.cpp
+    )
+    target_include_directories(infernux_editor_collection_model_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_editor_collection_model_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.editor_collection_model COMMAND infernux_editor_collection_model_tests)
 
     add_executable(infernux_job_system_tests
         cpp/tests/JobSystemTests.cpp
@@ -1215,6 +1241,22 @@ add_custom_target(prebuild_player_runtime ALL
 if(TARGET InfernuxPlayerLauncher)
     add_dependencies(prebuild_player_runtime InfernuxPlayerLauncher)
 endif()
+
+# Audit an already-built Player directory without making game packaging part
+# of the normal engine/wheel build.  This target is intentionally explicit:
+# configure with -DINFERNUX_PLAYER_OUTPUT_DIR=<path> or pass it at build time.
+set(INFERNUX_PLAYER_OUTPUT_DIR "" CACHE PATH
+    "Existing Player output directory to audit")
+add_custom_target(player_package_audit
+    COMMAND ${CMAKE_COMMAND}
+        "-DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+        "-DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
+        "-DINFERNUX_PLAYER_OUTPUT_DIR=${INFERNUX_PLAYER_OUTPUT_DIR}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/verify_player_package.cmake"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Auditing Player service manifest, source privacy and payload uniqueness"
+    VERBATIM
+)
 
 # ------------------------------------------------------------------------------
 # Infernux Hub standalone packaging targets

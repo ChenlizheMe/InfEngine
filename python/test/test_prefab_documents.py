@@ -21,10 +21,11 @@ from Infernux.engine.prefab_manager import (
 from Infernux.engine.prefab_overrides import (
     _build_reverted_prefab_document,
     apply_overrides_to_prefab,
+    build_prefab_apply_command,
+    build_prefab_revert_command,
     compute_overrides,
     resolve_prefab_instance_root,
     revert_overrides,
-    revert_overrides_with_undo,
 )
 from Infernux.engine.undo import (
     BuiltinPropertyCommand,
@@ -354,7 +355,7 @@ def test_prefab_revert_undo_captures_inspector_builtin_wrapper_edit(scene, tmp_p
         assert collider.is_trigger is True
         assert compute_overrides(instance, str(path))
 
-        assert revert_overrides_with_undo(instance, str(path)) is True
+        assert manager.execute(build_prefab_revert_command(instance, str(path))) is True
         assert instance.get_child(0).get_component("BoxCollider").is_trigger is False
 
         manager.undo()
@@ -429,6 +430,40 @@ def test_apply_propagates_to_existing_instances_and_preserves_overrides(scene, t
     first_overrides = compute_overrides(first, str(path))
     assert any("BoxCollider" in override.key for override in first_overrides)
     assert compute_overrides(second, str(path)) == []
+
+
+def test_apply_overrides_transaction_restores_asset_and_instances_on_undo(
+    scene,
+    tmp_path,
+):
+    _PREFAB_TEMPLATE_CACHE.clear()
+    source = scene.create_game_object("TransactionalPrefab")
+    source.add_component("BoxCollider")
+    path = tmp_path / "transactional.prefab"
+    assert save_prefab(source, str(path)) is True
+
+    instance = instantiate_prefab(file_path=str(path), scene=scene)
+    instance.prefab_guid = "transactional-guid"
+    instance.prefab_root = True
+    instance.get_component("BoxCollider").is_trigger = True
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    try:
+        assert manager.execute(build_prefab_apply_command(instance, str(path))) is True
+        saved = _read_prefab_document(str(path))["root_object"]
+        assert saved["components"][0]["data"]["is_trigger"] is True
+
+        manager.undo()
+        saved = _read_prefab_document(str(path))["root_object"]
+        assert saved["components"][0]["data"]["is_trigger"] is False
+        assert instance.get_component("BoxCollider").is_trigger is True
+
+        manager.redo()
+        saved = _read_prefab_document(str(path))["root_object"]
+        assert saved["components"][0]["data"]["is_trigger"] is True
+        assert instance.get_component("BoxCollider").is_trigger is True
+    finally:
+        UndoManager._instance = previous_manager
 
 
 @pytest.mark.parametrize(

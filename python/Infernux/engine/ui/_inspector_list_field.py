@@ -16,8 +16,7 @@ from ._inspector_references import (
     _game_object_has_required_component,
     _create_component_ref_from_go,
     _picker_scene_gameobjects,
-    _picker_assets,
-    render_object_field,
+    render_asset_reference_field,
 )
 
 
@@ -58,8 +57,8 @@ def _make_list_default_element(metadata, element_type):
         from Infernux.core.asset_ref import ShaderRef
         return ShaderRef()
     if element_type == FieldType.ASSET:
-        from Infernux.core.asset_ref import AudioClipRef
-        return AudioClipRef()
+        from Infernux.components._serialize_helpers import make_null_ref
+        return make_null_ref(FieldType.ASSET, metadata)
     if element_type == FieldType.SERIALIZABLE_OBJECT:
         elem_cls = metadata.element_class
         if elem_cls is not None:
@@ -107,12 +106,11 @@ def _list_drag_drop_type(element_type, metadata=None):
     }
     if element_type == FieldType.ASSET:
         asset_type = getattr(metadata, "asset_type", None) if metadata else None
-        if asset_type:
-            from Infernux.core.asset_ref import get_asset_type_config
-            cfg = get_asset_type_config(asset_type)
-            if cfg:
-                return cfg["drag_type"]
-        return "AUDIO_FILE"  # fallback
+        if not asset_type:
+            raise ValueError("ASSET list elements require an explicit asset_type")
+        from Infernux.core.asset_reference_types import asset_type_registry
+
+        return asset_type_registry.require(asset_type).drag_types
     return mapping.get(element_type)
 
 
@@ -129,12 +127,11 @@ def _list_type_hint(element_type, metadata):
         return "Shader"
     if element_type == FieldType.ASSET:
         asset_type = getattr(metadata, "asset_type", None) if metadata else None
-        if asset_type:
-            from Infernux.core.asset_ref import get_asset_type_config
-            cfg = get_asset_type_config(asset_type)
-            if cfg:
-                return cfg["display"]
-        return "AudioClip"
+        if not asset_type:
+            raise ValueError("ASSET list elements require an explicit asset_type")
+        from Infernux.core.asset_reference_types import asset_type_registry
+
+        return asset_type_registry.require(asset_type).display_name
     if element_type == FieldType.COMPONENT:
         comp_type = getattr(metadata, 'component_type', '') or ''
         return comp_type or "Component"
@@ -149,28 +146,13 @@ def _make_list_picker_providers(element_type, metadata):
         _rc = metadata.component_type if element_type == FieldType.COMPONENT else metadata.required_component
         return (lambda filt, _rc=_rc: _picker_scene_gameobjects(filt, required_component=_rc), None)
 
-    if element_type == FieldType.MATERIAL:
-        return (None, lambda filt: _picker_assets(filt, "*.mat"))
-    if element_type == FieldType.TEXTURE:
-        from Infernux.core.asset_types import IMAGE_EXTENSIONS
-        patterns = tuple(f"*{extension}" for extension in sorted(IMAGE_EXTENSIONS))
-        return (None, lambda filt, _patterns=patterns: sum(
-            (_picker_assets(filt, pattern, assets_only=True) for pattern in _patterns), []))
-    if element_type == FieldType.SHADER:
-        return (None, lambda filt: _picker_assets(filt, "*.vert") + _picker_assets(filt, "*.frag"))
-    if element_type == FieldType.ASSET:
-        asset_type = getattr(metadata, "asset_type", None) if metadata else None
-        if asset_type:
-            from Infernux.core.asset_ref import get_asset_type_config
-            cfg = get_asset_type_config(asset_type)
-            if cfg:
-                exts = cfg["extensions"]
-                return (None, lambda filt, _exts=exts: sum(
-                    (_picker_assets(filt, e) for e in _exts), []))
-        from Infernux.core.asset_types import AUDIO_EXTENSIONS
-        patterns = tuple(f"*{extension}" for extension in sorted(AUDIO_EXTENSIONS))
-        return (None, lambda filt, _patterns=patterns: sum(
-            (_picker_assets(filt, pattern) for pattern in _patterns), []))
+    if element_type in {
+        FieldType.MATERIAL,
+        FieldType.TEXTURE,
+        FieldType.SHADER,
+        FieldType.ASSET,
+    }:
+        return (None, None)
     return (None, None)
 
 
@@ -236,26 +218,34 @@ def _render_reference_list_item(ctx, field_name, index, item, items, metadata, e
         FieldType.ASSET,
     }
 
-    def _li_on_ping(_item=item, _et=element_type):
-        if _et not in asset_types:
-            return
-        from ._inspector_references import _resolve_asset_disk_path, ping_asset_in_project
-        path = _resolve_asset_disk_path(_item)
-        if path:
-            ping_asset_in_project(path)
+    from ._inspector_references import _resolve_asset_disk_path
 
-    IGUI.object_field(
+    asset_path = _resolve_asset_disk_path(item) if element_type in asset_types else ""
+
+    field_renderer = (
+        IGUI.asset_reference_field
+        if element_type in asset_types
+        else IGUI.object_field
+    )
+    kwargs = {
+        "on_drop": _replace_item,
+        "picker_scene_items": _li_scene,
+        "on_pick": _li_on_pick,
+        "on_clear": _li_on_clear,
+        "ping_path": asset_path or None,
+        "has_value": item is not None and display != "None",
+    }
+    if element_type in asset_types:
+        kwargs["asset_type"] = _list_type_hint(element_type, metadata)
+    else:
+        kwargs["accept"] = _list_drag_drop_type(element_type, metadata)
+        kwargs["picker_asset_items"] = _li_assets
+    field_renderer(
         ctx,
         f"list_{field_name}_{index}",
         display,
         _list_type_hint(element_type, metadata),
-        accept=_list_drag_drop_type(element_type, metadata),
-        on_drop=_replace_item,
-        picker_scene_items=_li_scene,
-        picker_asset_items=_li_assets,
-        on_pick=_li_on_pick,
-        on_clear=_li_on_clear,
-        on_ping=_li_on_ping if element_type in asset_types and item is not None and display != "None" else None,
+        **kwargs,
     )
     return changed
 
@@ -346,22 +336,30 @@ def _render_serializable_asset_reference(
         _create_reference_value_from_payload,
         _get_asset_ref_config,
         _get_reference_display_name,
-        _picker_assets,
-        _resolve_asset_config,
+        _resolve_asset_disk_path,
     )
     from .inspector_utils import field_label, pretty_field_name
 
     field_type = metadata.field_type
     if field_type == FieldType.ASSET:
-        type_hint, drag_type, globs, prefix = _resolve_asset_config(metadata)
+        asset_type = str(getattr(metadata, "asset_type", "") or "")
+        if not asset_type:
+            raise ValueError("nested ASSET fields require an explicit asset_type")
+        from Infernux.core.asset_reference_types import asset_type_registry
+
+        descriptor = asset_type_registry.require(asset_type)
+        type_hint = descriptor.display_name
+        drag_type = descriptor.drag_types
+        prefix = descriptor.widget_prefix
     else:
-        type_hint, drag_type, globs, prefix = _get_asset_ref_config()[field_type]
+        type_hint, drag_type, _globs, prefix = _get_asset_ref_config()[field_type]
+        asset_type = type_hint
 
     selected = current_value
 
     def _make_value(path):
         if field_type == FieldType.ASSET:
-            return _create_asset_ref_from_payload(metadata, str(path))
+            return _create_asset_ref_from_payload(metadata, path)
         return _create_reference_value_from_payload(field_type, path)
 
     def _on_pick(path):
@@ -374,34 +372,21 @@ def _render_serializable_asset_reference(
         nonlocal selected
         selected = make_null_ref(field_type, metadata)
 
-    assets_only = field_type == FieldType.TEXTURE
-
-    def _picker(filt):
-        values = []
-        for glob in globs:
-            values += _picker_assets(filt, glob, assets_only=assets_only)
-        return values
-
     field_label(ctx, pretty_field_name(field_name), label_width)
     display = _get_reference_display_name(field_type, current_value)
 
-    def _on_ping(_value=current_value):
-        from ._inspector_references import _resolve_asset_disk_path, ping_asset_in_project
-        path = _resolve_asset_disk_path(_value)
-        if path:
-            ping_asset_in_project(path)
-
-    render_object_field(
+    render_asset_reference_field(
         ctx,
         f"{prefix}_nested_ref_{widget_id}",
         display,
         type_hint,
         accept_drag_type=drag_type,
-        on_drop_callback=_on_pick,
-        picker_asset_items=_picker,
-        on_pick=_on_pick,
+        on_assign=_on_pick,
         on_clear=_on_clear,
-        on_ping=_on_ping if current_value is not None and display != "None" else None,
+        ping_path=_resolve_asset_disk_path(current_value) or None,
+        has_value=current_value is not None and display != "None",
+        asset_type=asset_type,
+        reference_value=current_value,
     )
     return selected
 
@@ -514,6 +499,7 @@ def _render_list_field(
     header_drop_factory=None,
     item_label=None,
     item_renderer=None,
+    on_change=None,
 ):
     from Infernux.components.serialized_field import FieldType
     from .igui import IGUI
@@ -531,6 +517,14 @@ def _render_list_field(
         FieldType.ASSET,
         FieldType.COMPONENT,
     }
+
+    def _commit_change() -> None:
+        if not changed or metadata.readonly:
+            return
+        if on_change is not None:
+            on_change(comp, field_name, current_value, items)
+            return
+        _record_property(comp, field_name, current_value, items, f"Set {field_name}")
 
     # ── Callbacks for IGUI.list_header ──
     def _on_add():
@@ -573,19 +567,13 @@ def _render_list_field(
     )
 
     if not header_open:
-        if changed and not metadata.readonly:
-            _record_property(comp, field_name, current_value, items, f"Set {field_name}")
-            if hasattr(comp, '_call_on_validate'):
-                comp._call_on_validate()
+        _commit_change()
         return
 
     # The header itself remains a complete add/remove/drop target. Avoid
     # building an empty body and reorder separator until an item exists.
     if not items:
-        if changed and not metadata.readonly:
-            _record_property(comp, field_name, current_value, items, f"Set {field_name}")
-            if hasattr(comp, '_call_on_validate'):
-                comp._call_on_validate()
+        _commit_change()
         return
 
     # ── Render items, reorder separators, bottom drop zone ──
@@ -604,7 +592,4 @@ def _render_list_field(
     ):
         changed = True
 
-    if changed and not metadata.readonly:
-        _record_property(comp, field_name, current_value, items, f"Set {field_name}")
-        if hasattr(comp, '_call_on_validate'):
-            comp._call_on_validate()
+    _commit_change()

@@ -15,10 +15,16 @@ def register_ui_tools(mcp) -> None:
         """Create a UI Canvas."""
 
         def _create():
-            obj, comp = _create_ui_object("canvas", name, 0)
-            comp.reference_width = int(reference_width)
-            comp.reference_height = int(reference_height)
-            _select_if(obj, select)
+            obj, comp = _create_ui_object(
+                "canvas",
+                name,
+                0,
+                initial_values={
+                    "reference_width": int(reference_width),
+                    "reference_height": int(reference_height),
+                },
+                select=bool(select),
+            )
             return _ui_snapshot(obj, comp)
 
         return main_thread("ui_create_canvas", _create)
@@ -28,9 +34,12 @@ def register_ui_tools(mcp) -> None:
         """Create a UIText element."""
 
         def _create():
-            obj, comp = _create_ui_object("text", name, int(parent_id or 0))
-            comp.text = str(text)
-            _apply_rect(comp, rect or {})
+            obj, comp = _create_ui_object(
+                "text",
+                name,
+                int(parent_id or 0),
+                initial_values={"text": str(text), **_rect_values(rect or {})},
+            )
             return _ui_snapshot(obj, comp)
 
         return main_thread("ui_create_text", _create)
@@ -40,9 +49,12 @@ def register_ui_tools(mcp) -> None:
         """Create a UIButton element."""
 
         def _create():
-            obj, comp = _create_ui_object("button", name, int(parent_id or 0))
-            comp.label = str(label)
-            _apply_rect(comp, rect or {})
+            obj, comp = _create_ui_object(
+                "button",
+                name,
+                int(parent_id or 0),
+                initial_values={"label": str(label), **_rect_values(rect or {})},
+            )
             return _ui_snapshot(obj, comp)
 
         return main_thread("ui_create_button", _create)
@@ -52,9 +64,15 @@ def register_ui_tools(mcp) -> None:
         """Create a UIImage element."""
 
         def _create():
-            obj, comp = _create_ui_object("image", name, int(parent_id or 0))
-            comp.texture_path = str(texture_path or "")
-            _apply_rect(comp, rect or {})
+            obj, comp = _create_ui_object(
+                "image",
+                name,
+                int(parent_id or 0),
+                initial_values={
+                    "texture_path": str(texture_path or ""),
+                    **_rect_values(rect or {}),
+                },
+            )
             return _ui_snapshot(obj, comp)
 
         return main_thread("ui_create_image", _create)
@@ -64,10 +82,16 @@ def register_ui_tools(mcp) -> None:
         """Create a solid-color panel using UIImage."""
 
         def _create():
-            obj, comp = _create_ui_object("image", name, int(parent_id or 0))
-            comp.texture_path = ""
-            comp.color = color or [0.1, 0.1, 0.1, 0.85]
-            _apply_rect(comp, rect or {})
+            obj, comp = _create_ui_object(
+                "image",
+                name,
+                int(parent_id or 0),
+                initial_values={
+                    "texture_path": "",
+                    "color": color or [0.1, 0.1, 0.1, 0.85],
+                    **_rect_values(rect or {}),
+                },
+            )
             return _ui_snapshot(obj, comp)
 
         return main_thread("ui_create_panel", _create)
@@ -81,8 +105,11 @@ def register_ui_tools(mcp) -> None:
             comp = _find_ui_screen_component(obj)
             if comp is None:
                 raise FileNotFoundError(f"GameObject {object_id} has no screen UI component.")
-            _apply_rect(comp, rect or {})
-            _mark_ui_dirty()
+            _commit_python_component_fields(
+                comp,
+                _rect_values(rect or {}),
+                "Set UI rectangle",
+            )
             return _ui_snapshot(obj, comp)
 
         return main_thread("ui_set_rect", _set_rect)
@@ -96,11 +123,12 @@ def register_ui_tools(mcp) -> None:
             comp = _find_named_component(obj, {"UIText", "UIButton"})
             if comp is None:
                 raise FileNotFoundError(f"GameObject {object_id} has no UIText or UIButton.")
-            if type(comp).__name__ == "UIButton":
-                comp.label = str(text)
-            else:
-                comp.text = str(text)
-            _mark_ui_dirty()
+            field = "label" if type(comp).__name__ == "UIButton" else "text"
+            _commit_python_component_fields(
+                comp,
+                {field: str(text)},
+                f"Set {type(comp).__name__} {field}",
+            )
             return _ui_snapshot(obj, comp)
 
         return main_thread("ui_set_text", _set_text)
@@ -198,18 +226,11 @@ def register_ui_tools(mcp) -> None:
             )
             old_entries = list(button.on_click_entries or [])
             new_entries = [entry] if replace else [*old_entries, entry]
-            from Infernux.engine.ui._inspector_undo import _record_property
-
-            _record_property(
+            _commit_python_component_fields(
                 button,
-                "on_click_entries",
-                old_entries,
-                new_entries,
+                {"on_click_entries": new_entries},
                 "Bind UIButton on_click",
             )
-            if hasattr(button, "_call_on_validate"):
-                button._call_on_validate()
-            _mark_ui_dirty()
             return {
                 "button": _ui_snapshot(button_obj, button),
                 "binding": _event_entry_snapshot(entry),
@@ -229,30 +250,61 @@ def register_ui_tools(mcp) -> None:
         )
 
 
-def _create_ui_object(kind: str, name: str, parent_id: int):
+def _create_ui_object(
+    kind: str,
+    name: str,
+    parent_id: int,
+    *,
+    initial_values: dict[str, Any] | None = None,
+    select: bool = False,
+):
+    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
     from Infernux.lib import SceneManager
-    from Infernux.ui import UICanvas, UIText, UIButton
-    from Infernux.ui.ui_image import UIImage
+
     scene = SceneManager.instance().get_active_scene()
     if not scene:
         raise RuntimeError("No active scene.")
-    if kind != "canvas" and not parent_id:
-        canvas = _find_first_canvas(scene)
-        if canvas is None:
-            canvas_obj, _canvas_comp = _create_ui_object("canvas", "Canvas", 0)
-            parent_id = int(canvas_obj.id)
-        else:
-            parent_id = int(canvas.id)
-    obj = scene.create_game_object(str(name or kind.title()))
-    if parent_id:
-        parent = scene.find_by_id(int(parent_id))
-        if parent is None:
-            raise FileNotFoundError(f"Parent GameObject {parent_id} was not found.")
-        obj.set_parent(parent)
-    cls = {"canvas": UICanvas, "text": UIText, "button": UIButton, "image": UIImage}[kind]
-    comp = cls()
-    obj.add_py_component(comp)
-    _mark_ui_dirty()
+
+    values = dict(initial_values or {})
+
+    def _configure(obj) -> None:
+        comp = _find_ui_component(obj)
+        if comp is None:
+            raise RuntimeError(f"Created ui.{kind} has no UI component.")
+        for field, value in values.items():
+            setattr(comp, field, value)
+        _publish_ui_component(comp)
+
+    creation = HierarchyCreationService.instance()
+    with _scene_object_service().user_action(f"Create UI {kind.title()}"):
+        if kind != "canvas" and not parent_id:
+            canvas = _find_first_canvas(scene)
+            if canvas is None:
+                canvas_entry = creation.create(
+                    "ui.canvas",
+                    name="Canvas",
+                    select=False,
+                    selection_owner_id="automation",
+                    selection_reason="mcp_ui_create_canvas",
+                )
+                parent_id = int(canvas_entry["id"])
+            else:
+                parent_id = int(canvas.id)
+        created = creation.create(
+            f"ui.{kind}",
+            parent_id=int(parent_id or 0),
+            name=str(name or kind.title()),
+            select=bool(select),
+            selection_owner_id="automation",
+            selection_reason="mcp_ui_create",
+            configure_created=_configure,
+        )
+    obj = scene.find_by_id(int(created["id"]))
+    if obj is None:
+        raise RuntimeError(f"Created ui.{kind} could not be resolved.")
+    comp = _find_ui_component(obj)
+    if comp is None:
+        raise RuntimeError(f"Created ui.{kind} has no UI component.")
     return obj, comp
 
 
@@ -266,10 +318,65 @@ def _find_first_canvas(scene):
     return None
 
 
-def _apply_rect(comp, rect: dict[str, Any]) -> None:
-    for key in ("x", "y", "width", "height", "rotation", "opacity", "corner_radius"):
-        if key in rect:
-            setattr(comp, key, float(rect[key]))
+def _rect_values(rect: dict[str, Any]) -> dict[str, float]:
+    return {
+        key: float(rect[key])
+        for key in (
+            "x",
+            "y",
+            "width",
+            "height",
+            "rotation",
+            "opacity",
+            "corner_radius",
+        )
+        if key in rect
+    }
+
+
+def _commit_python_component_fields(
+    comp,
+    values: dict[str, Any],
+    description: str,
+) -> None:
+    from Infernux.engine.interaction import (
+        PropertyTransactionStatus,
+        make_python_component_property_transaction,
+    )
+
+    applied = False
+    with _scene_object_service().user_action(description):
+        for field, value in values.items():
+            status = make_python_component_property_transaction(
+                (comp,),
+                field,
+                description=str(description),
+            ).commit_or_raise(value)
+            applied = applied or status is PropertyTransactionStatus.APPLIED
+    if applied:
+        _invalidate_ui_cache()
+
+
+def _publish_ui_component(comp) -> None:
+    callback = getattr(comp, "_call_on_validate", None)
+    if callable(callback):
+        callback()
+    _invalidate_ui_cache()
+
+
+def _invalidate_ui_cache() -> None:
+    from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
+
+    invalidate_canvas_cache()
+
+
+def _scene_object_service():
+    from Infernux.engine.interaction import EditorInteractionCore
+
+    core = EditorInteractionCore.instance()
+    if core is None:
+        raise RuntimeError("EditorInteractionCore is unavailable.")
+    return core.scene_objects
 
 
 def _ui_snapshot(obj, comp) -> dict[str, Any]:
@@ -326,31 +433,6 @@ def _find_ui_screen_component(obj):
     except Exception:
         pass
     return None
-
-
-def _mark_ui_dirty() -> None:
-    try:
-        from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
-        invalidate_canvas_cache()
-    except Exception:
-        pass
-    try:
-        from Infernux.engine.scene_manager import SceneFileManager
-        sfm = SceneFileManager.instance()
-        if sfm:
-            sfm.mark_dirty()
-    except Exception:
-        pass
-
-
-def _select_if(obj, select: bool) -> None:
-    if not select:
-        return
-    try:
-        from Infernux.engine.ui.selection_manager import SelectionManager
-        SelectionManager.instance().select(int(obj.id))
-    except Exception:
-        pass
 
 
 def _register_metadata() -> None:

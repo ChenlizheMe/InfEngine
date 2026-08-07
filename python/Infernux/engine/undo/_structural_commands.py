@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from Infernux.engine.undo._base import UndoCommand
 from Infernux.engine.undo._helpers import (
@@ -76,6 +76,19 @@ def _snapshot_object(obj) -> dict:
     return serialize_game_object_document_authoritatively(obj)
 
 
+def _validate_recreated_object(obj, expected_id: int):
+    if obj is None:
+        raise RuntimeError(
+            f"GameObject undo restore returned no object for stable id {expected_id}"
+        )
+    actual_id = int(getattr(obj, "id", 0) or 0)
+    if actual_id != int(expected_id):
+        raise RuntimeError(
+            f"GameObject undo restore expected stable id {expected_id}, got {actual_id}"
+        )
+    return obj
+
+
 class CreateGameObjectCommand(UndoCommand):
     """Undo destroys the object; redo recreates from a document snapshot."""
 
@@ -119,8 +132,9 @@ class CreateGameObjectCommand(UndoCommand):
     def redo(self) -> None:
         if self._document is not None:
             from Infernux.engine.undo._recreate import _recreate_game_object_from_document
-            _recreate_game_object_from_document(
+            restored = _recreate_game_object_from_document(
                 self._document, self._parent_id, self._sibling_index)
+            _validate_recreated_object(restored, self._object_id)
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()
 
@@ -157,8 +171,9 @@ class DeleteGameObjectCommand(UndoCommand):
     def undo(self) -> None:
         if self._document is not None:
             from Infernux.engine.undo._recreate import _recreate_game_object_from_document
-            _recreate_game_object_from_document(
+            restored = _recreate_game_object_from_document(
                 self._document, self._parent_id, self._sibling_index)
+            _validate_recreated_object(restored, self._object_id)
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()
 
@@ -234,10 +249,22 @@ class DeleteGameObjectsCommand(UndoCommand):
 
     def undo(self) -> None:
         from Infernux.engine.undo._recreate import _recreate_game_object_from_document
-
-        for entry in sorted(self._entries, key=self._entry_order):
-            _recreate_game_object_from_document(
-                entry["document"], entry["parent_id"], entry["sibling_index"])
+        restored = []
+        try:
+            for entry in sorted(self._entries, key=self._entry_order):
+                obj = _recreate_game_object_from_document(
+                    entry["document"], entry["parent_id"], entry["sibling_index"])
+                restored.append(
+                    _validate_recreated_object(obj, entry["object_id"])
+                )
+        except Exception:
+            scene = _get_active_scene()
+            if scene is not None:
+                for obj in reversed(restored):
+                    live = scene.find_by_id(int(obj.id))
+                    if live is not None:
+                        _destroy_game_object_immediately(scene, live)
+            raise
         if self._entries:
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()
@@ -324,12 +351,158 @@ class MoveGameObjectCommand(UndoCommand):
             transform.set_sibling_index(max(0, int(sibling_index)))
 
 
+class SceneHierarchyLayoutCommand(UndoCommand):
+    """Atomically restore complete child ordering for affected parents.
+
+    Multi-object hierarchy gestures are one user action. Storing one command
+    per dragged object makes sibling indices depend on replay order and can
+    leave a partially moved tree when one sub-command fails. This command
+    captures the complete child list for every affected parent and applies the
+    layout as one fail-closed transition.
+    """
+
+    def __init__(
+        self,
+        before_layout: Dict[Optional[int], Tuple[int, ...]],
+        after_layout: Dict[Optional[int], Tuple[int, ...]],
+        description: str = "Move GameObjects",
+    ) -> None:
+        super().__init__(description)
+        self._before_layout = self._normalize(before_layout)
+        self._after_layout = self._normalize(after_layout)
+        if set(self._before_layout) != set(self._after_layout):
+            raise ValueError("hierarchy layout parent sets must match")
+        if self._before_layout == self._after_layout:
+            raise ValueError("hierarchy layout command requires a real change")
+        before_ids = self._layout_ids(self._before_layout)
+        after_ids = self._layout_ids(self._after_layout)
+        if before_ids != after_ids:
+            raise ValueError("hierarchy layout object sets must match")
+
+    @staticmethod
+    def _normalize(layout):
+        if not isinstance(layout, dict) or not layout:
+            raise TypeError("hierarchy layout must be a non-empty mapping")
+        normalized = {}
+        for parent_id, object_ids in layout.items():
+            key = None if parent_id in {None, 0} else int(parent_id)
+            values = tuple(int(object_id) for object_id in object_ids)
+            if any(object_id <= 0 for object_id in values):
+                raise ValueError("hierarchy layout requires positive object ids")
+            if len(values) != len(set(values)):
+                raise ValueError("hierarchy layout contains duplicate siblings")
+            normalized[key] = values
+        return normalized
+
+    @staticmethod
+    def _layout_ids(layout) -> set[int]:
+        result: set[int] = set()
+        for object_ids in layout.values():
+            overlap = result.intersection(object_ids)
+            if overlap:
+                raise ValueError(
+                    f"hierarchy layout assigns objects to multiple parents: {sorted(overlap)}"
+                )
+            result.update(object_ids)
+        return result
+
+    @staticmethod
+    def _children(scene, parent_id: Optional[int]):
+        if parent_id is None:
+            return list(scene.get_root_objects())
+        parent = scene.find_by_id(parent_id)
+        if parent is None:
+            raise RuntimeError(f"hierarchy parent is unavailable: {parent_id}")
+        return list(parent.get_children())
+
+    @classmethod
+    def _preflight(cls, scene, layout):
+        objects = {}
+        expected_ids = cls._layout_ids(layout)
+        for object_id in expected_ids:
+            obj = scene.find_by_id(object_id)
+            if obj is None:
+                raise RuntimeError(f"hierarchy object is unavailable: {object_id}")
+            objects[object_id] = obj
+        actual_ids = {
+            int(obj.id)
+            for parent_id in layout
+            for obj in cls._children(scene, parent_id)
+        }
+        if actual_ids != expected_ids:
+            raise RuntimeError(
+                "hierarchy child sets changed outside this transaction"
+            )
+        return objects
+
+    @classmethod
+    def _apply_layout(cls, scene, layout) -> None:
+        objects = cls._preflight(scene, layout)
+        desired_parent = {
+            object_id: parent_id
+            for parent_id, object_ids in layout.items()
+            for object_id in object_ids
+        }
+        for object_id, parent_id in desired_parent.items():
+            obj = objects[object_id]
+            current_parent = obj.get_parent()
+            current_parent_id = current_parent.id if current_parent is not None else None
+            if current_parent_id == parent_id:
+                continue
+            parent = scene.find_by_id(parent_id) if parent_id is not None else None
+            _preserve_ui_world_position(obj, parent)
+            obj.set_parent(parent)
+            _invalidate_canvas_caches(current_parent)
+            _invalidate_canvas_caches(parent)
+
+        for parent_id, object_ids in layout.items():
+            current = tuple(int(obj.id) for obj in cls._children(scene, parent_id))
+            if set(current) != set(object_ids):
+                raise RuntimeError(
+                    f"hierarchy parent {parent_id or 0} rejected the requested child set"
+                )
+            for index, object_id in enumerate(object_ids):
+                transform = getattr(objects[object_id], "transform", None)
+                if transform is None:
+                    raise RuntimeError(
+                        f"hierarchy object has no Transform: {object_id}"
+                    )
+                transform.set_sibling_index(index)
+            parent = scene.find_by_id(parent_id) if parent_id is not None else None
+            _invalidate_canvas_caches(parent)
+
+    @classmethod
+    def _transition(cls, target, rollback) -> None:
+        scene = _get_active_scene()
+        if scene is None:
+            raise RuntimeError("hierarchy layout requires an active scene")
+        try:
+            cls._apply_layout(scene, target)
+        except Exception as original:
+            try:
+                cls._apply_layout(scene, rollback)
+            except Exception as rollback_error:
+                raise RuntimeError(
+                    "hierarchy layout failed and rollback could not restore the tree"
+                ) from rollback_error
+            raise original
+
+    def execute(self) -> None:
+        self._transition(self._after_layout, self._before_layout)
+
+    def undo(self) -> None:
+        self._transition(self._before_layout, self._after_layout)
+
+    def redo(self) -> None:
+        self._transition(self._after_layout, self._before_layout)
+
+
 class GlobalSelectionCommand(UndoCommand):
-    """Replay a typed global selection without dirtying its document."""
+    """Record a typed selection transition without replay side effects."""
 
     marks_dirty: bool = False
 
-    def __init__(self, old_snapshot, new_snapshot, apply_fn, description: str = ""):
+    def __init__(self, old_snapshot, new_snapshot, description: str = ""):
         from Infernux.engine.interaction import SelectionSnapshot
 
         if not isinstance(old_snapshot, SelectionSnapshot):
@@ -341,16 +514,75 @@ class GlobalSelectionCommand(UndoCommand):
         self._new_snapshot = new_snapshot
         self.before_selection_snapshot = old_snapshot
         self.after_selection_snapshot = new_snapshot
-        self._apply_fn = apply_fn
 
     def execute(self) -> None:
         pass
 
     def undo(self) -> None:
-        self._apply_fn(self._old_snapshot)
+        pass
 
     def redo(self) -> None:
-        self._apply_fn(self._new_snapshot)
+        pass
+
+
+class GlobalFocusCommand(UndoCommand):
+    """Record a focus transition without replay side effects."""
+
+    marks_dirty: bool = False
+    # A visible editor-window transition is one chronological user action.
+    # It must never be absorbed into the data edit that happens immediately
+    # before or after it.
+    separates_history: bool = True
+
+    def __init__(self, old_snapshot, new_snapshot, description: str = ""):
+        from Infernux.engine.interaction import FocusSnapshot
+
+        if not isinstance(old_snapshot, FocusSnapshot):
+            raise TypeError("old_snapshot must be a FocusSnapshot")
+        if not isinstance(new_snapshot, FocusSnapshot):
+            raise TypeError("new_snapshot must be a FocusSnapshot")
+        UndoCommand.__init__(self, description or "Change Editor Focus")
+        self._old_snapshot = old_snapshot
+        self._new_snapshot = new_snapshot
+
+    def execute(self) -> None:
+        pass
+
+    def undo(self) -> None:
+        pass
+
+    def redo(self) -> None:
+        pass
+
+
+class GlobalContextCommand(UndoCommand):
+    """Represent a context-only history step.
+
+    The journal entry owns context restoration. Keeping this command inert
+    prevents focus and selection from being applied twice during replay.
+    """
+
+    marks_dirty: bool = False
+
+    def __init__(self, before_context, after_context, description: str = ""):
+        from Infernux.engine.interaction import EditorContextSnapshot
+
+        if not isinstance(before_context, EditorContextSnapshot):
+            raise TypeError("before_context must be an EditorContextSnapshot")
+        if not isinstance(after_context, EditorContextSnapshot):
+            raise TypeError("after_context must be an EditorContextSnapshot")
+        UndoCommand.__init__(self, description or "Change Editor Context")
+        self._before_context = before_context
+        self._after_context = after_context
+
+    def execute(self) -> None:
+        pass
+
+    def undo(self) -> None:
+        pass
+
+    def redo(self) -> None:
+        pass
 
 
 class PrefabModeCommand(UndoCommand):
@@ -368,21 +600,31 @@ class PrefabModeCommand(UndoCommand):
         from Infernux.engine.scene_manager import SceneFileManager
         sfm = SceneFileManager.instance()
         if not sfm:
-            return
+            raise RuntimeError("Prefab Mode requires an active SceneFileManager")
         if self._enter_mode:
-            sfm.open_prefab_mode(self._prefab_path, preserve_undo_history=True)
+            succeeded = sfm.open_prefab_mode(
+                self._prefab_path,
+                preserve_undo_history=True,
+            )
         else:
-            sfm._do_exit_prefab_mode(preserve_undo_history=True)
+            succeeded = sfm._do_exit_prefab_mode(preserve_undo_history=True)
+        if not succeeded:
+            raise RuntimeError(f"{self.description} was rejected")
 
     def undo(self) -> None:
         from Infernux.engine.scene_manager import SceneFileManager
         sfm = SceneFileManager.instance()
         if not sfm:
-            return
+            raise RuntimeError("Prefab Mode requires an active SceneFileManager")
         if self._enter_mode:
-            sfm._do_exit_prefab_mode(preserve_undo_history=True)
+            succeeded = sfm._do_exit_prefab_mode(preserve_undo_history=True)
         else:
-            sfm.open_prefab_mode(self._prefab_path, preserve_undo_history=True)
+            succeeded = sfm.open_prefab_mode(
+                self._prefab_path,
+                preserve_undo_history=True,
+            )
+        if not succeeded:
+            raise RuntimeError(f"Undo {self.description} was rejected")
 
     def redo(self) -> None:
         self.execute()
@@ -467,3 +709,44 @@ class PrefabRevertCommand(UndoCommand):
         ):
             raise RuntimeError("Prefab ObjectGraph transaction failed")
         _bump_inspector_structure()
+
+
+class PrefabApplyOverridesCommand(UndoCommand):
+    """Atomically apply one Prefab asset edit and all live instance projections."""
+
+    def __init__(self, capture_state, apply_overrides, restore_state,
+                 description: str = "Apply Prefab Overrides"):
+        super().__init__(description)
+        if not callable(capture_state) or not callable(apply_overrides):
+            raise TypeError("Prefab Apply command requires capture and apply callbacks")
+        if not callable(restore_state):
+            raise TypeError("Prefab Apply command requires a restore callback")
+        self._capture_state = capture_state
+        self._apply_overrides = apply_overrides
+        self._restore_state = restore_state
+        self._before_state = None
+        self._after_state = None
+
+    def execute(self) -> None:
+        if self._before_state is not None:
+            raise RuntimeError("Prefab Apply command has already executed; use redo")
+        self._before_state = self._capture_state()
+        try:
+            if not self._apply_overrides():
+                raise RuntimeError("Prefab Apply transaction was rejected")
+            self._after_state = self._capture_state()
+        except Exception:
+            self._restore_state(self._before_state)
+            self._before_state = None
+            self._after_state = None
+            raise
+
+    def undo(self) -> None:
+        if self._before_state is None:
+            raise RuntimeError("Prefab Apply command has not executed")
+        self._restore_state(self._before_state)
+
+    def redo(self) -> None:
+        if self._after_state is None:
+            raise RuntimeError("Prefab Apply command has no committed result")
+        self._restore_state(self._after_state)

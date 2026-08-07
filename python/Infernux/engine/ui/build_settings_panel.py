@@ -1,9 +1,6 @@
 """
 Build Settings — Unity-style floating window for managing game builds.
 
-NOT a dockable panel.  Rendered by MenuBarPanel each frame when visible;
-never registered through WindowManager / engine.register_gui().
-
 Features:
   * Scene list (drag-drop from Project panel or "Add Open Scene")
   * Output directory picker
@@ -16,6 +13,8 @@ import os
 import json
 import sys
 import threading
+import copy
+from collections import deque
 from Infernux.engine.path_utils import portable_path, relative_path, resolved_path, same_path
 from typing import Dict, List, Optional
 
@@ -27,6 +26,16 @@ from Infernux.engine.game_builder import (
     GameBuilder,
 )
 from Infernux.engine.i18n import t
+from Infernux.engine.interaction import (
+    BoundPanelCommand,
+    PanelCommandAdapter,
+    PanelCommandSpec,
+    PanelInteractionDescriptor,
+    ensure_project_settings_document,
+    normalize_build_settings,
+)
+from .editor_panel import FloatingEditorPanel
+from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 from ._dialogs import pick_folder_dialog, pick_file_dialog
 
@@ -67,15 +76,6 @@ def load_build_settings(project_path: Optional[str] = None) -> dict:
     return data
 
 
-def save_build_settings(settings: dict, project_path: Optional[str] = None):
-    path = _settings_path(project_path)
-    if not path:
-        return
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    from Infernux.core.document_store import write_document_text
-    write_document_text(path, json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
-
-
 # ---------------------------------------------------------------------------
 # Drag-drop type & style constants
 # ---------------------------------------------------------------------------
@@ -83,15 +83,63 @@ def save_build_settings(settings: dict, project_path: Optional[str] = None):
 DRAG_DROP_SCENE = "SCENE_FILE"
 DRAG_DROP_REORDER = "BUILD_REORDER"
 _DRAG_TARGET_COLOR = Theme.DRAG_DROP_TARGET
-_WIN_FLAGS = Theme.WINDOW_FLAGS_DIALOG
 
 
-class BuildSettingsPanel:
-    """Standalone floating Build Settings window."""
+def _bind_build_settings_panel(panel: object) -> PanelCommandAdapter:
+    required = (
+        "can_start_build",
+        "command_start_build",
+        "can_cancel_build",
+        "command_cancel_build",
+    )
+    missing = tuple(name for name in required if not callable(getattr(panel, name, None)))
+    if missing:
+        raise TypeError(f"build settings interaction contract is missing: {missing}")
+    return PanelCommandAdapter(
+        {
+            "build.start": BoundPanelCommand(
+                lambda _context: panel.command_start_build(run_after=False),
+                lambda _context: panel.can_start_build(),
+            ),
+            "build.start_and_run": BoundPanelCommand(
+                lambda _context: panel.command_start_build(run_after=True),
+                lambda _context: panel.can_start_build(),
+            ),
+            "build.cancel": BoundPanelCommand(
+                lambda _context: panel.command_cancel_build(),
+                lambda _context: panel.can_cancel_build(),
+            ),
+        }
+    )
+
+
+_BUILD_SETTINGS_INTERACTION = PanelInteractionDescriptor(
+    document_backed=True,
+    commands=(
+        PanelCommandSpec("build.start"),
+        PanelCommandSpec("build.start_and_run"),
+        PanelCommandSpec("build.cancel"),
+    ),
+    adapter_factory=_bind_build_settings_panel,
+)
+
+
+@editor_panel(
+    "Build Settings",
+    type_id="build_settings",
+    title_key="menu.build_settings",
+    menu_path="",
+    interaction=_BUILD_SETTINGS_INTERACTION,
+)
+class BuildSettingsPanel(FloatingEditorPanel):
+    """Build Settings utility surface hosted by the global panel lifecycle."""
 
     def __init__(self):
-        self._visible: bool = False
-        self._first_open: bool = True
+        super().__init__(
+            title="Build Settings",
+            window_id="build_settings",
+            size=(980.0, 720.0),
+        )
         self._game_name: str = ""
         self._scenes: List[str] = []
         self._output_dir: str = ""
@@ -101,6 +149,9 @@ class BuildSettingsPanel:
         self._window_height: int = 720
         self._window_resizable: bool = True
         self._splash_items: List[Dict] = []
+        self._settings_controller = None
+        self._pending_settings_edits = deque()
+        self._pending_settings_edits_lock = threading.Lock()
         self._load()
 
         # Build state
@@ -112,22 +163,31 @@ class BuildSettingsPanel:
         self._build_output_dir: Optional[str] = None
         self._cancel_event: threading.Event = threading.Event()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def on_enable(self) -> None:
+        self._bind_project_settings_document()
 
-    def open(self):
-        self._visible = True
-        self._first_open = True
-        self._load()
-        self._prune_missing_splash()
+    def on_disable(self) -> None:
+        if self._settings_controller is not None:
+            self._settings_controller.remove_listener(
+                self._apply_project_settings_document
+            )
 
-    def close(self):
-        self._visible = False
-
-    @property
-    def is_open(self) -> bool:
-        return self._visible
+    def _bind_project_settings_document(self) -> None:
+        root = get_project_root()
+        if not root:
+            raise RuntimeError("Build Settings requires an active project")
+        controller = ensure_project_settings_document(
+            root,
+            view_id=self.window_id,
+        )
+        if self._settings_controller is not None and self._settings_controller is not controller:
+            self._settings_controller.remove_listener(
+                self._apply_project_settings_document
+            )
+        self._settings_controller = controller
+        controller.add_listener(self._apply_project_settings_document)
+        self.bind_document(controller.document_id)
+        self._apply_project_settings_document(controller.capture_document())
 
     def get_scene_list(self) -> List[str]:
         return list(self._scenes)
@@ -137,7 +197,17 @@ class BuildSettingsPanel:
     # ------------------------------------------------------------------
 
     def _load(self):
-        data = load_build_settings()
+        data = (
+            self._settings_controller.section("build")
+            if self._settings_controller is not None
+            else normalize_build_settings(load_build_settings())
+        )
+        self._apply_build_settings(data)
+
+    def _apply_project_settings_document(self, document: dict) -> None:
+        self._apply_build_settings(document["build"])
+
+    def _apply_build_settings(self, data: dict) -> None:
         self._game_name = data.get("game_name", "")
         self._scenes = list(data.get("scenes", []))
         self._output_dir = data.get("output_dir", "")
@@ -155,18 +225,8 @@ class BuildSettingsPanel:
         self._enable_jit = data.get("enable_jit", False)
         self._splash_items = list(data.get("splash_items", []))
 
-    def _prune_missing_splash(self):
-        """Remove splash items whose source files no longer exist."""
-        before = len(self._splash_items)
-        self._splash_items = [
-            it for it in self._splash_items
-            if os.path.isfile(it.get("path", ""))
-        ]
-        if len(self._splash_items) < before:
-            self._save()
-
-    def _save(self):
-        save_build_settings({
+    def _capture_build_settings(self) -> dict:
+        return normalize_build_settings({
             "game_name": self._game_name,
             "scenes": self._scenes,
             "output_dir": self._output_dir,
@@ -181,37 +241,45 @@ class BuildSettingsPanel:
             "splash_items": self._splash_items,
         })
 
+    def _save(self):
+        controller = self._settings_controller
+        if controller is None:
+            raise RuntimeError("Build Settings is not bound to Project Settings")
+        following = self._capture_build_settings()
+        previous = controller.section("build")
+        changed_fields = sorted(
+            key for key in following if following[key] != previous.get(key)
+        )
+        if not changed_fields:
+            return False
+        self.publish_interaction_ownership(reason="project_settings_edit")
+        field_key = "+".join(changed_fields)
+        return controller.apply_section(
+            "build",
+            following,
+            edit_key=f"project_settings.build.{field_key}",
+            description="Edit Build Settings",
+            view_id=self.window_id,
+        )
+
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
 
-    def render(self, ctx):
-        if not self._visible:
-            return
+    def on_render_content(self, ctx):
+        self._drain_pending_settings_edits()
+        self._render_body(ctx)
 
-        x0, y0, dw, dh = ctx.get_main_viewport_bounds()
-        cx = x0 + (dw - 980) * 0.5
-        cy = y0 + (dh - 720) * 0.5
-        ctx.set_next_window_pos(cx, cy, Theme.COND_ALWAYS, 0.0, 0.0)
-        ctx.set_next_window_size(980, 720, Theme.COND_ALWAYS)
+    def _enqueue_settings_edit(self, callback) -> None:
+        with self._pending_settings_edits_lock:
+            self._pending_settings_edits.append(callback)
 
-        visible, still_open = ctx.begin_window_closable(
-            t("menu.build_settings") + "###build_settings", self._visible, _WIN_FLAGS
-        )
-
-        if not still_open:
-            self._visible = False
-            from .closable_panel import ClosablePanel
-            active = ClosablePanel.get_active_panel_id()
-            if active:
-                ClosablePanel.focus_panel_by_id(active)
-            ctx.end_window()
-            return
-
-        if visible:
-            self._render_body(ctx)
-
-        ctx.end_window()
+    def _drain_pending_settings_edits(self) -> None:
+        with self._pending_settings_edits_lock:
+            callbacks = tuple(self._pending_settings_edits)
+            self._pending_settings_edits.clear()
+        for callback in callbacks:
+            callback()
 
     # ------------------------------------------------------------------
 
@@ -360,8 +428,9 @@ class BuildSettingsPanel:
             try:
                 folder = pick_folder_dialog("Choose Output Directory")
                 if folder:
-                    self._output_dir = folder
-                    self._save()
+                    self._enqueue_settings_edit(
+                        lambda value=folder: self._accept_output_dir(value)
+                    )
             except Exception as exc:
                 Debug.log_warning(f"Build Settings output directory browse failed: {exc}")
         threading.Thread(target=_do, daemon=True).start()
@@ -378,11 +447,20 @@ class BuildSettingsPanel:
                     ext = os.path.splitext(path)[1].lower()
                     if ext not in _ICON_EXTS:
                         raise ValueError("Unsupported icon format")
-                    self._icon_path = resolved_path(path)
-                    self._save()
+                    self._enqueue_settings_edit(
+                        lambda value=resolved_path(path): self._accept_icon_path(value)
+                    )
             except Exception as exc:
                 Debug.log_warning(f"Build Settings icon picker failed: {exc}")
         threading.Thread(target=_do, daemon=True).start()
+
+    def _accept_output_dir(self, path: str) -> None:
+        self._output_dir = str(path)
+        self._save()
+
+    def _accept_icon_path(self, path: str) -> None:
+        self._icon_path = str(path)
+        self._save()
 
     def _clear_icon_path(self):
         if not self._icon_path:
@@ -466,9 +544,16 @@ class BuildSettingsPanel:
             fname = os.path.basename(item.get("path", "<none>"))
             item_type = item.get("type", "image")
             badge = "[IMG]" if item_type == "image" else "[VID]"
+            source_exists = os.path.isfile(item.get("path", ""))
 
             # ── Row 1: name ──
+            if not source_exists:
+                ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
             ctx.label(f"  {i + 1}. {badge}  {fname}")
+            if not source_exists:
+                ctx.same_line(0, 8)
+                ctx.label(t("build.source_missing"))
+                ctx.pop_style_color(1)
             if ctx.is_item_hovered():
                 ctx.set_tooltip(item.get("path", ""))
 
@@ -559,17 +644,23 @@ class BuildSettingsPanel:
                 if path:
                     ext = os.path.splitext(path)[1].lower()
                     itype = "video" if ext in _VIDEO_EXTS else "image"
-                    self._splash_items.append({
+                    item = {
                         "type": itype,
                         "path": resolved_path(path),
                         "duration": 3.0 if itype == "image" else 0.0,
                         "fade_in": 0.5,
                         "fade_out": 0.5,
-                    })
-                    self._save()
+                    }
+                    self._enqueue_settings_edit(
+                        lambda value=item: self._accept_splash_item(value)
+                    )
             except Exception as exc:
                 Debug.log_warning(f"Build Settings splash picker failed: {exc}")
         threading.Thread(target=_do, daemon=True).start()
+
+    def _accept_splash_item(self, item: dict) -> None:
+        self._splash_items.append(copy.deepcopy(item))
+        self._save()
 
     # ------------------------------------------------------------------
     # SCENE LIST
@@ -731,8 +822,16 @@ class BuildSettingsPanel:
             ctx.label(progress_message)
             ctx.progress_bar(self._build_progress, -1.0, 20.0, "")
             cancel_label = t("build.cancel")
-            ctx.button("  " + cancel_label + "  ##cancel_build", self._cancel_build, width=120, height=30)
-            ctx.record_semantic_item("button", cancel_label, True, "build_settings.cancel")
+            can_cancel = self.can_cancel_build()
+            ctx.button(
+                "  " + cancel_label + "  ##cancel_build",
+                lambda: self._execute_build_command("build.cancel"),
+                width=120,
+                height=30,
+            )
+            ctx.record_semantic_item(
+                "button", cancel_label, can_cancel, "build_settings.cancel"
+            )
         elif self._build_cancelled:
             ctx.record_semantic_item(
                 "status", "Cancelled", False, "build_settings.status", string_value="cancelled"
@@ -796,7 +895,7 @@ class BuildSettingsPanel:
             ctx.record_semantic_item(
                 "status", "Ready", False, "build_settings.status", string_value="ready"
             )
-            can_build = len(self._scenes) > 0 and bool(self._output_dir)
+            can_build = self.can_start_build()
 
             if not can_build:
                 ctx.push_style_color(ImGuiCol.Button, *Theme.BTN_DISABLED)
@@ -807,12 +906,12 @@ class BuildSettingsPanel:
             ctx.same_line(max(ctx.get_window_width() - 360, 200))
 
             ctx.button("  " + t("build.build") + "  ",
-                        self._start_build if can_build else lambda: None,
+                        lambda: self._execute_build_command("build.start") if can_build else None,
                         width=140, height=36)
             ctx.record_semantic_item("button", t("build.build"), can_build, "build_settings.build")
             ctx.same_line(0, 16)
             ctx.button("  " + t("build.build_and_run") + "  ",
-                        self._start_build_and_run if can_build else lambda: None,
+                        lambda: self._execute_build_command("build.start_and_run") if can_build else None,
                         width=160, height=36)
             ctx.record_semantic_item(
                 "button", t("build.build_and_run"), can_build, "build_settings.build_and_run"
@@ -853,8 +952,27 @@ class BuildSettingsPanel:
             enable_jit=self._enable_jit,
         )
 
-    def _cancel_build(self):
+    def _execute_build_command(self, command_id: str) -> bool:
+        from Infernux.engine.interaction import CommandSource
+
+        return self.execute_owned_command(command_id, source=CommandSource.TOOLBAR)
+
+    def can_cancel_build(self) -> bool:
+        return bool(self._building and not self._cancel_event.is_set())
+
+    def command_cancel_build(self) -> bool:
+        if not self.can_cancel_build():
+            return False
         self._cancel_event.set()
+        return True
+
+    def can_start_build(self) -> bool:
+        return bool(not self._building and self._scenes and self._output_dir)
+
+    def command_start_build(self, *, run_after: bool) -> bool:
+        if not self.can_start_build():
+            return False
+        return self._do_build(run_after=bool(run_after))
 
     def _format_output_directory_error(self, exc: BuildOutputDirectoryError) -> str:
         if exc.reason == "required":
@@ -892,15 +1010,9 @@ class BuildSettingsPanel:
         if self._cancel_event.is_set():
             raise BuildCancelled()
 
-    def _start_build(self):
-        self._do_build(run_after=False)
-
-    def _start_build_and_run(self):
-        self._do_build(run_after=True)
-
-    def _do_build(self, *, run_after: bool):
+    def _do_build(self, *, run_after: bool) -> bool:
         if self._building:
-            return
+            return False
         self._building = True
         self._build_progress = 0.0
         self._build_message = "Starting build..."
@@ -926,7 +1038,7 @@ class BuildSettingsPanel:
                 source="build",
                 priority=20,
             )
-            return
+            return False
 
         try:
             builder = self._make_builder()
@@ -941,7 +1053,7 @@ class BuildSettingsPanel:
                 source="build",
                 priority=20,
             )
-            return
+            return False
 
         def _run():
             try:
@@ -996,6 +1108,7 @@ class BuildSettingsPanel:
                     )
 
         threading.Thread(target=_run, daemon=True).start()
+        return True
 
     # ------------------------------------------------------------------
     # Internal

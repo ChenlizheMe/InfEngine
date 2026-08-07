@@ -1576,6 +1576,11 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
     result.databaseCommitted = true;
     result.changed = true;
     result.queryGeneration = GetQueryGeneration();
+    // Import may restore a previously deleted GUID. Incoming dependency edges
+    // intentionally survive deletion, so publish availability only after the
+    // catalog and importer outputs have committed. Existing runtime references
+    // can then resolve their cache without any Project-panel-specific repair.
+    AssetDependencyGraph::Instance().NotifyEvent(guid, type, AssetEvent::Modified);
     return result;
 }
 
@@ -1755,6 +1760,115 @@ AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const s
     if (!result)
         result.error = "move could not recover metadata and reimport failed: " + result.error;
     return result;
+}
+
+std::vector<AssetMutationResult>
+AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::string>> &moves)
+{
+    AssertMutationThread("MoveAssetsBatch");
+    AssertNoPendingCommit("MoveAssetsBatch");
+    if (moves.empty())
+        return {};
+
+    struct PreparedMove
+    {
+        std::string oldPath;
+        std::string newPath;
+        std::string oldKey;
+        std::string newKey;
+        std::string guid;
+        ResourceType resourceType = ResourceType::DefaultText;
+    };
+
+    auto failure = [](const std::string &oldPath, const std::string &newPath, AssetMutationErrorCode code,
+                      const std::string &message) {
+        AssetMutationResult result;
+        result.operation = "move_batch";
+        result.previousPath = oldPath;
+        result.path = newPath;
+        result.errorCode = code;
+        result.error = message;
+        return std::vector<AssetMutationResult>{std::move(result)};
+    };
+
+    std::vector<PreparedMove> prepared;
+    prepared.reserve(moves.size());
+    std::unordered_set<std::string> sourceKeys;
+    std::unordered_set<std::string> destinationKeys;
+    for (const auto &[oldPath, newPath] : moves) {
+        const std::string oldKey = FilesystemPathKey(oldPath);
+        const std::string newKey = FilesystemPathKey(newPath);
+        if (oldKey.empty() || newKey.empty() || oldKey == newKey)
+            return failure(oldPath, newPath, AssetMutationErrorCode::InvalidPath,
+                           "asset relocation requires two different paths");
+        if (!sourceKeys.insert(oldKey).second || !destinationKeys.insert(newKey).second)
+            return failure(oldPath, newPath, AssetMutationErrorCode::InvalidPath,
+                           "asset relocation contains duplicate source or destination paths");
+        const std::string guid = GetGuidFromPath(oldPath);
+        if (guid.empty())
+            return failure(oldPath, newPath, AssetMutationErrorCode::NotFound,
+                           "asset relocation source has no registered GUID");
+        prepared.push_back({oldPath, newPath, oldKey, newKey, guid, GetResourceTypeForPath(newPath)});
+    }
+
+    for (const PreparedMove &move : prepared) {
+        const auto occupied = m_pathToGuid.find(move.newKey);
+        if (occupied != m_pathToGuid.end() && occupied->second != move.guid && sourceKeys.count(move.newKey) == 0)
+            return failure(move.oldPath, move.newPath, AssetMutationErrorCode::InvalidPath,
+                           "asset relocation destination is occupied by another GUID");
+    }
+
+    const auto guidToPathBefore = m_guidToPath;
+    const auto pathToGuidBefore = m_pathToGuid;
+    const auto metasBefore = m_metas;
+    const auto fileStatesBefore = m_fileStates;
+    const bool assetIndexDirtyBefore = m_assetIndexDirty;
+    std::vector<const PreparedMove *> metadataMoved;
+    metadataMoved.reserve(prepared.size());
+    try {
+        for (const PreparedMove &move : prepared) {
+            MoveMetadata(move.oldPath, move.newPath);
+            metadataMoved.push_back(&move);
+            UpdateMapping(move.guid, move.newPath);
+            RemoveMappingByPath(move.oldPath);
+            m_fileStates.erase(move.oldKey);
+            UpdateCachedFileState(move.newPath, IsReadOnlyPath(move.newKey));
+        }
+        m_assetIndexDirty = true;
+        PublishQuerySnapshot();
+    } catch (const std::exception &exc) {
+        for (auto it = metadataMoved.rbegin(); it != metadataMoved.rend(); ++it) {
+            try {
+                MoveMetadata((*it)->newPath, (*it)->oldPath);
+            } catch (...) {
+            }
+        }
+        m_guidToPath = guidToPathBefore;
+        m_pathToGuid = pathToGuidBefore;
+        m_metas = metasBefore;
+        m_fileStates = fileStatesBefore;
+        m_assetIndexDirty = assetIndexDirtyBefore;
+        return failure(prepared.front().oldPath, prepared.front().newPath, AssetMutationErrorCode::RuntimeApplyFailed,
+                       std::string("asset relocation batch failed: ") + exc.what());
+    }
+
+    std::vector<AssetMutationResult> results;
+    results.reserve(prepared.size());
+    for (const PreparedMove &move : prepared) {
+        AssetDependencyGraph::Instance().NotifyEvent(move.guid, move.resourceType, AssetEvent::Moved);
+        AssetMutationResult result;
+        result.succeeded = true;
+        result.databaseCommitted = true;
+        result.changed = true;
+        result.operation = "move_batch";
+        result.guid = move.guid;
+        result.path = move.newPath;
+        result.previousPath = move.oldPath;
+        result.resourceType = move.resourceType;
+        result.queryGeneration = GetQueryGeneration();
+        results.push_back(std::move(result));
+    }
+    return results;
 }
 
 bool AssetDatabase::ContainsGuid(const std::string &guid) const

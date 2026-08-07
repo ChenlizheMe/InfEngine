@@ -108,8 +108,12 @@ def _isolate_side_effects(monkeypatch, order):
     monkeypatch.setattr(AssetManager, "invalidate", classmethod(lambda _cls, _guid: order.append("py-evict")))
     monkeypatch.setattr(
         AssetManager,
-        "_emit_editor_asset_changed",
-        classmethod(lambda _cls, _path, event="modified": order.append(f"editor-{event}")),
+        "_publish_asset_content_change",
+        classmethod(
+            lambda _cls, _path, event="modified", **_kwargs: order.append(
+                f"editor-{event}"
+            )
+        ),
     )
     monkeypatch.setattr(AssetManager, "_invalidate_project_panel_cache", classmethod(lambda _cls: None))
 
@@ -124,14 +128,14 @@ def test_reimport_rebuilds_database_before_registry_reload(monkeypatch):
     assert order == ["db-reimport", "registry-reload", "py-evict", "editor-modified"]
 
 
-def test_delete_evicts_registry_before_database_event(monkeypatch):
+def test_delete_commits_database_before_evicting_live_registry(monkeypatch):
     order = []
     database = _Database(order)
     _isolate_side_effects(monkeypatch, order)
 
     result = AssetManager.delete_asset("old.txt", database=database)
     assert result and result.database_committed
-    assert order == ["registry-remove", "py-evict", "db-delete", "editor-deleted"]
+    assert order == ["db-delete", "registry-remove", "py-evict", "editor-deleted"]
 
 
 def test_move_commits_mapping_before_patching_loaded_path(monkeypatch):
@@ -141,7 +145,7 @@ def test_move_commits_mapping_before_patching_loaded_path(monkeypatch):
 
     result = AssetManager.move_asset("old.txt", "new.txt", database=database)
     assert result and result.previous_path == "old.txt"
-    assert order == ["db-move", "registry-move", "py-evict", "editor-moved"]
+    assert order == ["db-move", "registry-move", "py-evict"]
 
 
 def test_programmatic_script_move_explicitly_hot_reloads_after_guid_move(monkeypatch):
@@ -170,7 +174,6 @@ def test_programmatic_script_move_explicitly_hot_reloads_after_guid_move(monkeyp
         "db-move",
         "registry-move",
         "py-evict",
-        "editor-moved",
         ("script-reload", "old.py", "new.py"),
     ]
 

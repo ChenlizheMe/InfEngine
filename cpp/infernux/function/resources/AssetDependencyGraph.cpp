@@ -82,17 +82,6 @@ void AssetDependencyGraph::ClearEdgesOf(AssetDependencySnapshot &snapshot, const
     snapshot.m_dependencies.erase(forward);
 }
 
-void AssetDependencyGraph::RemoveNode(AssetDependencySnapshot &snapshot, const std::string &guid)
-{
-    ClearEdgesOf(snapshot, guid);
-    const auto reverse = snapshot.m_dependents.find(guid);
-    if (reverse == snapshot.m_dependents.end())
-        return;
-    const auto users = reverse->second;
-    for (const auto &userGuid : users)
-        RemoveEdge(snapshot, userGuid, guid);
-}
-
 void AssetDependencyGraph::RebuildStatistics(AssetDependencySnapshot &snapshot)
 {
     snapshot.m_edgeCount = 0;
@@ -220,7 +209,7 @@ void AssetDependencyGraph::RemoveAsset(const std::string &guid)
 {
     if (guid.empty())
         throw std::invalid_argument("Asset GUID cannot be empty");
-    PublishAssetMutation([&](AssetDependencySnapshot &snapshot) { RemoveNode(snapshot, guid); });
+    PublishAssetMutation([&](AssetDependencySnapshot &snapshot) { ClearEdgesOf(snapshot, guid); });
 
     std::lock_guard<std::mutex> lock(m_runtimeMutex);
     const auto outgoing = m_runtimeDependencies.find(guid);
@@ -234,19 +223,6 @@ void AssetDependencyGraph::RemoveAsset(const std::string &guid)
                 m_runtimeDependents.erase(reverse);
         }
         m_runtimeDependencies.erase(outgoing);
-    }
-    const auto users = m_runtimeDependents.find(guid);
-    if (users != m_runtimeDependents.end()) {
-        const auto objectGuids = users->second;
-        for (const auto &objectGuid : objectGuids) {
-            const auto forward = m_runtimeDependencies.find(objectGuid);
-            if (forward == m_runtimeDependencies.end())
-                continue;
-            forward->second.erase(guid);
-            if (forward->second.empty())
-                m_runtimeDependencies.erase(forward);
-        }
-        m_runtimeDependents.erase(users);
     }
 }
 

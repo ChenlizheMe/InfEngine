@@ -1,6 +1,9 @@
 #include "platform/filesystem/DocumentStore.h"
 
 #include <condition_variable>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
@@ -132,8 +135,22 @@ void TestWriterFailurePropagates()
     store.Shutdown();
     Require(propagated, "writer failure was not propagated through the ticket");
     Require(failed->GetStatusName() == "failed", "failed ticket did not expose its terminal status");
+    Require(failed->GetError() == "disk full", "failed ticket did not preserve its diagnostic");
     Require(store.GetMetrics("failed.scene").latestFailedGeneration == failed->GetGeneration(),
             "failed generation metric was not recorded");
+}
+
+void TestFlushPublishesTerminalTicketState()
+{
+    DocumentStore store([](const std::string &, const std::string &, const infernux::DocumentWriteOptions &) {});
+    for (int index = 0; index < 256; ++index) {
+        const std::string path = "flush-ticket-" + std::to_string(index) + ".scene";
+        auto ticket = store.Submit(path, "content");
+        store.Flush(path);
+        Require(ticket->IsComplete(), "path flush returned before its ticket reached a terminal state");
+        Require(ticket->GetStatusName() == "succeeded", "path flush exposed a non-success terminal state");
+    }
+    store.Shutdown();
 }
 
 void TestWriterPreservesPathCasing()
@@ -210,6 +227,44 @@ void TestQueuedCancellationAndGenerationMetrics()
             "successful generation metric was not recorded");
 }
 
+void TestConditionalWriteRejectsAChangedTarget()
+{
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("infernux-document-cas-" + std::to_string(
+                           std::chrono::steady_clock::now().time_since_epoch().count()) +
+                       ".txt");
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << "before";
+    }
+    DocumentStore store;
+    const auto expected = store.CaptureFileState(path.string());
+    const auto originalTime = std::filesystem::last_write_time(path);
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << "extern";
+    }
+    std::filesystem::last_write_time(path, originalTime);
+
+    infernux::DocumentWriteOptions options;
+    options.expectedFileState = expected;
+    auto rejected = store.Submit(path.string(), "editor", options);
+    bool failed = false;
+    try {
+        rejected->Wait();
+    } catch (const std::runtime_error &error) {
+        failed = std::string(error.what()).find("changed outside the editor") != std::string::npos;
+    }
+    std::ifstream current(path, std::ios::binary);
+    const std::string contents((std::istreambuf_iterator<char>(current)), std::istreambuf_iterator<char>());
+    store.Shutdown();
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+
+    Require(failed, "conditional write did not reject an externally changed target");
+    Require(contents == "extern", "conditional write overwrote the external target");
+}
+
 } // namespace
 
 int main()
@@ -219,8 +274,10 @@ int main()
         TestShutdownDrainsAndRestarts();
         TestDifferentPathsRunConcurrently();
         TestWriterFailurePropagates();
+        TestFlushPublishesTerminalTicketState();
         TestWriterPreservesPathCasing();
         TestQueuedCancellationAndGenerationMetrics();
+        TestConditionalWriteRejectsAChangedTarget();
         std::cout << "DocumentStore tests passed\n";
         return 0;
     } catch (const std::exception &error) {

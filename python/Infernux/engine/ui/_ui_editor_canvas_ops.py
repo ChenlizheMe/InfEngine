@@ -51,13 +51,15 @@ class UIEditorCanvasOps:
         canvases = self._get_all_canvases()
         if not canvases:
             return None, None
-        # If hierarchy has a selected object, prefer canvas that is ancestor
-        if self._hierarchy_panel:
-            sel_id = getattr(self._hierarchy_panel, '_selected_object_id', 0)
-            if sel_id:
-                for go, canvas in canvases:
-                    if self._is_descendant_of(sel_id, go):
-                        return go, canvas
+        # SelectionService is the only selection authority. The UI Editor must
+        # never infer semantic state from another panel's rendering cache.
+        from Infernux.engine.interaction import SelectionService
+
+        selected_id = SelectionService.instance().primary_scene_object_id()
+        if selected_id:
+            for go, canvas in canvases:
+                if self._is_descendant_of(selected_id, go):
+                    return go, canvas
         return canvases[0]
 
     def _get_focused_canvas(self, all_canvases=None):
@@ -69,10 +71,9 @@ class UIEditorCanvasOps:
         for go, canvas in all_canvases:
             if go.id == self._focused_canvas_id:
                 return go, canvas
-        # Fallback to first canvas
-        go, canvas = all_canvases[0]
-        self._focused_canvas_id = go.id
-        return go, canvas
+        # A query must never mutate editor state. The first canvas is only a
+        # presentation fallback until a user action establishes focus.
+        return all_canvases[0]
 
     def _find_canvas_for_object(self, go, all_canvases=None):
         """Return the owning canvas pair for *go*, or (None, None)."""
@@ -89,7 +90,11 @@ class UIEditorCanvasOps:
         """Set the focused canvas to the one that owns *go*."""
         canvas_go, canvas = self._find_canvas_for_object(go, all_canvases)
         if canvas_go is not None:
-            self._focused_canvas_id = canvas_go.id
+            self._set_focused_canvas_id(
+                canvas_go.id,
+                record_history=False,
+                description="Focus UI Canvas",
+            )
         return canvas_go, canvas
 
     def _ensure_canvas_layout(self, all_canvases):

@@ -40,6 +40,7 @@ class PortDef:
     display_name: str = ""
     dimension_policy: PortDimensionPolicy = PortDimensionPolicy.EXACT
     type_property: str = ""
+    max_connections: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "direction", PortDirection(self.direction))
@@ -70,6 +71,16 @@ class PortDef:
             raise ValueError(
                 "property-typed ports must be value ports without a concrete type"
             )
+        if (
+            self.max_connections is not None
+            and (
+                type(self.max_connections) is not int
+                or self.max_connections < -1
+            )
+        ):
+            raise ValueError(
+                "graph port max_connections must be -1, non-negative, or None"
+            )
 
 
 @dataclass(frozen=True)
@@ -90,12 +101,54 @@ class PropertyDef:
 
 
 @dataclass(frozen=True)
+class NodePresentation:
+    """Optional authoring chrome owned by the strict node definition.
+
+    ``None`` and empty values intentionally delegate to the graph frontend's
+    domain defaults.  A domain that needs distinct chrome declares it beside
+    its ports and properties instead of maintaining a parallel ``NodeTypeDef``.
+    """
+
+    header_color: tuple[float, float, float, float] | None = None
+    min_width: float | None = None
+    deletable: bool | None = None
+    body_bottom_pad: float | None = None
+    visual_style: str = ""
+    category_label: str = ""
+    show_header_color_swatch: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.header_color is not None:
+            if len(self.header_color) != 4:
+                raise ValueError("node presentation header_color must contain RGBA")
+            object.__setattr__(
+                self,
+                "header_color",
+                tuple(float(value) for value in self.header_color),
+            )
+        for field_name in ("min_width", "body_bottom_pad"):
+            value = getattr(self, field_name)
+            if value is not None and float(value) < 0.0:
+                raise ValueError(f"node presentation {field_name} cannot be negative")
+        if self.deletable is not None and type(self.deletable) is not bool:
+            raise TypeError("node presentation deletable must be bool or None")
+        if (
+            self.show_header_color_swatch is not None
+            and type(self.show_header_color_swatch) is not bool
+        ):
+            raise TypeError(
+                "node presentation show_header_color_swatch must be bool or None"
+            )
+
+
+@dataclass(frozen=True)
 class NodeDef:
     type_id: str
     display_name: str
     ports: tuple[PortDef, ...]
     properties: tuple[PropertyDef, ...] = ()
     target_opcodes: Mapping[str, str] = field(default_factory=dict)
+    presentation: NodePresentation = field(default_factory=NodePresentation)
 
     def __post_init__(self) -> None:
         if not self.type_id or "." not in self.type_id:
@@ -145,6 +198,7 @@ __all__ = [
     "COMMON_NODE_REGISTRY",
     "NodeDef",
     "NodeDefinitionRegistry",
+    "NodePresentation",
     "PortDef",
     "PortDimensionPolicy",
     "PortDirection",

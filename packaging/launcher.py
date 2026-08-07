@@ -150,6 +150,14 @@ class GameEngineLauncher(QMainWindow):
         )
         self.settings_view.language_changed.connect(self._on_language_changed)
 
+        from view.notification_dialog import HubNotificationController
+
+        self.notification_controller = HubNotificationController(
+            self,
+            self.db,
+            open_installs=lambda: self.sidebar.select_page(1),
+        )
+
         # ── Page 3: Discussion ──────────────────────────────────────
         from view.discussion_view import DiscussionView
 
@@ -202,17 +210,16 @@ class GameEngineLauncher(QMainWindow):
 
     def _bootstrap_python_runtime(self):
         if self.runtime_manager.has_runtime():
-            self.installs_view.refresh()
-            QTimer.singleShot(1200, lambda: self.update_controller.check(silent=True))
+            QTimer.singleShot(0, self._finish_startup)
             return
 
         QMessageBox.information(
             self,
             tr("Python 3.12 Setup"),
             tr("Infernux Hub needs Python 3.12 to create and launch projects.\n\n"
-            "The recommended path is to install Infernux Hub through the installer. The installer or standalone Hub will\n"
-            "download the matching full Python 3.12 installer for this machine when needed and install it under\n"
-            "C:\\Users\\Public\\InfernuxHub. Each project then receives its own full copy of the runtime."),
+            "Hub uses an isolated runtime under C:\\Users\\Public\\InfernuxHub. It is deployed from a file archive\n"
+            "and never installs, upgrades, removes, registers, or changes your existing Python environments.\n"
+            "Each project receives its own copy of this private runtime."),
         )
 
         dlg = PythonRuntimeInstallDialog(self.runtime_manager, self)
@@ -223,6 +230,11 @@ class GameEngineLauncher(QMainWindow):
                 dlg.error_text,
             )
         self.installs_view.refresh()
+        QTimer.singleShot(0, self._finish_startup)
+
+    def _finish_startup(self):
+        self.installs_view.refresh()
+        self.notification_controller.show_pending()
         QTimer.singleShot(1200, lambda: self.update_controller.check(silent=True))
 
     def _on_close(self):

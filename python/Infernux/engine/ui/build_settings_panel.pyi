@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from Infernux.engine.ui.editor_panel import FloatingEditorPanel
+
 
 BUILD_SETTINGS_FILE: str
 """Default filename for build settings (``BuildSettings.json``)."""
@@ -20,30 +22,14 @@ def load_build_settings() -> dict:
     """
     ...
 
-def save_build_settings(settings: dict) -> None:
-    """Persist *settings* to the project's ``BuildSettings.json``."""
-    ...
-
-
-class BuildSettingsPanel:
-    """Floating Build Settings window with scene list and platform config.
-
-    Usage::
-
-        panel = BuildSettingsPanel()
-        panel.open()
-        panel.render(ctx)
-    """
+class BuildSettingsPanel(FloatingEditorPanel):
+    """Build Settings utility surface with scene list and platform config."""
 
     def __init__(self) -> None: ...
-    def open(self) -> None: ...
-    def close(self) -> None: ...
-
-    @property
-    def is_open(self) -> bool: ...
+    def on_enable(self) -> None: ...
 
     def get_scene_list(self) -> List[str]:
         """Return ordered list of scene paths included in the build."""
         ...
 
-    def render(self, ctx: object) -> None: ...
+    def on_render_content(self, ctx: object) -> None: ...

@@ -17,6 +17,7 @@
 #include <fstream>
 #include <function/audio/AudioClipLoader.h>
 #include <function/audio/AudioEngine.h>
+#include <function/audio/AudioSource.h>
 #include <function/renderer/EditorGizmos.h>
 #include <function/renderer/GizmosDrawCallBuffer.h>
 #include <function/renderer/SceneRenderGraph.h>
@@ -2437,30 +2438,6 @@ uint64_t Infernux::RenderTimelineCubePreview(float px, float py, float pz, float
     return m_cubePreviewTexId;
 }
 
-bool Infernux::ScheduleMaterialSaveSnapshotTask(const std::string &key, const std::string &filePath,
-                                                const std::string &jsonSnapshot)
-{
-    (void)key;
-    if (filePath.empty())
-        return false;
-
-    const std::string pathCopy = filePath;
-    const std::string jsonCopy = jsonSnapshot;
-    EnqueuePreviewTask([this, pathCopy, jsonCopy]() {
-        try {
-            DocumentStore::Instance().WriteAndWait(pathCopy, jsonCopy);
-            // The first UI invalidation happens before this asynchronous write.
-            // Invalidate again after publication so a cached old mtime cannot
-            // delay the Project panel's preview by a full polling interval.
-            InvalidateMaterialPreviewTask(std::string("mat|") + pathCopy);
-        } catch (const std::exception &ex) {
-            INXLOG_WARN("ScheduleMaterialSaveSnapshotTask failed for ", pathCopy, ": ", ex.what());
-        }
-    });
-
-    return true;
-}
-
 // ----------------------------------
 // Renderer initialization
 // ----------------------------------
@@ -2564,57 +2541,51 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             return mat;
         };
 
-        graph.RegisterCallback(ResourceType::Texture, [this, resolveMaterial](const std::string &dependentGuid,
-                                                                              const std::string &texGuid,
-                                                                              AssetEvent event) {
-            auto mat = resolveMaterial(dependentGuid);
-            if (!mat)
-                return;
+        graph.RegisterCallback(
+            ResourceType::Texture,
+            [this, resolveMaterial](const std::string &dependentGuid, const std::string &texGuid, AssetEvent event) {
+                auto mat = resolveMaterial(dependentGuid);
+                if (!mat)
+                    return;
 
-            if (event == AssetEvent::Deleted) {
-                bool changed = false;
-                for (const auto &[propName, prop] : mat->GetAllProperties()) {
-                    if (prop.type != MaterialPropertyType::Texture2D)
-                        continue;
-                    const auto *val = std::get_if<std::string>(&prop.value);
-                    if (!val || *val != texGuid)
-                        continue;
-                    mat->ClearTexture(propName);
-                    changed = true;
-                    INXLOG_INFO("AssetGraph: cleared texture '", propName, "' from material '", mat->GetName(), "'");
+                if (event == AssetEvent::Deleted) {
+                    for (const auto &[propName, prop] : mat->GetAllProperties()) {
+                        if (prop.type != MaterialPropertyType::Texture2D)
+                            continue;
+                        const auto *val = std::get_if<std::string>(&prop.value);
+                        if (!val || *val != texGuid)
+                            continue;
+                        INXLOG_INFO("AssetGraph: texture '", propName, "' is missing for material '", mat->GetName(),
+                                    "'; preserving its GUID");
+                    }
                 }
-                if (changed)
-                    mat->SaveToFile();
-            }
 
-            if (event == AssetEvent::Deleted || event == AssetEvent::Modified) {
-                mat->MarkPropertiesDirty();
-                INXLOG_INFO("AssetGraph: queued descriptor refresh for material '", mat->GetMaterialKey(),
-                            "' (texture changed)");
-            }
-        });
+                if (event == AssetEvent::Deleted || event == AssetEvent::Modified) {
+                    mat->MarkPropertiesDirty();
+                    INXLOG_INFO("AssetGraph: queued descriptor refresh for material '", mat->GetMaterialKey(),
+                                "' (texture changed)");
+                }
+            });
 
-        graph.RegisterCallback(ResourceType::Material,
-                               [](const std::string &dependentGuid, const std::string & /*matGuid*/, AssetEvent event) {
-                                   if (event != AssetEvent::Deleted)
-                                       return;
-                                   uint64_t compId = 0;
-                                   try {
-                                       compId = std::stoull(dependentGuid);
-                                   } catch (...) {
-                                       return;
-                                   }
-                                   auto *comp = Component::FindByComponentId(compId);
-                                   if (!comp)
-                                       return;
-                                   auto *mr = dynamic_cast<MeshRenderer *>(comp);
-                                   if (!mr)
-                                       return;
-                                   auto fallback = AssetRegistry::Instance().GetBuiltinMaterial("ErrorMaterial");
-                                   if (fallback)
-                                       mr->SetMaterial(0, fallback);
-                                   INXLOG_INFO("AssetGraph: reassigned MeshRenderer to error material");
-                               });
+        graph.RegisterCallback(
+            ResourceType::Material, [](const std::string &dependentGuid, const std::string &matGuid, AssetEvent event) {
+                if (event != AssetEvent::Deleted && event != AssetEvent::Modified)
+                    return;
+                uint64_t compId = 0;
+                try {
+                    compId = std::stoull(dependentGuid);
+                } catch (...) {
+                    return;
+                }
+                auto *comp = Component::FindByComponentId(compId);
+                if (!comp)
+                    return;
+                auto *mr = dynamic_cast<MeshRenderer *>(comp);
+                if (!mr)
+                    return;
+                mr->OnMaterialAssetEvent(matGuid, event);
+                INXLOG_INFO("AssetGraph: refreshed MeshRenderer material reference without changing GUID");
+            });
 
         graph.RegisterCallback(ResourceType::Mesh, [](const std::string &dependentGuid,
                                                       const std::string & /*meshGuid*/, AssetEvent event) {
@@ -2633,6 +2604,23 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             mr->OnMeshAssetEvent(event);
             INXLOG_INFO("AssetGraph: refreshed MeshRenderer mesh state");
         });
+
+        graph.RegisterCallback(
+            ResourceType::Audio, [](const std::string &dependentGuid, const std::string &audioGuid, AssetEvent event) {
+                if (event != AssetEvent::Deleted && event != AssetEvent::Modified)
+                    return;
+                uint64_t componentId = 0;
+                const char *begin = dependentGuid.data();
+                const char *end = begin + dependentGuid.size();
+                const auto [parsedEnd, error] = std::from_chars(begin, end, componentId);
+                if (error != std::errc{} || parsedEnd != end)
+                    return;
+                auto *source = dynamic_cast<AudioSource *>(Component::FindByComponentId(componentId));
+                if (!source)
+                    return;
+                source->OnAudioClipAssetEvent(audioGuid, event);
+                INXLOG_INFO("AssetGraph: refreshed AudioSource clip reference without changing GUID");
+            });
 
         graph.RegisterCallback(ResourceType::Shader, [this, resolveMaterial](const std::string &dependentGuid,
                                                                              const std::string & /*shaderGuid*/,
@@ -3621,13 +3609,13 @@ void Infernux::ResetImGuiLayout()
     }
 }
 
-void Infernux::SelectDockedWindow(const std::string &windowId)
+void Infernux::SelectDockedWindow(const std::string &windowId, bool allowDuringModal)
 {
     auto *renderer = GetRenderer();
     if (renderer == nullptr) {
         return;
     }
-    renderer->QueueDockTabSelection(windowId.c_str());
+    renderer->QueueDockTabSelection(windowId.c_str(), allowDuringModal);
 }
 
 uint64_t Infernux::QueueSyntheticKeyInput(int scancode, bool pressed, bool repeat)

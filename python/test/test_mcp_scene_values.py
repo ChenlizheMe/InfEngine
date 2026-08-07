@@ -9,6 +9,7 @@ from Infernux.mcp.tools.scene import (
     _coerce_property_value,
     _find_component,
     _remove_component_through_editor_transaction,
+    _set_component_fields_through_editor_transaction,
     _resolved_component_field_metadata,
 )
 from Infernux.renderstack.effect_slot import EffectSlot
@@ -179,11 +180,13 @@ def test_builtin_lazy_enum_metadata_resolves_to_public_enum():
 
 
 def test_mcp_component_add_fields_are_one_editor_transaction(scene):
+    from Infernux.engine.interaction import EditorInteractionCore
     from Infernux.engine.undo import UndoManager
 
     owner = scene.create_game_object("McpComponentAddTransaction")
     previous_manager = UndoManager._instance
     manager = UndoManager()
+    core = EditorInteractionCore()
     try:
         light = _add_component_through_editor_transaction(
             owner,
@@ -203,11 +206,44 @@ def test_mcp_component_add_fields_are_one_editor_transaction(scene):
         assert restored.component_id == component_id
         assert restored.intensity == 3.25
     finally:
+        core.shutdown()
+        UndoManager._instance = previous_manager
+
+
+def test_mcp_component_multi_field_edit_is_one_editor_transaction(scene):
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.undo import UndoManager
+
+    owner = scene.create_game_object("McpComponentFieldsTransaction")
+    light = owner.add_component("Light")
+    old_intensity = float(light.intensity)
+    old_range = float(light.range)
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    core = EditorInteractionCore()
+    try:
+        changed = _set_component_fields_through_editor_transaction(
+            light,
+            "Light",
+            {"intensity": 3.5, "range": 17.0},
+        )
+        assert changed == {"intensity": 3.5, "range": 17.0}
+        assert len(manager.action_journal.applied_entries()) == 1
+        manager.undo()
+        assert float(light.intensity) == old_intensity
+        assert float(light.range) == old_range
+        assert not manager.can_undo
+        manager.redo()
+        assert float(light.intensity) == 3.5
+        assert float(light.range) == 17.0
+    finally:
+        core.shutdown()
         UndoManager._instance = previous_manager
 
 
 def test_mcp_component_remove_reports_constraint_rejection(scene):
     from Infernux.components.decorators import require_component
+    from Infernux.engine.interaction import EditorInteractionCore
     from Infernux.engine.undo import UndoManager
 
     class McpDependency(InxComponent):
@@ -225,6 +261,7 @@ def test_mcp_component_remove_reports_constraint_rejection(scene):
 
     previous_manager = UndoManager._instance
     manager = UndoManager()
+    core = EditorInteractionCore()
     try:
         assert _remove_component_through_editor_transaction(
             owner, dependency
@@ -232,4 +269,5 @@ def test_mcp_component_remove_reports_constraint_rejection(scene):
         assert owner.get_component(McpDependency) is dependency
         assert not manager.can_undo
     finally:
+        core.shutdown()
         UndoManager._instance = previous_manager

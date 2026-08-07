@@ -347,6 +347,9 @@ class AddComponentTransactionCommand(UndoCommand):
         python_instance: Any = None,
         initializer: Optional[Callable[[Any], None]] = None,
         invoke_after_deserialize: bool = False,
+        target_component_id: int = 0,
+        insert_after: bool = False,
+        insert_at_start: bool = False,
         description: str = "",
     ):
         super().__init__(description or f"Add {type_name}")
@@ -358,6 +361,13 @@ class AddComponentTransactionCommand(UndoCommand):
         self._python_instance = python_instance
         self._initializer = initializer
         self._invoke_after_deserialize = bool(invoke_after_deserialize)
+        self._target_component_id = int(target_component_id or 0)
+        self._insert_after = bool(insert_after)
+        self._insert_at_start = bool(insert_at_start)
+        if self._target_component_id and self._insert_at_start:
+            raise ValueError(
+                "component insertion cannot use both an anchor and the list start"
+            )
         self._result_component = None
         self._result_component_id = 0
         self._compound: Optional[CompoundCommand] = None
@@ -466,6 +476,31 @@ class AddComponentTransactionCommand(UndoCommand):
             )
         return CompoundCommand(commands, self.description)
 
+    def _place_added_components(self, obj, before: dict) -> None:
+        """Move the complete newly-created component block to the drop position."""
+        if not self._target_component_id and not self._insert_at_start:
+            return
+        before_order = tuple(int(value) for value in before["order"])
+        if self._target_component_id and self._target_component_id not in before_order:
+            raise RuntimeError(
+                f"component insertion target {self._target_component_id} is not live"
+            )
+        current = tuple(int(value) for value in obj.get_component_order())
+        before_ids = set(before_order)
+        added = tuple(value for value in current if value not in before_ids)
+        if not added:
+            raise RuntimeError("component insertion produced no new components")
+        remaining = [value for value in current if value in before_ids]
+        if self._insert_at_start:
+            target_index = 0
+        else:
+            target_index = remaining.index(self._target_component_id)
+            if self._insert_after:
+                target_index += 1
+        requested = remaining[:target_index] + list(added) + remaining[target_index:]
+        if tuple(requested) != current and not obj.set_component_order(requested):
+            raise RuntimeError("failed to apply the requested component insertion point")
+
     def execute(self) -> None:
         if self._compound is not None:
             self._compound.redo()
@@ -479,6 +514,7 @@ class AddComponentTransactionCommand(UndoCommand):
             self._result_component_id = int(
                 getattr(self._result_component, "component_id", 0) or 0
             )
+            self._place_added_components(obj, before)
             after = _capture_component_documents(obj)
             self._compound = self._build_compound(before, after)
         except Exception:

@@ -254,8 +254,16 @@ class Engine():
                 manager = WindowManager.instance()
                 if manager is not None:
                     manager.process_pending_actions()
+                    manager.sync_native_gui_focus()
             except Exception as exc:
                 Debug.log_suppressed("Engine.pre_gui_tick.WindowManager", exc)
+            try:
+                from Infernux.engine.undo import UndoManager
+                undo_manager = UndoManager.instance()
+                if undo_manager is not None:
+                    undo_manager.process_pending_replay()
+            except Exception as exc:
+                Debug.log_suppressed("Engine.pre_gui_tick.UndoReplay", exc)
         self._engine.set_pre_gui_callback(_pre_gui_tick)
 
         # Install a post-draw callback that runs AFTER GPU submit + present.
@@ -272,9 +280,16 @@ class Engine():
         _gc_frame = [0]  # mutable counter for closure
         def _post_draw_tick():
             try:
+                from Infernux.engine.interaction import DocumentRegistry
+                DocumentRegistry.instance().process_deferred_saves()
+            except Exception as exc:
+                Debug.log_suppressed("Engine.post_draw_tick.process_deferred_saves", exc)
+            try:
                 from Infernux.core.assets import AssetManager
                 AssetManager.flush_pending_gpu_texture_reloads()
                 AssetManager.poll_pending_asset_writes()
+                from Infernux.engine.interaction import DocumentRegistry
+                DocumentRegistry.instance().process_pending_saves()
             except Exception as exc:
                 Debug.log_suppressed("Engine.post_draw_tick.flush_texture_reloads", exc)
 
@@ -530,6 +545,8 @@ class Engine():
         try:
             from Infernux.core.assets import AssetManager
             AssetManager.flush_all_asset_writes()
+            from Infernux.engine.interaction import DocumentRegistry
+            DocumentRegistry.instance().process_pending_saves()
         except Exception as exc:
             Debug.log_error(f"Failed to flush pending asset writes during shutdown: {exc}")
 
@@ -597,13 +614,13 @@ class Engine():
     def _confirm_dirty_panels_before_exit(self) -> bool:
         """Audit dirty state after native close confirmation without prompting."""
         try:
-            from Infernux.engine.project_context import get_dirty_panel_entries
+            from Infernux.engine.interaction import DocumentRegistry
 
-            entries = list(get_dirty_panel_entries())
-            if entries:
-                titles = ", ".join(str(entry.get("title") or entry.get("panel_id") or "Panel") for entry in entries)
+            documents = list(DocumentRegistry.instance().dirty_documents())
+            if documents:
+                titles = ", ".join(document.title for document in documents)
                 Debug.log_warning(
-                    "Engine teardown reached with dirty panel registry entries after "
+                    "Engine teardown reached with dirty documents after "
                     f"close confirmation: {titles}"
                 )
             return True
@@ -628,15 +645,59 @@ class Engine():
     def register_gui(
         self, name: str, gui_object: InxGUIRenderable, *, priority: int = 0
     ):
-        self._engine.register_gui_renderable(name, gui_object, int(priority))
-        self._gui_objects[name] = gui_object
+        if self._is_editor_panel_renderable(gui_object):
+            raise RuntimeError(
+                "editor panels must be registered through WindowManager so "
+                "their interaction descriptor, document, focus, and close "
+                "lifecycle are bound atomically"
+            )
+        self._register_gui_unchecked(name, gui_object, priority=priority)
+
+    def _register_editor_panel_gui(
+        self, name: str, gui_object: InxGUIRenderable, *, priority: int = 0
+    ):
+        if not self._is_editor_panel_renderable(gui_object):
+            raise TypeError("panel host registration requires an EditorPanel")
+        self._register_gui_unchecked(name, gui_object, priority=priority)
+
+    @staticmethod
+    def _is_editor_panel_renderable(gui_object) -> bool:
+        panel_types = []
+        try:
+            from Infernux.engine.ui.editor_panel import EditorPanel
+
+            panel_types.append(EditorPanel)
+        except ImportError:
+            pass
+        try:
+            from Infernux.lib import EditorPanel as NativeEditorPanel
+
+            panel_types.append(NativeEditorPanel)
+        except ImportError:
+            pass
+        return bool(panel_types) and isinstance(gui_object, tuple(panel_types))
+
+    def _register_gui_unchecked(
+        self, name: str, gui_object: InxGUIRenderable, *, priority: int = 0
+    ):
+        identifier = str(name or "").strip()
+        if not identifier:
+            raise ValueError("GUI renderable name cannot be empty")
+        if identifier in self._gui_objects:
+            raise RuntimeError(
+                f"GUI renderable is already registered: {identifier}"
+            )
+        self._engine.register_gui_renderable(identifier, gui_object, int(priority))
+        self._gui_objects[identifier] = gui_object
 
     def unregister_gui(self, name: str):
         self._engine.unregister_gui_renderable(name)
         self._gui_objects.pop(name, None)
 
-    def select_docked_window(self, window_id: str):
-        self._engine.select_docked_window(window_id)
+    def select_docked_window(
+        self, window_id: str, allow_during_modal: bool = False
+    ):
+        self._engine.select_docked_window(window_id, bool(allow_during_modal))
 
     def reset_imgui_layout(self):
         """Clear ImGui docking layout (in-memory + on disk)."""

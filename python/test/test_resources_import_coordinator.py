@@ -97,9 +97,9 @@ def _patch_asset_manager(monkeypatch, calls):
     )
     monkeypatch.setattr(
         AssetManager,
-        "_emit_editor_asset_changed",
+        "_publish_asset_content_change",
         classmethod(
-            lambda _cls, path, event_type="modified": calls.append(
+            lambda _cls, path, event_type="modified", **_kwargs: calls.append(
                 (f"asset-{event_type}", path, threading.get_ident())
             )
         ),
@@ -209,7 +209,7 @@ def test_missing_meta_rebuild_imports_unregistered_owner(monkeypatch, tmp_path):
     assert database.guid_by_path[str(owner.resolve())] == "created-guid"
 
 
-def test_material_save_suppresses_watcher_modified_echo(monkeypatch, tmp_path):
+def test_material_preview_invalidation_does_not_hide_external_edit(monkeypatch, tmp_path):
     database = _AssetDatabaseProbe()
     handler = ResourceChangeHandler(_EngineProbe(database))
     asset_calls = []
@@ -223,7 +223,9 @@ def test_material_save_suppresses_watcher_modified_echo(monkeypatch, tmp_path):
     AssetManager.on_material_saved(path_str)
     handler.on_modified(_event(path))
     assert handler.process_pending_reloads(force=True) == 1
-    assert database.mutations == []
+    assert database.mutations == [
+        ("modified", path_str, threading.get_ident())
+    ]
 
 
 def test_watcher_thread_only_submits_and_main_thread_commits(monkeypatch, tmp_path):
@@ -299,7 +301,9 @@ def test_move_query_may_run_on_watcher_but_mutation_waits_for_owner(monkeypatch,
     assert handler.process_pending_reloads(force=True) == 1
     assert database.mutations[0][0] == "moved"
     assert database.mutations[0][-1] == threading.get_ident()
-    assert [entry[0] for entry in asset_calls] == ["invalidate", "asset-moved"]
+    # A move is published exclusively by AssetMutationService as one typed
+    # relocation; it must not also masquerade as a content-change event.
+    assert [entry[0] for entry in asset_calls] == ["invalidate"]
     assert all(entry[-1] == threading.get_ident() for entry in asset_calls)
 
 
@@ -334,8 +338,6 @@ def test_first_scene_save_as_imports_active_unregistered_target(monkeypatch, tmp
     handler = ResourceChangeHandler(_EngineProbe(database))
     asset_calls = []
     _patch_asset_manager(monkeypatch, asset_calls)
-    monkeypatch.setattr(handler, "_is_active_scene_file", lambda _path: True)
-
     target = tmp_path / "MainMenu.scene"
     temporary = tmp_path / "MainMenu.scene.tmp.123456.9"
     target.write_text("{}", encoding="utf-8")
@@ -347,13 +349,11 @@ def test_first_scene_save_as_imports_active_unregistered_target(monkeypatch, tmp
     assert [entry[0] for entry in asset_calls] == ["asset-created"]
 
 
-def test_active_registered_scene_watcher_echo_is_ignored(monkeypatch, tmp_path):
+def test_active_registered_scene_external_edit_is_reimported(monkeypatch, tmp_path):
     database = _AssetDatabaseProbe()
     handler = ResourceChangeHandler(_EngineProbe(database))
     asset_calls = []
     _patch_asset_manager(monkeypatch, asset_calls)
-    monkeypatch.setattr(handler, "_is_active_scene_file", lambda _path: True)
-
     target = tmp_path / "RaceTrack.scene"
     target.write_text("{}", encoding="utf-8")
     database.guid_by_path[str(target.resolve())] = "stable-guid"
@@ -361,8 +361,56 @@ def test_active_registered_scene_watcher_echo_is_ignored(monkeypatch, tmp_path):
     handler.on_modified(_event(target))
 
     assert handler.process_pending_reloads(force=True) == 1
+    assert database.mutations == [
+        ("modified", str(target.resolve()), threading.get_ident())
+    ]
+    assert [entry[0] for entry in asset_calls] == ["invalidate", "asset-modified"]
+
+
+def test_dirty_document_blocks_external_reimport_before_live_asset_mutation(
+    monkeypatch,
+    tmp_path,
+):
+    from Infernux.engine.interaction import (
+        DocumentCapability,
+        DocumentKey,
+        DocumentKind,
+        DocumentRegistry,
+        DocumentState,
+    )
+
+    class _ReloadableController:
+        def reload_from_resource(self, *, document_id: str, resource_path: str):
+            del document_id, resource_path
+            return True
+
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    asset_calls = []
+    _patch_asset_manager(monkeypatch, asset_calls)
+    target = tmp_path / "Dirty.effect"
+    target.write_text("{}", encoding="utf-8")
+    target_path = str(target.resolve())
+    database.guid_by_path[target_path] = "dirty-guid"
+    registry = DocumentRegistry()
+    document = registry.create(
+        DocumentKind.RENDER_EFFECT,
+        "Dirty",
+        key=DocumentKey.resource(DocumentKind.RENDER_EFFECT, target_path),
+        resource_path=target_path,
+        revision=1,
+        saved_revision=0,
+        capabilities=DocumentCapability.SAVE | DocumentCapability.DISCARD,
+        controller=_ReloadableController(),
+    )
+
+    handler.on_modified(_event(target))
+
+    assert handler.process_pending_reloads(force=True) == 1
     assert database.mutations == []
     assert asset_calls == []
+    assert document.state is DocumentState.CONFLICT
+    assert document.is_dirty
 
 
 def test_document_store_atomic_replace_does_not_delete_republished_target(monkeypatch, tmp_path):

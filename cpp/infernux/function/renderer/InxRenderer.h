@@ -154,6 +154,14 @@ struct RendererFrameTelemetrySnapshot
     double sceneUpdateMs = 0.0;
     double guiBuildMs = 0.0;
     double prepareFrameMs = 0.0;
+    uint64_t guiFrame = 0;
+    bool guiFrameRequested = false;
+    double guiFrameIntervalMs = 0.0;
+    double guiFrameUntilDueMs = 0.0;
+    uint64_t guiFrameConsumeCount = 0;
+    uint64_t guiFrameApprovedCount = 0;
+    uint64_t guiFrameForcedCount = 0;
+    uint64_t guiFrameRequestCount = 0;
     std::unordered_map<std::string, double> guiPanelTimesMs;
     std::unordered_map<std::string, std::unordered_map<std::string, double>> guiPanelSubTimesMs;
 };
@@ -307,7 +315,7 @@ class InxRenderer
     float GetDisplayScale() const;
     void RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable, int priority = 0);
     void UnregisterGUIRenderable(const char *name);
-    void QueueDockTabSelection(const char *windowId);
+    void QueueDockTabSelection(const char *windowId, bool allowDuringModal = false);
     void SetGUIPlayerMode(bool enabled);
 
     // ImGui texture management

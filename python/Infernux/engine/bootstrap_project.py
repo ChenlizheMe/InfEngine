@@ -7,6 +7,7 @@ callbacks to a C++ ``ProjectPanel`` instance.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import TYPE_CHECKING
 
@@ -37,171 +38,149 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
 
     from Infernux.engine.interaction import CommandSource
 
-    def _command_payload(argument: str):
+    def _command_payload(command_id: str, argument: str):
+        if command_id == "asset.create":
+            parts = str(argument or "").split("\t", 3)
+            parts.extend([""] * (4 - len(parts)))
+            return {
+                "kind": parts[0],
+                "base_name": parts[1],
+                "extension": parts[2],
+                "variant": parts[3],
+            }
+        if command_id == "asset.open":
+            kind, separator, path = str(argument or "").partition("\t")
+            return {"kind": kind, "path": path} if separator else {}
+        if command_id == "asset.rename":
+            source_path, separator, new_name = str(argument or "").partition("\t")
+            return (
+                {"source_path": source_path, "new_name": new_name}
+                if separator
+                else {}
+            )
+        if command_id == "asset.import_external":
+            try:
+                payload = json.loads(str(argument or ""))
+            except (TypeError, ValueError):
+                return {}
+            if not isinstance(payload, dict):
+                return {}
+            paths = payload.get("paths", ())
+            destination = payload.get("destination", "")
+            if not isinstance(paths, list) or not isinstance(destination, str):
+                return {}
+            return {
+                "paths": tuple(str(path) for path in paths),
+                "destination": destination,
+            }
+        if command_id == "asset.transfer":
+            try:
+                payload = json.loads(str(argument or ""))
+            except (TypeError, ValueError):
+                return {}
+            if not isinstance(payload, dict):
+                return {}
+            paths = payload.get("paths", ())
+            destination = payload.get("destination", "")
+            if not isinstance(paths, list) or not isinstance(destination, str):
+                return {}
+            return {
+                "paths": tuple(str(path) for path in paths),
+                "destination": destination,
+            }
+        if command_id == "prefab.save_as":
+            object_id, separator, current_path = str(argument or "").partition("\t")
+            if not separator:
+                return {}
+            try:
+                resolved_object_id = int(object_id)
+            except ValueError:
+                return {}
+            return {
+                "object_id": resolved_object_id,
+                "current_path": current_path,
+            }
+        if command_id in {
+            "project.set_folder_expanded",
+            "project.set_model_expanded",
+        }:
+            target_id, separator, expanded = str(argument or "").rpartition("\t")
+            if not separator or not target_id or expanded not in {"0", "1"}:
+                return {}
+            return {"target_id": target_id, "expanded": expanded == "1"}
         target_id = str(argument or "").strip()
         return {"target_id": target_id} if target_id else {}
 
-    def _activate_project_command_context():
-        bs.interaction_core.focus.activate_panel("project", view_id="project")
-
     def _execute_project_command(command_id, source, argument):
-        _activate_project_command_context()
         return bs.interaction_core.commands.execute(
             command_id,
             source=CommandSource(source),
-            payload=_command_payload(argument),
+            payload=_command_payload(command_id, argument),
         ).accepted
 
-    def _can_execute_project_command(command_id, argument):
-        _activate_project_command_context()
-        return bs.interaction_core.commands.can_execute(
-            command_id,
-            bs.interaction_core.commands.context(
-                CommandSource.CONTEXT_MENU,
-                _command_payload(argument),
-            ),
-        )
-
     pp.execute_command = _execute_project_command
-    pp.can_execute_command = _can_execute_project_command
 
-    from Infernux.engine.interaction import (
-        ClipboardDomain,
-        ClipboardItem,
-        ClipboardOperation,
-    )
+    def _render_project_context_menu(
+        ctx_arg,
+        target_path,
+        reveal_path,
+        current_path,
+    ):
+        from Infernux.engine.interaction import ContextMenuBuilder
+        from Infernux.engine.ui.core_context_menus import project_context_menu
 
-    clipboard = bs.interaction_core.clipboard
-
-    def _write_asset_clipboard(paths, cut: bool) -> bool:
-        from Infernux.engine.path_utils import lexical_path
-
-        items = tuple(
-            ClipboardItem(lexical_path(path))
-            for path in paths or ()
-            if path and os.path.exists(path)
-        )
-        if not items:
-            return False
-        clipboard.write(
-            ClipboardDomain.ASSET,
-            items,
-            operation=(ClipboardOperation.CUT if cut else ClipboardOperation.COPY),
-            source_owner_id="project",
-            reason="cut_assets" if cut else "copy_assets",
-        )
-        return True
-
-    def _read_asset_clipboard():
-        payload = clipboard.peek(ClipboardDomain.ASSET)
-        if payload is None:
-            return [], False
-        return (
-            [item.target_id for item in payload.items],
-            payload.operation is ClipboardOperation.CUT,
+        ContextMenuBuilder(bs.interaction_core.commands).render(
+            ctx_arg,
+            project_context_menu(
+                _t,
+                target_path=str(target_path or ""),
+                reveal_path=str(reveal_path or ""),
+                current_path=str(current_path or ""),
+            ),
+            payload={"directory": str(current_path or "")},
         )
 
-    def _consume_asset_clipboard() -> None:
-        payload = clipboard.peek(ClipboardDomain.ASSET)
-        if payload is not None:
-            clipboard.consume_cut(payload.revision)
+    pp.render_context_menu = _render_project_context_menu
 
-    pp.write_asset_clipboard = _write_asset_clipboard
-    pp.read_asset_clipboard = _read_asset_clipboard
-    pp.consume_asset_clipboard = _consume_asset_clipboard
-
-    def _apply_asset_transfer(
-        paths,
-        *,
-        cut: bool,
-        destination: str,
-        description: str,
-    ) -> bool:
-        from Infernux.debug import Debug
-        from Infernux.engine.undo import (
-            ProjectAssetCopyCommand,
-            ProjectAssetMoveCommand,
-            ProjectAssetPasteCommand,
-            UndoManager,
-        )
-
-        try:
-            planned = file_ops.plan_asset_paste(paths, destination, cut=cut)
-        except (OSError, RuntimeError, ValueError) as exc:
-            Debug.log_error(f"Project asset paste rejected: {exc}")
-            return False
-        if not planned:
-            return False
-
-        backup_root = os.path.join(bs.project_path, "Library", "EditorUndo")
-        commands = []
-        for source, target in planned:
-            if cut:
-                commands.append(
-                    ProjectAssetMoveCommand(
-                        source,
-                        target,
-                        asset_database=adb,
-                    )
-                )
-            else:
-                commands.append(
-                    ProjectAssetCopyCommand(
-                        source,
-                        target,
-                        project_root=bs.project_path,
-                        backup_root=backup_root,
-                        asset_database=adb,
-                    )
-                )
-        result_paths = [target for _source, target in planned]
-
-        def _on_applied(applied_paths: list[str]) -> None:
-            from Infernux.engine.interaction import (
-                SelectionService,
-                SelectionTarget,
-            )
-
-            pp.invalidate_dir_cache()
-            SelectionService.instance().replace(
-                tuple(SelectionTarget.asset(path) for path in applied_paths),
-                owner_id="project",
-                primary=SelectionTarget.asset(applied_paths[-1]),
-                reason="project_asset_transfer",
-                record_history=False,
-            )
-
-        command = ProjectAssetPasteCommand(
-            commands,
-            result_paths,
-            on_applied=_on_applied,
-            on_reverted=pp.invalidate_dir_cache,
-            description=description,
-        )
-        manager = UndoManager.instance()
-        if manager is not None:
-            return manager.execute(command)
-        try:
-            command.execute()
-            return True
-        finally:
-            command.dispose()
-
-    pp.paste_asset_clipboard = lambda paths, cut, destination: _apply_asset_transfer(
-        paths,
-        cut=bool(cut),
-        destination=destination,
-        description="Move Assets" if cut else "Paste Assets",
-    )
-    pp.move_asset_paths = lambda paths, destination: _apply_asset_transfer(
-        paths,
-        cut=True,
-        destination=destination,
-        description="Move Assets",
-    )
+    project_assets = bs.interaction_core.project_assets
 
     # -- Asset database access (via engine) --
     adb = bs.engine.get_asset_database()
+    project_assets.configure(bs.project_path, adb)
+    project_assets.add_change_listener(pp.invalidate_dir_cache)
+
+    def _remap_project_directory(change) -> None:
+        from Infernux.engine.interaction import (
+            AssetMutationKind,
+            iter_asset_mutations,
+        )
+        from Infernux.engine.path_utils import (
+            is_path_within,
+            relative_path,
+            same_path,
+        )
+
+        current_path = str(pp.get_current_path() or "")
+        if not current_path:
+            return
+        for mutation in iter_asset_mutations(change):
+            if mutation.kind is not AssetMutationKind.MOVED:
+                continue
+            source = str(mutation.source_path or "")
+            destination = str(mutation.destination_path or "")
+            if same_path(current_path, source):
+                remapped = destination
+            elif is_path_within(current_path, source, allow_root=False):
+                remapped = os.path.join(
+                    destination,
+                    relative_path(current_path, source),
+                )
+            else:
+                continue
+            pp.set_current_path(remapped)
+            return
+
+    bs.interaction_core.asset_mutations.add_listener(_remap_project_directory)
 
     pp.get_guid_from_path = lambda path: (
         adb.get_guid_from_path(path) if adb else ""
@@ -213,13 +192,6 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     # -- File operation callbacks --
     from Infernux.debug import Debug
 
-    def _safe_project_create(cb, *args):
-        try:
-            return cb(*args)
-        except Exception as exc:
-            Debug.log_error(f"ProjectPanel create failed: {exc}")
-            return False, str(exc)
-
     def _safe_project_path(cb, *args):
         try:
             return cb(*args) or ""
@@ -227,188 +199,74 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
             Debug.log_error(f"ProjectPanel path operation failed: {exc}")
             return ""
 
-    pp.create_folder = lambda cur, name: _safe_project_create(
-        file_ops.create_folder, cur, name)
-    pp.create_script = lambda cur, name: _safe_project_create(
-        file_ops.create_script, cur, name, adb)
-    pp.create_shader = lambda cur, name, typ: _safe_project_create(
-        file_ops.create_shader, cur, name, typ, adb)
-    pp.create_material = lambda cur, name: _safe_project_create(
-        file_ops.create_material, cur, name, adb)
-    pp.create_physic_material = lambda cur, name: _safe_project_create(
-        file_ops.create_physic_material, cur, name, adb)
-    pp.create_scene = lambda cur, name: _safe_project_create(
-        file_ops.create_scene, cur, name, adb)
-    pp.create_animclip = lambda cur, name: _safe_project_create(
-        file_ops.create_animclip, cur, name, adb)
-    pp.create_animclip3d = lambda cur, name: _safe_project_create(
-        file_ops.create_animclip3d, cur, name, adb)
-    pp.create_animfsm = lambda cur, name: _safe_project_create(
-        file_ops.create_animfsm, cur, name, adb)
-    pp.create_particlegraph = lambda cur, name: _safe_project_create(
-        file_ops.create_particlegraph, cur, name, adb)
-    pp.create_render_effect = lambda cur, name, feature_type: _safe_project_create(
-        file_ops.create_render_effect, cur, name, feature_type, adb)
-    pp.create_render_effect_group = lambda cur, name: _safe_project_create(
-        file_ops.create_render_effect_group, cur, name, adb)
-    pp.create_animtimeline = lambda cur, name: _safe_project_create(
-        file_ops.create_animtimeline, cur, name, adb)
-    pp.create_timelinefsm = lambda cur, name: _safe_project_create(
-        file_ops.create_timelinefsm, cur, name, adb)
-    def _rename_asset(old_path: str, new_name: str) -> str:
-        from Infernux.engine.interaction import (
-            SelectionService,
-            SelectionSnapshot,
-            SelectionTarget,
-        )
-        from Infernux.engine.path_utils import same_path
-        from Infernux.engine.undo import ProjectAssetRenameCommand, UndoManager
-
-        before_context = bs.interaction_core.capture_context()
-        new_path = _safe_project_path(
-            file_ops.do_rename,
-            old_path,
-            new_name,
-            adb,
-        )
-        if not new_path or same_path(old_path, new_path):
-            return new_path
-
-        manager = UndoManager.instance()
-        if manager is None or manager.is_executing:
-            return new_path
-
-        next_snapshot = SelectionSnapshot.create(
-            (SelectionTarget.asset(new_path),),
-            owner_id="project",
-        )
-        SelectionService.instance().apply_snapshot(
-            next_snapshot,
-            reason="project_asset_rename",
-            record_history=False,
-        )
-
-        manager.record(
-            ProjectAssetRenameCommand(
-                old_path,
-                new_path,
-                asset_database=adb,
-                on_changed=pp.invalidate_dir_cache,
+    def _create_asset(kind, cur, name, variant):
+        creators = {
+            "folder": ("Create Folder", file_ops.create_folder, (cur, name)),
+            "script": ("Create Script", file_ops.create_script, (cur, name, adb)),
+            "shader": (
+                "Create Shader",
+                file_ops.create_shader,
+                (cur, name, variant, adb),
             ),
-            before_context=before_context,
-            after_context=bs.interaction_core.capture_context(),
-        )
-        return new_path
+            "material": (
+                "Create Material",
+                file_ops.create_material,
+                (cur, name, adb),
+            ),
+            "physic_material": (
+                "Create Physic Material",
+                file_ops.create_physic_material,
+                (cur, name, adb),
+            ),
+            "scene": ("Create Scene", file_ops.create_scene, (cur, name, adb)),
+            "animation_clip": (
+                "Create Animation Clip",
+                file_ops.create_animclip,
+                (cur, name, adb),
+            ),
+            "animation_clip3d": (
+                "Create 3D Animation Clip",
+                file_ops.create_animclip3d,
+                (cur, name, adb),
+            ),
+            "animation_fsm": (
+                "Create Animation State Machine",
+                file_ops.create_animfsm,
+                (cur, name, adb),
+            ),
+            "particle_graph": (
+                "Create Particle Graph",
+                file_ops.create_particlegraph,
+                (cur, name, adb),
+            ),
+            "render_effect": (
+                "Create Render Effect",
+                file_ops.create_render_effect,
+                (cur, name, variant, adb),
+            ),
+            "render_effect_group": (
+                "Create Render Effect Group",
+                file_ops.create_render_effect_group,
+                (cur, name, adb),
+            ),
+            "animation_timeline": (
+                "Create Timeline",
+                file_ops.create_animtimeline,
+                (cur, name, adb),
+            ),
+            "timeline_fsm": (
+                "Create Timeline State Machine",
+                file_ops.create_timelinefsm,
+                (cur, name, adb),
+            ),
+        }
+        spec = creators.get(str(kind or "").strip())
+        if spec is None:
+            return False, f"Unknown asset kind: {kind}"
+        _description, callback, args = spec
+        return callback(*args)
 
-    pp.do_rename = _rename_asset
-    pp.get_unique_name = lambda cur, base, ext: (
-        file_ops.get_unique_name(cur, base, ext)
-    )
-    pp.copy_item_to_path = lambda item, dest: _safe_project_path(
-        file_ops.copy_path_as_new_asset, item, dest, adb)
-
-    # -- Delete (through an Editor-owned semantic modal) --
-    def _delete_items(paths):
-        valid = []
-        seen = set()
-        for p in paths or []:
-            if not p or not os.path.exists(p) or p in seen:
-                continue
-            seen.add(p)
-            valid.append(p)
-        if not valid:
-            return
-
-        from Infernux.engine.ui.project_delete_confirmation import (
-            ProjectDeleteConfirmationCoordinator,
-        )
-
-        def _delete_confirmed(confirmed_paths: list[str]) -> bool:
-            from Infernux.engine.undo import ProjectAssetDeleteCommand, UndoManager
-
-            def _on_deleted() -> None:
-                from Infernux.engine.interaction import SelectionService
-
-                SelectionService.instance().clear(
-                    reason="project_asset_delete",
-                    record_history=False,
-                )
-                pp.invalidate_dir_cache()
-
-            command = ProjectAssetDeleteCommand(
-                confirmed_paths,
-                project_root=bs.project_path,
-                backup_root=os.path.join(bs.project_path, "Library", "EditorUndo"),
-                asset_database=adb,
-                on_deleted=_on_deleted,
-                on_restored=pp.invalidate_dir_cache,
-                description=(
-                    "Delete Asset" if len(confirmed_paths) == 1 else "Delete Assets"
-                ),
-            )
-            manager = UndoManager.instance()
-            if manager is not None:
-                return manager.execute(command)
-            try:
-                command.execute()
-                return True
-            finally:
-                command.dispose()
-
-        ProjectDeleteConfirmationCoordinator.instance().request(valid, _delete_confirmed)
-
-    pp.delete_items = _delete_items
-
-    # -- Create prefab from hierarchy drag --
-    def _create_prefab_from_hierarchy(obj_id, current_path):
-        from Infernux.lib import SceneManager
-        scene = SceneManager.instance().get_active_scene()
-        if not scene:
-            Debug.log_warning("Failed to create prefab: no active scene")
-            return
-        game_object = scene.find_by_id(obj_id)
-        if not game_object:
-            Debug.log_warning(f"Failed to create prefab: object {obj_id} not found")
-            return
-        if not current_path:
-            Debug.log_warning("Failed to create prefab: no target folder")
-            return
-        # Detect canvas parent for UI prefabs
-        source_canvas_name = ""
-        cur = game_object.get_parent() if hasattr(game_object, 'get_parent') else None
-        while cur is not None:
-            try:
-                from Infernux.ui import UICanvas as _UCCls
-                for comp in (cur.get_py_components() or []):
-                    if isinstance(comp, _UCCls):
-                        source_canvas_name = cur.name
-                        break
-            except Exception:
-                pass
-            if source_canvas_name:
-                break
-            cur = cur.get_parent()
-
-        ok, result = file_ops.create_prefab_from_gameobject(
-            game_object, current_path, adb,
-            source_canvas_name=source_canvas_name)
-        if not ok:
-            from Infernux.debug import Debug
-            Debug.log_warning(f"Failed to create prefab: {result}")
-        else:
-            # Invalidate the project panel cache so the new file appears
-            # immediately, and request full-speed rendering so the panel
-            # refreshes without waiting for the idle-throttle cooldown.
-            pp.invalidate_dir_cache()
-            native = bs.engine.get_native_engine()
-            if native:
-                native.request_full_speed_frame()
-
-    pp.create_prefab_from_hierarchy = _create_prefab_from_hierarchy
-
-    # -- Open callbacks --
-    pp.open_file = lambda path: project_utils.open_file_with_system(
-        path, project_root=bs.project_path)
+    # -- Unified asset-open adapter --
 
     def _open_scene(file_path):
         from Infernux.debug import Debug
@@ -428,7 +286,7 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
             if runner.is_busy:
                 Debug.log_warning(
                     "Cannot open scene while another deferred task is running")
-                return
+                return False
 
             def _on_stop(ok):
                 if not ok:
@@ -450,128 +308,73 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
                     return
                 _open_after_stop()
 
-            if not play_mode.exit_play_mode(on_complete=_on_stop):
+            accepted = bool(play_mode.exit_play_mode(on_complete=_on_stop))
+            if not accepted:
                 Debug.log_warning(
                     "Failed to stop Play Mode before opening scene")
-            return
+            return accepted
 
         sfm = SceneFileManager.instance()
         if sfm:
-            sfm.open_scene(file_path)
-        else:
-            Debug.log_warning("SceneFileManager not initialized")
+            return bool(sfm.open_scene(file_path))
+        Debug.log_warning("SceneFileManager not initialized")
+        return False
 
-    pp.open_scene = _open_scene
+    def _open_project_document(file_path, document_kind):
+        return bs.interaction_core.commands.execute(
+            "project.open_document",
+            source=CommandSource.API,
+            payload={
+                "path": str(file_path or ""),
+                "document_kind": str(document_kind or ""),
+            },
+        ).accepted
 
-    pp.open_prefab_mode = lambda path: (
-        SceneFileManager.instance().open_prefab_mode_with_undo(path)
-        if SceneFileManager.instance() else None
-    )
-
-    def _open_anim_clip(file_path):
-        from Infernux.engine.ui.window_manager import WindowManager
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        wm = WindowManager.instance()
-        if wm is None:
-            return
-        panel = wm.open_window("animclip2d_editor")
-        if panel is not None and hasattr(panel, '_open_animclip'):
-            panel._open_animclip(file_path)
-            ClosablePanel.focus_panel_by_id("animclip2d_editor")
-            try:
-                wm._engine.select_docked_window("animclip2d_editor")
-            except Exception:
-                pass
-
-    pp.open_anim_clip = _open_anim_clip
-
-    def _open_anim_fsm(file_path):
-        from Infernux.engine.ui.window_manager import WindowManager
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        wm = WindowManager.instance()
-        if wm is None:
-            return
-        panel = wm.open_window("animfsm_editor")
-        if panel is not None and hasattr(panel, '_open_animfsm'):
-            panel._open_animfsm(file_path)
-            ClosablePanel.focus_panel_by_id("animfsm_editor")
-            try:
-                wm._engine.select_docked_window("animfsm_editor")
-            except Exception:
-                pass
-
-    pp.open_anim_fsm = _open_anim_fsm
-
-    def _open_particle_graph(file_path):
-        from Infernux.engine.ui.window_manager import WindowManager
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        wm = WindowManager.instance()
-        if wm is None:
-            return
-        panel = wm.open_window("particle_graph_editor")
-        if panel is not None and hasattr(panel, "_open_particlegraph"):
-            panel._open_particlegraph(file_path)
-            ClosablePanel.focus_panel_by_id("particle_graph_editor")
-            try:
-                wm._engine.select_docked_window("particle_graph_editor")
-            except Exception:
-                pass
-
-    pp.open_particle_graph = _open_particle_graph
-
-    def _open_anim_timeline(file_path):
-        from Infernux.engine.ui.window_manager import WindowManager
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        wm = WindowManager.instance()
-        if wm is None:
-            return
-        panel = wm.open_window("animtimeline_editor")
-        if panel is not None and hasattr(panel, '_open_timeline'):
-            panel._open_timeline(file_path)
-            ClosablePanel.focus_panel_by_id("animtimeline_editor")
-            try:
-                wm._engine.select_docked_window("animtimeline_editor")
-            except Exception:
-                pass
-
-    pp.open_anim_timeline = _open_anim_timeline
-
-    def _open_timeline_fsm(file_path):
-        from Infernux.engine.ui.window_manager import WindowManager
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        wm = WindowManager.instance()
-        if wm is None:
-            return
-        panel = wm.open_window("animfsm_editor")
-        if panel is not None and hasattr(panel, '_open_animfsm'):
-            panel._open_animfsm(file_path)
-            ClosablePanel.focus_panel_by_id("animfsm_editor")
-            try:
-                wm._engine.select_docked_window("animfsm_editor")
-            except Exception:
-                pass
-
-    pp.open_timeline_fsm = _open_timeline_fsm
-
-    pp.reveal_in_explorer = lambda path: (
-        project_utils.reveal_in_file_explorer(path)
-    )
-
-    # -- Script validation for drag-drop --
-    def _validate_script_component(file_path):
-        try:
-            from Infernux.components.script_loader import (
-                load_component_from_file, ScriptLoadError)
-            load_component_from_file(file_path)
-            return True
-        except Exception as exc:
-            Debug.log_suppressed(
-                f"bootstrap_project.validate_script_component[{os.path.basename(file_path)}]",
-                exc,
-            )
+    def _open_asset(kind, file_path):
+        kind = str(kind or "").strip()
+        file_path = str(file_path or "").strip()
+        if not kind or not file_path:
             return False
+        if kind == "system":
+            return bool(
+                project_utils.open_file_with_system(
+                    file_path, project_root=bs.project_path
+                )
+            )
+        if kind == "scene":
+            return _open_scene(file_path)
+        if kind == "prefab":
+            return bool(bs.interaction_core.prefabs.open(path=file_path))
+        document_kinds = {
+            "animation_clip": "animation_clip",
+            "animation_fsm": "animation_fsm",
+            "particle_graph": "particle_graph",
+            "timeline": "timeline",
+            "timeline_fsm": "animation_fsm",
+        }
+        document_kind = document_kinds.get(kind)
+        return bool(
+            document_kind
+            and _open_project_document(file_path, document_kind)
+        )
 
-    pp.validate_script_component = _validate_script_component
+    from Infernux.engine.ui.project_delete_confirmation import (
+        ProjectDeleteConfirmationCoordinator,
+    )
+
+    def _reveal_project_asset(path: str) -> bool:
+        project_utils.reveal_in_file_explorer(path)
+        return True
+
+    project_asset_interactions = bs.interaction_core.project_asset_interactions
+    project_asset_interactions.configure(
+        unique_name=file_ops.get_unique_name,
+        create=_create_asset,
+        open_asset=_open_asset,
+        reveal=_reveal_project_asset,
+        read_external_clipboard=pp.get_os_clipboard_files,
+        request_delete=ProjectDeleteConfirmationCoordinator.instance().request,
+    )
 
     # -- Inspector invalidation --
     def _invalidate_asset_inspector(path):
@@ -585,15 +388,21 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     pp.invalidate_asset_inspector = _invalidate_asset_inspector
 
     # -- External file drop from OS (e.g. Windows Explorer drag) ------
-    # Register a lightweight per-frame renderable that forwards OS-level
-    # file drops to the ProjectPanel when it is the focused window.
+    # The OS event is process-wide. Interaction Core resolves its pointer
+    # owner before Project View is allowed to submit asset.import_external.
     from Infernux.lib import InxGUIRenderable, InxGUIContext, InputManager
+    from Infernux.engine.interaction import ExternalDropKind
 
     class _ExternalDropForwarder(InxGUIRenderable):
         def on_render(self, ctx: InxGUIContext):
             try:
                 im = InputManager.instance()
                 if im is None or not im.has_dropped_files():
+                    return
+                if not bs.interaction_core.external_drops.accepts(
+                    "project",
+                    ExternalDropKind.FILES,
+                ):
                     return
                 files = im.get_dropped_files()
                 if files and pp.get_current_path():
@@ -605,13 +414,8 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
     bs.engine.register_gui("project_drop_forwarder", bs._external_drop_forwarder)
 
     # -- Panel focus sync --
-    def _on_project_focus_changed(focused: bool):
-        from Infernux.engine.interaction import FocusService
-
-        focus = FocusService.instance()
-        if focused:
-            focus.activate_panel("project", view_id="project")
-        else:
-            focus.deactivate_panel("project")
-
-    pp.on_project_panel_focused = _on_project_focus_changed
+    pp.on_panel_focused = bs.window_manager.native_panel_focus_callback(
+        "project",
+        view_id="project",
+        source_instance=pp,
+    )

@@ -11,6 +11,7 @@ from Infernux.engine.interaction import (
     DocumentCapability,
     DocumentKind,
     DocumentRegistry,
+    DocumentState,
 )
 
 
@@ -20,17 +21,26 @@ class _Controller:
         self.document_id = document_id
         self.pending_ticket = None
         self.discard_calls = 0
+        self.reload_calls = 0
 
     def save(self, *, ticket, save_as: bool = False):
+        del save_as
         if self.pending_ticket is not None:
             self.pending_ticket = ticket
             return DocumentActionResult(DocumentActionStatus.PENDING)
+        self.registry.capture_save_revision(ticket.ticket_id)
+        self.registry.complete_save(ticket.ticket_id, success=True)
         return True
 
     def discard(self, *, document_id: str):
         assert document_id == self.document_id
         self.discard_calls += 1
-        self.registry.mark_saved(self.document_id)
+        return True
+
+    def reload_from_resource(self, *, document_id: str, resource_path: str):
+        assert document_id == self.document_id
+        del resource_path
+        self.reload_calls += 1
         return True
 
 
@@ -91,7 +101,24 @@ def test_closing_one_of_multiple_views_never_prompts_for_the_document():
     assert controller.discard_calls == 0
 
 
-def test_exit_discard_defers_mutation_and_visits_each_document_once():
+def test_reset_layout_with_explicit_empty_scope_does_not_prompt_for_all_dirty_documents():
+    registry = DocumentRegistry()
+    document, controller = _dirty_document(registry, "shared")
+    completed: list[str] = []
+    close = CloseCoordinator(registry)
+
+    assert close.request(
+        CloseIntent(CloseIntentKind.RESET_LAYOUT, document_ids=()),
+        lambda: completed.append("reset"),
+    )
+
+    assert completed == ["reset"]
+    assert close.state is CloseState.IDLE
+    assert document.is_dirty
+    assert controller.discard_calls == 0
+
+
+def test_exit_discard_abandons_session_state_without_rebuilding_documents():
     registry = DocumentRegistry()
     first, first_controller = _dirty_document(registry, "first")
     second, second_controller = _dirty_document(registry, "second")
@@ -112,7 +139,8 @@ def test_exit_discard_defers_mutation_and_visits_each_document_once():
     assert completed == ["exit"]
     assert first_controller.discard_calls == 0
     assert second_controller.discard_calls == 0
-    assert first.is_dirty and second.is_dirty
+    assert not first.is_dirty and not second.is_dirty
+    assert registry.capture_session_state()["documents"] == []
 
 
 def test_exit_orders_prefab_before_suspended_scene():
@@ -215,4 +243,53 @@ def test_cancel_invokes_callback_without_mutating_document():
 
     assert cancelled == ["cancelled"]
     assert document.is_dirty
+    assert close.state is CloseState.IDLE
+
+
+def test_close_waits_for_external_conflict_before_dirty_decision():
+    registry = DocumentRegistry()
+    document, _controller = _dirty_document(registry, "conflicted")
+    registry.mark_conflict(document.document_id)
+    close = CloseCoordinator(registry)
+
+    close.request(
+        CloseIntent(
+            CloseIntentKind.CLOSE_VIEW,
+            document_ids=(document.document_id,),
+        ),
+        lambda: None,
+    )
+
+    assert close.state is CloseState.WAITING_FOR_CONFLICT
+    assert close.active_document is document
+
+    registry.resolve_conflict_keep_local(document.document_id)
+    close.poll()
+
+    assert close.state is CloseState.AWAITING_DECISION
+    assert document.state is DocumentState.READY
+    assert document.is_dirty
+
+
+def test_clean_conflict_reload_allows_close_to_finish():
+    registry = DocumentRegistry()
+    document, controller = _dirty_document(registry, "reload-conflict")
+    registry.mark_saved(document.document_id)
+    registry.mark_conflict(document.document_id)
+    completed: list[str] = []
+    close = CloseCoordinator(registry)
+    close.request(
+        CloseIntent(
+            CloseIntentKind.CLOSE_VIEW,
+            document_ids=(document.document_id,),
+        ),
+        lambda: completed.append("closed"),
+    )
+
+    assert close.state is CloseState.WAITING_FOR_CONFLICT
+    assert registry.request_reload_external(document.document_id).accepted
+    close.poll()
+
+    assert controller.reload_calls == 1
+    assert completed == ["closed"]
     assert close.state is CloseState.IDLE

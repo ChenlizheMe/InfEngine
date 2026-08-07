@@ -192,25 +192,175 @@ class TestBuiltinComponent:
         import weakref
 
         from Infernux.components.builtin.sprite_renderer import SpriteRenderer
-        from Infernux.engine.ui.event_bus import EditorEvent, EditorEventBus
+        from Infernux.engine.interaction import (
+            AssetMutationService,
+            DocumentRegistry,
+            SelectionService,
+        )
 
-        bus = EditorEventBus.instance()
-        baseline = bus.subscriber_count(EditorEvent.ASSET_CHANGED)
+        previous = AssetMutationService.instance()
+        if previous is not None:
+            previous.shutdown()
+        bus = AssetMutationService(DocumentRegistry(), SelectionService())
+        baseline = len(bus._listeners)
         wrapper = SpriteRenderer()
         wrapper._sprite_material = object()
         wrapper._material_ready = True
         wrapper._sprite_frames = [{"name": "frame"}]
+        wrapper._sprite_frames_by_id = {"frame": wrapper._sprite_frames[0]}
         wrapper._subscribe_asset_events()
         wrapper_ref = weakref.ref(wrapper)
 
-        assert bus.subscriber_count(EditorEvent.ASSET_CHANGED) == baseline + 1
+        assert len(bus._listeners) == baseline + 1
 
         wrapper._invalidate_native_binding()
-        assert bus.subscriber_count(EditorEvent.ASSET_CHANGED) == baseline
+        assert len(bus._listeners) == baseline
         assert wrapper._sprite_material is None
         assert wrapper._material_ready is False
         assert wrapper._sprite_frames == []
+        assert wrapper._sprite_frames_by_id == {}
 
         del wrapper
         gc.collect()
         assert wrapper_ref() is None
+        bus.shutdown()
+
+    def test_sprite_renderer_missing_frame_id_does_not_fall_back_by_index(self):
+        from types import SimpleNamespace
+
+        from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+        from Infernux.core.asset_types import SpriteFrame
+
+        class _Material:
+            def __init__(self):
+                self.values = {}
+
+            def set_vector4(self, name, *value):
+                self.values[name] = value
+
+        existing = SpriteFrame(
+            stable_id="1" * 32,
+            name="existing",
+            w=32,
+            h=32,
+        )
+        wrapper = SpriteRenderer()
+        wrapper._cpp_component = SimpleNamespace(
+            sprite_guid="texture-guid",
+            frame_id="2" * 32,
+            flip_x=False,
+            flip_y=True,
+        )
+        wrapper._sprite_frames = [existing]
+        wrapper._sprite_frames_by_id = {existing.stable_id: existing}
+        wrapper._tex_w = 32
+        wrapper._tex_h = 32
+        material = _Material()
+        wrapper._get_material = lambda: material
+
+        wrapper._apply_uv_rect()
+
+        assert material.values["uvRect"] == (0.0, 0.0, 0.0, 0.0)
+        assert material.values["displayScale"] == (0.0, 0.0, 0.0, 0.0)
+
+    def test_native_sprite_renderer_scene_document_uses_stable_frame_id(self):
+        from Infernux.lib import SpriteRenderer as NativeSpriteRenderer
+
+        renderer = NativeSpriteRenderer()
+        renderer.sprite_guid = "texture-guid"
+        renderer.frame_id = "0123456789abcdef0123456789abcdef"
+
+        document = renderer.serialize_document()
+
+        assert document["frameId"] == renderer.frame_id
+        assert "frameIndex" not in document
+        restored = NativeSpriteRenderer()
+        assert restored.deserialize_document(document)
+        assert restored.frame_id == renderer.frame_id
+
+    def test_native_sprite_renderer_rejects_invalid_frame_identity(self):
+        from Infernux.lib import SpriteRenderer as NativeSpriteRenderer
+
+        renderer = NativeSpriteRenderer()
+        with pytest.raises(ValueError, match="32-character lowercase UUID"):
+            renderer.frame_id = "legacy-index-3"
+
+        document = renderer.serialize_document()
+        document["frameId"] = "ABCDEF0123456789ABCDEF0123456789"
+        assert renderer.deserialize_document(document) is False
+
+    def test_sprite_assignment_binds_texture_and_persisted_frame_atomically(
+        self,
+        monkeypatch,
+    ):
+        from types import SimpleNamespace
+
+        from Infernux.components.builtin import sprite_renderer as sprite_module
+        from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+        from Infernux.core import asset_types
+
+        first = asset_types.SpriteFrame(
+            stable_id="1" * 32,
+            name="first",
+            w=32,
+            h=32,
+        )
+        second = asset_types.SpriteFrame(
+            stable_id="2" * 32,
+            name="second",
+            x=32,
+            w=32,
+            h=32,
+        )
+        settings = asset_types.TextureImportSettings(
+            texture_type=asset_types.TextureType.SPRITE,
+            sprite_frames=[first, second],
+        )
+        monkeypatch.setattr(
+            sprite_module,
+            "_get_asset_database",
+            lambda: SimpleNamespace(
+                get_path_from_guid=lambda guid: (
+                    "C:/Project/Assets/sheet.png" if guid == "texture-guid" else ""
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            asset_types,
+            "read_texture_import_settings",
+            lambda _path: settings,
+        )
+
+        wrapper = SpriteRenderer()
+        wrapper._cpp_component = SimpleNamespace(
+            component_id=1,
+            sprite_guid="",
+            frame_id="",
+        )
+        monkeypatch.setattr(wrapper, "_load_sprite_data", lambda: None)
+        monkeypatch.setattr(wrapper, "_apply_uv_rect", lambda: None)
+
+        wrapper.sprite = {"guid": "texture-guid"}
+        assert wrapper._cpp_component.sprite_guid == "texture-guid"
+        assert wrapper._cpp_component.frame_id == first.stable_id
+
+        wrapper._cpp_component.frame_id = second.stable_id
+        wrapper.sprite = {"guid": "texture-guid"}
+        assert wrapper._cpp_component.frame_id == second.stable_id
+
+        requested = wrapper._sprite_assignment_snapshot(
+            {"guid": "texture-guid", "frame_id": first.stable_id}
+        )
+        assert requested == {
+            "sprite_guid": "texture-guid",
+            "frame_id": first.stable_id,
+        }
+
+        with pytest.raises(ValueError, match="does not belong"):
+            wrapper._sprite_assignment_snapshot(
+                {"guid": "texture-guid", "frame_id": "f" * 32}
+            )
+
+        wrapper.sprite = None
+        assert wrapper._cpp_component.sprite_guid == ""
+        assert wrapper._cpp_component.frame_id == ""

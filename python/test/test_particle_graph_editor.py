@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.project_context import clear_panel_tracking
+from Infernux.engine.interaction import DocumentRegistry
 from Infernux.engine.ui.graph_document_authoring import (
     GraphDocumentAuthoringModel,
     ParticleEmitterGraphAuthoringModel,
@@ -36,11 +36,16 @@ from Infernux.particle.nodes import (
 
 @pytest.fixture(autouse=True)
 def _isolate_particle_graph_panel_dirty_tracking():
-    clear_panel_tracking("particle_graph_editor")
+    from Infernux.engine.undo import UndoManager
+
+    previous_manager = UndoManager.instance()
+    UndoManager()
+    DocumentRegistry.instance().close_view("particle_graph_editor")
     try:
         yield
     finally:
-        clear_panel_tracking("particle_graph_editor")
+        DocumentRegistry.instance().close_view("particle_graph_editor")
+        UndoManager._instance = previous_manager
 
 
 def _stage_model(document):
@@ -48,6 +53,28 @@ def _stage_model(document):
         document,
         definition_filter=particle_stage_definition_filter(document.domain),
     )
+
+
+def _finish_particle_graph_save(panel, path) -> None:
+    from Infernux.core.document_store import DocumentStore
+
+    DocumentStore.flush(str(path))
+    panel._authoring_document_controller.poll_pending_writes()
+
+
+def _save_particle_graph(panel, path) -> bool:
+    registry = DocumentRegistry.instance()
+    document = registry.require(panel.document_id)
+    target = os.path.abspath(str(path))
+    current = os.path.abspath(document.resource_path) if document.resource_path else ""
+    ticket = registry.begin_save(
+        document.document_id,
+        save_as=not current or os.path.normcase(target) != os.path.normcase(current),
+    )
+    accepted = panel._save_to(str(path), ticket_id=ticket.ticket_id)
+    if accepted:
+        _finish_particle_graph_save(panel, path)
+    return accepted
 
 
 def test_particle_document_authoring_round_trip_keeps_strict_roots():
@@ -1023,8 +1050,31 @@ def test_unsaved_particle_graph_edits_do_not_publish_runtime_artifacts(
 
     panel.add_authoring_parameter("Draft Value", "f32", 1.0)
 
-    assert panel._dirty is True
+    assert panel._document_is_dirty() is True
     assert published == []
+
+
+def _particle_panel_with_command_core():
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        ParticleGraphEditorPanel,
+    )
+    from Infernux.engine.undo import UndoManager
+
+    core = EditorInteractionCore()
+    manager = UndoManager(core.action_journal)
+    panel = ParticleGraphEditorPanel()
+    core.panels.register_type(panel.panel_type_id, panel.PANEL_INTERACTION)
+    core.panels.bind_view(panel.window_id, panel.panel_type_id, panel)
+    panel._graph_selection.bind(core.selection)
+    core.focus.activate_panel(
+        panel.panel_type_id,
+        view_id=panel.window_id,
+        document_id=panel.document_id,
+        child_context_id=panel.current_child_context_id(),
+        record_history=False,
+    )
+    return panel, core, manager
 
 
 def test_particle_emitter_row_defers_model_rebind_until_list_render_finishes(
@@ -1033,7 +1083,7 @@ def test_particle_emitter_row_defers_model_rebind_until_list_render_finishes(
     import Infernux.engine.ui.particle_graph_editor_panel as module
     import Infernux.engine.ui.node_graph_editor_panel as shared_module
 
-    panel = module.ParticleGraphEditorPanel()
+    panel, _core, _manager = _particle_panel_with_command_core()
     panel._asset = ParticleGraphAsset(
         emitters=(
             ParticleEmitterAsset(stable_id="first", name="First"),
@@ -1086,7 +1136,7 @@ def test_particle_workspace_defers_add_until_all_rows_finish(monkeypatch):
         ParticleGraphEditorPanel,
     )
 
-    panel = ParticleGraphEditorPanel()
+    panel, core, _manager = _particle_panel_with_command_core()
     rendered_rows = []
     dispatched = []
 
@@ -1119,6 +1169,24 @@ def test_particle_workspace_defers_add_until_all_rows_finish(monkeypatch):
     panel._render_emitter_page(ctx)
 
     assert dispatched == [("particle_emitter", "default")]
+    assert core.commands.can_execute(
+        "graph.workspace.add",
+        core.commands.context(
+            payload={
+                "section_id": "particle_emitter",
+                "action_id": "default",
+            }
+        ),
+    )
+    assert not core.commands.can_execute(
+        "graph.workspace.add",
+        core.commands.context(
+            payload={
+                "section_id": "particle_emitter",
+                "action_id": "missing",
+            }
+        ),
+    )
 
 
 def test_particle_parameter_workspace_rename_uses_the_existing_undoable_api():
@@ -1208,7 +1276,8 @@ def test_particle_value_input_connection_can_be_replaced_atomically():
     ) == 1
 
 
-def test_particle_graph_editor_restores_single_canvas_dirty_draft():
+def test_particle_graph_editor_restores_single_canvas_dirty_document_session():
+    from Infernux.engine.interaction import DocumentRegistry
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
@@ -1216,11 +1285,16 @@ def test_particle_graph_editor_restores_single_canvas_dirty_draft():
     velocity = panel._on_node_add("particle.attribute.velocity", 220.0, 0.0)
     panel._on_link_created("init::init.velocity", "out", velocity.uid, "in")
     panel._select_stage("rendering")
+    view_state = panel.save_state()
+    session_state = DocumentRegistry.instance().capture_session_state()
 
+    restored_registry = DocumentRegistry()
+    assert restored_registry.queue_session_restore(session_state) == 1
     restored = ParticleGraphEditorPanel()
-    restored.load_state(panel.save_state())
+    assert restored.restore_persisted_session_document()
+    restored.load_state(view_state)
 
-    assert restored._dirty is True
+    assert restored._document_is_dirty() is True
     assert restored._stage == "rendering"
     assert [node.type_id for node in restored.asset.emitters[0].init.nodes] == [
         "particle.root.init",
@@ -1240,24 +1314,25 @@ def test_particle_graph_editor_restores_single_canvas_dirty_draft():
     ]
 
 
-def test_particle_graph_editor_discards_incompatible_transient_draft(tmp_path):
+def test_particle_graph_editor_discards_incompatible_document_session(tmp_path):
+    from Infernux.engine.interaction import DocumentRegistry
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
     from Infernux.particle import ParticleGraphAsset
 
     target = tmp_path / "Current.particlegraph"
     ParticleGraphAsset(stable_id="current-graph", name="Current").save(str(target))
     panel = ParticleGraphEditorPanel()
-    state = panel.save_state()
-    state["file_path"] = str(target)
-    state["dirty"] = True
-    stale_draft = dict(state["draft"])
-    stale_draft.pop("event_types")
-    state["draft"] = stale_draft
+    panel.open_document_resource_immediate(str(target))
+    session_state = DocumentRegistry.instance().capture_session_state()
+    stale_asset = session_state["documents"][0]["restore_state"]["asset"]
+    stale_asset.pop("event_types")
 
+    restored_registry = DocumentRegistry()
+    assert restored_registry.queue_session_restore(session_state) == 1
     restored = ParticleGraphEditorPanel()
-    restored.load_state(state)
+    assert restored.restore_persisted_session_document()
 
-    assert restored._dirty is False
+    assert restored._document_is_dirty() is False
     assert os.path.normcase(restored._file_path) == os.path.normcase(str(target.resolve()))
     assert restored.asset.stable_id == "current-graph"
 
@@ -1294,28 +1369,33 @@ def test_particle_graph_editor_ignores_float32_widget_round_trip_noise():
     assert preserve_ui_float_precision(changed, original) == changed
 
 
-def test_particle_graph_save_replaces_persisted_dirty_draft(tmp_path, monkeypatch):
+def test_particle_graph_save_publishes_view_state_without_global_session_flush(tmp_path, monkeypatch):
     from Infernux.engine.ui import panel_state
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     layout = tmp_path / "layout"
     panel_state.init(str(layout))
+    sentinel_session = {"documents": [{"document_id": "bootstrap-owned"}]}
+    panel_state.put("document_session", sentinel_session)
     target = tmp_path / "Sparks.particlegraph"
     panel = ParticleGraphEditorPanel()
     panel._file_path = str(target)
-    panel._dirty = True
     panel._persist_panel_state()
-    assert panel_state.get("panel:particle_graph_editor")["dirty"] is True
+    view_state = panel_state.get("panel:particle_graph_editor")
+    assert "dirty" not in view_state
+    assert "draft" not in view_state
+    assert panel_state.get("document_session") == sentinel_session
 
     def save_asset(asset, path):
         target.write_text(json.dumps(asset.to_dict()), encoding="utf-8")
 
     monkeypatch.setattr(ParticleGraphAsset, "save", save_asset)
 
-    assert panel._save_to(str(target)) is True
-    persisted = panel_state.get("panel:particle_graph_editor")
-    assert persisted["dirty"] is False
-    assert "draft" not in persisted
+    assert _save_particle_graph(panel, target) is True
+    persisted_view = panel_state.get("panel:particle_graph_editor")
+    assert "dirty" not in persisted_view
+    assert "draft" not in persisted_view
+    assert panel_state.get("document_session") == sentinel_session
 
 
 def test_particle_graph_scalar_properties_publish_stable_semantic_ids():
@@ -1583,11 +1663,14 @@ def _particle_panel_with_history():
     manager = UndoManager()
     manager.set_context_hooks(
         lambda: EditorContextSnapshot(selection=selection.snapshot),
-        lambda context, phase: selection.apply_snapshot(
-            context.selection,
-            reason=phase,
-            record_history=False,
-        ),
+        lambda context, phase: (
+            selection.apply_snapshot(
+                context.selection,
+                reason=phase,
+                record_history=False,
+            ),
+            True,
+        )[1],
     )
     panel = ParticleGraphEditorPanel()
     panel._graph_selection.bind(selection)
@@ -1707,7 +1790,7 @@ def test_particle_graph_editor_sets_mesh_asset_through_live_authoring_model(
     assert node.data["mesh"] == reference
     assert panel._selected_node_uid == node.uid
     assert panel._view.selected_nodes == [node.uid]
-    assert panel._dirty is True
+    assert panel._document_is_dirty() is True
     snapshot = panel.authoring_snapshot()
     assert snapshot["panel_id"] == "particle_graph_editor"
     saved_node = next(item for item in snapshot["nodes"] if item["uid"] == node.uid)
@@ -1740,7 +1823,7 @@ def test_particle_graph_editor_rejects_wrong_asset_kind(tmp_path):
     panel._model.prepare_node_creation("rendering")
     node = panel._on_node_add("particle.output.mesh", 540.0, 460.0)
 
-    with pytest.raises(ValueError, match="requires a model asset"):
+    with pytest.raises(ValueError, match="Mesh reference rejects"):
         panel.set_node_asset_reference(node.uid, "mesh", str(texture_path))
 
 
@@ -1857,7 +1940,7 @@ def test_particle_graph_editor_semantic_authoring_edits_orientation_exec_chains(
     }
     assert initial_link["changed"] is True
     assert update_link["changed"] is True
-    assert panel._dirty is True
+    assert panel._document_is_dirty() is True
     snapshot = panel.authoring_snapshot()
     nodes = {node["uid"]: node for node in snapshot["nodes"]}
     assert nodes[initial["uid"]]["properties"]["degrees"] == [15.0, 30.0, 45.0]
@@ -2184,7 +2267,7 @@ def test_particle_event_row_binds_drag_source_before_context_menu(monkeypatch):
     import Infernux.engine.ui.particle_graph_editor_panel as module
     import Infernux.engine.ui.node_graph_editor_panel as shared_module
 
-    panel = module.ParticleGraphEditorPanel()
+    panel, _core, _manager = _particle_panel_with_command_core()
     panel._record = lambda *_args: None
     event_type = panel.add_event_type("Pulse", 8, [])
     calls = []
@@ -2542,19 +2625,179 @@ def test_particle_graph_editor_save_aot_compiles_and_reopens(tmp_path, monkeypat
 
     path = tmp_path / "Smoke.particlegraph"
     panel = ParticleGraphEditorPanel()
-    assert panel._save_to(str(path)) is True
+    assert _save_particle_graph(panel, path) is True
     artifact = ParticleArtifactRegistry.get(str(path))
     assert artifact is not None
     assert artifact.source_kind == "graph"
     assert artifact.hir["name"] == "Smoke"
-    assert panel._dirty is False
+    assert panel._document_is_dirty() is False
 
     reopened = ParticleGraphEditorPanel()
-    assert reopened._open_particlegraph(str(path)) is True
+    assert reopened.open_document_resource_immediate(str(path)) is True
     assert reopened.asset.name == "Smoke"
-    assert reopened._dirty is False
+    assert reopened._document_is_dirty() is False
     assert reopened.reload_from_disk() is True
-    assert reopened._dirty is False
+    assert reopened._document_is_dirty() is False
+
+
+def test_particle_graph_close_reopen_preserves_direct_save_target(tmp_path, monkeypatch):
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.interaction import DocumentRegistry
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    DocumentRegistry()
+    monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(lambda cls, _path: None))
+    path = tmp_path / "New_Particle_Graph.particlegraph"
+    panel = ParticleGraphEditorPanel()
+    panel.on_enable()
+    assert _save_particle_graph(panel, path) is True
+    original_document_id = panel.document_id
+
+    panel.unbind_document()
+    assert panel.document_id == ""
+    panel.open()
+
+    assert panel.document_id == original_document_id
+    assert panel._file_path == str(path.resolve())
+    panel.add_authoring_parameter("Intensity")
+    assert panel._document_is_dirty() is True
+    monkeypatch.setattr(
+        panel,
+        "_show_save_as_dialog",
+        lambda: (_ for _ in ()).throw(AssertionError("Save unexpectedly became Save As")),
+    )
+
+    assert DocumentRegistry.instance().request_save(panel.document_id).accepted
+    _finish_particle_graph_save(panel, path)
+    assert panel._file_path == str(path.resolve())
+    assert panel._document_is_dirty() is False
+    assert DocumentRegistry.instance().require(panel.document_id).is_dirty is False
+    panel.on_disable()
+
+
+def test_particle_graph_deferred_save_stays_clean_after_same_frame_edit(
+    tmp_path, monkeypatch
+):
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.interaction import DocumentRegistry
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    registry = DocumentRegistry()
+    monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(lambda cls, _path: None))
+    path = tmp_path / "Deferred.particlegraph"
+    panel = ParticleGraphEditorPanel()
+    panel.on_enable()
+    assert _save_particle_graph(panel, path) is True
+    panel.add_authoring_parameter("BeforeSave")
+
+    result = registry.defer_save(panel.document_id)
+    panel.add_authoring_parameter("CommittedLaterInFrame")
+    assert result.accepted
+    registry.process_deferred_saves()
+    _finish_particle_graph_save(panel, path)
+    document = registry.require(panel.document_id)
+    assert document.is_dirty is False
+    assert panel._document_is_dirty() is False
+    reopened = ParticleGraphAsset.load(str(path))
+    assert [parameter.name for parameter in reopened.parameters] == [
+        "BeforeSave",
+        "CommittedLaterInFrame",
+    ]
+    panel.on_disable()
+
+
+def test_particle_graph_pending_save_as_clears_the_serialized_revision(
+    tmp_path, monkeypatch
+):
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.interaction import DocumentRegistry
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    registry = DocumentRegistry()
+    monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(lambda cls, _path: None))
+    path = tmp_path / "PendingSaveAs.particlegraph"
+    panel = ParticleGraphEditorPanel()
+    panel.on_enable()
+    document = registry.require(panel.document_id)
+    ticket = registry.begin_save(document.document_id, save_as=True)
+    panel._pending_save_ticket_id = ticket.ticket_id
+    panel.add_authoring_parameter("CommittedWhileDialogWasOpen")
+
+    assert panel._save_to(str(path), ticket_id=ticket.ticket_id) is True
+    assert document.resource_path == ""
+    _finish_particle_graph_save(panel, path)
+
+    document = registry.require(panel.document_id)
+    assert document.resource_path == str(path.resolve())
+    assert document.is_dirty is False
+    assert panel._document_is_dirty() is False
+    assert panel._window_title_suffix() == ""
+    panel.on_disable()
+
+
+def test_particle_graph_async_save_keeps_edits_after_capture_dirty(
+    tmp_path, monkeypatch
+):
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.interaction import DocumentRegistry
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    registry = DocumentRegistry()
+    monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(lambda cls, _path: None))
+    path = tmp_path / "SnapshotIsolation.particlegraph"
+    panel = ParticleGraphEditorPanel()
+    panel.on_enable()
+    panel.add_authoring_parameter("Captured")
+    document = registry.require(panel.document_id)
+    ticket = registry.begin_save(document.document_id, save_as=True)
+
+    assert panel._save_to(str(path), ticket_id=ticket.ticket_id) is True
+    panel.add_authoring_parameter("AfterCapture")
+    _finish_particle_graph_save(panel, path)
+
+    first_snapshot = ParticleGraphAsset.load(str(path))
+    assert [parameter.name for parameter in first_snapshot.parameters] == ["Captured"]
+    assert document.is_dirty is True
+
+    assert _save_particle_graph(panel, path) is True
+    second_snapshot = ParticleGraphAsset.load(str(path))
+    assert [parameter.name for parameter in second_snapshot.parameters] == [
+        "Captured",
+        "AfterCapture",
+    ]
+    assert document.is_dirty is False
+    panel.on_disable()
+
+
+def test_particle_graph_save_absorbs_synchronous_reimport_bookkeeping_revision(
+    tmp_path, monkeypatch
+):
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.interaction import DocumentRegistry
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    registry = DocumentRegistry()
+    path = tmp_path / "ReimportBookkeeping.particlegraph"
+    panel = ParticleGraphEditorPanel()
+    panel.on_enable()
+    panel.add_authoring_parameter("Intensity")
+    document = registry.require(panel.document_id)
+
+    def reimport_asset(_cls, _path):
+        registry.mark_changed(document.document_id)
+        return True
+
+    monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(reimport_asset))
+
+    ticket = registry.begin_save(document.document_id, save_as=True)
+    assert panel._save_to(str(path), ticket_id=ticket.ticket_id) is True
+    _finish_particle_graph_save(panel, path)
+
+    assert document.revision == document.saved_revision
+    assert document.is_dirty is False
+    assert panel._document_is_dirty() is False
+    assert panel._window_title_suffix() == ""
+    panel.on_disable()
 
 
 def test_particle_graph_document_revision_and_selection_are_globally_authoritative(
@@ -2575,21 +2818,21 @@ def test_particle_graph_document_revision_and_selection_are_globally_authoritati
     panel.on_enable()
     path = tmp_path / "Authority.particlegraph"
 
-    assert panel._save_to(str(path)) is True
+    assert _save_particle_graph(panel, path) is True
     document = DocumentRegistry.instance().require(panel.document_id)
     assert document.is_dirty is False
 
     parameter = panel.add_authoring_parameter("Intensity")
 
     assert document.is_dirty is True
-    assert panel._dirty is True
+    assert panel._document_is_dirty() is True
     assert selection.snapshot.primary.document_id == document.document_id
     assert selection.snapshot.primary.sub_kind == GraphElementKind.PARAMETER.value
     assert selection.snapshot.primary.target_id == parameter["stable_id"]
 
-    assert panel._save_to(str(path)) is True
+    assert _save_particle_graph(panel, path) is True
     assert document.is_dirty is False
-    assert panel._dirty is False
+    assert panel._document_is_dirty() is False
     panel.on_disable()
 
 
@@ -2710,6 +2953,8 @@ def test_particle_event_type_and_flow_use_precise_domain_diffs():
     event_id = event_type["stable_id"]
     manager.undo()
     assert panel.asset.event_types == ()
+
+
     manager.redo()
     assert panel.asset.event_types[0].stable_id == event_id
 
@@ -2735,6 +2980,26 @@ def test_particle_event_type_and_flow_use_precise_domain_diffs():
     assert panel.asset.emitters[0].event_flows[0].event_id == ""
 
 
+def test_particle_graph_disk_discard_reconciles_document_revision(tmp_path):
+    from Infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from Infernux.particle import ParticleGraphAsset
+
+    target = tmp_path / "Saved.particlegraph"
+    ParticleGraphAsset(stable_id="saved-graph", name="Saved").save(str(target))
+    panel = ParticleGraphEditorPanel()
+    assert panel.open_document_resource_immediate(str(target))
+    registry = DocumentRegistry.instance()
+    document = registry.require(panel.document_id)
+    registry.mark_changed(document.document_id)
+
+    result = registry.request_discard(document.document_id)
+
+    assert result.status is DocumentActionStatus.APPLIED
+    assert registry.require(panel.document_id).is_dirty is False
+    assert panel._document_is_dirty() is False
+
+
 def test_particle_node_drag_records_only_stable_node_positions():
     panel, manager = _particle_panel_with_history()
     node_data = panel.add_authoring_node(
@@ -2748,7 +3013,7 @@ def test_particle_node_drag_records_only_stable_node_positions():
     before = (node.pos_x, node.pos_y)
     manager.clear()
 
-    panel._view.set_selection((node_uid,), "", notify=False)
+    panel._view.project_selection((node_uid,), "")
     panel._on_node_drag_start(node_uid)
     node.pos_x += 37.0
     node.pos_y -= 19.0
@@ -2766,6 +3031,114 @@ def test_particle_node_drag_records_only_stable_node_positions():
         panel._model.find_node(node_uid).pos_x,
         panel._model.find_node(node_uid).pos_y,
     ) == after
+
+
+def test_particle_node_drag_keeps_exact_cross_panel_history_order():
+    """A graph drag must remain between the two Scene editing sessions."""
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import (
+        ContextRestoreStatus,
+        EditorInteractionCore,
+        PanelInteractionDescriptor,
+        SelectionDomain,
+        SelectionTarget,
+    )
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from Infernux.engine.undo import SetPropertyCommand, UndoManager
+
+    core = EditorInteractionCore()
+    manager = UndoManager(core.action_journal)
+    manager.set_context_hooks(
+        core.capture_context,
+        lambda context, _phase: (
+            core.focus.apply_snapshot(context.focus, record_history=False),
+            core.selection.apply_snapshot(
+                context.selection,
+                reason="cross_panel_test_restore",
+                record_history=False,
+            ),
+            ContextRestoreStatus.READY,
+        )[-1],
+    )
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.interaction_core = core
+    bootstrap._present_selection_snapshot = lambda _snapshot: None
+    core.focus.add_change_listener(bootstrap._on_global_focus_changed)
+    core.selection.add_listener(bootstrap._on_global_selection_changed)
+
+    panel = ParticleGraphEditorPanel()
+    core.panels.register_type(
+        panel.panel_type_id,
+        panel.PANEL_INTERACTION,
+    )
+    core.panels.bind_view(panel.window_id, panel.panel_type_id, panel)
+    core.panels.register_type(
+        "scene_view",
+        PanelInteractionDescriptor(
+            owned_selection_domains=frozenset({SelectionDomain.SCENE_OBJECT}),
+        ),
+    )
+    panel._graph_selection.bind(core.selection)
+    node_data = panel.add_authoring_node(
+        "update",
+        "common.noise.vector3d",
+        240.0,
+        460.0,
+    )
+    node_uid = node_data["uid"]
+    manager.clear()
+    camera = SimpleNamespace(position=0.0)
+
+    core.focus.activate_panel("scene_view", view_id="scene_view")
+    core.selection.select(
+        SelectionTarget.scene_object(5),
+        owner_id="scene_view",
+    )
+    manager.execute(SetPropertyCommand(camera, "position", 0.0, 1.0, "Move camera"))
+
+    core.focus.activate_panel(
+        panel.panel_type_id,
+        view_id=panel.window_id,
+        document_id=panel.document_id,
+        child_context_id=panel.current_child_context_id(),
+    )
+    panel._select_canvas_node(node_uid, record_history=True)
+    panel._on_node_drag_start(node_uid)
+    node = panel._model.find_node(node_uid)
+    node.pos_x += 37.0
+    panel._on_node_drag_end(node_uid)
+
+    core.focus.activate_panel(
+        "scene_view",
+        view_id="scene_view",
+        document_id="",
+        child_context_id="",
+    )
+    core.selection.select(
+        SelectionTarget.scene_object(5),
+        owner_id="scene_view",
+    )
+    manager.execute(SetPropertyCommand(camera, "position", 1.0, 2.0, "Move camera"))
+    core.selection.clear(reason="scene_pick_clear")
+
+    assert [entry.action.description for entry in manager.action_journal.entries] == [
+        "Focus scene_view",
+        "Change Selection",
+        "Move camera",
+        f"Focus {panel.panel_type_id}",
+        "Change Selection",
+        "Move Particle Graph node",
+        "Focus scene_view",
+        "Change Selection",
+        "Move camera",
+        "Change Selection",
+    ]
+
+    for _ in range(4):
+        manager.undo()
+    assert manager.undo_description == "Move Particle Graph node"
+    manager.undo()
+    assert panel._model.find_node(node_uid).pos_x == 240.0
 
 
 def test_particle_node_and_link_deletion_is_one_precise_undo_action():
@@ -2797,6 +3170,97 @@ def test_particle_node_and_link_deletion_is_one_precise_undo_action():
     manager.redo()
     assert panel._model.find_node(node_uid) is None
     assert panel._model.find_link(link_uid) is None
+
+
+def test_particle_graph_uses_shared_typed_subgraph_clipboard_and_undo():
+    from Infernux.engine.interaction import (
+        ClipboardDomain,
+        ClipboardService,
+        GraphElementKind,
+    )
+
+    panel, manager = _particle_panel_with_history()
+    panel._model.set_authoring_stage("update")
+    panel._model.prepare_node_creation("update")
+    first = panel._on_node_add("particle.control.wait_frames", 260.0, 230.0)
+    panel._model.prepare_node_creation("update")
+    second = panel._on_node_add("particle.control.wait_seconds", 520.0, 230.0)
+    assert first is not None and second is not None
+    panel._on_link_created(first.uid, "out", second.uid, "in")
+    assert any(
+        link.source_node == first.uid and link.target_node == second.uid
+        for link in panel._model.links
+    )
+    panel._graph_selection.select(
+        (
+            panel._graph_element_from_view(GraphElementKind.NODE, first.uid),
+            panel._graph_element_from_view(GraphElementKind.NODE, second.uid),
+        ),
+        record_history=False,
+    )
+    manager.clear()
+
+    panel._on_graph_copy()
+    payload = ClipboardService.instance().peek(ClipboardDomain.GRAPH_ELEMENT)
+    assert payload is not None
+    assert payload.items[0].sub_kind == "node_graph_subgraph"
+    assert len(payload.items[0].data.state.nodes) == 2
+    assert len(payload.items[0].data.state.links) == 1
+
+    panel._on_graph_paste()
+    pasted = panel._graph_selection.selected_ids(GraphElementKind.NODE)
+    assert len(pasted) == 2
+    assert all(stable_id not in {first.uid, second.uid} for stable_id in pasted)
+    assert manager.undo_description == "Paste graph nodes"
+    copied_count = len(panel._model.nodes)
+
+    manager.undo()
+    assert len(panel._model.nodes) == copied_count - 2
+    manager.redo()
+    assert len(panel._model.nodes) == copied_count
+
+
+def test_particle_graph_shared_commands_duplicate_and_cut_atomically():
+    from Infernux.engine.interaction import GraphElementKind
+
+    panel, manager = _particle_panel_with_history()
+    panel._model.set_authoring_stage("update")
+    panel._model.prepare_node_creation("update")
+    first = panel._on_node_add("particle.control.wait_frames", 260.0, 230.0)
+    panel._model.prepare_node_creation("update")
+    second = panel._on_node_add("particle.control.wait_seconds", 520.0, 230.0)
+    assert first is not None and second is not None
+    panel._on_link_created(first.uid, "out", second.uid, "in")
+    panel._graph_selection.select(
+        (
+            panel._graph_element_from_view(GraphElementKind.NODE, first.uid),
+            panel._graph_element_from_view(GraphElementKind.NODE, second.uid),
+        ),
+        record_history=False,
+    )
+    manager.clear()
+
+    assert panel.command_edit_duplicate()
+    duplicated_count = len(panel._model.nodes)
+    assert manager.undo_description == "Duplicate graph nodes"
+    manager.undo()
+    assert len(panel._model.nodes) == duplicated_count - 2
+
+    panel._graph_selection.select(
+        (
+            panel._graph_element_from_view(GraphElementKind.NODE, first.uid),
+            panel._graph_element_from_view(GraphElementKind.NODE, second.uid),
+        ),
+        record_history=False,
+    )
+    manager.clear()
+    assert panel.command_edit_cut()
+    assert panel._model.find_node(first.uid) is None
+    assert panel._model.find_node(second.uid) is None
+    assert manager.undo_description == "Delete Particle Graph nodes"
+    manager.undo()
+    assert panel._model.find_node(first.uid) is not None
+    assert panel._model.find_node(second.uid) is not None
 
 
 def test_project_create_particlegraph_writes_loadable_asset(tmp_path, monkeypatch):
@@ -2833,7 +3297,6 @@ def test_particle_graph_document_state_does_not_serialize_stale_model(monkeypatc
 
     panel = ParticleGraphEditorPanel()
     panel._file_path = "Assets/VFX/Legacy.particlegraph"
-    panel._dirty = False
     monkeypatch.setattr(
         panel,
         "_sync_model_to_asset",
@@ -2842,7 +3305,7 @@ def test_particle_graph_document_state_does_not_serialize_stale_model(monkeypatc
 
     assert panel.authoring_document_state() == {
         "file_path": "Assets/VFX/Legacy.particlegraph",
-        "dirty": False,
+        "dirty": True,
     }
 
 
@@ -2888,3 +3351,13 @@ def test_particle_system_inspector_metadata_is_localizable_and_backend_is_emitte
         fields["manual_bounds_size"].display_name_key
         == "particle_system.manual_bounds_size"
     )
+def test_particle_graph_workspace_child_context_is_stable_and_restorable():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._workspace_tab_index = 1
+    assert panel.current_child_context_id() == "particle_graph.workspace.parameters"
+
+    assert panel.restore_child_context("particle_graph.workspace.events")
+    assert panel._workspace_tab_index == 2
+    assert not panel.restore_child_context("particle_graph.workspace.unknown")

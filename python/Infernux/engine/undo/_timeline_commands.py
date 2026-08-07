@@ -28,19 +28,26 @@ class _TimelineCommand(UndoCommand):
     def _live_timeline(self) -> AnimationTimeline:
         document = DocumentRegistry.instance().require(self._document_id)
         controller = document.controller
-        candidate = getattr(controller, "_timeline", None)
+        resolve = getattr(controller, "timeline_authoring_model", None)
+        candidate = resolve() if callable(resolve) else None
         if isinstance(candidate, AnimationTimeline):
             return candidate
-        return self._timeline
+        raise RuntimeError(
+            f"timeline document {self._document_id!r} has no live model adapter"
+        )
 
     def _finish(self, revision: int) -> None:
         registry = DocumentRegistry.instance()
         registry.restore_content_revision(self._document_id, revision)
         document = registry.require(self._document_id)
         controller = document.controller
-        callback = getattr(controller, "_on_timeline_command_applied", None)
+        callback = getattr(controller, "on_timeline_authoring_applied", None)
         if callable(callback):
             callback()
+        else:
+            raise RuntimeError(
+                f"timeline document {self._document_id!r} has no refresh adapter"
+            )
 
 
 class TimelinePropertyCommand(_TimelineCommand):

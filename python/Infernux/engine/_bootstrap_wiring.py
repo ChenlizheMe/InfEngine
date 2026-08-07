@@ -30,8 +30,6 @@ from Infernux.engine.ui import (
     UIEditorPanel,
     EditorPanel,
     EditorServices,
-    EditorEventBus,
-    EditorEvent,
     PanelRegistry,
     editor_panel,
 )
@@ -41,61 +39,31 @@ from Infernux.engine.ui import panel_state as _panel_state
 class BootstrapWiringMixin:
     """BootstrapWiringMixin method group for EditorBootstrap."""
 
-    @staticmethod
-    def _save_focused_document(wm, sfm, *, save_as: bool = False) -> bool:
-        from Infernux.engine.interaction import (
-            DocumentActionStatus,
-            DocumentRegistry,
-            FocusService,
-        )
-
-        focus = FocusService.instance().snapshot
-        if focus.active_document_id:
-            document = DocumentRegistry.instance().get(focus.active_document_id)
-            if document is not None:
-                result = DocumentRegistry.instance().request_save(
-                    document.document_id,
-                    save_as=save_as,
-                )
-                if result.status in {
-                    DocumentActionStatus.FAILED,
-                    DocumentActionStatus.REJECTED,
-                }:
-                    from Infernux.debug import Debug
-
-                    Debug.log_warning(
-                        f"Could not save focused document '{document.title}': "
-                        f"{result.message or result.status.value}"
-                    )
-                return result.accepted
-
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-
-        panel_id = ClosablePanel.get_active_panel_id()
-        panel = wm.get_window_instance(panel_id) if panel_id else None
-        handler = getattr(panel, "handle_save_command", None)
-        if callable(handler) and bool(handler(save_as=save_as)):
-            return True
-        if save_as:
-            return bool(sfm.save_scene_as())
-        return bool(sfm.save_current_scene())
-
     def _register_core_editor_commands(self, wm, sfm) -> None:
         from Infernux.engine.interaction import (
+            ActionOrigin,
+            ContinuousEditService,
             EditorCommand,
             KeyChord,
+            SelectionDomain,
             ShortcutBinding,
             ShortcutScope,
-            SelectionDomain,
+        )
+        from Infernux.engine._bootstrap_panels import (
+            PERMANENT_EDITOR_WINDOW_TYPE_IDS,
         )
         from Infernux.engine.undo import UndoManager
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-
         registry = self.interaction_core.commands
         shortcuts = self.interaction_core.shortcuts
+        panel_interactions = self.interaction_core.panels
         pmm = self.engine._play_mode_manager if self.engine else None
 
+        def _native_engine():
+            getter = getattr(self.engine, "get_native_engine", None)
+            return getter() if callable(getter) else None
+
         def _undo(_context):
+            ContinuousEditService.instance().commit_all()
             manager = UndoManager.instance()
             if not manager or not manager.can_undo:
                 return False
@@ -117,9 +85,10 @@ class BootstrapWiringMixin:
                 return True
             if not pmm.enter_play_mode():
                 return False
-            ClosablePanel.focus_panel_by_id("game_view")
-            if self.engine:
-                self.engine.select_docked_window("game_view")
+            wm.open_window_from_user(
+                "game_view",
+                reason="play_mode_enter",
+            )
             return True
 
         def _new_scene(_context):
@@ -134,6 +103,23 @@ class BootstrapWiringMixin:
             pmm.step_frame()
             return True
 
+        def _toggle_scene_grid(_context) -> bool:
+            native = _native_engine()
+            if native is None:
+                return False
+            current = bool(native.is_show_grid())
+            return self.interaction_core.view_commands.set_value(
+                current,
+                not current,
+                lambda value: native.set_show_grid(bool(value)),
+                description="Toggle Scene Grid",
+                owner_view_id="scene_view",
+            )
+
+        def _is_scene_grid_visible(_context) -> bool:
+            native = _native_engine()
+            return bool(native is not None and native.is_show_grid())
+
         def _window_target(context) -> str:
             return str(context.payload.get("target_id", "") or "").strip()
 
@@ -141,263 +127,354 @@ class BootstrapWiringMixin:
             target_id = _window_target(context)
             if not target_id:
                 return False
-            return wm.open_window(target_id) is not None
+            return wm.open_window_from_user(target_id) is not None
+
+        def _toggle_window_target(target_id: str) -> bool:
+            target = str(target_id or "").strip()
+            if not target or target not in wm.get_registered_types():
+                return False
+            if target in PERMANENT_EDITOR_WINDOW_TYPE_IDS:
+                return False
+            if wm.is_window_open(target):
+                wm.close_window(target)
+                return True
+            return wm.open_window_from_user(
+                target,
+                reason="window_toggle_command",
+            ) is not None
+
+        def _toggle_window(context) -> bool:
+            return _toggle_window_target(_window_target(context))
 
         def _reset_layout(_context):
-            wm.reset_layout()
-            return True
+            return wm.reset_layout() is not False
 
-        def _hierarchy_panel():
-            return getattr(self, "hierarchy", None)
-
-        def _project_panel():
-            return getattr(self, "project_panel", None)
-
-        def _timeline_panel():
-            getter = getattr(wm, "get_window_instance", None)
-            if not callable(getter):
-                return None
-            return getter("animtimeline_editor")
-
-        def _inspector_component_actions():
-            return getattr(self, "_inspector_component_actions", None)
-
-        def _is_scene_edit_context(context, *, hierarchy_only: bool = False) -> bool:
-            active_panel = context.focus.active_panel_id
-            if hierarchy_only:
-                return active_panel == "hierarchy"
-            return active_panel in {"hierarchy", "scene_view"}
-
-        def _has_scene_selection(context) -> bool:
-            return bool(
-                _is_scene_edit_context(context)
-                and context.selection.domain is SelectionDomain.SCENE_OBJECT
-                and context.selection.targets
-            )
-
-        def _is_project_edit_context(context) -> bool:
-            return context.focus.active_panel_id == "project"
-
-        def _is_timeline_edit_context(context) -> bool:
-            return context.focus.active_panel_id == "animtimeline_editor"
-
-        def _is_inspector_component_context(context) -> bool:
-            return bool(
-                context.focus.active_panel_id == "inspector"
-                and context.selection.domain is SelectionDomain.COMPONENT
-                and context.selection.targets
-                and _inspector_component_actions() is not None
-            )
-
-        def _can_component_action(context, predicate_name: str, *args) -> bool:
-            if not _is_inspector_component_context(context):
-                return False
-            actions = _inspector_component_actions()
-            predicate = getattr(actions, predicate_name, None)
-            return bool(predicate and predicate(*args))
-
-        def _invoke_component_action(context, action_name: str, *args) -> bool:
-            if not _is_inspector_component_context(context):
-                return False
-            actions = _inspector_component_actions()
-            action = getattr(actions, action_name, None)
-            return bool(action and action(*args))
-
-        def _component_reorder_args(context):
-            payload = context.payload
+        def _open_console_entry(context) -> bool:
             try:
-                object_ids = tuple(int(value) for value in payload.get("object_ids", ()))
-                dragged_ids = tuple(
-                    int(value) for value in payload.get("dragged_component_ids", ())
-                )
-                target_ids = tuple(
-                    int(value) for value in payload.get("target_component_ids", ())
-                )
+                uid = int(context.payload.get("uid", 0) or 0)
             except (TypeError, ValueError):
-                return None
-            if (
-                not object_ids
-                or len(object_ids) != len(dragged_ids)
-                or len(object_ids) != len(target_ids)
-                or any(value <= 0 for value in object_ids + dragged_ids + target_ids)
-            ):
-                return None
-            return (
-                object_ids,
-                dragged_ids,
-                target_ids,
-                bool(payload.get("insert_after", False)),
-            )
-
-        def _can_reorder_component(context) -> bool:
-            args = _component_reorder_args(context)
-            return bool(
-                args is not None
-                and _can_component_action(context, "can_reorder", *args)
-            )
-
-        def _reorder_component(context) -> bool:
-            args = _component_reorder_args(context)
-            return bool(
-                args is not None
-                and _invoke_component_action(context, "reorder", *args)
-            )
-
-        def _has_project_selection(context) -> bool:
-            return bool(
-                _is_project_edit_context(context)
-                and context.selection.domain is SelectionDomain.ASSET
-                and context.selection.targets
-                and _project_panel() is not None
-                and _project_panel().has_selected_assets()
-            )
-
-        def _has_timeline_selection(context) -> bool:
-            panel = _timeline_panel()
-            return bool(
-                _is_timeline_edit_context(context)
-                and context.selection.domain is SelectionDomain.TIMELINE_ELEMENT
-                and context.selection.targets
-                and panel is not None
-                and panel.can_delete_selected_keyframe()
-            )
-
-        def _copy_scene_selection(_context, *, cut: bool):
-            panel = _hierarchy_panel()
-            if panel is None or not panel.copy_selected:
                 return False
-            return bool(panel.copy_selected(cut))
-
-        def _paste_scene_selection(_context):
-            panel = _hierarchy_panel()
-            if panel is None or not panel.paste_clipboard:
-                return False
-            return bool(panel.paste_clipboard())
-
-        def _delete_scene_selection(_context):
-            panel = _hierarchy_panel()
-            if panel is None or not panel.delete_selected_objects:
-                return False
-            panel.delete_selected_objects()
-            return True
-
-        def _rename_scene_selection(context):
-            panel = _hierarchy_panel()
+            panel = wm.open_window_from_user(
+                "console",
+                reason="status_bar_console",
+            )
             if panel is None:
                 return False
-            target_id = str(context.payload.get("target_id", "") or "").strip()
-            if not target_id and context.selection.primary is not None:
-                target_id = context.selection.primary.target_id
-            try:
-                object_id = int(target_id)
-            except (TypeError, ValueError):
+            selector = getattr(panel, "select_entry", None)
+            if not callable(selector):
                 return False
-            if object_id <= 0:
-                return False
-            panel.begin_rename_object(object_id)
+            selector(uid)
             return True
 
-        def _can_paste_scene(context) -> bool:
-            panel = _hierarchy_panel()
+        def _console_source_path(context) -> str:
+            return str(context.payload.get("source_path", "") or "").strip()
+
+        def _open_console_source(context) -> bool:
+            source_path = _console_source_path(context)
+            if not source_path:
+                return False
+            from Infernux.engine.ui import project_utils
+
             return bool(
-                _is_scene_edit_context(context)
-                and panel is not None
-                and panel.has_clipboard_data
-                and panel.has_clipboard_data()
+                project_utils.open_file_with_system(
+                    source_path,
+                    project_root=self.project_path,
+                )
+            )
+
+        def _owns_panel_command(context, command_id: str) -> bool:
+            return panel_interactions.owns_active(context, command_id)
+
+        def _can_panel_command(context, command_id: str) -> bool:
+            return panel_interactions.can_execute_active(context, command_id)
+
+        def _invoke_panel_command(context, command_id: str) -> bool:
+            return panel_interactions.execute_active(context, command_id)
+
+        def _prefab_target(context) -> tuple[int, str, str]:
+            payload = context.payload
+            try:
+                object_id = int(
+                    payload.get("object_id", 0)
+                    or payload.get("target_id", 0)
+                    or 0
+                )
+            except (TypeError, ValueError):
+                object_id = 0
+            if object_id <= 0 and context.selection.primary is not None:
+                primary = context.selection.primary
+                if primary.domain is SelectionDomain.SCENE_OBJECT:
+                    object_id = primary.scene_object_id()
+                elif primary.domain is SelectionDomain.COMPONENT:
+                    object_id = primary.component_ids()[0]
+            return (
+                object_id,
+                str(payload.get("path", "") or "").strip(),
+                str(payload.get("current_path", "") or "").strip(),
+            )
+
+        def _command_origin(context) -> ActionOrigin:
+            from Infernux.engine.interaction import CommandSource
+
+            return (
+                ActionOrigin.AUTOMATION
+                if context.source is CommandSource.AUTOMATION
+                else ActionOrigin.USER
+            )
+
+        def _can_prefab_command(context, action: str) -> bool:
+            object_id, path, _current_path = _prefab_target(context)
+            service_action = {
+                "save_as": "create",
+                "select": "locate",
+            }.get(action, action)
+            return self.interaction_core.prefabs.can_execute(
+                service_action,
+                object_id=object_id,
+                path=path,
+            )
+
+        def _execute_prefab_command(context, action: str) -> bool:
+            object_id, path, current_path = _prefab_target(context)
+            service = self.interaction_core.prefabs
+            origin = _command_origin(context)
+            if action == "save_as":
+                return bool(
+                    service.create_from_object(
+                        object_id,
+                        current_path,
+                        origin=origin,
+                    )
+                )
+            if action == "select":
+                return service.locate(object_id=object_id, path=path)
+            if action == "open":
+                return service.open(object_id=object_id, path=path, origin=origin)
+            if action == "exit":
+                return service.exit(origin=origin)
+            if action == "apply":
+                return service.apply(object_id, origin=origin)
+            if action == "revert":
+                return service.revert(object_id, origin=origin)
+            if action == "unpack":
+                return service.unpack(object_id, origin=origin)
+            return False
+
+        def _can_target_panel_command(
+            context,
+            view_id: str,
+            command_id: str,
+        ) -> bool:
+            return panel_interactions.can_execute_view(
+                view_id,
+                context,
+                command_id,
+            )
+
+        def _invoke_target_panel_command(
+            context,
+            view_id: str,
+            command_id: str,
+        ) -> bool:
+            return panel_interactions.execute_view(
+                view_id,
+                context,
+                command_id,
+            )
+
+        def _clear_edit_selection(context) -> bool:
+            if _owns_panel_command(context, "edit.deselect"):
+                return _invoke_panel_command(context, "edit.deselect")
+            return self.interaction_core.selection.clear(
+                reason="edit_deselect",
+                record_history=True,
             )
 
         def _copy_edit_selection(context, *, cut: bool):
-            if _is_project_edit_context(context):
-                panel = _project_panel()
-                return bool(panel and panel.copy_selected_assets(cut))
-            if not cut and _is_inspector_component_context(context):
-                return _invoke_component_action(context, "copy")
-            return _copy_scene_selection(context, cut=cut)
+            command_id = "edit.cut" if cut else "edit.copy"
+            return _invoke_panel_command(context, command_id)
 
         def _paste_edit_selection(context):
-            if _is_project_edit_context(context):
-                panel = _project_panel()
-                return bool(panel and panel.paste_assets())
-            if _is_inspector_component_context(context):
-                return _invoke_component_action(context, "paste_default")
-            return _paste_scene_selection(context)
+            return _invoke_panel_command(context, "edit.paste")
 
         def _delete_edit_selection(context):
-            if _is_timeline_edit_context(context):
-                panel = _timeline_panel()
-                return bool(panel and panel.command_delete_selected_keyframe())
-            if _is_project_edit_context(context):
-                panel = _project_panel()
-                return bool(panel and panel.request_delete_selected_assets())
-            if _is_inspector_component_context(context):
-                return _invoke_component_action(context, "remove")
-            return _delete_scene_selection(context)
+            return _invoke_panel_command(context, "edit.delete")
 
         def _rename_edit_selection(context):
-            if _is_project_edit_context(context):
-                panel = _project_panel()
-                if panel is None:
-                    return False
-                target_path = str(context.payload.get("target_id", "") or "").strip()
-                return bool(panel.begin_rename_selected_asset(target_path))
-            return _rename_scene_selection(context)
+            return _invoke_panel_command(context, "edit.rename")
 
         def _can_copy_edit_selection(context) -> bool:
-            return bool(
-                _has_project_selection(context)
-                or _has_scene_selection(context)
-                or _can_component_action(context, "can_copy")
-            )
+            return _can_panel_command(context, "edit.copy")
 
         def _can_cut_edit_selection(context) -> bool:
-            return _has_project_selection(context) or _has_scene_selection(context)
+            return _can_panel_command(context, "edit.cut")
 
         def _can_delete_edit_selection(context) -> bool:
-            return bool(
-                _can_cut_edit_selection(context)
-                or _has_timeline_selection(context)
-                or _can_component_action(context, "can_remove")
-            )
+            return _can_panel_command(context, "edit.delete")
 
         def _can_paste_edit_selection(context) -> bool:
-            if _is_project_edit_context(context):
-                panel = _project_panel()
-                return bool(panel and panel.can_paste_assets())
-            if _is_inspector_component_context(context):
-                return bool(
-                    _can_component_action(context, "can_paste_values")
-                    or _can_component_action(context, "can_paste_as_new")
-                )
-            return _can_paste_scene(context)
+            return _can_panel_command(context, "edit.paste")
 
         def _can_rename_edit_selection(context) -> bool:
-            if _is_project_edit_context(context):
-                panel = _project_panel()
-                if panel is None:
-                    return False
-                target_path = str(context.payload.get("target_id", "") or "").strip()
-                return bool(panel.can_rename_selected_asset(target_path))
-            return bool(
-                _is_scene_edit_context(context, hierarchy_only=True)
-                and context.selection.domain is SelectionDomain.SCENE_OBJECT
-                and context.selection.primary is not None
-            )
+            return _can_panel_command(context, "edit.rename")
 
         def _create_project_folder(context):
-            panel = _project_panel()
-            if not _is_project_edit_context(context) or panel is None:
-                return False
-            return bool(panel.create_folder_from_command())
+            return _invoke_panel_command(context, "project.create_folder")
 
-        def _invoke_timeline_command(context, method_name: str) -> bool:
-            if not _is_timeline_edit_context(context):
-                return False
-            panel = _timeline_panel()
-            method = getattr(panel, method_name, None) if panel is not None else None
-            return bool(method and method())
+        def _asset_rename_target(context) -> tuple[str, str]:
+            return (
+                str(context.payload.get("source_path", "") or "").strip(),
+                str(context.payload.get("new_name", "") or "").strip(),
+            )
 
-        def _can_invoke_timeline_command(context) -> bool:
-            return bool(_is_timeline_edit_context(context) and _timeline_panel() is not None)
+        def _can_rename_project_asset(context) -> bool:
+            source_path, new_name = _asset_rename_target(context)
+            return self.interaction_core.project_assets.can_rename(
+                source_path,
+                new_name,
+            )
+
+        def _rename_project_asset(context) -> bool:
+            source_path, new_name = _asset_rename_target(context)
+            return bool(
+                self.interaction_core.project_assets.rename(
+                    source_path,
+                    new_name,
+                    origin=_command_origin(context),
+                )
+            )
+
+        def _asset_import_target(context) -> tuple[tuple[str, ...], str]:
+            raw_paths = context.payload.get("paths", ())
+            if isinstance(raw_paths, str):
+                raw_paths = (raw_paths,)
+            paths = tuple(
+                str(path).strip()
+                for path in raw_paths
+                if str(path or "").strip()
+            )
+            destination = str(
+                context.payload.get("destination", "") or ""
+            ).strip()
+            return paths, destination
+
+        def _can_import_external_assets(context) -> bool:
+            paths, destination = _asset_import_target(context)
+            return self.interaction_core.project_assets.can_import_external(
+                paths,
+                destination,
+            )
+
+        def _import_external_assets(context) -> bool:
+            paths, destination = _asset_import_target(context)
+            return bool(
+                self.interaction_core.project_assets.import_external(
+                    paths,
+                    destination,
+                    origin=_command_origin(context),
+                    select_results=True,
+                )
+            )
+
+        def _open_project_document(context) -> bool:
+            from Infernux.engine.interaction import (
+                DocumentKind,
+                DocumentOpenStatus,
+            )
+
+            path = str(context.payload.get("path", "") or "").strip()
+            kind_name = str(
+                context.payload.get("document_kind", "") or ""
+            ).strip()
+            if not path or not kind_name:
+                return False
+            try:
+                kind = DocumentKind(kind_name)
+            except ValueError:
+                return False
+            guid = ""
+            asset_database = self.engine.get_asset_database() if self.engine else None
+            if asset_database is not None:
+                guid = str(asset_database.get_guid_from_path(path) or "")
+            result = self.interaction_core.document_open.open_resource(
+                kind,
+                path,
+                guid=guid,
+                title=os.path.basename(path),
+            )
+            if result.status is DocumentOpenStatus.FAILED:
+                return False
+
+            panel_id = {
+                DocumentKind.ANIMATION_CLIP: "animclip2d_editor",
+                DocumentKind.ANIMATION_FSM: "animfsm_editor",
+                DocumentKind.TIMELINE: "animtimeline_editor",
+                DocumentKind.PARTICLE_GRAPH: "particle_graph_editor",
+            }.get(kind)
+            if not panel_id:
+                return False
+
+            # DocumentOpenService owns resource replacement and registration;
+            # WindowManager owns the user-visible navigation edge. Calling
+            # this after open_resource lets a newly registered dynamic panel
+            # defer focus until register_gui completes, while the history
+            # context already points at the opened document.
+            return wm.open_window_from_user(
+                panel_id,
+                reason="project_open_document",
+            ) is not None
+
+        def _object_property_target(context):
+            payload = context.payload
+            try:
+                object_id = int(payload.get("object_id", 0) or 0)
+            except (TypeError, ValueError):
+                return None
+            property_name = str(payload.get("property", "") or "").strip()
+            if object_id <= 0 or not property_name or "value" not in payload:
+                return None
+            return object_id, property_name, payload["value"]
+
+        def _can_set_object_property(context) -> bool:
+            target = _object_property_target(context)
+            return bool(
+                target is not None
+                and self.interaction_core.scene_objects.can_set_object_property(*target)
+            )
+
+        def _set_object_property(context) -> bool:
+            target = _object_property_target(context)
+            return bool(
+                target is not None
+                and self.interaction_core.scene_objects.set_object_property(*target)
+            )
+
+        def _transform_targets(context):
+            payload = context.payload
+            object_ids = payload.get("object_ids", ())
+            transforms = payload.get("transforms", ())
+            if isinstance(object_ids, (str, bytes)) or isinstance(
+                transforms, (str, bytes)
+            ):
+                return None
+            try:
+                return tuple(object_ids), tuple(transforms)
+            except TypeError:
+                return None
+
+        def _can_set_transforms(context) -> bool:
+            target = _transform_targets(context)
+            return bool(
+                target is not None
+                and self.interaction_core.scene_objects.can_set_transforms(*target)
+            )
+
+        def _set_transforms(context) -> bool:
+            target = _transform_targets(context)
+            return bool(
+                target is not None
+                and self.interaction_core.scene_objects.set_transforms(*target)
+            )
 
         commands = (
             EditorCommand(
@@ -409,14 +486,16 @@ class BootstrapWiringMixin:
             ),
             EditorCommand(
                 "file.save",
-                lambda _context: self._save_focused_document(wm, sfm),
+                lambda _context: self.interaction_core.saving.save_focused().accepted,
                 display_name="Save",
                 category="File",
                 default_shortcut="Ctrl+S",
             ),
             EditorCommand(
                 "file.save_as",
-                lambda _context: self._save_focused_document(wm, sfm, save_as=True),
+                lambda _context: self.interaction_core.saving.save_focused(
+                    save_as=True
+                ).accepted,
                 display_name="Save As",
                 category="File",
                 default_shortcut="Ctrl+Shift+S",
@@ -427,7 +506,8 @@ class BootstrapWiringMixin:
                 display_name="Undo",
                 category="Edit",
                 can_execute=lambda _context: bool(
-                    UndoManager.instance() and UndoManager.instance().can_undo
+                    ContinuousEditService.instance().active_count
+                    or (UndoManager.instance() and UndoManager.instance().can_undo)
                 ),
                 default_shortcut="Ctrl+Z",
             ),
@@ -474,6 +554,22 @@ class BootstrapWiringMixin:
                 default_shortcut="Delete",
             ),
             EditorCommand(
+                "interaction.cancel",
+                lambda _context: self.interaction_core.cancel_active_interaction(),
+                display_name="Cancel Current Interaction",
+                category="Edit",
+                can_execute=lambda _context: self.interaction_core.can_cancel_active_interaction,
+                default_shortcut="Escape",
+            ),
+            EditorCommand(
+                "edit.deselect",
+                _clear_edit_selection,
+                display_name="Deselect All",
+                category="Edit",
+                can_execute=lambda context: bool(context.selection.targets),
+                default_shortcut="Escape",
+            ),
+            EditorCommand(
                 "edit.rename",
                 _rename_edit_selection,
                 display_name="Rename",
@@ -482,124 +578,672 @@ class BootstrapWiringMixin:
                 default_shortcut="F2",
             ),
             EditorCommand(
+                "edit.duplicate",
+                lambda context: _invoke_panel_command(context, "edit.duplicate"),
+                display_name="Duplicate",
+                category="Edit",
+                can_execute=lambda context: _can_panel_command(
+                    context, "edit.duplicate"
+                ),
+                default_shortcut="Ctrl+D",
+            ),
+            EditorCommand(
                 "component.open_script",
-                lambda context: _invoke_component_action(context, "open_script"),
+                lambda context: _invoke_panel_command(
+                    context, "component.open_script"
+                ),
                 display_name="Open Script",
                 category="Component",
-                can_execute=lambda context: _can_component_action(
-                    context, "can_open_script"
+                can_execute=lambda context: _can_panel_command(
+                    context, "component.open_script"
                 ),
             ),
             EditorCommand(
                 "component.copy_properties",
-                lambda context: _invoke_component_action(context, "copy"),
+                lambda context: _invoke_panel_command(
+                    context, "component.copy_properties"
+                ),
                 display_name="Copy Component",
                 category="Component",
-                can_execute=lambda context: _can_component_action(
-                    context, "can_copy"
+                can_execute=lambda context: _can_panel_command(
+                    context, "component.copy_properties"
                 ),
             ),
             EditorCommand(
                 "component.paste_properties",
-                lambda context: _invoke_component_action(context, "paste_values"),
+                lambda context: _invoke_panel_command(
+                    context, "component.paste_properties"
+                ),
                 display_name="Paste Component Values",
                 category="Component",
-                can_execute=lambda context: _can_component_action(
-                    context, "can_paste_values"
+                can_execute=lambda context: _can_panel_command(
+                    context, "component.paste_properties"
                 ),
             ),
             EditorCommand(
                 "component.paste_as_new",
-                lambda context: _invoke_component_action(context, "paste_as_new"),
+                lambda context: _invoke_panel_command(
+                    context, "component.paste_as_new"
+                ),
                 display_name="Paste Component As New",
                 category="Component",
-                can_execute=lambda context: _can_component_action(
-                    context, "can_paste_as_new"
+                can_execute=lambda context: _can_panel_command(
+                    context, "component.paste_as_new"
                 ),
             ),
             EditorCommand(
                 "component.remove",
-                lambda context: _invoke_component_action(context, "remove"),
+                lambda context: _invoke_panel_command(context, "component.remove"),
                 display_name="Remove Component",
                 category="Component",
-                can_execute=lambda context: _can_component_action(
-                    context, "can_remove"
+                can_execute=lambda context: _can_panel_command(
+                    context, "component.remove"
                 ),
             ),
             EditorCommand(
                 "component.reset",
-                lambda context: _invoke_component_action(context, "reset"),
+                lambda context: _invoke_panel_command(context, "component.reset"),
                 display_name="Reset Component",
                 category="Component",
-                can_execute=lambda context: _can_component_action(
-                    context, "can_reset"
+                can_execute=lambda context: _can_panel_command(
+                    context, "component.reset"
                 ),
             ),
             EditorCommand(
                 "component.move_up",
-                lambda context: _invoke_component_action(context, "move_up"),
+                lambda context: _invoke_panel_command(context, "component.move_up"),
                 display_name="Move Component Up",
                 category="Component",
-                can_execute=lambda context: _can_component_action(
-                    context, "can_move_up"
+                can_execute=lambda context: _can_panel_command(
+                    context, "component.move_up"
                 ),
             ),
             EditorCommand(
                 "component.move_down",
-                lambda context: _invoke_component_action(context, "move_down"),
+                lambda context: _invoke_panel_command(
+                    context, "component.move_down"
+                ),
                 display_name="Move Component Down",
                 category="Component",
-                can_execute=lambda context: _can_component_action(
-                    context, "can_move_down"
+                can_execute=lambda context: _can_panel_command(
+                    context, "component.move_down"
                 ),
             ),
             EditorCommand(
                 "component.reorder",
-                _reorder_component,
+                lambda context: _invoke_panel_command(
+                    context, "component.reorder"
+                ),
                 display_name="Reorder Components",
                 category="Component",
-                can_execute=_can_reorder_component,
+                can_execute=lambda context: _can_panel_command(
+                    context, "component.reorder"
+                ),
+            ),
+            EditorCommand(
+                "component.add",
+                lambda context: _invoke_target_panel_command(
+                    context, "inspector", "component.add"
+                ),
+                display_name="Add Component",
+                category="Component",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "inspector", "component.add"
+                ),
+            ),
+            EditorCommand(
+                "component.set_enabled",
+                lambda context: _invoke_panel_command(
+                    context, "component.set_enabled"
+                ),
+                display_name="Set Component Enabled",
+                category="Component",
+                can_execute=lambda context: _can_panel_command(
+                    context, "component.set_enabled"
+                ),
+            ),
+            EditorCommand(
+                "prefab.save_as",
+                lambda context: _execute_prefab_command(context, "save_as"),
+                display_name="Save As Prefab",
+                category="Prefab",
+                can_execute=lambda context: _can_prefab_command(context, "save_as"),
+            ),
+            EditorCommand(
+                "prefab.select_asset",
+                lambda context: _execute_prefab_command(context, "select"),
+                display_name="Select Prefab Asset",
+                category="Prefab",
+                can_execute=lambda context: _can_prefab_command(context, "select"),
+            ),
+            EditorCommand(
+                "prefab.open",
+                lambda context: _execute_prefab_command(context, "open"),
+                display_name="Open Prefab",
+                category="Prefab",
+                can_execute=lambda context: _can_prefab_command(context, "open"),
+            ),
+            EditorCommand(
+                "prefab.apply",
+                lambda context: _execute_prefab_command(context, "apply"),
+                display_name="Apply Prefab Overrides",
+                category="Prefab",
+                can_execute=lambda context: _can_prefab_command(context, "apply"),
+            ),
+            EditorCommand(
+                "prefab.revert",
+                lambda context: _execute_prefab_command(context, "revert"),
+                display_name="Revert Prefab Overrides",
+                category="Prefab",
+                can_execute=lambda context: _can_prefab_command(context, "revert"),
+            ),
+            EditorCommand(
+                "prefab.unpack",
+                lambda context: _execute_prefab_command(context, "unpack"),
+                display_name="Unpack Prefab",
+                category="Prefab",
+                can_execute=lambda context: _can_prefab_command(context, "unpack"),
+            ),
+            EditorCommand(
+                "prefab.exit",
+                lambda context: _execute_prefab_command(context, "exit"),
+                display_name="Exit Prefab Mode",
+                category="Prefab",
+                can_execute=lambda context: _can_prefab_command(context, "exit"),
             ),
             EditorCommand(
                 "project.create_folder",
                 _create_project_folder,
                 display_name="Create Folder",
                 category="Assets",
-                can_execute=lambda context: bool(
-                    _is_project_edit_context(context)
-                    and _project_panel() is not None
-                    and _project_panel().get_current_path()
+                can_execute=lambda context: _can_panel_command(
+                    context, "project.create_folder"
                 ),
                 default_shortcut="Ctrl+Shift+N",
             ),
             EditorCommand(
+                "asset.create",
+                lambda context: _invoke_panel_command(context, "asset.create"),
+                display_name="Create Asset",
+                category="Assets",
+                can_execute=lambda context: _can_panel_command(
+                    context, "asset.create"
+                ),
+            ),
+            EditorCommand(
+                "asset.open",
+                lambda context: _invoke_panel_command(context, "asset.open"),
+                display_name="Open Asset",
+                category="Assets",
+                can_execute=lambda context: _can_panel_command(
+                    context, "asset.open"
+                ),
+            ),
+            EditorCommand(
+                "asset.rename",
+                _rename_project_asset,
+                display_name="Rename Asset",
+                category="Assets",
+                can_execute=_can_rename_project_asset,
+            ),
+            EditorCommand(
+                "asset.import_external",
+                _import_external_assets,
+                display_name="Import External Assets",
+                category="Assets",
+                can_execute=_can_import_external_assets,
+            ),
+            EditorCommand(
+                "asset.transfer",
+                lambda context: _invoke_panel_command(context, "asset.transfer"),
+                display_name="Move Assets",
+                category="Assets",
+                can_execute=lambda context: _can_panel_command(
+                    context, "asset.transfer"
+                ),
+            ),
+            EditorCommand(
+                "project.reveal_in_explorer",
+                lambda context: _invoke_panel_command(
+                    context, "project.reveal_in_explorer"
+                ),
+                display_name="Reveal in File Explorer",
+                category="Assets",
+                can_execute=lambda context: _can_panel_command(
+                    context, "project.reveal_in_explorer"
+                ),
+            ),
+            EditorCommand(
+                "project.open_document",
+                _open_project_document,
+                display_name="Open Asset",
+                category="Assets",
+                can_execute=lambda context: bool(
+                    context.payload.get("path")
+                    and context.payload.get("document_kind")
+                ),
+            ),
+            EditorCommand(
                 "timeline.new",
-                lambda context: _invoke_timeline_command(context, "command_new_timeline"),
+                lambda context: _invoke_panel_command(context, "timeline.new"),
                 display_name="New Timeline",
                 category="Timeline",
-                can_execute=_can_invoke_timeline_command,
+                can_execute=lambda context: _can_panel_command(
+                    context, "timeline.new"
+                ),
+            ),
+            EditorCommand(
+                "animclip2d.new",
+                lambda context: _invoke_panel_command(context, "animclip2d.new"),
+                display_name="New 2D Animation Clip",
+                category="Animation",
+                can_execute=lambda context: _can_panel_command(
+                    context, "animclip2d.new"
+                ),
+            ),
+            EditorCommand(
+                "animclip2d.play_pause",
+                lambda context: _invoke_panel_command(
+                    context, "animclip2d.play_pause"
+                ),
+                display_name="Play / Pause 2D Animation Preview",
+                category="Animation",
+                can_execute=lambda context: _can_panel_command(
+                    context, "animclip2d.play_pause"
+                ),
+                default_shortcut="Space",
+            ),
+            EditorCommand(
+                "animclip2d.stop",
+                lambda context: _invoke_panel_command(context, "animclip2d.stop"),
+                display_name="Stop 2D Animation Preview",
+                category="Animation",
+                can_execute=lambda context: _can_panel_command(
+                    context, "animclip2d.stop"
+                ),
+            ),
+            EditorCommand(
+                "animclip2d.previous_frame",
+                lambda context: _invoke_panel_command(
+                    context, "animclip2d.previous_frame"
+                ),
+                display_name="Previous 2D Animation Frame",
+                category="Animation",
+                can_execute=lambda context: _can_panel_command(
+                    context, "animclip2d.previous_frame"
+                ),
+            ),
+            EditorCommand(
+                "animclip2d.next_frame",
+                lambda context: _invoke_panel_command(
+                    context, "animclip2d.next_frame"
+                ),
+                display_name="Next 2D Animation Frame",
+                category="Animation",
+                can_execute=lambda context: _can_panel_command(
+                    context, "animclip2d.next_frame"
+                ),
+            ),
+            EditorCommand(
+                "animclip2d.clear_sequence",
+                lambda context: _invoke_panel_command(
+                    context, "animclip2d.clear_sequence"
+                ),
+                display_name="Clear 2D Animation Sequence",
+                category="Animation",
+                can_execute=lambda context: _can_panel_command(
+                    context, "animclip2d.clear_sequence"
+                ),
+            ),
+            EditorCommand(
+                "animclip2d.add_frame",
+                lambda context: _invoke_panel_command(
+                    context, "animclip2d.add_frame"
+                ),
+                display_name="Add 2D Animation Frame",
+                category="Animation",
+                can_execute=lambda context: _can_panel_command(
+                    context, "animclip2d.add_frame"
+                ),
+            ),
+            EditorCommand(
+                "animfsm.new",
+                lambda context: _invoke_panel_command(context, "animfsm.new"),
+                display_name="New Animation State Machine",
+                category="Animation",
+                can_execute=lambda context: _can_panel_command(
+                    context, "animfsm.new"
+                ),
+            ),
+            EditorCommand(
+                "build.start",
+                lambda context: _invoke_panel_command(context, "build.start"),
+                display_name="Build Player",
+                category="Build",
+                can_execute=lambda context: _can_panel_command(
+                    context, "build.start"
+                ),
+            ),
+            EditorCommand(
+                "build.start_and_run",
+                lambda context: _invoke_panel_command(
+                    context, "build.start_and_run"
+                ),
+                display_name="Build and Run Player",
+                category="Build",
+                can_execute=lambda context: _can_panel_command(
+                    context, "build.start_and_run"
+                ),
+            ),
+            EditorCommand(
+                "build.cancel",
+                lambda context: _invoke_panel_command(context, "build.cancel"),
+                display_name="Cancel Build",
+                category="Build",
+                can_execute=lambda context: _can_panel_command(
+                    context, "build.cancel"
+                ),
             ),
             EditorCommand(
                 "timeline.play_pause",
-                lambda context: _invoke_timeline_command(context, "command_toggle_playback"),
+                lambda context: _invoke_panel_command(
+                    context, "timeline.play_pause"
+                ),
                 display_name="Play / Pause Timeline",
                 category="Timeline",
-                can_execute=_can_invoke_timeline_command,
+                can_execute=lambda context: _can_panel_command(
+                    context, "timeline.play_pause"
+                ),
                 default_shortcut="Space",
             ),
             EditorCommand(
                 "timeline.stop",
-                lambda context: _invoke_timeline_command(context, "command_stop_playback"),
+                lambda context: _invoke_panel_command(context, "timeline.stop"),
                 display_name="Stop Timeline",
                 category="Timeline",
-                can_execute=_can_invoke_timeline_command,
+                can_execute=lambda context: _can_panel_command(
+                    context, "timeline.stop"
+                ),
+            ),
+            EditorCommand(
+                "timeline.set_loop_preview",
+                lambda context: _invoke_panel_command(
+                    context, "timeline.set_loop_preview"
+                ),
+                display_name="Toggle Timeline Loop Preview",
+                category="Timeline",
+                can_execute=lambda context: _can_panel_command(
+                    context, "timeline.set_loop_preview"
+                ),
+                palette_visible=False,
             ),
             EditorCommand(
                 "timeline.add_keyframe",
-                lambda context: _invoke_timeline_command(context, "command_add_keyframe"),
+                lambda context: _invoke_panel_command(
+                    context, "timeline.add_keyframe"
+                ),
                 display_name="Add Timeline Keyframe",
                 category="Timeline",
-                can_execute=_can_invoke_timeline_command,
+                can_execute=lambda context: _can_panel_command(
+                    context, "timeline.add_keyframe"
+                ),
+            ),
+            EditorCommand(
+                "scene.create_object",
+                lambda context: _invoke_panel_command(
+                    context, "scene.create_object"
+                ),
+                display_name="Create GameObject",
+                category="GameObject",
+                can_execute=lambda context: _can_panel_command(
+                    context, "scene.create_object"
+                ),
+            ),
+            EditorCommand(
+                "scene.create_empty_parent",
+                lambda context: _invoke_panel_command(
+                    context, "scene.create_empty_parent"
+                ),
+                display_name="Create Empty Parent",
+                category="GameObject",
+                can_execute=lambda context: _can_panel_command(
+                    context, "scene.create_empty_parent"
+                ),
+            ),
+            EditorCommand(
+                "scene.instantiate_prefab",
+                lambda context: _invoke_target_panel_command(
+                    context, "hierarchy", "scene.instantiate_prefab"
+                ),
+                display_name="Instantiate Prefab",
+                category="GameObject",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "hierarchy", "scene.instantiate_prefab"
+                ),
+            ),
+            EditorCommand(
+                "scene.create_model",
+                lambda context: _invoke_target_panel_command(
+                    context, "hierarchy", "scene.create_model"
+                ),
+                display_name="Create Model",
+                category="GameObject",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "hierarchy", "scene.create_model"
+                ),
+            ),
+            EditorCommand(
+                "scene.rename_object",
+                lambda context: _invoke_target_panel_command(
+                    context, "hierarchy", "scene.rename_object"
+                ),
+                display_name="Rename GameObject",
+                category="GameObject",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "hierarchy", "scene.rename_object"
+                ),
+            ),
+            EditorCommand(
+                "scene.set_object_property",
+                _set_object_property,
+                display_name="Set GameObject Property",
+                category="GameObject",
+                can_execute=_can_set_object_property,
+            ),
+            EditorCommand(
+                "scene.set_transforms",
+                _set_transforms,
+                display_name="Edit Transform",
+                category="GameObject",
+                can_execute=_can_set_transforms,
+            ),
+            EditorCommand(
+                "scene.move_hierarchy",
+                lambda context: _invoke_target_panel_command(
+                    context, "hierarchy", "scene.move_hierarchy"
+                ),
+                display_name="Move GameObject",
+                category="GameObject",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "hierarchy", "scene.move_hierarchy"
+                ),
+            ),
+            EditorCommand(
+                "scene.tool.select",
+                lambda context: _invoke_panel_command(
+                    context, "scene.tool.select"
+                ),
+                display_name="Select Tool",
+                category="Scene",
+                can_execute=lambda context: _can_panel_command(
+                    context, "scene.tool.select"
+                ),
+                default_shortcut="Q",
+            ),
+            EditorCommand(
+                "ui.nudge.left",
+                lambda context: _invoke_panel_command(context, "ui.nudge.left"),
+                display_name="Nudge UI Element Left",
+                category="UI Editor",
+                can_execute=lambda context: _can_panel_command(
+                    context, "ui.nudge.left"
+                ),
+                default_shortcut="Left",
+            ),
+            EditorCommand(
+                "ui.nudge.right",
+                lambda context: _invoke_panel_command(context, "ui.nudge.right"),
+                display_name="Nudge UI Element Right",
+                category="UI Editor",
+                can_execute=lambda context: _can_panel_command(
+                    context, "ui.nudge.right"
+                ),
+                default_shortcut="Right",
+            ),
+            EditorCommand(
+                "ui.nudge.up",
+                lambda context: _invoke_panel_command(context, "ui.nudge.up"),
+                display_name="Nudge UI Element Up",
+                category="UI Editor",
+                can_execute=lambda context: _can_panel_command(
+                    context, "ui.nudge.up"
+                ),
+                default_shortcut="Up",
+            ),
+            EditorCommand(
+                "ui.nudge.down",
+                lambda context: _invoke_panel_command(context, "ui.nudge.down"),
+                display_name="Nudge UI Element Down",
+                category="UI Editor",
+                can_execute=lambda context: _can_panel_command(
+                    context, "ui.nudge.down"
+                ),
+                default_shortcut="Down",
+            ),
+            EditorCommand(
+                "ui.nudge.left.fast",
+                lambda context: _invoke_panel_command(
+                    context, "ui.nudge.left.fast"
+                ),
+                display_name="Nudge UI Element Left (Fast)",
+                category="UI Editor",
+                can_execute=lambda context: _can_panel_command(
+                    context, "ui.nudge.left.fast"
+                ),
+                default_shortcut="Shift+Left",
+            ),
+            EditorCommand(
+                "ui.nudge.right.fast",
+                lambda context: _invoke_panel_command(
+                    context, "ui.nudge.right.fast"
+                ),
+                display_name="Nudge UI Element Right (Fast)",
+                category="UI Editor",
+                can_execute=lambda context: _can_panel_command(
+                    context, "ui.nudge.right.fast"
+                ),
+                default_shortcut="Shift+Right",
+            ),
+            EditorCommand(
+                "ui.nudge.up.fast",
+                lambda context: _invoke_panel_command(
+                    context, "ui.nudge.up.fast"
+                ),
+                display_name="Nudge UI Element Up (Fast)",
+                category="UI Editor",
+                can_execute=lambda context: _can_panel_command(
+                    context, "ui.nudge.up.fast"
+                ),
+                default_shortcut="Shift+Up",
+            ),
+            EditorCommand(
+                "ui.nudge.down.fast",
+                lambda context: _invoke_panel_command(
+                    context, "ui.nudge.down.fast"
+                ),
+                display_name="Nudge UI Element Down (Fast)",
+                category="UI Editor",
+                can_execute=lambda context: _can_panel_command(
+                    context, "ui.nudge.down.fast"
+                ),
+                default_shortcut="Shift+Down",
+            ),
+            EditorCommand(
+                "scene.tool.move",
+                lambda context: _invoke_panel_command(context, "scene.tool.move"),
+                display_name="Move Tool",
+                category="Scene",
+                can_execute=lambda context: _can_panel_command(
+                    context, "scene.tool.move"
+                ),
+                default_shortcut="W",
+            ),
+            EditorCommand(
+                "scene.tool.rotate",
+                lambda context: _invoke_panel_command(
+                    context, "scene.tool.rotate"
+                ),
+                display_name="Rotate Tool",
+                category="Scene",
+                can_execute=lambda context: _can_panel_command(
+                    context, "scene.tool.rotate"
+                ),
+                default_shortcut="E",
+            ),
+            EditorCommand(
+                "scene.tool.scale",
+                lambda context: _invoke_panel_command(
+                    context, "scene.tool.scale"
+                ),
+                display_name="Scale Tool",
+                category="Scene",
+                can_execute=lambda context: _can_panel_command(
+                    context, "scene.tool.scale"
+                ),
+                default_shortcut="R",
+            ),
+            EditorCommand(
+                "scene.align_to_camera",
+                lambda context: _invoke_panel_command(
+                    context, "scene.align_to_camera"
+                ),
+                display_name="Align With View",
+                category="Scene",
+                can_execute=lambda context: _can_panel_command(
+                    context, "scene.align_to_camera"
+                ),
+                default_shortcut="Ctrl+F",
+            ),
+            EditorCommand(
+                "scene.frame_selected",
+                lambda context: _invoke_target_panel_command(
+                    context, "scene_view", "scene.frame_selected"
+                ),
+                display_name="Frame Selected",
+                category="Scene",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "scene_view", "scene.frame_selected"
+                ),
+                default_shortcut="F",
+            ),
+            EditorCommand(
+                "scene.toggle_grid",
+                _toggle_scene_grid,
+                display_name="Toggle Scene Grid",
+                category="Scene",
+                can_execute=lambda _context: _native_engine() is not None,
+                is_checked=_is_scene_grid_visible,
+            ),
+            EditorCommand(
+                "scene.set_coordinate_space",
+                lambda context: _invoke_panel_command(
+                    context, "scene.set_coordinate_space"
+                ),
+                display_name="Set Scene Coordinate Space",
+                category="Scene",
+                can_execute=lambda context: _can_panel_command(
+                    context, "scene.set_coordinate_space"
+                ),
             ),
             EditorCommand(
                 "play.toggle",
@@ -635,14 +1279,95 @@ class BootstrapWiringMixin:
                 ),
             ),
             EditorCommand(
+                "window.toggle",
+                _toggle_window,
+                display_name="Toggle Window",
+                category="Window",
+                can_execute=lambda context: _window_target(context)
+                in wm.get_registered_types()
+                and _window_target(context)
+                not in PERMANENT_EDITOR_WINDOW_TYPE_IDS,
+                is_checked=lambda context: bool(
+                    _window_target(context)
+                    and wm.is_window_open(_window_target(context))
+                ),
+            ),
+            EditorCommand(
                 "window.reset_layout",
                 _reset_layout,
                 display_name="Reset Layout",
                 category="Window",
             ),
+            EditorCommand(
+                "console.open_entry",
+                _open_console_entry,
+                display_name="Open Console Entry",
+                category="Window",
+                can_execute=lambda context: str(
+                    context.payload.get("uid", "")
+                ).strip().isdigit(),
+            ),
+            EditorCommand(
+                "console.open_source",
+                _open_console_source,
+                display_name="Open Console Source",
+                category="Console",
+                can_execute=lambda context: bool(_console_source_path(context)),
+            ),
+            EditorCommand(
+                "console.clear",
+                lambda context: _invoke_target_panel_command(
+                    context, "console", "console.clear"
+                ),
+                display_name="Clear Console",
+                category="Console",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "console", "console.clear"
+                ),
+            ),
+            EditorCommand(
+                "console.set_option",
+                lambda context: _invoke_target_panel_command(
+                    context, "console", "console.set_option"
+                ),
+                display_name="Set Console Option",
+                category="Console",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "console", "console.set_option"
+                ),
+            ),
+            EditorCommand(
+                "console.set_search",
+                lambda context: _invoke_target_panel_command(
+                    context, "console", "console.set_search"
+                ),
+                display_name="Search Console",
+                category="Console",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "console", "console.set_search"
+                ),
+            ),
+            EditorCommand(
+                "console.set_detail_height",
+                lambda context: _invoke_target_panel_command(
+                    context, "console", "console.set_detail_height"
+                ),
+                display_name="Resize Console Details",
+                category="Console",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "console", "console.set_detail_height"
+                ),
+            ),
         )
         for command in commands:
             registry.register(command, replace=True)
+
+        # ObjectField context actions are ordinary global commands.  The
+        # popup freezes its field model in the command payload, so all asset
+        # drawers share one enablement and execution contract.
+        from Infernux.engine.interaction import register_asset_reference_commands
+
+        register_asset_reference_commands(registry)
 
         bindings = (
             ("file.new_scene", "Ctrl+N", "default.file.new_scene"),
@@ -651,89 +1376,67 @@ class BootstrapWiringMixin:
             ("edit.undo", "Ctrl+Z", "default.edit.undo"),
             ("edit.redo", "Ctrl+Shift+Z", "default.edit.redo.shift"),
             ("edit.redo", "Ctrl+Y", "default.edit.redo.y"),
-        )
-        for command_id, chord, binding_id in bindings:
-            shortcuts.register(
-                ShortcutBinding(command_id, KeyChord.parse(chord), binding_id=binding_id),
-                replace=True,
-            )
-
-        for owner_id in ("hierarchy", "scene_view"):
-            for command_id, chord in (
-                ("edit.copy", "Ctrl+C"),
-                ("edit.cut", "Ctrl+X"),
-                ("edit.paste", "Ctrl+V"),
-                ("edit.delete", "Delete"),
-            ):
-                shortcuts.register(
-                    ShortcutBinding(
-                        command_id,
-                        KeyChord.parse(chord),
-                        ShortcutScope.PANEL,
-                        owner_id,
-                        binding_id=f"default.{owner_id}.{command_id}",
-                    ),
-                    replace=True,
-                )
-        shortcuts.register(
-            ShortcutBinding(
-                "edit.rename",
-                KeyChord.parse("F2"),
-                ShortcutScope.PANEL,
-                "hierarchy",
-                binding_id="default.hierarchy.edit.rename",
+            (
+                "command_palette.open",
+                "Ctrl+Shift+P",
+                "default.command_palette.open",
             ),
-            replace=True,
         )
-        for command_id, chord in (
-            ("edit.copy", "Ctrl+C"),
-            ("edit.cut", "Ctrl+X"),
-            ("edit.paste", "Ctrl+V"),
-            ("edit.delete", "Delete"),
-            ("edit.rename", "F2"),
-            ("project.create_folder", "Ctrl+Shift+N"),
-        ):
-            shortcuts.register(
-                ShortcutBinding(
-                    command_id,
-                    KeyChord.parse(chord),
-                    ShortcutScope.PANEL,
-                    "project",
-                    binding_id=f"default.project.{command_id}",
-                ),
-                replace=True,
+        default_shortcuts = [
+            ShortcutBinding(command_id, KeyChord.parse(chord), binding_id=binding_id)
+            for command_id, chord, binding_id in bindings
+        ]
+        default_shortcuts.append(
+            ShortcutBinding(
+                "interaction.cancel",
+                KeyChord.parse("Escape"),
+                ShortcutScope.GLOBAL,
+                priority=10_000,
+                allow_when_text_input=True,
+                allow_when_modal=True,
+                allow_when_captured=True,
+                binding_id="default.interaction.cancel",
             )
-
-        for command_id, chord in (
-            ("edit.copy", "Ctrl+C"),
-            ("edit.paste", "Ctrl+V"),
-            ("edit.delete", "Delete"),
-        ):
-            shortcuts.register(
+        )
+        default_shortcuts.extend(
+            (
                 ShortcutBinding(
-                    command_id,
-                    KeyChord.parse(chord),
-                    ShortcutScope.PANEL,
-                    "inspector",
-                    binding_id=f"default.inspector.{command_id}",
+                    "command_palette.previous",
+                    KeyChord.parse("Up"),
+                    ShortcutScope.CHILD_CONTEXT,
+                    owner_id="command_palette",
+                    priority=10_000,
+                    allow_when_text_input=True,
+                    allow_when_modal=True,
+                    binding_id="default.command_palette.previous",
                 ),
-                replace=True,
-            )
-
-        for command_id, chord in (
-            ("timeline.play_pause", "Space"),
-            ("edit.delete", "Delete"),
-        ):
-            shortcuts.register(
                 ShortcutBinding(
-                    command_id,
-                    KeyChord.parse(chord),
-                    ShortcutScope.PANEL,
-                    "animtimeline_editor",
-                    binding_id=f"default.animtimeline_editor.{command_id}",
+                    "command_palette.next",
+                    KeyChord.parse("Down"),
+                    ShortcutScope.CHILD_CONTEXT,
+                    owner_id="command_palette",
+                    priority=10_000,
+                    allow_when_text_input=True,
+                    allow_when_modal=True,
+                    binding_id="default.command_palette.next",
                 ),
-                replace=True,
+                ShortcutBinding(
+                    "command_palette.execute",
+                    KeyChord.parse("Enter"),
+                    ShortcutScope.CHILD_CONTEXT,
+                    owner_id="command_palette",
+                    priority=10_000,
+                    allow_when_text_input=True,
+                    allow_when_modal=True,
+                    binding_id="default.command_palette.execute",
+                ),
             )
+        )
+        default_shortcuts.extend(panel_interactions.iter_shortcut_bindings())
+        self.interaction_core.preferences.bind_shortcuts(
+            default_shortcuts,
+            shortcuts,
+        )
 
     def _wire_menu_bar_callbacks(self, wm):
         """Wire C++ MenuBarPanel callbacks to Python managers."""
@@ -774,7 +1477,7 @@ class BootstrapWiringMixin:
                 command_registry.context(CommandSource.MENU, _payload(argument)),
             )
         )
-        mb.route_shortcut = lambda chord, text_input, modal: shortcut_router.route(
+        self.shortcut_input.route_shortcut = lambda chord, text_input, modal: shortcut_router.route(
             ShortcutEvent(
                 KeyChord.parse(chord),
                 text_input_active=bool(text_input),
@@ -826,81 +1529,65 @@ class BootstrapWiringMixin:
         if native:
             mb.is_close_requested = lambda: native.is_close_requested()
 
-        # Floating sub-panels (still rendered from Python)
-        from Infernux.engine.ui.build_settings_panel import BuildSettingsPanel
-        from Infernux.engine.ui.preferences_panel import PreferencesPanel
-        from Infernux.engine.ui.tag_layer_settings import PhysicsLayerMatrixPanel
-        from Infernux.engine.ui.environment_settings_panel import EnvironmentSettingsPanel
-        from Infernux.engine.project_context import get_project_root
-        self._build_settings = BuildSettingsPanel()
-        self._preferences = PreferencesPanel()
-        self._physics_layer_matrix = PhysicsLayerMatrixPanel()
-        self._physics_layer_matrix.set_project_path(get_project_root() or "")
-        self._environment_settings = EnvironmentSettingsPanel()
-
-        def _toggle_floating_panel(panel):
-            panel.close() if panel.is_open else panel.open()
-            return True
-
-        for command_id, display_name, panel in (
-            ("window.toggle.build_settings", "Build Settings", self._build_settings),
-            ("window.toggle.preferences", "Preferences", self._preferences),
+        # Utility settings are normal WindowManager-owned panel surfaces. The
+        # project menu only dispatches commands; it never owns their instances
+        # or renders a parallel panel list.
+        for command_id, display_name, panel_id in (
+            ("window.toggle.build_settings", "Build Settings", "build_settings"),
+            ("window.toggle.preferences", "Preferences", "preferences"),
+            ("window.toggle.history", "History", "history"),
             (
                 "window.toggle.physics_layers",
                 "Physics Layer Matrix",
-                self._physics_layer_matrix,
+                "physics_settings",
             ),
             (
                 "window.toggle.environment",
                 "Environment Settings",
-                self._environment_settings,
+                "environment_settings",
             ),
         ):
             command_registry.register(
                 EditorCommand(
                     command_id,
-                    lambda _context, target=panel: _toggle_floating_panel(target),
+                    lambda _context, target=panel_id: _toggle_window_target(target),
                     display_name=display_name,
                     category="Window",
-                    is_checked=lambda _context, target=panel: bool(target.is_open),
+                    is_checked=lambda _context, target=panel_id: wm.is_window_open(target),
                 ),
                 replace=True,
             )
 
-        # Floating utility windows participate in the normal panel layer.
-        # Global confirmations are registered separately at overlay priority
-        # so dynamically-created or undocked editors can never cover them.
+        # Global confirmations are registered at overlay priority so
+        # dynamically-created or undocked editors can never cover them.
         from Infernux.lib import InxGUIRenderable, InxGUIContext
-        _bs = self._build_settings
-        _pref = self._preferences
-        _plm = self._physics_layer_matrix
-        _env = self._environment_settings
-        _sfm = sfm
         from Infernux.engine.ui.dirty_panel_confirmation import (
             DirtyPanelConfirmationCoordinator,
         )
         from Infernux.engine.ui.project_delete_confirmation import (
             ProjectDeleteConfirmationCoordinator,
         )
+        from Infernux.engine.ui.external_document_conflict import (
+            ExternalDocumentConflictCoordinator,
+        )
         _dirty_panels = DirtyPanelConfirmationCoordinator.instance()
         _project_delete = ProjectDeleteConfirmationCoordinator.instance()
+        _external_conflicts = ExternalDocumentConflictCoordinator.instance()
+        from Infernux.engine.ui.command_palette import CommandPalettePresenter
 
-        class _MenuBarFloatingPanels(InxGUIRenderable):
-            def on_render(self, ctx: InxGUIContext):
-                _bs.render(ctx)
-                _pref.render(ctx)
-                _plm.render(ctx)
-                _env.render(ctx)
+        self._command_palette_presenter = CommandPalettePresenter(
+            self.interaction_core.command_palette,
+            self.interaction_core.modals,
+        )
+        from Infernux.engine.ui.modal_portal import ModalPortal
+
+        _modal_portal = ModalPortal(self.interaction_core.modals)
 
         class _EditorGlobalOverlays(InxGUIRenderable):
             def on_render(self, ctx: InxGUIContext):
-                _dirty_panels.render(ctx)
-                _project_delete.render(ctx)
-                if _sfm:
-                    _sfm.render_save_as_popup(ctx)
+                _external_conflicts.poll()
+                _modal_portal.on_render(ctx)
 
-        self._menu_bar_floats = _MenuBarFloatingPanels()
-        engine.register_gui("menu_bar_floats", self._menu_bar_floats)
         self._editor_global_overlays = _EditorGlobalOverlays()
         engine.register_gui(
             "editor_global_overlays",
@@ -951,46 +1638,29 @@ class BootstrapWiringMixin:
         """Wire C++ HierarchyPanel callbacks to Python managers."""
         from Infernux.engine.bootstrap_hierarchy import wire_hierarchy_callbacks
         wire_hierarchy_callbacks(self)
+        self._wire_native_transient_interactions(self.hierarchy, "hierarchy")
 
     def _wire_project_callbacks(self):
         """Wire C++ ProjectPanel callbacks to Python managers."""
         from Infernux.engine.bootstrap_project import wire_project_callbacks
         wire_project_callbacks(self)
+        self._wire_native_transient_interactions(self.project_panel, "project")
 
     def _wire_inspector_callbacks(self):
         """Wire C++ InspectorPanel callbacks to Python managers."""
         from Infernux.engine.bootstrap_inspector import wire_inspector_callbacks
         wire_inspector_callbacks(self)
+        self._wire_native_transient_interactions(self.inspector_panel, "inspector")
 
     def _wire_ui_editor(self):
         ui_editor = self.ui_editor
         hierarchy = self.hierarchy
         scene_view = self.scene_view
         game_view = self.game_view
-        from Infernux.engine.ui.event_bus import EditorEvent, EditorEventBus
-
         def on_ui_mode_request(enter: bool):
             hierarchy.set_ui_mode(enter)
 
         ui_editor.set_on_request_ui_mode(on_ui_mode_request)
-
-        def on_ui_editor_selected(go):
-            from Infernux.engine.interaction import SelectionService, SelectionTarget
-
-            if go is not None:
-                SelectionService.instance().select(
-                    SelectionTarget.scene_object(go.id),
-                    owner_id="ui_editor",
-                    reason="ui_editor_select",
-                    record_history=True,
-                )
-            else:
-                SelectionService.instance().clear(
-                    reason="ui_editor_clear",
-                    record_history=True,
-                )
-
-        ui_editor.set_on_selection_changed(on_ui_editor_selected)
 
         from Infernux.engine.interaction import SelectionService
 
@@ -1007,17 +1677,6 @@ class BootstrapWiringMixin:
         self._ui_editor_selection_listener = on_global_selection_changed
         selection.add_listener(on_global_selection_changed)
         self._project_ui_editor_selection(selection.snapshot)
-
-        def on_panel_focused(panel_id: str):
-            if self.window_manager is not None:
-                self.window_manager.note_panel_focus(panel_id)
-
-        bus = EditorEventBus.instance()
-        previous = getattr(self, "_panel_focus_event_handler", None)
-        if previous is not None:
-            bus.unsubscribe(EditorEvent.PANEL_FOCUSED, previous)
-        self._panel_focus_event_handler = on_panel_focused
-        bus.subscribe(EditorEvent.PANEL_FOCUSED, on_panel_focused)
 
     def _project_ui_editor_selection(self, snapshot) -> None:
         from Infernux.engine.interaction import SelectionDomain
@@ -1036,5 +1695,5 @@ class BootstrapWiringMixin:
 
             scene = SceneManager.instance().get_active_scene()
             obj = scene.find_by_id(object_id) if scene else None
-        self.ui_editor.notify_hierarchy_selection(obj)
+        self.ui_editor.project_global_selection(obj)
 

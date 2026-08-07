@@ -175,6 +175,9 @@ class SceneViewPickingMixin:
             local_x, local_y, vp.width, vp.height)
         if request_id <= 0:
             return
+        from Infernux.engine.interaction import SelectionService
+
+        selection = SelectionService.instance()
         self._pending_scene_pick = {
             "request_id": request_id,
             "x": local_x,
@@ -183,6 +186,8 @@ class SceneViewPickingMixin:
             "height": vp.height,
             "cpu_id": int(cpu_picked_id),
             "cpu_candidates": list(self._pick_cycle_candidates),
+            "selection_revision": selection.revision,
+            "document_id": str(getattr(self, "document_id", "") or ""),
         }
 
     def _insert_ids_by_depth(self, base_ids, extra_ids, local_x, local_y, width, height):
@@ -279,9 +284,21 @@ class SceneViewPickingMixin:
         self._pick_cycle_last_mouse = (pending["x"], pending["y"])
         self._pick_cycle_last_viewport = (int(pending["width"]), int(pending["height"]))
 
-        from .selection_manager import SelectionManager
+        from Infernux.engine.interaction import SelectionService
+        selection = SelectionService.instance()
+        pending_revision = pending.get("selection_revision")
+        pending_document_id = pending.get("document_id")
+        if (
+            (pending_revision is not None and selection.revision != int(pending_revision))
+            or (
+                pending_document_id is not None
+                and str(getattr(self, "document_id", "") or "")
+                != str(pending_document_id)
+            )
+        ):
+            return
         cpu_id = int(pending["cpu_id"])
-        if SelectionManager.instance().get_primary() != cpu_id:
+        if selection.primary_scene_object_id() != cpu_id:
             # Selection moved on since the click; don't fight the user.
             if gpu_id in merged:
                 self._pick_cycle_index = merged.index(cpu_id) if cpu_id in merged else 0
@@ -369,23 +386,31 @@ class SceneViewPickingMixin:
 
         ctrl = ctx.is_key_down(_keys.KEY_LEFT_CTRL) or ctx.is_key_down(_keys.KEY_RIGHT_CTRL)
 
-        from .selection_manager import SelectionManager
-        sel = SelectionManager.instance()
-        if selected_ids:
-            sel.box_select(
-                selected_ids,
-                additive=ctrl,
-                owner_id="scene_view",
-                record_history=True,
-            )
-        elif not ctrl:
-            sel.clear(record_history=True)
+        from Infernux.engine.interaction import SelectionService
 
-        # Resolve primary object for inspector
-        primary_id = sel.get_primary()
-        primary_obj = scene.find_by_id(primary_id) if primary_id else None
-        if self._on_box_select:
-            self._on_box_select(primary_obj)
+        selection = SelectionService.instance()
+        from Infernux.engine.interaction import EditorInteractionCore
+
+        core = EditorInteractionCore.instance()
+        if core is None:
+            raise RuntimeError("Box selection requires EditorInteractionCore")
+        with core.scene_objects.user_action("Box Select GameObjects"):
+            if selected_ids:
+                selection.box_select_scene_objects(
+                    selected_ids,
+                    additive=ctrl,
+                    owner_id="scene_view",
+                    record_history=True,
+                )
+            elif not ctrl:
+                selection.clear(reason="scene_box_clear", record_history=True)
+            primary = selection.snapshot.primary
+            if primary is not None:
+                core.navigation.reveal(
+                    primary,
+                    record_history=True,
+                    activate_panel=False,
+                )
 
     def _pick_scene_object(self, ctx: InxGUIContext, vp: ViewportInfo) -> int:
         """Pick scene object under mouse cursor with repeated-click cycling."""

@@ -59,9 +59,6 @@ std::string MenuBarPanel::T(const std::string &key) const
 
 void MenuBarPanel::OnRender(InxGUIContext *ctx)
 {
-    // Handle global shortcuts before menu logic
-    HandleShortcuts(ctx);
-
     // Check for window close request (SDL_EVENT_QUIT intercepted by C++)
     if (isCloseRequested && onRequestClose) {
         if (isCloseRequested())
@@ -91,68 +88,15 @@ void MenuBarPanel::OnRender(InxGUIContext *ctx)
     ImGui::PopStyleColor(4);
     ImGui::PopStyleVar(3);
 
-    // Note: floating sub-panels (BuildSettings, Preferences, PhysicsLayerMatrix)
-    // and save-confirmation popup are rendered from Python side.
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Keyboard shortcuts
-// ════════════════════════════════════════════════════════════════════
-
-void MenuBarPanel::HandleShortcuts(InxGUIContext *ctx)
-{
-    const int frame = ImGui::GetFrameCount();
-    if (m_lastShortcutFrame == frame)
-        return;
-    m_lastShortcutFrame = frame;
-
-    const auto isDown = [ctx](ImGuiKey key) { return ctx->IsKeyDown(static_cast<int>(key)); };
-    const bool ctrl = isDown(ImGuiKey_LeftCtrl) || isDown(ImGuiKey_RightCtrl);
-    const bool shift = isDown(ImGuiKey_LeftShift) || isDown(ImGuiKey_RightShift);
-    const bool alt = isDown(ImGuiKey_LeftAlt) || isDown(ImGuiKey_RightAlt);
-    const bool super = isDown(ImGuiKey_LeftSuper) || isDown(ImGuiKey_RightSuper);
-    const auto pressedOnce = [](ImGuiKey key) { return ImGui::IsKeyPressed(key, false); };
-    const bool textInputActive = ImGui::GetIO().WantTextInput;
-    const bool popupActive = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
-    const auto dispatch = [&](const char *chord) {
-        if (routeShortcut)
-            routeShortcut(chord, textInputActive, popupActive);
-    };
-
-    if (ctrl && !alt && !super) {
-        if (pressedOnce(ImGuiKey_S))
-            dispatch(shift ? "Ctrl+Shift+S" : "Ctrl+S");
-
-        if (pressedOnce(ImGuiKey_N))
-            dispatch(shift ? "Ctrl+Shift+N" : "Ctrl+N");
-
-        if (pressedOnce(ImGuiKey_Z))
-            dispatch(shift ? "Ctrl+Shift+Z" : "Ctrl+Z");
-
-        if (!shift && pressedOnce(ImGuiKey_Y))
-            dispatch("Ctrl+Y");
-
-        if (!shift && pressedOnce(ImGuiKey_C))
-            dispatch("Ctrl+C");
-        if (!shift && pressedOnce(ImGuiKey_X))
-            dispatch("Ctrl+X");
-        if (!shift && pressedOnce(ImGuiKey_V))
-            dispatch("Ctrl+V");
-        return;
-    }
-
-    if (!shift && !alt && !super) {
-        if (pressedOnce(ImGuiKey_F2))
-            dispatch("F2");
-        if (pressedOnce(ImGuiKey_Delete))
-            dispatch("Delete");
-        if (pressedOnce(ImGuiKey_Space))
-            dispatch("Space");
-    }
+    // Utility settings are WindowManager-owned panel surfaces; only global
+    // confirmation overlays remain separately rendered from Python.
 }
 
 // ════════════════════════════════════════════════════════════════════
 // Project menu
+// ════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════
 // ════════════════════════════════════════════════════════════════════
 
 void MenuBarPanel::RenderProjectMenu(InxGUIContext *ctx)
@@ -221,6 +165,12 @@ void MenuBarPanel::RenderEditMenu(InxGUIContext *ctx)
         if (SemanticMenuItem(ctx, T(labelKey), shortcut, false, enabled, semanticId))
             ExecuteCommand(commandId, "menu");
     }
+
+    ImGui::Separator();
+    const bool canOpenPalette = CanExecuteCommand("command_palette.open");
+    if (SemanticMenuItem(ctx, T("menu.command_palette"), "Ctrl+Shift+P", false, canOpenPalette,
+                         "menu.edit.command_palette"))
+        ExecuteCommand("command_palette.open", "menu");
 
     ImGui::EndMenu();
 }
@@ -338,7 +288,7 @@ void MenuBarPanel::RefreshWindowTypeCache()
     m_cachedWindowTypes = getRegisteredTypes();
     m_cachedTopMenus.clear();
     for (const auto &info : m_cachedWindowTypes) {
-        if (info.menuPath == "Window")
+        if (info.menuPath.empty() || info.menuPath == "Window")
             continue;
         std::string top = info.menuPath;
         const auto slash = top.find('/');

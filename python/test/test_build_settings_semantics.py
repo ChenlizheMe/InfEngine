@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from types import SimpleNamespace
 
 from Infernux.engine.ui.build_settings_panel import BuildSettingsPanel
@@ -181,6 +182,25 @@ def test_build_settings_scene_controls_expose_stable_semantic_ids(monkeypatch):
     assert ctx.semantic_values["build_settings.scene.1.row"] == "Assets/results.scene"
 
 
+def test_build_settings_does_not_turn_external_splash_deletion_into_user_edit():
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._splash_items = [
+        {
+            "type": "image",
+            "path": "C:/Missing/splash.png",
+            "duration": 3.0,
+        }
+    ]
+    panel._bind_project_settings_document = lambda: None
+    saves = []
+    panel._save = lambda: saves.append(True)
+
+    panel.on_enable()
+
+    assert panel._splash_items[0]["path"] == "C:/Missing/splash.png"
+    assert saves == []
+
+
 def test_build_settings_add_open_scene_uses_the_button_result(monkeypatch):
     import Infernux.engine.scene_manager as scene_manager
     import Infernux.engine.ui.build_settings_panel as module
@@ -267,7 +287,8 @@ def test_build_settings_disables_only_the_settings_body_while_building(monkeypat
     panel._building = True
     panel._build_message = "Building"
     panel._build_progress = 0.5
-    panel._cancel_build = lambda: None
+    panel._cancel_event = threading.Event()
+    panel._execute_build_command = lambda _command_id: True
     for name in (
         "_render_output_section",
         "_render_display_section",
@@ -291,13 +312,18 @@ def test_build_click_cannot_unbalance_the_disabled_stack_mid_frame():
     panel._build_output_dir = None
     panel._scenes = ["C:/RacingPilot/Assets/MainMenu.scene"]
     panel._output_dir = "C:/Builds/RacingPilot"
-    panel._start_build = lambda: setattr(panel, "_building", True)
-    panel._start_build_and_run = lambda: None
+    commands: list[str] = []
+    panel._execute_build_command = lambda command_id: (
+        commands.append(command_id)
+        or setattr(panel, "_building", command_id == "build.start")
+        or True
+    )
     ctx = _Context(button_results=[True, False])
 
     panel._render_build_controls(ctx)
 
     assert panel._building is True
+    assert commands == ["build.start"]
     assert ctx.disabled_transitions == []
     assert ctx.disabled_depth == 0
 
@@ -306,7 +332,8 @@ def test_build_status_actions_expose_stable_semantic_ids():
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
     panel._build_message = "Building"
     panel._build_progress = 0.5
-    panel._cancel_build = lambda: None
+    panel._cancel_event = threading.Event()
+    panel._execute_build_command = lambda _command_id: True
 
     panel._building = True
     panel._build_cancelled = False
@@ -359,3 +386,26 @@ def test_build_status_actions_expose_stable_semantic_ids():
     }
     assert succeeded.semantic_values["build_settings.status"] == "succeeded"
     assert succeeded.semantic_values["build_settings.result.output_dir"] == "C:/Builds/RacingPilot"
+
+
+def test_build_commands_gate_start_and_cancel_without_entering_undo():
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._building = False
+    panel._scenes = ["C:/RacingPilot/Assets/Main.scene"]
+    panel._output_dir = "C:/Builds/RacingPilot"
+    panel._cancel_event = threading.Event()
+    starts: list[bool] = []
+    panel._do_build = lambda *, run_after: starts.append(run_after) or True
+
+    assert panel.can_start_build()
+    assert panel.command_start_build(run_after=False)
+    assert panel.command_start_build(run_after=True)
+    assert starts == [False, True]
+
+    panel._building = True
+    assert not panel.can_start_build()
+    assert panel.can_cancel_build()
+    assert panel.command_cancel_build()
+    assert panel._cancel_event.is_set()
+    assert not panel.can_cancel_build()
+    assert not panel.command_cancel_build()

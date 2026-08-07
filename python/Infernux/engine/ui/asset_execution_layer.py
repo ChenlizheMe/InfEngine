@@ -59,10 +59,22 @@ class AssetExecutionLayer:
         AssetManager.reimport_asset(self.file_path)
 
     def move_asset_path(self, new_path: str) -> bool:
-        ok = AssetManager.move_asset(self.file_path, new_path)
-        if ok:
-            self.file_path = new_path
-        return ok
+        """Request one editor-owned, undoable workspace relocation.
+
+        Asset inspectors must not mutate the native catalog directly. A path
+        edit is the same user action as a Project-panel move and therefore goes
+        through the shared command/transaction pipeline.
+        """
+        from Infernux.engine.interaction import ProjectAssetCommandService
+
+        service = ProjectAssetCommandService.instance()
+        if service is None or not service.configured:
+            return False
+        try:
+            self.file_path = service.move(self.file_path, new_path)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Read-write resource execution (autosave)
@@ -78,10 +90,15 @@ class AssetExecutionLayer:
             debounce_sec=self._autosave_debounce_sec,
         )
 
-    def flush_rw_autosave(self):
+    def flush_rw_autosave(self, *, force: bool = False):
         if self.access_mode != AssetAccessMode.READ_WRITE_RESOURCE:
-            return
-        AssetManager.flush_scheduled_saves(self.file_path)
+            return False
+        return AssetManager.flush_scheduled_saves(self.file_path, force=force)
+
+    def cancel_rw_autosave(self) -> bool:
+        if self.access_mode != AssetAccessMode.READ_WRITE_RESOURCE:
+            return False
+        return AssetManager.cancel_scheduled_save(self.file_path)
 
 
 def get_asset_execution_layer(

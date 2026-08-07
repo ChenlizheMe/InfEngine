@@ -241,6 +241,60 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         if self.pipeline_params_json != serialized:
             self.pipeline_params_json = serialized
 
+    def set_pipeline_parameter(
+        self,
+        field_name: str,
+        value,
+        *,
+        pipeline_class_name: str | None = None,
+    ) -> None:
+        """Commit one pipeline parameter through the persistent stack document.
+
+        Pipeline instances are disposable runtime projections. Undo/redo and
+        editor automation call this API so a graph rebuild never leaves a
+        command pointing at a stale Python pipeline object.
+        """
+        from enum import Enum
+
+        selected_pipeline = (
+            self.pipeline_class_name
+            if pipeline_class_name is None
+            else str(pipeline_class_name or "")
+        )
+        key = self._pipeline_key(selected_pipeline)
+        if self._pipeline_param_store is None:
+            self._pipeline_param_store = {}
+
+        if selected_pipeline == self.pipeline_class_name:
+            pipeline = self.pipeline
+            from Infernux.components.serialized_field import get_serialized_fields
+
+            if field_name not in get_serialized_fields(type(pipeline)):
+                raise AttributeError(
+                    f"pipeline '{pipeline.name}' has no serialized parameter "
+                    f"'{field_name}'"
+                )
+            previous_deserializing = getattr(pipeline, "_inf_deserializing", False)
+            pipeline._inf_deserializing = True
+            try:
+                setattr(pipeline, field_name, value)
+            finally:
+                pipeline._inf_deserializing = previous_deserializing
+            self._save_current_pipeline_params()
+        else:
+            params = self._pipeline_param_store.setdefault(key, {})
+            params[field_name] = (
+                {"__enum_name__": value.name}
+                if isinstance(value, Enum)
+                else value
+            )
+
+        serialized = _json.dumps(self._pipeline_param_store)
+        if self.pipeline_params_json != serialized:
+            self.pipeline_params_json = serialized
+        if selected_pipeline == self.pipeline_class_name:
+            self.invalidate_graph()
+
     def _deserialize_fields_document(
         self, data: dict, *, _skip_on_after_deserialize: bool = False
     ) -> None:

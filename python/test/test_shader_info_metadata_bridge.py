@@ -145,13 +145,17 @@ def test_material_inspector_balances_style_scope_after_render_error(monkeypatch)
 def test_material_shader_object_field_forwards_stable_semantic_id(monkeypatch):
     calls = []
 
-    def render_object_field(*args, **kwargs):
+    def render_asset_reference_field(*args, **kwargs):
         calls.append((args, kwargs))
         return False
 
     from Infernux.engine.ui import inspector_components
 
-    monkeypatch.setattr(inspector_components, "render_object_field", render_object_field)
+    monkeypatch.setattr(
+        inspector_components,
+        "render_asset_reference_field",
+        render_asset_reference_field,
+    )
     inspector_material._render_obj_field(
         object(),
         "mat_frag",

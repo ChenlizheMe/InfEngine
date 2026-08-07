@@ -65,6 +65,19 @@ class _CompiledParticleArtifact:
     gpu_spirv: Mapping[str, Any]
 
 
+@dataclass(frozen=True)
+class PreparedParticleGraphArtifact:
+    """Side-effect-free graph compilation ready for durable publication."""
+
+    compiled: _CompiledParticleArtifact
+    source_path: str
+    source_key: str
+    path_identity: str
+    request_generation: int
+    artifact_path: str
+    source_text: str
+
+
 class ParticleArtifactRegistry:
     _artifacts: dict[str, ParticleArtifact] = {}
     _revision = 0
@@ -77,6 +90,119 @@ class ParticleArtifactRegistry:
             cls._artifacts.clear()
             cls._request_generation.clear()
             cls._revision = 0
+
+    @classmethod
+    def on_asset_mutation(cls, change) -> None:
+        from Infernux.engine.interaction import AssetMutationKind, iter_asset_mutations
+
+        for mutation in iter_asset_mutations(change):
+            if mutation.kind is not AssetMutationKind.MOVED:
+                continue
+            destination = mutation.destination_path
+            if not destination.lower().endswith((".particlegraph", ".particle.py")):
+                continue
+            cls.remap_source(
+                mutation.source_path,
+                destination,
+                guid=mutation.guid,
+            )
+
+    @classmethod
+    def remap_source(cls, source_path: str, destination_path: str, *, guid: str = "") -> None:
+        """Rekey live and shipped AOT lookup state after a GUID-stable move."""
+        source = resolved_path(source_path)
+        destination = resolved_path(destination_path)
+        source_key = cls._source_key(source)
+        destination_key = cls._source_key(destination)
+        guid_key = cls._source_key("", guid) if guid else ""
+        with cls._lock:
+            artifact = (
+                cls._artifacts.get(guid_key)
+                if guid_key
+                else None
+            ) or cls._artifacts.get(source_key)
+            cls._artifacts.pop(source_key, None)
+            generation = cls._request_generation.pop(source_key, None)
+            if generation is not None:
+                cls._request_generation[destination_key] = max(
+                    generation,
+                    cls._request_generation.get(destination_key, 0),
+                )
+            if artifact is not None:
+                next_key = guid_key or destination_key
+                moved = replace(artifact, source_key=next_key)
+                cls._register_unlocked(moved, next_key, destination_key)
+
+        from Infernux.core.document_store import write_document_text
+        from Infernux.engine.project_context import get_project_root
+
+        project_root = get_project_root()
+        if not project_root:
+            return
+        try:
+            old_hint = portable_path(relative_path(source, project_root, resolve=False))
+            new_hint = portable_path(
+                relative_path(destination, project_root, resolve=False)
+            )
+        except ValueError:
+            return
+        index_path = os.path.join(
+            project_root,
+            "Library",
+            "Artifacts",
+            "Particle",
+            PARTICLE_RUNTIME_INDEX_FILENAME,
+        )
+        try:
+            index = json.loads(Path(index_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if (
+            type(index) is not dict
+            or index.get("$schema") != PARTICLE_RUNTIME_INDEX_SCHEMA
+            or type(index.get("entries")) is not list
+        ):
+            return
+
+        old_identity = portable_path(old_hint).casefold()
+        changed = False
+        entries: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for value in index["entries"]:
+            if (
+                type(value) is not dict
+                or set(value) != {"guid", "path_hint", "stable_id"}
+                or any(type(value.get(key)) is not str for key in value)
+            ):
+                continue
+            entry = dict(value)
+            if (
+                (guid and entry["guid"] == guid)
+                or portable_path(entry["path_hint"]).casefold() == old_identity
+            ):
+                entry["path_hint"] = new_hint
+                if guid:
+                    entry["guid"] = guid
+                changed = True
+            identity = (entry["guid"], entry["stable_id"])
+            if identity in seen:
+                changed = True
+                continue
+            seen.add(identity)
+            entries.append(entry)
+        if not changed:
+            return
+        entries.sort(key=lambda entry: portable_path(entry["path_hint"]).casefold())
+        write_document_text(
+            index_path,
+            json.dumps(
+                {"$schema": PARTICLE_RUNTIME_INDEX_SCHEMA, "entries": entries},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+        )
 
     @classmethod
     def get(cls, path: str = "", *, guid: str = "") -> ParticleArtifact | None:
@@ -195,6 +321,22 @@ class ParticleArtifactRegistry:
         guid: str = "",
     ) -> ParticleArtifact:
         """Compile, atomically save, and publish one exact graph snapshot."""
+        prepared = cls.prepare_graph_asset(asset, path, guid=guid)
+        from Infernux.core.document_store import write_document_text
+
+        os.makedirs(os.path.dirname(prepared.source_path), exist_ok=True)
+        write_document_text(prepared.source_path, prepared.source_text)
+        return cls.publish_prepared_graph(prepared)
+
+    @classmethod
+    def prepare_graph_asset(
+        cls,
+        asset: ParticleGraphAsset,
+        path: str,
+        *,
+        guid: str = "",
+    ) -> PreparedParticleGraphArtifact:
+        """Compile one immutable graph snapshot without touching disk or runtime."""
         if not isinstance(asset, ParticleGraphAsset):
             raise ParticleArtifactError("particle graph must be a ParticleGraphAsset")
         source_path = resolved_path(path)
@@ -222,14 +364,31 @@ class ParticleArtifactRegistry:
             json.dumps(asset.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
             + "\n"
         )
-        return cls._publish_compiled(
+        return PreparedParticleGraphArtifact(
             compiled,
-            source_path=source_path,
-            key=key,
-            path_identity=path_identity,
-            ticket=ticket,
-            artifact_path=artifact_path,
-            source_text=source_text,
+            source_path,
+            key,
+            path_identity,
+            ticket,
+            artifact_path,
+            source_text,
+        )
+
+    @classmethod
+    def publish_prepared_graph(
+        cls,
+        prepared: PreparedParticleGraphArtifact,
+    ) -> ParticleArtifact:
+        """Publish a prepared graph after its source file reached durable storage."""
+        if not isinstance(prepared, PreparedParticleGraphArtifact):
+            raise TypeError("prepared particle graph artifact has an invalid type")
+        return cls._publish_compiled(
+            prepared.compiled,
+            source_path=prepared.source_path,
+            key=prepared.source_key,
+            path_identity=prepared.path_identity,
+            ticket=prepared.request_generation,
+            artifact_path=prepared.artifact_path,
         )
 
     @classmethod
@@ -863,4 +1022,5 @@ __all__ = [
     "ParticleArtifact",
     "ParticleArtifactError",
     "ParticleArtifactRegistry",
+    "PreparedParticleGraphArtifact",
 ]

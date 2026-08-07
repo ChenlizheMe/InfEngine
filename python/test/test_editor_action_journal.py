@@ -4,9 +4,16 @@ import pytest
 
 from Infernux.engine.interaction import (
     ActionOrigin,
+    ContextRestoreStatus,
+    DocumentKey,
+    DocumentKind,
+    DocumentLocator,
     EditorActionJournal,
     EditorContextSnapshot,
+    FocusSnapshot,
     SelectionSnapshot,
+    SelectionTarget,
+    WindowLocator,
 )
 
 
@@ -36,7 +43,38 @@ def test_editor_context_rejects_non_selection_payloads():
     assert EditorContextSnapshot().with_selection(snapshot).selection == snapshot
 
 
+def test_editor_context_selection_replacement_preserves_document_locator():
+    locator = DocumentLocator(
+        "particle-smoke",
+        DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, "Assets/Smoke.particlegraph"),
+        resource_path="Assets/Smoke.particlegraph",
+        title="Smoke",
+    )
+    window = WindowLocator("particle/Smoke", "particle_graph_editor")
+    scene = DocumentLocator(
+        "scene-main",
+        DocumentKey.resource(DocumentKind.SCENE, "Assets/Main.scene"),
+        resource_path="Assets/Main.scene",
+        title="Main",
+    )
+    context = EditorContextSnapshot(document=locator, window=window, scene=scene)
+
+    replaced = context.with_selection(SelectionSnapshot())
+
+    assert replaced.document == locator
+    assert replaced.window == window
+    assert replaced.scene == scene
+
+
 from Infernux.engine.undo import UndoCommand, UndoManager
+
+
+def test_undo_manager_exposes_only_the_global_journal_history():
+    manager = UndoManager(EditorActionJournal())
+
+    assert manager.action_journal is not None
+    assert not hasattr(manager, "_undo_stack")
+    assert not hasattr(manager, "_redo_stack")
 
 
 class ValueAction(UndoCommand):
@@ -119,18 +157,6 @@ def test_external_changes_never_enter_user_history():
     assert journal.entries == ()
 
 
-def test_merge_changes_dirty_signature_at_save_point():
-    journal = EditorActionJournal()
-    state = {"value": 0}
-    journal.record(ValueAction(state, 0, 1))
-    saved = journal.dirty_signature()
-
-    result = journal.record(ValueAction(state, 1, 2))
-
-    assert result.merged is True
-    assert journal.dirty_signature() != saved
-
-
 def test_undo_manager_restores_context_around_replay():
     manager = UndoManager()
     state = {"value": 0}
@@ -146,6 +172,146 @@ def test_undo_manager_restores_context_around_replay():
 
     assert state["value"] == 0
     assert [phase for _, phase in restored] == ["prepare_undo", "undo_complete"]
+
+
+def test_failed_prepare_restore_does_not_replay_or_move_cursor():
+    manager = UndoManager()
+    state = {"value": 0}
+    context = EditorContextSnapshot()
+    manager.set_context_hooks(
+        lambda: context,
+        lambda _snapshot, phase: phase != "prepare_undo",
+    )
+    manager.execute(ValueAction(state, 0, 4))
+    cursor = manager.action_journal.cursor
+
+    manager.undo()
+
+    assert state["value"] == 4
+    assert manager.action_journal.cursor == cursor
+    assert manager.can_undo
+
+
+def test_pending_prepare_waits_without_replaying_or_moving_cursor():
+    manager = UndoManager()
+    state = {"value": 0}
+    context = EditorContextSnapshot()
+    ready = {"value": False}
+    undo_calls = []
+
+    class CountingAction(ValueAction):
+        def undo(self):
+            undo_calls.append("undo")
+            super().undo()
+
+    def restore(_snapshot, phase):
+        if phase == "prepare_undo" and not ready["value"]:
+            return ContextRestoreStatus.PENDING
+        return ContextRestoreStatus.READY
+
+    manager.set_context_hooks(lambda: context, restore)
+    manager.execute(CountingAction(state, 0, 4))
+
+    manager.undo()
+    manager.undo()
+    manager.process_pending_replay()
+
+    assert state["value"] == 4
+    assert undo_calls == []
+    assert manager.action_journal.cursor == 1
+    assert manager.is_replay_pending
+
+    ready["value"] = True
+    assert manager.process_pending_replay() is ContextRestoreStatus.READY
+    assert state["value"] == 0
+    assert undo_calls == ["undo"]
+    assert manager.action_journal.cursor == 0
+    assert not manager.is_replay_pending
+
+
+def test_pending_final_restore_executes_action_once_then_commits_cursor():
+    manager = UndoManager()
+    state = {"value": 0}
+    context = EditorContextSnapshot()
+    final_ready = {"value": False}
+    undo_calls = []
+
+    class CountingAction(ValueAction):
+        def undo(self):
+            undo_calls.append("undo")
+            super().undo()
+
+    def restore(_snapshot, phase):
+        if phase == "undo_complete" and not final_ready["value"]:
+            return ContextRestoreStatus.PENDING
+        return ContextRestoreStatus.READY
+
+    manager.set_context_hooks(lambda: context, restore)
+    manager.execute(CountingAction(state, 0, 4))
+
+    manager.undo()
+    manager.process_pending_replay()
+
+    assert state["value"] == 0
+    assert undo_calls == ["undo"]
+    assert manager.action_journal.cursor == 1
+    assert manager.is_replay_pending
+
+    final_ready["value"] = True
+    manager.process_pending_replay()
+    assert undo_calls == ["undo"]
+    assert manager.action_journal.cursor == 0
+    assert not manager.is_replay_pending
+
+
+def test_failed_final_restore_compensates_data_and_keeps_cursor():
+    manager = UndoManager()
+    state = {"value": 0}
+    context = EditorContextSnapshot()
+    calls = []
+
+    class CountingAction(ValueAction):
+        def undo(self):
+            calls.append("undo")
+            super().undo()
+
+        def redo(self):
+            calls.append("redo")
+            super().redo()
+
+    def restore(_snapshot, phase):
+        if phase == "undo_complete":
+            return ContextRestoreStatus.FAILED
+        return ContextRestoreStatus.READY
+
+    manager.set_context_hooks(lambda: context, restore)
+    manager.execute(CountingAction(state, 0, 4))
+
+    manager.undo()
+
+    assert state["value"] == 4
+    assert calls == ["undo", "redo"]
+    assert manager.action_journal.cursor == 1
+    assert not manager.is_replay_pending
+
+
+def test_prepare_restore_exception_does_not_replay_or_move_cursor():
+    manager = UndoManager()
+    state = {"value": 0}
+    context = EditorContextSnapshot()
+
+    def fail_restore(_snapshot, phase):
+        if phase == "prepare_undo":
+            raise RuntimeError("document unavailable")
+
+    manager.set_context_hooks(lambda: context, fail_restore)
+    manager.execute(ValueAction(state, 0, 4))
+    cursor = manager.action_journal.cursor
+
+    manager.undo()
+
+    assert state["value"] == 4
+    assert manager.action_journal.cursor == cursor
 
 
 def test_undo_manager_executes_external_change_without_recording_it():
@@ -227,3 +393,207 @@ def test_editor_transaction_records_one_action():
     manager.undo()
     assert state_a["value"] == 0
     assert state_b["value"] == 0
+
+
+def test_user_action_groups_multiple_commands_into_one_global_step():
+    manager = UndoManager()
+    state_a = {"value": 0}
+    state_b = {"value": 0}
+
+    with manager.user_action("Batch edit"):
+        manager.execute(ValueAction(state_a, 0, 1))
+        manager.execute(ValueAction(state_b, 0, 2))
+
+    assert len(manager.action_journal.entries) == 1
+    assert manager.undo_description == "Batch edit"
+    manager.undo()
+    assert state_a["value"] == 0
+    assert state_b["value"] == 0
+    assert not manager.can_undo
+
+
+def test_context_only_user_action_is_one_replayable_history_entry():
+    manager = UndoManager()
+    before = EditorContextSnapshot(
+        FocusSnapshot(active_panel_id="scene_view"),
+        SelectionSnapshot.create(
+            (SelectionTarget.scene_object(7),),
+            owner_id="scene_view",
+        ),
+    )
+    after = EditorContextSnapshot(
+        FocusSnapshot(active_panel_id="project"),
+        SelectionSnapshot.create(
+            (SelectionTarget.asset("Assets/Test.mat"),),
+            owner_id="project",
+        ),
+    )
+    current = {"context": before}
+
+    phases = []
+
+    def restore(snapshot, phase):
+        phases.append(phase)
+        current["context"] = snapshot
+
+    manager.set_context_hooks(lambda: current["context"], restore)
+    with manager.user_action("Select Project Asset"):
+        current["context"] = after
+
+    assert len(manager.action_journal.entries) == 1
+    assert manager.undo_description == "Select Project Asset"
+    manager.undo()
+    assert current["context"] == before
+    manager.redo()
+    assert current["context"] == after
+    assert phases == [
+        "prepare_undo",
+        "undo_complete",
+        "prepare_redo",
+        "redo_complete",
+    ]
+
+
+def test_user_action_uses_outer_context_for_data_command():
+    manager = UndoManager()
+    before = EditorContextSnapshot(FocusSnapshot(active_panel_id="hierarchy"))
+    after = EditorContextSnapshot(FocusSnapshot(active_panel_id="inspector"))
+    current = {"context": before}
+    state = {"value": 0}
+    manager.set_context_hooks(
+        lambda: current["context"],
+        lambda snapshot, _phase: current.__setitem__("context", snapshot),
+    )
+
+    with manager.user_action("Edit and focus"):
+        current["context"] = after
+        manager.execute(ValueAction(state, 0, 1))
+
+    entry = manager.action_journal.peek_undo()
+    assert entry.before_context == before
+    assert entry.after_context == after
+    assert len(manager.action_journal.entries) == 1
+
+
+def test_focus_transition_is_never_grouped_with_following_data_command():
+    from Infernux.engine.undo import GlobalFocusCommand
+
+    manager = UndoManager()
+    hierarchy = EditorContextSnapshot(FocusSnapshot(active_panel_id="hierarchy"))
+    graph = EditorContextSnapshot(
+        FocusSnapshot(
+            active_panel_id="particle_graph_editor",
+            active_view_id="particle_graph_editor/Smoke",
+        )
+    )
+    current = {"context": hierarchy}
+    state = {"value": 0}
+    manager.set_context_hooks(
+        lambda: current["context"],
+        lambda snapshot, _phase: current.__setitem__("context", snapshot),
+    )
+
+    with manager.user_action("Remove Particle Graph parameter"):
+        current["context"] = graph
+        manager.record(
+            GlobalFocusCommand(hierarchy.focus, graph.focus),
+            before_context=hierarchy,
+            after_context=graph,
+        )
+        manager.execute(ValueAction(state, 0, 1))
+
+    entries = manager.action_journal.entries
+    assert len(entries) == 2
+    assert isinstance(entries[0].action, GlobalFocusCommand)
+    assert isinstance(entries[1].action, ValueAction)
+
+    manager.undo()
+    assert state["value"] == 0
+    assert current["context"].focus == graph.focus
+    manager.undo()
+    assert current["context"].focus == hierarchy.focus
+
+
+def test_scene_transform_undo_precedes_workspace_and_selection_restore():
+    from Infernux.engine.undo import GlobalFocusCommand, GlobalSelectionCommand
+
+    manager = UndoManager()
+    empty = SelectionSnapshot()
+    selected = SelectionSnapshot.create(
+        (SelectionTarget.scene_object(42),),
+        owner_id="hierarchy",
+    )
+    graph_focus = FocusSnapshot(
+        active_panel_id="particle_graph_editor",
+        active_view_id="particle_graph_editor",
+    )
+    scene_focus = FocusSnapshot(
+        active_panel_id="scene_view",
+        active_view_id="scene_view",
+    )
+    graph_empty = EditorContextSnapshot(graph_focus, empty)
+    graph_selected = EditorContextSnapshot(graph_focus, selected)
+    scene_selected = EditorContextSnapshot(scene_focus, selected)
+    current = {"context": graph_empty}
+    transform = {"value": 0}
+    manager.set_context_hooks(
+        lambda: current["context"],
+        lambda snapshot, _phase: current.__setitem__("context", snapshot),
+    )
+
+    manager.record(
+        GlobalSelectionCommand(empty, selected),
+        before_context=graph_empty,
+        after_context=graph_selected,
+    )
+    current["context"] = graph_selected
+    manager.record(
+        GlobalFocusCommand(graph_focus, scene_focus),
+        before_context=graph_selected,
+        after_context=scene_selected,
+    )
+    current["context"] = scene_selected
+    transform["value"] = 3
+    transform_command = ValueAction(transform, 0, 3)
+    transform_command.before_selection_snapshot = selected
+    transform_command.after_selection_snapshot = selected
+    manager.record(
+        transform_command,
+        before_context=scene_selected,
+        after_context=scene_selected,
+    )
+
+    assert [entry.action.description for entry in manager.action_journal.entries] == [
+        "Change Selection",
+        "Change Editor Focus",
+        "Set Value",
+    ]
+
+    manager.undo()
+    assert transform["value"] == 0
+    assert current["context"] == scene_selected
+    manager.undo()
+    assert current["context"] == graph_selected
+    manager.undo()
+    assert current["context"] == graph_empty
+
+
+def test_action_origin_scope_is_inherited_by_nested_editor_commands():
+    from Infernux.engine.interaction import action_origin_scope, current_action_origin
+
+    manager = UndoManager()
+    state = {"value": 0}
+
+    assert current_action_origin() is ActionOrigin.USER
+    with action_origin_scope(ActionOrigin.AUTOMATION):
+        assert current_action_origin() is ActionOrigin.AUTOMATION
+        with manager.user_action("Automation batch"):
+            manager.execute(ValueAction(state, 0, 1, "Automation One"))
+            manager.execute(ValueAction(state, 1, 2, "Automation Two"))
+
+    assert current_action_origin() is ActionOrigin.USER
+    assert state["value"] == 2
+    assert all(
+        entry.origin is ActionOrigin.AUTOMATION
+        for entry in manager.action_journal.applied_entries()
+    )

@@ -54,9 +54,17 @@ void RegisterResourceBindings(py::module_ &m)
     py::register_exception<DocumentWriteSuperseded>(m, "DocumentWriteSuperseded");
     py::register_exception<DocumentWriteCancelled>(m, "DocumentWriteCancelled");
 
+    py::class_<DocumentFileState>(m, "DocumentFileState")
+        .def(py::init<>())
+        .def_readwrite("exists", &DocumentFileState::exists)
+        .def_readwrite("size", &DocumentFileState::size)
+        .def_readwrite("modified_ns", &DocumentFileState::modifiedNs)
+        .def_readwrite("content_hash", &DocumentFileState::contentHash);
+
     py::class_<DocumentWriteOptions>(m, "DocumentWriteOptions")
         .def(py::init<>())
-        .def_readwrite("create_backup", &DocumentWriteOptions::createBackup);
+        .def_readwrite("create_backup", &DocumentWriteOptions::createBackup)
+        .def_readwrite("expected_file_state", &DocumentWriteOptions::expectedFileState);
 
     py::class_<DocumentPathMetrics>(m, "DocumentPathMetrics")
         .def_readonly("latest_submitted_generation", &DocumentPathMetrics::latestSubmittedGeneration)
@@ -70,6 +78,8 @@ void RegisterResourceBindings(py::module_ &m)
         .def_property_readonly("generation", &DocumentWriteTicket::GetGeneration)
         .def_property_readonly("is_complete", &DocumentWriteTicket::IsComplete)
         .def_property_readonly("status", &DocumentWriteTicket::GetStatusName)
+        .def_property_readonly("error", &DocumentWriteTicket::GetError)
+        .def_property_readonly("committed_file_state", &DocumentWriteTicket::GetCommittedFileState)
         .def("wait", &DocumentWriteTicket::Wait, py::call_guard<py::gil_scoped_release>());
 
     py::class_<DocumentStore>(m, "NativeDocumentStore")
@@ -80,6 +90,7 @@ void RegisterResourceBindings(py::module_ &m)
              py::arg("options") = DocumentWriteOptions{}, py::call_guard<py::gil_scoped_release>())
         .def("cancel", &DocumentStore::Cancel, py::arg("ticket"))
         .def("get_metrics", &DocumentStore::GetMetrics, py::arg("path"))
+        .def("capture_file_state", &DocumentStore::CaptureFileState, py::arg("path"))
         .def("flush_all", py::overload_cast<>(&DocumentStore::Flush), py::call_guard<py::gil_scoped_release>())
         .def("flush_path", py::overload_cast<const std::string &>(&DocumentStore::Flush), py::arg("path"),
              py::call_guard<py::gil_scoped_release>())

@@ -107,6 +107,15 @@ bool ExtractDescriptorRawFromValidationMessage(const char *message, uint64_t &ou
     outRaw = static_cast<uint64_t>(parsed);
     return true;
 }
+
+bool IsIntentionalSupersetVertexInterfaceWarning(const VkDebugUtilsMessengerCallbackDataEXT *callbackData)
+{
+    if (callbackData == nullptr || callbackData->pMessage == nullptr)
+        return false;
+    const char *message = callbackData->pMessage;
+    return std::strstr(message, "VK_SHADER_STAGE_VERTEX_BIT declared to output location") != nullptr &&
+           std::strstr(message, "but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT") != nullptr;
+}
 } // namespace
 
 // ============================================================================
@@ -169,6 +178,11 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityF
             }
         }
     } else if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
+        // Geometry programs intentionally share a stable superset vertex ABI.
+        // Unlit/specialized fragments need not consume every varying; Vulkan
+        // permits that interface and the driver discards unused outputs.
+        if (IsIntentionalSupersetVertexInterfaceWarning(pCallbackData))
+            return VK_FALSE;
         INXLOG_WARN("Vulkan Validation Warning: ", pCallbackData->pMessage);
     } else if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) {
         INXLOG_INFO("Vulkan Validation Info: ", pCallbackData->pMessage);

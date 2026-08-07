@@ -1249,6 +1249,14 @@ PYBIND11_MODULE(_Infernux, m)
                                    result["scene_update_ms"] = snapshot.sceneUpdateMs;
                                    result["gui_build_ms"] = snapshot.guiBuildMs;
                                    result["prepare_frame_ms"] = snapshot.prepareFrameMs;
+                                   result["gui_frame"] = snapshot.guiFrame;
+                                   result["gui_frame_requested"] = snapshot.guiFrameRequested;
+                                   result["gui_frame_interval_ms"] = snapshot.guiFrameIntervalMs;
+                                   result["gui_frame_until_due_ms"] = snapshot.guiFrameUntilDueMs;
+                                   result["gui_frame_consume_count"] = snapshot.guiFrameConsumeCount;
+                                   result["gui_frame_approved_count"] = snapshot.guiFrameApprovedCount;
+                                   result["gui_frame_forced_count"] = snapshot.guiFrameForcedCount;
+                                   result["gui_frame_request_count"] = snapshot.guiFrameRequestCount;
                                    result["ui_panel_times_ms"] = snapshot.guiPanelTimesMs;
                                    result["ui_panel_sub_times_ms"] = snapshot.guiPanelSubTimesMs;
                                    return result;
@@ -1441,7 +1449,8 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("name"))
         .def("select_docked_window", &Infernux::SelectDockedWindow,
-             "Select and focus a docked ImGui window by its stable window_id", py::arg("window_id"))
+             "Select and focus a docked ImGui window by its stable window_id",
+             py::arg("window_id"), py::arg("allow_during_modal") = false)
         .def("reset_imgui_layout", &Infernux::ResetImGuiLayout, "Clear ImGui docking layout and delete saved ini")
         .def("exit", &Infernux::Exit, "Exit the Infernux application")
         .def("cleanup", &Infernux::Cleanup, "Destroy renderer and release all GPU resources")
@@ -1698,8 +1707,6 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("resource_key"), py::arg("image_data"), py::arg("stamp"), py::arg("nearest") = false,
             "Schedule texture preview from an encoded in-memory image buffer (JPEG/PNG/etc.)")
-        .def("schedule_material_save_snapshot_task", &Infernux::ScheduleMaterialSaveSnapshotTask, py::arg("key"),
-             py::arg("file_path"), py::arg("json_snapshot"), "Schedule async material save task from JSON snapshot")
         // ========================================================================
         // Editor Camera (property-based object access — preferred API)
         // ========================================================================

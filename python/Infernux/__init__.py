@@ -140,6 +140,7 @@ __all__ = [
     "Shader",
     "AudioClip",
     "AnimationClip",
+    "AnimationFrame",
     "AnimStateMachine",
     "AnimState",
     "AnimTransition",

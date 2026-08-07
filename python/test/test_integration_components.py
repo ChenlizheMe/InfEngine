@@ -1340,6 +1340,11 @@ class TestColliders:
     def test_physic_material_inspector_edit_is_undoable_and_republishes(self):
         from types import SimpleNamespace
         from Infernux.core.physic_material import PhysicMaterial
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            DocumentRegistry,
+            ensure_editable_resource_document,
+        )
         from Infernux.engine.ui.asset_details_renderer import _apply_physic_material_edit
         from Infernux.engine.undo import UndoManager
 
@@ -1347,14 +1352,32 @@ class TestColliders:
             def __init__(self):
                 self.published = []
 
+            def refresh_binding(self, _category, _file_path):
+                pass
+
             def schedule_rw_save(self, resource):
                 self.published.append(resource.serialize_document())
 
         previous_manager = UndoManager.instance()
+        previous_registry = DocumentRegistry._instance
+        DocumentRegistry()
         manager = UndoManager()
         material = PhysicMaterial()
         execution_layer = _ExecutionLayer()
-        state = SimpleNamespace(settings=material, exec_layer=execution_layer)
+        controller = ensure_editable_resource_document(
+            category="physic_material",
+            document_kind=DocumentKind.PHYSIC_MATERIAL,
+            file_path="Assets/Test.physicmat",
+            resource=material,
+            guid="physic-material-guid",
+            exec_layer=execution_layer,
+        )
+        state = SimpleNamespace(
+            settings=material,
+            exec_layer=execution_layer,
+            resource_controller=controller,
+            document_id=controller.document_id,
+        )
         try:
             assert _apply_physic_material_edit(state, "friction", 0.8)
             assert material.friction == pytest.approx(0.8)
@@ -1367,6 +1390,7 @@ class TestColliders:
             assert [entry["friction"] for entry in execution_layer.published] == pytest.approx([0.8, 0.4, 0.8])
         finally:
             UndoManager._instance = previous_manager
+            DocumentRegistry._instance = previous_registry
 
     def test_collider_rejects_invalid_material_combine(self, scene):
         material = InxPhysicMaterial()
@@ -1520,11 +1544,11 @@ class TestColliders:
         assert AssetManager.delete_asset(str(asset_path), database=asset_database)
         asset_path.unlink(missing_ok=True)
         assert collider.physic_material.resolve() is None
-        assert collider.physic_material.guid == ""
-        assert collider.physic_material_guid == ""
+        assert collider.physic_material.guid == guid
+        assert collider.physic_material_guid == guid
         assert restored.physic_material.resolve() is None
-        assert restored.physic_material.guid == ""
-        assert restored.physic_material_guid == ""
+        assert restored.physic_material.guid == guid
+        assert restored.physic_material_guid == guid
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Camera
@@ -1816,23 +1840,47 @@ class TestComponentSerialization:
         assert renderer.deserialize_document(invalid) is False
         assert renderer.serialize_document() == original
 
-    @pytest.mark.parametrize("resource_kind", ["mesh", "material", "audio"])
-    def test_missing_native_resource_fails_without_component_mutation(self, scene, resource_kind):
+    def test_missing_audio_resource_preserves_its_guid(self, scene):
+        owner = scene.create_game_object("MissingAudioResource")
+        component = owner.add_component("AudioSource")
+        document = component.serialize_document()
+        document["tracks"][0]["clip_guid"] = "missing-audio-resource-guid"
+
+        assert component.deserialize_document(document) is True
+        assert component.serialize_document()["tracks"][0]["clip_guid"] == (
+            "missing-audio-resource-guid"
+        )
+        assert component.get_track_clip(0) is None
+
+    @pytest.mark.parametrize("resource_kind", ["mesh", "material"])
+    def test_missing_renderer_resource_preserves_its_guid(self, scene, resource_kind):
         owner = scene.create_game_object(f"Missing{resource_kind.title()}Resource")
-        component_type = "AudioSource" if resource_kind == "audio" else "MeshRenderer"
-        component = owner.add_component(component_type)
-        original = component.serialize_document()
-        invalid = json.loads(json.dumps(original))
+        renderer = owner.add_component("MeshRenderer")
+        document = renderer.serialize_document()
         missing_guid = f"missing-{resource_kind}-resource-guid"
         if resource_kind == "mesh":
-            invalid["meshAssetGuid"] = missing_guid
-        elif resource_kind == "material":
-            invalid["materials"] = [missing_guid]
+            document["meshAssetGuid"] = missing_guid
         else:
-            invalid["tracks"][0]["clip_guid"] = missing_guid
+            document["materials"] = [missing_guid]
 
-        assert component.deserialize_document(invalid) is False
-        assert component.serialize_document() == original
+        assert renderer.deserialize_document(document) is True
+        restored = renderer.serialize_document()
+        if resource_kind == "mesh":
+            assert restored["meshAssetGuid"] == missing_guid
+        else:
+            assert restored["materials"] == [missing_guid]
+
+    def test_missing_physic_material_preserves_its_guid(self, scene):
+        owner = scene.create_game_object("MissingPhysicMaterial")
+        collider = owner.add_component("BoxCollider")
+        document = collider.serialize_document()
+        document["physic_material_guid"] = "missing-physic-material-guid"
+
+        assert collider.deserialize_document(document) is True
+        assert (
+            collider.serialize_document()["physic_material_guid"]
+            == "missing-physic-material-guid"
+        )
 
     @pytest.mark.parametrize(
         "component_type",

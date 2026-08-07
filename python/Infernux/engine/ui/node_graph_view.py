@@ -14,7 +14,6 @@ Handles:
 - Right-click context menu
 - Minimap in bottom-right corner
 - Drop targets on the canvas (accept any ImGui payload type; host ``on_canvas_drop`` filters)
-- Keyboard delete for selected nodes / links
 - Callbacks for graph mutations
 """
 
@@ -33,7 +32,14 @@ from Infernux.core.node_graph import (
     PinDef,
     PinKind,
 )
+from Infernux.engine.interaction.context_menus import (
+    ContextMenuBuilder,
+    ContextMenuCommand,
+    ResolvedContextMenuCommand,
+)
+from Infernux.engine.interaction.search import SearchQueryModel
 from Infernux.engine.i18n import t
+from Infernux.engine.ui.imgui_keys import KEY_LEFT_CTRL, KEY_RIGHT_CTRL
 from Infernux.engine.ui.inspector_utils import preserve_ui_float_precision
 from Infernux.engine.ui.theme import ImGuiStyleVar, ImGuiWindowFlags, Theme
 
@@ -87,6 +93,24 @@ _LINK_SELECTED_COLOR = Theme.APPLY_BUTTON
 _LINK_HOVER_COLOR = (0.55, 0.55, 0.58, 1.0)
 _PENDING_LINK_COLOR = (0.65, 0.65, 0.68, 0.5)
 
+_NODE_GRAPH_EDIT_CONTEXT_MENU = (
+    ContextMenuCommand("edit.copy", semantic_id="context.edit.copy"),
+    ContextMenuCommand("edit.cut", semantic_id="context.edit.cut"),
+    ContextMenuCommand("edit.paste", semantic_id="context.edit.paste"),
+    ContextMenuCommand("edit.duplicate", semantic_id="context.edit.duplicate"),
+    ContextMenuCommand("edit.delete", semantic_id="context.edit.delete"),
+    ContextMenuCommand(
+        "graph.center_view",
+        separator_before=True,
+        semantic_id="context.center_view",
+    ),
+    ContextMenuCommand(
+        "graph.reset_zoom",
+        semantic_id="context.reset_zoom",
+    ),
+)
+_NODE_GRAPH_CONTEXT_MENU_BUILDER = ContextMenuBuilder()
+
 _TEXT_COLOR = (0.90, 0.91, 0.92, 1.0)
 _TEXT_DIM_COLOR = (0.52, 0.53, 0.55, 1.0)
 _TEXT_BODY_COLOR = (0.62, 0.63, 0.65, 1.0)
@@ -121,12 +145,6 @@ _MINIMAP_VIEW = (
 )
 
 # ImGuiKey constants (see imgui_keys.py)
-_KEY_DELETE = 522
-_KEY_C = 548
-_KEY_V = 567
-_IMGUI_MOD_CTRL = 1 << 12
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Bezier helper
 # ═══════════════════════════════════════════════════════════════════════════
@@ -237,6 +255,8 @@ class NodeGraphView:
 
         # Canvas panning
         self._panning: bool = False
+        self._pan_gesture_before: Optional[Tuple[float, float, float]] = None
+        self._zoom_gesture_before: Optional[Tuple[float, float, float]] = None
 
         # Canvas origin (screen coords)
         self._origin_x: float = 0.0
@@ -271,12 +291,15 @@ class NodeGraphView:
             Callable[[NodeCreationEntry, dict], object]
         ] = None
         self.on_node_creation_requested: Optional[Callable[[dict], None]] = None
+        self.on_node_creation_command: Optional[
+            Callable[[dict], bool]
+        ] = None
         # Pin drag released over empty canvas: (src_node, src_pin, src_kind, graph_x, graph_y).
         # Hosts can use this to pop a "create node and auto-connect" search menu.
         self.on_link_dropped_empty: Optional[Callable[[str, str, "PinKind", float, float], None]] = None
         self.on_node_selected: Optional[Callable[[str], None]] = None
         self.on_selection_changed: Optional[
-            Callable[[Tuple[str, ...], str, bool], None]
+            Callable[[Tuple[str, ...], str, bool], bool]
         ] = None
         self.on_node_data_changed: Optional[Callable[[str, str, object, object], None]] = None
         # Called immediately before user-driven selection changes (click), so editors can snapshot undo.
@@ -290,9 +313,16 @@ class NodeGraphView:
         self.on_node_header_color_changed: Optional[
             Callable[[str, Tuple[float, float, float, float], Tuple[float, float, float, float], bool], None]
         ] = None
-        self.on_copy: Optional[Callable[[], None]] = None
-        self.on_paste: Optional[Callable[[], None]] = None
-
+        self.on_view_gesture_committed: Optional[
+            Callable[
+                [
+                    str,
+                    Tuple[float, float, float],
+                    Tuple[float, float, float],
+                ],
+                None,
+            ]
+        ] = None
         self._header_color_popup_node_uid: str = ""
         self._open_header_color_popup_next_frame: bool = False
         self._header_color_popup_initial_color: Optional[Tuple[float, float, float, float]] = None
@@ -301,7 +331,7 @@ class NodeGraphView:
         # Shared Blender-style node creation palette.  It serves both empty
         # canvas context actions and a connection dropped onto empty space.
         self._node_create_request: Optional[dict] = None
-        self._node_create_search: str = ""
+        self._node_create_search = SearchQueryModel()
         self._node_create_focus: bool = False
         self._open_node_create_popup_next_frame: bool = False
         self._inline_control_hovered: bool = False
@@ -316,9 +346,12 @@ class NodeGraphView:
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def reset_interaction_state(self) -> None:
-        """Drop selection and transient gestures when the host replaces the graph."""
-        self.set_selection((), "", notify=False)
+    def reset_interaction_state(self, *, clear_selection: bool = True) -> None:
+        """Cancel transient gestures, optionally retaining projected selection."""
+        self._commit_view_gesture("pan", self._pan_gesture_before)
+        self._commit_view_gesture("zoom", self._zoom_gesture_before)
+        if clear_selection:
+            self.project_selection((), "")
         self._dragging_pin = False
         self._drag_src_node = ""
         self._drag_src_pin = ""
@@ -326,6 +359,8 @@ class NodeGraphView:
         self._dragging_node = False
         self._drag_node_id = ""
         self._panning = False
+        self._pan_gesture_before = None
+        self._zoom_gesture_before = None
         self._layouts.clear()
         self._hovered_link = ""
         self._hovered_pin = ("", "", PinKind.OUTPUT)
@@ -334,22 +369,65 @@ class NodeGraphView:
         self._header_color_popup_initial_color = None
         self._header_color_popup_changed = False
         self._node_create_request = None
-        self._node_create_search = ""
+        self._node_create_search.clear()
         self._node_create_focus = False
         self._open_node_create_popup_next_frame = False
         self._inline_control_hovered = False
         self._inline_control_active = False
         self._canvas_window_hovered = False
 
-    def set_selection(
+    def _view_state(self) -> Tuple[float, float, float]:
+        return (float(self.pan_x), float(self.pan_y), float(self.zoom))
+
+    def _commit_view_gesture(
+        self,
+        kind: str,
+        before: Optional[Tuple[float, float, float]],
+    ) -> None:
+        if before is None:
+            return
+        after = self._view_state()
+        if before != after and self.on_view_gesture_committed is not None:
+            self.on_view_gesture_committed(kind, before, after)
+
+    def cancel_node_drag(self) -> bool:
+        """Stop an active node drag without publishing a completed gesture."""
+        if not self._dragging_node:
+            return False
+        self._dragging_node = False
+        self._drag_node_id = ""
+        return True
+
+    def bind_graph(
+        self,
+        graph: Optional[NodeGraph],
+        *,
+        preserve_selection: bool = True,
+    ) -> None:
+        """Replace the model while preserving stable selections that still exist."""
+        selected_nodes = tuple(self.selected_nodes) if preserve_selection else ()
+        selected_link = self.selected_link if preserve_selection else ""
+        self.graph = graph
+        self.reset_interaction_state(clear_selection=not preserve_selection)
+        if graph is None or not preserve_selection:
+            return
+        selected_nodes = tuple(
+            stable_id
+            for stable_id in selected_nodes
+            if graph.find_node(stable_id) is not None
+        )
+        if selected_link and graph.find_link(selected_link) is None:
+            selected_link = ""
+        if selected_link:
+            selected_nodes = ()
+        self.project_selection(selected_nodes, selected_link)
+
+    def project_selection(
         self,
         node_ids=(),
         link_id: str = "",
-        *,
-        notify: bool = True,
-        record_history: bool = True,
     ) -> bool:
-        """Set projected selection while leaving authority to the host service."""
+        """Apply an authoritative selection projection from the host service."""
         nodes = tuple(dict.fromkeys(str(uid) for uid in node_ids if str(uid)))
         link = str(link_id or "")
         if nodes and link:
@@ -358,9 +436,46 @@ class NodeGraphView:
             return False
         self.selected_nodes = list(nodes)
         self.selected_link = link
-        if notify and self.on_selection_changed is not None:
-            self.on_selection_changed(nodes, link, bool(record_history))
         return True
+
+    def request_selection(
+        self,
+        node_ids=(),
+        link_id: str = "",
+        *,
+        record_history: bool = True,
+    ) -> bool:
+        """Publish a user selection intent without mutating the local projection."""
+        nodes = tuple(dict.fromkeys(str(uid) for uid in node_ids if str(uid)))
+        link = str(link_id or "")
+        if nodes and link:
+            raise ValueError("node graph selection cannot contain nodes and a link")
+        if tuple(self.selected_nodes) == nodes and self.selected_link == link:
+            return False
+        callback = self.on_selection_changed
+        if callback is None:
+            return False
+        return bool(callback(nodes, link, bool(record_history)))
+
+    @staticmethod
+    def _selection_after_node_click(
+        selected_nodes: List[str],
+        node_uid: str,
+        *,
+        additive: bool,
+    ) -> tuple[str, ...]:
+        """Resolve the shared graph selection semantics for one node click."""
+        current = list(dict.fromkeys(str(uid) for uid in selected_nodes if uid))
+        node_uid = str(node_uid or "")
+        if not node_uid:
+            return tuple(current)
+        if not additive:
+            return (node_uid,)
+        if node_uid in current:
+            current.remove(node_uid)
+        else:
+            current.append(node_uid)
+        return tuple(current)
 
     def register_body_renderer(self, type_id: str, renderer: Callable) -> None:
         self._body_renderers[type_id] = renderer
@@ -792,26 +907,27 @@ class NodeGraphView:
             label = str(layout.node.data.get("label", layout.typedef.label))
             center_x = layout.sx + layout.w * 0.5
             center_y = layout.sy + layout.h * 0.5
-            center_enabled = self._node_drag_point_hits(uid, center_x, center_y)
+            interaction_point = self._find_node_drag_semantic_point(uid, layout)
+            interaction_x, interaction_y = interaction_point or (center_x, center_y)
+            interaction_size = 12.0 * max(1.0, self.zoom)
             self._record_semantic_rect(
                 ctx,
                 "node_graph_node",
                 label,
-                center_enabled,
+                interaction_point is not None,
                 f"node.{uid}",
-                layout.sx,
-                layout.sy,
-                layout.w,
-                layout.h,
+                interaction_x - interaction_size * 0.5,
+                interaction_y - interaction_size * 0.5,
+                interaction_size,
+                interaction_size,
             )
-            drag_point = self._find_node_drag_semantic_point(uid, layout)
-            drag_x, drag_y = drag_point or (center_x, center_y)
+            drag_x, drag_y = interaction_x, interaction_y
             handle_size = 8.0 * max(1.0, self.zoom)
             self._record_semantic_rect(
                 ctx,
                 "node_graph_node_drag_handle",
                 f"{label} Drag",
-                drag_point is not None,
+                interaction_point is not None,
                 f"node.{uid}.drag",
                 drag_x - handle_size * 0.5,
                 drag_y - handle_size * 0.5,
@@ -830,8 +946,13 @@ class NodeGraphView:
 
     def _find_node_drag_semantic_point(self, uid: str, layout: _NodeLayout) -> Optional[Tuple[float, float]]:
         sx, sy, w, h = layout.sx, layout.sy, layout.w, layout.h
+        header_h = self._header_height(layout.typedef) * self.zoom
         candidates = [
-            (sx + w * 0.5, sy + h * 0.5),
+            # Header text is draw-list content rather than an ImGui widget, so
+            # it is the canonical point for both selection and drag semantics.
+            # Body centres commonly contain inline numeric controls.
+            (sx + w * 0.5, sy + header_h * 0.5),
+            (sx + w * 0.25, sy + header_h * 0.5),
             (sx + 6.0 * self.zoom, sy + h * 0.65),
             (sx + w - 6.0 * self.zoom, sy + h * 0.65),
             (sx + w * 0.25, sy + h * 0.75),
@@ -1038,8 +1159,6 @@ class NodeGraphView:
             return
         if self.on_node_data_changed is not None:
             self.on_node_data_changed(node.uid, field_id, previous, copy.deepcopy(value))
-        else:
-            node.data[field_id] = copy.deepcopy(value)
 
     def _draw_inline_fields(self, ctx) -> None:
         if self.graph is None:
@@ -1644,8 +1763,6 @@ class NodeGraphView:
                     self._header_color_popup_changed = True
                     if self.on_node_header_color_changed is not None:
                         self.on_node_header_color_changed(uid, old_color, new_color, False)
-                    else:
-                        node.data["header_color"] = new_color
             ctx.end_popup()
         else:
             if self._header_color_popup_changed:
@@ -1753,6 +1870,9 @@ class NodeGraphView:
 
         # Node dragging (divide delta by zoom)
         if self._dragging_node:
+            if self.on_node_drag_start is None or self.on_node_drag_end is None:
+                self.cancel_node_drag()
+                return
             if ctx.is_mouse_button_down(0):
                 dx = ctx.get_mouse_drag_delta_x(0)
                 dy = ctx.get_mouse_drag_delta_y(0)
@@ -1778,6 +1898,9 @@ class NodeGraphView:
                 ctx.reset_mouse_drag_delta(2)
             else:
                 self._panning = False
+                before = self._pan_gesture_before
+                self._pan_gesture_before = None
+                self._commit_view_gesture("pan", before)
             return
 
         # Zoom (scroll wheel, centred on cursor). Handled before the inline
@@ -1786,47 +1909,36 @@ class NodeGraphView:
         if self._canvas_window_hovered and not self._inline_control_active:
             wheel = ctx.get_mouse_wheel_delta()
             if abs(wheel) > 0.01:
+                if self._zoom_gesture_before is None:
+                    self._zoom_gesture_before = self._view_state()
                 old_zoom = self.zoom
                 self.zoom = max(_ZOOM_MIN, min(_ZOOM_MAX, self.zoom + wheel * _ZOOM_SPEED))
                 ratio = self.zoom / old_zoom
                 self.pan_x = mx - self._origin_x - (mx - self._origin_x - self.pan_x) * ratio
                 self.pan_y = my - self._origin_y - (my - self._origin_y - self.pan_y) * ratio
+            elif self._zoom_gesture_before is not None:
+                before = self._zoom_gesture_before
+                self._zoom_gesture_before = None
+                self._commit_view_gesture("zoom", before)
+        elif self._zoom_gesture_before is not None:
+            before = self._zoom_gesture_before
+            self._zoom_gesture_before = None
+            self._commit_view_gesture("zoom", before)
 
         if self._inline_control_hovered:
             return
-
-        # Delete key — remove selected nodes or link even when the cursor
-        # is no longer hovering the canvas after selection.
-        if ctx.is_key_pressed(_KEY_DELETE):
-            if self.selected_nodes:
-                if self.on_nodes_deleted:
-                    self.on_nodes_deleted(list(self.selected_nodes))
-                elif self.graph:
-                    for uid in list(self.selected_nodes):
-                        self.graph.remove_node(uid)
-                self.set_selection((), "", record_history=False)
-                return
-            if self.selected_link:
-                link_uid = self.selected_link
-                if self.on_link_deleted:
-                    self.on_link_deleted(link_uid)
-                elif self.graph:
-                    self.graph.remove_link(link_uid)
-                self.set_selection((), "", record_history=False)
-                return
-
-        if canvas_hovered and ctx.is_key_down(_IMGUI_MOD_CTRL):
-            if ctx.is_key_pressed(_KEY_C) and self.on_copy:
-                self.on_copy()
-            if ctx.is_key_pressed(_KEY_V) and self.on_paste:
-                self.on_paste()
 
         if not canvas_hovered:
             return
 
         # Middle-mouse → panning
         if ctx.is_mouse_button_clicked(2):
+            if self._zoom_gesture_before is not None:
+                before = self._zoom_gesture_before
+                self._zoom_gesture_before = None
+                self._commit_view_gesture("zoom", before)
             self._panning = True
+            self._pan_gesture_before = self._view_state()
             return
 
         # Right-click — select link under cursor for context menu
@@ -1834,7 +1946,7 @@ class NodeGraphView:
             hit_lk = self._hit_test_link(mx, my)
             if hit_lk:
                 self._notify_before_selection_change()
-                self.set_selection((), hit_lk)
+                self.request_selection((), hit_lk)
                 if self.on_node_selected:
                     self.on_node_selected("")
 
@@ -1844,7 +1956,7 @@ class NodeGraphView:
             hit_color_uid = self._hit_test_header_color_swatch(mx, my)
             if hit_color_uid:
                 self._notify_before_selection_change()
-                self.set_selection((hit_color_uid,), "")
+                self.request_selection((hit_color_uid,), "")
                 if self.on_node_selected:
                     self.on_node_selected(hit_color_uid)
                 self._header_color_popup_node_uid = hit_color_uid
@@ -1904,38 +2016,52 @@ class NodeGraphView:
                     self._drag_src_kind = PinKind.INPUT
                 self._drag_end_x = mx
                 self._drag_end_y = my
-                self.set_selection((), "", record_history=False)
+                self.request_selection((), "", record_history=False)
                 return
 
             # Nodes
             hit_uid = self._hit_test_node(mx, my)
             if hit_uid:
                 self._notify_before_selection_change()
-                self.set_selection((hit_uid,), "")
+                additive = (
+                    ctx.is_key_down(KEY_LEFT_CTRL)
+                    or ctx.is_key_down(KEY_RIGHT_CTRL)
+                )
+                selected = self._selection_after_node_click(
+                    self.selected_nodes,
+                    hit_uid,
+                    additive=additive,
+                )
+                self.request_selection(selected, "")
                 if self.on_node_selected:
-                    self.on_node_selected(hit_uid)
+                    self.on_node_selected(selected[-1] if selected else "")
+                if hit_uid not in selected:
+                    return
                 consumed = False
                 if self.on_node_primary_click:
                     consumed = bool(self.on_node_primary_click(hit_uid, mx, my))
-                if not consumed:
+                if (
+                    not consumed
+                    and self.on_node_drag_start is not None
+                    and self.on_node_drag_end is not None
+                ):
                     self._dragging_node = True
                     self._drag_node_id = hit_uid
-                    if self.on_node_drag_start:
-                        self.on_node_drag_start(hit_uid)
+                    self.on_node_drag_start(hit_uid)
                 return
 
             # Links
             hit_lk = self._hit_test_link(mx, my)
             if hit_lk:
                 self._notify_before_selection_change()
-                self.set_selection((), hit_lk)
+                self.request_selection((), hit_lk)
                 if self.on_node_selected:
                     self.on_node_selected("")
                 return
 
             # Empty space — deselect
             self._notify_before_selection_change()
-            self.set_selection((), "")
+            self.request_selection((), "")
             if self.on_node_selected:
                 self.on_node_selected("")
 
@@ -2044,11 +2170,7 @@ class NodeGraphView:
         existing = self._find_link_to_input(endpoints[2], endpoints[3])
         if existing is None:
             return None
-        if self.on_link_replaced is not None:
-            return existing
-        if self.on_link_created is None and self.on_link_deleted is None:
-            return existing
-        return None
+        return existing if self.on_link_replaced is not None else None
 
     def _try_complete_link(self, mx, my):
         target_node, target_pin, target_kind = self._hit_test_pin(mx, my)
@@ -2096,25 +2218,11 @@ class NodeGraphView:
         ):
             return
         if existing is not None:
-            if self.on_link_replaced:
+            if self.on_link_replaced is not None:
                 self.on_link_replaced(existing.uid, *endpoints)
-            elif self.graph:
-                if self.on_link_deleted or self.on_link_created:
-                    if self.on_link_deleted:
-                        self.on_link_deleted(existing.uid)
-                    else:
-                        self.graph.remove_link(existing.uid)
-                    if self.on_link_created:
-                        self.on_link_created(*endpoints)
-                    else:
-                        self.graph.add_link(*endpoints)
-                else:
-                    self.graph.replace_link(existing.uid, *endpoints)
             return
-        if self.on_link_created:
+        if self.on_link_created is not None:
             self.on_link_created(*endpoints)
-        elif self.graph:
-            self.graph.add_link(*endpoints)
 
     # ── Context menu ──────────────────────────────────────────────────
 
@@ -2135,7 +2243,7 @@ class NodeGraphView:
         }
         if self.on_node_creation_requested is not None:
             self.on_node_creation_requested(dict(self._node_create_request))
-        self._node_create_search = ""
+        self._node_create_search.clear()
         self._node_create_focus = True
         self._open_node_create_popup_next_frame = True
 
@@ -2217,19 +2325,17 @@ class NodeGraphView:
         if self.on_node_creation_selected is not None:
             self.on_node_creation_selected(entry, dict(request))
             return
+        if self.on_node_add_request is None:
+            return
+        if request.get("source_node") and self.on_link_created is None:
+            return
         typedef = self.graph.get_type(entry.type_id)
         if typedef is None:
             return
         before = {node.uid for node in self.graph.nodes}
-        result = None
-        if self.on_node_add_request:
-            result = self.on_node_add_request(
-                typedef.type_id, request["gx"], request["gy"]
-            )
-        else:
-            result = self.graph.add_node(
-                typedef.type_id, request["gx"], request["gy"]
-            )
+        result = self.on_node_add_request(
+            typedef.type_id, request["gx"], request["gy"]
+        )
         node_uid = getattr(result, "uid", result if isinstance(result, str) else "")
         if not node_uid:
             created = [node for node in self.graph.nodes if node.uid not in before]
@@ -2256,10 +2362,25 @@ class NodeGraphView:
             )
         if not self.graph.validate_link(*endpoints):
             return
-        if self.on_link_created:
-            self.on_link_created(*endpoints)
-        else:
-            self.graph.add_link(*endpoints)
+        self.on_link_created(*endpoints)
+
+    @staticmethod
+    def _creation_command_payload(
+        entry: NodeCreationEntry,
+        request: dict,
+    ) -> dict:
+        source_kind = PinKind(
+            request.get("source_kind", PinKind.OUTPUT)
+        )
+        return {
+            "entry_key": entry.key,
+            "type_id": entry.type_id,
+            "gx": float(request["gx"]),
+            "gy": float(request["gy"]),
+            "source_node": str(request.get("source_node", "") or ""),
+            "source_pin": str(request.get("source_pin", "") or ""),
+            "source_kind": source_kind.value,
+        }
 
     def _draw_node_create_popup(self, ctx) -> None:
         popup_id = "##shared_node_create_palette"
@@ -2274,20 +2395,20 @@ class NodeGraphView:
             if self._node_create_focus:
                 ctx.set_keyboard_focus_here()
                 self._node_create_focus = False
-            self._node_create_search = ctx.input_text_with_hint(
+            search_text = ctx.input_text_with_hint(
                 "##node_create_search",
                 t("node_graph.search_nodes"),
-                self._node_create_search,
+                self._node_create_search.query,
                 160,
             )
-            query = self._node_create_search.strip().casefold()
+            self._node_create_search.set_query(search_text)
             grouped: Dict[str, List[NodeCreationEntry]] = {}
             for entry in self._creation_entries(request):
                 haystack = (
                     f"{entry.label} {entry.key} {entry.type_id} {entry.category}"
                     .casefold()
                 )
-                if query and query not in haystack:
+                if not self._node_create_search.matches_normalized(haystack):
                     continue
                 grouped.setdefault(entry.category or "NODE", []).append(entry)
             for category in sorted(grouped):
@@ -2317,7 +2438,10 @@ class NodeGraphView:
         if selected is not None:
             request = dict(request)
             self._node_create_request = None
-            self._create_from_palette(selected, request)
+            if self.on_node_creation_command is not None:
+                self.on_node_creation_command(
+                    self._creation_command_payload(selected, request)
+                )
 
     def _draw_context_menu(self, ctx) -> None:
         mx = ctx.get_mouse_pos_x()
@@ -2327,48 +2451,37 @@ class NodeGraphView:
         if self.graph is None:
             return
 
-        add_label = t("node_graph.add_node")
-        add_requested = ctx.menu_item(add_label, "", False, True)
-        self._record_semantic_item(
-            ctx, "menu_item", add_label, True, "context.add_node", bool_value=True
+        def _record_command(
+            semantic_ctx: object,
+            command: ResolvedContextMenuCommand,
+        ) -> None:
+            self._record_semantic_item(
+                semantic_ctx,
+                "menu_item",
+                command.label,
+                command.enabled,
+                command.spec.semantic_id or f"context.{command.spec.command_id}",
+                bool_value=command.checked,
+            )
+
+        _NODE_GRAPH_CONTEXT_MENU_BUILDER.render(
+            ctx,
+            (
+                ContextMenuCommand(
+                    "graph.add_node",
+                    label=t("node_graph.add_node"),
+                    payload={"gx": gx, "gy": gy},
+                    semantic_id="context.add_node",
+                ),
+            ),
+            semantic_recorder=_record_command,
         )
-        if add_requested:
-            self._request_node_creation(gx, gy)
 
-        # Delete selected nodes
-        if self.selected_nodes:
-            label = f"Delete Node ({len(self.selected_nodes)})"
-            deleted = ctx.menu_item(label, "", False, True)
-            self._record_semantic_item(ctx, "menu_item", label, True, "context.delete_nodes")
-            if deleted:
-                if self.on_nodes_deleted:
-                    self.on_nodes_deleted(list(self.selected_nodes))
-                else:
-                    for uid in self.selected_nodes:
-                        self.graph.remove_node(uid)
-                self.set_selection((), "", record_history=False)
-
-        # Delete selected link
-        if self.selected_link:
-            deleted = ctx.menu_item("Delete Link", "", False, True)
-            self._record_semantic_item(ctx, "menu_item", "Delete Link", True, "context.delete_link")
-            if deleted:
-                if self.on_link_deleted:
-                    self.on_link_deleted(self.selected_link)
-                else:
-                    self.graph.remove_link(self.selected_link)
-                self.set_selection((), "", record_history=False)
-
-        ctx.separator()
-        centered = ctx.menu_item("Center View", "", False, True)
-        self._record_semantic_item(ctx, "menu_item", "Center View", True, "context.center_view")
-        if centered:
-            self.center_on_nodes()
-        reset_zoom = ctx.menu_item("Reset Zoom", "", False, True)
-        self._record_semantic_item(ctx, "menu_item", "Reset Zoom", True, "context.reset_zoom")
-        if reset_zoom:
-            self.zoom = 1.0
-
+        _NODE_GRAPH_CONTEXT_MENU_BUILDER.render(
+            ctx,
+            _NODE_GRAPH_EDIT_CONTEXT_MENU,
+            semantic_recorder=_record_command,
+        )
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Geometry helpers

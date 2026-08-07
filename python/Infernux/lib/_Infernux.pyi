@@ -34,8 +34,15 @@ GIZMO_Z_AXIS_ID: int
 class DocumentWriteSuperseded(RuntimeError): ...
 class DocumentWriteCancelled(RuntimeError): ...
 
+class DocumentFileState:
+    exists: bool
+    size: int
+    modified_ns: int
+    content_hash: int
+
 class DocumentWriteOptions:
     create_backup: bool
+    expected_file_state: DocumentFileState | None
 
 class DocumentPathMetrics:
     @property
@@ -58,6 +65,10 @@ class DocumentWriteTicket:
     def is_complete(self) -> bool: ...
     @property
     def status(self) -> str: ...
+    @property
+    def error(self) -> str: ...
+    @property
+    def committed_file_state(self) -> DocumentFileState | None: ...
     def wait(self) -> None: ...
 
 class NativeDocumentStore:
@@ -67,6 +78,7 @@ class NativeDocumentStore:
     def write_and_wait(self, path: str, content: str, options: DocumentWriteOptions = ...) -> int: ...
     def cancel(self, ticket: DocumentWriteTicket) -> bool: ...
     def get_metrics(self, path: str) -> DocumentPathMetrics: ...
+    def capture_file_state(self, path: str) -> DocumentFileState: ...
     def flush_all(self) -> None: ...
     def flush_path(self, path: str) -> None: ...
     def shutdown(self) -> None: ...
@@ -914,7 +926,7 @@ class SpriteRenderer(MeshRenderer):
     """Sprite rendering component — renders a single frame on a Quad mesh."""
 
     sprite_guid: str
-    frame_index: int
+    frame_id: str
     sprite_color: Tuple[float, float, float, float]
     flip_x: bool
     flip_y: bool
@@ -1576,6 +1588,7 @@ class AssetDatabase:
     def reimport_asset(self, path: str) -> AssetMutationResult: ...
     def delete_asset(self, path: str) -> AssetMutationResult: ...
     def move_asset(self, old_path: str, new_path: str) -> AssetMutationResult: ...
+    def move_assets_batch(self, moves: list[tuple[str, str]]) -> list[AssetMutationResult]: ...
     def contains_guid(self, guid: str) -> bool: ...
     def contains_path(self, path: str) -> bool: ...
     def get_guid_from_path(self, path: str) -> str: ...
@@ -1985,6 +1998,8 @@ class PropertyBatchPlan:
 class InxGUIContext:
     """ImGui context for building editor panels and tool windows."""
 
+    def is_pointer_activation_blocked_by_popup(self) -> bool: ...
+
     # Text & labels
     def label(self, text: str) -> None: ...
     def text_wrapped(self, text: str) -> None: ...
@@ -2112,7 +2127,7 @@ class InxGUIContext:
     def end_main_menu_bar(self) -> None: ...
     def begin_menu(self, label: str, enabled: bool = True) -> bool: ...
     def end_menu(self) -> None: ...
-    def menu_item(self, label: str) -> bool: ...
+    def menu_item(self, label: str, shortcut: str = "", selected: bool = False, enabled: bool = True) -> bool: ...
 
     # Child windows
     def begin_child(self, id: str, width: float = 0, height: float = 0, border: bool = False, flags: int = 0) -> bool: ...
@@ -2171,6 +2186,7 @@ class InxGUIContext:
     def begin_window_closable(
         self, name: str, is_open: bool = True, flags: int = 0
     ) -> Tuple[bool, bool]: ...
+    def is_current_window_content_presented(self) -> bool: ...
     def end_window(self) -> None: ...
 
     # Layout queries
@@ -2283,7 +2299,7 @@ class InxGUIContext:
         surface_values: Sequence[object], surface_label_width: float,
         picker_texture_id: int, preview_texture_id: int,
         preview_unavailable_label: str, default_open: bool, read_only: bool,
-    ) -> Tuple[int, bool, str, bool, int, bool, str, bool, Dict[int, object]]: ...
+    ) -> Tuple[int, bool, str, bool, int, bool, str, bool, Dict[int, object], int, int]: ...
     def render_object_field_chrome(self, field_id: str, display_text: str, type_hint: str, selected: bool = False, clickable: bool = True, has_picker: bool = False, picker_texture_id: int = 0, semantic_id: str = "") -> int: ...
     def render_mesh_renderer_inspector_fields(
         self, mesh_field_id: str, mesh_label: str, mesh_display: str,
@@ -2418,8 +2434,19 @@ class EditorPanel(InxGUIRenderable):
     """Base class for dockable editor panels."""
 
     def is_open(self) -> bool: ...
+    def is_content_visible(self) -> bool: ...
+    def was_content_visible(self) -> bool: ...
+    def is_content_hovered(self) -> bool: ...
     def set_open(self, open: bool) -> None: ...
     def get_window_id(self) -> str: ...
+    on_panel_focused: Optional[Callable[[bool, bool], None]]
+    on_request_close: Optional[Callable[[], bool]]
+    on_transient_begin: Optional[Callable[[str, str, int], None]]
+    on_transient_end: Optional[Callable[[str], None]]
+    execute_command: Any
+    can_execute_command: Any
+    def republish_panel_focus(self) -> None: ...
+    def cancel_transient(self, token: str) -> bool: ...
 
 
 class ConsolePanel(EditorPanel):
@@ -2435,8 +2462,17 @@ class ConsolePanel(EditorPanel):
     def get_warning_count(self) -> int: ...
     def get_error_count(self) -> int: ...
     def select_latest_entry(self) -> None: ...
-    def _select_entry(self, uid: int) -> None: ...
+    def select_entry(self, uid: int) -> None: ...
     def set_selection_snapshot(self, uid: int) -> None: ...
+    def has_selected_entry(self) -> bool: ...
+    def copy_selected_entry(self) -> bool: ...
+    def has_view_option(self, option: str) -> bool: ...
+    def get_view_option(self, option: str) -> bool: ...
+    def set_view_option(self, option: str, enabled: bool) -> None: ...
+    def get_search_query(self) -> str: ...
+    def set_search_query(self, query: str) -> None: ...
+    def get_detail_height(self) -> float: ...
+    def set_detail_height(self, height: float) -> None: ...
     def _get_status_snapshot(self) -> tuple[str, str, int, int, int, int]: ...
 
     @property
@@ -2451,7 +2487,6 @@ class ConsolePanel(EditorPanel):
     clear_on_play: bool
     error_pause: bool
     auto_scroll: bool
-    on_double_click_entry: Any
     on_error_pause: Any
     on_request_focus: Any
     on_selection_changed: Any
@@ -2459,6 +2494,8 @@ class ConsolePanel(EditorPanel):
 
 class StatusBarPanel(InxGUIRenderable):
     """Bottom status bar panel."""
+
+    execute_command: Any
 
     def __init__(self) -> None: ...
     def set_console_panel(self, console: ConsolePanel) -> None: ...
@@ -2477,7 +2514,6 @@ class ToolbarPanel(EditorPanel):
     get_play_state: Any
     get_play_time_str: Any
     is_show_grid: Any
-    set_show_grid: Any
     translate: Any
 
     def get_camera_settings(self) -> Dict[str, Any]: ...
@@ -2496,11 +2532,18 @@ class MenuBarPanel(InxGUIRenderable):
     execute_command: Any
     can_execute_command: Any
     is_command_checked: Any
-    route_shortcut: Any
     on_request_close: Any
     get_registered_types: Any
     is_close_requested: Any
     translate: Any
+
+
+class EditorShortcutInput(InxGUIRenderable):
+    """Native physical key-edge adapter for the editor interaction core."""
+
+    def __init__(self) -> None: ...
+
+    route_shortcut: Any
 
 
 class HierarchyPanel(EditorPanel):
@@ -2515,13 +2558,14 @@ class HierarchyPanel(EditorPanel):
     def clear_selection_and_notify(self) -> None: ...
     def set_selected_object_by_id(self, id: int, clear_search: bool = False) -> None: ...
     def set_selection_snapshot(self, ids: List[int], primary: int) -> None: ...
+    def get_expanded_object_ids(self) -> List[int]: ...
+    def set_expanded_object_ids(self, ids: List[int]) -> None: ...
     def set_runtime_hidden_ids(self, ids: set[int]) -> None: ...
     def set_scene_header_snapshot(self, scene_display_name: str, prefab_mode: bool, prefab_display_name: str) -> None: ...
     def expand_to_object(self, obj_id: int) -> None: ...
     def set_pending_expand_id(self, obj_id: int) -> None: ...
     def invalidate_scene_structure_cache(self) -> None: ...
     def begin_rename_object(self, obj_id: int) -> None: ...
-
     # Selection callbacks
     is_selected: Any
     select_id: Any
@@ -2536,18 +2580,14 @@ class HierarchyPanel(EditorPanel):
 
     # Notification callbacks
     on_selection_changed: Any
-    on_double_click_focus: Any
     on_selection_changed_ui_editor: Any
 
     # Unified command callbacks
     execute_command: Any
-    can_execute_command: Any
+    render_context_menu: Any
 
-    # Undo callbacks
-    undo_record_create: Any
-    undo_record_delete: Any
-    undo_record_rename: Any
-    undo_record_move: Any
+    rename_object: Any
+    move_objects: Any
 
     # Scene info callbacks
     get_scene_display_name: Any
@@ -2563,34 +2603,6 @@ class HierarchyPanel(EditorPanel):
     parent_has_canvas_ancestor: Any
     has_canvas_descendant: Any
     get_canvas_root_ids: Any
-
-    # Context-menu action callbacks
-    create_primitive: Any
-    create_light: Any
-    create_camera: Any
-    create_render_stack: Any
-    create_empty: Any
-    create_ui_canvas: Any
-    create_ui_text: Any
-    create_ui_button: Any
-    save_as_prefab: Any
-    prefab_select_asset: Any
-    prefab_open_asset: Any
-    prefab_apply_overrides: Any
-    prefab_revert_overrides: Any
-    prefab_unpack: Any
-
-    # Clipboard callbacks
-    copy_selected: Any
-    paste_clipboard: Any
-    has_clipboard_data: Any
-
-    # External drop callbacks
-    instantiate_prefab: Any
-    create_model_object: Any
-
-    # Delete
-    delete_selected_objects: Any
 
     # Translation
     translate: Any
@@ -2680,14 +2692,14 @@ class InspectorPanel(EditorPanel):
     is_multi_selection: Any
     get_selected_ids: Any
     get_value_generation: Any
+    execute_command: Any
+    can_execute_command: Any
 
     # Object info callbacks
     get_object_info: Any
-    set_object_property: Any
 
     # Transform callbacks
     get_transform_data: Any
-    set_transform_data: Any
 
     # Component enumeration
     get_component_list: Any
@@ -2699,12 +2711,9 @@ class InspectorPanel(EditorPanel):
     consume_component_body_profile: Any
     on_component_selection_changed: Any
     render_component_context_menu: Any
-    reorder_component: Any
-    set_component_enabled: Any
 
     # Add Component
     get_add_component_entries: Any
-    add_component: Any
 
     # Asset / File preview
     render_asset_inspector: Any
@@ -2715,12 +2724,8 @@ class InspectorPanel(EditorPanel):
 
     # Prefab
     get_prefab_info: Any
-    prefab_action: Any
 
     # Undo
-    undo_begin_frame: Any
-    undo_end_frame: Any
-    undo_invalidate_all: Any
 
     # Tag & Layer
     get_all_tags: Any
@@ -2729,11 +2734,7 @@ class InspectorPanel(EditorPanel):
     # Translation
     translate: Any
 
-    # Script drop
-    handle_script_drop: Any
-
     # Window manager
-    open_window: Any
 
 
 class ProjectPanel(EditorPanel):
@@ -2752,15 +2753,16 @@ class ProjectPanel(EditorPanel):
     def invalidate_dir_cache(self) -> None: ...
     def receive_dropped_files(self, paths: List[str]) -> None: ...
     def get_current_path(self) -> str: ...
-    def set_current_path(self, path: str) -> None: ...
-    def copy_selected_assets(self, cut: bool) -> bool: ...
-    def paste_assets(self) -> bool: ...
-    def request_delete_selected_assets(self) -> bool: ...
+    def can_navigate_to_path(self, path: str) -> bool: ...
+    def set_current_path(self, path: str) -> bool: ...
+    def get_folder_expanded_paths(self) -> List[str]: ...
+    def set_folder_expanded_paths(self, paths: List[str]) -> None: ...
+    def get_model_expanded_paths(self) -> List[str]: ...
+    def set_model_expanded_paths(self, paths: List[str]) -> None: ...
     def begin_rename_selected_asset(self, path: str = "") -> bool: ...
-    def create_folder_from_command(self) -> bool: ...
     def has_selected_assets(self) -> bool: ...
     def can_rename_selected_asset(self, path: str = "") -> bool: ...
-    def can_paste_assets(self) -> bool: ...
+    def get_os_clipboard_files(self) -> List[str]: ...
 
     # Notification callbacks
     on_file_selected: Any
@@ -2768,36 +2770,7 @@ class ProjectPanel(EditorPanel):
     on_empty_area_clicked: Any
     on_state_changed: Any
     execute_command: Any
-    can_execute_command: Any
-    write_asset_clipboard: Any
-    read_asset_clipboard: Any
-    consume_asset_clipboard: Any
-    paste_asset_clipboard: Any
-    move_asset_paths: Any
-
-    # File operation callbacks
-    create_folder: Any
-    create_script: Any
-    create_shader: Any
-    create_material: Any
-    create_physic_material: Any
-    create_scene: Any
-    create_particlegraph: Any
-    create_render_effect: Any
-    create_render_effect_group: Any
-    create_prefab_from_hierarchy: Any
-    delete_items: Any
-    do_rename: Any
-    get_unique_name: Any
-    copy_item_to_path: Any
-
-    # Open/Reveal callbacks
-    open_file: Any
-    open_scene: Any
-    open_prefab_mode: Any
-    open_particle_graph: Any
-    reveal_in_explorer: Any
-
+    render_context_menu: Any
     # Validation / GUID callbacks
     validate_script_component: Any
     get_guid_from_path: Any
@@ -3139,7 +3112,7 @@ class Infernux:
         self, name: str, renderable: InxGUIRenderable, priority: int = 0
     ) -> None: ...
     def unregister_gui_renderable(self, name: str) -> None: ...
-    def select_docked_window(self, window_id: str) -> None: ...
+    def select_docked_window(self, window_id: str, allow_during_modal: bool = False) -> None: ...
     def reset_imgui_layout(self) -> None: ...
     def exit(self) -> None: ...
     def cleanup(self) -> None: ...
@@ -3190,7 +3163,6 @@ class Infernux:
                                            pump: bool = True) -> Tuple[int, int, int]: ...
     def schedule_texture_preview_from_memory(self, resource_key: str, image_data: bytes, stamp: int,
                                              nearest: bool = False) -> bool: ...
-    def schedule_material_save_snapshot_task(self, key: str, file_path: str, json_snapshot: str) -> bool: ...
 
     @property
     def editor_camera(self) -> EditorCamera: ...
@@ -3663,6 +3635,9 @@ def get_editor_theme_floats() -> Dict[str, float]: ...
 def is_frame_profile_enabled() -> bool: ...
 def set_gui_semantic_capture_enabled(enabled: bool) -> None: ...
 def request_gui_semantic_snapshot() -> int: ...
+def get_gui_focused_window_id() -> str: ...
+def was_gui_window_content_presented(window_id: str) -> Optional[bool]: ...
+def get_gui_window_presented_dock_peer(window_id: str) -> Optional[str]: ...
 def get_gui_semantic_snapshot() -> Dict[str, Any]: ...
 
 

@@ -49,6 +49,100 @@ def test_engine_gui_registration_forwards_overlay_priority():
     assert engine._gui_objects["global_overlay"] is renderable
 
 
+def test_engine_gui_registration_rejects_duplicate_renderable_identity():
+    from types import SimpleNamespace
+
+    from Infernux.engine.engine import Engine
+
+    calls = []
+    engine = Engine.__new__(Engine)
+    engine._engine = SimpleNamespace(
+        register_gui_renderable=lambda name, renderable, priority: calls.append(
+            (name, renderable, priority)
+        )
+    )
+    existing = object()
+    engine._gui_objects = {"scene_view": existing}
+
+    with pytest.raises(RuntimeError, match="already registered"):
+        engine.register_gui("scene_view", object())
+
+    assert calls == []
+    assert engine._gui_objects["scene_view"] is existing
+
+
+def test_existing_window_registration_is_atomic_when_native_registration_fails():
+    from Infernux.engine.interaction import (
+        EditorInteractionCore,
+        PanelInteractionDescriptor,
+    )
+    from Infernux.engine.ui.window_manager import WindowManager
+
+    class Engine:
+        @staticmethod
+        def register_gui(_window_id, _instance):
+            raise RuntimeError("native registration failed")
+
+    class Panel:
+        is_open = True
+
+    previous_manager = WindowManager._instance
+    core = EditorInteractionCore()
+    try:
+        manager = WindowManager(Engine())
+        manager.set_panel_interaction_registry(core.panels)
+        core.panels.register_type("native", PanelInteractionDescriptor())
+
+        with pytest.raises(RuntimeError, match="native registration failed"):
+            manager.register_existing_window("native", Panel(), "native")
+
+        with pytest.raises(KeyError, match="Unknown window id"):
+            manager.get_window_state("native")
+        assert manager.get_window_instance("native") is None
+        assert core.panels.instance_for_view("native") is None
+        assert "native" not in manager._registered_instance_ids
+    finally:
+        core.shutdown()
+        WindowManager._instance = previous_manager
+
+
+def test_engine_docked_window_selection_forwards_modal_flag():
+    from types import SimpleNamespace
+
+    from Infernux.engine.engine import Engine
+
+    calls = []
+    engine = Engine.__new__(Engine)
+    engine._engine = SimpleNamespace(
+        select_docked_window=lambda window_id, allow_during_modal: calls.append(
+            (window_id, allow_during_modal)
+        )
+    )
+
+    engine.select_docked_window("particle_graph_editor", True)
+
+    assert calls == [("particle_graph_editor", True)]
+
+
+def test_engine_docked_window_selection_rejects_stale_native_binding():
+    from Infernux.engine.engine import Engine
+
+    class LegacyNativeEngine:
+        def __init__(self):
+            self.focus_requests = []
+
+        def select_docked_window(self, window_id):
+            self.focus_requests.append(window_id)
+
+    engine = Engine.__new__(Engine)
+    engine._engine = LegacyNativeEngine()
+
+    with pytest.raises(TypeError):
+        engine.select_docked_window("particle_graph_editor", True)
+
+    assert engine._engine.focus_requests == []
+
+
 class TestThemeColorMath:
     def test_srgb_to_linear_low_segment(self):
         assert srgb_to_linear(0.0) == 0.0
@@ -156,6 +250,1299 @@ class TestViewportInfo:
 # ── window manager state machine ─────────────────────────────────────────
 
 class TestWindowManager:
+    @staticmethod
+    def _layout_reset_fixture():
+        from Infernux.engine.interaction import (
+            DocumentCapability,
+            DocumentKind,
+            EditorInteractionCore,
+            PanelInteractionDescriptor,
+        )
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.ui.editor_panel import EditorPanel
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Engine:
+            def __init__(self):
+                self.registered = {}
+                self.reset_count = 0
+                self.focused = []
+
+            def register_gui(self, window_id, instance):
+                self.registered[window_id] = instance
+
+            def unregister_gui(self, window_id):
+                self.registered.pop(window_id, None)
+
+            def reset_imgui_layout(self):
+                self.reset_count += 1
+
+            def select_docked_window(self, window_id, *, allow_during_modal=False):
+                self.focused.append((window_id, bool(allow_during_modal)))
+
+        class Controller:
+            def __init__(self):
+                self.discard_calls = 0
+
+            def discard(self, *, document_id):
+                assert document_id == "graph-document"
+                self.discard_calls += 1
+                return True
+
+        core = EditorInteractionCore()
+        engine = Engine()
+        manager = WindowManager(engine)
+        manager.set_panel_interaction_registry(core.panels)
+        for type_id in ("scene_view", "graph"):
+            core.panels.register_type(type_id, PanelInteractionDescriptor())
+
+        scene = EditorPanel("Scene", "scene_view")
+        manager.register_existing_window("scene_view", scene, "scene_view")
+        manager.register_window_type(
+            "graph",
+            ClosablePanel,
+            "Graph",
+            factory=lambda: ClosablePanel("Graph", "graph"),
+        )
+        graph = manager.open_window("graph")
+        manager.process_pending_actions()
+
+        controller = Controller()
+        document = core.documents.create(
+            DocumentKind.GENERIC,
+            "Graph",
+            document_id="graph-document",
+            revision=1,
+            saved_revision=0,
+            capabilities=DocumentCapability.DISCARD,
+            controller=controller,
+        )
+        graph.bind_document(document.document_id)
+        return core, engine, manager, scene, graph, document, controller
+
+    def test_native_titlebar_close_intent_uses_window_manager_lifecycle(self):
+        from Infernux.engine.interaction import (
+            EditorInteractionCore,
+            PanelInteractionDescriptor,
+        )
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def select_docked_window(self, *_args, **_kwargs):
+                pass
+
+        class NativePanel:
+            def __init__(self):
+                self.open = True
+                self.on_request_close = None
+
+            def is_open(self):
+                return self.open
+
+            def set_open(self, value):
+                self.open = bool(value)
+
+        previous = WindowManager._instance
+        core = None
+        try:
+            core = EditorInteractionCore()
+            manager = WindowManager(Engine())
+            manager.set_panel_interaction_registry(core.panels)
+            core.panels.register_type(
+                "native",
+                PanelInteractionDescriptor(),
+            )
+            panel = NativePanel()
+            manager.register_existing_window("native", panel, "native")
+            state_changes = []
+            manager.set_on_state_changed(lambda: state_changes.append(True))
+
+            core.focus.activate_panel(
+                "native",
+                view_id="native",
+                reason="test",
+                record_history=False,
+            )
+            core.modals.register(
+                "native.modal",
+                is_active=lambda: True,
+                render=lambda _ctx: None,
+                cancel=lambda: None,
+            )
+            assert core.modals.activate("native.modal", owner_id="native")
+            assert callable(panel.on_request_close)
+
+            assert panel.on_request_close()
+
+            assert manager.get_window_state("native") is WindowState.CLOSED
+            assert not panel.open
+            assert core.focus.snapshot.active_view_id == ""
+            assert core.modals.active_modal_id == ""
+            assert state_changes
+        finally:
+            if core is not None:
+                core.shutdown()
+            WindowManager._instance = previous
+
+    def test_reset_layout_cancel_preserves_dirty_dynamic_view(self):
+        from Infernux.engine.interaction import CloseState
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        previous = WindowManager._instance
+        core = None
+        try:
+            core, engine, manager, _scene, graph, document, controller = (
+                self._layout_reset_fixture()
+            )
+
+            assert manager.reset_layout()
+            assert core.close_coordinator.state is CloseState.AWAITING_DECISION
+            assert core.close_coordinator.active_document is document
+            assert core.modals.active_modal_id == "editor.unsaved_changes"
+            assert engine.reset_count == 0
+
+            core.close_coordinator.cancel()
+            manager.process_pending_actions()
+
+            assert manager.get_window_state("graph") in {
+                WindowState.OPEN,
+                WindowState.FOCUSED,
+            }
+            assert manager.get_window_instance("graph") is graph
+            assert core.documents.document_for_view("graph") is document
+            assert controller.discard_calls == 0
+            assert engine.reset_count == 0
+            assert core.modals.active_modal_id == ""
+        finally:
+            if core is not None:
+                core.shutdown()
+            WindowManager._instance = previous
+
+    def test_reset_layout_discards_then_formally_retires_dynamic_view(self):
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        previous = WindowManager._instance
+        core = None
+        try:
+            core, engine, manager, _scene, graph, _document, controller = (
+                self._layout_reset_fixture()
+            )
+
+            assert manager.reset_layout()
+            core.close_coordinator.decide_discard()
+            manager.process_pending_actions()
+
+            assert controller.discard_calls == 1
+            assert manager.get_window_state("graph") is WindowState.CLOSED
+            assert "graph" not in manager._window_instances
+            assert core.documents.document_for_view("graph") is None
+            assert graph.document_id == ""
+            assert "graph" not in engine.registered
+            assert engine.reset_count == 1
+            assert engine.focused[-1] == ("scene_view", False)
+        finally:
+            if core is not None:
+                core.shutdown()
+            WindowManager._instance = previous
+
+    def test_reset_layout_does_not_prompt_for_document_with_retained_view(self):
+        from Infernux.engine.interaction import CloseState
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        previous = WindowManager._instance
+        core = None
+        try:
+            core, engine, manager, _scene, _graph, document, controller = (
+                self._layout_reset_fixture()
+            )
+            core.documents.attach_view(document.document_id, "scene_view")
+
+            assert manager.reset_layout()
+            assert core.close_coordinator.state is CloseState.IDLE
+            manager.process_pending_actions()
+
+            assert controller.discard_calls == 0
+            assert document.is_dirty
+            assert document.view_ids == {"scene_view"}
+            assert manager.get_window_state("graph") is WindowState.CLOSED
+            assert engine.reset_count == 1
+        finally:
+            if core is not None:
+                core.shutdown()
+            WindowManager._instance = previous
+
+    def test_document_panel_payload_without_formal_snapshot_is_pruned(self, monkeypatch):
+        from Infernux.engine.ui import panel_state
+
+        monkeypatch.setattr(
+            panel_state,
+            "_state",
+            {
+                "panel:animclip2d_editor": {"dirty": True, "clips": ["draft"]},
+                "panel:particle_graph_editor": {"schema": "view"},
+                "panel:console": {"filter": "warning"},
+                "window_manager": {"open_windows": {}},
+            },
+        )
+
+        removed = panel_state.prune_document_view_states(
+            is_document_backed=lambda view_id: view_id
+            in {"animclip2d_editor", "particle_graph_editor"},
+            has_restorable_document=lambda view_id: view_id
+            == "particle_graph_editor",
+        )
+
+        assert removed == ("animclip2d_editor",)
+        assert "panel:animclip2d_editor" not in panel_state.keys()
+        assert panel_state.get("panel:particle_graph_editor") == {"schema": "view"}
+        assert panel_state.get("panel:console") == {"filter": "warning"}
+
+    def test_window_state_retains_type_identity_for_closed_dynamic_views(
+        self,
+        _reset_editor_interaction_state,
+    ):
+        from Infernux.engine.interaction import (
+            PanelInteractionDescriptor,
+            PanelInteractionRegistry,
+        )
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        previous = WindowManager._instance
+        try:
+            manager = WindowManager(object())
+            panels = PanelInteractionRegistry()
+            panels.register_type(
+                "particle_graph_editor",
+                PanelInteractionDescriptor(document_backed=True),
+            )
+            manager.set_panel_interaction_registry(panels)
+            manager.load_state(
+                {
+                    "open_windows": {"graph-instance": False},
+                    "window_types": {
+                        "graph-instance": "particle_graph_editor",
+                    },
+                }
+            )
+
+            assert manager.window_type_id("graph-instance") == "particle_graph_editor"
+            assert manager.is_document_backed_view(
+                "graph-instance",
+                manager.window_type_id("graph-instance"),
+            )
+        finally:
+            WindowManager._instance = previous
+
+    def test_terminal_discard_closes_document_backed_view_in_saved_state(
+        self,
+        _reset_editor_interaction_state,
+    ):
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            PanelInteractionDescriptor,
+            PanelInteractionRegistry,
+        )
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        previous = WindowManager._instance
+        try:
+            manager = WindowManager(object())
+            panels = PanelInteractionRegistry()
+            panels.register_type(
+                "particle_graph_editor",
+                PanelInteractionDescriptor(document_backed=True),
+            )
+            manager.set_panel_interaction_registry(panels)
+            manager._window_states["particle_graph_editor"] = WindowState.OPEN
+            manager._window_type_ids["particle_graph_editor"] = (
+                "particle_graph_editor"
+            )
+
+            document = _reset_editor_interaction_state.create(
+                DocumentKind.PARTICLE_GRAPH,
+                "Unsaved Graph",
+                revision=1,
+                saved_revision=0,
+            )
+            _reset_editor_interaction_state.attach_view(
+                document.document_id,
+                "particle_graph_editor",
+            )
+            _reset_editor_interaction_state.abandon_session_changes(
+                document.document_id
+            )
+
+            state = manager.save_state()
+            assert state["open_windows"]["particle_graph_editor"] is False
+        finally:
+            WindowManager._instance = previous
+
+    def test_startup_does_not_recreate_document_panel_without_snapshot(
+        self,
+        _reset_editor_interaction_state,
+    ):
+        from Infernux.engine.interaction import (
+            PanelInteractionDescriptor,
+            PanelInteractionRegistry,
+        )
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Panel:
+            def __init__(self):
+                self.is_open = True
+
+            def set_open(self, value):
+                self.is_open = bool(value)
+
+        previous = WindowManager._instance
+        try:
+            manager = WindowManager(object())
+            panels = PanelInteractionRegistry()
+            panels.register_type(
+                "particle_graph_editor",
+                PanelInteractionDescriptor(document_backed=True),
+            )
+            manager.set_panel_interaction_registry(panels)
+            manager.register_window_type(
+                "particle_graph_editor",
+                Panel,
+                "Particle Graph",
+                factory=Panel,
+            )
+
+            manager.load_state(
+                {
+                    "open_windows": {"particle_graph_editor": True},
+                    "window_types": {
+                        "particle_graph_editor": "particle_graph_editor"
+                    },
+                }
+            )
+
+            assert manager.get_window_state(
+                "particle_graph_editor"
+            ) is WindowState.CLOSED
+            assert manager.get_window_instance("particle_graph_editor") is None
+        finally:
+            WindowManager._instance = previous
+
+    def test_startup_discards_pending_draft_for_closed_document_view(
+        self,
+        _reset_editor_interaction_state,
+    ):
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            PanelInteractionDescriptor,
+            PanelInteractionRegistry,
+        )
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Controller:
+            @staticmethod
+            def capture_document_restore_state(_document_id):
+                return {"draft": True}
+
+        document = _reset_editor_interaction_state.create(
+            DocumentKind.PARTICLE_GRAPH,
+            "Closed Draft",
+            revision=1,
+            saved_revision=0,
+            controller=Controller(),
+        )
+        _reset_editor_interaction_state.attach_view(
+            document.document_id,
+            "particle_graph_editor",
+        )
+        session = _reset_editor_interaction_state.capture_session_state()
+        _reset_editor_interaction_state.clear()
+        assert _reset_editor_interaction_state.queue_session_restore(session) == 1
+
+        previous = WindowManager._instance
+        try:
+            manager = WindowManager(object())
+            panels = PanelInteractionRegistry()
+            panels.register_type(
+                "particle_graph_editor",
+                PanelInteractionDescriptor(document_backed=True),
+            )
+            manager.set_panel_interaction_registry(panels)
+            manager.load_state(
+                {
+                    "open_windows": {"particle_graph_editor": False},
+                    "window_types": {
+                        "particle_graph_editor": "particle_graph_editor"
+                    },
+                }
+            )
+
+            assert not _reset_editor_interaction_state.has_pending_session_document(
+                "particle_graph_editor"
+            )
+            assert _reset_editor_interaction_state.capture_session_state()[
+                "documents"
+            ] == []
+        finally:
+            WindowManager._instance = previous
+
+    def test_startup_restores_document_panel_when_snapshot_exists(
+        self,
+        _reset_editor_interaction_state,
+    ):
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            PanelInteractionDescriptor,
+            PanelInteractionRegistry,
+        )
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Panel:
+            def __init__(self):
+                self.is_open = True
+
+            def set_open(self, value):
+                self.is_open = bool(value)
+
+        class Controller:
+            @staticmethod
+            def capture_document_restore_state(_document_id):
+                return {"asset": "Assets/Smoke.particlegraph"}
+
+        document = _reset_editor_interaction_state.create(
+            DocumentKind.PARTICLE_GRAPH,
+            "Smoke",
+            controller=Controller(),
+        )
+        _reset_editor_interaction_state.attach_view(
+            document.document_id,
+            "particle_graph_editor",
+        )
+        session = _reset_editor_interaction_state.capture_session_state()
+        _reset_editor_interaction_state.clear()
+        assert _reset_editor_interaction_state.queue_session_restore(session) == 1
+
+        previous = WindowManager._instance
+        try:
+            manager = WindowManager(object())
+            panels = PanelInteractionRegistry()
+            panels.register_type(
+                "particle_graph_editor",
+                PanelInteractionDescriptor(document_backed=True),
+            )
+            manager.set_panel_interaction_registry(panels)
+            manager.register_window_type(
+                "particle_graph_editor",
+                Panel,
+                "Particle Graph",
+                factory=Panel,
+            )
+
+            manager.load_state(
+                {
+                    "open_windows": {"particle_graph_editor": True},
+                    "window_types": {
+                        "particle_graph_editor": "particle_graph_editor"
+                    },
+                }
+            )
+
+            assert manager.get_window_state(
+                "particle_graph_editor"
+            ) is WindowState.OPENING
+            assert manager.get_window_instance("particle_graph_editor") is not None
+        finally:
+            WindowManager._instance = previous
+
+    def test_dynamic_panel_menu_close_finalizes_lifecycle_before_unregister(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.editor_panel import EditorPanel
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.registered = {}
+
+            def register_gui(self, window_id, instance):
+                self.registered[window_id] = instance
+
+            def unregister_gui(self, window_id):
+                self.registered.pop(window_id)
+
+            @staticmethod
+            def select_docked_window(_window_id):
+                pass
+
+        class Panel(EditorPanel):
+            def __init__(self):
+                super().__init__("Utility", "utility")
+                self.disable_count = 0
+
+            def on_disable(self):
+                self.disable_count += 1
+
+        previous_manager = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            FocusService()
+            engine = Engine()
+            manager = WindowManager(engine)
+            manager.register_window_type(
+                "utility",
+                Panel,
+                "Utility",
+                factory=Panel,
+                singleton=True,
+            )
+            panel = manager.open_window("utility")
+            manager.process_pending_actions()
+            panel._enable_called = True
+
+            manager.close_window("utility")
+            assert panel.disable_count == 0
+            assert manager.get_window_state("utility") is WindowState.CLOSING
+
+            manager.process_pending_actions()
+            assert panel.disable_count == 1
+            assert manager.get_window_state("utility") is WindowState.CLOSED
+            assert "utility" not in engine.registered
+
+            panel._finalize_close_lifecycle()
+            assert panel.disable_count == 1
+        finally:
+            FocusService._instance = previous_focus
+            WindowManager._instance = previous_manager
+
+    def test_utility_settings_share_the_floating_editor_panel_contract(self):
+        from Infernux.engine.interaction import PanelInteractionDescriptor
+        from Infernux.engine.ui import (
+            BuildSettingsPanel,
+            EnvironmentSettingsPanel,
+            FloatingEditorPanel,
+            PhysicsLayerMatrixPanel,
+            PreferencesPanel,
+        )
+
+        expected_ids = {
+            BuildSettingsPanel: "build_settings",
+            PreferencesPanel: "preferences",
+            PhysicsLayerMatrixPanel: "physics_settings",
+            EnvironmentSettingsPanel: "environment_settings",
+        }
+        for panel_class, expected_id in expected_ids.items():
+            assert issubclass(panel_class, FloatingEditorPanel)
+            assert panel_class.WINDOW_TYPE_ID == expected_id
+            assert panel_class._panel_menu_path == ""
+            assert isinstance(panel_class.PANEL_INTERACTION, PanelInteractionDescriptor)
+            assert "render" not in panel_class.__dict__
+
+    def test_close_confirmation_restores_source_during_modal(self):
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.focus_requests = []
+
+            def select_docked_window(
+                self, window_id, *, allow_during_modal=False
+            ):
+                self.focus_requests.append((window_id, allow_during_modal))
+
+        previous = WindowManager._instance
+        try:
+            engine = Engine()
+            manager = WindowManager(engine)
+            manager._window_states["particle_graph_editor"] = WindowState.OPEN
+
+            manager.restore_close_confirmation_source("particle_graph_editor")
+
+            assert engine.focus_requests == [("particle_graph_editor", True)]
+        finally:
+            WindowManager._instance = previous
+
+    def test_close_confirmation_requires_canonical_engine_boundary(self):
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.focus_requests = []
+
+            def select_docked_window(self, window_id):
+                self.focus_requests.append(window_id)
+
+        previous = WindowManager._instance
+        try:
+            engine = Engine()
+            manager = WindowManager(engine)
+            manager._window_states["particle_graph_editor"] = WindowState.OPEN
+
+            with pytest.raises(TypeError):
+                manager.restore_close_confirmation_source("particle_graph_editor")
+
+            assert engine.focus_requests == []
+        finally:
+            WindowManager._instance = previous
+
+    def test_dynamic_views_keep_panel_type_separate_from_instance_identity(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.editor_panel import EditorPanel
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            @staticmethod
+            def register_gui(_window_id, _instance):
+                pass
+
+            @staticmethod
+            def unregister_gui(_window_id):
+                pass
+
+            @staticmethod
+            def select_docked_window(_window_id):
+                pass
+
+        class FocusContext:
+            @staticmethod
+            def set_window_focus():
+                pass
+
+        previous_manager = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            manager = WindowManager(Engine())
+            manager.register_window_type(
+                "graph",
+                EditorPanel,
+                "Graph",
+                factory=lambda: EditorPanel("Graph", "factory-default"),
+                singleton=False,
+            )
+            left = manager.open_window("graph", instance_id="graph/left")
+            right = manager.open_window("graph", instance_id="graph/right")
+            manager.process_pending_actions()
+
+            assert left.panel_type_id == right.panel_type_id == "graph"
+            assert left.window_id == "graph/left"
+            assert right.window_id == "graph/right"
+
+            right._activate_panel(FocusContext())
+            assert focus.snapshot.active_panel_id == "graph"
+            assert focus.snapshot.active_view_id == "graph/right"
+
+            manager.close_window("graph/left")
+            assert focus.snapshot.active_panel_id == "graph"
+            assert focus.snapshot.active_view_id == "graph/right"
+        finally:
+            FocusService._instance = previous_focus
+            WindowManager._instance = previous_manager
+
+    def test_panel_identity_transfer_preserves_an_early_document_binding(self):
+        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        previous_registry = DocumentRegistry._instance
+        try:
+            registry = DocumentRegistry()
+            document = registry.create(DocumentKind.GENERIC, "Graph")
+            panel = ClosablePanel("Graph", "factory-default")
+            panel.bind_document(document.document_id)
+
+            panel.set_panel_identity("graph", "graph/asset-a")
+
+            assert registry.document_for_view("factory-default") is None
+            assert registry.document_for_view("graph/asset-a") is document
+            assert registry.get(document.document_id) is document
+        finally:
+            DocumentRegistry._instance = previous_registry
+
+    def test_failed_native_registration_rolls_back_panel_interaction_binding(self):
+        from Infernux.engine.interaction import (
+            EditorInteractionCore,
+            PanelInteractionDescriptor,
+        )
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            @staticmethod
+            def register_gui(_window_id, _instance):
+                raise RuntimeError("native registration failed")
+
+        previous_manager = WindowManager._instance
+        core = EditorInteractionCore()
+        try:
+            manager = WindowManager(Engine())
+            manager.set_panel_interaction_registry(core.panels)
+            core.panels.register_type("graph", PanelInteractionDescriptor())
+            manager.register_window_type(
+                "graph",
+                ClosablePanel,
+                "Graph",
+                factory=lambda: ClosablePanel("Graph"),
+                singleton=False,
+            )
+            manager.open_window("graph", instance_id="graph/broken")
+
+            with pytest.raises(RuntimeError, match="native registration failed"):
+                manager.process_pending_actions()
+
+            assert manager.get_window_state("graph/broken") is WindowState.CLOSED
+            assert "graph/broken" not in core.panels._views
+        finally:
+            core.shutdown()
+            WindowManager._instance = previous_manager
+
+    def test_native_pointer_activation_is_distinct_user_focus_history(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Panel:
+            is_open = True
+
+        previous_manager = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            changes = []
+            focus.add_change_listener(changes.append)
+            focus.activate_panel(
+                "scene_view",
+                view_id="scene_view",
+                record_history=False,
+            )
+            changes.clear()
+
+            manager = WindowManager(object())
+            manager.register_existing_window("project", Panel())
+            callback = manager.native_panel_focus_callback("project")
+            callback(True, True)
+
+            assert focus.snapshot.active_panel_id == "project"
+            assert len(changes) == 1
+            assert changes[0].record_history is True
+            assert changes[0].reason == "pointer_panel_activation"
+        finally:
+            WindowManager._instance = previous_manager
+            FocusService._instance = previous_focus
+
+    def test_user_window_command_publishes_reveal_before_native_focus(self):
+        from Infernux.engine.interaction import (
+            EditorInteractionCore,
+            PanelInteractionDescriptor,
+        )
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Engine:
+            @staticmethod
+            def select_docked_window(_window_id):
+                pass
+
+        previous_manager = WindowManager._instance
+        core = EditorInteractionCore()
+        changes = []
+        core.focus.add_change_listener(changes.append)
+        try:
+            manager = WindowManager(Engine())
+            manager.set_panel_interaction_registry(core.panels)
+            core.panels.register_type("graph", PanelInteractionDescriptor())
+            manager.register_window_type(
+                "graph",
+                ClosablePanel,
+                "Graph",
+                factory=lambda: ClosablePanel("Graph", "graph"),
+            )
+            panel = ClosablePanel("Graph", "graph")
+            manager.register_existing_window("graph", panel, type_id="graph")
+            core.focus.activate_panel(
+                "scene_view",
+                view_id="scene_view",
+                record_history=False,
+            )
+            changes.clear()
+
+            assert manager.open_window_from_user("graph") is panel
+
+            assert core.focus.snapshot.active_view_id == "graph"
+            assert len(changes) == 1
+            assert changes[0].reason == "window_open_command"
+            assert changes[0].record_history is True
+        finally:
+            core.shutdown()
+            WindowManager._instance = previous_manager
+
+    def test_user_window_reveal_survives_early_focus_projection(self):
+        from Infernux.engine.interaction import (
+            EditorInteractionCore,
+            PanelInteractionDescriptor,
+        )
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.focused = []
+
+            def select_docked_window(self, window_id):
+                self.focused.append(window_id)
+
+        previous_manager = WindowManager._instance
+        core = EditorInteractionCore()
+        try:
+            engine = Engine()
+            manager = WindowManager(engine)
+            manager.set_panel_interaction_registry(core.panels)
+            core.panels.register_type("graph", PanelInteractionDescriptor())
+            manager.register_window_type(
+                "graph",
+                ClosablePanel,
+                "Graph",
+                factory=lambda: ClosablePanel("Graph", "graph"),
+            )
+            panel = ClosablePanel("Graph", "graph")
+            manager.register_existing_window("graph", panel, type_id="graph")
+            core.focus.add_listener(manager.project_interaction_focus)
+            core.focus.activate_panel(
+                "scene_view",
+                view_id="scene_view",
+                record_history=False,
+            )
+
+            assert manager.open_window_from_user("graph") is panel
+            assert manager.get_window_state("graph") is WindowState.FOCUSED
+
+            manager.process_pending_actions()
+
+            assert engine.focused == ["graph"]
+            assert manager.get_window_state("graph") is WindowState.FOCUSED
+        finally:
+            core.shutdown()
+            WindowManager._instance = previous_manager
+
+    def test_new_user_window_registers_before_focus_projection(self):
+        from Infernux.engine.interaction import (
+            EditorInteractionCore,
+            PanelInteractionDescriptor,
+        )
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.registered = {}
+                self.focused = []
+
+            def register_gui(self, window_id, instance):
+                self.registered[window_id] = instance
+
+            def select_docked_window(self, window_id):
+                self.focused.append(window_id)
+
+        previous_manager = WindowManager._instance
+        core = EditorInteractionCore()
+        changes = []
+        core.focus.add_change_listener(changes.append)
+        try:
+            engine = Engine()
+            manager = WindowManager(engine)
+            manager.set_panel_interaction_registry(core.panels)
+            core.panels.register_type("graph", PanelInteractionDescriptor())
+            manager.register_window_type(
+                "graph",
+                ClosablePanel,
+                "Graph",
+                factory=lambda: ClosablePanel("Graph", "graph"),
+            )
+            core.focus.add_listener(manager.project_interaction_focus)
+            core.focus.activate_panel(
+                "project",
+                view_id="project",
+                record_history=False,
+            )
+            changes.clear()
+
+            panel = manager.open_window_from_user("graph")
+
+            assert manager.get_window_state("graph") is WindowState.OPENING
+            assert core.focus.snapshot.active_view_id == "project"
+            assert "graph" not in engine.registered
+
+            manager.process_pending_actions()
+
+            assert engine.registered["graph"] is panel
+            assert engine.focused == ["graph"]
+            assert manager.get_window_state("graph") is WindowState.FOCUSED
+            assert core.focus.snapshot.active_view_id == "graph"
+            recorded = [change for change in changes if change.record_history]
+            assert len(recorded) == 1
+            assert recorded[0].reason == "window_open_command"
+        finally:
+            core.shutdown()
+            WindowManager._instance = previous_manager
+
+    def test_user_window_command_does_not_publish_visible_focus(self):
+        from Infernux.engine.interaction import (
+            EditorInteractionCore,
+            PanelInteractionDescriptor,
+        )
+        from Infernux.engine.ui.editor_panel import EditorPanel
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.focused = []
+
+            def select_docked_window(self, window_id):
+                self.focused.append(window_id)
+
+        previous_manager = WindowManager._instance
+        core = EditorInteractionCore()
+        changes = []
+        core.focus.add_change_listener(changes.append)
+        try:
+            engine = Engine()
+            manager = WindowManager(engine)
+            manager.set_panel_interaction_registry(core.panels)
+            core.panels.register_type("graph", PanelInteractionDescriptor())
+            manager.register_window_type(
+                "graph",
+                EditorPanel,
+                "Graph",
+                factory=lambda: EditorPanel("Graph", "graph"),
+            )
+            panel = EditorPanel("Graph", "graph")
+            panel.open()
+            panel._content_was_visible = True
+            panel._content_visible_previous_frame = True
+            manager.register_existing_window("graph", panel, type_id="graph")
+            core.focus.activate_panel(
+                "scene_view",
+                view_id="scene_view",
+                record_history=False,
+            )
+            changes.clear()
+
+            assert manager.open_window_from_user("graph") is panel
+
+            assert manager.get_window_state("graph") is WindowState.FOCUS_REQUESTED
+            assert engine.focused == []
+            assert core.focus.snapshot.active_view_id == "scene_view"
+            assert changes == []
+        finally:
+            core.shutdown()
+            WindowManager._instance = previous_manager
+
+    def test_visible_native_panel_activation_is_not_focus_history(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Panel:
+            is_open = True
+
+            @staticmethod
+            def is_content_visible():
+                return True
+
+            @staticmethod
+            def was_content_visible():
+                return True
+
+        previous_manager = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            changes = []
+            focus.add_change_listener(changes.append)
+            focus.activate_panel(
+                "scene_view",
+                view_id="scene_view",
+                record_history=False,
+            )
+            changes.clear()
+
+            manager = WindowManager(object())
+            manager.register_existing_window("inspector", Panel())
+            manager.native_panel_focus_callback("inspector")(True, True)
+
+            assert focus.snapshot.active_panel_id == "inspector"
+            assert len(changes) == 1
+            assert changes[0].record_history is False
+            assert changes[0].reason == "pointer_panel_activation"
+        finally:
+            WindowManager._instance = previous_manager
+            FocusService._instance = previous_focus
+
+    def test_revealed_native_dock_tab_activation_remains_focus_history(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Panel:
+            is_open = True
+
+            @staticmethod
+            def is_content_visible():
+                # Native focus is published before the newly selected dock
+                # tab commits its current-frame presentation state.
+                return False
+
+            @staticmethod
+            def was_content_visible():
+                return False
+
+        previous_manager = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            changes = []
+            focus.add_change_listener(changes.append)
+            focus.activate_panel(
+                "scene_view",
+                view_id="scene_view",
+                record_history=False,
+            )
+            changes.clear()
+
+            manager = WindowManager(object())
+            manager.register_existing_window("inspector", Panel())
+            manager.native_panel_focus_callback("inspector")(True, True)
+
+            assert focus.snapshot.active_panel_id == "inspector"
+            assert len(changes) == 1
+            assert changes[0].record_history is True
+            assert changes[0].reason == "pointer_panel_activation"
+        finally:
+            WindowManager._instance = previous_manager
+            FocusService._instance = previous_focus
+
+    def test_revealed_dock_tab_reports_the_tab_it_replaced(self, monkeypatch):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Panel:
+            is_open = True
+
+            @staticmethod
+            def is_content_visible():
+                return False
+
+            @staticmethod
+            def was_content_visible():
+                return False
+
+        previous_manager = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            focus.activate_panel("console", view_id="console", record_history=False)
+            changes = []
+            focus.add_change_listener(changes.append)
+
+            manager = WindowManager(object())
+            manager.register_existing_window("scene_view", Panel())
+            manager.register_existing_window("particle_graph_editor", Panel())
+            monkeypatch.setattr(
+                manager,
+                "_native_window_presented_dock_peer",
+                lambda window_id: "scene_view"
+                if window_id == "particle_graph_editor"
+                else "",
+            )
+
+            manager.native_panel_focus_callback("particle_graph_editor")(True, True)
+
+            assert len(changes) == 1
+            assert changes[0].before.active_view_id == "console"
+            assert changes[0].after.active_view_id == "particle_graph_editor"
+            assert changes[0].presentation_before_view_id == "scene_view"
+        finally:
+            WindowManager._instance = previous_manager
+            FocusService._instance = previous_focus
+
+    def test_user_window_command_captures_peer_before_dock_selection(
+        self, monkeypatch
+    ):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Engine:
+            pass
+
+        class Panel:
+            is_open = True
+
+            @staticmethod
+            def is_content_visible():
+                return True
+
+            @staticmethod
+            def was_content_visible():
+                return False
+
+        previous_manager = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            focus.activate_panel("console", view_id="console", record_history=False)
+            changes = []
+            focus.add_change_listener(changes.append)
+
+            manager = WindowManager(Engine())
+            manager.register_window_type(
+                "particle_graph_editor",
+                Panel,
+                "Particle Graph",
+            )
+            manager.register_existing_window("scene_view", Panel())
+            manager.register_existing_window("particle_graph_editor", Panel())
+            monkeypatch.setattr(
+                manager,
+                "_native_window_presented_dock_peer",
+                lambda window_id: "scene_view"
+                if window_id == "particle_graph_editor"
+                else "",
+            )
+            monkeypatch.setattr(
+                manager,
+                "is_window_content_visible",
+                lambda _window_id: False,
+            )
+
+            manager.open_window_from_user("particle_graph_editor")
+
+            assert len(changes) == 1
+            assert changes[0].before.active_view_id == "console"
+            assert changes[0].presentation_before_view_id == "scene_view"
+        finally:
+            WindowManager._instance = previous_manager
+            FocusService._instance = previous_focus
+
+    def test_revealed_native_dock_tab_uses_previous_frame_visibility(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Panel:
+            is_open = True
+
+            @staticmethod
+            def is_content_visible():
+                # Some native callbacks arrive after the selected tab has
+                # already submitted its current-frame contents.
+                return True
+
+            @staticmethod
+            def was_content_visible():
+                return False
+
+        previous_manager = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            changes = []
+            focus.add_change_listener(changes.append)
+            focus.activate_panel(
+                "particle_graph_editor",
+                view_id="particle_graph_editor",
+                record_history=False,
+            )
+            changes.clear()
+
+            manager = WindowManager(object())
+            manager.register_existing_window("scene_view", Panel())
+            manager.native_panel_focus_callback("scene_view")(True, True)
+
+            assert focus.snapshot.active_panel_id == "scene_view"
+            assert len(changes) == 1
+            assert changes[0].record_history is True
+            assert changes[0].reason == "pointer_panel_activation"
+        finally:
+            WindowManager._instance = previous_manager
+            FocusService._instance = previous_focus
+
+    def test_native_focus_visibility_comes_from_the_event_source_instance(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class StaleRegisteredPanel:
+            is_open = True
+
+            @staticmethod
+            def is_content_visible():
+                return False
+
+            @staticmethod
+            def was_content_visible():
+                return False
+
+        class RenderingSourcePanel:
+            is_open = True
+
+            @staticmethod
+            def is_content_visible():
+                return True
+
+            @staticmethod
+            def was_content_visible():
+                return True
+
+        previous_manager = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            changes = []
+            focus.add_change_listener(changes.append)
+            focus.activate_panel(
+                "inspector",
+                view_id="inspector",
+                record_history=False,
+            )
+            changes.clear()
+
+            manager = WindowManager(object())
+            manager.register_existing_window("hierarchy", StaleRegisteredPanel())
+            source = RenderingSourcePanel()
+            callback = manager.native_panel_focus_callback(
+                "hierarchy",
+                source_instance=source,
+            )
+            callback(True, True)
+
+            assert focus.snapshot.active_panel_id == "hierarchy"
+            assert len(changes) == 1
+            assert changes[0].record_history is False
+        finally:
+            WindowManager._instance = previous_manager
+            FocusService._instance = previous_focus
+
+    def test_panel_child_context_can_be_restored_by_its_owner(self):
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Panel:
+            is_open = True
+
+            def __init__(self):
+                self.restored = []
+
+            def restore_child_context(self, context_id):
+                self.restored.append(context_id)
+                return context_id in {"", "particle_graph.workspace.parameters"}
+
+        previous = WindowManager._instance
+        try:
+            manager = WindowManager(object())
+            panel = Panel()
+            manager.register_existing_window("particle_graph_editor", panel)
+
+            assert manager.restore_panel_child_context(
+                "particle_graph_editor",
+                "particle_graph.workspace.parameters",
+            )
+            assert panel.restored == ["particle_graph.workspace.parameters"]
+            assert not manager.restore_panel_child_context(
+                "particle_graph_editor",
+                "particle_graph.workspace.missing",
+            )
+        finally:
+            WindowManager._instance = previous
+
     def _fresh_manager(self):
         from Infernux.engine.ui.window_manager import WindowManager
         mgr = WindowManager.instance()
@@ -182,6 +1569,7 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_explicit_dynamic_window_state_machine(self):
+        from Infernux.engine.interaction import FocusService
         from Infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
@@ -213,7 +1601,9 @@ class TestWindowManager:
                 self._is_open = True
 
         previous = WindowManager._instance
+        previous_focus = FocusService._instance
         try:
+            focus = FocusService()
             engine = Engine()
             manager = WindowManager(engine)
             manager.register_window_type("dynamic", Panel, "Dynamic", factory=Panel)
@@ -228,13 +1618,18 @@ class TestWindowManager:
             manager.process_pending_actions()
             assert manager.get_window_state("dynamic") is WindowState.FOCUSED
             assert engine.focused == ["dynamic"]
+            focus.activate_panel("dynamic", view_id="dynamic", record_history=False)
 
             manager.close_window("dynamic")
             assert manager.get_window_state("dynamic") is WindowState.CLOSING
+            assert focus.snapshot.active_panel_id == ""
+            manager.observe_native_panel_focus("dynamic", True, view_id="dynamic")
+            assert focus.snapshot.active_panel_id == ""
             manager.process_pending_actions()
             assert manager.get_window_state("dynamic") is WindowState.CLOSED
             assert "dynamic" not in engine.registered
         finally:
+            FocusService._instance = previous_focus
             WindowManager._instance = previous
 
     def test_focus_window_requires_known_open_panel(self):
@@ -280,7 +1675,385 @@ class TestWindowManager:
         finally:
             WindowManager._instance = previous
 
+    def test_load_state_projects_restored_front_tab_into_focus_service(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.focused = []
+
+            def select_docked_window(self, window_id):
+                self.focused.append(window_id)
+
+        class Panel:
+            def __init__(self):
+                self.is_open = True
+
+            def set_open(self, value):
+                self.is_open = bool(value)
+
+        previous = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            focus.activate_panel(
+                "particle_graph_editor",
+                view_id="particle_graph_editor",
+                record_history=False,
+            )
+            engine = Engine()
+            manager = WindowManager(engine)
+            manager.register_window_type("console", Panel, "Console", factory=Panel)
+            manager.register_existing_window("console", Panel(), "console")
+
+            manager.load_state(
+                {
+                    "open_windows": {"console": True},
+                    "active_panel_id": "particle_graph_editor",
+                    "project_console_front_id": "console",
+                }
+            )
+
+            assert engine.focused == ["console"]
+            assert manager.get_window_state("console") is WindowState.FOCUSED
+            assert focus.snapshot.active_panel_id == "console"
+            assert focus.snapshot.active_view_id == "console"
+        finally:
+            WindowManager._instance = previous
+            FocusService._instance = previous_focus
+
+    def test_completed_imgui_focus_reconciles_child_window_to_owning_panel(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Panel:
+            def __init__(self):
+                self.is_open = True
+
+        previous = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            focus.activate_panel(
+                "particle_graph_editor",
+                view_id="particle_graph_editor",
+                record_history=False,
+            )
+            manager = WindowManager(object())
+            manager.register_existing_window("particle_graph_editor", Panel())
+            manager.register_existing_window("project", Panel())
+
+            child_id = "project/##project_browser/##file_grid"
+            assert manager.resolve_native_gui_panel_id(child_id) == "project"
+            assert manager.observe_native_gui_window_focus(child_id)
+            assert focus.snapshot.active_panel_id == "project"
+            assert manager.get_window_state("project") is WindowState.FOCUSED
+
+            assert not manager.observe_native_gui_window_focus("##SaveResourceModal")
+            assert focus.snapshot.active_panel_id == "project"
+            assert not manager.observe_native_gui_window_focus(child_id)
+        finally:
+            WindowManager._instance = previous
+            FocusService._instance = previous_focus
+
+    def test_completed_imgui_focus_rebinds_document_for_already_focused_panel(self):
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            DocumentRegistry,
+            FocusService,
+        )
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Panel:
+            def __init__(self):
+                self.is_open = True
+
+        previous = WindowManager._instance
+        previous_focus = FocusService._instance
+        previous_registry = DocumentRegistry._instance
+        try:
+            focus = FocusService()
+            registry = DocumentRegistry()
+            manager = WindowManager(object())
+            manager.register_existing_window("inspector", Panel())
+
+            child_id = "inspector/##asset_inspector"
+            assert manager.observe_native_gui_window_focus(child_id)
+            assert focus.snapshot.active_panel_id == "inspector"
+            assert focus.snapshot.active_document_id == ""
+
+            document = registry.create(DocumentKind.MATERIAL, "Material")
+            registry.attach_view(document.document_id, "inspector")
+
+            # The native panel did not change, but its active document did.
+            assert manager.observe_native_gui_window_focus(child_id)
+            assert focus.snapshot.active_panel_id == "inspector"
+            assert focus.snapshot.active_document_id == document.document_id
+            assert not manager.observe_native_gui_window_focus(child_id)
+        finally:
+            WindowManager._instance = previous
+            DocumentRegistry._instance = previous_registry
+            FocusService._instance = previous_focus
+
+    def test_dynamic_window_locator_restores_instance_and_focuses_after_register(self):
+        from Infernux.engine.interaction import ContextRestoreStatus, FocusService
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.registered = {}
+                self.focused = []
+
+            def register_gui(self, window_id, instance):
+                self.registered[window_id] = instance
+
+            def unregister_gui(self, window_id):
+                self.registered.pop(window_id)
+
+            def select_docked_window(self, window_id):
+                self.focused.append(window_id)
+
+        class Panel:
+            def __init__(self):
+                self._is_open = False
+
+            @property
+            def is_open(self):
+                return self._is_open
+
+            def set_open(self, value):
+                self._is_open = bool(value)
+
+            def open(self):
+                self._is_open = True
+
+            def set_window_manager(self, manager):
+                self.manager = manager
+
+        previous = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            focus_changes = []
+            focus.add_change_listener(focus_changes.append)
+            engine = Engine()
+            manager = WindowManager(engine)
+            manager.register_window_type("graph", Panel, "Graph", factory=Panel)
+            manager.open_window("graph", instance_id="graph/asset-a")
+            manager.process_pending_actions()
+            locator = manager.locate_window("graph/asset-a")
+            assert locator.window_id == "graph/asset-a"
+            assert locator.type_id == "graph"
+
+            manager.close_window("graph/asset-a")
+            manager.process_pending_actions()
+            assert manager.get_window_state("graph/asset-a") is WindowState.CLOSED
+
+            assert manager.restore_window(locator) is ContextRestoreStatus.PENDING
+            assert manager.get_window_state("graph/asset-a") is WindowState.OPENING
+            manager.process_pending_actions()
+
+            assert manager.get_window_state("graph/asset-a") is WindowState.FOCUSED
+            assert "graph/asset-a" in engine.registered
+            assert engine.focused == ["graph/asset-a"]
+            assert manager.restore_window(locator) is ContextRestoreStatus.PENDING
+
+            manager.observe_native_panel_focus(
+                "graph/asset-a", True, view_id="graph/asset-a"
+            )
+            assert manager.restore_window(locator) is ContextRestoreStatus.READY
+            assert [change.record_history for change in focus_changes] == [False]
+        finally:
+            WindowManager._instance = previous
+            FocusService._instance = previous_focus
+
+    def test_visible_window_locator_does_not_steal_focus(self):
+        from Infernux.engine.interaction import ContextRestoreStatus, FocusService
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Engine:
+            def __init__(self):
+                self.focused = []
+
+            def select_docked_window(self, window_id):
+                self.focused.append(window_id)
+
+        class Panel:
+            is_open = True
+
+            @staticmethod
+            def is_content_visible():
+                return True
+
+            @staticmethod
+            def was_content_visible():
+                return True
+
+        previous = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            focus.activate_panel(
+                "scene_view",
+                view_id="scene_view",
+                record_history=False,
+            )
+            engine = Engine()
+            manager = WindowManager(engine)
+            manager.register_existing_window("inspector", Panel())
+
+            locator = manager.locate_window("inspector")
+            assert manager.is_window_content_visible("inspector")
+            assert manager.was_window_content_visible("inspector")
+            assert manager.restore_window(locator) is ContextRestoreStatus.READY
+            assert focus.snapshot.active_view_id == "scene_view"
+            assert engine.focused == []
+        finally:
+            WindowManager._instance = previous
+            FocusService._instance = previous_focus
+
+    def test_hidden_dock_tab_still_requests_focus(self):
+        from Infernux.engine.interaction import ContextRestoreStatus, FocusService
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.focused = []
+
+            def select_docked_window(self, window_id):
+                self.focused.append(window_id)
+
+        class Panel:
+            is_open = True
+
+            @staticmethod
+            def is_content_visible():
+                return False
+
+            @staticmethod
+            def was_content_visible():
+                return False
+
+        previous = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            FocusService()
+            engine = Engine()
+            manager = WindowManager(engine)
+            manager.register_existing_window("console", Panel())
+            locator = manager.locate_window("console")
+
+            assert manager.restore_window(locator) is ContextRestoreStatus.PENDING
+            assert manager.get_window_state("console") is WindowState.FOCUS_REQUESTED
+            manager.process_pending_actions()
+            assert engine.focused == ["console"]
+        finally:
+            WindowManager._instance = previous
+            FocusService._instance = previous_focus
+
+    def test_hidden_dock_tab_does_not_restore_from_logical_focus_alone(self):
+        from Infernux.engine.interaction import ContextRestoreStatus, FocusService
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.focused = []
+
+            def select_docked_window(self, window_id):
+                self.focused.append(window_id)
+
+        class Panel:
+            is_open = True
+            presented = False
+
+            def is_content_visible(self):
+                return self.presented
+
+            def was_content_visible(self):
+                return self.presented
+
+        previous = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            engine = Engine()
+            panel = Panel()
+            manager = WindowManager(engine)
+            manager.register_existing_window("scene_view", panel)
+            locator = manager.locate_window("scene_view")
+
+            # Context restore applies its logical snapshot before asking the
+            # WindowManager to reveal the recorded dock tab.
+            focus.activate_panel(
+                "scene_view",
+                view_id="scene_view",
+                record_history=False,
+            )
+            manager._window_states["scene_view"] = WindowState.FOCUSED
+
+            assert manager.restore_window(locator) is ContextRestoreStatus.PENDING
+            assert manager.get_window_state("scene_view") is WindowState.FOCUS_REQUESTED
+            manager.process_pending_actions()
+            assert engine.focused == ["scene_view"]
+
+            assert manager.restore_window(locator) is ContextRestoreStatus.READY
+        finally:
+            WindowManager._instance = previous
+            FocusService._instance = previous_focus
+
+    def test_builtin_window_locator_restores_without_dynamic_type_registration(self):
+        from Infernux.engine.interaction import ContextRestoreStatus, FocusService
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.focused = []
+
+            def select_docked_window(self, window_id):
+                self.focused.append(window_id)
+
+        class Panel:
+            def __init__(self):
+                self._is_open = True
+
+            @property
+            def is_open(self):
+                return self._is_open
+
+            def set_open(self, value):
+                self._is_open = bool(value)
+
+        previous = WindowManager._instance
+        previous_focus = FocusService._instance
+        try:
+            focus = FocusService()
+            engine = Engine()
+            panel = Panel()
+            manager = WindowManager(engine)
+            manager.register_existing_window("hierarchy", panel)
+            locator = manager.locate_window("hierarchy")
+
+            manager.close_window("hierarchy")
+            assert manager.get_window_state("hierarchy") is WindowState.CLOSED
+            assert panel.is_open is False
+
+            assert manager.restore_window(locator) is ContextRestoreStatus.PENDING
+            assert manager.get_window_state("hierarchy") is WindowState.FOCUS_REQUESTED
+            assert panel.is_open is True
+            manager.process_pending_actions()
+            manager.observe_native_panel_focus(
+                "hierarchy", True, view_id="hierarchy"
+            )
+
+            assert manager.restore_window(locator) is ContextRestoreStatus.READY
+            assert engine.focused == ["hierarchy"]
+        finally:
+            WindowManager._instance = previous
+            FocusService._instance = previous_focus
+
     def test_builtin_window_closes_without_unregistering(self):
+        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
         from Infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
@@ -305,18 +2078,23 @@ class TestWindowManager:
                 self.is_open = value
 
         previous = WindowManager._instance
+        previous_registry = DocumentRegistry._instance
         try:
+            registry = DocumentRegistry()
             engine = Engine()
             manager = WindowManager(engine)
             panel = Panel()
             engine.registered["builtin"] = panel
             manager.register_window_type("builtin", Panel, "Builtin", factory=Panel)
             manager.register_existing_window("builtin", panel, "builtin")
+            document = registry.create(DocumentKind.SCENE, "Scene")
+            registry.attach_view(document.document_id, "builtin")
 
             manager.close_window("builtin")
             assert manager.get_window_state("builtin") is WindowState.CLOSED
             assert engine.registered["builtin"] is panel
             assert panel.is_open is False
+            assert registry.document_for_view("builtin") is document
 
             assert manager.open_window("builtin") is panel
             manager.process_pending_actions()
@@ -324,7 +2102,223 @@ class TestWindowManager:
             assert panel.is_open is True
             assert engine.focused == ["builtin"]
         finally:
+            DocumentRegistry._instance = previous_registry
             WindowManager._instance = previous
+
+    def test_destroyed_dynamic_window_releases_its_document_view(self):
+        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Engine:
+            @staticmethod
+            def register_gui(_window_id, _instance):
+                pass
+
+            @staticmethod
+            def unregister_gui(_window_id):
+                pass
+
+        previous_manager = WindowManager._instance
+        previous_registry = DocumentRegistry._instance
+        try:
+            registry = DocumentRegistry()
+            manager = WindowManager(Engine())
+            manager.register_window_type(
+                "graph", ClosablePanel, "Graph", factory=lambda: ClosablePanel("Graph", "graph")
+            )
+            panel = manager.open_window("graph")
+            manager.process_pending_actions()
+            document = registry.create(DocumentKind.PARTICLE_GRAPH, "Graph")
+            panel.bind_document(document.document_id)
+
+            manager.close_window("graph")
+
+            assert panel.document_id == ""
+            assert registry.document_for_view("graph") is None
+            assert registry.get(document.document_id) is None
+        finally:
+            DocumentRegistry._instance = previous_registry
+            WindowManager._instance = previous_manager
+
+    def test_reopened_dynamic_singleton_restores_its_document_binding(self):
+        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        class Engine:
+            @staticmethod
+            def register_gui(_window_id, _instance):
+                pass
+
+            @staticmethod
+            def unregister_gui(_window_id):
+                pass
+
+        previous_manager = WindowManager._instance
+        previous_registry = DocumentRegistry._instance
+        try:
+            registry = DocumentRegistry()
+            manager = WindowManager(Engine())
+            manager.register_window_type(
+                "graph",
+                ClosablePanel,
+                "Graph",
+                factory=lambda: ClosablePanel("Graph", "graph"),
+            )
+            panel = manager.open_window("graph")
+            manager.process_pending_actions()
+            document = registry.create(DocumentKind.PARTICLE_GRAPH, "Graph")
+            panel.bind_document(document.document_id)
+            original_stable_id = document.stable_id
+
+            manager.close_window("graph")
+            manager.process_pending_actions()
+            assert panel.document_id == ""
+
+            reopened = manager.open_window("graph")
+            manager.process_pending_actions()
+
+            assert reopened is panel
+            assert reopened.document_id == document.document_id
+            restored = registry.require(reopened.document_id)
+            assert restored.stable_id == original_stable_id
+            assert registry.document_for_view("graph") is restored
+        finally:
+            DocumentRegistry._instance = previous_registry
+            WindowManager._instance = previous_manager
+
+    def test_dynamic_window_reopen_waits_for_native_close_transaction(self):
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.registered = {}
+                self.events = []
+
+            def register_gui(self, window_id, instance):
+                assert window_id not in self.registered
+                self.registered[window_id] = instance
+                self.events.append(("register", window_id))
+
+            def unregister_gui(self, window_id):
+                self.registered.pop(window_id)
+                self.events.append(("unregister", window_id))
+
+        class Panel:
+            def __init__(self):
+                self.is_open = True
+
+            def open(self):
+                self.is_open = True
+
+            def set_open(self, value):
+                self.is_open = bool(value)
+
+            def request_close(self):
+                return True
+
+        previous = WindowManager._instance
+        try:
+            engine = Engine()
+            manager = WindowManager(engine)
+            manager.register_window_type("graph", Panel, "Graph", factory=Panel)
+            panel = manager.open_window("graph")
+            manager.process_pending_actions()
+            assert manager.get_window_state("graph") is WindowState.OPEN
+
+            manager.close_window("graph")
+            assert manager.get_window_state("graph") is WindowState.CLOSING
+            assert manager.open_window("graph") is panel
+            assert manager.get_window_state("graph") is WindowState.CLOSING
+
+            manager.process_pending_actions()
+
+            assert engine.events == [
+                ("register", "graph"),
+                ("unregister", "graph"),
+                ("register", "graph"),
+            ]
+            assert manager.get_window_state("graph") is WindowState.OPEN
+            assert manager.get_window_instance("graph") is panel
+            assert panel.is_open is True
+        finally:
+            WindowManager._instance = previous
+
+    def test_user_reopen_during_close_publishes_focus_after_registration(self, monkeypatch):
+        from Infernux.engine.interaction import (
+            EditorInteractionCore,
+            PanelInteractionDescriptor,
+        )
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.registered = {}
+                self.focused = []
+
+            def register_gui(self, window_id, instance):
+                assert window_id not in self.registered
+                self.registered[window_id] = instance
+
+            def unregister_gui(self, window_id):
+                self.registered.pop(window_id)
+
+            def select_docked_window(self, window_id):
+                self.focused.append(window_id)
+
+        previous_manager = WindowManager._instance
+        core = EditorInteractionCore()
+        changes = []
+        core.focus.add_change_listener(changes.append)
+        try:
+            monkeypatch.setattr(
+                WindowManager,
+                "_native_window_content_visible",
+                staticmethod(lambda _window_id: False),
+            )
+            monkeypatch.setattr(
+                WindowManager,
+                "_native_window_presented_dock_peer",
+                staticmethod(lambda _window_id: "project"),
+            )
+            engine = Engine()
+            manager = WindowManager(engine)
+            manager.set_panel_interaction_registry(core.panels)
+            core.panels.register_type("graph", PanelInteractionDescriptor())
+            manager.register_window_type(
+                "graph",
+                ClosablePanel,
+                "Graph",
+                factory=lambda: ClosablePanel("Graph", "graph"),
+            )
+            panel = manager.open_window("graph")
+            manager.process_pending_actions()
+            core.focus.activate_panel(
+                "project",
+                view_id="project",
+                record_history=False,
+            )
+            changes.clear()
+
+            manager.close_window("graph")
+            assert manager.get_window_state("graph") is WindowState.CLOSING
+            assert manager.open_window_from_user("graph") is panel
+            assert core.focus.snapshot.active_view_id == "project"
+
+            manager.process_pending_actions()
+
+            assert manager.get_window_state("graph") is WindowState.FOCUSED
+            assert engine.registered["graph"] is panel
+            assert engine.focused == ["graph"]
+            assert core.focus.snapshot.active_view_id == "graph"
+            recorded = [change for change in changes if change.record_history]
+            assert len(recorded) == 1
+            assert recorded[0].reason == "window_open_command"
+        finally:
+            core.shutdown()
+            WindowManager._instance = previous_manager
 
     def test_window_menu_close_respects_panel_close_deferral(self):
         from Infernux.engine.ui.window_manager import WindowManager, WindowState
@@ -683,82 +2677,161 @@ class TestUIButtonPersistentDispatch:
         ]
 
 
-def test_focused_save_routes_to_document_then_falls_back_to_scene():
-    from Infernux.engine._bootstrap_wiring import BootstrapWiringMixin
-    from Infernux.engine.ui.closable_panel import ClosablePanel
+def test_focused_save_rejects_stale_document_instead_of_saving_scene():
+    from Infernux.engine.interaction import (
+        DocumentCapability,
+        DocumentKind,
+        DocumentRegistry,
+        EditorSaveService,
+        FocusService,
+    )
+    from Infernux.engine.scene_manager import SceneFileManager
 
-    calls = []
+    class Controller:
+        calls = 0
 
-    class Panel:
-        @staticmethod
-        def handle_save_command(save_as=False):
-            calls.append(("document", save_as))
-            return True
+        def save(self, *, ticket, save_as=False):
+            self.calls += 1
+            DocumentRegistry.instance().complete_save(ticket.ticket_id, success=True)
 
-    class WindowManager:
-        panel = Panel()
-
-        @classmethod
-        def get_window_instance(cls, panel_id):
-            return cls.panel if panel_id == "timeline" else None
-
-    class SceneFiles:
-        @staticmethod
-        def save_current_scene():
-            calls.append(("scene", False))
-
-        @staticmethod
-        def save_scene_as():
-            calls.append(("scene", True))
-
-    from Infernux.engine.interaction import FocusService
-
+    registry = DocumentRegistry()
+    scene_controller = Controller()
+    scene = registry.create(
+        DocumentKind.SCENE,
+        "Scene",
+        document_id="scene-document",
+        capabilities=DocumentCapability.SAVE | DocumentCapability.SAVE_AS,
+        controller=scene_controller,
+    )
+    scene.revision = 1
+    previous_scene = SceneFileManager._instance
     previous_focus = FocusService._instance
+    previous_saving = EditorSaveService._instance
+    SceneFileManager._instance = type("SceneFiles", (), {"document_id": scene.document_id})()
     focus = FocusService()
+    saving = EditorSaveService(registry)
     try:
-        focus.activate_panel("timeline")
-        BootstrapWiringMixin._save_focused_document(WindowManager, SceneFiles)
-        BootstrapWiringMixin._save_focused_document(
-            WindowManager, SceneFiles, save_as=True
+        focus.activate_panel(
+            "timeline",
+            view_id="timeline",
+            document_id="missing-document",
         )
-        focus.activate_panel("game")
-        BootstrapWiringMixin._save_focused_document(WindowManager, SceneFiles)
+        result = saving.save_focused()
     finally:
+        EditorSaveService._instance = previous_saving
         FocusService._instance = previous_focus
+        SceneFileManager._instance = previous_scene
 
-    assert calls == [
-        ("document", False),
-        ("document", True),
-        ("scene", False),
-    ]
+    assert result.accepted is False
+    assert "no longer registered" in result.result.message
+    assert scene_controller.calls == 0
 
 
 class TestPanelFocusEvents:
-    def test_closable_panel_emits_single_canonical_focus_event(self):
+    def test_scene_change_binds_every_scene_backed_view_to_one_document(self):
+        from Infernux.engine.bootstrap import EditorBootstrap
+        from Infernux.engine.interaction import SelectionService
+
+        class SceneFiles:
+            document_id = "scene-document"
+            callback = None
+
+            def set_on_scene_changed(self, callback):
+                self.callback = callback
+
+        class View:
+            def __init__(self):
+                self.bound = []
+
+            def bind_document(self, document_id):
+                self.bound.append(document_id)
+
+        bootstrap = EditorBootstrap.__new__(EditorBootstrap)
+        bootstrap.scene_file_manager = SceneFiles()
+        bootstrap.scene_view = View()
+        bootstrap.scene_view._fly_to_active = True
+        bootstrap.scene_view._fly_to_last_obj_id = 17
+        bootstrap.scene_view._fly_to_close = True
+        bootstrap.game_view = View()
+        bootstrap.ui_editor = View()
+
+        previous_selection = SelectionService._instance
+        SelectionService()
+        try:
+            bootstrap._setup_scene_change_cleanup()
+            bootstrap.scene_file_manager.callback()
+        finally:
+            SelectionService._instance = previous_selection
+
+        assert bootstrap.scene_view.bound == ["scene-document"]
+        assert bootstrap.game_view.bound == ["scene-document"]
+        assert bootstrap.ui_editor.bound == ["scene-document"]
+
+    def test_document_binding_projects_focus_without_user_history(self):
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            DocumentRegistry,
+            FocusService,
+        )
         from Infernux.engine.ui.closable_panel import ClosablePanel
-        from Infernux.engine.ui.event_bus import EditorEvent, EditorEventBus
+
+        previous_focus = FocusService._instance
+        previous_registry = DocumentRegistry._instance
+        focus = FocusService()
+        registry = DocumentRegistry()
+        changes = []
+        focus.add_change_listener(changes.append)
+        try:
+            panel = ClosablePanel("Graph", "graph")
+            document = registry.create(DocumentKind.GENERIC, "Graph")
+            focus.activate_panel("graph", view_id="graph", record_history=False)
+            changes.clear()
+
+            panel.bind_document(document.document_id)
+            assert focus.snapshot.active_document_id == document.document_id
+            assert [change.record_history for change in changes] == [False]
+
+            changes.clear()
+            panel.unbind_document()
+            assert focus.snapshot.active_document_id == ""
+            assert [change.record_history for change in changes] == [False]
+        finally:
+            DocumentRegistry._instance = previous_registry
+            FocusService._instance = previous_focus
+
+    def test_closable_panel_publishes_focus_only_through_focus_service(self):
+        from Infernux.engine.ui.closable_panel import ClosablePanel
 
         class FocusContext:
             def set_window_focus(self):
                 pass
 
-        bus = EditorEventBus.instance()
         received = []
-        handler = received.append
         from Infernux.engine.interaction import FocusService
 
         previous_focus = FocusService._instance
-        FocusService()
-        bus.subscribe(EditorEvent.PANEL_FOCUSED, handler)
+        focus = FocusService()
+        focus.add_listener(received.append)
         try:
             panel = ClosablePanel("Focus Test", "focus_test")
             panel._activate_panel(FocusContext(), focus_window=True)
             panel._activate_panel(FocusContext(), focus_window=True)
-            assert received == ["focus_test"]
+            assert [snapshot.active_view_id for snapshot in received] == [
+                "focus_test"
+            ]
             assert not hasattr(ClosablePanel, "set_on_panel_focus_changed")
         finally:
-            bus.unsubscribe(EditorEvent.PANEL_FOCUSED, handler)
             FocusService._instance = previous_focus
+
+    def test_untyped_editor_event_bus_cannot_be_reintroduced(self):
+        from pathlib import Path
+
+        root = Path("python/Infernux/engine")
+        assert not (root / "ui" / "event_bus.py").exists()
+        assert all(
+            "EditorEventBus" not in path.read_text(encoding="utf-8")
+            for path in root.rglob("*.py")
+        )
 
     def test_closable_panel_keeps_child_window_focus_as_panel_focus(self):
         from Infernux.engine.ui.closable_panel import ClosablePanel
@@ -781,7 +2854,7 @@ class TestPanelFocusEvents:
 
             def is_window_focused(self, flags):
                 self.focus_flags.append(flags)
-                return flags == 3
+                return flags == 1
 
         panel = ClosablePanel("Child Focus Test", "child_focus_test")
         ctx = FocusContext()
@@ -795,35 +2868,330 @@ class TestPanelFocusEvents:
 
             assert panel._begin_closable_window(ctx) is True
             assert ClosablePanel.get_active_panel_id() == panel.window_id
-            assert ctx.focus_flags == [3]
+            assert ctx.focus_flags == [1]
         finally:
             FocusService._instance = previous_focus
 
-    def test_dirty_registry_sync_is_change_driven(self, monkeypatch):
-        from Infernux.engine import project_context
+    def test_closable_panel_records_pointer_driven_dock_tab_focus(self):
+        from Infernux.engine.interaction import FocusService
         from Infernux.engine.ui.closable_panel import ClosablePanel
 
-        calls = []
-        monkeypatch.setattr(
-            project_context,
-            "set_panel_dirty",
-            lambda panel_id, dirty, **kwargs: calls.append(
-                (panel_id, dirty, kwargs["title"])
-            ),
-        )
+        class FocusContext:
+            @staticmethod
+            def begin_window_closable(_title, _open, _flags):
+                return True, True
+
+            @staticmethod
+            def is_window_hovered(_flags):
+                return False
+
+            @staticmethod
+            def is_mouse_button_clicked(button):
+                return button == 0
+
+            @staticmethod
+            def is_window_focused(_flags):
+                return True
+
+        previous_focus = FocusService._instance
+        focus = FocusService()
+        changes = []
+        focus.add_change_listener(changes.append)
+        try:
+            focus.activate_panel("scene", record_history=False)
+            changes.clear()
+            panel = ClosablePanel("Docked", "docked")
+
+            assert panel._begin_closable_window(FocusContext()) is True
+            assert focus.snapshot.active_panel_id == "docked"
+            assert len(changes) == 1
+            assert changes[0].record_history is True
+        finally:
+            FocusService._instance = previous_focus
+
+    def test_closable_panel_does_not_claim_click_consumed_by_popup(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        class FocusContext:
+            @staticmethod
+            def begin_window_closable(_title, _open, _flags):
+                return True, True
+
+            @staticmethod
+            def is_window_hovered(_flags):
+                return True
+
+            @staticmethod
+            def is_mouse_button_clicked(button):
+                return button == 0
+
+            @staticmethod
+            def is_window_focused(_flags):
+                return True
+
+            @staticmethod
+            def is_pointer_activation_blocked_by_popup():
+                return True
+
+        previous_focus = FocusService._instance
+        focus = FocusService()
+        changes = []
+        focus.add_change_listener(changes.append)
+        try:
+            focus.activate_panel("scene", record_history=False)
+            changes.clear()
+            panel = ClosablePanel("History", "history")
+
+            assert panel._begin_closable_window(FocusContext()) is True
+            assert focus.snapshot.active_panel_id == "scene"
+            assert changes == []
+            assert panel._last_pointer_press_at == 0.0
+        finally:
+            FocusService._instance = previous_focus
+
+    def test_closable_panel_does_not_record_focus_when_already_visible(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        class FocusContext:
+            @staticmethod
+            def begin_window_closable(_title, _open, _flags):
+                return True, True
+
+            @staticmethod
+            def is_window_hovered(_flags):
+                return True
+
+            @staticmethod
+            def is_mouse_button_clicked(button):
+                return button == 0
+
+            @staticmethod
+            def is_window_focused(_flags):
+                return True
+
+            @staticmethod
+            def set_window_focus():
+                pass
+
+        previous_focus = FocusService._instance
+        focus = FocusService()
+        changes = []
+        focus.add_change_listener(changes.append)
+        try:
+            focus.activate_panel("scene", record_history=False)
+            changes.clear()
+            panel = ClosablePanel("Docked", "docked")
+            panel._content_visible_previous_frame = True
+
+            assert panel._begin_closable_window(FocusContext()) is True
+            assert focus.snapshot.active_panel_id == "docked"
+            assert len(changes) == 1
+            assert changes[0].record_history is False
+        finally:
+            FocusService._instance = previous_focus
+
+    def test_closable_panel_carries_dock_press_to_next_focus_frame(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        class FocusContext:
+            def __init__(self):
+                self.visible = False
+                self.clicked = True
+
+            def begin_window_closable(self, _title, _open, _flags):
+                return self.visible, True
+
+            @staticmethod
+            def is_window_hovered(_flags):
+                return False
+
+            def is_mouse_button_clicked(self, button):
+                return self.clicked and button == 0
+
+            def is_window_focused(self, _flags):
+                return self.visible
+
+        previous_focus = FocusService._instance
+        focus = FocusService()
+        changes = []
+        focus.add_change_listener(changes.append)
+        try:
+            focus.activate_panel("scene", record_history=False)
+            changes.clear()
+            panel = ClosablePanel("Docked", "docked")
+            ctx = FocusContext()
+
+            assert panel._begin_closable_window(ctx) is False
+            ctx.visible = True
+            ctx.clicked = False
+            assert panel._begin_closable_window(ctx) is True
+
+            assert focus.snapshot.active_panel_id == "docked"
+            assert len(changes) == 1
+            assert changes[0].record_history is True
+        finally:
+            FocusService._instance = previous_focus
+
+    def test_hidden_dock_tab_clears_stale_focus_latch_before_reveal(self):
+        from Infernux.engine.interaction import FocusService
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        class FocusContext:
+            def __init__(self):
+                self.visible = False
+                self.clicked = False
+
+            def begin_window_closable(self, _title, _open, _flags):
+                return self.visible, True
+
+            @staticmethod
+            def is_window_hovered(_flags):
+                return False
+
+            def is_mouse_button_clicked(self, button):
+                return self.clicked and button == 0
+
+            def is_window_focused(self, _flags):
+                return self.visible
+
+        previous_focus = FocusService._instance
+        focus = FocusService()
+        changes = []
+        focus.add_change_listener(changes.append)
+        try:
+            panel = ClosablePanel("Scene", "scene_view")
+            panel._panel_was_focused = True
+            focus.activate_panel(
+                "particle_graph_editor",
+                view_id="particle_graph_editor",
+                record_history=False,
+            )
+            changes.clear()
+            ctx = FocusContext()
+
+            # The Scene tab is still submitted by the dock host, but its
+            # content is hidden behind Particle Graph.
+            assert panel._begin_closable_window(ctx) is False
+            assert panel._panel_was_focused is False
+            assert focus.snapshot.active_view_id == "particle_graph_editor"
+
+            # Revealing Scene must now create an independent navigation item.
+            ctx.visible = True
+            ctx.clicked = True
+            assert panel._begin_closable_window(ctx) is True
+
+            assert focus.snapshot.active_view_id == "scene_view"
+            assert len(changes) == 1
+            assert changes[0].record_history is True
+        finally:
+            FocusService._instance = previous_focus
+
+    def test_non_authoring_panel_does_not_create_a_legacy_document(self):
+        from Infernux.engine.interaction import DocumentRegistry
+        from Infernux.engine.ui.closable_panel import ClosablePanel
 
         panel = ClosablePanel("Probe", "dirty_probe")
-        panel._dirty = False
-        panel._sync_dirty_registry()
-        panel._sync_dirty_registry()
-        panel._dirty = True
         panel._sync_dirty_registry()
         panel._sync_dirty_registry()
 
-        assert calls == [
-            ("dirty_probe", False, "Probe"),
-            ("dirty_probe", True, "Probe"),
-        ]
+        assert DocumentRegistry.instance().document_for_view(panel.window_id) is None
+
+    def test_bound_document_dirty_state_is_a_per_view_panel_title_capability(self):
+        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        previous_registry = DocumentRegistry._instance
+        registry = DocumentRegistry()
+        try:
+            document = registry.create(DocumentKind.PROJECT_SETTINGS, "Settings")
+            panel = ClosablePanel("Settings", "settings")
+            panel.bind_document(document.document_id)
+
+            assert panel._window_title_suffix() == ""
+            registry.mark_changed(document.document_id)
+            assert panel._window_title_suffix() == " *"
+            registry.mark_saved(document.document_id)
+            assert panel._window_title_suffix() == ""
+        finally:
+            DocumentRegistry._instance = previous_registry
+
+    def test_shared_scene_document_does_not_broadcast_dirty_titles_to_every_view(self):
+        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        previous_registry = DocumentRegistry._instance
+        registry = DocumentRegistry()
+        try:
+            document = registry.create(DocumentKind.SCENE, "Main")
+            scene = ClosablePanel("Scene", "scene_view")
+            game = ClosablePanel("Game", "game_view")
+            ui = ClosablePanel("UI Editor", "ui_editor")
+            for panel in (scene, game, ui):
+                panel.bind_document(document.document_id)
+
+            registry.mark_changed(document.document_id, view_id="ui_editor")
+            assert scene._window_title_suffix() == ""
+            assert game._window_title_suffix() == ""
+            assert ui._window_title_suffix() == " *"
+
+            registry.mark_changed(document.document_id, view_id="scene_view")
+            assert scene._window_title_suffix() == " *"
+            assert game._window_title_suffix() == ""
+            assert ui._window_title_suffix() == " *"
+
+            registry.mark_saved(document.document_id)
+            assert all(panel._window_title_suffix() == "" for panel in (scene, game, ui))
+        finally:
+            DocumentRegistry._instance = previous_registry
+
+    def test_legacy_shared_document_without_owner_chooses_one_view_instead_of_broadcasting(self):
+        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        previous_registry = DocumentRegistry._instance
+        registry = DocumentRegistry()
+        try:
+            document = registry.create(
+                DocumentKind.GENERIC,
+                "Shared",
+                revision=1,
+                saved_revision=0,
+            )
+            first = ClosablePanel("First", "first")
+            second = ClosablePanel("Second", "second")
+            first.bind_document(document.document_id)
+            second.bind_document(document.document_id)
+
+            assert first._window_title_suffix() == " *"
+            assert second._window_title_suffix() == ""
+        finally:
+            DocumentRegistry._instance = previous_registry
+
+    def test_unbound_authoring_panel_reports_once_without_creating_state(
+        self, monkeypatch
+    ):
+        from Infernux.debug import Debug
+        from Infernux.engine.interaction import (
+            DocumentRegistry,
+            PanelInteractionDescriptor,
+        )
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        class _AuthoringProbe(ClosablePanel):
+            PANEL_INTERACTION = PanelInteractionDescriptor(document_backed=True)
+
+        errors = []
+        monkeypatch.setattr(Debug, "log_error", errors.append)
+        panel = _AuthoringProbe("Probe", "dirty_probe")
+        panel._sync_dirty_registry()
+        panel._sync_dirty_registry()
+
+        assert DocumentRegistry.instance().document_for_view(panel.window_id) is None
+        assert len(errors) == 1
+        assert "has no formal DocumentRegistry binding" in errors[0]
 
 
 class TestSceneViewPicking:
@@ -888,7 +3256,7 @@ class TestSceneViewPicking:
 
     def test_particle_refinement_keeps_icon_selection_but_joins_cycle(self, monkeypatch):
         from Infernux.engine.ui import _scene_view_picking as picking
-        from Infernux.engine.ui.selection_manager import SelectionManager
+        from Infernux.engine.interaction import SelectionService
 
         class Engine:
             @staticmethod
@@ -926,9 +3294,9 @@ class TestSceneViewPicking:
             7: 3.0,
         }[object_id])
 
-        sel = SelectionManager.instance()
-        previous = list(sel.get_ids())
-        sel.select(42)
+        sel = SelectionService.instance()
+        previous = sel.snapshot
+        sel.select_scene_object(42, owner_id="scene_view", record_history=False)
         try:
             probe = PickingProbe()
             probe._poll_scene_object_pick()
@@ -936,14 +3304,11 @@ class TestSceneViewPicking:
             assert probe._pick_cycle_candidates == [42, 99, 7]
             assert probe._pick_cycle_index == 0
         finally:
-            if previous:
-                sel.set_ids(previous)
-            else:
-                sel.clear()
+            sel.apply_snapshot(previous, record_history=False)
 
     def test_particle_refinement_corrects_mesh_behind_spray(self, monkeypatch):
         from Infernux.engine.ui import _scene_view_picking as picking
-        from Infernux.engine.ui.selection_manager import SelectionManager
+        from Infernux.engine.interaction import SelectionService
 
         class Engine:
             @staticmethod
@@ -980,9 +3345,9 @@ class TestSceneViewPicking:
             7: 3.0,
         }[object_id])
 
-        sel = SelectionManager.instance()
-        previous = list(sel.get_ids())
-        sel.select(7)
+        sel = SelectionService.instance()
+        previous = sel.snapshot
+        sel.select_scene_object(7, owner_id="scene_view", record_history=False)
         try:
             probe = PickingProbe()
             probe._poll_scene_object_pick()
@@ -990,10 +3355,62 @@ class TestSceneViewPicking:
             assert probe._pick_cycle_candidates == [99, 7]
             assert probe._pick_cycle_index == 0
         finally:
-            if previous:
-                sel.set_ids(previous)
-            else:
-                sel.clear()
+            sel.apply_snapshot(previous, record_history=False)
+
+    def test_particle_refinement_cannot_overwrite_a_newer_selection(self, monkeypatch):
+        from Infernux.engine.ui import _scene_view_picking as picking
+        from Infernux.engine.interaction import SelectionService
+
+        class Engine:
+            @staticmethod
+            def query_scene_object_pick(_request_id):
+                return {"status": "completed", "object_id": 99}
+
+            @staticmethod
+            def screen_to_world_ray(*_args):
+                return (0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+
+        selection = SelectionService.instance()
+        previous = selection.snapshot
+        selection.select_scene_object(7, owner_id="scene_view", record_history=False)
+        request_revision = selection.revision
+
+        class PickingProbe(picking.SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._document_id = "scene-a"
+                self._pending_scene_pick = {
+                    "request_id": 1,
+                    "x": 10.0,
+                    "y": 12.0,
+                    "width": 100.0,
+                    "height": 80.0,
+                    "cpu_id": 7,
+                    "cpu_candidates": [7],
+                    "selection_revision": request_revision,
+                    "document_id": "scene-a",
+                }
+                self._pick_cycle_candidates = [7]
+                self._pick_cycle_index = 0
+                self._pick_cycle_last_mouse = (-1.0, -1.0)
+                self._pick_cycle_last_viewport = (0, 0)
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append((object_id, ctrl))
+
+            @property
+            def document_id(self):
+                return self._document_id
+
+        monkeypatch.setattr(picking, "_owns_particle_system", lambda object_id: object_id == 99)
+        monkeypatch.setattr(picking, "_is_icon_only_pick_target", lambda _object_id: False)
+        try:
+            selection.select_scene_object(42, owner_id="hierarchy", record_history=False)
+            selection.select_scene_object(7, owner_id="scene_view", record_history=False)
+            probe = PickingProbe()
+            probe._poll_scene_object_pick()
+            assert probe.picked == []
+        finally:
+            selection.apply_snapshot(previous, record_history=False)
 
     def test_same_spot_click_keeps_particle_in_depth_cycle(self, monkeypatch):
         from Infernux.engine.ui import _scene_view_picking as picking
@@ -1042,6 +3459,74 @@ class TestSceneViewPicking:
 
 
 class TestEditorPanelVisibilityLifecycle:
+    def test_panel_content_failure_is_isolated_and_deduplicated(self, monkeypatch):
+        from Infernux.debug import Debug
+        from Infernux.engine.ui.editor_panel import EditorPanel
+
+        class Context:
+            @staticmethod
+            def end_window():
+                pass
+
+        class ProbePanel(EditorPanel):
+            def __init__(self):
+                super().__init__("Probe", "probe")
+                self.should_fail = True
+
+            def _begin_closable_window(self, _ctx, _flags=0):
+                return True
+
+            def on_render_content(self, _ctx):
+                if self.should_fail:
+                    raise AttributeError("missing widget API")
+
+        errors = []
+        monkeypatch.setattr(Debug, "log_error", errors.append)
+        panel = ProbePanel()
+
+        panel.on_render(Context())
+        panel.on_render(Context())
+        assert len(errors) == 1
+        assert "missing widget API" in errors[0]
+
+        panel.should_fail = False
+        panel.on_render(Context())
+        panel.should_fail = True
+        panel.on_render(Context())
+        assert len(errors) == 2
+
+    def test_dock_presentation_survives_begin_window_false(self):
+        from Infernux.engine.ui.editor_panel import EditorPanel
+
+        class Context:
+            @staticmethod
+            def begin_window_closable(_title, _open, _flags):
+                # ImGui may skip content submission on a throttled editor
+                # frame even though this remains the selected dock tab.
+                return False, True
+
+            @staticmethod
+            def is_current_window_content_presented():
+                return True
+
+            @staticmethod
+            def is_mouse_button_clicked(_button):
+                return False
+
+            @staticmethod
+            def is_window_focused(_flags):
+                return False
+
+            @staticmethod
+            def end_window():
+                pass
+
+        panel = EditorPanel("Probe", "probe")
+        panel.on_render(Context())
+
+        assert panel.is_content_visible() is True
+        assert panel._content_was_visible is True
+
     def test_hidden_hook_runs_only_on_visibility_transitions(self):
         from Infernux.engine.ui.editor_panel import EditorPanel
 
@@ -1078,3 +3563,124 @@ class TestEditorPanelVisibilityLifecycle:
         assert panel.hidden_calls == 2
         assert panel.visible_calls == 1
         assert panel.content_calls == 1
+
+
+def test_ui_editor_nudge_executes_before_recording_and_replays_through_history():
+    from types import SimpleNamespace
+
+    from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
+    from Infernux.engine.undo import UndoManager
+
+    class ProbePanel(UIEditorPanel):
+        def __init__(self, element):
+            super().__init__()
+            self.element = element
+
+        @property
+        def _selected_element_comp(self):
+            return self.element
+
+    previous_manager = UndoManager.instance()
+    manager = UndoManager()
+    panel = ProbePanel(SimpleNamespace(x=12.0, y=24.0))
+    try:
+        assert panel.command_nudge_selected(-1, 10)
+        assert (panel.element.x, panel.element.y) == (11.0, 34.0)
+        assert manager.undo_description == "Nudge UI Element"
+
+        manager.undo()
+        assert (panel.element.x, panel.element.y) == (12.0, 24.0)
+        manager.redo()
+        assert (panel.element.x, panel.element.y) == (11.0, 34.0)
+    finally:
+        UndoManager._instance = previous_manager
+
+
+def test_ui_editor_selection_identity_uses_game_object_id_not_wrapper_identity():
+    from types import SimpleNamespace
+
+    from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
+
+    first_wrapper = SimpleNamespace(game_object=SimpleNamespace(id=42))
+    refreshed_wrapper = SimpleNamespace(game_object=SimpleNamespace(id=42))
+
+    assert first_wrapper is not refreshed_wrapper
+    assert UIEditorPanel._element_object_id(first_wrapper) == UIEditorPanel._element_object_id(
+        refreshed_wrapper
+    )
+
+
+def test_ui_editor_continuous_manipulation_is_core_owned_and_fail_closed():
+    from types import SimpleNamespace
+
+    from Infernux.engine.interaction import (
+        ContinuousEditService,
+        EditorContextSnapshot,
+        EditorInteractionCore,
+        FocusService,
+    )
+    from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
+    from Infernux.engine.undo import UndoManager
+
+    class ProbePanel(UIEditorPanel):
+        def __init__(self, element):
+            super().__init__()
+            self.element = element
+
+        @property
+        def _selected_element_comp(self):
+            return self.element
+
+    previous_manager = UndoManager.instance()
+    previous_core = EditorInteractionCore._instance
+    previous_edits = ContinuousEditService._instance
+    previous_focus = FocusService._instance
+    manager = UndoManager()
+    edits = ContinuousEditService()
+    focus = FocusService()
+    core = SimpleNamespace(
+        continuous_edits=edits,
+        focus=focus,
+        capture_context=lambda: EditorContextSnapshot(focus=focus.snapshot),
+    )
+    EditorInteractionCore._instance = core
+    element = SimpleNamespace(x=12.0, y=24.0, rotation=0.0)
+    panel = ProbePanel(element)
+    try:
+        assert panel._begin_element_manipulation("drag", element)
+        assert focus.snapshot.capture_owner_id == "ui_editor.manipulation"
+        assert edits.active_count == 1
+        assert panel._mutate_element_manipulation(
+            lambda: (setattr(element, "x", 32.0), setattr(element, "y", 44.0))
+        )
+        assert panel._finish_element_manipulation(commit=True)
+        assert edits.active_count == 0
+        assert focus.snapshot.capture_owner_id == ""
+        assert manager.undo_description == "Move UI Element"
+        entry = manager.action_journal.peek_undo()
+        assert entry is not None
+        assert entry.after_context.focus.capture_owner_id == ""
+
+        manager.undo()
+        assert (element.x, element.y) == (12.0, 24.0)
+        manager.redo()
+        assert (element.x, element.y) == (32.0, 44.0)
+
+        assert panel._begin_element_manipulation("rotate", element)
+        assert panel._mutate_element_manipulation(
+            lambda: setattr(element, "rotation", 90.0)
+        )
+        assert panel._finish_element_manipulation(commit=False)
+        assert element.rotation == 0.0
+        assert manager.undo_description == "Move UI Element"
+
+        manager.enabled = False
+        before = (element.x, element.y)
+        assert not panel._begin_element_manipulation("drag", element)
+        assert not panel._apply_drag_suppressed(100.0, 200.0, 800.0, 600.0)
+        assert (element.x, element.y) == before
+    finally:
+        UndoManager._instance = previous_manager
+        EditorInteractionCore._instance = previous_core
+        ContinuousEditService._instance = previous_edits
+        FocusService._instance = previous_focus

@@ -24,57 +24,6 @@ if TYPE_CHECKING:
     from .component import InxComponent
 
 
-# ── Injectable callbacks (set once by EditorBootstrap) ─────────────
-#
-# These break the circular dependency:
-#     components.serialized_field  →  engine.undo / play_mode / scene_manager
-#
-# ``on_field_will_change(instance, field_name, old, new) -> bool``
-#   Called before storing; returns True if undo handled the write (caller
-#   should ``return`` early).
-#
-# ``on_field_did_change(instance, field_name, old, new) -> None``
-#   Called after storing; responsible for marking-dirty / play-mode guard.
-
-_on_field_will_change: Optional[Callable] = None
-_on_field_did_change: Optional[Callable] = None
-
-
-def set_field_change_hooks(
-    will_change: Optional[Callable] = None,
-    did_change: Optional[Callable] = None,
-) -> None:
-    """Inject editor-level callbacks (called once at startup)."""
-    global _on_field_will_change, _on_field_did_change
-    _on_field_will_change = will_change
-    _on_field_did_change = did_change
-
-
-def _call_field_will_change(instance: 'InxComponent', field_name: str, old_value: Any, new_value: Any) -> bool:
-    if _on_field_will_change is None:
-        return False
-    try:
-        return bool(_on_field_will_change(instance, field_name, old_value, new_value))
-    except Exception as exc:
-        Debug.log_suppressed(
-            f"serialized_field.will_change.{type(instance).__name__}.{field_name}",
-            exc,
-        )
-        return False
-
-
-def _call_field_did_change(instance: 'InxComponent', field_name: str, old_value: Any, new_value: Any) -> None:
-    if _on_field_did_change is None:
-        return
-    try:
-        _on_field_did_change(instance, field_name, old_value, new_value)
-    except Exception as exc:
-        Debug.log_suppressed(
-            f"serialized_field.did_change.{type(instance).__name__}.{field_name}",
-            exc,
-        )
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 #  Unity-style Annotated[] markers
 #
@@ -284,6 +233,28 @@ class FieldMetadata:
     getter: Optional[Callable] = None
     setter: Optional[Callable] = None
 
+    def __post_init__(self) -> None:
+        requires_asset_type = self.field_type == FieldType.ASSET or (
+            self.field_type == FieldType.LIST
+            and self.element_type == FieldType.ASSET
+        )
+        if not requires_asset_type:
+            return
+        token = str(self.asset_type or "").strip()
+        if not token:
+            raise ValueError(
+                "ASSET serialized fields require an explicit asset_type"
+            )
+        from Infernux.core.asset_reference_types import asset_type_registry
+
+        try:
+            descriptor = asset_type_registry.require(token)
+        except KeyError as exc:
+            raise ValueError(
+                f"unknown serialized asset_type {token!r}"
+            ) from exc
+        self.asset_type = descriptor.type_id
+
 
 def copy_serialized_field_default(metadata: FieldMetadata) -> Any:
     """Return an independent default value for one serialized field."""
@@ -401,44 +372,19 @@ class SerializedFieldDescriptor:
         if self._cds_class_id is not None:
             slot = getattr(instance, '_cds_slot', None)
             if slot is not None and getattr(instance, '_cds_class_id', None) == self._cds_class_id:
-                # Undo hook (before write)
-                if not getattr(instance, '_inf_deserializing', False) and _on_field_will_change is not None:
-                    from ._cds_bridge import cds_get
-                    old_value = cds_get(self._cds_class_id, self._cds_field_id, self._cds_type_code, slot)
-                    if old_value != value:
-                        if _call_field_will_change(instance, self.metadata.name, old_value, value):
-                            return
-                from ._cds_bridge import cds_set, cds_get as _cg
-                old = _cg(self._cds_class_id, self._cds_field_id, self._cds_type_code, slot)
+                from ._cds_bridge import cds_set
                 cds_set(self._cds_class_id, self._cds_field_id, self._cds_type_code, slot, value)
-                if not getattr(instance, '_inf_deserializing', False):
-                    if old != value and _on_field_did_change is not None:
-                        _call_field_did_change(instance, self.metadata.name, old, value)
                 return
 
         inst_id = id(instance)
 
-        # --- Undo integration via injectable callback ---
-        if not getattr(instance, '_inf_deserializing', False) and _on_field_will_change is not None:
-            with self._lock:
-                old_value = self._values.get(inst_id, self.metadata.default)
-            if old_value != value:
-                if _call_field_will_change(instance, self.metadata.name, old_value, value):
-                    return  # callback handled the write (undo recorded)
-
         # Normal set path
         with self._lock:
-            old = self._values.get(inst_id, self.metadata.default)
             # Track instance with weak reference for cleanup
             tracked = self._weak_refs.get(inst_id)
             if tracked is None or tracked() is not instance:
                 self._weak_refs[inst_id] = weakref.ref(instance, self._make_ref_callback(inst_id))
             self._values[inst_id] = value
-
-        # Mark scene dirty via injectable callback
-        if not getattr(instance, '_inf_deserializing', False):
-            if old != value and _on_field_did_change is not None:
-                _call_field_did_change(instance, self.metadata.name, old, value)
 
         # Periodic batch cleanup as a safety net for ref-cycle GC edge cases.
         self._set_count += 1
@@ -649,33 +595,32 @@ def _ensure_shader_ref(value):
     return ref
 
 
-def _ensure_audio_clip_ref(value):
-    from Infernux.core.asset_ref import AudioClipRef
-    if isinstance(value, AudioClipRef):
-        return value
-    ref = AudioClipRef()
-    if value is None:
-        return ref
-    guid, path_hint = _extract_guid_and_path(value, ('file_path', 'source_path'))
-    ref.guid = guid
-    ref.path_hint = path_hint
-    ref._cached = value
-    return ref
-
-
-def _ensure_asset_ref(value, asset_type: str = "AudioClip"):
+def _ensure_asset_ref(value, asset_type: str):
     """Wrap *value* in the appropriate AssetRefBase subclass for *asset_type*."""
-    from Infernux.core.asset_ref import AssetRefBase, get_asset_type_config
-    cfg = get_asset_type_config(asset_type)
-    if cfg is None:
-        return _ensure_audio_clip_ref(value)
-    ref_class = cfg["ref_class"]
-    if isinstance(value, ref_class):
+    from Infernux.core.asset_ref import (
+        AssetRefBase,
+        create_asset_ref,
+        get_asset_type_for_ref,
+    )
+
+    token = str(asset_type or "").strip()
+    if not token:
+        raise ValueError("ASSET serialized values require an explicit asset_type")
+    from Infernux.core.asset_reference_types import asset_type_registry
+
+    descriptor = asset_type_registry.require(token)
+    if (
+        isinstance(value, AssetRefBase)
+        and get_asset_type_for_ref(value) == descriptor.type_id
+    ):
         return value
-    # Accept any AssetRefBase — transfer guid/path_hint
     if isinstance(value, AssetRefBase):
-        return ref_class(guid=value.guid, path_hint=value.path_hint)
-    ref = ref_class()
+        return create_asset_ref(
+            descriptor.type_id,
+            guid=value.guid,
+            path_hint=value.path_hint,
+        )
+    ref = create_asset_ref(descriptor.type_id)
     if value is None:
         return ref
     guid, path_hint = _extract_guid_and_path(value, ('file_path', 'source_path'))
@@ -777,7 +722,7 @@ def normalize_runtime_field_value(value: Any, field_meta_or_type) -> Any:
     if field_type == FieldType.SHADER:
         return _ensure_shader_ref(value)
     if field_type == FieldType.ASSET:
-        return _ensure_asset_ref(value, asset_type or "AudioClip")
+        return _ensure_asset_ref(value, asset_type)
     if field_type == FieldType.LIST and isinstance(value, list):
         if element_type == FieldType.COMPONENT:
             return [_ensure_component_ref(v) for v in value]
@@ -790,7 +735,7 @@ def normalize_runtime_field_value(value: Any, field_meta_or_type) -> Any:
         if element_type == FieldType.SHADER:
             return [_ensure_shader_ref(v) for v in value]
         if element_type == FieldType.ASSET:
-            return [_ensure_audio_clip_ref(v) for v in value]
+            return [_ensure_asset_ref(v, asset_type) for v in value]
     if field_type == FieldType.COLOR:
         return normalize_rgba(value)
     return value
@@ -879,8 +824,12 @@ def coerce_serialized_field_input(
         FieldType.MATERIAL: "Material",
         FieldType.TEXTURE: "Texture",
         FieldType.SHADER: "Shader",
-        FieldType.ASSET: getattr(metadata, "asset_type", None) or "AudioClip",
     }
+    if field_type == FieldType.ASSET:
+        asset_type = str(getattr(metadata, "asset_type", "") or "").strip()
+        if not asset_type:
+            raise ValueError(f"{path}: ASSET field has no asset_type contract")
+        reference_asset_types[FieldType.ASSET] = asset_type
     if field_type in reference_asset_types and isinstance(value, dict) and TYPE_KEY not in value:
         if set(value) != {"guid", "path_hint"}:
             raise ValueError(f"{path}: asset reference requires guid and path_hint")
@@ -1113,6 +1062,7 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
                     default=[],
                     element_type=inner_meta.field_type,
                     component_type=inner_meta.component_type,
+                    asset_type=inner_meta.asset_type,
                 )
             return None
 
@@ -1158,6 +1108,7 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
                     default=[],
                     element_type=inner_meta.field_type,
                     component_type=inner_meta.component_type,
+                    asset_type=inner_meta.asset_type,
                 )
         return None
 
@@ -1232,7 +1183,23 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
             field_type=field_type,
             default=default,
             component_type="" if field_type == FieldType.COMPONENT else None,
+            asset_type="AudioClip" if field_type == FieldType.ASSET else None,
         )
+
+    try:
+        from Infernux.core.asset_ref import AssetRefBase, get_asset_type_for_ref
+
+        if issubclass(annotation, AssetRefBase):
+            asset_type = get_asset_type_for_ref(annotation)
+            if asset_type:
+                return FieldMetadata(
+                    name="",
+                    field_type=FieldType.ASSET,
+                    default=_ensure_asset_ref(None, asset_type),
+                    asset_type=asset_type,
+                )
+    except ImportError:
+        pass
 
     return None
 
@@ -1507,6 +1474,18 @@ def serialized_field(
     else:
         inferred_type = field_type or _infer_field_type(None, default)
 
+    if inferred_type == FieldType.ASSET or (
+        inferred_type == FieldType.LIST and element_type == FieldType.ASSET
+    ):
+        token = str(asset_type or "").strip()
+        if not token:
+            raise ValueError(
+                "ASSET serialized fields require an explicit asset_type"
+            )
+        from Infernux.core.asset_reference_types import asset_type_registry
+
+        asset_type = asset_type_registry.require(token).type_id
+
     # Auto-default for reference fields: store empty refs internally
     if default is None:
         if inferred_type == FieldType.COMPONENT:
@@ -1521,7 +1500,7 @@ def serialized_field(
         elif inferred_type == FieldType.SHADER:
             default = _ensure_shader_ref(None)
         elif inferred_type == FieldType.ASSET:
-            default = _ensure_asset_ref(None, asset_type or "AudioClip")
+            default = _ensure_asset_ref(None, asset_type)
 
     inferred_element_type = element_type
     if inferred_type == FieldType.LIST and inferred_element_type is None:

@@ -465,3 +465,61 @@ def test_node_graph_diff_relinks_before_removing_an_old_endpoint():
     assert graph.capture_authoring_state() == after
     graph.apply_authoring_mutations(NodeGraph.invert_authoring_mutations(mutations))
     assert graph.capture_authoring_state() == before
+
+
+def test_node_graph_clipboard_pastes_internal_subgraph_atomically():
+    graph = NodeGraph("clipboard")
+    graph.register_type(_exec_type())
+    graph.add_node("module", 10.0, 20.0, uid="first", marker="a")
+    graph.add_node("module", 30.0, 40.0, uid="second", marker="b")
+    graph.add_node("module", 50.0, 60.0, uid="outside")
+    graph.add_link("first", "out", "second", "in", uid="internal")
+    graph.add_link("second", "out", "outside", "in", uid="external")
+
+    clipboard = graph.capture_authoring_subgraph(("first", "second"))
+    assert tuple(clipboard.state.nodes) == ("first", "second")
+    assert tuple(clipboard.state.links) == ("internal",)
+
+    node_ids = {"first": "first-copy", "second": "second-copy"}
+    result = graph.paste_authoring_subgraph(
+        clipboard,
+        node_identity=lambda old_id, _payload: node_ids[old_id],
+        link_identity=lambda _old_id, _payload: "internal-copy",
+    )
+
+    assert result.node_id_map == node_ids
+    assert result.link_id_map == {"internal": "internal-copy"}
+    assert (graph.find_node("first-copy").pos_x, graph.find_node("first-copy").pos_y) == (
+        58.0,
+        68.0,
+    )
+    pasted_link = graph.find_link("internal-copy")
+    assert pasted_link is not None
+    assert (pasted_link.source_node, pasted_link.target_node) == (
+        "first-copy",
+        "second-copy",
+    )
+    assert graph.find_link("external-copy") is None
+
+
+def test_node_graph_clipboard_rolls_back_when_domain_validation_rejects_link():
+    graph = NodeGraph("clipboard")
+    graph.register_type(_exec_type())
+    graph.add_node("module", uid="first")
+    graph.add_node("module", uid="second")
+    graph.add_link("first", "out", "second", "in", uid="wire")
+    clipboard = graph.capture_authoring_subgraph(("first", "second"))
+    before = graph.capture_authoring_state()
+
+    with pytest.raises(RuntimeError, match="link insertion was rejected"):
+        graph.paste_authoring_subgraph(
+            clipboard,
+            node_identity=lambda old_id, _payload: f"{old_id}-copy",
+            link_identity=lambda _old_id, _payload: "wire-copy",
+            link_payload=lambda _old, _new, payload, _mapping: {
+                **payload,
+                "target_port": "missing",
+            },
+        )
+
+    assert graph.capture_authoring_state() == before

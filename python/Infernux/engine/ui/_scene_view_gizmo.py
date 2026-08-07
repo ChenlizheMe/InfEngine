@@ -54,9 +54,115 @@ def _rotate_vector_by_quat(q, v):
 class SceneViewGizmoMixin:
     """SceneViewGizmoMixin method group for SceneViewPanel."""
 
-    def _finish_gizmo_drag(self, mode: int, *, record_undo: bool):
-        if record_undo:
-            self._record_gizmo_undo(mode)
+    def _gizmo_interaction_owner(self) -> str:
+        return str(getattr(self, "window_id", "scene_view") or "scene_view")
+
+    def _capture_gizmo_drag_state(self) -> dict:
+        from Infernux.lib._Infernux import SceneManager as _SM
+
+        scene = _SM.instance().get_active_scene()
+        if scene is None:
+            return {}
+        state = {}
+        for object_id in (getattr(self, "_gizmo_drag_items", {}) or {}):
+            obj = scene.find_by_id(int(object_id))
+            if obj is not None:
+                state[int(object_id)] = self._snapshot_gizmo_object(obj)
+        return state
+
+    def _restore_gizmo_drag_state(self, state: dict) -> None:
+        from Infernux.lib._Infernux import SceneManager as _SM, Vector3
+
+        scene = _SM.instance().get_active_scene()
+        if scene is None:
+            return
+        for object_id, snapshot in (state or {}).items():
+            obj = scene.find_by_id(int(object_id))
+            if obj is None:
+                continue
+            obj.transform.position = Vector3(*snapshot["pos"])
+            obj.transform.euler_angles = Vector3(*snapshot["euler"])
+            obj.transform.local_scale = Vector3(*snapshot["scale"])
+
+    def _commit_gizmo_continuous_edit(self, session) -> bool:
+        mode = int(session.metadata.get("mode", self._gizmo_tool_mode))
+        return bool(self._record_gizmo_undo(mode))
+
+    def _rollback_gizmo_continuous_edit(self, session) -> None:
+        self._restore_gizmo_drag_state(session.initial_value)
+
+    def _begin_gizmo_drag_transaction(self, mode: int) -> None:
+        from Infernux.engine.interaction import (
+            ContinuousEditService,
+            TransientInteractionService,
+        )
+
+        owner = self._gizmo_interaction_owner()
+        key = f"{owner}:gizmo_transform"
+        self._gizmo_drag_edit_key = key
+        ContinuousEditService.instance().begin(
+            key,
+            owner_id=owner,
+            document_id=str(getattr(self, "document_id", "") or ""),
+            description="Transform",
+            initial_value=self._gizmo_drag_items,
+            metadata={"mode": int(mode)},
+            on_commit=self._commit_gizmo_continuous_edit,
+            on_cancel=self._rollback_gizmo_continuous_edit,
+        )
+        self._gizmo_drag_cancel_token = TransientInteractionService.instance().begin(
+            owner,
+            self._commit_interrupted_gizmo_drag,
+            kind="scene_gizmo_drag",
+            priority=100,
+            token_id=f"{owner}:gizmo_drag",
+        )
+
+    def _update_gizmo_drag_transaction(self) -> None:
+        from Infernux.engine.interaction import ContinuousEditService
+
+        key = str(getattr(self, "_gizmo_drag_edit_key", "") or "")
+        if key:
+            ContinuousEditService.instance().update(
+                key,
+                self._capture_gizmo_drag_state(),
+            )
+
+    def _commit_interrupted_gizmo_drag(self) -> bool:
+        if not getattr(self, "_is_gizmo_dragging", False):
+            return False
+        self._finish_gizmo_drag(self._gizmo_tool_mode, commit=True)
+        return True
+
+    def _finish_gizmo_drag(self, mode: int, *, commit: bool):
+        from Infernux.engine.interaction import (
+            ContinuousEditService,
+            TransientInteractionService,
+        )
+
+        token = str(getattr(self, "_gizmo_drag_cancel_token", "") or "")
+        self._gizmo_drag_cancel_token = ""
+        if token:
+            TransientInteractionService.instance().end(token)
+
+        key = str(getattr(self, "_gizmo_drag_edit_key", "") or "")
+        edits = ContinuousEditService.instance()
+        if key and edits.get(key) is not None:
+            self._update_gizmo_drag_transaction()
+            if commit:
+                edits.commit(key)
+            else:
+                edits.cancel(key)
+        elif commit:
+            try:
+                if not self._record_gizmo_undo(mode):
+                    self._restore_gizmo_drag_state(self._gizmo_drag_items)
+            except Exception as exc:
+                Debug.log_error(f"Scene gizmo commit failed: {exc}")
+                self._restore_gizmo_drag_state(self._gizmo_drag_items)
+        else:
+            self._restore_gizmo_drag_state(self._gizmo_drag_items)
+        self._gizmo_drag_edit_key = ""
 
         rb_entries = list(getattr(self, "_gizmo_drag_rigidbodies", []) or [])
         if not rb_entries and self._gizmo_drag_rigidbody is not None:
@@ -73,6 +179,7 @@ class SceneViewGizmoMixin:
         self._gizmo_drag_rigidbodies = []
         self._gizmo_drag_restore_dynamic = False
         self._gizmo_drag_items = {}
+        self._gizmo_drag_selection_snapshot = None
 
         for rb, restore_dynamic in rb_entries:
             if not restore_dynamic or rb is None:
@@ -86,6 +193,12 @@ class SceneViewGizmoMixin:
 
         if self._engine:
             self._engine.set_editor_tool_highlight(0)
+
+    def _interrupt_gizmo_drag(self, *, commit: bool = True) -> bool:
+        if not getattr(self, "_is_gizmo_dragging", False):
+            return False
+        self._finish_gizmo_drag(self._gizmo_tool_mode, commit=commit)
+        return True
 
     def _begin_gizmo_rigidbody_drive(self, obj):
         self._gizmo_drag_rigidbody = None
@@ -155,8 +268,9 @@ class SceneViewGizmoMixin:
             return []
         ids = []
         try:
-            from Infernux.engine.ui.selection_manager import SelectionManager
-            ids = list(SelectionManager.instance().get_ids() or [])
+            from Infernux.engine.interaction import SelectionService
+
+            ids = list(SelectionService.instance().scene_object_ids())
         except Exception:
             ids = []
         if primary_id and primary_id not in ids:
@@ -230,8 +344,10 @@ class SceneViewGizmoMixin:
         """Initialize gizmo drag state.  Returns ``False`` if blocked (prefab child)."""
         from Infernux.lib._Infernux import SceneManager as _SM
         scene = _SM.instance().get_active_scene()
-        from Infernux.engine.ui.selection_manager import SelectionManager
-        sel_id = SelectionManager.instance().get_primary()
+        from Infernux.engine.interaction import SelectionService
+
+        selection = SelectionService.instance()
+        sel_id = selection.primary_scene_object_id()
         selected_objects = self._get_gizmo_drag_objects(scene, sel_id)
         if selected_objects:
             for _obj in selected_objects:
@@ -251,6 +367,7 @@ class SceneViewGizmoMixin:
         obj_rot = None
         obj_scale = (1.0, 1.0, 1.0)
         self._gizmo_drag_items = {}
+        self._gizmo_drag_selection_snapshot = selection.snapshot
         if selected_objects:
             primary = selected_objects[0]
             for obj in selected_objects:
@@ -300,6 +417,7 @@ class SceneViewGizmoMixin:
             self._gizmo_drag_start_t = self._closest_param_on_axis(
                 ray[:3], ray[3:], self._gizmo_drag_start_pos, self._gizmo_drag_axis_dir)
 
+        self._begin_gizmo_drag_transaction(mode)
         return True
 
     def _update_gizmo_interaction(self, ctx, local_mx, local_my, scene_w, scene_h,
@@ -321,7 +439,7 @@ class SceneViewGizmoMixin:
         # -----------------------------------------------------------
         if self._is_gizmo_dragging:
             if not left_down:
-                self._finish_gizmo_drag(mode, record_undo=True)
+                self._finish_gizmo_drag(mode, commit=True)
                 return False
 
             self._gizmo_snap_active = self._is_ctrl_down(ctx)
@@ -332,6 +450,8 @@ class SceneViewGizmoMixin:
                 self._drag_rotate(engine, local_mx, local_my, scene_w, scene_h)
             elif mode == TOOL_SCALE:
                 self._drag_scale(engine, local_mx, local_my, scene_w, scene_h)
+
+            self._update_gizmo_drag_transaction()
 
             return True  # consumed
 
@@ -431,11 +551,7 @@ class SceneViewGizmoMixin:
     def _record_gizmo_undo(self, mode: int):
         """Record an undo command for the gizmo drag that just finished."""
         from Infernux.lib._Infernux import SceneManager as _SM, Vector3
-        from Infernux.engine.undo import (
-            CompoundCommand,
-            SetPropertyCommand,
-            UndoManager,
-        )
+        from Infernux.engine.interaction import ComponentCommandService
 
         scene = _SM.instance().get_active_scene()
         if not scene or not self._gizmo_drag_obj_id:
@@ -444,20 +560,20 @@ class SceneViewGizmoMixin:
                     "[UndoTrace] gizmo record skipped: "
                     f"scene={scene is not None} object={self._gizmo_drag_obj_id}"
                 )
-            return
+            return False
 
         snapshots = getattr(self, "_gizmo_drag_items", {}) or {}
         if not snapshots:
             obj = scene.find_by_id(self._gizmo_drag_obj_id)
             if not obj:
-                return
+                return False
             snapshots = {self._gizmo_drag_obj_id: {
                 "pos": self._gizmo_drag_start_pos,
                 "euler": self._gizmo_drag_start_euler,
                 "scale": self._gizmo_drag_start_scale,
             }}
 
-        commands = []
+        changes = []
         desc = "Transform"
         prop_name = "position"
         old_key = "pos"
@@ -472,7 +588,7 @@ class SceneViewGizmoMixin:
             prop_name = "local_scale"
             old_key = "scale"
         else:
-            return
+            return False
 
         for oid, snapshot in snapshots.items():
             obj = scene.find_by_id(oid)
@@ -489,9 +605,9 @@ class SceneViewGizmoMixin:
                     new_value = Vector3(current[0], current[1], current[2])
                     if self._vec3_approx_equal(old_value, new_value):
                         continue
-                    commands.append(SetPropertyCommand(
-                        transform, rotate_prop, old_value, new_value, desc
-                    ))
+                    changes.append(
+                        (transform, rotate_prop, old_value, new_value, desc)
+                    )
                 continue
 
             old_value = Vector3(*snapshot[old_key])
@@ -499,23 +615,30 @@ class SceneViewGizmoMixin:
             new_value = Vector3(current[0], current[1], current[2])
             if self._vec3_approx_equal(old_value, new_value):
                 continue
-            commands.append(SetPropertyCommand(
-                transform, prop_name, old_value, new_value, desc
-            ))
+            changes.append((transform, prop_name, old_value, new_value, desc))
 
-        if not commands:
+        if not changes:
             if os.environ.get("INFERNUX_UNDO_TRACE") == "1":
                 Debug.log("[UndoTrace] gizmo produced no transform command")
-            return
-        cmd = commands[0] if len(commands) == 1 else CompoundCommand(commands, desc)
-        UndoManager.instance().record(cmd)
+            return False
+        # A gizmo gesture owns transforms, not selection. Freeze the selection
+        # at pointer-down for both sides of the command so context polling or a
+        # late focus edge cannot make undo/redo of the transform also change
+        # the global selection.
+        before_selection = getattr(self, "_gizmo_drag_selection_snapshot", None)
+        return ComponentCommandService.require().record_applied_property_changes(
+            changes,
+            description=desc,
+            before_selection=before_selection,
+            after_selection=before_selection,
+        )
 
     def _set_tool_mode(self, mode: int):
         """Switch the active editor tool (syncs to C++ and resets drag)."""
         if mode == self._gizmo_tool_mode:
             return
         if self._is_gizmo_dragging:
-            self._finish_gizmo_drag(self._gizmo_tool_mode, record_undo=False)
+            self._finish_gizmo_drag(self._gizmo_tool_mode, commit=True)
         self._gizmo_tool_mode = mode
         if self._engine:
             self._engine.set_editor_tool_mode(mode)

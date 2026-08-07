@@ -78,15 +78,19 @@ def test_public_api_lint_rejects_internal_and_reflection_imports():
     assert {item["code"] for item in rejected["violations"]} >= {"forbidden_import", "private_symbol", "reflection"}
 
 
-def test_developer_assist_writes_only_lint_clean_assets_scripts(tmp_path):
+def test_developer_assist_prepares_only_lint_clean_assets_scripts(tmp_path):
     session.configure(str(tmp_path), _config())
 
-    result = session.write_project_script("Racing/drive.py", "from Infernux.components import Component\n")
+    result = session.prepare_project_script_write(
+        "Racing/drive.py",
+        "from Infernux.components import Component\n",
+    )
     assert result["path"] == "Assets/Racing/drive.py"
-    assert (tmp_path / "Assets" / "Racing" / "drive.py").is_file()
+    assert result["lint"]["passed"] is True
+    assert not (tmp_path / "Assets" / "Racing" / "drive.py").exists()
 
     with pytest.raises(session.McpPolicyError):
-        session.write_project_script("../escape.py", "pass\n")
+        session.prepare_project_script_write("../escape.py", "pass\n")
 
 
 def test_developer_assist_attempt_persists_mode_and_checkpoint(tmp_path):

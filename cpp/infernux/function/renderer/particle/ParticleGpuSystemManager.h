@@ -365,6 +365,9 @@ class ParticleGpuSystemManager
     /// the previous exported particle output.
     [[nodiscard]] bool RecordAsyncExport(VkCommandBuffer commandBuffer);
     [[nodiscard]] bool CanExecuteAsync() const noexcept;
+    /// Returns true only when the frame compute callback would record useful
+    /// particle work (simulation, collision upload, or diagnostics).
+    [[nodiscard]] bool HasPendingGpuWork() const noexcept;
     /// Changes whenever a simulation graph is published. Frame scheduling
     /// uses this to synchronously prime newly exported render data once.
     [[nodiscard]] uint64_t AsyncExecutionGeneration() const noexcept;

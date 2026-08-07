@@ -23,6 +23,13 @@ class _Ctx:
     """Thin namespace shared across inspector wiring helpers."""
 
 
+def _component_commands():
+    """Return the sole authority for Inspector component mutations."""
+    from Infernux.engine.interaction import ComponentCommandService
+
+    return ComponentCommandService.require()
+
+
 # ═══════ Cache initialisation ═══════════════════════════════════
 
 def _wire_cache_init(ctx):
@@ -219,7 +226,7 @@ def _wire_component_list(ctx):
 # ═══════ Object info & properties ══════════════════════════════
 
 def _wire_object_info(ctx):
-    """Wire get_object_info and set_object_property."""
+    """Wire the read-only object-info projection."""
     SceneManager = ctx.SceneManager
     InspectorObjectInfo = ctx.InspectorObjectInfo
     ip = ctx.ip
@@ -245,42 +252,10 @@ def _wire_object_info(ctx):
 
     ip.get_object_info = _get_object_info
 
-    def _set_object_property(obj_id, prop_name, value_str):
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(obj_id) if scene else None
-        if obj is None:
-            return
-        from Infernux.engine.undo import UndoManager, SetPropertyCommand
-        mgr = UndoManager.instance()
-        old_val = getattr(obj, prop_name, None)
-        if prop_name == "active":
-            new_val = value_str.lower() in ("true", "1")
-        elif prop_name in ("name", "tag"):
-            new_val = value_str
-        elif prop_name == "layer":
-            new_val = int(value_str)
-        else:
-            new_val = value_str
-        if mgr:
-            mgr.execute(SetPropertyCommand(obj, prop_name, old_val, new_val,
-                                           f"Set {prop_name}"))
-        else:
-            setattr(obj, prop_name, new_val)
-            _bump()
-        if prop_name == "active":
-            actual = getattr(obj, prop_name, None)
-            if actual != new_val:
-                Debug.log_warning(
-                    f"[Inspector] SetActive failed: old={old_val}, "
-                    f"requested={new_val}, actual={actual}, obj={obj_id}")
-
-    ip.set_object_property = _set_object_property
-
-
 # ═══════ Transform ═════════════════════════════════════════════
 
 def _wire_transform(ctx):
-    """Wire transform get/set callbacks."""
+    """Wire the read-only Transform projection."""
     SceneManager = ctx.SceneManager
     ip = ctx.ip
     _bump = ctx._bump_inspector_values
@@ -305,52 +280,6 @@ def _wire_transform(ctx):
         return td
 
     ip.get_transform_data = _get_transform_data
-
-    from Infernux.engine.undo import (
-        UndoManager, InspectorSnapshotCommand,
-        snapshot_live_transform, restore_live_transform,
-    )
-
-    def _set_transform_data(obj_id, td):
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(obj_id) if scene else None
-        if obj is None:
-            return
-        trans = obj.get_transform()
-        if trans is None:
-            return
-
-        mgr = UndoManager.instance()
-        old_snap = None
-        if mgr and mgr.enabled:
-            try:
-                old_snap = snapshot_live_transform(obj_id)
-            except Exception:
-                old_snap = None
-
-        from Infernux.lib import Vector3
-        trans.local_position = Vector3(td.px, td.py_, td.pz)
-        trans.local_euler_angles = Vector3(td.rx, td.ry, td.rz)
-        trans.local_scale = Vector3(td.sx, td.sy, td.sz)
-
-        if mgr and mgr.enabled and old_snap is not None:
-            try:
-                new_snap = snapshot_live_transform(obj_id)
-            except Exception:
-                new_snap = None
-            if new_snap is not None and new_snap != old_snap:
-                def _restore(snap, _oid=obj_id):
-                    restore_live_transform(_oid, snap)
-                    _bump()
-                cmd = InspectorSnapshotCommand(
-                    f"transform:{obj_id}", old_snap, new_snap,
-                    _restore, "Edit Transform")
-                mgr.record(cmd)
-
-        _bump()
-
-    ip.set_transform_data = _set_transform_data
-
 
 # ═══════ Icons & body rendering ════════════════════════════════
 
@@ -515,26 +444,54 @@ def _wire_icons_and_body(ctx):
 
     ip.render_multi_component_body = _render_multi_component_body
 
-    def _set_component_enabled(obj_id, comp_id, new_enabled, is_native):
-        comp = ctx.resolve_component(obj_id, comp_id, is_native)
-        if comp is None:
-            return
-        from Infernux.engine.undo import UndoManager, SetPropertyCommand
-        mgr = UndoManager.instance()
-        old_val = comp.enabled
-        if mgr:
-            mgr.execute(SetPropertyCommand(
-                comp, "enabled", old_val, new_enabled,
-                f"Toggle {getattr(comp, 'type_name', '?')}"))
-        else:
-            comp.enabled = new_enabled
-            _bump()
-        for item in _component_cache["items"]:
-            if item.component_id == comp_id:
-                item.enabled = bool(new_enabled)
-                break
+    def _enabled_components(obj_ids, comp_ids, is_native):
+        if not obj_ids or len(obj_ids) != len(comp_ids):
+            return ()
+        components = tuple(
+            ctx.resolve_component(obj_id, comp_id, is_native)
+            for obj_id, comp_id in zip(obj_ids, comp_ids)
+        )
+        return components if all(comp is not None for comp in components) else ()
 
-    ip.set_component_enabled = _set_component_enabled
+    def _can_set_component_enabled(obj_ids, comp_ids, new_enabled, is_native):
+        del new_enabled
+        return bool(_enabled_components(obj_ids, comp_ids, is_native))
+
+    def _set_component_enabled(obj_ids, comp_ids, new_enabled, is_native):
+        components = _enabled_components(obj_ids, comp_ids, is_native)
+        if not components:
+            return False
+        changes = [
+            (
+                comp,
+                "enabled",
+                bool(comp.enabled),
+                bool(new_enabled),
+                f"Toggle {getattr(comp, 'type_name', type(comp).__name__)}",
+            )
+            for comp in components
+            if bool(comp.enabled) != bool(new_enabled)
+        ]
+        if not changes:
+            return False
+        type_name = getattr(components[0], "type_name", type(components[0]).__name__)
+        if not _component_commands().execute_property_changes(
+            changes,
+            description=f"Toggle {type_name}",
+        ):
+            return False
+        changed_ids = {int(comp_id) for comp_id in comp_ids}
+        for item in _component_cache["items"]:
+            if int(item.component_id) in changed_ids:
+                item.enabled = bool(new_enabled)
+        ctx._bump_inspector_values()
+        return True
+
+    # The command adapter is assembled by ``_wire_clipboard_and_context``.
+    # Publish these callbacks through the shared wiring context instead of
+    # relying on local closures from this wiring phase.
+    ctx.can_set_component_enabled = _can_set_component_enabled
+    ctx.set_component_enabled = _set_component_enabled
 
 
 # ═══════ Clipboard & context menu ══════════════════════════════
@@ -664,58 +621,25 @@ def _publish_component_clipboard(comp, type_name: str, is_native: bool) -> bool:
 
 
 def _paste_native_component_as_new(obj, type_name: str, document: dict) -> bool:
-    from Infernux.engine.undo import (
-        AddComponentTransactionCommand,
-        UndoManager,
-    )
-
-    command = AddComponentTransactionCommand(
-        obj.id,
-        type_name,
-        native_document=document,
-        description=f"Paste {type_name} As New",
-    )
-    manager = UndoManager.instance()
-    if manager is not None:
-        return manager.execute(command)
     try:
-        command.execute()
-    except Exception as exc:
-        command.dispose()
-        Debug.log_error(f"Cannot paste native component '{type_name}': {exc}")
-        return False
-    else:
-        command.dispose()
-        from Infernux.engine.ui._inspector_undo import _notify_scene_modified
-
-        _notify_scene_modified()
+        _component_commands().add(
+            obj,
+            type_name,
+            native_document=document,
+            description=f"Paste {type_name} As New",
+        )
         return True
+    except RuntimeError:
+        return False
 
 
 def _paste_native_component_values(comp, document: dict) -> bool:
-    old_document = comp.serialize_document()
-    new_document = copy.deepcopy(document)
-    if old_document == new_document:
-        return False
-    from Infernux.engine.undo import GenericComponentCommand, UndoManager
-
-    manager = UndoManager.instance()
-    if manager is not None:
-        return manager.execute(
-            GenericComponentCommand(
-                comp,
-                old_document,
-                new_document,
-                f"Paste {getattr(comp, 'type_name', 'Component')} Properties",
-                mergeable=False,
-            )
-        )
-    if not comp.deserialize_document(new_document):
-        return False
-    from Infernux.engine.ui._inspector_undo import _notify_scene_modified
-
-    _notify_scene_modified()
-    return True
+    return _component_commands().restore_document(
+        comp,
+        copy.deepcopy(document),
+        description=f"Paste {getattr(comp, 'type_name', 'Component')} Properties",
+        edit_key=f"paste_component:{_time.time_ns()}",
+    )
 
 def _wire_clipboard_and_context(ctx):
     """Wire clipboard operations and component context menu."""
@@ -794,32 +718,13 @@ def _wire_clipboard_and_context(ctx):
                     instance._script_guid = guid
                 except Exception as _exc:
                     Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            from Infernux.engine.undo import (
-                AddComponentTransactionCommand,
-                UndoManager,
-            )
-            command = AddComponentTransactionCommand(
-                obj.id,
+            _component_commands().add(
+                obj,
                 tn,
                 python_instance=instance,
                 invoke_after_deserialize=True,
                 description=f"Paste {tn} As New",
             )
-            manager = UndoManager.instance()
-            if manager is not None:
-                if not manager.execute(command):
-                    return False
-            else:
-                try:
-                    command.execute()
-                except Exception as exc:
-                    command.dispose()
-                    Debug.log_error(f"Cannot finish pasting '{tn}': {exc}")
-                    return False
-                command.dispose()
-                from Infernux.engine.ui._inspector_undo import _notify_scene_modified
-
-                _notify_scene_modified()
         _invalidate()
         return True
 
@@ -833,28 +738,15 @@ def _wire_clipboard_and_context(ctx):
                 return False
         elif hasattr(comp, "_deserialize_fields_document"):
             try:
-                old_document = _python_component_clipboard_document(comp)
                 new_document = copy.deepcopy(payload)
                 new_document["__type_name__"] = type(comp).__name__
-                from Infernux.engine.undo import (
-                    PythonComponentDocumentCommand,
-                    UndoManager,
-                )
-                manager = UndoManager.instance()
-                if manager:
-                    command = PythonComponentDocumentCommand(
-                        comp,
-                        old_document,
-                        new_document,
-                        f"Paste {type(comp).__name__} Properties",
-                        edit_key=f"paste_component:{_time.time_ns()}",
-                    )
-                    if not manager.execute(command):
-                        return False
-                else:
-                    _apply_python_component_clipboard_document(comp, new_document)
-                    from Infernux.engine.ui._inspector_undo import _notify_scene_modified
-                    _notify_scene_modified()
+                if not _component_commands().restore_document(
+                    comp,
+                    new_document,
+                    description=f"Paste {type(comp).__name__} Properties",
+                    edit_key=f"paste_component:{_time.time_ns()}",
+                ):
+                    return False
             except Exception as _exc:
                 Debug.log_error(f"Cannot paste component properties: {_exc}")
                 return False
@@ -872,8 +764,32 @@ def _wire_clipboard_and_context(ctx):
                 return path
         return ''
 
-    def _selected_component_entries():
+    def _component_entry(object_id, component_id, is_native):
+        from Infernux.engine.interaction import SelectionTarget
+
+        scene = SceneManager.instance().get_active_scene()
+        obj = scene.find_by_id(int(object_id)) if scene is not None else None
+        if obj is None or int(component_id) <= 0:
+            return None
+        comp = _resolve(int(object_id), int(component_id), bool(is_native))
+        if comp is None:
+            return None
+        type_name = str(
+            getattr(comp, "type_name", type(comp).__name__) or type(comp).__name__
+        )
+        target = SelectionTarget.component(
+            int(object_id),
+            int(component_id),
+            sub_kind="native" if is_native else "script",
+        )
+        return target, obj, comp, type_name, bool(is_native)
+
+    def _selected_component_entries(explicit_target=None):
         from Infernux.engine.interaction import SelectionDomain, SelectionService
+
+        if explicit_target is not None:
+            entry = _component_entry(*explicit_target)
+            return [entry] if entry is not None else []
 
         snapshot = SelectionService.instance().snapshot
         if snapshot.domain is not SelectionDomain.COMPONENT:
@@ -901,76 +817,71 @@ def _wire_clipboard_and_context(ctx):
             entries.append((target, obj, comp, type_name, is_native))
         return entries
 
-    def _primary_component_entry():
-        entries = _selected_component_entries()
+    def _primary_component_entry(explicit_target=None):
+        entries = _selected_component_entries(explicit_target)
         if not entries:
             return None
+        if explicit_target is not None:
+            return entries[0]
         from Infernux.engine.interaction import SelectionService
 
         primary = SelectionService.instance().snapshot.primary
         return next((entry for entry in entries if entry[0] == primary), entries[-1])
 
-    def _can_copy_selected_component():
-        return _primary_component_entry() is not None
+    def _can_copy_selected_component(explicit_target=None):
+        return _primary_component_entry(explicit_target) is not None
 
-    def _copy_selected_component():
-        entry = _primary_component_entry()
+    def _copy_selected_component(explicit_target=None):
+        entry = _primary_component_entry(explicit_target)
         if entry is None:
             return False
         _target, _obj, comp, type_name, is_native = entry
         return _copy_to_clipboard(comp, type_name, is_native)
 
-    def _can_paste_selected_values():
-        entry = _primary_component_entry()
+    def _can_paste_selected_values(explicit_target=None):
+        entry = _primary_component_entry(explicit_target)
         if entry is None:
             return False
         _target, _obj, comp, type_name, is_native = entry
         return _can_paste_values(comp, type_name, is_native)
 
-    def _paste_selected_values():
-        entry = _primary_component_entry()
+    def _paste_selected_values(explicit_target=None):
+        entry = _primary_component_entry(explicit_target)
         if entry is None:
             return False
         _target, _obj, comp, _type_name, is_native = entry
         return _paste_values(comp, is_native)
 
-    def _can_paste_selected_as_new():
-        entry = _primary_component_entry()
+    def _can_paste_selected_as_new(explicit_target=None):
+        entry = _primary_component_entry(explicit_target)
         return bool(entry is not None and entry[3] != "Transform" and _has_clip())
 
-    def _paste_selected_as_new():
-        entry = _primary_component_entry()
+    def _paste_selected_as_new(explicit_target=None):
+        entry = _primary_component_entry(explicit_target)
         if entry is None:
             return False
         return _paste_as_new(entry[1])
 
-    def _paste_selected_default():
-        if _can_paste_selected_values():
-            return _paste_selected_values()
-        return _paste_selected_as_new()
+    def _paste_selected_default(explicit_target=None):
+        if _can_paste_selected_values(explicit_target):
+            return _paste_selected_values(explicit_target)
+        return _paste_selected_as_new(explicit_target)
 
-    def _can_remove_selected_components():
-        entries = _selected_component_entries()
+    def _can_remove_selected_components(explicit_target=None):
+        entries = _selected_component_entries(explicit_target)
         return bool(entries) and all(
             _can_remove_component(obj, comp, type_name, is_native)
             for _target, obj, comp, type_name, is_native in entries
         )
 
-    def _can_reset_selected_components():
-        return bool(_selected_component_entries())
+    def _can_reset_selected_components(explicit_target=None):
+        return bool(_selected_component_entries(explicit_target))
 
-    def _reset_selected_components():
-        entries = _selected_component_entries()
+    def _reset_selected_components(explicit_target=None):
+        entries = _selected_component_entries(explicit_target)
         if not entries:
             return False
-        from Infernux.engine.undo import (
-            CompoundCommand,
-            GenericComponentCommand,
-            PythonComponentDocumentCommand,
-            UndoManager,
-        )
-
-        commands = []
+        edits = []
         for _target, obj, comp, type_name, is_native in entries:
             if is_native:
                 old_document = comp.serialize_document()
@@ -981,14 +892,8 @@ def _wire_clipboard_and_context(ctx):
                 )
                 new_document = obj.get_component_default_document(native_component)
                 if old_document != new_document:
-                    commands.append(
-                        GenericComponentCommand(
-                            comp,
-                            old_document,
-                            new_document,
-                            f"Reset {type_name}",
-                            mergeable=False,
-                        )
+                    edits.append(
+                        (comp, new_document, f"Reset {type_name}", "")
                     )
                 continue
 
@@ -998,38 +903,32 @@ def _wire_clipboard_and_context(ctx):
                 fresh._call_reset()
             new_document = _python_component_clipboard_document(fresh)
             if old_document != new_document:
-                commands.append(
-                    PythonComponentDocumentCommand(
+                edits.append(
+                    (
                         comp,
-                        old_document,
                         new_document,
                         f"Reset {type_name}",
-                        edit_key=f"reset_component:{int(getattr(comp, 'component_id', 0) or 0)}",
+                        f"reset_component:{int(getattr(comp, 'component_id', 0) or 0)}",
                     )
                 )
 
-        if not commands:
+        if not edits:
             return False
-        command = (
-            commands[0]
-            if len(commands) == 1
-            else CompoundCommand(commands, f"Reset {len(commands)} Components")
-        )
-        manager = UndoManager.instance()
-        if manager is not None:
-            if not manager.execute(command):
-                return False
-        else:
-            command.execute()
-            command.dispose()
+        if not _component_commands().restore_many(
+            edits,
+            description=f"Reset {len(edits)} Components",
+        ):
+            return False
         _bump()
         return True
 
-    def _component_reorder_changes(direction: int):
+    def _component_reorder_changes(direction: int, explicit_target=None):
         if direction not in {-1, 1}:
             raise ValueError("component move direction must be -1 or 1")
         grouped = {}
-        for _target, obj, comp, _type_name, _is_native in _selected_component_entries():
+        for _target, obj, comp, _type_name, _is_native in _selected_component_entries(
+            explicit_target
+        ):
             component_id = int(getattr(comp, "component_id", 0) or 0)
             if component_id:
                 grouped.setdefault(int(obj.id), (obj, set()))[1].add(component_id)
@@ -1054,28 +953,20 @@ def _wire_clipboard_and_context(ctx):
                 changes.append((object_id, tuple(before), tuple(after)))
         return changes
 
-    def _can_move_selected_components(direction: int):
-        return bool(_component_reorder_changes(direction))
+    def _can_move_selected_components(direction: int, explicit_target=None):
+        return bool(_component_reorder_changes(direction, explicit_target))
 
     def _execute_component_reorder(changes, description: str):
         if not changes:
             return False
-        from Infernux.engine.undo import ReorderComponentsCommand, UndoManager
-
-        command = ReorderComponentsCommand(changes, description)
-        manager = UndoManager.instance()
-        if manager is not None:
-            if not manager.execute(command):
-                return False
-        else:
-            command.execute()
-            command.dispose()
+        if not _component_commands().reorder(changes, description=description):
+            return False
         _invalidate()
         return True
 
-    def _move_selected_components(direction: int):
+    def _move_selected_components(direction: int, explicit_target=None):
         return _execute_component_reorder(
-            _component_reorder_changes(direction),
+            _component_reorder_changes(direction, explicit_target),
             "Move Components Up" if direction < 0 else "Move Components Down",
         )
 
@@ -1162,74 +1053,54 @@ def _wire_clipboard_and_context(ctx):
             "Reorder Components",
         )
 
-    def _remove_selected_components():
-        entries = _selected_component_entries()
-        if not entries or not _can_remove_selected_components():
+    def _remove_selected_components(explicit_target=None):
+        entries = _selected_component_entries(explicit_target)
+        if not entries or not _can_remove_selected_components(explicit_target):
             return False
         from Infernux.engine.interaction import (
             SelectionService,
             SelectionSnapshot,
             SelectionTarget,
         )
-        from Infernux.engine.undo import (
-            RemoveComponentsCommand,
-            RemoveNativeComponentCommand,
-            RemovePyComponentCommand,
-            UndoManager,
-        )
-
         before_selection = SelectionService.instance().snapshot
         object_ids = list(dict.fromkeys(int(entry[1].id) for entry in entries))
-        after_targets = tuple(
-            SelectionTarget.scene_object(object_id) for object_id in object_ids
-        )
-        primary_object_id = (
-            before_selection.primary.component_ids()[0]
-            if before_selection.primary is not None
-            else object_ids[-1]
-        )
-        primary_target = SelectionTarget.scene_object(primary_object_id)
-        after_selection = SelectionSnapshot.create(
-            after_targets,
-            owner_id="inspector",
-            primary=primary_target,
-            anchor=after_targets[0],
-        )
-        commands = [
-            (
-                RemoveNativeComponentCommand(obj.id, type_name, comp)
-                if is_native
-                else RemovePyComponentCommand(obj.id, comp)
-            )
-            for _target, obj, comp, type_name, is_native in entries
-        ]
-        description = (
-            commands[0].description
-            if len(commands) == 1
-            else f"Remove {len(commands)} Components"
-        )
-        command = RemoveComponentsCommand(
-            commands,
-            before_selection,
-            after_selection,
-            description,
-        )
-        manager = UndoManager.instance()
-        if manager is not None:
-            if not manager.execute(command):
-                return False
+        removed_targets = {entry[0] for entry in entries}
+        if explicit_target is not None and not any(
+            target in removed_targets for target in before_selection.targets
+        ):
+            after_selection = before_selection
         else:
-            command.execute()
-            command.dispose()
+            after_targets = tuple(
+                SelectionTarget.scene_object(object_id) for object_id in object_ids
+            )
+            primary_object_id = (
+                before_selection.primary.component_ids()[0]
+                if before_selection.primary in removed_targets
+                else object_ids[-1]
+            )
+            primary_target = SelectionTarget.scene_object(primary_object_id)
+            after_selection = SelectionSnapshot.create(
+                after_targets,
+                owner_id="inspector",
+                primary=primary_target,
+                anchor=after_targets[0],
+            )
+        if not _component_commands().remove_many(
+            [(obj, comp) for _target, obj, comp, _type_name, _is_native in entries],
+            before_selection=before_selection,
+            after_selection=after_selection,
+            description=f"Remove {len(entries)} Components",
+        ):
+            return False
         _invalidate()
         return True
 
-    def _can_open_selected_script():
-        entry = _primary_component_entry()
+    def _can_open_selected_script(explicit_target=None):
+        entry = _primary_component_entry(explicit_target)
         return bool(entry is not None and not entry[4] and _get_script_path(entry[2]))
 
-    def _open_selected_script():
-        entry = _primary_component_entry()
+    def _open_selected_script(explicit_target=None):
+        entry = _primary_component_entry(explicit_target)
         if entry is None or entry[4]:
             return False
         script_path = _get_script_path(entry[2])
@@ -1257,93 +1128,78 @@ def _wire_clipboard_and_context(ctx):
         remove=_remove_selected_components,
         can_reset=_can_reset_selected_components,
         reset=_reset_selected_components,
-        can_move_up=lambda: _can_move_selected_components(-1),
-        move_up=lambda: _move_selected_components(-1),
-        can_move_down=lambda: _can_move_selected_components(1),
-        move_down=lambda: _move_selected_components(1),
+        can_move_up=lambda target=None: _can_move_selected_components(-1, target),
+        move_up=lambda target=None: _move_selected_components(-1, target),
+        can_move_down=lambda target=None: _can_move_selected_components(1, target),
+        move_down=lambda target=None: _move_selected_components(1, target),
         can_reorder=_can_reorder_selected_components,
         reorder=_reorder_selected_components,
         can_open_script=_can_open_selected_script,
         open_script=_open_selected_script,
+        can_set_enabled=ctx.can_set_component_enabled,
+        set_enabled=ctx.set_component_enabled,
     )
 
-    def _request_component_reorder(object_ids, dragged_ids, target_ids, insert_after):
-        from Infernux.engine.interaction import CommandSource
-
-        ctx.bs.interaction_core.commands.execute(
-            "component.reorder",
-            source=CommandSource.DRAG_DROP,
-            payload={
-                "object_ids": [int(value) for value in object_ids],
-                "dragged_component_ids": [int(value) for value in dragged_ids],
-                "target_component_ids": [int(value) for value in target_ids],
-                "insert_after": bool(insert_after),
-            },
+    def _render_component_context_menu(ctx_arg, obj_id, type_name, comp_id, is_native):
+        from Infernux.engine.interaction import (
+            ContextMenuBuilder,
+            ContextMenuCommand,
         )
 
-    ip.reorder_component = _request_component_reorder
-
-    def _render_component_context_menu(ctx_arg, obj_id, type_name, comp_id, is_native):
-        del obj_id, type_name, comp_id, is_native
-        from Infernux.engine.interaction import CommandSource
-
         registry = ctx.bs.interaction_core.commands
-
-        def _command_item(label, command_id):
-            context = registry.context(CommandSource.CONTEXT_MENU)
-            enabled = registry.can_execute(command_id, context)
-            if not enabled:
-                ctx_arg.begin_disabled()
-            clicked = ctx_arg.selectable(label)
-            if not enabled:
-                ctx_arg.end_disabled()
-            if not clicked:
-                return False
-            result = registry.execute(
-                command_id,
-                source=CommandSource.CONTEXT_MENU,
-            )
-            if result.accepted:
-                ctx_arg.close_current_popup()
-            return result.accepted
-
-        if registry.can_execute(
-            "component.open_script",
-            registry.context(CommandSource.CONTEXT_MENU),
-        ):
-            if _command_item(_t("inspector.show_script"), "component.open_script"):
-                return False
-            ctx_arg.separator()
-
-        if _command_item(_t("inspector.reset"), "component.reset"):
-            return False
-
-        if _command_item(_t("inspector.move_up"), "component.move_up"):
-            return False
-        if _command_item(_t("inspector.move_down"), "component.move_down"):
-            return False
-        ctx_arg.separator()
-
-        if _command_item(
-            _t("inspector.copy_properties"),
-            "component.copy_properties",
-        ):
-            return False
-        if _command_item(
-            _t("inspector.paste_as_new"),
-            "component.paste_as_new",
-        ):
-            return False
-        if _command_item(
-            _t("inspector.paste_properties"),
-            "component.paste_properties",
-        ):
-            return False
-
-        ctx_arg.separator()
-        if _command_item(_t("inspector.remove"), "component.remove"):
-            return True
-        return False
+        payload = {
+            "object_id": int(obj_id),
+            "component_id": int(comp_id),
+            "type_name": str(type_name or ""),
+            "is_native": bool(is_native),
+        }
+        result = ContextMenuBuilder(registry).render(
+            ctx_arg,
+            (
+                ContextMenuCommand(
+                    "component.open_script",
+                    label=_t("inspector.show_script"),
+                    hide_when_disabled=True,
+                ),
+                ContextMenuCommand(
+                    "component.reset",
+                    label=_t("inspector.reset"),
+                    separator_before=True,
+                ),
+                ContextMenuCommand(
+                    "component.move_up",
+                    label=_t("inspector.move_up"),
+                ),
+                ContextMenuCommand(
+                    "component.move_down",
+                    label=_t("inspector.move_down"),
+                ),
+                ContextMenuCommand(
+                    "component.copy_properties",
+                    label=_t("inspector.copy_properties"),
+                    separator_before=True,
+                ),
+                ContextMenuCommand(
+                    "component.paste_as_new",
+                    label=_t("inspector.paste_as_new"),
+                ),
+                ContextMenuCommand(
+                    "component.paste_properties",
+                    label=_t("inspector.paste_properties"),
+                ),
+                ContextMenuCommand(
+                    "component.remove",
+                    label=_t("inspector.remove"),
+                    separator_before=True,
+                ),
+            ),
+            payload=payload,
+        )
+        return bool(
+            result is not None
+            and result.result.accepted
+            and result.command.spec.command_id == "component.remove"
+        )
 
     ip.render_component_context_menu = _render_component_context_menu
 
@@ -1354,19 +1210,29 @@ def _wire_add_remove_and_drop(ctx):
     """Wire add_component and handle_script_drop."""
     ip = ctx.ip
     engine = ctx.engine
-    SelectionManager = ctx.SelectionManager
+    SelectionService = ctx.SelectionService
     SceneManager = ctx.SceneManager
     _invalidate = ctx.invalidate_component_cache
     _bump = ctx._bump_inspector_values
 
     ip.get_add_component_entries = _get_add_component_entries
 
-    def _execute_add_transaction(obj, type_name, *, python_instance=None):
-        from Infernux.engine.undo import (
-            AddComponentTransactionCommand,
-            UndoManager,
-        )
+    def _selected_object():
+        primary = SelectionService.instance().primary_scene_object_id()
+        if not primary:
+            return None
+        scene = SceneManager.instance().get_active_scene()
+        return scene.find_by_id(primary) if scene else None
 
+    def _execute_add_transaction(
+        obj,
+        type_name,
+        *,
+        python_instance=None,
+        target_component_id=0,
+        insert_after=False,
+        insert_at_start=False,
+    ):
         if python_instance is not None:
             from Infernux.components.registry import get_python_attachment_blockers
 
@@ -1377,42 +1243,31 @@ def _wire_add_remove_and_drop(ctx):
                 )
                 return False
 
-        command = AddComponentTransactionCommand(
-            obj.id,
+        _component_commands().add(
+            obj,
             type_name,
             python_instance=python_instance,
+            target_component_id=int(target_component_id or 0),
+            insert_after=bool(insert_after),
+            insert_at_start=bool(insert_at_start),
             description=f"Add {type_name}",
         )
-        manager = UndoManager.instance()
-        if manager is not None:
-            succeeded = manager.execute(command)
-        else:
-            try:
-                command.execute()
-            except Exception as exc:
-                command.dispose()
-                Debug.log_error(f"Failed to add component '{type_name}': {exc}")
-                return False
-            command.dispose()
-            from Infernux.engine.ui._inspector_undo import _notify_scene_modified
+        _invalidate()
+        _bump()
+        Debug.log_internal(f"Added component: {type_name}")
+        return True
 
-            _notify_scene_modified()
-            succeeded = True
-        if succeeded:
-            _invalidate()
-            _bump()
-            Debug.log_internal(f"Added component: {type_name}")
-        return succeeded
-
-    def _add_component(type_name_or_path, is_native, script_path):
-        sel = SelectionManager.instance()
-        primary = sel.get_primary()
-        if not primary:
-            return
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(primary) if scene else None
+    def _add_component(
+        type_name_or_path,
+        is_native,
+        script_path,
+        target_component_id=0,
+        insert_after=False,
+        insert_at_start=False,
+    ):
+        obj = _selected_object()
         if obj is None:
-            return
+            return False
         if is_native:
             blockers = tuple(obj.get_add_component_blockers(type_name_or_path))
             if blockers:
@@ -1420,7 +1275,13 @@ def _wire_add_remove_and_drop(ctx):
                     f"Cannot add '{type_name_or_path}': " + "; ".join(blockers)
                 )
                 return False
-            return _execute_add_transaction(obj, type_name_or_path)
+            return _execute_add_transaction(
+                obj,
+                type_name_or_path,
+                target_component_id=target_component_id,
+                insert_after=insert_after,
+                insert_at_start=insert_at_start,
+            )
         elif not script_path:
             _engine_py_map = {"RenderStack": None}
             try:
@@ -1441,6 +1302,9 @@ def _wire_add_remove_and_drop(ctx):
                 obj,
                 comp_cls.__name__,
                 python_instance=instance,
+                target_component_id=target_component_id,
+                insert_after=insert_after,
+                insert_at_start=insert_at_start,
             )
         else:
             adb = engine.get_asset_database()
@@ -1451,31 +1315,39 @@ def _wire_add_remove_and_drop(ctx):
                 obj,
                 instance.type_name,
                 python_instance=instance,
+                target_component_id=target_component_id,
+                insert_after=insert_after,
+                insert_at_start=insert_at_start,
             )
 
-    ip.add_component = _add_component
-
-    def _handle_script_drop(script_path):
-        sel = SelectionManager.instance()
-        primary = sel.get_primary()
-        if not primary:
-            return
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(primary) if scene else None
-        if obj is None:
-            return
-        adb = engine.get_asset_database()
-        instance = _load_script_component(script_path, adb)
-        if instance is None:
+    def _can_add_component(
+        type_name_or_path,
+        is_native,
+        script_path,
+        target_component_id=0,
+        insert_after=False,
+        insert_at_start=False,
+    ):
+        del script_path
+        del insert_after
+        obj = _selected_object()
+        if obj is None or not str(type_name_or_path or "").strip():
             return False
-        return _execute_add_transaction(
-            obj,
-            instance.type_name,
-            python_instance=instance,
-        )
+        target_component_id = int(target_component_id or 0)
+        insert_at_start = bool(insert_at_start)
+        if target_component_id and insert_at_start:
+            return False
+        if target_component_id and target_component_id not in {
+            int(value) for value in obj.get_component_order()
+        }:
+            return False
+        if is_native:
+            return not tuple(obj.get_add_component_blockers(type_name_or_path))
+        return True
 
-    ip.handle_script_drop = _handle_script_drop
-
+    actions = ctx.bs._inspector_component_actions
+    actions.can_add = _can_add_component
+    actions.add = _add_component
 
 # ═══════ Asset / file preview ══════════════════════════════════
 
@@ -1516,9 +1388,6 @@ def _wire_prefab_and_misc(ctx):
     bs = ctx.bs
     _t = ctx._t
     SceneManager = ctx.SceneManager
-    SelectionManager = ctx.SelectionManager
-    _bump = ctx._bump_inspector_values
-    _invalidate = ctx.invalidate_component_cache
 
     from Infernux.lib import InspectorPrefabInfo
 
@@ -1544,61 +1413,9 @@ def _wire_prefab_and_misc(ctx):
 
     ip.get_prefab_info = _get_prefab_info
 
-    def _prefab_action(obj_id, action):
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(obj_id) if scene else None
-        if obj is None:
-            return
-        guid = getattr(obj, 'prefab_guid', '') or ''
-        if not guid:
-            return
-        from Infernux.engine.prefab_overrides import resolve_prefab_instance_root
-        root = resolve_prefab_instance_root(obj)
-        if root is None:
-            return
-        adb = engine.get_asset_database()
-        path = adb.get_path_from_guid(guid) if adb else ""
-        if action == "select":
-            if path:
-                bs.project_panel.set_current_path(
-                    __import__('os').path.dirname(path))
-        elif action == "open":
-            from Infernux.engine.scene_manager import SceneFileManager
-            sfm = SceneFileManager.instance()
-            if sfm and path:
-                sfm.open_prefab_mode_with_undo(path)
-        elif action == "apply":
-            from Infernux.engine.prefab_overrides import apply_overrides_to_prefab
-            if path:
-                apply_overrides_to_prefab(root, path, adb)
-        elif action == "revert":
-            from Infernux.engine.prefab_overrides import revert_overrides_with_undo
-            if path and revert_overrides_with_undo(root, path, adb):
-                hierarchy = bs.hierarchy
-                hierarchy.invalidate_scene_structure_cache()
-                from Infernux.engine.interaction import (
-                    SelectionService,
-                    SelectionTarget,
-                )
-
-                SelectionService.instance().select(
-                    SelectionTarget.scene_object(root.id),
-                    owner_id="inspector",
-                    reason="prefab_revert",
-                    record_history=False,
-                )
-                hierarchy.set_pending_expand_id(root.id)
-        _invalidate()
-        _bump()
-
-    ip.prefab_action = _prefab_action
-
     from Infernux.lib import TagLayerManager
     ip.get_all_tags = lambda: TagLayerManager.instance().get_all_tags()
     ip.get_all_layers = lambda: TagLayerManager.instance().get_all_layers()
-
-    wm = bs.window_manager
-    ip.open_window = lambda win_id: wm.open_window(win_id) if wm else None
 
 
 # ═══════ Main entry point ══════════════════════════════════════
@@ -1609,7 +1426,7 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
     engine = bs.engine
     from Infernux.engine.i18n import t as _t
     from Infernux.engine.ui import inspector_support as _inspector_support
-    from Infernux.engine.ui.selection_manager import SelectionManager
+    from Infernux.engine.interaction import SelectionService
     from Infernux.lib import SceneManager, InspectorObjectInfo, InspectorComponentInfo
     from Infernux.components.component import InxComponent
 
@@ -1626,16 +1443,106 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
     ctx.InspectorObjectInfo = InspectorObjectInfo
     ctx.InspectorComponentInfo = InspectorComponentInfo
     ctx.InxComponent = InxComponent
-    ctx.SelectionManager = SelectionManager
+    ctx.SelectionService = SelectionService
     ctx.project_path = bs.project_path
+
+    bs.interaction_core.scene_objects.set_change_publisher(
+        _inspector_support.bump_inspector_value_generation
+    )
 
     ip.translate = _t
 
-    sel = SelectionManager.instance()
-    ip.is_multi_selection = lambda: sel.is_multi()
-    ip.get_selected_ids = lambda: sel.get_ids()
+    from Infernux.engine.interaction import CommandSource
+
+    def _command_payload(command_id: str, argument: str):
+        if command_id in {
+            "scene.set_object_property",
+            "scene.set_transforms",
+            "component.reorder",
+        }:
+            import json
+
+            try:
+                payload = json.loads(str(argument or ""))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return {}
+            return payload if isinstance(payload, dict) else {}
+        if command_id == "component.add":
+            import os
+            import json
+
+            try:
+                raw = json.loads(str(argument or ""))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return {}
+            if not isinstance(raw, dict):
+                return {}
+            type_name = str(raw.get("type_name", "") or "").strip()
+            script_path = str(raw.get("script_path", "") or "").strip()
+            if not type_name and script_path:
+                type_name = os.path.splitext(os.path.basename(script_path))[0]
+            return {
+                "type_name": type_name,
+                "is_native": bool(raw.get("is_native", False)),
+                "script_path": script_path,
+                "target_component_id": raw.get("target_component_id", 0),
+                "insert_after": bool(raw.get("insert_after", False)),
+                "insert_at_start": bool(raw.get("insert_at_start", False)),
+            }
+        if command_id == "component.set_enabled":
+            import json
+
+            try:
+                raw = json.loads(str(argument or ""))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return {}
+            if not isinstance(raw, dict):
+                return {}
+            return {
+                "targets": raw.get("targets", ()),
+                "enabled": bool(raw.get("enabled", False)),
+                "is_native": bool(raw.get("is_native", False)),
+            }
+        if command_id.startswith("prefab."):
+            try:
+                return {"object_id": int(argument)}
+            except (TypeError, ValueError):
+                return {}
+        if command_id == "window.open":
+            target_id = str(argument or "").strip()
+            return {"target_id": target_id} if target_id else {}
+        return {}
+
+    def _execute_inspector_command(command_id, source, argument):
+        return bs.interaction_core.commands.execute(
+            command_id,
+            source=CommandSource(source),
+            payload=_command_payload(command_id, argument),
+        ).accepted
+
+    def _can_execute_inspector_command(command_id, argument):
+        return bs.interaction_core.commands.can_execute(
+            command_id,
+            bs.interaction_core.commands.context(
+                CommandSource.CONTEXT_MENU,
+                _command_payload(command_id, argument),
+            ),
+        )
+
+    ip.execute_command = _execute_inspector_command
+    ip.can_execute_command = _can_execute_inspector_command
+
+    selection = SelectionService.instance()
+    ip.is_multi_selection = lambda: len(selection.scene_object_ids()) > 1
+    ip.get_selected_ids = lambda: list(selection.scene_object_ids())
     ip.get_value_generation = _inspector_support.get_inspector_value_generation
     ip.consume_component_body_profile = _inspector_support.consume_inspector_profile_metrics
+
+    ip.on_panel_focused = bs.window_manager.native_panel_focus_callback(
+        "inspector",
+        view_id="inspector",
+        source_instance=ip,
+    )
 
     _wire_cache_init(ctx)
     _wire_component_list(ctx)

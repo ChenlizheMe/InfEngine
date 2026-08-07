@@ -166,7 +166,7 @@ class GraphSelectionController:
         self.owner_id = owner_id
         self._document_id = document_id
         self._contains = contains
-        self._view = view
+        self._view = None
         self._element_from_view = element_from_view or (
             lambda kind, stable_id: GraphElementRef(kind, stable_id)
         )
@@ -174,6 +174,8 @@ class GraphSelectionController:
         self._on_changed = on_changed
         self._service: Optional[SelectionService] = None
         self._elements: tuple[GraphElementRef, ...] = ()
+        if view is not None:
+            self.set_view(view)
 
     @property
     def elements(self) -> tuple[GraphElementRef, ...]:
@@ -207,6 +209,10 @@ class GraphSelectionController:
         self._service = None
 
     def set_view(self, view) -> None:
+        if view is not None and not callable(getattr(view, "project_selection", None)):
+            raise TypeError(
+                "graph selection views must implement project_selection(node_ids, link_id)"
+            )
         self._view = view
         self._project_view()
 
@@ -352,9 +358,4 @@ class GraphSelectionController:
             if primary is not None and primary.kind is GraphElementKind.LINK
             else ""
         )
-        setter = getattr(view, "set_selection", None)
-        if callable(setter):
-            setter(nodes, link, notify=False)
-            return
-        view.selected_nodes = list(nodes)
-        view.selected_link = link
+        view.project_selection(nodes, link)

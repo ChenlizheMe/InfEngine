@@ -7,6 +7,7 @@ from .texture import Texture as Texture
 from .shader import Shader as Shader
 from .audio_clip import AudioClip as AudioClip
 from .physic_material import PhysicMaterial as PhysicMaterial
+from .animation_clip import AnimationClip as AnimationClip, AnimationFrame as AnimationFrame
 from .assets import AssetManager as AssetManager
 from .parallel_backend import (
     ParallelBackend as ParallelBackend,
@@ -22,6 +23,7 @@ from .asset_types import (
     TextureType as TextureType,
     WrapMode as WrapMode,
     FilterMode as FilterMode,
+    SpriteFrame as SpriteFrame,
     ShaderAssetInfo as ShaderAssetInfo,
     FontAssetInfo as FontAssetInfo,
     AudioImportSettings as AudioImportSettings,
@@ -35,6 +37,7 @@ from .asset_ref import (
     PhysicMaterialRef as PhysicMaterialRef,
     RenderEffectRef as RenderEffectRef,
 )
+from .asset_reference_types import AssetReferenceType as AssetReferenceType, AssetTypeRegistry as AssetTypeRegistry, asset_type_registry as asset_type_registry
 
 __all__ = [
     "Material",
@@ -42,6 +45,8 @@ __all__ = [
     "Shader",
     "AudioClip",
     "PhysicMaterial",
+    "AnimationClip",
+    "AnimationFrame",
     "AssetManager",
     "ParallelBackend",
     "ParallelBufferView",
@@ -54,6 +59,7 @@ __all__ = [
     "TextureType",
     "WrapMode",
     "FilterMode",
+    "SpriteFrame",
     "ShaderAssetInfo",
     "FontAssetInfo",
     "AudioImportSettings",
@@ -64,4 +70,7 @@ __all__ = [
     "AudioClipRef",
     "PhysicMaterialRef",
     "RenderEffectRef",
+    "AssetReferenceType",
+    "AssetTypeRegistry",
+    "asset_type_registry",
 ]

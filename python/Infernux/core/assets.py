@@ -91,7 +91,9 @@ class AssetManager:
     # JSON snapshots are captured on the main thread, while DocumentStore owns
     # coalescing and atomic IO on native worker threads.
     _render_effect_save_snapshots: Dict[str, str] = {}
+    _document_save_expected_states: Dict[str, Any] = {}
     _pending_document_writes: Dict[str, Any] = {}
+    _pending_document_write_callbacks: Dict[str, tuple[Any, Callable[[str], None]]] = {}
 
     # Cached reference to C++ AssetRegistry singleton
     _registry = None
@@ -266,6 +268,7 @@ class AssetManager:
         cls.register_import_strategy("mesh", write_mesh_import_settings)
         cls.register_save_strategy("material", cls._save_material_resource)
         cls.register_save_strategy("render_effect", cls._save_render_effect_resource)
+        cls.register_save_strategy("physic_material", lambda resource: resource.save() is not False)
         cls.register_save_strategy("animclip", cls._save_animclip_resource)
         cls.register_save_strategy("animclip3d", cls._save_animclip3d_resource)
         cls.register_save_strategy("animfsm", cls._save_animfsm_resource)
@@ -355,7 +358,7 @@ class AssetManager:
         cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._prime_material_preview(path)
-        cls._emit_editor_asset_changed(path, "created")
+        cls._publish_asset_content_change(path, "created", guid=result.guid)
         return result
 
     @classmethod
@@ -435,7 +438,7 @@ class AssetManager:
             cls._reload_mesh_asset(path)
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("modified", path)
-        cls._emit_editor_asset_changed(path, "modified")
+        cls._publish_asset_content_change(path, "modified", guid=guid)
         return result
 
     @classmethod
@@ -492,16 +495,33 @@ class AssetManager:
             return f"particle compile failed; keeping last-known-good: {exc}"
 
     @classmethod
-    def _emit_editor_asset_changed(cls, path: str, event_type: str = "modified") -> None:
+    def _publish_asset_content_change(
+        cls,
+        path: str,
+        event_type: str = "modified",
+        *,
+        guid: str = "",
+    ) -> None:
+        """Publish one committed database consequence to Interaction Core."""
         if not path:
             return
         try:
-            from Infernux.engine.ui.event_bus import EditorEventBus, EditorEvent
+            from Infernux.engine.interaction import (
+                AssetMutationKind,
+                AssetMutationService,
+                current_action_origin,
+            )
 
-            bus = EditorEventBus.instance()
-            bus.emit(EditorEvent.ASSET_CHANGED, path, event_type)
+            service = AssetMutationService.instance()
+            if service is not None:
+                service.publish_content_change(
+                    path,
+                    AssetMutationKind(str(event_type).casefold()),
+                    guid=guid,
+                    origin=current_action_origin(),
+                )
         except Exception as exc:
-            Debug.log_suppressed("AssetManager._emit_editor_asset_changed", exc)
+            Debug.log_suppressed("AssetManager._publish_asset_content_change", exc)
 
     @staticmethod
     def _invalidate_shader_authoring_cache(path: str) -> None:
@@ -523,14 +543,67 @@ class AssetManager:
         *,
         database=None,
         suppress_watcher_echo: bool = True,
+        origin="system",
+        operation_id: str = "",
+        publish_interaction: bool = True,
     ):
-        """Commit a GUID-stable move, then patch all loaded path-bearing state."""
+        """Commit one GUID-stable catalog move and update loaded runtime state.
+
+        Project workspace operations preflight and publish a complete relocation
+        batch themselves, so they disable the per-entry interaction publication.
+        """
         asset_database = cls._mutation_database(database)
         guid = asset_database.get_guid_from_path(old_path)
+        mutations = None
+        plan = None
+        if publish_interaction:
+            from Infernux.engine.interaction import ActionOrigin, AssetMutationService
+
+            mutations = AssetMutationService.instance()
+            action_origin = ActionOrigin(origin)
+            if mutations is not None and action_origin is not ActionOrigin.EXTERNAL:
+                plan = mutations.prepare_relocation(
+                    ((old_path, new_path, guid),),
+                    origin=action_origin,
+                    operation_id=operation_id,
+                )
         result = asset_database.move_asset(old_path, new_path)
         if not result:
+            if mutations is not None and plan is not None:
+                mutations.abort_relocation(plan)
             return result
+        cls._finalize_asset_move(
+            old_path,
+            new_path,
+            guid=guid,
+            suppress_watcher_echo=suppress_watcher_echo,
+        )
+        if mutations is not None:
+            if plan is not None:
+                mutations.commit_relocation(plan)
+            elif publish_interaction:
+                try:
+                    mutations.publish_move(
+                        old_path,
+                        new_path,
+                        guid=guid,
+                        origin=origin,
+                        operation_id=operation_id,
+                    )
+                except Exception as exc:
+                    Debug.log_suppressed("AssetManager.move_asset.external_interaction", exc)
+        return result
 
+    @classmethod
+    def _finalize_asset_move(
+        cls,
+        old_path: str,
+        new_path: str,
+        *,
+        guid: str = "",
+        suppress_watcher_echo: bool = True,
+    ) -> None:
+        """Apply loaded-runtime and editor-cache consequences of a catalog move."""
         registry = cls._get_registry()
         if registry:
             registry.update_loaded_asset_path(old_path, new_path)
@@ -544,14 +617,35 @@ class AssetManager:
         if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
             cls._invalidate_shader_authoring_cache(new_path)
         cls._invalidate_project_panel_cache()
-        cls._emit_editor_asset_changed(new_path, "moved")
         if suppress_watcher_echo and new_path.lower().endswith(".py"):
             from Infernux.engine.resources_manager import ResourcesManager
 
             resources = ResourcesManager.instance()
             if resources is not None:
                 resources.reload_moved_script(old_path, new_path)
-        return result
+
+    @classmethod
+    def move_assets_batch(
+        cls,
+        moves,
+        *,
+        database=None,
+        suppress_watcher_echo: bool = True,
+    ):
+        """Commit one native catalog batch, then project runtime consequences."""
+        asset_database = cls._mutation_database(database)
+        pairs = tuple((str(old), str(new)) for old, new in moves)
+        results = asset_database.move_assets_batch(pairs)
+        if len(results) != len(pairs) or any(not result for result in results):
+            return results
+        for (old_path, new_path), result in zip(pairs, results):
+            cls._finalize_asset_move(
+                old_path,
+                new_path,
+                guid=str(result.guid or ""),
+                suppress_watcher_echo=suppress_watcher_echo,
+            )
+        return results
 
     @classmethod
     def delete_asset(
@@ -572,13 +666,21 @@ class AssetManager:
 
         asset_database = cls._mutation_database(database)
         guid = asset_database.get_guid_from_path(path) or str(guid_hint or "").strip()
+        ext = os.path.splitext(path)[1].lower()
+
+        # The catalog mutation owns dependency notification.  Do not evict
+        # live payloads before it commits: a failed metadata/database delete
+        # must leave the running editor exactly as it was.
+        result = asset_database.delete_asset(path)
+        if not result:
+            return result
+
         registry = cls._get_registry()
         if registry and guid:
             registry.remove_asset(guid)
         if guid:
             cls.invalidate(guid)
 
-        ext = os.path.splitext(path)[1].lower()
         if ext in MATERIAL_EXTENSIONS:
             if guid:
                 cls._remove_material_pipeline(guid)
@@ -586,12 +688,8 @@ class AssetManager:
                 cls._remove_material_pipeline_by_path(path)
         if ext in IMAGE_EXTENSIONS:
             cls._invalidate_texture_ui_cache(path)
-            cls._clear_deleted_texture_from_active_ui(path)
             cls._schedule_gpu_texture_reload(path)
 
-        result = asset_database.delete_asset(path)
-        if not result:
-            return result
         if ext == ".py" and guid:
             from Infernux.engine.play_mode import PlayModeManager
 
@@ -602,7 +700,7 @@ class AssetManager:
             cls._suppress_watcher_echo("deleted", path)
         cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
-        cls._emit_editor_asset_changed(path, "deleted")
+        cls._publish_asset_content_change(path, "deleted", guid=guid)
         return result
 
     @classmethod
@@ -649,6 +747,17 @@ class AssetManager:
         cls.schedule_save(key, lambda: save_handler(resource_obj), debounce_sec=debounce_sec)
 
     @classmethod
+    def cancel_scheduled_save(cls, key: str) -> bool:
+        """Cancel a debounced write that has not reached its persistence backend."""
+        removed = cls._scheduled_saves.pop(key, None) is not None
+        normalized = path_key(key) if key else ""
+        if normalized:
+            cls._material_save_snapshots.pop(normalized, None)
+            cls._render_effect_save_snapshots.pop(normalized, None)
+            cls._document_save_expected_states.pop(normalized, None)
+        return removed
+
+    @classmethod
     def set_material_save_snapshot(cls, file_path: str, json_str: str):
         """Pre-capture a material JSON snapshot for async save.
 
@@ -669,6 +778,13 @@ class AssetManager:
             cls._render_effect_save_snapshots[path_key(file_path)] = json_str
 
     @classmethod
+    def set_document_save_expected_state(cls, file_path: str, state) -> None:
+        """Freeze the DocumentRegistry baseline for the next durable write."""
+        normalized = path_key(file_path) if file_path else ""
+        if normalized:
+            cls._document_save_expected_states[normalized] = state
+
+    @classmethod
     def _save_render_effect_resource(cls, resource_obj):
         """Submit a coalesced RenderEffect source write to DocumentStore."""
         file_path = str(getattr(resource_obj, "file_path", "") or "")
@@ -683,19 +799,23 @@ class AssetManager:
 
         from Infernux.core.document_store import submit_document_text
 
-        # The live shared instance already contains this generation.  Do not
-        # re-read our own atomic replace through the file watcher.
-        cls._suppress_watcher_echo("modified", file_path, match_any=True)
         try:
-            ticket = submit_document_text(file_path, snapshot)
+            ticket = submit_document_text(
+                file_path,
+                snapshot,
+                expected_file_state=cls._document_save_expected_states.pop(
+                    norm_path,
+                    None,
+                ),
+            )
         except (OSError, RuntimeError, ValueError) as exc:
             Debug.log_error(f"RenderEffect save submission failed for '{file_path}': {exc}")
             return False
         cls._pending_document_writes[norm_path] = ticket
-        callback = getattr(resource_obj, "_on_save_submitted", None)
+        callback = getattr(resource_obj, "_on_save_completed", None)
         if callable(callback):
-            callback()
-        return True
+            cls._pending_document_write_callbacks[norm_path] = (ticket, callback)
+        return ticket
 
     @classmethod
     def poll_pending_asset_writes(cls) -> None:
@@ -704,10 +824,30 @@ class AssetManager:
             if not bool(getattr(ticket, "is_complete", False)):
                 continue
             status = str(getattr(ticket, "status", "") or "")
+            if status == "succeeded":
+                # Arm suppression only after the atomic replace and bind it to
+                # the exact committed file. A time-only suppression window can
+                # swallow a real external edit racing with this write.
+                cls._suppress_watcher_echo("modified", path)
             if status not in {"succeeded", "superseded"}:
-                Debug.log_error(f"Asset document write failed for '{path}' ({status or 'unknown'})")
+                detail = str(getattr(ticket, "error", "") or "").strip()
+                Debug.log_error(
+                    f"Asset document write failed for '{path}' "
+                    f"({status or 'unknown'}): {detail or 'no diagnostic'}"
+                )
+            callback_record = cls._pending_document_write_callbacks.get(path)
+            if callback_record is not None and callback_record[0] is ticket:
+                try:
+                    callback_record[1](status)
+                except Exception as exc:
+                    Debug.log_suppressed(
+                        "AssetManager.poll_pending_asset_writes.callback",
+                        exc,
+                    )
             if cls._pending_document_writes.get(path) is ticket:
                 cls._pending_document_writes.pop(path, None)
+            if callback_record is not None and callback_record[0] is ticket:
+                cls._pending_document_write_callbacks.pop(path, None)
 
     @classmethod
     def _save_material_resource(cls, resource_obj):
@@ -718,57 +858,44 @@ class AssetManager:
         norm_path = path_key(file_path) if file_path else ""
         snapshot = cls._material_save_snapshots.pop(norm_path, "")
 
-        # Prefer C++ async save path when available to avoid main-thread stalls.
-        native = cls._native_engine()
-        if native and hasattr(native, "schedule_material_save_snapshot_task") and file_path:
-            try:
-                if not snapshot:
-                    serialize = getattr(resource_obj, "serialize", None)
-                    if callable(serialize):
-                        snapshot = serialize() or ""
-                if snapshot:
-                    key = f"material-save|{file_path}"
-                    ok = bool(native.schedule_material_save_snapshot_task(key, file_path, snapshot))
-                    if ok:
-                        cls.on_material_saved(file_path)
-                        return True
-            except Exception as exc:
-                Debug.log_suppressed("AssetManager.schedule_material_save_async.native_path", exc)
-
-        # Fallback for older native builds — run synchronous save on the
-        # IO thread pool to avoid blocking the main/render thread.
-        save = getattr(resource_obj, "save", None)
-        if not callable(save):
+        if not snapshot:
+            serialize = getattr(resource_obj, "serialize", None)
+            if callable(serialize):
+                snapshot = serialize() or ""
+        if not file_path or not snapshot:
             return False
 
-        from Infernux.core.asset_types import _io_pool
+        from Infernux.core.document_store import submit_document_text
 
-        def _fallback_save():
-            try:
-                saved = bool(save())
-                if saved and file_path:
-                    cls.on_material_saved(file_path)
-                return saved
-            except Exception as exc:
-                Debug.log_suppressed("AssetManager.schedule_material_save_async.fallback_save", exc)
-                return False
-
-        _io_pool.submit(_fallback_save)
-        # Optimistically invalidate caches now; actual file write may
-        # complete a few ms later, but mtime-based systems will reconverge.
-        if file_path:
-            cls.on_material_saved(file_path)
-        return True
+        try:
+            ticket = submit_document_text(
+                file_path,
+                snapshot,
+                expected_file_state=cls._document_save_expected_states.pop(
+                    norm_path,
+                    None,
+                ),
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            Debug.log_error(f"Material save submission failed for '{file_path}': {exc}")
+            return False
+        cls._pending_document_writes[norm_path] = ticket
+        cls._pending_document_write_callbacks[norm_path] = (
+            ticket,
+            lambda status, _path=file_path: (
+                cls.on_material_saved(_path) if status == "succeeded" else None
+            ),
+        )
+        # In-memory previews may refresh immediately; a second invalidation is
+        # issued only after DocumentStore confirms durable publication.
+        cls.on_material_saved(file_path)
+        return ticket
 
     @classmethod
     def on_material_saved(cls, path: str) -> None:
         """Invalidate caches that depend on a material asset's file contents."""
         if not path:
             return
-        # Inspector already holds the live material. Suppress the DocumentStore
-        # publish echo; match_any covers async writes whose mtime changes after
-        # this call returns.
-        cls._suppress_watcher_echo("modified", path, match_any=True)
         cls.invalidate_path(path)
         cls._invalidate_material_ui_cache(path)
 
@@ -812,19 +939,25 @@ class AssetManager:
         if key is not None:
             record = cls._scheduled_saves.get(key)
             if not record:
-                return
+                # A runtime owner (for example RenderEffect.flush()) may have
+                # submitted the shared path before its Inspector controller
+                # reaches the footer in the same frame. Return that exact
+                # receipt so DocumentRegistry can still own completion.
+                return cls._pending_document_writes.get(path_key(key), False)
             if not force and bool(record.get("wait_one_flush", False)):
                 record["wait_one_flush"] = False
-                return
+                return False
             if not force and now < float(record.get("deadline", 0.0)):
-                return
+                return False
+            result: object = True
             try:
                 save_fn = record.get("save_fn")
                 if callable(save_fn):
-                    save_fn()
+                    value = save_fn()
+                    result = False if value is False else (True if value is None else value)
             finally:
                 cls._scheduled_saves.pop(key, None)
-            return
+            return result
 
         due_keys = []
         for k, v in cls._scheduled_saves.items():
@@ -842,6 +975,7 @@ class AssetManager:
                         save_fn()
             finally:
                 cls._scheduled_saves.pop(k, None)
+        return bool(due_keys)
 
     @classmethod
     def flush_all_asset_writes(cls) -> None:
@@ -1272,52 +1406,6 @@ class AssetManager:
         mat_name = os.path.splitext(os.path.basename(path))[0]
         if mat_name:
             native.remove_material_pipeline(mat_name)
-
-    @classmethod
-    def _clear_deleted_texture_from_active_ui(cls, path: str) -> bool:
-        """Clear stale texture_path fields from active UI Python components."""
-        normalized = cls._normalize_asset_path(path)
-        if not normalized:
-            return False
-
-        changed = False
-
-        try:
-            from Infernux.lib import SceneManager
-
-            scene = SceneManager.instance().get_active_scene()
-            if scene is None:
-                return False
-
-            for game_object in scene.get_all_objects():
-                if game_object is None:
-                    continue
-                for py_comp in game_object.get_py_components():
-                    tex_path = getattr(py_comp, "texture_path", None)
-                    if not isinstance(tex_path, str) or not tex_path:
-                        continue
-                    if cls._normalize_asset_path(tex_path) != normalized:
-                        continue
-                    setattr(py_comp, "texture_path", "")
-                    changed = True
-        except Exception as exc:
-            Debug.log_suppressed("AssetManager._clear_deleted_texture_from_active_ui.scan", exc)
-            return False
-
-        if changed:
-            try:
-                from Infernux.engine.scene_manager import SceneFileManager
-
-                sfm = SceneFileManager.instance()
-                if sfm is not None:
-                    sfm.mark_dirty()
-            except Exception as exc:
-                Debug.log_suppressed(
-                    "AssetManager._clear_deleted_texture_from_active_ui.mark_dirty",
-                    exc,
-                )
-
-        return changed
 
     @classmethod
     def invalidate_project_panel_cache(cls) -> None:

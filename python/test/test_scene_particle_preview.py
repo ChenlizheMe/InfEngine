@@ -549,9 +549,9 @@ def test_prefab_exit_overlay_is_semantic_and_clickable(monkeypatch):
     exits = []
     manager = SimpleNamespace(
         is_prefab_mode=True,
-        exit_prefab_mode_with_undo=lambda: exits.append(True),
     )
     monkeypatch.setattr(SceneFileManager, "instance", classmethod(lambda _cls: manager))
+    panel._execute_scene_command = lambda command_id: exits.append(command_id) or True
 
     semantics = []
 
@@ -591,7 +591,7 @@ def test_prefab_exit_overlay_is_semantic_and_clickable(monkeypatch):
 
     panel._render_overlays_and_shortcuts(Context(), None, 0.0, 0.0, 640.0, 480.0, 0.016)
 
-    assert exits == [True]
+    assert exits == ["prefab.exit"]
     assert len(semantics) == 1
     assert semantics[0][0] == "button"
     assert semantics[0][1]

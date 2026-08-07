@@ -106,6 +106,10 @@ class RenderEffect:
     def to_dict(self) -> dict[str, Any]:
         return self.to_asset().to_dict()
 
+    def serialize_document(self) -> dict[str, Any]:
+        """Return the canonical editable-resource document."""
+        return self.to_dict()
+
     def deserialize_document(self, document) -> bool:
         """Apply a strict source document to this shared live instance."""
         try:
@@ -305,10 +309,19 @@ class RenderEffect:
             debounce_sec=self._AUTOSAVE_MIN_INTERVAL,
         )
 
-    def _on_save_submitted(self) -> None:
-        self._last_save_time = time.monotonic()
-        self._save_pending = False
-        self._pending_saves.discard(self)
+    def _on_save_completed(self, status: str) -> None:
+        if status == "succeeded":
+            self._last_save_time = time.monotonic()
+            self._save_pending = False
+            self._pending_saves.discard(self)
+            return
+
+        # Keep the latest in-memory generation pending. A failed or externally
+        # superseded write must never turn a live effect into a false clean
+        # state or strand it without another debounced persistence attempt.
+        self._save_pending = True
+        self._pending_saves.add(self)
+        self._schedule_save()
 
     @staticmethod
     def _validate_name(name: str) -> str:

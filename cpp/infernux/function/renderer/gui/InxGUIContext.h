@@ -94,6 +94,8 @@ struct MaterialTopInteraction
     std::string fragmentPayload;
     bool fragmentListPopupOpen = false;
     std::vector<PropertyChange> surfaceChanges;
+    int activeSurfaceIndex = -1;
+    int deactivatedSurfaceIndex = -1;
 };
 
 class InxGUIContext
@@ -107,6 +109,11 @@ class InxGUIContext
     /// Native batch renderers use this to avoid entering widgets from
     /// selection/change callbacks that can run between panel renders.
     [[nodiscard]] bool CanRenderWidgets() const;
+    /// Capture popup ownership before panel rendering starts. A popup can
+    /// close while consuming a click, so querying only the current popup
+    /// stack later in the frame would let that click reach a panel below it.
+    void BeginFrameInteractionState();
+    [[nodiscard]] bool IsPointerActivationBlockedByPopup() const;
     /* basic text & labels */
     void Label(const std::string &text);
     void TextWrapped(const std::string &text);
@@ -153,6 +160,20 @@ class InxGUIContext
     int SearchableCombo(const std::string &id, int currentItem, const std::vector<std::string> &items,
                         float width = 0.0f, int maxVisibleItems = 8, const std::string &searchHint = "Filter...",
                         const std::string &emptyText = "No results");
+
+    using TransientBeginHandler =
+        std::function<void(const std::string &, const std::string &, int, std::function<bool()>)>;
+    using TransientEndHandler = std::function<void(const std::string &)>;
+    void SetTransientInteractionBridge(TransientBeginHandler begin, TransientEndHandler end)
+    {
+        m_transientBegin = std::move(begin);
+        m_transientEnd = std::move(end);
+    }
+    void ClearTransientInteractionBridge()
+    {
+        m_transientBegin = {};
+        m_transientEnd = {};
+    }
     bool ListBox(const std::string &label, int *currentItem, const std::vector<std::string> &items,
                  int heightInItems = -1);
 
@@ -246,6 +267,10 @@ class InxGUIContext
     void GetMainViewportBounds(float *x, float *y, float *w, float *h);
     bool BeginWindow(const std::string &name, bool *open = nullptr, int flags = 0);
     void EndWindow();
+    /// True when the current root window is actually presented to the user.
+    /// Unlike BeginWindow's return value, this remains stable for the selected
+    /// tab of a dock node when editor rendering is throttled.
+    bool IsCurrentWindowContentPresented();
 
     /* layout query */
     float CalcTextWidth(const std::string &text);
@@ -408,7 +433,9 @@ class InxGUIContext
     void PopDrawListClipRect();
 
     /* batch property rendering — renders all scalar fields in one call */
-    std::vector<PropertyChange> RenderPropertyBatch(const std::vector<PropertyDesc> &descriptors, float labelWidth);
+    std::vector<PropertyChange> RenderPropertyBatch(const std::vector<PropertyDesc> &descriptors, float labelWidth,
+                                                    int *activeIndex = nullptr,
+                                                    int *deactivatedAfterEditIndex = nullptr);
     uint32_t RenderObjectFieldChrome(const std::string &fieldId, const std::string &displayText,
                                      const std::string &typeHint, bool selected, bool clickable, bool hasPicker,
                                      uint64_t pickerTextureId, const std::string &semanticId = "");
@@ -436,6 +463,7 @@ class InxGUIContext
         bool scrollToHighlight = false;
         bool wasOpen = false;
         bool restoreTriggerFocus = false;
+        bool closeRequested = false;
     };
 
     // Infinite-drag helper: warps cursor to opposite screen edge when it
@@ -445,7 +473,10 @@ class InxGUIContext
 
     bool m_dragCaptured = false;
     int m_ignoreMouseDeltaFrames = 0; // suppress N frames after SDL warp
+    bool m_popupOwnedPointerAtFrameStart = false;
     std::unordered_map<std::string, SearchableComboState> m_searchableComboStates;
+    TransientBeginHandler m_transientBegin;
+    TransientEndHandler m_transientEnd;
 };
 
 } // namespace infernux

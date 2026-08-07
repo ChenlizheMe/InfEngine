@@ -12,7 +12,12 @@ from Infernux.components.value_document import (
     COMPONENT_REF,
     ASSET_REF,
 )
-from Infernux.core.asset_ref import get_all_asset_type_configs, register_asset_type
+from Infernux.core.asset_ref import (
+    GenericAssetRef,
+    create_asset_ref,
+    get_all_asset_type_configs,
+    register_asset_type,
+)
 
 
 def _meta(field_type: FieldType, name: str = "field") -> FieldMetadata:
@@ -222,3 +227,78 @@ def test_enum_uses_exact_typed_document():
 def test_asset_registry_no_longer_owns_serialization_marker_keys():
     assert "dict_key" not in inspect.signature(register_asset_type).parameters
     assert all("dict_key" not in config for config in get_all_asset_type_configs().values())
+
+
+def test_registered_asset_without_specialized_wrapper_roundtrips():
+    codec = ValueCodecRegistry()
+    metadata = FieldMetadata(
+        name="mesh",
+        field_type=FieldType.ASSET,
+        default=None,
+        asset_type="Mesh",
+    )
+    reference = create_asset_ref(
+        "Mesh",
+        guid="mesh-guid",
+        path_hint="Assets/Models/Probe.fbx",
+    )
+
+    document = codec.encode(reference, "Probe.mesh")
+    decoded = codec.decode(document, metadata, "Probe.mesh")
+
+    assert document == {
+        TYPE_KEY: ASSET_REF,
+        "asset_type": "Mesh",
+        "guid": "mesh-guid",
+        "path_hint": "Assets/Models/Probe.fbx",
+    }
+    assert isinstance(decoded, GenericAssetRef)
+    assert decoded.asset_type == "Mesh"
+    assert decoded.guid == "mesh-guid"
+
+
+def test_asset_list_codec_preserves_parent_element_contract():
+    codec = ValueCodecRegistry()
+    metadata = FieldMetadata(
+        name="clips",
+        field_type=FieldType.LIST,
+        default=[],
+        element_type=FieldType.ASSET,
+        asset_type="AudioClip",
+    )
+    document = [
+        {
+            TYPE_KEY: ASSET_REF,
+            "asset_type": "AudioClip",
+            "guid": "audio-guid",
+            "path_hint": "Assets/Audio/Probe.wav",
+        }
+    ]
+
+    decoded = codec.decode(document, metadata, "Probe.clips")
+
+    assert len(decoded) == 1
+    assert decoded[0].guid == "audio-guid"
+    assert decoded[0].path_hint == "Assets/Audio/Probe.wav"
+
+
+def test_asset_list_codec_rejects_wrong_element_type():
+    codec = ValueCodecRegistry()
+    metadata = FieldMetadata(
+        name="clips",
+        field_type=FieldType.LIST,
+        default=[],
+        element_type=FieldType.ASSET,
+        asset_type="AudioClip",
+    )
+    document = [
+        {
+            TYPE_KEY: ASSET_REF,
+            "asset_type": "Mesh",
+            "guid": "mesh-guid",
+            "path_hint": "Assets/Models/Probe.fbx",
+        }
+    ]
+
+    with pytest.raises(TypeError, match="requires AudioClip"):
+        codec.decode(document, metadata, "Probe.clips")

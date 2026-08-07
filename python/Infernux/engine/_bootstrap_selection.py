@@ -10,14 +10,55 @@ methods, and panel/manager references live on the bootstrap instance.
 """
 
 
-from Infernux.engine.ui.event_bus import EditorEvent
+_PROJECT_SUBRESOURCE_TOKENS = {
+    "::submat:": "submaterial",
+    "::subbone:": "subbone",
+    "::subanim:": "subanimation",
+}
+
+
+def _project_selection_target(path: str):
+    """Translate one Project row identity into a typed global target."""
+    from Infernux.engine.interaction import SelectionTarget
+
+    value = str(path or "")
+    for token, sub_kind in _PROJECT_SUBRESOURCE_TOKENS.items():
+        base, separator, identifier = value.partition(token)
+        if separator and base and identifier:
+            return SelectionTarget.asset_subresource(
+                base,
+                identifier,
+                sub_kind=sub_kind,
+            )
+    return SelectionTarget.asset(value)
+
+
+def _project_path_for_target(target) -> str:
+    """Rebuild the Project row path from a typed selection target."""
+    from Infernux.engine.interaction import SelectionDomain
+
+    if target.domain is SelectionDomain.ASSET:
+        return target.target_id
+    if target.domain is not SelectionDomain.ASSET_SUBRESOURCE:
+        return ""
+    token = {
+        "submaterial": "::submat:",
+        "subbone": "::subbone:",
+        "subanimation": "::subanim:",
+    }.get(target.sub_kind)
+    if not token:
+        return target.document_id
+    return f"{target.document_id}{token}{target.target_id}"
 
 
 class BootstrapSelectionMixin:
     """BootstrapSelectionMixin method group for EditorBootstrap."""
 
     def _wire_selection_system(self):
-        from Infernux.engine.interaction import SelectionService
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            SelectionService,
+        )
 
         hierarchy = self.hierarchy
         project = self.project_panel
@@ -25,11 +66,6 @@ class BootstrapSelectionMixin:
 
         project.on_selection_changed = self._on_project_selection_changed
         scene_view.set_on_object_picked(self._on_scene_view_picked)
-        scene_view.set_on_box_select(self._on_box_select_done)
-        hierarchy.on_double_click_focus = (
-            lambda oid: self._fly_to_object_by_id(oid)
-        )
-
         selection = SelectionService.instance()
         previous_service = getattr(self, "_selection_projection_service", None)
         previous_listener = getattr(self, "_selection_projection_listener", None)
@@ -38,36 +74,627 @@ class BootstrapSelectionMixin:
         self._selection_projection_service = selection
         self._selection_projection_listener = self._on_global_selection_changed
         selection.add_listener(self._selection_projection_listener)
+        previous_asset_bus = getattr(self, "_selection_asset_mutations", None)
+        previous_asset_listener = getattr(
+            self,
+            "_selection_asset_event_listener",
+            None,
+        )
+        if previous_asset_bus is not None and callable(previous_asset_listener):
+            previous_asset_bus.remove_listener(previous_asset_listener)
+        asset_bus = self.interaction_core.asset_mutations
+        self._selection_asset_mutations = asset_bus
+        self._selection_asset_event_listener = (
+            self._on_asset_selection_source_changed
+        )
+        asset_bus.add_listener(self._selection_asset_event_listener)
         self._prev_selection_snapshot = selection.snapshot
         self._present_selection_snapshot(selection.snapshot)
+        focus = self.interaction_core.focus
+        previous_focus_service = getattr(self, "_focus_history_service", None)
+        previous_focus_listener = getattr(self, "_focus_history_listener", None)
+        if previous_focus_service is not None and callable(previous_focus_listener):
+            previous_focus_service.remove_change_listener(previous_focus_listener)
+        self._focus_history_service = focus
+        self._focus_history_listener = self._on_global_focus_changed
+        focus.add_change_listener(self._focus_history_listener)
+
+        previous_projection_service = getattr(
+            self, "_window_focus_projection_service", None
+        )
+        previous_projection_listener = getattr(
+            self, "_window_focus_projection_listener", None
+        )
+        if previous_projection_service is not None and callable(
+            previous_projection_listener
+        ):
+            previous_projection_service.remove_listener(
+                previous_projection_listener
+            )
+
+        def project_window_focus(snapshot):
+            if self.window_manager is not None:
+                self.window_manager.project_interaction_focus(snapshot)
+
+        self._window_focus_projection_service = focus
+        self._window_focus_projection_listener = project_window_focus
+        focus.add_listener(project_window_focus)
+        project_window_focus(focus.snapshot)
+        self.interaction_core.set_window_locator_provider(
+            lambda snapshot: self.window_manager.locate_window(
+                snapshot.active_view_id or snapshot.active_panel_id
+            )
+            if self.window_manager is not None
+            else None
+        )
         self.undo_manager.set_context_hooks(
             self.interaction_core.capture_context,
             self._restore_editor_context,
         )
+        opener = self.interaction_core.document_open
+        opener.register(
+            DocumentKind.SCENE,
+            lambda locator: self.scene_file_manager.restore_document_locator(locator),
+            replace=True,
+        )
+        opener.register(
+            DocumentKind.PREFAB,
+            self._restore_prefab_document,
+            replace=True,
+        )
+        opener.register(
+            DocumentKind.PARTICLE_GRAPH,
+            lambda locator: self._restore_panel_document(
+                locator,
+                panel_id="particle_graph_editor",
+            ),
+            replace=True,
+        )
+        opener.register(
+            DocumentKind.ANIMATION_FSM,
+            lambda locator: self._restore_panel_document(
+                locator,
+                panel_id="animfsm_editor",
+            ),
+            replace=True,
+        )
+        opener.register(
+            DocumentKind.TIMELINE,
+            lambda locator: self._restore_panel_document(
+                locator,
+                panel_id="animtimeline_editor",
+            ),
+            replace=True,
+        )
+        opener.register(
+            DocumentKind.ANIMATION_CLIP,
+            lambda locator: self._restore_panel_document(
+                locator,
+                panel_id="animclip2d_editor",
+            ),
+            replace=True,
+        )
+        from Infernux.engine.interaction import SelectionDomain
 
-    def _restore_editor_context(self, context, phase: str) -> None:
-        from Infernux.engine.interaction import SelectionService
+        navigation = self.interaction_core.navigation
+        navigation.register(
+            SelectionDomain.ASSET,
+            self._present_asset_navigation_target,
+            replace=True,
+        )
+        navigation.register(
+            SelectionDomain.ASSET_SUBRESOURCE,
+            self._present_asset_navigation_target,
+            replace=True,
+        )
+        navigation.register(
+            SelectionDomain.SCENE_OBJECT,
+            self._present_scene_navigation_target,
+            replace=True,
+        )
 
+    def _on_asset_selection_source_changed(self, change) -> None:
+        """Invalidate stable subresource targets independently of Panel visibility."""
+        import os
+
+        from Infernux.engine.interaction import (
+            AssetMutationKind,
+            SelectionDomain,
+            SelectionService,
+            SelectionTarget,
+            iter_asset_mutations,
+        )
+        from Infernux.engine.path_utils import same_path
+
+        selection = SelectionService.instance()
+        snapshot = selection.snapshot
+        if snapshot.domain is not SelectionDomain.ASSET_SUBRESOURCE:
+            return
+        for mutation in iter_asset_mutations(change):
+            changed_path = mutation.path
+            asset_path = (
+                changed_path[:-5]
+                if changed_path.lower().endswith(".meta")
+                else changed_path
+            )
+            scoped = tuple(
+                target
+                for target in selection.snapshot.targets
+                if target.sub_kind == "sprite_frame"
+                and same_path(target.document_id, asset_path)
+            )
+            if not scoped:
+                continue
+
+            valid_ids: set[str] = set()
+            asset_exists = (
+                os.path.isfile(asset_path)
+                and mutation.kind is not AssetMutationKind.DELETED
+            )
+            if asset_exists:
+                try:
+                    from Infernux.core.asset_types import (
+                        TextureType,
+                        read_texture_import_settings,
+                    )
+
+                    settings = read_texture_import_settings(asset_path)
+                    if settings.texture_type is TextureType.SPRITE:
+                        valid_ids = {
+                            frame.stable_id for frame in settings.sprite_frames
+                        }
+                except (OSError, TypeError, ValueError):
+                    valid_ids = set()
+
+            selection.reconcile(
+                lambda target: not (
+                    target.sub_kind == "sprite_frame"
+                    and same_path(target.document_id, asset_path)
+                    and target.target_id not in valid_ids
+                ),
+                fallback=(
+                    SelectionTarget.asset(asset_path) if asset_exists else None
+                ),
+                fallback_owner_id="inspector",
+                reason="asset_subresource_invalidated",
+                record_history=False,
+            )
+    def _focus_navigation_panel(
+        self,
+        panel_id: str,
+        *,
+        record_history: bool = True,
+    ) -> bool:
+        if self.window_manager is None:
+            return False
+        try:
+            if record_history:
+                return self.window_manager.open_window_from_user(
+                    panel_id,
+                    reason="navigate_panel",
+                ) is not None
+            return self.window_manager.open_window(panel_id) is not None
+        except (KeyError, RuntimeError, ValueError):
+            return False
+
+    def _present_asset_navigation_target(
+        self,
+        target,
+        request,
+    ) -> bool:
+        import os
+
+        from Infernux.engine.interaction import SelectionDomain, ViewCommandService
+        from Infernux.engine.path_utils import lexical_path, same_path
+
+        if self.project_panel is None:
+            return False
+        if target.domain is SelectionDomain.ASSET_SUBRESOURCE:
+            backing_path = lexical_path(target.document_id)
+        else:
+            backing_path = lexical_path(target.target_id)
+        if not backing_path or not os.path.exists(backing_path):
+            return False
+        parent = lexical_path(
+            backing_path if os.path.isdir(backing_path) else os.path.dirname(backing_path)
+        )
+        if not parent or not self.project_panel.can_navigate_to_path(parent):
+            return False
+        if request.activate_panel:
+            if not self._focus_navigation_panel(
+                "project",
+                record_history=request.record_history,
+            ):
+                return False
+
+        current = lexical_path(self.project_panel.get_current_path())
+        if same_path(current, parent):
+            return True
+        if not request.record_history:
+            return bool(self.project_panel.set_current_path(parent))
+        return ViewCommandService.require().set_value(
+            current,
+            parent,
+            self.project_panel.set_current_path,
+            description="Navigate Project",
+        )
+
+    def _present_scene_navigation_target(
+        self,
+        target,
+        request,
+    ) -> bool:
+        object_id = target.scene_object_id()
+        if object_id <= 0 or self.hierarchy is None:
+            return False
+        from Infernux.lib import SceneManager
+
+        scene = SceneManager.instance().get_active_scene()
+        obj = scene.find_by_id(object_id) if scene is not None else None
+        if obj is None:
+            return False
+        if request.activate_panel:
+            if not self._focus_navigation_panel(
+                "hierarchy",
+                record_history=request.record_history,
+            ):
+                return False
+
+        ancestor_ids: list[int] = []
+        parent = obj.get_parent()
+        while parent is not None:
+            ancestor_ids.append(int(parent.id))
+            parent = parent.get_parent()
+
+        from Infernux.engine.interaction import TreeViewStateService
+
+        return TreeViewStateService.require().reveal_path(
+            self.hierarchy.get_expanded_object_ids(),
+            ancestor_ids,
+            self.hierarchy.set_expanded_object_ids,
+            description="Reveal Hierarchy Object",
+            record_history=request.record_history,
+        )
+
+    def _restore_prefab_document(self, locator):
+        """Restore the scene-backed Prefab document without recording history."""
+        import os
+
+        from Infernux.engine.interaction import (
+            DocumentOpenResult,
+            DocumentOpenStatus,
+        )
+        from Infernux.engine.path_utils import same_path
+        from Infernux.engine.scene_manager import SceneFileManager
+
+        registry = self.interaction_core.documents
+        resolved = registry.resolve_locator(locator)
+        scene_files = SceneFileManager.instance()
+        if scene_files is None:
+            return DocumentOpenResult(
+                DocumentOpenStatus.FAILED,
+                message="Prefab restore requires an active SceneFileManager",
+            )
+        path = str(locator.resource_path or "").strip()
+        if not path or not os.path.isfile(path):
+            return DocumentOpenResult(
+                DocumentOpenStatus.FAILED,
+                message=f"Prefab resource is unavailable: {path or locator.title}",
+            )
+        if scene_files.is_prefab_mode:
+            if not same_path(scene_files.prefab_mode_path or "", path):
+                return DocumentOpenResult(
+                    DocumentOpenStatus.FAILED,
+                    message="another Prefab document is currently active",
+                )
+            if resolved is None:
+                resolved = registry.resolve_locator(locator)
+            return DocumentOpenResult(
+                DocumentOpenStatus.READY if resolved is not None else DocumentOpenStatus.FAILED,
+                resolved,
+                "" if resolved is not None else "active Prefab document is not registered",
+            )
+        if not scene_files.open_prefab_mode(path, preserve_undo_history=True):
+            return DocumentOpenResult(
+                DocumentOpenStatus.FAILED,
+                message=f"Prefab document open was rejected: {path}",
+            )
+        resolved = registry.resolve_locator(locator)
+        if resolved is None:
+            return DocumentOpenResult(
+                DocumentOpenStatus.FAILED,
+                message="Prefab Mode did not register the requested document",
+            )
+        return DocumentOpenResult(DocumentOpenStatus.READY, resolved)
+
+    def _restore_panel_document(self, locator, *, panel_id: str):
+        """Idempotently restore one singleton authoring panel document."""
+        import os
+
+        from Infernux.engine.interaction import (
+            DocumentOpenResult,
+            DocumentOpenStatus,
+        )
+
+        registry = self.interaction_core.documents
+        resolved = registry.resolve_locator(locator)
+        if resolved is not None:
+            return DocumentOpenResult(DocumentOpenStatus.READY, resolved)
+
+        path = str(locator.resource_path or "").strip()
+        if not path:
+            panel = self.window_manager.open_window(panel_id)
+            restore_session = getattr(panel, "restore_dormant_document", None)
+            if not callable(restore_session) or not restore_session(locator):
+                return DocumentOpenResult(
+                    DocumentOpenStatus.FAILED,
+                    message=f"document session is unavailable: {locator.title}",
+                )
+            resolved = registry.resolve_locator(locator)
+            if resolved is None:
+                return DocumentOpenResult(
+                    DocumentOpenStatus.FAILED,
+                    message="session restore did not register the requested document",
+                )
+            return DocumentOpenResult(DocumentOpenStatus.READY, resolved)
+        if not os.path.isfile(path):
+            return DocumentOpenResult(
+                DocumentOpenStatus.FAILED,
+                message=f"document resource is unavailable: {path or locator.title}",
+            )
+
+        requests = getattr(self, "_document_restore_requests", None)
+        if requests is None:
+            requests = {}
+            self._document_restore_requests = requests
+        request_key = locator.stable_id
+        request = requests.setdefault(request_key, {"state": "new", "message": ""})
+        if request["state"] == "failed":
+            requests.pop(request_key, None)
+            return DocumentOpenResult(
+                DocumentOpenStatus.FAILED,
+                message=request["message"] or "document replacement was cancelled",
+            )
+
+        panel = self.window_manager.get_window_instance(panel_id)
+        existing = registry.document_for_view(panel_id)
+        if existing is not None and existing.is_dirty and request["state"] == "new":
+            from Infernux.engine.ui.dirty_panel_confirmation import (
+                DirtyPanelConfirmationCoordinator,
+            )
+
+            def _approved() -> None:
+                request["state"] = "approved"
+
+            def _cancelled() -> None:
+                request["state"] = "failed"
+                request["message"] = "document replacement was cancelled"
+
+            coordinator = DirtyPanelConfirmationCoordinator.instance()
+            accepted = coordinator.request_document_replace(
+                existing.document_id,
+                on_complete=_approved,
+                on_cancel=_cancelled,
+            )
+            if accepted:
+                request["state"] = "waiting"
+            return DocumentOpenResult(DocumentOpenStatus.PENDING)
+        if request["state"] == "waiting":
+            return DocumentOpenResult(DocumentOpenStatus.PENDING)
+
+        try:
+            panel = self.window_manager.open_window(panel_id)
+            controller = getattr(
+                panel,
+                "_authoring_document_controller",
+                None,
+            )
+            loader = getattr(controller, "open_resource_immediate", None)
+            if not callable(loader):
+                raise RuntimeError(
+                    f"editor panel '{panel_id}' has no authoring document loader"
+                )
+            loaded = loader(path)
+            if loaded is False:
+                raise RuntimeError(f"editor panel rejected document: {path}")
+        except Exception as exc:
+            requests.pop(request_key, None)
+            return DocumentOpenResult(DocumentOpenStatus.FAILED, message=str(exc))
+
+        resolved = registry.resolve_locator(locator)
+        if resolved is None:
+            requests.pop(request_key, None)
+            return DocumentOpenResult(
+                DocumentOpenStatus.FAILED,
+                message="document loader did not register the requested resource",
+            )
+        requests.pop(request_key, None)
+        return DocumentOpenResult(DocumentOpenStatus.READY, resolved)
+
+    def _restore_editor_context(self, context, phase: str):
+        from dataclasses import replace
+
+        from Infernux.engine.interaction import (
+            ContextRestoreStatus,
+            DocumentOpenStatus,
+            SelectionService,
+        )
+
+        # Old journal entries may contain the temporary child context emitted
+        # by inline rename, popup, or drag capture. It is presentation state,
+        # not a restorable editor location.
+        transients = getattr(
+            self.interaction_core,
+            "transient_interactions",
+            None,
+        )
+        focus_snapshot = (
+            transients.persistent_focus_snapshot(context.focus)
+            if transients is not None
+            else context.focus
+        )
+        if context.scene is not None:
+            scene_result = self.interaction_core.document_open.resolve_or_open(
+                context.scene
+            )
+            if scene_result.status is DocumentOpenStatus.PENDING:
+                return ContextRestoreStatus.PENDING
+            if (
+                scene_result.status is DocumentOpenStatus.FAILED
+                or scene_result.document is None
+            ):
+                from Infernux.debug import Debug
+
+                Debug.log_error(
+                    "Undo/Redo could not restore Scene context "
+                    f"'{context.scene.title}' ({context.scene.stable_id}): "
+                    f"{scene_result.message or scene_result.status.value}"
+                )
+                return ContextRestoreStatus.FAILED
+        if context.document is not None:
+            result = self.interaction_core.document_open.resolve_or_open(context.document)
+            if result.status is DocumentOpenStatus.PENDING:
+                return ContextRestoreStatus.PENDING
+            if result.status is DocumentOpenStatus.FAILED or result.document is None:
+                from Infernux.debug import Debug
+
+                Debug.log_error(
+                    "Undo/Redo could not restore document context "
+                    f"'{context.document.title}' ({context.document.stable_id}): "
+                    f"{result.message or result.status.value}"
+                )
+                return ContextRestoreStatus.FAILED
+            document = result.document
+            if focus_snapshot.active_document_id != document.document_id:
+                focus_snapshot = replace(
+                    focus_snapshot,
+                    active_document_id=document.document_id,
+                )
+        window_locator = getattr(context, "window", None)
+        window_already_visible = False
+        if window_locator is not None and self.window_manager is not None:
+            window_already_visible = self.window_manager.is_window_content_visible(
+                window_locator.window_id
+            )
+            if (
+                not window_already_visible
+                and self.interaction_core.focus.snapshot != focus_snapshot
+            ):
+                self.interaction_core.focus.apply_snapshot(
+                    focus_snapshot,
+                    reason="undo_focus_intent",
+                    record_history=False,
+                )
+            status = self.window_manager.restore_window(window_locator)
+            if status is not ContextRestoreStatus.READY:
+                if status is ContextRestoreStatus.FAILED:
+                    from Infernux.debug import Debug
+
+                    Debug.log_error(
+                        "Undo/Redo could not restore window context "
+                        f"'{window_locator.window_id}'"
+                    )
+                return status
+        if (
+            not window_already_visible
+            and self.interaction_core.focus.snapshot != focus_snapshot
+        ):
+            self._apply_focus_snapshot(
+                focus_snapshot,
+                window_already_restored=window_locator is not None,
+            )
+        panel_id = focus_snapshot.active_view_id or focus_snapshot.active_panel_id
+        child_context_id = focus_snapshot.child_context_id
+        if panel_id and self.window_manager is not None:
+            if not self.window_manager.restore_panel_child_context(
+                panel_id,
+                child_context_id,
+            ):
+                from Infernux.debug import Debug
+
+                Debug.log_error(
+                    "Undo/Redo could not restore panel child context "
+                    f"'{child_context_id}' for '{panel_id}'"
+                )
+                return ContextRestoreStatus.FAILED
         if SelectionService.instance().snapshot != context.selection:
             self._apply_selection_snapshot(context.selection)
+        return ContextRestoreStatus.READY
 
-        panel_id = context.focus.active_panel_id
-        if not panel_id or self.window_manager is None:
+    def _apply_focus_snapshot(self, snapshot, *, window_already_restored=False) -> None:
+        focus = self.interaction_core.focus
+        focus.apply_snapshot(snapshot, reason="undo", record_history=False)
+        window_id = snapshot.active_view_id or snapshot.active_panel_id
+        if not window_id or self.window_manager is None:
             return
-        if not self.window_manager.is_window_open(panel_id):
+        if window_already_restored:
+            return
+        if not self.window_manager.is_window_open(window_id):
             registered = self.window_manager.get_registered_types()
-            if panel_id in registered:
-                self.window_manager.open_window(panel_id)
-        if self.window_manager.is_window_open(panel_id):
-            self.window_manager.focus_window(panel_id)
+            panel_type_id = snapshot.active_panel_id
+            if panel_type_id in registered:
+                self.window_manager.open_window(
+                    panel_type_id,
+                    instance_id=window_id,
+                )
+        if self.window_manager.is_window_open(window_id):
+            self.window_manager.focus_window(window_id)
+
+    def _on_global_focus_changed(self, change) -> None:
+        if not change.record_history:
+            return
+        from Infernux.engine.interaction import SelectionService
+        from Infernux.engine.undo import GlobalFocusCommand, UndoManager
+
+        manager = UndoManager.instance()
+        if manager is None or manager.is_executing:
+            return
+        # The focus producer owns the presentation decision. Re-checking dock
+        # visibility here is racy: Python panels publish focus while ImGui is
+        # revealing the new tab, so a second probe can observe the new state
+        # and silently drop a transition already classified as user-visible.
+        selection = SelectionService.instance().snapshot
+        description = (
+            f"Focus {change.after.active_panel_id}"
+            if change.after.active_panel_id
+            else f"Leave {change.before.active_panel_id}"
+        )
+        before_context = self.interaction_core.capture_context(
+            focus=change.before,
+            selection=selection,
+        )
+        presentation_before_view_id = str(
+            getattr(change, "presentation_before_view_id", "") or ""
+        )
+        if presentation_before_view_id and self.window_manager is not None:
+            from dataclasses import replace
+
+            locator = self.window_manager.locate_window(
+                presentation_before_view_id
+            )
+            if locator is not None:
+                before_context = replace(before_context, window=locator)
+        manager.record(
+            GlobalFocusCommand(
+                change.before,
+                change.after,
+                description=description,
+            ),
+            before_context=before_context,
+            after_context=self.interaction_core.capture_context(
+                focus=change.after,
+                selection=selection,
+            ),
+        )
 
     def _set_outline(self, object_id: int, object_ids=None):
         native = self.engine.get_native_engine()
         if not native:
             return
         if object_ids is None:
-            from Infernux.engine.ui.selection_manager import SelectionManager
-            ids = SelectionManager.instance().get_ids()
+            from Infernux.engine.interaction import SelectionService
+
+            ids = SelectionService.instance().scene_object_ids()
         else:
             ids = list(object_ids)
         ids = [int(selected_id) for selected_id in ids if selected_id]
@@ -121,11 +748,7 @@ class BootstrapSelectionMixin:
 
         if domain in (SelectionDomain.ASSET, SelectionDomain.ASSET_SUBRESOURCE):
             paths = [
-                (
-                    target.target_id
-                    if target.domain is SelectionDomain.ASSET
-                    else target.document_id
-                )
+                _project_path_for_target(target)
                 for target in snapshot.targets
                 if target.domain in (
                     SelectionDomain.ASSET,
@@ -135,15 +758,10 @@ class BootstrapSelectionMixin:
             paths = list(dict.fromkeys(path for path in paths if path))
             primary_path = ""
             if primary is not None:
-                primary_path = (
-                    primary.target_id
-                    if primary.domain is SelectionDomain.ASSET
-                    else primary.document_id
-                )
+                primary_path = _project_path_for_target(primary)
             self.project_panel.set_selected_files(paths, primary_path, False)
             self._inspector_set_selected_file(primary_path)
             self._set_outline(0, [])
-            self.event_bus.emit(EditorEvent.FILE_SELECTED, primary_path)
             return
 
         if domain in (SelectionDomain.SCENE_OBJECT, SelectionDomain.COMPONENT):
@@ -166,33 +784,15 @@ class BootstrapSelectionMixin:
                 ]
                 primary_id = primary.scene_object_id() if primary is not None else 0
 
-            obj = None
-            if primary_id:
-                from Infernux.lib import SceneManager
-
-                scene = SceneManager.instance().get_active_scene()
-                obj = scene.find_by_id(primary_id) if scene else None
             inspector.set_selected_object_id(primary_id or 0)
             self.project_panel.clear_selection(False)
             self._set_outline(primary_id, object_ids)
-            self.event_bus.emit(EditorEvent.SELECTION_CHANGED, obj)
             return
 
         self.project_panel.clear_selection(False)
         self.inspector_panel.clear_selected_object()
         self._inspector_set_selected_file("")
         self._set_outline(0, [])
-        self.event_bus.emit(EditorEvent.SELECTION_CHANGED, None)
-
-    def _fly_to_object_by_id(self, object_id: int):
-        """Resolve object ID and fly scene view to it."""
-        if not object_id:
-            return
-        from Infernux.lib import SceneManager
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(object_id) if scene else None
-        if obj:
-            self.scene_view.fly_to_object(obj)
 
     def _on_project_selection_changed(self, paths, primary_path):
         from Infernux.engine.interaction import (
@@ -201,8 +801,8 @@ class BootstrapSelectionMixin:
             SelectionTarget,
         )
 
-        targets = tuple(SelectionTarget.asset(path) for path in paths if path)
-        primary = SelectionTarget.asset(primary_path) if primary_path else None
+        targets = tuple(_project_selection_target(path) for path in paths if path)
+        primary = _project_selection_target(primary_path) if primary_path else None
         snapshot = SelectionSnapshot.create(
             targets,
             owner_id="project" if targets else "",
@@ -218,32 +818,29 @@ class BootstrapSelectionMixin:
         from Infernux.engine.interaction import SelectionService, SelectionTarget
 
         selection = SelectionService.instance()
+        with self.interaction_core.scene_objects.user_action("Select Scene Object"):
+            if ctrl and object_id:
+                selection.toggle(
+                    SelectionTarget.scene_object(object_id),
+                    owner_id="scene_view",
+                    record_history=True,
+                )
+            elif object_id:
+                selection.select(
+                    SelectionTarget.scene_object(object_id),
+                    owner_id="scene_view",
+                    record_history=True,
+                )
+            elif not ctrl:
+                selection.clear(reason="scene_pick_clear", record_history=True)
 
-        if ctrl and object_id:
-            selection.toggle(
-                SelectionTarget.scene_object(object_id),
-                owner_id="scene_view",
-                record_history=True,
-            )
-        elif object_id:
-            selection.select(
-                SelectionTarget.scene_object(object_id),
-                owner_id="scene_view",
-                record_history=True,
-            )
-        elif not ctrl:
-            selection.clear(record_history=True)
-
-        primary = selection.snapshot.primary
-        if primary is not None:
-            self.hierarchy.expand_to_object(primary.scene_object_id())
-
-    def _on_box_select_done(self, _primary_obj):
-        from Infernux.engine.interaction import SelectionService
-
-        primary = SelectionService.instance().snapshot.primary
-        if primary is not None:
-            self.hierarchy.expand_to_object(primary.scene_object_id())
+            primary = selection.snapshot.primary
+            if primary is not None:
+                self.interaction_core.navigation.reveal(
+                    primary,
+                    record_history=True,
+                    activate_panel=False,
+                )
 
     def _navigate_console_entry_to_object(self, object_id: int) -> bool:
         """Reveal a console-targeted scene object in Hierarchy and Inspector."""
@@ -257,23 +854,14 @@ class BootstrapSelectionMixin:
         if obj is None:
             return False
 
-        if self.window_manager is not None:
-            if not self.window_manager.is_window_open("hierarchy"):
-                self.window_manager.open_window("hierarchy")
-            if not self.window_manager.is_window_open("inspector"):
-                self.window_manager.open_window("inspector")
+        from Infernux.engine.interaction import SelectionTarget
 
-        from Infernux.engine.interaction import SelectionService, SelectionTarget
-
-        SelectionService.instance().select(
+        return self.interaction_core.navigation.locate(
             SelectionTarget.scene_object(object_id),
             owner_id="hierarchy",
             reason="console_navigate_to_object",
             record_history=True,
         )
-        self.hierarchy.expand_to_object(object_id)
-
-        return True
 
     def _record_selection_snapshot(
         self,
@@ -297,12 +885,11 @@ class BootstrapSelectionMixin:
         if not record or previous_snapshot == next_snapshot:
             return
         manager = UndoManager.instance()
-        if manager is None or manager.is_executing:
+        if manager is None or manager.is_executing or manager.is_user_action_active:
             return
         manager.record(GlobalSelectionCommand(
             previous_snapshot,
             next_snapshot,
-            self._apply_selection_snapshot,
         ))
 
     def _apply_selection_snapshot(self, snapshot):
@@ -311,7 +898,4 @@ class BootstrapSelectionMixin:
         service = SelectionService.instance()
         service.apply_snapshot(snapshot, reason="undo", record_history=False)
         self._prev_selection_snapshot = snapshot
-        window_manager = getattr(self, "window_manager", None)
-        if window_manager is not None and snapshot.owner_id:
-            window_manager.focus_window(snapshot.owner_id)
 

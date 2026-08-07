@@ -120,6 +120,9 @@ class MeshRenderer : public Component
     /// @brief Handle asset graph notifications for the referenced mesh asset.
     void OnMeshAssetEvent(AssetEvent event);
 
+    /// @brief Invalidate or reconnect material slots without changing GUIDs.
+    void OnMaterialAssetEvent(const std::string &guid, AssetEvent event);
+
     /// @brief Get the mesh asset reference
     [[nodiscard]] const AssetRef<InxMesh> &GetMeshAssetRef() const
     {

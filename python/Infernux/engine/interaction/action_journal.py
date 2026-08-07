@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from contextlib import contextmanager
+from contextvars import ContextVar
 import time
 import uuid
 from typing import Any, Optional
 
 from .contexts import FocusSnapshot
 from .descriptors import SelectionSnapshot
+from .documents import DocumentLocator
+from .windows import WindowLocator
 
 
 class ActionOrigin(str, Enum):
@@ -19,15 +23,50 @@ class ActionOrigin(str, Enum):
     EXTERNAL = "external"
 
 
+_ACTION_ORIGIN = ContextVar("infernux_editor_action_origin", default=ActionOrigin.USER)
+
+
+def current_action_origin() -> ActionOrigin:
+    """Return the source of commands created in the current execution context."""
+    return ActionOrigin(_ACTION_ORIGIN.get())
+
+
+@contextmanager
+def action_origin_scope(origin: ActionOrigin):
+    """Propagate one human/automation/system source through nested services."""
+    token = _ACTION_ORIGIN.set(ActionOrigin(origin))
+    try:
+        yield
+    finally:
+        _ACTION_ORIGIN.reset(token)
+
+
+class ContextRestoreStatus(str, Enum):
+    """Progress of restoring the editor context required by history replay."""
+
+    READY = "ready"
+    PENDING = "pending"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True, slots=True)
 class EditorContextSnapshot:
     focus: FocusSnapshot = FocusSnapshot()
     selection: SelectionSnapshot = SelectionSnapshot()
+    document: Optional[DocumentLocator] = None
+    window: Optional[WindowLocator] = None
+    scene: Optional[DocumentLocator] = None
 
     def with_selection(self, selection: SelectionSnapshot) -> "EditorContextSnapshot":
         if not isinstance(selection, SelectionSnapshot):
             raise TypeError("editor context selection must be a SelectionSnapshot")
-        return EditorContextSnapshot(self.focus, selection)
+        return EditorContextSnapshot(
+            self.focus,
+            selection,
+            self.document,
+            self.window,
+            self.scene,
+        )
 
 
 @dataclass(slots=True)
@@ -38,12 +77,14 @@ class JournalEntry:
     origin: ActionOrigin = ActionOrigin.USER
     operation_id: str = ""
     transaction_id: str = ""
+    command_id: str = ""
     timestamp: float = 0.0
     revision: int = 0
 
     def __post_init__(self) -> None:
         if not self.operation_id:
             self.operation_id = uuid.uuid4().hex
+        self.command_id = str(self.command_id or "").strip()
         if not self.timestamp:
             self.timestamp = time.time()
 
@@ -63,6 +104,11 @@ class EditorActionJournal:
         self.max_entries = max(1, int(max_entries))
         self._entries: list[JournalEntry] = []
         self._cursor = 0
+        self._revision = 0
+
+    @property
+    def revision(self) -> int:
+        return self._revision
 
     @property
     def entries(self) -> tuple[JournalEntry, ...]:
@@ -87,13 +133,6 @@ class EditorActionJournal:
         # Compatibility order: the next redo action is the final element.
         return tuple(reversed(self._entries[self._cursor :]))
 
-    def dirty_signature(self) -> tuple[tuple[str, int], ...]:
-        return tuple(
-            (entry.operation_id, entry.revision)
-            for entry in self._entries[: self._cursor]
-            if bool(getattr(entry.action, "marks_dirty", True))
-        )
-
     def record(
         self,
         action: Any,
@@ -102,6 +141,8 @@ class EditorActionJournal:
         after_context: Optional[EditorContextSnapshot] = None,
         origin: ActionOrigin = ActionOrigin.USER,
         transaction_id: str = "",
+        operation_id: str = "",
+        command_id: str = "",
     ) -> JournalPushResult:
         if origin is ActionOrigin.EXTERNAL:
             self._dispose_action(action)
@@ -122,6 +163,9 @@ class EditorActionJournal:
                 previous.after_context = after_context
                 previous.timestamp = time.time()
                 previous.revision += 1
+                if command_id:
+                    previous.command_id = str(command_id).strip()
+                self._revision += 1
                 self._dispose_action(action)
                 self._dispose_entries(discarded_redo)
                 return JournalPushResult(
@@ -136,9 +180,12 @@ class EditorActionJournal:
             after_context=after_context,
             origin=origin,
             transaction_id=str(transaction_id or ""),
+            command_id=str(command_id or ""),
+            operation_id=str(operation_id or getattr(action, "operation_id", "")),
         )
         self._entries.append(entry)
         self._cursor += 1
+        self._revision += 1
 
         dropped: tuple[JournalEntry, ...] = ()
         overflow = len(self._entries) - self.max_entries
@@ -167,17 +214,67 @@ class EditorActionJournal:
         if current is not entry:
             raise RuntimeError("undo journal cursor changed during replay")
         self._cursor -= 1
+        self._revision += 1
 
     def commit_redo(self, entry: JournalEntry) -> None:
         current = self.peek_redo()
         if current is not entry:
             raise RuntimeError("redo journal cursor changed during replay")
         self._cursor += 1
+        self._revision += 1
+
+    def operation_entries(self, operation_id: str) -> tuple[JournalEntry, ...]:
+        """Return the contiguous applied tail owned by one user operation."""
+        operation_id = str(operation_id or "").strip()
+        if not operation_id:
+            return ()
+        result: list[JournalEntry] = []
+        for entry in reversed(self._entries[: self._cursor]):
+            if entry.operation_id != operation_id:
+                break
+            result.append(entry)
+        return tuple(reversed(result))
+
+    def replace_operation(
+        self,
+        operation_id: str,
+        action: Any,
+        *,
+        before_context: Optional[EditorContextSnapshot],
+        after_context: Optional[EditorContextSnapshot],
+        origin: ActionOrigin,
+        transaction_id: str = "",
+        command_id: str = "",
+    ) -> JournalEntry:
+        """Collapse one operation's applied tail without disposing its children."""
+        entries = self.operation_entries(operation_id)
+        if not entries:
+            raise RuntimeError("journal operation has no applied entries")
+        if self._cursor != len(self._entries):
+            raise RuntimeError("cannot replace an operation while redo entries exist")
+        start = self._cursor - len(entries)
+        del self._entries[start : self._cursor]
+        entry = JournalEntry(
+            action=action,
+            before_context=before_context,
+            after_context=after_context,
+            origin=ActionOrigin(origin),
+            operation_id=str(operation_id),
+            transaction_id=str(transaction_id or ""),
+            command_id=str(command_id or ""),
+            timestamp=entries[-1].timestamp,
+            revision=max(entry.revision for entry in entries),
+        )
+        self._entries.append(entry)
+        self._cursor = len(self._entries)
+        self._revision += 1
+        return entry
 
     def clear(self) -> None:
         entries = tuple(self._entries)
         self._entries.clear()
         self._cursor = 0
+        self._revision += 1
         self._dispose_entries(entries)
 
     @staticmethod

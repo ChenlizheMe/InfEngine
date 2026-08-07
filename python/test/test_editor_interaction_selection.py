@@ -1,4 +1,6 @@
 from Infernux.engine.interaction import (
+    AssetMutation,
+    AssetMutationKind,
     FocusService,
     InputContext,
     SelectionDomain,
@@ -6,39 +8,7 @@ from Infernux.engine.interaction import (
     SelectionSnapshot,
     SelectionTarget,
 )
-from Infernux.engine.ui.selection_manager import SelectionManager
-
 import pytest
-
-
-def test_legacy_selection_adapter_rebinds_to_replaced_authority(monkeypatch):
-    monkeypatch.setattr(SelectionService, "_instance", None)
-    monkeypatch.setattr(SelectionManager, "_instance", None)
-
-    original = SelectionService()
-    adapter = SelectionManager.instance()
-    notifications = []
-    adapter.add_listener(lambda: notifications.append(adapter.get_ids()))
-
-    replacement = SelectionService()
-    assert SelectionManager.instance() is adapter
-    assert adapter._selection is replacement
-
-    replacement.select(
-        SelectionTarget.scene_object(42),
-        owner_id="hierarchy",
-        record_history=False,
-    )
-    assert adapter.get_ids() == [42]
-    assert notifications == [[42]]
-
-    original.select(
-        SelectionTarget.scene_object(7),
-        owner_id="hierarchy",
-        record_history=False,
-    )
-    assert adapter.get_ids() == [42]
-    assert notifications == [[42]]
 
 
 def test_selection_service_has_one_active_domain():
@@ -126,6 +96,67 @@ def test_selection_range_keeps_stable_anchor_and_clicked_primary():
     assert service.snapshot.primary == targets[4]
 
 
+def test_same_domain_toggle_crosses_views_without_resetting_selection():
+    service = SelectionService()
+    first = SelectionTarget.scene_object(41)
+    second = SelectionTarget.scene_object(42)
+    service.select(first, owner_id="hierarchy")
+
+    service.toggle(second, owner_id="scene_view")
+
+    assert service.snapshot.targets == (first, second)
+    assert service.snapshot.primary == second
+    assert service.snapshot.anchor == first
+    assert service.snapshot.owner_id == "scene_view"
+
+
+def test_scene_object_projection_includes_component_owners_without_second_state():
+    service = SelectionService()
+    first = SelectionTarget.component(41, 101)
+    second = SelectionTarget.component(42, 102)
+    service.replace(
+        (first, second),
+        owner_id="inspector",
+        primary=second,
+        anchor=first,
+        record_history=False,
+    )
+
+    assert service.scene_object_ids() == (41, 42)
+    assert service.primary_scene_object_id() == 42
+    assert service.is_scene_object_selected(41)
+    assert service.snapshot.domain is SelectionDomain.COMPONENT
+
+
+def test_scene_object_operations_publish_typed_selection_directly():
+    service = SelectionService()
+    service.set_ordered_scene_objects("hierarchy", [1, 2, 3, 4])
+    service.select_scene_object(2, owner_id="hierarchy")
+    service.range_select_scene_object(4, owner_id="hierarchy")
+
+    assert service.scene_object_ids() == (2, 3, 4)
+    assert service.primary_scene_object_id() == 4
+    assert service.snapshot.anchor == SelectionTarget.scene_object(2)
+
+    service.toggle_scene_object(3, owner_id="scene_view")
+    assert service.scene_object_ids() == (2, 4)
+    assert service.snapshot.owner_id == "scene_view"
+
+
+def test_range_selection_can_reuse_same_domain_anchor_from_another_view():
+    service = SelectionService()
+    targets = [SelectionTarget.scene_object(value) for value in range(1, 6)]
+    service.select(targets[1], owner_id="scene_view")
+    service.set_ordered_targets("hierarchy", targets)
+
+    service.range_select(targets[4], owner_id="hierarchy")
+
+    assert service.snapshot.targets == tuple(targets[1:])
+    assert service.snapshot.anchor == targets[1]
+    assert service.snapshot.primary == targets[4]
+    assert service.snapshot.owner_id == "hierarchy"
+
+
 def test_selection_replay_does_not_request_another_history_entry():
     service = SelectionService()
     changes = []
@@ -139,6 +170,73 @@ def test_selection_replay_does_not_request_another_history_entry():
 
     assert len(changes) == 1
     assert changes[0].record_history is False
+
+
+def test_selection_reconcile_preserves_valid_order_and_repairs_primary_anchor():
+    service = SelectionService()
+    first = SelectionTarget.asset_subresource(
+        "Assets/sheet.png", "1" * 32, sub_kind="sprite_frame"
+    )
+    second = SelectionTarget.asset_subresource(
+        "Assets/sheet.png", "2" * 32, sub_kind="sprite_frame"
+    )
+    third = SelectionTarget.asset_subresource(
+        "Assets/sheet.png", "3" * 32, sub_kind="sprite_frame"
+    )
+    service.replace(
+        (first, second, third),
+        owner_id="inspector",
+        primary=second,
+        anchor=second,
+        record_history=False,
+    )
+
+    assert service.reconcile(
+        lambda target: target != second,
+        reason="test_reconcile",
+        record_history=False,
+    )
+    assert service.snapshot.targets == (first, third)
+    assert service.snapshot.primary == third
+    assert service.snapshot.anchor == first
+
+
+def test_asset_refresh_reconciles_sprite_selection_without_inspector_visibility(
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.core import asset_types
+
+    previous = SelectionService._instance
+    service = SelectionService()
+    asset_path = tmp_path / "sheet.png"
+    asset_path.write_bytes(b"texture")
+    stale = SelectionTarget.asset_subresource(
+        str(asset_path),
+        "1" * 32,
+        sub_kind="sprite_frame",
+    )
+    service.select(stale, owner_id="inspector", record_history=False)
+    monkeypatch.setattr(
+        asset_types,
+        "read_texture_import_settings",
+        lambda _path: SimpleNamespace(
+            texture_type=asset_types.TextureType.SPRITE,
+            sprite_frames=(
+                SimpleNamespace(stable_id="2" * 32),
+            ),
+        ),
+    )
+    try:
+        BootstrapSelectionMixin()._on_asset_selection_source_changed(
+            AssetMutation(AssetMutationKind.MODIFIED, str(asset_path))
+        )
+        assert service.snapshot.primary == SelectionTarget.asset(str(asset_path))
+    finally:
+        SelectionService._instance = previous
 
 
 def test_timeline_editor_projects_stable_keyframe_selection():
@@ -197,40 +295,6 @@ def test_timeline_editor_drops_stale_keyframe_selection():
         SelectionService._instance = previous
 
 
-def test_legacy_selection_manager_is_a_typed_service_adapter():
-    service = SelectionService()
-    SelectionService.install(service)
-    manager = SelectionManager()
-
-    manager.box_select([2, 3])
-    service.select(SelectionTarget.asset("Assets/Test.mat"), owner_id="project")
-
-    assert manager.get_ids() == []
-    assert manager.get_primary() == 0
-    assert service.snapshot.domain is SelectionDomain.ASSET
-
-
-def test_legacy_selection_manager_projects_component_owners():
-    service = SelectionService()
-    SelectionService.install(service)
-    manager = SelectionManager()
-    first = SelectionTarget.component(41, 101)
-    second = SelectionTarget.component(42, 102)
-
-    service.replace(
-        (first, second),
-        owner_id="inspector",
-        primary=second,
-        anchor=first,
-        record_history=False,
-    )
-
-    assert manager.get_ids() == [41, 42]
-    assert manager.get_primary() == 42
-    assert manager.is_selected(41)
-    assert manager.is_multi()
-
-
 def test_focus_service_owns_pending_and_active_panel_state():
     focus = FocusService()
 
@@ -245,6 +309,493 @@ def test_focus_service_owns_pending_and_active_panel_state():
     assert not focus.activate_panel("project")
     assert focus.snapshot.child_context_id == "project.search"
 
+
+def test_focus_change_distinguishes_user_history_from_replay():
+    focus = FocusService()
+    changes = []
+    focus.add_change_listener(changes.append)
+
+    assert focus.activate_panel("project", reason="project_click")
+    assert focus.apply_snapshot(
+        FocusService().snapshot,
+        reason="undo",
+        record_history=False,
+    )
+
+    assert [change.reason for change in changes] == ["project_click", "undo"]
+    assert [change.record_history for change in changes] == [True, False]
+
+
+def test_bootstrap_records_focus_in_global_action_journal(monkeypatch):
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import (
+        ContextRestoreStatus,
+        EditorActionJournal,
+        EditorContextSnapshot,
+    )
+    from Infernux.engine.undo import UndoManager
+
+    focus = FocusService()
+    selection = SelectionService()
+    SelectionService.install(selection)
+    journal = EditorActionJournal()
+    manager = UndoManager(journal)
+    focused = []
+
+    class _WindowManager:
+        @staticmethod
+        def is_window_content_visible(_panel_id):
+            return False
+
+        @staticmethod
+        def was_window_content_visible(_panel_id):
+            return False
+
+        @staticmethod
+        def is_window_open(_panel_id):
+            return True
+
+        @staticmethod
+        def focus_window(panel_id):
+            focused.append(panel_id)
+
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.interaction_core = SimpleNamespace(
+        focus=focus,
+        capture_context=lambda **overrides: EditorContextSnapshot(
+            overrides.get("focus", focus.snapshot),
+            overrides.get("selection", selection.snapshot),
+        ),
+    )
+    bootstrap.undo_manager = manager
+    bootstrap.window_manager = _WindowManager()
+
+    def _restore_context(context, _phase):
+        if focus.snapshot != context.focus:
+            bootstrap._apply_focus_snapshot(context.focus)
+        if selection.snapshot != context.selection:
+            selection.apply_snapshot(
+                context.selection,
+                reason="test_restore",
+                record_history=False,
+            )
+        return ContextRestoreStatus.READY
+
+    manager.set_context_hooks(
+        bootstrap.interaction_core.capture_context,
+        _restore_context,
+    )
+    focus.add_change_listener(bootstrap._on_global_focus_changed)
+
+    assert focus.activate_panel("project", reason="project_click")
+    assert manager.can_undo
+    assert manager.undo_description == "Focus project"
+    assert not journal.peek_undo().action.marks_dirty
+
+    manager.undo()
+    assert focus.snapshot.active_panel_id == ""
+    assert not manager.can_undo
+    assert manager.can_redo
+
+    manager.redo()
+    assert focus.snapshot.active_panel_id == "project"
+    assert focused == ["project"]
+
+
+def test_focus_history_keeps_keyboard_focus_and_replaced_dock_tab_separate():
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import (
+        EditorActionJournal,
+        EditorContextSnapshot,
+        WindowLocator,
+    )
+    from Infernux.engine.undo import UndoManager
+
+    focus = FocusService()
+    focus.activate_panel("console", view_id="console", record_history=False)
+    selection = SelectionService()
+    SelectionService.install(selection)
+    journal = EditorActionJournal()
+    manager = UndoManager(journal)
+
+    def capture_context(**overrides):
+        snapshot = overrides.get("focus", focus.snapshot)
+        view_id = snapshot.active_view_id or snapshot.active_panel_id
+        return EditorContextSnapshot(
+            snapshot,
+            overrides.get("selection", selection.snapshot),
+            window=WindowLocator(view_id, view_id) if view_id else None,
+        )
+
+    class _WindowManager:
+        @staticmethod
+        def locate_window(window_id):
+            return WindowLocator(window_id, window_id)
+
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.interaction_core = SimpleNamespace(
+        focus=focus,
+        capture_context=capture_context,
+    )
+    bootstrap.undo_manager = manager
+    bootstrap.window_manager = _WindowManager()
+    focus.add_change_listener(bootstrap._on_global_focus_changed)
+
+    assert focus.activate_panel(
+        "particle_graph_editor",
+        view_id="particle_graph_editor",
+        record_history=True,
+        presentation_before_view_id="scene_view",
+    )
+
+    entry = journal.peek_undo()
+    assert entry is not None
+    assert entry.before_context.focus.active_view_id == "console"
+    assert entry.before_context.window.window_id == "scene_view"
+    assert entry.after_context.focus.active_view_id == "particle_graph_editor"
+    assert entry.after_context.window.window_id == "particle_graph_editor"
+
+
+def test_context_restore_publishes_focus_intent_before_native_window_poll():
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import (
+        ContextRestoreStatus,
+        EditorContextSnapshot,
+        WindowLocator,
+    )
+
+    focus = FocusService()
+    focus.activate_panel("project", record_history=False)
+    target_focus = type(focus.snapshot)(
+        active_panel_id="particle_graph_editor",
+        active_view_id="particle_graph_editor",
+    )
+    observed_focus = []
+
+    class _WindowManager:
+        @staticmethod
+        def is_window_content_visible(_window_id):
+            return False
+
+        @staticmethod
+        def restore_window(_locator):
+            observed_focus.append(focus.snapshot)
+            return ContextRestoreStatus.PENDING
+
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.interaction_core = SimpleNamespace(
+        focus=focus,
+        document_open=SimpleNamespace(),
+    )
+    bootstrap.window_manager = _WindowManager()
+
+    status = bootstrap._restore_editor_context(
+        EditorContextSnapshot(
+            focus=target_focus,
+            selection=SelectionService.instance().snapshot,
+            window=WindowLocator("particle_graph_editor", "particle_graph_editor"),
+        ),
+        "undo_complete",
+    )
+
+    assert status is ContextRestoreStatus.PENDING
+    assert observed_focus == [target_focus]
+    assert focus.snapshot == target_focus
+
+
+def test_visible_panel_context_restore_preserves_current_focus():
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import (
+        ContextRestoreStatus,
+        EditorContextSnapshot,
+        WindowLocator,
+    )
+
+    focus = FocusService()
+    focus.activate_panel(
+        "scene_view",
+        view_id="scene_view",
+        record_history=False,
+    )
+    target_focus = type(focus.snapshot)(
+        active_panel_id="inspector",
+        active_view_id="inspector",
+    )
+
+    class _WindowManager:
+        @staticmethod
+        def is_window_content_visible(window_id):
+            return window_id == "inspector"
+
+        @staticmethod
+        def restore_window(_locator):
+            return ContextRestoreStatus.READY
+
+        @staticmethod
+        def restore_panel_child_context(_panel_id, _context_id):
+            return True
+
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.interaction_core = SimpleNamespace(
+        focus=focus,
+        document_open=SimpleNamespace(),
+    )
+    bootstrap.window_manager = _WindowManager()
+
+    status = bootstrap._restore_editor_context(
+        EditorContextSnapshot(
+            focus=target_focus,
+            selection=SelectionService.instance().snapshot,
+            window=WindowLocator("inspector", "inspector"),
+        ),
+        "undo_complete",
+    )
+
+    assert status is ContextRestoreStatus.READY
+    assert focus.snapshot.active_view_id == "scene_view"
+
+
+def test_already_visible_focus_change_is_not_recorded_in_global_journal():
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import EditorActionJournal, EditorContextSnapshot
+    from Infernux.engine.undo import UndoManager
+
+    focus = FocusService()
+    selection = SelectionService()
+    SelectionService.install(selection)
+    journal = EditorActionJournal()
+    manager = UndoManager(journal)
+
+    class _WindowManager:
+        @staticmethod
+        def is_window_content_visible(panel_id):
+            return panel_id in {"scene_view", "inspector"}
+
+        @staticmethod
+        def was_window_content_visible(panel_id):
+            return panel_id in {"scene_view", "inspector"}
+
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.interaction_core = SimpleNamespace(
+        focus=focus,
+        capture_context=lambda **overrides: EditorContextSnapshot(
+            overrides.get("focus", focus.snapshot),
+            overrides.get("selection", selection.snapshot),
+        ),
+    )
+    bootstrap.undo_manager = manager
+    bootstrap.window_manager = _WindowManager()
+    focus.add_change_listener(bootstrap._on_global_focus_changed)
+
+    focus.activate_panel(
+        "scene_view",
+        view_id="scene_view",
+        record_history=False,
+    )
+    assert focus.activate_panel(
+        "inspector",
+        view_id="inspector",
+        reason="pointer_panel_activation",
+        # Visibility is classified at the event producer. The history
+        # listener consumes that decision and must not race a second probe.
+        record_history=False,
+    )
+    assert not manager.can_undo
+
+
+def test_revealed_dock_tab_focus_change_remains_in_global_journal():
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import EditorActionJournal, EditorContextSnapshot
+    from Infernux.engine.undo import UndoManager
+
+    focus = FocusService()
+    selection = SelectionService()
+    SelectionService.install(selection)
+    journal = EditorActionJournal()
+    manager = UndoManager(journal)
+
+    class _WindowManager:
+        @staticmethod
+        def is_window_content_visible(panel_id):
+            return panel_id == "particle_graph_editor"
+
+        @staticmethod
+        def was_window_content_visible(_panel_id):
+            return False
+
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.interaction_core = SimpleNamespace(
+        focus=focus,
+        capture_context=lambda **overrides: EditorContextSnapshot(
+            overrides.get("focus", focus.snapshot),
+            overrides.get("selection", selection.snapshot),
+        ),
+    )
+    bootstrap.undo_manager = manager
+    bootstrap.window_manager = _WindowManager()
+    focus.add_change_listener(bootstrap._on_global_focus_changed)
+
+    assert focus.activate_panel(
+        "particle_graph_editor",
+        reason="pointer_panel_activation",
+    )
+    assert manager.can_undo
+    assert manager.undo_description == "Focus particle_graph_editor"
+
+
+def test_project_selection_intent_does_not_forge_panel_focus():
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+
+    focus = FocusService()
+    selection = SelectionService()
+    SelectionService.install(selection)
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.interaction_core = SimpleNamespace(focus=focus)
+
+    bootstrap._on_project_selection_changed(
+        ("Assets/Smoke.particlegraph",),
+        "Assets/Smoke.particlegraph",
+    )
+
+    assert focus.snapshot.active_panel_id == ""
+    assert focus.snapshot.active_view_id == ""
+    assert selection.snapshot.owner_id == "project"
+    assert selection.snapshot.primary == SelectionTarget.asset(
+        "Assets/Smoke.particlegraph"
+    )
+
+
+def test_native_panel_adapters_leave_focus_to_the_native_publisher():
+    from pathlib import Path
+
+    paths = (
+        "python/Infernux/engine/bootstrap_hierarchy/_wire.py",
+        "python/Infernux/engine/bootstrap_project.py",
+        "python/Infernux/engine/bootstrap_inspector/_wire.py",
+        "python/Infernux/engine/_bootstrap_selection.py",
+        "python/Infernux/engine/ui/_scene_view_picking.py",
+    )
+    for path in paths:
+        source = Path(path).read_text(encoding="utf-8")
+        assert ".focus.activate_panel(" not in source, path
+
+    selection_source = Path(paths[3]).read_text(encoding="utf-8")
+    console_navigation = selection_source[
+        selection_source.index("    def _navigate_console_entry_to_object") :
+        selection_source.index("    def _record_selection_snapshot")
+    ]
+    assert "interaction_core.navigation.locate" in console_navigation
+    assert "window_manager.open_window" not in console_navigation
+    assert "SelectionService.instance().select" not in console_navigation
+
+
+def test_project_subresource_click_keeps_typed_row_identity():
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+
+    focus = FocusService()
+    selection = SelectionService()
+    SelectionService.install(selection)
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.interaction_core = SimpleNamespace(focus=focus)
+
+    row = "Assets/Robot.fbx::subanim:3"
+    bootstrap._on_project_selection_changed((row,), row)
+
+    assert selection.snapshot.primary == SelectionTarget.asset_subresource(
+        "Assets/Robot.fbx",
+        "3",
+        sub_kind="subanimation",
+    )
+
+
+def test_native_panel_focus_loss_keeps_last_editor_command_context():
+    focus = FocusService()
+    changes = []
+    focus.add_change_listener(changes.append)
+
+    assert focus.observe_panel_focus("project", True, view_id="project")
+    assert focus.snapshot.active_panel_id == "project"
+    assert not focus.observe_panel_focus("project", False, view_id="project")
+    assert focus.snapshot.active_panel_id == "project"
+
+    assert focus.observe_panel_focus("hierarchy", True, view_id="hierarchy")
+    assert focus.snapshot.active_panel_id == "hierarchy"
+    assert [change.record_history for change in changes] == [False, False]
+
+
+def test_project_click_records_focus_then_selection_as_distinct_user_actions():
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import EditorContextSnapshot
+    from Infernux.engine.undo import UndoManager
+
+    focus = FocusService()
+    selection = SelectionService()
+    SelectionService.install(selection)
+    focus.activate_panel("scene_view", record_history=False)
+    selection.select(
+        SelectionTarget.scene_object(42),
+        owner_id="scene_view",
+        record_history=False,
+    )
+    manager = UndoManager()
+    manager.set_context_hooks(
+        lambda: EditorContextSnapshot(focus.snapshot, selection.snapshot),
+        lambda context, _phase: (
+            focus.apply_snapshot(context.focus, record_history=False),
+            selection.apply_snapshot(context.selection, record_history=False),
+        ),
+    )
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.interaction_core = SimpleNamespace(
+        focus=focus,
+        capture_context=lambda **overrides: EditorContextSnapshot(
+            overrides.get("focus", focus.snapshot),
+            overrides.get("selection", selection.snapshot),
+        ),
+    )
+    bootstrap._present_selection_snapshot = lambda _snapshot: None
+    focus.add_change_listener(bootstrap._on_global_focus_changed)
+    selection.add_listener(bootstrap._on_global_selection_changed)
+
+    # Native EditorPanelFocusPublisher owns the first operation. The Project
+    # selection adapter publishes only the second operation.
+    focus.activate_panel(
+        "project",
+        view_id="project",
+        reason="pointer_panel_activation",
+        record_history=True,
+    )
+    bootstrap._on_project_selection_changed(
+        ("Assets/Smoke.particlegraph",),
+        "Assets/Smoke.particlegraph",
+    )
+
+    assert len(manager.action_journal.entries) == 2
+    assert manager.undo_description == "Change Selection"
+    manager.undo()
+    assert focus.snapshot.active_panel_id == "project"
+    assert selection.snapshot.primary == SelectionTarget.scene_object(42)
+    manager.undo()
+    assert focus.snapshot.active_panel_id == "scene_view"
+    assert selection.snapshot.primary == SelectionTarget.scene_object(42)
 
 def test_input_context_stack_honors_priority_and_modal_barrier():
     focus = FocusService()
@@ -262,35 +813,14 @@ def test_input_context_stack_honors_priority_and_modal_barrier():
     ]
 
 
-def test_bootstrap_selection_projection_is_the_single_cross_panel_writer(monkeypatch):
+def test_bootstrap_selection_projection_is_the_single_cross_panel_writer():
     from types import SimpleNamespace
 
-    import Infernux.lib as native
     from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.ui.event_bus import EditorEvent
-
-    selected_object = SimpleNamespace(id=42)
-
-    class _Scene:
-        @staticmethod
-        def find_by_id(object_id):
-            return selected_object if object_id == 42 else None
-
-    class _SceneManager:
-        @staticmethod
-        def instance():
-            return _SceneManager()
-
-        @staticmethod
-        def get_active_scene():
-            return _Scene()
-
-    monkeypatch.setattr(native, "SceneManager", _SceneManager)
 
     project_calls = []
     inspector_calls = []
     outlines = []
-    events = []
     bootstrap = BootstrapSelectionMixin()
     bootstrap.project_panel = SimpleNamespace(
         set_selected_files=lambda paths, primary, notify: project_calls.append(
@@ -310,9 +840,6 @@ def test_bootstrap_selection_projection_is_the_single_cross_panel_writer(monkeyp
     bootstrap._set_outline = (
         lambda primary, selected: outlines.append((primary, list(selected)))
     )
-    bootstrap.event_bus = SimpleNamespace(
-        emit=lambda event, value: events.append((event, value))
-    )
 
     asset = SelectionSnapshot.create(
         (SelectionTarget.asset("Assets/Smoke.mat"),),
@@ -324,12 +851,10 @@ def test_bootstrap_selection_projection_is_the_single_cross_panel_writer(monkeyp
     assert project_calls == [("set", [asset_path], asset_path, False)]
     assert inspector_calls == [("file", asset_path)]
     assert outlines == [(0, [])]
-    assert events == [(EditorEvent.FILE_SELECTED, asset_path)]
 
     project_calls.clear()
     inspector_calls.clear()
     outlines.clear()
-    events.clear()
     scene = SelectionSnapshot.create(
         (SelectionTarget.scene_object(42),),
         owner_id="hierarchy",
@@ -339,7 +864,6 @@ def test_bootstrap_selection_projection_is_the_single_cross_panel_writer(monkeyp
     assert project_calls == [("clear", False)]
     assert inspector_calls == [("object", 42)]
     assert outlines == [(42, [42])]
-    assert events == [(EditorEvent.SELECTION_CHANGED, selected_object)]
 
 
 def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch):
@@ -526,8 +1050,15 @@ def test_typed_selection_undo_replays_without_legacy_domain_loss():
     from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
 
     service = SelectionService()
+    focus_requests = []
+
+    class WindowManager:
+        @staticmethod
+        def focus_window(window_id):
+            focus_requests.append(window_id)
+
     bootstrap = BootstrapSelectionMixin()
-    bootstrap.window_manager = None
+    bootstrap.window_manager = WindowManager()
     bootstrap._prev_selection_snapshot = SelectionSnapshot()
 
     graph = SelectionSnapshot.create(
@@ -558,35 +1089,42 @@ def test_typed_selection_undo_replays_without_legacy_domain_loss():
     bootstrap._apply_selection_snapshot(subresource)
     assert service.snapshot == subresource
     assert bootstrap._prev_selection_snapshot == subresource
+    assert focus_requests == []
 
 
-def test_scene_box_selection_preserves_primary_and_anchor():
-    from types import SimpleNamespace
-
+def test_scene_pick_reveals_through_navigation_without_activating_hierarchy():
     from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.undo import UndoManager
 
-    service = SelectionService()
-    first = SelectionTarget.scene_object(41)
-    second = SelectionTarget.scene_object(42)
-    scene_snapshot = SelectionSnapshot.create(
-        (first, second),
-        owner_id="scene_view",
-        primary=first,
-        anchor=second,
+    previous_core = EditorInteractionCore._instance
+    previous_manager = UndoManager._instance
+    previous_selection = SelectionService._instance
+    core = EditorInteractionCore()
+    UndoManager(core.action_journal)
+    requests = []
+    core.navigation.register(
+        SelectionDomain.SCENE_OBJECT,
+        lambda target, request: requests.append((target, request)) or True,
     )
-    service.apply_snapshot(scene_snapshot, record_history=False)
-
-    revealed = []
+    core.panels.register_selection_authority(
+        "scene_view",
+        (SelectionDomain.SCENE_OBJECT,),
+    )
     bootstrap = BootstrapSelectionMixin()
-    bootstrap.hierarchy = SimpleNamespace(expand_to_object=revealed.append)
+    bootstrap.interaction_core = core
+    try:
+        bootstrap._on_scene_view_picked(41, False)
 
-    bootstrap._on_box_select_done(None)
-
-    assert service.snapshot.owner_id == "scene_view"
-    assert service.snapshot.targets == (first, second)
-    assert service.snapshot.primary == first
-    assert service.snapshot.anchor == second
-    assert revealed == [41]
+        assert core.selection.snapshot.owner_id == "scene_view"
+        assert core.selection.snapshot.primary == SelectionTarget.scene_object(41)
+        assert requests[0][0] == SelectionTarget.scene_object(41)
+        assert requests[0][1].activate_panel is False
+    finally:
+        core.shutdown()
+        EditorInteractionCore._instance = previous_core
+        UndoManager._instance = previous_manager
+        SelectionService._instance = previous_selection
 
 
 def test_ui_editor_projects_directly_from_typed_selection(monkeypatch):
@@ -619,10 +1157,7 @@ def test_ui_editor_projects_directly_from_typed_selection(monkeypatch):
         set_on_request_ui_mode=lambda callback: callbacks.__setitem__(
             "mode", callback
         ),
-        set_on_selection_changed=lambda callback: callbacks.__setitem__(
-            "selection", callback
-        ),
-        notify_hierarchy_selection=projected.append,
+        project_global_selection=projected.append,
     )
     bootstrap = BootstrapWiringMixin()
     bootstrap.ui_editor = ui_editor
@@ -649,6 +1184,67 @@ def test_ui_editor_projects_directly_from_typed_selection(monkeypatch):
     )
     assert projected[-1] is None
 
-    callbacks["selection"](selected_object)
-    assert service.snapshot.owner_id == "ui_editor"
-    assert service.snapshot.primary == SelectionTarget.scene_object(42)
+def test_ui_editor_component_is_a_revision_cached_global_selection_projection(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    import Infernux.lib as native
+    import Infernux.ui.inx_ui_screen_component as screen_component_module
+    from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
+
+    class _ScreenComponent:
+        pass
+
+    first_component = _ScreenComponent()
+    second_component = _ScreenComponent()
+    objects = {
+        41: SimpleNamespace(id=41, get_py_components=lambda: [first_component]),
+        42: SimpleNamespace(id=42, get_py_components=lambda: [second_component]),
+    }
+
+    class _Scene:
+        @staticmethod
+        def find_by_id(object_id):
+            return objects.get(object_id)
+
+    class _SceneManager:
+        @staticmethod
+        def instance():
+            return _SceneManager()
+
+        @staticmethod
+        def get_active_scene():
+            return _Scene()
+
+    monkeypatch.setattr(native, "SceneManager", _SceneManager)
+    monkeypatch.setattr(
+        screen_component_module,
+        "InxUIScreenComponent",
+        _ScreenComponent,
+    )
+
+    service = SelectionService()
+    panel = UIEditorPanel.__new__(UIEditorPanel)
+    panel._selected_element_cache_revision = -1
+    panel._selected_element_cache_object_id = 0
+    panel._selected_element_cache = None
+
+    service.select_scene_object(
+        41,
+        owner_id="ui_editor",
+        record_history=False,
+    )
+    assert panel._selected_element_comp is first_component
+    objects[41] = SimpleNamespace(id=41, get_py_components=lambda: [second_component])
+    assert panel._selected_element_comp is first_component
+
+    service.select_scene_object(
+        42,
+        owner_id="hierarchy",
+        record_history=False,
+    )
+    assert panel._selected_element_comp is second_component
+
+    service.clear(record_history=False)
+    assert panel._selected_element_comp is None

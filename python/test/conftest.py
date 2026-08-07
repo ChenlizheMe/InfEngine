@@ -30,13 +30,22 @@ from Infernux.input import Input
 @pytest.fixture(autouse=True)
 def _reset_editor_interaction_state():
     """Prevent process-wide editor interaction state from leaking across tests."""
-    from Infernux.engine.interaction import ClipboardService, DocumentRegistry
+    from Infernux.engine.interaction import (
+        ClipboardService,
+        DocumentRegistry,
+        EditorInteractionCore,
+    )
 
+    previous_core = EditorInteractionCore._instance
     registry = DocumentRegistry()
     clipboard = ClipboardService()
     try:
         yield registry
     finally:
+        current_core = EditorInteractionCore._instance
+        if current_core is not None and current_core is not previous_core:
+            current_core.shutdown()
+        EditorInteractionCore._instance = previous_core
         registry.clear()
         clipboard.clear(reason="test_teardown")
         if DocumentRegistry._instance is registry:

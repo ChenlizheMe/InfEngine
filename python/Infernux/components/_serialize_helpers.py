@@ -97,11 +97,9 @@ def deserialize_dict_ref(value: dict) -> Any:
         if asset_type == "Shader":
             from Infernux.core.asset_ref import ShaderRef
             return ShaderRef(guid=guid, path_hint=path_hint)
-        from Infernux.core.asset_ref import get_asset_type_config
-        config = get_asset_type_config(asset_type)
-        if config is None:
-            raise ValueError(f"unknown asset reference type {asset_type!r}")
-        return config["ref_class"](guid=guid, path_hint=path_hint)
+        from Infernux.core.asset_ref import create_asset_ref
+
+        return create_asset_ref(asset_type, guid=guid, path_hint=path_hint)
     if document_type == SERIALIZABLE_OBJECT:
         from .serializable_object import SerializableObject
         return SerializableObject._deserialize(value)
@@ -134,13 +132,15 @@ def make_null_ref(field_type, field_meta=None) -> Any:
         from Infernux.core.asset_ref import ShaderRef
         return ShaderRef()
     if field_type == FieldType.ASSET:
-        asset_type = getattr(field_meta, "asset_type", None) or "AudioClip"
-        from Infernux.core.asset_ref import get_asset_type_config
-        cfg = get_asset_type_config(asset_type)
-        if cfg:
-            return cfg["ref_class"]()
-        from Infernux.core.asset_ref import AudioClipRef
-        return AudioClipRef()
+        asset_type = str(getattr(field_meta, "asset_type", "") or "").strip()
+        if not asset_type:
+            raise ValueError("ASSET fields require an explicit asset_type")
+        from Infernux.core.asset_reference_types import asset_type_registry
+
+        asset_type = asset_type_registry.require(asset_type).type_id
+        from Infernux.core.asset_ref import create_asset_ref
+
+        return create_asset_ref(asset_type)
     if field_type == FieldType.COMPONENT:
         from .ref_wrappers import ComponentRef
         comp_type = getattr(field_meta, "component_type", "") or ""

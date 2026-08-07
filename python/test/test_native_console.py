@@ -119,6 +119,31 @@ class TestNativeConsolePanel:
         assert "MatchesCurrentFilters" in source
         assert "if (!m_cacheDirty && !m_filterDirty)" in source
 
+    def test_console_user_selection_is_intent_only_until_global_projection(self):
+        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
+        select_uid = source[
+            source.index("void ConsolePanel::SelectUid") : source.index("void ConsolePanel::PublishSelection")
+        ]
+        render_row = source[
+            source.index("void ConsolePanel::RenderRow") : source.index("const ImVec4 &ConsolePanel::LevelColor")
+        ]
+
+        assert "m_selectedUid = uid" not in select_uid
+        assert "m_selectedUid = ve.uid" not in render_row
+        assert "PublishSelection(uid, recordHistory)" in select_uid
+        assert "PublishSelection(ve.uid, true)" in render_row
+        assert "ImGui::SetWindowFocus" not in select_uid
+
+    def test_console_row_identity_is_not_truncated_by_visible_log_text(self):
+        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
+        render_row = source[
+            source.index("void ConsolePanel::RenderRow") : source.index("const ImVec4 &ConsolePanel::LevelColor")
+        ]
+
+        assert "const std::string label" in render_row
+        assert "std::to_string" in render_row
+        assert "char label[" not in render_row
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Debug → C++ bridge

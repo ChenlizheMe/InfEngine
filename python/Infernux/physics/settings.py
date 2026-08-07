@@ -65,7 +65,7 @@ def _integer(value: object, field: str, minimum: int, maximum: int) -> int:
     return value
 
 
-def _validate_document(data: object) -> dict:
+def normalize(data: object) -> dict:
     if not isinstance(data, dict):
         raise PhysicsSettingsError("physics settings must be a JSON object")
 
@@ -162,14 +162,14 @@ def load(project_path: str) -> dict:
             data = json.load(f)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         raise PhysicsSettingsError(f"failed to read {path}: {exc}") from exc
-    return _validate_document(data)
+    return normalize(data)
 
 
 def save(project_path: str, settings: dict) -> None:
     """Validate and atomically persist physics settings."""
     if not project_path:
         raise PhysicsSettingsError("project_path is required to save physics settings")
-    validated = _validate_document(settings)
+    validated = normalize(settings)
     path = settings_path(project_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     content = json.dumps(validated, indent=2, ensure_ascii=False) + "\n"
@@ -183,7 +183,7 @@ def apply(settings: dict) -> None:
     from Infernux.physics import Physics
     from Infernux.timing import Time
 
-    validated = _validate_document(settings)
+    validated = normalize(settings)
     gravity = validated["gravity"]
     fixed_dt = validated["fixed_delta_time"]
     max_fixed_dt = validated["max_fixed_delta_time"]

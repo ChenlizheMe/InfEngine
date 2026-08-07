@@ -96,8 +96,8 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
     ImGui::SetCursorScreenPos(origin);
     ImGui::InvisibleButton("##StatusBarConsole", ImVec2(consoleWidth, barHeight));
     const bool consoleHovered = ImGui::IsItemHovered();
-    if (ImGui::IsItemClicked() && m_console)
-        m_console->SelectEntry(m_latestUid);
+    if (ImGui::IsItemClicked() && m_console && executeCommand)
+        executeCommand("console.open_entry", "pointer", std::to_string(m_latestUid));
     if (InxGUISemantics::IsCaptureEnabled())
         ctx->RecordSemanticItem("status_console", "Console", true, "status.console");
 

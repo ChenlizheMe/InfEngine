@@ -244,6 +244,46 @@ class NodeGraphAuthoringState:
 
 
 @dataclass(frozen=True, slots=True)
+class NodeGraphClipboardState:
+    """Portable structural subset captured from one :class:`NodeGraph`.
+
+    The payload contains only selected nodes and links whose two endpoints are
+    both selected.  Domain-owned data stays inside the normal authoring
+    payload, so FSM, Particle, and future Shader Graph adapters can remap their
+    own stable references without implementing another graph clipboard.
+    """
+
+    graph_kind: str
+    state: NodeGraphAuthoringState
+
+    def __post_init__(self) -> None:
+        graph_kind = str(self.graph_kind or "").strip()
+        if not graph_kind:
+            raise ValueError("node graph clipboard graph_kind must not be empty")
+        if not isinstance(self.state, NodeGraphAuthoringState):
+            raise TypeError("node graph clipboard state must be authoring state")
+        if not self.state.nodes:
+            raise ValueError("node graph clipboard must contain at least one node")
+        object.__setattr__(self, "graph_kind", graph_kind)
+
+
+@dataclass(frozen=True, slots=True)
+class NodeGraphPasteResult:
+    """Result of one atomic subgraph paste."""
+
+    node_ids: tuple[str, ...]
+    link_ids: tuple[str, ...]
+    node_id_map: dict[str, str]
+    link_id_map: dict[str, str]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "node_ids", tuple(self.node_ids))
+        object.__setattr__(self, "link_ids", tuple(self.link_ids))
+        object.__setattr__(self, "node_id_map", dict(self.node_id_map))
+        object.__setattr__(self, "link_id_map", dict(self.link_id_map))
+
+
+@dataclass(frozen=True, slots=True)
 class NodeGraphMutation:
     """A reversible node/link edit independent of any editor domain."""
 
@@ -926,6 +966,162 @@ class NodeGraph:
             )
         return NodeGraphAuthoringState(nodes, links)
 
+    def capture_authoring_subgraph(
+        self,
+        node_ids: Iterable[str],
+    ) -> NodeGraphClipboardState:
+        """Capture selected nodes plus every internal link in stable order."""
+        selected = {str(value) for value in node_ids if str(value)}
+        if not selected:
+            raise ValueError("node graph clipboard selection must not be empty")
+        state = self.capture_authoring_state()
+        nodes = {
+            stable_id: item
+            for stable_id, item in state.nodes.items()
+            if stable_id in selected
+        }
+        missing = selected - set(nodes)
+        if missing:
+            raise KeyError(f"node graph clipboard nodes do not exist: {sorted(missing)}")
+        links = {
+            stable_id: item
+            for stable_id, item in state.links.items()
+            if str(item.payload.get("source_node", "")) in selected
+            and str(item.payload.get("target_node", "")) in selected
+        }
+        return NodeGraphClipboardState(
+            self.graph_kind or "node_graph",
+            NodeGraphAuthoringState(nodes, links),
+        )
+
+    @staticmethod
+    def _fresh_clipboard_id(occupied: set[str]) -> str:
+        while True:
+            stable_id = uuid.uuid4().hex[:8]
+            if stable_id not in occupied:
+                return stable_id
+
+    def paste_authoring_subgraph(
+        self,
+        clipboard: NodeGraphClipboardState,
+        *,
+        offset: tuple[float, float] = (48.0, 48.0),
+        node_identity: Optional[Callable[[str, dict], str]] = None,
+        link_identity: Optional[Callable[[str, dict], str]] = None,
+        node_payload: Optional[
+            Callable[[str, str, dict, Mapping[str, str]], dict]
+        ] = None,
+        link_payload: Optional[
+            Callable[[str, str, dict, Mapping[str, str]], dict]
+        ] = None,
+    ) -> NodeGraphPasteResult:
+        """Paste a captured subgraph as one atomic model operation.
+
+        The graph core owns ordering, identity collision checks, internal-link
+        remapping, validation, and rollback.  Domain adapters may only provide
+        stable-ID factories and pure payload transforms for embedded domain
+        references.
+        """
+        if not isinstance(clipboard, NodeGraphClipboardState):
+            raise TypeError("clipboard must be a NodeGraphClipboardState")
+        if clipboard.graph_kind != (self.graph_kind or "node_graph"):
+            raise ValueError(
+                f"cannot paste {clipboard.graph_kind!r} nodes into "
+                f"{(self.graph_kind or 'node_graph')!r}"
+            )
+        if len(offset) != 2:
+            raise ValueError("node graph paste offset must contain two values")
+
+        occupied_nodes = {node.uid for node in self.nodes}
+        occupied_links = {link.uid for link in self.links}
+        node_map: dict[str, str] = {}
+        link_map: dict[str, str] = {}
+        ordered_nodes = sorted(
+            clipboard.state.nodes.items(),
+            key=lambda pair: (pair[1].index, pair[0]),
+        )
+        ordered_links = sorted(
+            clipboard.state.links.items(),
+            key=lambda pair: (pair[1].index, pair[0]),
+        )
+
+        for old_id, item in ordered_nodes:
+            new_id = str(
+                node_identity(old_id, copy.deepcopy(item.payload))
+                if node_identity is not None
+                else self._fresh_clipboard_id(occupied_nodes)
+            ).strip()
+            if not new_id or new_id in occupied_nodes or new_id in node_map.values():
+                raise ValueError(f"node graph paste produced duplicate node ID: {new_id!r}")
+            occupied_nodes.add(new_id)
+            node_map[old_id] = new_id
+        for old_id, item in ordered_links:
+            new_id = str(
+                link_identity(old_id, copy.deepcopy(item.payload))
+                if link_identity is not None
+                else self._fresh_clipboard_id(occupied_links)
+            ).strip()
+            if not new_id or new_id in occupied_links or new_id in link_map.values():
+                raise ValueError(f"node graph paste produced duplicate link ID: {new_id!r}")
+            occupied_links.add(new_id)
+            link_map[old_id] = new_id
+
+        mutations: list[NodeGraphMutation] = []
+        for order, (old_id, item) in enumerate(ordered_nodes):
+            new_id = node_map[old_id]
+            payload = copy.deepcopy(item.payload)
+            position = payload.get("position")
+            if not isinstance(position, (list, tuple)) or len(position) != 2:
+                raise RuntimeError("node graph clipboard node position is invalid")
+            payload["position"] = [
+                float(position[0]) + float(offset[0]),
+                float(position[1]) + float(offset[1]),
+            ]
+            if node_payload is not None:
+                payload = node_payload(old_id, new_id, payload, node_map)
+            if not isinstance(payload, dict):
+                raise TypeError("node graph paste node transform must return a dict")
+            mutations.append(
+                NodeGraphMutation(
+                    NodeGraphMutationKind.INSERT,
+                    NodeGraphElementKind.NODE,
+                    new_id,
+                    after=payload,
+                    after_index=len(self.nodes) + order,
+                )
+            )
+
+        for order, (old_id, item) in enumerate(ordered_links):
+            new_id = link_map[old_id]
+            payload = copy.deepcopy(item.payload)
+            source = str(payload.get("source_node", ""))
+            target = str(payload.get("target_node", ""))
+            if source not in node_map or target not in node_map:
+                raise RuntimeError("node graph clipboard link escapes the captured subgraph")
+            payload["source_node"] = node_map[source]
+            payload["target_node"] = node_map[target]
+            if link_payload is not None:
+                payload = link_payload(old_id, new_id, payload, node_map)
+            if not isinstance(payload, dict):
+                raise TypeError("node graph paste link transform must return a dict")
+            mutations.append(
+                NodeGraphMutation(
+                    NodeGraphMutationKind.INSERT,
+                    NodeGraphElementKind.LINK,
+                    new_id,
+                    after=payload,
+                    after_index=len(self.links) + order,
+                )
+            )
+
+        self.apply_authoring_mutations(mutations)
+        return NodeGraphPasteResult(
+            tuple(node_map[old_id] for old_id, _item in ordered_nodes),
+            tuple(link_map[old_id] for old_id, _item in ordered_links),
+            node_map,
+            link_map,
+        )
+
     def restore_authoring_state(self, state: NodeGraphAuthoringState) -> None:
         """Restore an authoring checkpoint without replaying a partial diff."""
         if not isinstance(state, NodeGraphAuthoringState):
@@ -1232,6 +1428,18 @@ class NodeGraph:
         if mutation.kind is NodeGraphMutationKind.INSERT:
             if link is not None or not isinstance(payload, dict):
                 raise RuntimeError(f"cannot insert link {stable_id!r}")
+            validation = self.validate_link(
+                str(payload.get("source_node", "")),
+                str(payload.get("source_port", "")),
+                str(payload.get("target_node", "")),
+                str(payload.get("target_port", "")),
+            )
+            if not validation:
+                detail = f"{validation.code}: {validation.message}".strip(": ")
+                raise RuntimeError(
+                    "link insertion was rejected while replaying a graph edit"
+                    + (f" ({detail})" if detail else "")
+                )
             link = self.add_link(
                 str(payload.get("source_node", "")),
                 str(payload.get("source_port", "")),

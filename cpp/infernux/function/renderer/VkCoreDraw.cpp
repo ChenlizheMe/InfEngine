@@ -111,7 +111,9 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     const uint64_t asyncComputeGeneration = asyncCompute ? m_frameAsyncComputeGeneration() : 0;
     const bool primeAsyncCompute =
         asyncCompute && (!m_frameAsyncComputePrimed || asyncComputeGeneration != m_frameAsyncComputePrimedGeneration);
-    const bool separateComputeBatch = !asyncCompute && m_frameComputeExecutor &&
+    const bool frameComputeHasWork = m_frameComputeExecutor &&
+                                      (!m_frameComputeWorkPredicate || m_frameComputeWorkPredicate());
+    const bool separateComputeBatch = !asyncCompute && frameComputeHasWork &&
                                       graphicsQueue.queue != VK_NULL_HANDLE && computeQueue.queue != VK_NULL_HANDLE;
 
     const bool composedFrame = static_cast<bool>(m_frameSubmissionBuilder);
@@ -292,7 +294,7 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     try {
         executeResult = m_submissionExecutor.Execute(
             frameSlot, submissionPlan,
-            [this, imageIndex, asyncCompute, primeAsyncCompute, separateComputeBatch, composedFrame,
+            [this, imageIndex, asyncCompute, primeAsyncCompute, separateComputeBatch, frameComputeHasWork, composedFrame,
              &submissionPlan](uint32_t batchIndex, VkCommandBuffer commandBuffer) {
                 if (batchIndex >= submissionPlan.batches.size())
                     return false;
@@ -320,7 +322,7 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
                 }
                 if (queue != rhi::QueueRole::Graphics)
                     return false;
-                if (!separateComputeBatch && m_frameComputeExecutor)
+                if (!separateComputeBatch && frameComputeHasWork)
                     m_frameComputeExecutor(commandBuffer);
                 return RecordFrameCommands(commandBuffer, imageIndex);
             },

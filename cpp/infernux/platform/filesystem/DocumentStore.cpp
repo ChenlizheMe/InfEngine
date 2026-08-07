@@ -74,6 +74,12 @@ std::string DocumentWriteTicket::GetStatusName() const
     return "invalid";
 }
 
+std::string DocumentWriteTicket::GetError() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_error;
+}
+
 void DocumentWriteTicket::Complete(Status status, std::string error, std::optional<DocumentFileState> fileState)
 {
     {
@@ -106,7 +112,11 @@ DocumentStore::DocumentStore(Writer writer, size_t workerCount)
     if (!m_writer) {
         m_writer = [](const std::string &path, const std::string &content, const DocumentWriteOptions &options) {
             std::string error;
-            if (!WriteTextFileAtomically(path, content, error, AtomicWriteOptions{options.createBackup}))
+            if (!WriteTextFileAtomically(
+                    path,
+                    content,
+                    error,
+                    AtomicWriteOptions{options.createBackup, options.expectedFileState}))
                 throw std::runtime_error("atomic write failed for '" + path + "': " + error);
         };
     }
@@ -215,6 +225,11 @@ DocumentPathMetrics DocumentStore::GetMetrics(const std::string &path) const
     return metrics;
 }
 
+DocumentFileState DocumentStore::CaptureFileState(const std::string &path) const
+{
+    return CaptureAtomicFileState(ResolvePath(path));
+}
+
 void DocumentStore::Flush()
 {
     std::unique_lock lock(m_mutex);
@@ -298,24 +313,22 @@ void DocumentStore::WorkerMain()
         std::optional<DocumentFileState> fileState;
         try {
             m_writer(request.path, request.content, request.options);
-            std::error_code stateError;
-            const auto filePath = ToFsPath(request.path);
-            const uintmax_t size = std::filesystem::file_size(filePath, stateError);
-            if (!stateError && size <= std::numeric_limits<uint64_t>::max()) {
-                const auto modified = std::filesystem::last_write_time(filePath, stateError);
-                if (!stateError)
-                    fileState = DocumentFileState{static_cast<uint64_t>(size),
-                                                  static_cast<int64_t>(modified.time_since_epoch().count())};
-            }
+            fileState = CaptureAtomicFileState(request.path);
         } catch (const std::exception &exception) {
             error = exception.what();
         }
+
+        const bool succeeded = error.empty();
+        if (succeeded)
+            request.ticket->Complete(DocumentWriteTicket::Status::Succeeded, {}, fileState);
+        else
+            request.ticket->Complete(DocumentWriteTicket::Status::Failed, std::move(error));
 
         {
             std::lock_guard lock(m_mutex);
             m_activePaths.erase(request.key);
             m_activeGenerations.erase(request.key);
-            if (error.empty())
+            if (succeeded)
                 m_succeededGenerations.insert_or_assign(request.key, request.ticket->GetGeneration());
             else
                 m_failedGenerations.insert_or_assign(request.key, request.ticket->GetGeneration());
@@ -326,11 +339,6 @@ void DocumentStore::WorkerMain()
             }
         }
         m_condition.notify_all();
-
-        if (error.empty())
-            request.ticket->Complete(DocumentWriteTicket::Status::Succeeded, {}, fileState);
-        else
-            request.ticket->Complete(DocumentWriteTicket::Status::Failed, std::move(error));
     }
 }
 

@@ -18,6 +18,105 @@ _TOOL_METADATA: dict[str, dict[str, Any]] = {}
 _KNOWLEDGE_TOKENS: dict[str, dict[str, Any]] = {}
 
 
+class _MainThreadGuardRejection:
+    """Carry a policy rejection out of the queued main-thread callback."""
+
+    __slots__ = ("result",)
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        self.result = result
+
+# Generic MCP file editing is deliberately narrower than the AssetDatabase.
+# These files are authored as external source/text and may be safely restored
+# from an MCP snapshot without competing with an editor document controller.
+EXTERNAL_SOURCE_TEXT_EXTENSIONS = frozenset({
+    ".bat",
+    ".c",
+    ".cc",
+    ".cfg",
+    ".cjs",
+    ".cmake",
+    ".cmd",
+    ".comp",
+    ".cpp",
+    ".css",
+    ".csv",
+    ".cxx",
+    ".frag",
+    ".glsl",
+    ".h",
+    ".hh",
+    ".hlsl",
+    ".hpp",
+    ".htm",
+    ".html",
+    ".hxx",
+    ".ini",
+    ".inl",
+    ".js",
+    ".json",
+    ".jsx",
+    ".lua",
+    ".md",
+    ".mjs",
+    ".ps1",
+    ".py",
+    ".pyi",
+    ".rc",
+    ".scss",
+    ".sh",
+    ".shadingmodel",
+    ".toml",
+    ".ts",
+    ".tsv",
+    ".tsx",
+    ".txt",
+    ".vert",
+    ".webmanifest",
+    ".xml",
+    ".yaml",
+    ".yml",
+})
+
+EXTERNAL_SOURCE_TEXT_FILENAMES = frozenset({
+    ".clang-format",
+    ".clang-tidy",
+    ".editorconfig",
+    ".gitattributes",
+    ".gitignore",
+    "cmakelists.txt",
+})
+
+EDITOR_OWNED_ASSET_EXTENSIONS = frozenset({
+    ".animclip2d",
+    ".animclip3d",
+    ".animfsm",
+    ".animtimeline",
+    ".effect",
+    ".effectgroup",
+    ".mat",
+    ".meta",
+    ".particlegraph",
+    ".physicmaterial",
+    ".prefab",
+    ".scene",
+    ".timelinefsm",
+})
+
+EXTERNAL_SOURCE_TRANSACTION_OPERATIONS = frozenset({
+    "edit_text",
+    "patch_text",
+    "write_json",
+    "write_text",
+})
+
+EDITOR_OWNED_PROJECT_DIRECTORIES = frozenset({
+    ".infernux",
+    "library",
+    "projectsettings",
+})
+
+
 class KnowledgeTokenError(Exception):
     def __init__(self, scope: str, required_tool: str, provided: str = "") -> None:
         self.scope = str(scope or "")
@@ -333,12 +432,36 @@ def main_thread(
     response_explain = explain or explain_for(name)
     timeout_ms = _configured_timeout_ms(timeout_ms)
     started = time.monotonic()
-    guard_failure = _scene_guard_failure(name, response_explain)
-    if guard_failure is not None:
-        _record_trace(name, False, started, guard_failure.get("error", {}).get("message", ""), arguments=arguments, result=guard_failure)
-        return guard_failure
     try:
-        result = ok(MainThreadCommandQueue.instance().run_sync(name, fn, timeout_ms=timeout_ms), explain=response_explain)
+        def _run_automation_action():
+            from Infernux.engine.interaction import ActionOrigin, action_origin_scope
+
+            # State validation and mutation are one main-thread critical
+            # operation. Reading SceneFileManager from the MCP server thread
+            # can otherwise approve a command from stale Play/load state.
+            guard_failure = _scene_guard_failure(name, response_explain)
+            if guard_failure is not None:
+                return _MainThreadGuardRejection(guard_failure)
+            with action_origin_scope(ActionOrigin.AUTOMATION):
+                return fn()
+
+        value = MainThreadCommandQueue.instance().run_sync(
+            name,
+            _run_automation_action,
+            timeout_ms=timeout_ms,
+        )
+        if isinstance(value, _MainThreadGuardRejection):
+            result = value.result
+            _record_trace(
+                name,
+                False,
+                started,
+                result.get("error", {}).get("message", ""),
+                arguments=arguments,
+                result=result,
+            )
+            return result
+        result = ok(value, explain=response_explain)
         _record_trace(name, True, started, arguments=arguments, result=result)
         return result
     except TimeoutError as exc:
@@ -525,6 +648,7 @@ def _requires_saved_scene_file(name: str) -> bool:
         "gameobject_set_sibling_index",
         "gameobject_ensure_path",
         "gameobject_clone_from_json",
+        "gameobject_create_from_model",
         "gameobject_set_tag_layer",
         "transform_set",
         "component_ensure",
@@ -545,6 +669,7 @@ def _requires_saved_scene_file(name: str) -> bool:
         "renderstack_add_effect",
         "renderstack_remove_effect",
         "renderstack_set_effect_enabled",
+        "scene_clear_generated",
     }
     if name in exact:
         return True
@@ -665,9 +790,7 @@ def get_asset_database():
 
 
 def project_assets_dir(project_path: str) -> str:
-    assets = os.path.join(resolved_path(project_path), "Assets")
-    os.makedirs(assets, exist_ok=True)
-    return assets
+    return os.path.join(resolved_path(project_path), "Assets")
 
 
 def resolve_project_dir(project_path: str, directory: str | None) -> str:
@@ -677,7 +800,6 @@ def resolve_project_dir(project_path: str, directory: str | None) -> str:
     raw = resolved_path(directory if os.path.isabs(directory) else os.path.join(root, directory))
     if not is_path_within(raw, root):
         raise ValueError("Target directory must stay inside the project.")
-    os.makedirs(raw, exist_ok=True)
     return raw
 
 
@@ -706,6 +828,83 @@ def resolve_asset_path(project_path: str, path: str | None, *, default_name: str
     return raw
 
 
+def is_document_registry_managed_path(path: str) -> bool:
+    """Return whether a live editor document owns *path* or an ancestor."""
+    target = resolved_path(path)
+    try:
+        from Infernux.engine.interaction import DocumentRegistry
+    except ImportError:
+        return False
+    registry = DocumentRegistry._instance
+    if registry is None:
+        return False
+    for document in registry.documents:
+        owner = str(getattr(document, "resource_path", "") or "").strip()
+        if not owner:
+            continue
+        owner = resolved_path(owner)
+        if same_path(target, owner) or is_path_within(target, owner):
+            return True
+    return False
+
+
+def require_external_source_edit_path(
+    project_path: str,
+    path: str,
+    operation: str = "edit",
+) -> str:
+    """Validate one generic MCP text target as externally authored source."""
+    target = resolve_project_path(project_path, path)
+    extension = os.path.splitext(target)[1].lower()
+    filename = os.path.basename(target).lower()
+    display = relative_path(target, project_path, allow_root=True)
+    project_relative_parts = tuple(
+        part.casefold()
+        for part in display.replace("\\", "/").split("/")
+        if part
+    )
+
+    if (
+        project_relative_parts
+        and project_relative_parts[0] in EDITOR_OWNED_PROJECT_DIRECTORIES
+    ):
+        raise ValueError(
+            f"Refusing to {operation} Editor-owned project data '{display}' through generic MCP file editing. "
+            "Use the corresponding Project Settings, asset, or MCP transaction service."
+        )
+    if extension in EDITOR_OWNED_ASSET_EXTENSIONS:
+        raise ValueError(
+            f"Refusing to {operation} Editor-owned asset '{display}' through generic MCP file editing. "
+            "Use the asset's editor/document/controller tool so in-memory state, dirty revisions, and Undo remain consistent."
+        )
+    if (
+        extension not in EXTERNAL_SOURCE_TEXT_EXTENSIONS
+        and filename not in EXTERNAL_SOURCE_TEXT_FILENAMES
+    ):
+        raise ValueError(
+            f"Refusing to {operation} '{display}' through generic MCP file editing. "
+            "Only explicit external source and text formats are supported; use the owning asset tool for imported or editor-authored resources."
+        )
+    if is_document_registry_managed_path(target):
+        raise ValueError(
+            f"Refusing to {operation} '{display}' because it is managed by an open Editor document. "
+            "Save or edit it through that document's controller."
+        )
+    return target
+
+
+def require_existing_parent_directory(project_path: str, path: str) -> str:
+    """Reject implicit directory creation by generic external file editors."""
+    target = resolve_project_path(project_path, path)
+    parent = os.path.dirname(target)
+    if not os.path.isdir(parent):
+        display = relative_path(parent, project_path, allow_root=True)
+        raise FileNotFoundError(
+            f"Parent directory does not exist: {display}. Create it first with asset_ensure_folder."
+        )
+    return parent
+
+
 def notify_asset_changed(path: str, action: str = "modified") -> None:
     """Commit one external file mutation through the canonical asset pipeline."""
     adb = get_asset_database()
@@ -727,16 +926,53 @@ def notify_asset_changed(path: str, action: str = "modified") -> None:
         AssetManager.import_asset(path, database=adb)
 
 
-def track_project_path_before_change(project_path: str, path: str, operation: str = "modify") -> None:
-    """Record a best-effort transaction snapshot before mutating a project path."""
+def track_project_path_before_change(project_path: str, path: str, operation: str = "modify") -> bool:
+    """Snapshot only externally authored source files for MCP rollback."""
+    if str(operation or "") not in EXTERNAL_SOURCE_TRANSACTION_OPERATIONS:
+        return False
+    try:
+        target = require_external_source_edit_path(project_path, path, "snapshot")
+    except (OSError, ValueError):
+        return False
     try:
         from Infernux.mcp.capabilities import feature_enabled
         if not feature_enabled("transactions"):
-            return
+            return False
         from Infernux.mcp.project_tools.transactions import record_path_before_change
-        record_path_before_change(project_path, path, operation=operation)
+        record_path_before_change(project_path, target, operation=operation)
+        return True
     except Exception:
-        pass
+        return False
+
+
+def write_external_source_text(
+    project_path: str,
+    path: str,
+    text: str,
+    *,
+    overwrite: bool = True,
+    operation: str = "write_text",
+) -> dict[str, Any]:
+    """Write one externally authored source file through the canonical path.
+
+    Callers must already be executing on the Editor main thread. This is the
+    sole MCP write primitive for scripts and other external source text.
+    """
+    file_path = require_external_source_edit_path(project_path, path, "write")
+    existed = os.path.exists(file_path)
+    if existed and not overwrite:
+        raise FileExistsError(f"File already exists: {path}")
+    require_existing_parent_directory(project_path, file_path)
+    track_project_path_before_change(project_path, file_path, operation)
+    from Infernux.core.document_store import write_document_text
+
+    write_document_text(file_path, text or "")
+    notify_asset_changed(file_path, "modified" if existed else "created")
+    return {
+        "path": relative_path(file_path, project_path),
+        "bytes": os.path.getsize(file_path),
+        "created": not existed,
+    }
 
 
 def serialize_vector(value) -> Any:

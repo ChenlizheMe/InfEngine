@@ -169,7 +169,6 @@ class TestPlayModeManager:
         runtime = str(tmp_path / "results.scene")
         manager = SceneFileManager()
         manager._current_scene_path = runtime
-        manager._dirty = False
         restored_cameras = []
         remembered_paths = []
         scene_changed = []
@@ -183,11 +182,11 @@ class TestPlayModeManager:
         from Infernux.engine.interaction import DocumentRegistry
 
         document = DocumentRegistry.instance().require(manager.document_id)
-        manager._dirty = True
+        DocumentRegistry.instance().mark_changed(document.document_id)
         mgr._scene_revision_backup = document.revision
         mgr._scene_saved_revision_backup = document.saved_revision
         mgr._scene_document_state_backup = document.state
-        manager._dirty = False
+        DocumentRegistry.instance().restore_saved_revision(document.document_id)
         mgr._restore_scene_file_path()
 
         assert manager.current_scene_path == authored
@@ -202,12 +201,12 @@ class TestPlayModeManager:
 
         manager = SceneFileManager()
         original_document_id = manager.document_id
-        manager._dirty = True
         document = DocumentRegistry.instance().require(original_document_id)
+        DocumentRegistry.instance().mark_changed(document.document_id)
         original_revision = document.revision
         original_saved_revision = document.saved_revision
         manager._current_scene_path = "runtime.scene"
-        manager._dirty = False
+        DocumentRegistry.instance().restore_saved_revision(document.document_id)
         scene_changed = []
         remembered_paths = []
         manager._on_scene_changed = lambda: scene_changed.append(True)

@@ -35,7 +35,6 @@ from Infernux.debug import Debug
 from Infernux.engine.path_utils import resolved_path
 import logging
 from ._inspector_references import (
-    _picker_texture_assets,
     _project_texture_guid_and_path,
 )
 
@@ -262,22 +261,12 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
 
     from .igui import IGUI
 
-    def _on_tex_drop(payload):
+    def _assign_texture(payload):
         nonlocal changed
-        guid, dropped = _project_texture_guid_and_path(payload)
+        guid, path = _project_texture_guid_and_path(payload)
         if not guid:
             logging.getLogger(__name__).warning(
                 "Texture must belong to the current project's Assets folder: %s", payload)
-            return
-        prop["guid"] = guid
-        changed = True
-
-    def _on_tex_pick(picked_path):
-        nonlocal changed
-        guid, picked = _project_texture_guid_and_path(picked_path)
-        if not guid:
-            logging.getLogger(__name__).warning(
-                "Texture must belong to the current project's Assets folder: %s", picked_path)
             return
         prop["guid"] = guid
         changed = True
@@ -287,19 +276,27 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
         prop["guid"] = ""
         changed = True
 
-    def _tex_asset_items(filt):
-        return _picker_texture_assets(filt)
+    def _texture_path():
+        tex_guid = str(prop.get("guid", "") or "")
+        adb = _get_asset_database()
+        return adb.get_path_from_guid(tex_guid) if adb and tex_guid else ""
 
-    IGUI.object_field(
+    IGUI.asset_reference_field(
         ctx,
         f"{wid_prefix}_{prop_name}_tex",
         display, "Texture",
+        asset_type="Texture",
         clickable=True,
         accept="TEXTURE_FILE",
-        on_drop=_on_tex_drop,
-        picker_asset_items=_tex_asset_items,
-        on_pick=_on_tex_pick,
+        on_assign=_assign_texture,
         on_clear=_on_tex_clear,
+        ping_path=_texture_path() or None,
+        has_value=bool(prop.get("guid")),
+        reference_value={
+            "asset_type": "Texture",
+            "guid": str(prop.get("guid", "") or ""),
+            "path_hint": _texture_path(),
+        },
     )
     return changed
 
@@ -416,6 +413,25 @@ _shader_cache: dict = {".vert": None, ".frag": None}
 _surface_batch_plans: dict = {}
 
 
+def _shader_reference_path(value, ext: str) -> str:
+    reference = shader_utils.make_shader_reference(value, ext)
+    path = str(reference.get("path_hint", "") or "")
+    if not path:
+        path = str(shader_utils.get_shader_file_path(
+            shader_utils.shader_ref_id(reference), ext,
+        ) or "")
+    return path
+
+
+def _ping_shader_reference(value, ext: str) -> None:
+    path = _shader_reference_path(value, ext)
+    if not path:
+        return
+    from ._inspector_references import ping_asset_in_project
+
+    ping_asset_in_project(path)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Extracted section renderers (called from render_material_body)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -438,11 +454,7 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
         shaders = mat_data.setdefault("shaders", {})
         vert_ref = shaders.get("vertex", "")
         frag_ref = shaders.get("fragment", "")
-        vert_shader_id = shader_utils.shader_ref_id(vert_ref)
-        frag_shader_id = shader_utils.shader_ref_id(frag_ref)
         s_lw = max_label_w(ctx, [t("material.vertex"), t("material.fragment")])
-        from .inspector_components import _picker_assets
-
         def _apply_shader(shader_key, new_value, other_key):
             nonlocal changed, requires_deserialize, requires_pipeline_refresh, change_key
             old_val = shaders.get(shader_key, "")
@@ -467,34 +479,26 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
         vert_items = shader_utils.get_shader_candidates(".vert", _shader_cache)
         vert_display = shader_utils.shader_display_from_value(vert_ref, vert_items)
 
-        if _render_obj_field(ctx, "mat_vert", vert_display, "Vert", "SHADER_FILE",
-                             lambda p: _apply_shader("vertex", p, "fragment"),
-                             picker_asset_items=lambda filt: _picker_assets(filt, "*.vert"),
-                             on_pick=lambda picked: _apply_shader("vertex", picked, "fragment"),
-                             semantic_id="asset.material.shader.vertex"):
-            ctx.open_popup("mat_vert_popup")
-        if ctx.begin_popup("mat_vert_popup"):
-            for display, value in vert_items:
-                if ctx.selectable(display, value == vert_shader_id):
-                    _apply_shader("vertex", value, "fragment")
-            ctx.end_popup()
+        _render_obj_field(
+            ctx, "mat_vert", vert_display, "Vert", "SHADER_FILE",
+            lambda p: _apply_shader("vertex", p, "fragment"),
+            ping_path=_shader_reference_path(vert_ref, ".vert") or None,
+            has_value=bool(shader_utils.shader_ref_id(vert_ref)),
+            semantic_id="asset.material.shader.vertex",
+        )
 
         # Fragment shader
         field_label(ctx, t("material.fragment"), s_lw)
         frag_items = shader_utils.get_shader_candidates(".frag", _shader_cache)
         frag_display = shader_utils.shader_display_from_value(frag_ref, frag_items)
 
-        if _render_obj_field(ctx, "mat_frag", frag_display, "Frag", "SHADER_FILE",
-                             lambda p: _apply_shader("fragment", p, "vertex"),
-                             picker_asset_items=lambda filt: _picker_assets(filt, "*.frag"),
-                             on_pick=lambda picked: _apply_shader("fragment", picked, "vertex"),
-                             semantic_id="asset.material.shader.fragment"):
-            ctx.open_popup("mat_frag_popup")
-        if ctx.begin_popup("mat_frag_popup"):
-            for display, value in frag_items:
-                if ctx.selectable(display, value == frag_shader_id):
-                    _apply_shader("fragment", value, "vertex")
-            ctx.end_popup()
+        _render_obj_field(
+            ctx, "mat_frag", frag_display, "Frag", "SHADER_FILE",
+            lambda p: _apply_shader("fragment", p, "vertex"),
+            ping_path=_shader_reference_path(frag_ref, ".frag") or None,
+            has_value=bool(shader_utils.shader_ref_id(frag_ref)),
+            semantic_id="asset.material.shader.fragment",
+        )
     _record_profile_timing("materialShader", section_t0)
     if is_builtin:
         ctx.end_disabled()
@@ -728,18 +732,19 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
                             requires_deserialize, requires_pipeline_refresh,
                             old_document, change_key, exec_layer):
     """Serialize and save material changes, record undo."""
+    del exec_layer
+    from Infernux.engine.interaction import AuthoringMutationService
+
+    if not AuthoringMutationService.require().can_record(require_edit_mode=False):
+        _restore_rejected_material_edit(
+            panel, state, native_mat, mat_data, old_document
+        )
+        raise RuntimeError(
+            "Material edit requires an available global Action Journal"
+        )
     try:
         embedded_path = getattr(state, "file_path", "") or ""
         is_embedded = "::submat:" in embedded_path
-
-        # Hot-path optimization: most property drags already push values via
-        # native setters in render_material_property. Full JSON deserialize is
-        # only needed when material structure changed (shader sync/texture slots).
-        if requires_deserialize:
-            if not native_mat.deserialize_document(mat_data):
-                raise RuntimeError("material document was rejected by the current native schema")
-        if requires_pipeline_refresh:
-            _refresh_pipeline(panel)
 
         if is_embedded:
             state.extra["cached_json"] = json.dumps(mat_data)
@@ -749,15 +754,9 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
                 pass
             return
 
-        # Use cached file-path when available (avoids per-frame panel lookup).
-        file_path = state.extra.get("_mat_file_path", "")
-        if not file_path:
-            file_path = _ensure_material_file_path(panel, native_mat)
-            if file_path:
-                state.extra["_mat_file_path"] = file_path
-
-        if exec_layer:
-            exec_layer.schedule_rw_save(native_mat)
+        controller = getattr(state, "resource_controller", None)
+        if controller is None or not getattr(state, "document_id", ""):
+            raise RuntimeError("Material edit requires a formal Material document")
 
         # ── Deferred undo ───────────────────────────────────────────
         # During continuous drag (60 fps), calling json.dumps every frame
@@ -765,34 +764,49 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
         # we save the pre-drag JSON once and mark a pending undo commit.
         # The actual json.dumps + record happens in render_material_body
         # on the first frame where changed=False (drag ended).
+        # Native memory follows each rendered input frame so previews remain
+        # live. The Action Journal receives one document transaction when the
+        # gesture ends; intermediate text values are not separate user actions.
         if requires_deserialize:
-            # Structural changes (shader swap, texture slot) always need
-            # an immediate snapshot because they can't be replayed
-            # incrementally.
-            new_json = json.dumps(mat_data)
-            state.extra["cached_json"] = new_json
-            # Pre-capture save snapshot.
-            if file_path:
-                from Infernux.core.assets import AssetManager
-                AssetManager.set_material_save_snapshot(file_path, new_json)
-            from Infernux.engine.undo import UndoManager, MaterialDocumentCommand
-            mgr = UndoManager.instance()
-            new_document = copy.deepcopy(mat_data)
-            if mgr and not mgr.is_executing and mgr.enabled and new_document != old_document:
-                mgr.record(MaterialDocumentCommand(
-                    native_mat, old_document, new_document, "Edit Material",
-                    refresh_callback=lambda _mat: _refresh_pipeline(panel),
-                    edit_key=change_key,
-                ))
-        else:
-            # Lightweight path: just remember that an undo commit is needed.
-            if not state.extra.get("_undo_pending"):
-                # First frame of this drag — save the starting snapshot.
-                state.extra["_undo_old_document"] = copy.deepcopy(old_document)
-                state.extra["_undo_edit_key"] = change_key
-            state.extra["_undo_pending"] = True
-    except (RuntimeError, ValueError) as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            if not native_mat.deserialize_document(copy.deepcopy(mat_data)):
+                raise RuntimeError("material live-preview document was rejected")
+            if requires_pipeline_refresh:
+                _refresh_pipeline(panel, native_mat)
+        _update_material_edit_session(
+            panel,
+            state,
+            native_mat,
+            old_document,
+            mat_data,
+            change_key,
+        )
+    except Exception:
+        _restore_rejected_material_edit(
+            panel, state, native_mat, mat_data, old_document
+        )
+        raise
+
+
+def _restore_rejected_material_edit(
+    panel,
+    state,
+    native_mat,
+    mat_data,
+    old_document,
+) -> None:
+    """Restore both cached and native material state after a rejected edit."""
+    restored = copy.deepcopy(old_document)
+    mat_data.clear()
+    mat_data.update(restored)
+    state.extra["cached_data"] = mat_data
+    state.extra["cached_json"] = json.dumps(restored)
+    state.extra.pop("_material_preview_pending", None)
+    if not native_mat.deserialize_document(restored):
+        raise RuntimeError("material rollback document was rejected")
+    _refresh_pipeline(panel)
+    try:
+        state.extra["_applied_version"] = native_mat.get_version()
+    except (AttributeError, RuntimeError):
         pass
 
 
@@ -809,42 +823,112 @@ def _document_before_material_edit(state, mat_data) -> dict:
     return copy.deepcopy(mat_data)
 
 
-def _flush_deferred_undo(panel, state, mat_data, native_mat):
-    """Commit deferred undo snapshot when drag ends (changed=False frame)."""
-    if not state.extra.get("_undo_pending"):
+def _material_edit_session_key(state, native_mat) -> str:
+    identity = (
+        getattr(state, "file_path", "")
+        or getattr(native_mat, "file_path", "")
+        or getattr(native_mat, "guid", "")
+        or str(id(native_mat))
+    )
+    return f"inspector:material:{identity}"
+
+
+def _commit_material_edit_session(panel, state, native_mat, session) -> None:
+    old_document = copy.deepcopy(session.initial_value)
+    new_document = copy.deepcopy(session.current_value)
+    if new_document != old_document:
+        controller = getattr(state, "resource_controller", None)
+        if controller is None or not getattr(state, "document_id", ""):
+            _restore_rejected_material_edit(
+                panel, state, native_mat, new_document, old_document
+            )
+            raise RuntimeError("Material edit requires a formal Material document")
+        if not controller.commit_applied_document(
+            old_document,
+            new_document,
+            view_id="inspector",
+            edit_key=str(session.metadata.get("edit_key", "")),
+            description="Edit Material",
+        ):
+            _restore_rejected_material_edit(
+                panel, state, native_mat, new_document, old_document
+            )
+            raise RuntimeError("Material document transaction was rejected")
+
+    state.extra["cached_json"] = json.dumps(new_document)
+    state.extra["cached_data"] = new_document
+
+
+def _cancel_material_edit_session(panel, state, native_mat, session) -> None:
+    old_document = copy.deepcopy(session.initial_value)
+    if not native_mat.deserialize_document(old_document):
+        raise RuntimeError("material rollback document was rejected")
+    cached_data = state.extra.get("cached_data")
+    if isinstance(cached_data, dict):
+        cached_data.clear()
+        cached_data.update(copy.deepcopy(old_document))
+    else:
+        state.extra["cached_data"] = copy.deepcopy(old_document)
+    state.extra["cached_json"] = json.dumps(old_document)
+    state.extra.pop("_material_preview_pending", None)
+    _refresh_pipeline(panel, native_mat)
+
+
+def _update_material_edit_session(
+    panel,
+    state,
+    native_mat,
+    old_document,
+    mat_data,
+    change_key,
+) -> None:
+    from Infernux.engine.interaction import ContinuousEditService
+
+    edits = ContinuousEditService.instance()
+    session_key = _material_edit_session_key(state, native_mat)
+    session = edits.get(session_key)
+    if session is not None and session.metadata.get("edit_key", "") != change_key:
+        edits.commit(session_key)
+        session = None
+    if session is None:
+        session = edits.begin(
+            session_key,
+            owner_id="inspector",
+            document_id=str(getattr(state, "document_id", "") or ""),
+            description="Edit Material",
+            initial_value=old_document,
+            metadata={"edit_key": str(change_key or "")},
+            on_commit=lambda item: _commit_material_edit_session(
+                panel, state, native_mat, item
+            ),
+            on_cancel=lambda item: _cancel_material_edit_session(
+                panel, state, native_mat, item
+            ),
+        )
+    edits.update(session.key, mat_data)
+
+
+def _flush_deferred_undo(
+    panel,
+    state,
+    mat_data,
+    native_mat,
+    *,
+    input_active: bool = False,
+    force: bool = False,
+):
+    """Commit the Core-owned material edit session when a gesture ends."""
+    del panel, mat_data
+    if input_active and not force:
         return
-    state.extra["_undo_pending"] = False
+    from Infernux.engine.interaction import ContinuousEditService
 
-    old_document = state.extra.pop("_undo_old_document", None)
-    edit_key = state.extra.pop("_undo_edit_key", "")
-    if old_document is None:
-        return
-
-    try:
-        from Infernux.engine.undo import UndoManager, MaterialDocumentCommand
-        mgr = UndoManager.instance()
-        new_json = json.dumps(mat_data)
-        state.extra["cached_json"] = new_json
-
-        # Pre-capture save snapshot so _save_material_resource doesn't need
-        # to call native_mat.serialize() on the main thread.
-        from Infernux.core.assets import AssetManager
-        file_path = state.extra.get("_mat_file_path", "")
-        if file_path:
-            AssetManager.set_material_save_snapshot(file_path, new_json)
-
-        if not (mgr and not mgr.is_executing and mgr.enabled):
-            return
-
-        new_document = copy.deepcopy(mat_data)
-        if new_document != old_document:
-            mgr.record(MaterialDocumentCommand(
-                native_mat, old_document, new_document, "Edit Material",
-                refresh_callback=lambda _mat: _refresh_pipeline(panel),
-                edit_key=edit_key,
-            ))
-    except (RuntimeError, ValueError) as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    edits = ContinuousEditService.instance()
+    session_key = _material_edit_session_key(state, native_mat)
+    if force:
+        edits.commit(session_key)
+    else:
+        edits.commit_if_idle(session_key, idle_seconds=0.75)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -895,6 +979,23 @@ def _sync_shader_annotations(mat_data, state):
                 changed = True
                 requires_deserialize = True
     return changed, requires_deserialize
+
+
+def _prepare_shader_annotations(mat_data, state, *, read_only: bool):
+    """Synchronize shader metadata without inventing a user edit.
+
+    Built-in materials are shared, immutable renderer resources.  Their
+    Inspector copy may still need newly imported shader annotations, but that
+    cache refresh must never enter the document/undo path.
+    """
+    changed, requires_deserialize = _sync_shader_annotations(mat_data, state)
+    if not read_only or not changed:
+        return changed, requires_deserialize
+
+    state.extra["cached_data"] = mat_data
+    state.extra["cached_json"] = json.dumps(mat_data)
+    state.extra.pop("_material_preview_pending", None)
+    return False, False
 
 
 def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
@@ -968,7 +1069,8 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
     )
     (vert_flags, vert_picker_open, vert_payload, vert_list_open,
      frag_flags, frag_picker_open, frag_payload, frag_list_open,
-     surface_changes) = interaction
+     surface_changes, active_surface_index,
+     deactivated_surface_index) = interaction
 
     changed = False
     requires_deserialize = False
@@ -979,6 +1081,13 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
         nonlocal changed, requires_deserialize, requires_pipeline_refresh, change_key
         old_val = shaders.get(shader_key, "")
         ext = ".vert" if shader_key == "vertex" else ".frag"
+        if isinstance(new_value, dict):
+            new_value = (
+                new_value.get("path_hint")
+                or new_value.get("guid")
+                or new_value.get("builtin")
+                or ""
+            )
         new_ref = shader_utils.make_shader_reference(new_value, ext)
         if not new_ref["guid"] and not new_ref["shader_id"]:
             return
@@ -998,47 +1107,62 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
                 f"{vert_id}|{frag_id}:{shader_utils.get_shader_property_generation()}"
             )
 
-    if vert_payload:
-        apply_shader("vertex", str(vert_payload), "fragment")
-    if frag_payload:
-        apply_shader("fragment", str(frag_payload), "vertex")
-
-    from . import igui as _igui_module
     from .igui import IGUI
-    from .inspector_components import _picker_assets
+    from Infernux.engine.interaction import AssetReferenceFieldModel
 
-    def render_shader_popups(field_id, flags, picker_open, list_open,
-                             popup_id, items, selected_id, apply):
-        if flags:
-            _igui_module._popup_needs_focus.add(field_id)
-            _igui_module._picker_filters.pop(f"_igui_filter_{field_id}", None)
-        if picker_open or flags:
-            ctx.push_id_str(field_id)
-            try:
-                IGUI._render_object_picker_popup(
-                    ctx, field_id, None,
-                    lambda filt: _picker_assets(filt, "*.vert" if field_id == "mat_vert" else "*.frag"),
-                    apply, None,
-                )
-            finally:
-                ctx.pop_id()
-        if flags & 1:
-            ctx.open_popup(popup_id)
-        if list_open or (flags & 1):
-            if ctx.begin_popup(popup_id):
-                for display, value in items:
-                    if ctx.selectable(display, value == selected_id):
-                        apply(value)
-                ctx.end_popup()
+    def process_shader_field(field_id, flags, picker_open, list_open,
+                             popup_id, items, selected_id, selected_ref,
+                             payload, apply):
+        del list_open, popup_id, items
+        ext = ".vert" if field_id == "mat_vert" else ".frag"
+        reference_path = _shader_reference_path(selected_id, ext)
+        asset_type = "Shader.Vertex" if ext == ".vert" else "Shader.Fragment"
+        reference_value = {
+            "asset_type": asset_type,
+            "guid": str(selected_ref.get("guid") or "")
+            if isinstance(selected_ref, dict) else "",
+            "path_hint": reference_path,
+            "builtin": (
+                str(selected_ref.get("shader_id") or "")
+                if isinstance(selected_ref, dict) and not reference_path
+                else ""
+            ),
+        }
+        model = AssetReferenceFieldModel(
+            field_id=field_id,
+            display_text=(vert_display if field_id == "mat_vert" else frag_display),
+            type_hint=asset_type,
+            accept="SHADER_FILE",
+            on_assign=apply,
+            ping_path=reference_path or None,
+            has_value=bool(str(selected_id or "").strip()),
+            reference_value=reference_value,
+            semantic_id=(
+                "asset.material.shader.vertex"
+                if field_id == "mat_vert"
+                else "asset.material.shader.fragment"
+            ),
+        )
+        if payload:
+            model.dispatch_drop(payload)
+        IGUI.process_object_field_interaction(
+            ctx,
+            model,
+            int(flags),
+            picker_open=bool(picker_open),
+            poll_picker=False,
+        )
 
-    render_shader_popups(
+    process_shader_field(
         "mat_vert", int(vert_flags), bool(vert_picker_open), bool(vert_list_open),
-        "mat_vert_popup", vert_items, shader_utils.shader_ref_id(vert_ref),
+        "mat_vert_popup", vert_items, shader_utils.shader_ref_id(vert_ref), vert_ref,
+        vert_payload,
         lambda value: apply_shader("vertex", value, "fragment"),
     )
-    render_shader_popups(
+    process_shader_field(
         "mat_frag", int(frag_flags), bool(frag_picker_open), bool(frag_list_open),
-        "mat_frag_popup", frag_items, shader_utils.shader_ref_id(frag_ref),
+        "mat_frag_popup", frag_items, shader_utils.shader_ref_id(frag_ref), frag_ref,
+        frag_payload,
         lambda value: apply_shader("fragment", value, "vertex"),
     )
 
@@ -1050,7 +1174,14 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
         requires_pipeline_refresh = True
         change_key = surface_change_key
 
-    return changed, requires_deserialize, requires_pipeline_refresh, change_key
+    return (
+        changed,
+        requires_deserialize,
+        requires_pipeline_refresh,
+        change_key,
+        int(active_surface_index) >= 0,
+        int(deactivated_surface_index) >= 0,
+    )
 
 
 def _render_material_top_legacy(ctx, panel, state, mat_data, section_readonly,
@@ -1123,7 +1254,14 @@ def _render_material_top_legacy(ctx, panel, state, mat_data, section_readonly,
             ctx.pop_style_color(1)
         ctx.end_table()
     ctx.separator()
-    return changed, requires_deserialize, requires_pipeline_refresh, change_key
+    return (
+        changed,
+        requires_deserialize,
+        requires_pipeline_refresh,
+        change_key,
+        bool(ctx.is_any_item_active()),
+        bool(ctx.is_item_deactivated_after_edit()),
+    )
 
 
 def render_material_body(ctx: InxGUIContext, panel, state):
@@ -1190,7 +1328,11 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
     change_key = ""
 
     # Sync shader annotations (both vertex + fragment properties)
-    sync_ch, sync_ds = _sync_shader_annotations(mat_data, state)
+    sync_ch, sync_ds = _prepare_shader_annotations(
+        mat_data,
+        state,
+        read_only=is_builtin,
+    )
     changed |= sync_ch
     requires_deserialize |= sync_ds
 
@@ -1202,7 +1344,14 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
         top_result = _render_material_top_legacy(
             ctx, panel, state, mat_data, section_readonly,
             default_open_sections, is_embedded_slot)
-    top_changed, top_deserialize, top_pipeline_refresh, top_change_key = top_result
+    (
+        top_changed,
+        top_deserialize,
+        top_pipeline_refresh,
+        top_change_key,
+        top_edit_active,
+        top_edit_finished,
+    ) = top_result
     changed |= top_changed
     requires_deserialize |= top_deserialize
     requires_pipeline_refresh |= top_pipeline_refresh
@@ -1233,6 +1382,10 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
         _apply_material_changes(panel, state, mat_data, _native_mat,
                                 requires_deserialize, requires_pipeline_refresh,
                                 old_document, change_key, exec_layer)
+        if top_edit_finished:
+            _flush_deferred_undo(
+                panel, state, mat_data, _native_mat, force=True
+            )
         # Mark the native version as "ours" so _refresh_material (called once
         # per frame by asset_details_renderer) can skip the expensive
         # serialize -> json.loads -> merge -> json.dumps round-trip.
@@ -1242,7 +1395,16 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
             pass
     else:
         # Drag ended (or no edit this frame) — commit deferred undo snapshot.
-        _flush_deferred_undo(panel, state, mat_data, _native_mat)
+        _flush_deferred_undo(
+            panel,
+            state,
+            mat_data,
+            _native_mat,
+            input_active=bool(
+                top_edit_active or ctx.is_any_item_active() or ctx.want_text_input()
+            ),
+            force=top_edit_finished,
+        )
 
 def render_inline_material_body(ctx: InxGUIContext, panel, native_mat, cache_key: str | None = None) -> None:
     """Render a MeshRenderer-linked material using the shared material inspector."""
@@ -1282,18 +1444,31 @@ def _on_shader_drop(path: str, required_ext: str, shaders_dict: dict):
 
 
 def _render_obj_field(ctx: InxGUIContext, fid: str, display: str, type_hint: str,
-                      drag_type: str, on_drop,
-                      picker_asset_items=None, on_pick=None, on_clear=None,
-                      semantic_id: str = "") -> bool:
+                      drag_type: str, on_assign,
+                      on_clear=None,
+                      on_ping=None, ping_path=None, has_value=None,
+                      semantic_id: str = "", asset_type: str = "",
+                      reference_value=None) -> bool:
     """Simplified object-field renderer accepting drag-drop."""
     from . import inspector_components as comp_ui
-    return comp_ui.render_object_field(ctx, fid, display, type_hint,
+    resolved_asset_type = asset_type or type_hint
+    return comp_ui.render_asset_reference_field(ctx, fid, display, type_hint,
+                                       asset_type=resolved_asset_type,
                                        clickable=True,
                                        accept_drag_type=drag_type,
-                                       on_drop_callback=on_drop,
-                                       picker_asset_items=picker_asset_items,
-                                       on_pick=on_pick,
+                                       on_assign=on_assign,
                                        on_clear=on_clear,
+                                       on_ping=on_ping,
+                                       ping_path=ping_path,
+                                       has_value=has_value,
+                                       reference_value=(
+                                           reference_value
+                                           if reference_value is not None
+                                           else ({
+                                               "asset_type": resolved_asset_type,
+                                               "path_hint": str(ping_path or ""),
+                                           } if has_value else None)
+                                       ),
                                        semantic_id=semantic_id)
 
 
@@ -1340,6 +1515,21 @@ class _InlineMaterialExecLayer:
         self._panel._inline_material_exec_layer = layer
         layer.schedule_rw_save(resource_obj)
 
+    def flush_rw_autosave(self, *, force: bool = False):
+        layer = getattr(self._panel, "_inline_material_exec_layer", None)
+        if layer is None or layer is self:
+            return False
+        return layer.flush_rw_autosave(force=force)
+
+    def cancel_rw_autosave(self) -> bool:
+        layer = getattr(self._panel, "_inline_material_exec_layer", None)
+        if layer is None or layer is self:
+            return False
+        return bool(layer.cancel_rw_autosave())
+
+    def refresh_binding(self, category: str, file_path: str) -> None:
+        del category, file_path
+
 
 def _build_inline_state(panel, native_mat):
     extra = _get_inline_material_extra(panel, native_mat)
@@ -1350,10 +1540,36 @@ def _build_inline_state(panel, native_mat):
             extra=extra,
             exec_layer=_InlineMaterialExecLayer(panel),
             file_path=mat_path,
+            category="material",
+            settings=native_mat,
+            resource_controller=None,
+            document_id="",
         )
         extra["_inline_state"] = state
     else:
         state.file_path = mat_path
+    if mat_path and "::submat:" not in mat_path and not bool(
+        getattr(native_mat, "is_builtin", False)
+    ):
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            ensure_editable_resource_document,
+        )
+
+        controller = ensure_editable_resource_document(
+            category="material",
+            document_kind=DocumentKind.MATERIAL,
+            file_path=mat_path,
+            resource=native_mat,
+            guid=str(getattr(native_mat, "guid", "") or ""),
+            title=os.path.basename(mat_path),
+            view_id="inspector",
+            exec_layer=state.exec_layer,
+            on_restored=notify_material_document_restored,
+            autosave_debounce_sec=0.25,
+        )
+        state.resource_controller = controller
+        state.document_id = controller.document_id
     return state
 
 
@@ -1401,7 +1617,7 @@ def _get_inline_material_extra(panel, native_mat) -> dict:
     return extra
 
 
-def _refresh_pipeline(panel):
+def _refresh_pipeline(panel, native_mat=None):
     """Ask the engine to rebuild the material pipeline."""
     engine = None
     if panel and hasattr(panel, '_get_native_engine'):
@@ -1415,8 +1631,20 @@ def _refresh_pipeline(panel):
         except Exception as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
-    if engine and _native_mat and hasattr(engine, 'refresh_material_pipeline'):
-        engine.refresh_material_pipeline(_native_mat)
+    material = native_mat or _native_mat
+    if engine and material and hasattr(engine, 'refresh_material_pipeline'):
+        engine.refresh_material_pipeline(material)
+
+
+def notify_material_document_restored(resource) -> None:
+    """Publish a restored Material document to rendering and preview views."""
+    native_mat = getattr(resource, "native", None) or resource
+    _refresh_pipeline(None, native_mat)
+    file_path = str(getattr(native_mat, "file_path", "") or "")
+    if file_path:
+        from .asset_resource_preview import invalidate_live_material_preview
+
+        invalidate_live_material_preview(file_path)
 
 
 def _ensure_material_file_path(panel, native_mat) -> str:

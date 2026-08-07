@@ -31,10 +31,6 @@ class ToolbarPanel : public EditorPanel
 
     // ── Callbacks set from Python ────────────────────────────────────
 
-    /// Unified command entry used by toolbar buttons.
-    std::function<bool(const std::string &, const std::string &, const std::string &)> executeCommand;
-    std::function<bool(const std::string &, const std::string &)> canExecuteCommand;
-
     /// Query current play state.
     std::function<PlayState()> getPlayState;
 
@@ -43,9 +39,6 @@ class ToolbarPanel : public EditorPanel
 
     /// Query show-grid state.
     std::function<bool()> isShowGrid;
-
-    /// Set show-grid state.
-    std::function<void(bool)> setShowGrid;
 
     // ── Camera settings ──────────────────────────────────────────────
 
@@ -72,6 +65,11 @@ class ToolbarPanel : public EditorPanel
 
     /// Callback to apply camera to engine (Python sets this).
     std::function<void(const CameraSettings &)> applyCameraToEngine;
+
+    /// Continuous-edit boundaries used to publish one global View Command per
+    /// camera widget gesture while keeping the live preview responsive.
+    std::function<void(const std::string &, const CameraSettings &)> beginCameraEdit;
+    std::function<void(const std::string &, const CameraSettings &)> endCameraEdit;
 
     // ── i18n callback ────────────────────────────────────────────────
 

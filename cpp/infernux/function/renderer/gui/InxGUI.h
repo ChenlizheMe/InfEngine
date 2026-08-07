@@ -40,6 +40,14 @@ class InxGUI
     void BuildFrame();
     [[nodiscard]] bool BuildFrameIfDue(bool force = false);
     void RequestFrame() noexcept;
+    [[nodiscard]] uint64_t GetFrameCounter() const noexcept
+    {
+        return m_guiFrameCounter;
+    }
+    [[nodiscard]] EditorGuiFrameScheduler::Snapshot GetFrameSchedulerSnapshot() const noexcept
+    {
+        return m_editorFrameScheduler.Inspect();
+    }
 
     void RecordCommand(VkCommandBuffer cmdBuf);
     void Shutdown();
@@ -67,7 +75,7 @@ class InxGUI
 
     void Register(const std::string &name, std::shared_ptr<InxGUIRenderable> renderable, int priority = 0);
     void Unregister(const std::string &name);
-    void QueueDockTabSelection(const std::string &windowId);
+    void QueueDockTabSelection(const std::string &windowId, bool allowDuringModal = false);
 
     /// @brief Submit texture data for asynchronous GPU upload.
     /// @param name Unique identifier for the texture
@@ -181,7 +189,12 @@ class InxGUI
     std::unordered_map<std::string, std::shared_ptr<InxGUIRenderable>> m_renderables_umap;
     std::vector<std::string> m_renderableOrder;
     std::unordered_map<std::string, int> m_renderablePriorities;
-    std::vector<std::string> m_pendingDockTabSelections;
+    struct PendingDockTabSelection
+    {
+        std::string windowId;
+        bool allowDuringModal = false;
+    };
+    std::vector<PendingDockTabSelection> m_pendingDockTabSelections;
     std::unordered_map<std::string, double> m_lastPanelTimesMs;
     std::unordered_map<std::string, std::unordered_map<std::string, double>> m_lastPanelSubTimesMs;
     std::unordered_map<std::string, ImGuiTextureResource> m_textures_umap;

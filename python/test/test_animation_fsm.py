@@ -321,9 +321,16 @@ class TestAnimationSerialization:
         assert tr2.target_state == "Run"
 
     def test_clip2d_events_round_trip(self):
-        from Infernux.core.animation_clip import AnimationClip
+        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
         from Infernux.core.animation_event import AnimationEvent
-        clip = AnimationClip(name="walk", frame_indices=[0, 1, 2], fps=12.0)
+        clip = AnimationClip(
+            name="walk",
+            frames=[
+                AnimationFrame(sprite_frame_id=f"{index + 1:032x}")
+                for index in (0, 1, 2)
+            ],
+            fps=12.0,
+        )
         clip.events = [AnimationEvent(0.5, "footstep", "L", 1.0)]
         clip2 = AnimationClip.from_dict(clip.to_dict())
         assert len(clip2.events) == 1
@@ -338,6 +345,309 @@ class TestAnimationSerialization:
         clip2 = AnimationClip3D.from_dict(clip.to_dict())
         assert len(clip2.events) == 1
         assert clip2.events[0].number_arg == 3.0
+
+
+def _write_texture_asset_metadata(
+    texture_path,
+    *,
+    guid: str,
+    texture_type,
+    sprite_frame_ids=(),
+):
+    import json
+
+    from Infernux.core.asset_types import SpriteFrame, TextureImportSettings
+
+    texture_path.parent.mkdir(parents=True, exist_ok=True)
+    texture_path.write_bytes(b"test texture")
+    settings = TextureImportSettings(
+        texture_type=texture_type,
+        sprite_frames=[
+            SpriteFrame(stable_id=stable_id, name=f"frame_{index}", w=16, h=16)
+            for index, stable_id in enumerate(sprite_frame_ids)
+        ],
+    )
+
+    def tagged(value):
+        if type(value) is bool:
+            tag = "bool"
+        elif type(value) is int:
+            tag = "int"
+        elif type(value) is list:
+            tag = "json_array"
+        else:
+            tag = "string"
+        return {"type": tag, "value": value}
+
+    metadata = {"guid": tagged(guid)}
+    metadata.update({key: tagged(value) for key, value in settings.to_dict().items()})
+    texture_path.with_name(texture_path.name + ".meta").write_text(
+        json.dumps({"metadata": metadata}, indent=2),
+        encoding="utf-8",
+    )
+
+
+class TestAnimationClipSpriteFrameReferences:
+    FRAME_A = "1" * 32
+    FRAME_B = "2" * 32
+    TEXTURE_GUID = "a" * 32
+
+    def test_valid_sprite_frame_references_resolve_project_relative_path(self, tmp_path):
+        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
+        from Infernux.core.asset_types import TextureType
+
+        project = tmp_path / "project"
+        texture = project / "Assets" / "Sprites" / "sheet.png"
+        _write_texture_asset_metadata(
+            texture,
+            guid=self.TEXTURE_GUID,
+            texture_type=TextureType.SPRITE,
+            sprite_frame_ids=(self.FRAME_A, self.FRAME_B),
+        )
+        clip = AnimationClip(
+            authoring_texture_path="Assets/Sprites/sheet.png",
+            frames=[AnimationFrame(sprite_frame_id=self.FRAME_B)],
+        )
+
+        resolved = clip.validate_sprite_frame_references(project_root=str(project))
+
+        assert resolved == str(texture)
+
+    def test_missing_sprite_frame_reference_is_rejected(self, tmp_path):
+        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
+        from Infernux.core.asset_types import TextureType
+
+        texture = tmp_path / "sheet.png"
+        _write_texture_asset_metadata(
+            texture,
+            guid=self.TEXTURE_GUID,
+            texture_type=TextureType.SPRITE,
+            sprite_frame_ids=(self.FRAME_A,),
+        )
+        clip = AnimationClip(
+            authoring_texture_path=str(texture),
+            frames=[AnimationFrame(sprite_frame_id=self.FRAME_B)],
+        )
+
+        with pytest.raises(ValueError, match=self.FRAME_B):
+            clip.validate_sprite_frame_references()
+
+    def test_non_sprite_texture_is_rejected_before_frame_lookup(self, tmp_path):
+        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
+        from Infernux.core.asset_types import TextureType
+
+        texture = tmp_path / "albedo.png"
+        _write_texture_asset_metadata(
+            texture,
+            guid=self.TEXTURE_GUID,
+            texture_type=TextureType.DEFAULT,
+        )
+        clip = AnimationClip(
+            authoring_texture_path=str(texture),
+            frames=[AnimationFrame(sprite_frame_id=self.FRAME_A)],
+        )
+
+        with pytest.raises(ValueError, match="not imported as Sprite"):
+            clip.validate_sprite_frame_references()
+
+    def test_path_and_guid_survive_file_round_trip_and_guid_resolves_moved_texture(
+        self, tmp_path
+    ):
+        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
+        from Infernux.core.asset_types import TextureType
+
+        project = tmp_path / "project"
+        texture = project / "Assets" / "Sprites" / "sheet.png"
+        clip_path = project / "Assets" / "Animations" / "walk.animclip2d"
+        clip_path.parent.mkdir(parents=True)
+        _write_texture_asset_metadata(
+            texture,
+            guid=self.TEXTURE_GUID,
+            texture_type=TextureType.SPRITE,
+            sprite_frame_ids=(self.FRAME_A,),
+        )
+        clip = AnimationClip(
+            name="walk",
+            authoring_texture_guid=self.TEXTURE_GUID,
+            authoring_texture_path="Assets/Sprites/sheet.png",
+            frames=[AnimationFrame(sprite_frame_id=self.FRAME_A)],
+        )
+        assert clip.save(str(clip_path)) is True
+
+        loaded = AnimationClip.load(str(clip_path))
+
+        assert loaded is not None
+        assert loaded.authoring_texture_guid == self.TEXTURE_GUID
+        assert loaded.authoring_texture_path == "Assets/Sprites/sheet.png"
+        loaded.authoring_texture_path = "Assets/Sprites/stale-path.png"
+        assert loaded.validate_sprite_frame_references(
+            project_root=str(project),
+            guid_paths={self.TEXTURE_GUID: str(texture)},
+        ) == str(texture)
+
+
+class TestSpiritAnimatorAssetReload:
+    @staticmethod
+    def _clip(frame_count: int, fps: float):
+        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
+
+        return AnimationClip(
+            frames=[
+                AnimationFrame(sprite_frame_id=f"{index + 1:032x}")
+                for index in range(frame_count)
+            ],
+            fps=fps,
+        )
+
+    def test_clip_hot_reload_preserves_state_progress_and_playback(self, tmp_path):
+        import json
+
+        path = tmp_path / "walk.animclip2d"
+        old_clip = self._clip(4, 4.0)
+        path.write_text(json.dumps(old_clip.to_dict()), encoding="utf-8")
+
+        state = AnimState(name="Walk", clip_path=str(path))
+        animator = SpiritAnimator()
+        animator._fsm = AnimStateMachine(
+            states=[state],
+            default_state="Walk",
+        )
+        animator._clip_cache = {"Walk": old_clip}
+        animator._current_state_name = "Walk"
+        animator._current_clip = old_clip
+        animator._elapsed = old_clip.duration * 0.5
+        animator._playing = True
+        animator._parameters = {"speed": 3.0}
+
+        class Renderer:
+            frame_id = ""
+            sync_count = 0
+
+            def sync_visual(self):
+                self.sync_count += 1
+
+        renderer = Renderer()
+        animator._sprite_renderer = renderer
+
+        replacement = self._clip(8, 8.0)
+        path.write_text(json.dumps(replacement.to_dict()), encoding="utf-8")
+        from Infernux.engine.interaction import AssetMutation, AssetMutationKind
+
+        animator._on_asset_changed(
+            AssetMutation(AssetMutationKind.MODIFIED, f"{path}.meta")
+        )
+
+        assert animator._current_state_name == "Walk"
+        assert animator._current_clip is animator._clip_cache["Walk"]
+        assert animator._current_clip.frame_count == 8
+        assert animator.normalized_time == pytest.approx(0.5)
+        assert animator._playing is True
+        assert animator._parameters == {"speed": 3.0}
+        assert renderer.frame_id == replacement.frames[4].sprite_frame_id
+        assert renderer.sync_count == 1
+
+    def test_invalid_clip_hot_reload_keeps_previous_runtime_clip(self, tmp_path):
+        import json
+
+        path = tmp_path / "walk.animclip2d"
+        clip = self._clip(2, 2.0)
+        path.write_text(json.dumps(clip.to_dict()), encoding="utf-8")
+        state = AnimState(name="Walk", clip_path=str(path))
+        animator = SpiritAnimator()
+        animator._fsm = AnimStateMachine(states=[state], default_state="Walk")
+        animator._clip_cache = {"Walk": clip}
+        animator._current_state_name = "Walk"
+        animator._current_clip = clip
+        animator._elapsed = 0.25
+        animator._playing = True
+        animator._sprite_renderer = None
+
+        path.write_text("not json", encoding="utf-8")
+        from Infernux.engine.interaction import AssetMutation, AssetMutationKind
+
+        animator._on_asset_changed(
+            AssetMutation(AssetMutationKind.MODIFIED, str(path))
+        )
+
+        assert animator._current_clip is clip
+        assert animator._clip_cache["Walk"] is clip
+        assert animator._elapsed == pytest.approx(0.25)
+        assert animator._playing is True
+
+    def test_controller_hot_reload_preserves_timeline_progress_without_clip_parse(
+        self, tmp_path, monkeypatch
+    ):
+        from Infernux.core.animation_timeline import AnimationTimeline
+        from Infernux.core.animation_clip import AnimationClip
+
+        controller_path = tmp_path / "controller.animfsm"
+        timeline_path = tmp_path / "motion.animtimeline"
+        timeline = AnimationTimeline(name="motion", duration=4.0)
+        assert timeline.save(str(timeline_path)) is True
+        state = AnimState(
+            name="Timeline",
+            kind="timeline",
+            timeline_path=str(timeline_path),
+        )
+        current_fsm = AnimStateMachine(
+            name="controller",
+            mode="2d",
+            states=[state],
+            default_state="Timeline",
+        )
+        current_fsm.file_path = str(controller_path)
+
+        animator = SpiritAnimator()
+        animator._fsm = current_fsm
+        animator._current_state_name = "Timeline"
+        animator._current_timeline = timeline
+        animator._current_clip = None
+        animator._timeline_cache = {"Timeline": timeline}
+        animator._clip_cache = {}
+        animator._elapsed = 2.0
+        animator._playing = True
+        animator._parameters = {}
+
+        replacement_timeline = AnimationTimeline(name="motion", duration=8.0)
+        assert replacement_timeline.save(str(timeline_path)) is True
+        replacement_fsm = AnimStateMachine(
+            name="controller",
+            mode="2d",
+            states=[
+                AnimState(
+                    name="Timeline",
+                    kind="timeline",
+                    timeline_path=str(timeline_path),
+                )
+            ],
+            default_state="Timeline",
+        )
+        assert replacement_fsm.save(str(controller_path)) is True
+
+        def reject_clip_parse(_path):
+            raise AssertionError("controller/timeline hot reload must not parse a 2D clip")
+
+        monkeypatch.setattr(AnimationClip, "load", reject_clip_parse)
+        applied = []
+        monkeypatch.setattr(
+            animator,
+            "_apply_timeline",
+            lambda value, elapsed: applied.append((value, elapsed)),
+        )
+
+        from Infernux.engine.interaction import AssetMutation, AssetMutationKind
+
+        animator._on_asset_changed(
+            AssetMutation(AssetMutationKind.MODIFIED, str(controller_path))
+        )
+
+        assert animator.current_state == "Timeline"
+        assert animator._current_clip is None
+        assert animator._current_timeline is not None
+        assert animator._current_timeline.duration == pytest.approx(8.0)
+        assert animator.normalized_time == pytest.approx(0.5)
+        assert animator.is_playing is True
+        assert applied == [(animator._current_timeline, pytest.approx(4.0))]
 
 
 class TestBlendStateModel:

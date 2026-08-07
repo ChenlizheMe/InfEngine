@@ -1,3 +1,6 @@
+import pytest
+from types import SimpleNamespace
+
 from Infernux.engine.ui.inspector_declarative import (
     InspectorChoice,
     InspectorList,
@@ -13,6 +16,39 @@ from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
 from Infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
 from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
 from Infernux.renderstack.render_stack import RenderStack
+
+
+@pytest.fixture(autouse=True)
+def action_journal():
+    from Infernux.engine.interaction import (
+        EditorCommandRegistry,
+        EditorInteractionCore,
+        FocusService,
+        RenderStackCommandService,
+        SelectionService,
+    )
+    from Infernux.engine.undo import UndoManager
+
+    previous = UndoManager.instance()
+    previous_service = RenderStackCommandService.instance()
+    previous_core = EditorInteractionCore._instance
+    previous_registry = EditorCommandRegistry._instance
+    manager = UndoManager()
+    service = RenderStackCommandService()
+    registry = EditorCommandRegistry(
+        focus=FocusService(),
+        selection=SelectionService(),
+    )
+    service.register_commands(registry)
+    EditorInteractionCore._instance = SimpleNamespace(commands=registry)
+    try:
+        yield manager
+    finally:
+        service.shutdown()
+        EditorCommandRegistry._instance = previous_registry
+        EditorInteractionCore._instance = previous_core
+        RenderStackCommandService._instance = previous_service
+        UndoManager._instance = previous
 
 
 def _topology_controls(model):
@@ -210,7 +246,7 @@ def test_forward_motion_targets_follow_every_supported_msaa_value():
     assert len(revisions) == len(MSAASamples)
 
 
-def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state():
+def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state(action_journal):
     from Infernux.renderstack.default_forward_pipeline import MSAASamples
 
     stack = RenderStack()
@@ -224,8 +260,7 @@ def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state():
 
     old_value = pipeline.msaa_samples
     stack._graph_desc = object()
-    pipeline.msaa_samples = MSAASamples.X2
-    control.on_change(pipeline, "msaa_samples", old_value, pipeline.msaa_samples)
+    control.on_change(pipeline, "msaa_samples", old_value, MSAASamples.X2)
 
     assert '"msaa_samples": {"__enum_name__": "X2"}' in stack.pipeline_params_json
     assert stack._graph_desc is None
@@ -233,11 +268,50 @@ def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state():
 
     stack._graph_desc = object()
     old_value = pipeline.msaa_samples
-    pipeline.msaa_samples = MSAASamples.X8
-    control.on_change(pipeline, "msaa_samples", old_value, pipeline.msaa_samples)
+    control.on_change(pipeline, "msaa_samples", old_value, MSAASamples.X8)
 
     assert stack._graph_desc is None
     assert stack.build_graph().msaa_samples == 8
+
+
+def test_pipeline_parameter_undo_keeps_serialized_document_and_rebuild_in_sync():
+    from Infernux.engine.undo import UndoManager
+    from Infernux.renderstack.default_forward_pipeline import MSAASamples
+
+    previous_manager = UndoManager.instance()
+    manager = UndoManager()
+    stack = RenderStack()
+    model = build_renderstack_inspector_model(stack)
+    control = next(
+        item
+        for item in model.sections[0].controls
+        if isinstance(item, InspectorSerializedTarget)
+    )
+    pipeline = control.target()
+
+    try:
+        old_value = pipeline.msaa_samples
+        pipeline.msaa_samples = MSAASamples.X8
+        control.on_change(pipeline, "msaa_samples", old_value, pipeline.msaa_samples)
+        assert stack.build_graph().msaa_samples == 8
+
+        manager.undo()
+        assert '"msaa_samples": {"__enum_name__": "X4"}' in stack.pipeline_params_json
+
+        # Recreate the runtime projection from the serialized parameter
+        # document. A stale mirror used to restore X8 at this point.
+        stack._pipeline = None
+        stack.invalidate_graph()
+        assert stack.build_graph().msaa_samples == 4
+
+        manager.redo()
+        assert '"msaa_samples": {"__enum_name__": "X8"}' in stack.pipeline_params_json
+        stack._pipeline = None
+        stack.invalidate_graph()
+        assert stack.build_graph().msaa_samples == 8
+    finally:
+        manager.clear()
+        UndoManager._instance = previous_manager
 
 
 def test_renderstack_inspector_exposes_only_effect_mount_points_with_inline_slots():
@@ -290,7 +364,7 @@ def test_default_pipeline_ui_and_effect_tail_has_canonical_order():
     )
 
 
-def test_switching_pipeline_rebuilds_stage_model_without_stale_stage_access():
+def test_switching_pipeline_rebuilds_stage_model_without_stale_stage_access(action_journal):
     stack = RenderStack()
     forward_model = build_renderstack_inspector_model(stack)
     choice = forward_model.sections[0].controls[0]
@@ -414,3 +488,79 @@ def test_declarative_lists_scope_nested_widget_ids_by_control_key(monkeypatch):
         ("stage_after_opaque",),
         ("stage_final",),
     ]
+
+
+def test_renderstack_effect_slots_use_shared_command_service(action_journal):
+    from Infernux.engine.interaction import ActionOrigin, RenderStackCommandService
+    from Infernux.renderstack.effect_slot import EffectSlot
+
+    stack = RenderStack()
+    stage_id = stack.effect_stages[0].stable_id
+    service = RenderStackCommandService.instance()
+    assert service is not None
+
+    assert service.set_effect_stage_slots(
+        stack,
+        stage_id,
+        [EffectSlot(stage_id=stage_id, enabled=False)],
+        origin=ActionOrigin.AUTOMATION,
+    )
+    assert len(stack.get_effect_stage_slots(stage_id)) == 1
+    assert not stack.get_effect_stage_slots(stage_id)[0].enabled
+    assert action_journal.action_journal.applied_entries()[-1].origin is ActionOrigin.AUTOMATION
+
+    action_journal.undo()
+    assert stack.get_effect_stage_slots(stage_id) == ()
+
+
+def test_renderstack_inspector_stage_list_uses_global_command_registry(action_journal):
+    from Infernux.renderstack.effect_slot import EffectSlot
+
+    stack = RenderStack()
+    control = next(
+        item
+        for item in _topology_controls(build_renderstack_inspector_model(stack))
+        if isinstance(item, InspectorList)
+    )
+    stage_id = control.key.removeprefix("stage_")
+    slots = [EffectSlot(stage_id=stage_id, enabled=False)]
+
+    assert control.target is stack
+    assert control.on_change is not None
+    control.on_change(stack, control.field_name, [], slots)
+
+    assert len(stack.get_effect_stage_slots(stage_id)) == 1
+    assert not stack.get_effect_stage_slots(stage_id)[0].enabled
+    assert not hasattr(stack, "_inspector_effect_stage_adapters")
+
+    action_journal.undo()
+    assert stack.get_effect_stage_slots(stage_id) == ()
+
+
+def test_renderstack_mcp_mutations_do_not_write_stack_or_scene_dirty_directly():
+    import os
+
+    source_path = os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "Infernux",
+        "mcp",
+        "tools",
+        "renderstack.py",
+    )
+    with open(source_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+
+    mutation_slice = source[
+        source.index('    @mcp.tool(name="renderstack_set_pipeline")') :
+        source.index("def _find_stack")
+    ]
+    assert "_mark_scene_dirty" not in mutation_slice
+    assert "stack.set_pipeline(" not in mutation_slice
+    assert "stack.set_effect_stage_slots(" not in mutation_slice
+    assert "stack.add_effect_slot(" not in mutation_slice
+    assert "RenderStackCommandService" not in mutation_slice
+    assert "submit_renderstack_command" in mutation_slice
+    assert '"renderstack.set_pipeline"' in mutation_slice
+    assert '"renderstack.set_parameter"' in mutation_slice
+    assert '"renderstack.set_effect_slots"' in mutation_slice

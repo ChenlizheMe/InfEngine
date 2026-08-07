@@ -3,6 +3,7 @@
 #include "Component.h"
 #include <cstdint>
 #include <pybind11/pybind11.h>
+#include <optional>
 #include <string>
 
 namespace py = pybind11;
@@ -28,6 +29,27 @@ struct CollisionInfo;
 class PyComponentProxy : public Component
 {
   public:
+    /**
+     * Keep the interpreter lock across one native lifecycle phase.
+     *
+     * Scene traversal remains native and ordered; this scope only removes
+     * repeated lock transitions at each Python component boundary. It is
+     * intentionally a small RAII helper so native tests can run without an
+     * initialized interpreter.
+     */
+    class PythonLifecyclePhaseScope
+    {
+      public:
+        PythonLifecyclePhaseScope();
+        ~PythonLifecyclePhaseScope();
+
+        PythonLifecyclePhaseScope(const PythonLifecyclePhaseScope &) = delete;
+        PythonLifecyclePhaseScope &operator=(const PythonLifecyclePhaseScope &) = delete;
+
+      private:
+        std::optional<py::gil_scoped_acquire> m_acquire;
+    };
+
     /**
      * @brief Construct a proxy for a Python component.
      * @param pyComponent The Python InxComponent instance
@@ -193,10 +215,27 @@ class PyComponentProxy : public Component
   private:
     void BindPythonMirror();
     void SyncPythonMirror() const;
+    void RefreshPythonLifecycleDispatchPlan();
     void RefreshCoroutineSchedulerFlag();
     void RefreshConstraintTypeId();
 
     py::object m_pyComponent;
+    // Bound framework entry points are immutable for the lifetime of this
+    // proxy. User method hot reload replaces the Python mirror and therefore
+    // calls RefreshPythonLifecycleDispatchPlan() on the new binding.
+    py::object m_callAwake;
+    py::object m_callStart;
+    py::object m_callUpdate;
+    py::object m_callFixedUpdate;
+    py::object m_callLateUpdate;
+    py::object m_callDisabledUpdate;
+    py::object m_callDisabledFixedUpdate;
+    py::object m_callDisabledLateUpdate;
+    py::object m_callOnEnable;
+    py::object m_callOnDisable;
+    py::object m_callOnDestroy;
+    py::object m_callOnValidate;
+    py::object m_callReset;
     std::string m_typeName;
     std::string m_typeGuid;   // Stable type GUID (hash of module.classname)
     std::string m_scriptGuid; // Stable GUID for the script asset

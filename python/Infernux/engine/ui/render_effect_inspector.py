@@ -25,7 +25,13 @@ def _inspector_parameter_instance(effect, feature):
     return instance
 
 
-def apply_render_effect_parameter_edit(effect, field_name: str, value) -> bool:
+def apply_render_effect_parameter_edit(
+    effect,
+    field_name: str,
+    value,
+    *,
+    resource_controller=None,
+) -> bool:
     """Apply one typed parameter edit to the shared asset with Undo support."""
     from Infernux.renderstack.render_effect_compiler import get_render_effect_feature
 
@@ -45,25 +51,28 @@ def apply_render_effect_parameter_edit(effect, field_name: str, value) -> bool:
     new_document = copy.deepcopy(old_document)
     new_document["parameters"][field_name] = instance.get_params_dict()[field_name]
 
-    from Infernux.engine.undo import ResourceDocumentCommand, UndoManager
+    if resource_controller is not None:
+        return bool(
+            resource_controller.apply_document(
+                new_document,
+                view_id="inspector",
+                edit_key=field_name,
+                description=f"Set RenderEffect {pretty_field_name(field_name)}",
+            )
+        )
 
-    command = ResourceDocumentCommand(
-        effect,
-        old_document,
-        new_document,
-        f"Set RenderEffect {pretty_field_name(field_name)}",
-        publish_callback=lambda _resource: None,
-        edit_key=field_name,
-    )
-    manager = UndoManager.instance()
-    if manager is not None and manager.enabled and not manager.is_executing:
-        manager.execute(command)
-    else:
-        command.execute()
-    return True
+    # Inspector mutations must always belong to a formal resource Document.
+    # Runtime scripts may still use RenderEffect.set_* directly.
+    return False
 
 
-def render_render_effect_parameters(ctx, effect, *, widget_prefix: str = "effect") -> bool:
+def render_render_effect_parameters(
+    ctx,
+    effect,
+    *,
+    widget_prefix: str = "effect",
+    resource_controller=None,
+) -> bool:
     """Render and edit parameters from the feature's serialized schema."""
     from Infernux.renderstack.render_effect_compiler import get_render_effect_feature
 
@@ -93,7 +102,12 @@ def render_render_effect_parameters(ctx, effect, *, widget_prefix: str = "effect
         # unchanged field on every Inspector frame.
         if (
             has_field_changed(metadata.field_type, current_value, new_value)
-            and apply_render_effect_parameter_edit(effect, field_name, new_value)
+            and apply_render_effect_parameter_edit(
+                effect,
+                field_name,
+                new_value,
+                resource_controller=resource_controller,
+            )
         ):
             changed = True
         if metadata.tooltip and ctx.is_item_hovered():

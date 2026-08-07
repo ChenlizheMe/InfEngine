@@ -40,12 +40,14 @@ class Engine:
     def register_gui(
         self, name: str, gui_object: InxGUIRenderable, *, priority: int = ...
     ) -> None:
-        """Register an ImGui renderable panel by name and presentation priority."""
+        """Register a passive ImGui renderable by name and presentation priority."""
         ...
     def unregister_gui(self, name: str) -> None:
         """Unregister an ImGui renderable panel."""
         ...
-    def select_docked_window(self, window_id: str) -> None:
+    def select_docked_window(
+        self, window_id: str, allow_during_modal: bool = False
+    ) -> None:
         """Select and focus a docked window by its stable ``window_id``."""
         ...
     def reset_imgui_layout(self) -> None:

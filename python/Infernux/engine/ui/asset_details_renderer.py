@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import uuid
 import wave
 import zlib
 from dataclasses import dataclass, field
@@ -144,6 +145,160 @@ def _meta_host_path_for_virtual_asset(file_path: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+class _ImportSettingsController:
+    """Own one GUID/path-stable import-settings draft document."""
+
+    def __init__(self, category: str, file_path: str, settings: Any) -> None:
+        self.category = str(category)
+        self.file_path = str(file_path)
+        self.settings = copy.deepcopy(settings)
+        self.disk_settings = copy.deepcopy(settings)
+        self.exec_layer = None
+        self.document_id = ""
+        self.state: Optional[_State] = None
+
+    def bind(self, *, file_path: str, exec_layer: Any, state: "_State") -> None:
+        self.file_path = str(file_path)
+        self.exec_layer = exec_layer
+        self.state = state
+        if self.exec_layer is not None:
+            self.exec_layer.refresh_binding(self.category, self.file_path)
+
+    def refresh_clean_source(self, settings: Any) -> None:
+        """Accept an external reload only while no local draft is pending."""
+        from Infernux.engine.interaction import DocumentRegistry
+
+        document = DocumentRegistry.instance().get(self.document_id)
+        if document is not None and document.is_dirty:
+            return
+        if settings == self.settings and settings == self.disk_settings:
+            return
+        self.settings = copy.deepcopy(settings)
+        self.disk_settings = copy.deepcopy(settings)
+
+    def restore_draft(self, settings: Any) -> None:
+        """Restore only the draft model; the document service owns revisions."""
+        self.settings = copy.deepcopy(settings)
+        if self.state is not None and self.state.import_controller is self:
+            self.state.settings = self.settings
+            self.state.disk_settings = self.disk_settings
+
+    def apply_mutation(
+        self,
+        mutator: Callable[[Any], None],
+        *,
+        view_id: str,
+        edit_key: str,
+        description: str,
+        selection_after: Optional[Callable[[Any, Any, Any], Any]] = None,
+    ) -> bool:
+        """Commit one import draft mutation through its document authority."""
+        from Infernux.engine.interaction import AuthoringMutationService
+        from Infernux.engine.undo import ImportSettingsDraftCommand
+
+        old_settings = copy.deepcopy(self.settings)
+        new_settings = copy.deepcopy(self.settings)
+        mutator(new_settings)
+        if new_settings == old_settings:
+            return False
+        before_selection = None
+        after_selection = None
+        if selection_after is not None:
+            if not callable(selection_after):
+                raise TypeError("import-settings selection projection must be callable")
+            from Infernux.engine.interaction import SelectionService
+
+            before_selection = SelectionService.instance().snapshot
+            after_selection = selection_after(
+                old_settings,
+                new_settings,
+                before_selection,
+            )
+        return AuthoringMutationService.require().execute_command(
+            self.document_id,
+            lambda _before_revision, _after_revision: ImportSettingsDraftCommand(
+                self,
+                old_settings,
+                new_settings,
+                edit_key=edit_key,
+                description=description,
+            ),
+            view_id=view_id,
+            before_selection=before_selection,
+            after_selection=after_selection,
+            require_edit_mode=False,
+        )
+
+    @staticmethod
+    def _content_document(settings: Any) -> dict:
+        serializer = getattr(settings, "to_dict", None)
+        if callable(serializer):
+            document = serializer()
+        elif isinstance(settings, dict):
+            document = settings
+        else:
+            raise TypeError("import settings must expose to_dict()")
+        if not isinstance(document, dict):
+            raise TypeError("import settings serialization must return an object")
+        return copy.deepcopy(document)
+
+    def save(self, *, ticket, save_as: bool = False):
+        del save_as
+        if self.exec_layer is None:
+            return False
+        from Infernux.engine.interaction import (
+            DocumentRegistry,
+            document_content_token,
+        )
+
+        registry = DocumentRegistry.instance()
+        registry.capture_save_revision(
+            ticket.ticket_id,
+            content_token=document_content_token(
+                self._content_document(self.settings)
+            ),
+        )
+        if not self.exec_layer.apply_import_settings(self.settings):
+            return False
+        self.disk_settings = copy.deepcopy(self.settings)
+        if self.state is not None and self.state.import_controller is self:
+            self.state.disk_settings = self.disk_settings
+        registry.complete_save(
+            ticket.ticket_id,
+            success=True,
+            content_token=document_content_token(
+                self._content_document(self.settings)
+            ),
+        )
+        return True
+
+    def discard(self, *, document_id: str):
+        from Infernux.engine.interaction import DocumentRegistry
+
+        if str(document_id) != self.document_id:
+            return False
+        self.settings = copy.deepcopy(self.disk_settings)
+        if self.state is not None and self.state.import_controller is self:
+            self.state.settings = self.settings
+            self.state.disk_settings = self.disk_settings
+        return True
+
+    def resource_moved(
+        self,
+        *,
+        document_id: str,
+        source_path: str,
+        destination_path: str,
+        guid: str,
+    ) -> None:
+        del source_path, guid
+        if str(document_id) != self.document_id:
+            return
+        self.file_path = str(destination_path)
+        if self.exec_layer is not None:
+            self.exec_layer.refresh_binding(self.category, self.file_path)
+
+
 class _State:
     """Per-asset inspector state (only one asset is inspected at a time)."""
 
@@ -156,6 +311,9 @@ class _State:
         self.meta: Optional[dict] = None
         self.settings: Any = None
         self.disk_settings: Any = None   # snapshot for dirty check (read-only)
+        self.document_id: str = ""
+        self.import_controller: Optional[_ImportSettingsController] = None
+        self.resource_controller = None
         self.exec_layer = None
         self.extra: dict = {}
 
@@ -169,6 +327,8 @@ class _State:
                 cat_def.refresh_fn(self)
             return True
         # Fresh load. Return live preview ownership before replacing state.
+        if self.resource_controller is not None:
+            self.resource_controller.flush_autosave(force=True)
         if self.file_path and self.category in {"texture", "material"}:
             from .asset_resource_preview import (
                 invalidate_live_material_preview,
@@ -196,12 +356,180 @@ class _State:
         return True
 
     def is_dirty(self) -> bool:
+        if self.document_id:
+            from Infernux.engine.interaction import DocumentRegistry
+
+            document = DocumentRegistry.instance().get(self.document_id)
+            if document is not None:
+                return document.is_dirty
         if self.disk_settings is None:
             return False
         return self.settings != self.disk_settings
 
 
 _state = _State()
+
+
+def _bind_import_settings_document(
+    state: _State,
+    cat_def: AssetCategoryDef,
+) -> None:
+    """Project one editable source asset into DocumentRegistry."""
+    from Infernux.engine.interaction import (
+        DocumentCapability,
+        DocumentKey,
+        DocumentKind,
+        DocumentRegistry,
+    )
+
+    registry = DocumentRegistry.instance()
+    if (
+        cat_def.access_mode is not AssetAccessMode.READ_ONLY_RESOURCE
+        or not cat_def.editable_fields
+        or state.settings is None
+    ):
+        registry.detach_view("inspector")
+        state.document_id = ""
+        state.import_controller = None
+        return
+
+    guid = str((state.meta or {}).get("guid", "") or "").strip()
+    key = (
+        DocumentKey.asset(DocumentKind.IMPORT_SETTINGS, guid)
+        if guid
+        else DocumentKey.resource(DocumentKind.IMPORT_SETTINGS, state.file_path)
+    )
+    title = f"{os.path.basename(state.file_path)} Import Settings"
+    existing = registry.get_by_key(key)
+    if existing is not None:
+        controller = existing.controller
+        if not isinstance(controller, _ImportSettingsController):
+            raise RuntimeError("import-settings document has an incompatible controller")
+        controller.refresh_clean_source(state.settings)
+        registry.update_metadata(
+            existing.document_id,
+            title=title,
+            resource_path=state.file_path,
+            capabilities=DocumentCapability.SAVE | DocumentCapability.DISCARD,
+            controller=controller,
+        )
+        document = existing
+    else:
+        controller = _ImportSettingsController(
+            state.category,
+            state.file_path,
+            state.settings,
+        )
+        document = registry.create(
+            DocumentKind.IMPORT_SETTINGS,
+            title,
+            key=key,
+            resource_path=state.file_path,
+            capabilities=DocumentCapability.SAVE | DocumentCapability.DISCARD,
+            controller=controller,
+        )
+        controller.document_id = document.document_id
+
+    controller.bind(file_path=state.file_path, exec_layer=state.exec_layer, state=state)
+    state.document_id = document.document_id
+    state.import_controller = controller
+    state.settings = controller.settings
+    state.disk_settings = controller.disk_settings
+    registry.attach_view(document.document_id, "inspector")
+
+
+def _bind_editable_resource_document(
+    state: _State,
+    cat_def: AssetCategoryDef,
+) -> None:
+    """Bind supported directly editable assets to one stable document."""
+    from Infernux.engine.interaction import (
+        DocumentKind,
+        ensure_editable_resource_document,
+    )
+
+    kind_by_category = {
+        "material": DocumentKind.MATERIAL,
+        "physic_material": DocumentKind.PHYSIC_MATERIAL,
+        "render_effect": DocumentKind.RENDER_EFFECT,
+        "animclip": DocumentKind.ANIMATION_CLIP,
+        "animclip3d": DocumentKind.ANIMATION_CLIP,
+    }
+    document_kind = kind_by_category.get(state.category)
+    if (
+        cat_def.access_mode is AssetAccessMode.READ_WRITE_RESOURCE
+        and document_kind is None
+    ):
+        raise RuntimeError(
+            f"read-write asset category '{state.category}' has no document contract"
+        )
+    if (
+        cat_def.access_mode is not AssetAccessMode.READ_WRITE_RESOURCE
+        or state.settings is None
+        or (
+            state.category == "animclip3d"
+            and bool(state.extra.get("embedded_model_take"))
+        )
+        or not callable(getattr(state.settings, "serialize_document", None))
+        or not callable(getattr(state.settings, "deserialize_document", None))
+    ):
+        return
+
+    resource = state.settings
+    controller_state = state
+    on_restored = None
+    if state.category == "material":
+        resource = state.extra.get("native_mat")
+        controller_state = None
+        from .inspector_material import notify_material_document_restored
+
+        on_restored = notify_material_document_restored
+
+    controller = ensure_editable_resource_document(
+        category=state.category,
+        document_kind=document_kind,
+        file_path=state.file_path,
+        resource=resource,
+        guid=str((state.meta or {}).get("guid", "") or ""),
+        title=os.path.basename(state.file_path),
+        view_id="inspector",
+        exec_layer=state.exec_layer,
+        state=controller_state,
+        autosave_debounce_sec=cat_def.autosave_debounce,
+        on_restored=on_restored,
+    )
+    state.document_id = controller.document_id
+    state.resource_controller = controller
+    if state.category != "material":
+        state.settings = controller.resource
+
+
+def _apply_editable_resource_document(
+    state: _State,
+    document: dict,
+    *,
+    edit_key: str,
+    description: str,
+) -> bool:
+    controller = state.resource_controller
+    if controller is None or not state.document_id:
+        raise RuntimeError(
+            f"{state.category} edit requires an editable resource document"
+        )
+    return bool(
+        controller.apply_document(
+            document,
+            view_id="inspector",
+            edit_key=edit_key,
+            description=description,
+        )
+    )
+
+
+def _bind_asset_document(state: _State, cat_def: AssetCategoryDef) -> None:
+    _bind_import_settings_document(state, cat_def)
+    if not state.document_id:
+        _bind_editable_resource_document(state, cat_def)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -361,7 +689,7 @@ def _ensure_categories():
     # ── Prefab ─────────────────────────────────────────────────────────
     _categories["prefab"] = AssetCategoryDef(
         display_name="asset.display_prefab",
-        access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
+        access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
         load_fn=_load_prefab,
         custom_header_fn=_render_prefab_preview,
         custom_body_fn=_render_prefab_body,
@@ -389,7 +717,7 @@ def _ensure_categories():
     # ── Animation State Machine ────────────────────────────────────────
     _categories["animfsm"] = AssetCategoryDef(
         display_name="asset.display_animfsm",
-        access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
+        access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
         load_fn=_load_animfsm,
         custom_body_fn=_render_animfsm_body,
         autosave_debounce=0.5,
@@ -530,29 +858,16 @@ def _apply_physic_material_edit(state: _State, field_name: str, value) -> bool:
         return False
     new_document = dict(old_document)
     new_document[field_name] = value
-    execution_layer = state.exec_layer
-
-    def publish(resource):
-        if execution_layer is not None:
-            execution_layer.schedule_rw_save(resource)
-        else:
-            resource.save()
-
-    from Infernux.engine.undo import ResourceDocumentCommand, UndoManager
-    manager = UndoManager.instance()
-    command = ResourceDocumentCommand(
-        material,
-        old_document,
+    controller = getattr(state, "resource_controller", None)
+    document_id = str(getattr(state, "document_id", "") or "")
+    if controller is None or not document_id:
+        return False
+    return controller.apply_document(
         new_document,
-        f"Set PhysicMaterial {field_name}",
-        publish_callback=publish,
+        view_id="inspector",
         edit_key=field_name,
+        description=f"Set PhysicMaterial {field_name}",
     )
-    if manager is not None and manager.enabled and not manager.is_executing:
-        manager.execute(command)
-    else:
-        command.execute()
-    return True
 
 
 def _render_physic_material_body(ctx: InxGUIContext, panel, state: _State):
@@ -643,10 +958,11 @@ def _render_prefab_body(ctx: InxGUIContext, panel, state: _State):
         return
 
     def _open_prefab_mode():
-        from Infernux.engine.scene_manager import SceneFileManager
-        sfm = SceneFileManager.instance()
-        if sfm and hasattr(sfm, "open_prefab_mode_with_undo"):
-            sfm.open_prefab_mode_with_undo(state.extra["prefab_path"])
+        from Infernux.engine.interaction import EditorInteractionCore
+
+        interaction = EditorInteractionCore.instance()
+        if interaction is not None:
+            interaction.prefabs.open(path=state.extra["prefab_path"])
 
     ctx.dummy(0, 4)
     ctx.push_style_color(ImGuiCol.Button, *Theme.PREFAB_BTN_NORMAL)
@@ -764,7 +1080,7 @@ def _load_animclip(path: str):
 def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
     from Infernux.core.animation_clip import AnimationClip
     from .inspector_utils import render_compact_section_header, render_info_text
-    from .inspector_components import render_object_field
+    from .inspector_components import render_asset_reference_field
 
     clip: AnimationClip = state.settings
     if not isinstance(clip, AnimationClip):
@@ -801,9 +1117,23 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
         display = "None (Texture)"
 
     field_label(ctx, t("asset.animclip_texture"), lw)
-    ctx.begin_disabled(True)
-    render_object_field(ctx, "##animclip_texture", display, "Texture")
-    ctx.end_disabled()
+    render_asset_reference_field(
+        ctx,
+        "##animclip_texture",
+        display,
+        "Texture",
+        asset_type="Texture",
+        ping_path=authoring_path or None,
+        has_value=bool(
+            clip.authoring_texture_guid or clip.authoring_texture_path
+        ),
+        reference_value={
+            "asset_type": "Texture",
+            "guid": str(clip.authoring_texture_guid or ""),
+            "path_hint": str(authoring_path or clip.authoring_texture_path or ""),
+        },
+        read_only=True,
+    )
 
     # ── Preview texture override (drag-droppable) ──────────────
     preview_override = state.extra.get("_animclip_preview_override_path", "")
@@ -812,35 +1142,63 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
     else:
         pv_display = "None (use authoring)"
 
-    field_label(ctx, t("asset.animclip_preview_texture"), lw)
-    render_object_field(ctx, "##animclip_pv_tex", pv_display, "Texture")
-
-    # Accept TEXTURE_FILE drop for preview override
-    from .igui import IGUI
     def _on_preview_texture_drop(payload):
-        tex_path = str(payload) if payload else ""
+        if isinstance(payload, dict):
+            tex_path = str(
+                payload.get("path_hint") or payload.get("path") or ""
+            ).strip()
+            if not tex_path and payload.get("guid"):
+                try:
+                    from Infernux.core.assets import AssetManager
+
+                    adb = getattr(AssetManager, "_asset_database", None)
+                    tex_path = (
+                        str(adb.get_path_from_guid(payload["guid"]) or "")
+                        if adb else ""
+                    )
+                except (AttributeError, RuntimeError):
+                    tex_path = ""
+        else:
+            tex_path = str(payload or "")
         if tex_path and os.path.isfile(tex_path):
             state.extra["_animclip_preview_override_path"] = tex_path
             # Clear cached preview texture so it reloads
             state.extra.pop("_animclip_pv", None)
 
-    IGUI.drop_target(ctx, "TEXTURE_FILE", _on_preview_texture_drop)
+    def _clear_preview():
+        state.extra.pop("_animclip_preview_override_path", None)
+        state.extra.pop("_animclip_pv", None)
 
-    # Clear button for preview override
-    if preview_override:
-        ctx.same_line(0, 4)
-        def _clear_preview():
-            state.extra.pop("_animclip_preview_override_path", None)
-            state.extra.pop("_animclip_pv", None)
-        ctx.button("X##clear_pv_tex", _clear_preview, width=22, height=22)
+    field_label(ctx, t("asset.animclip_preview_texture"), lw)
+    render_asset_reference_field(
+        ctx,
+        "##animclip_pv_tex",
+        pv_display,
+        "Texture",
+        asset_type="Texture",
+        accept_drag_type=("TEXTURE_GUID", "TEXTURE_FILE"),
+        on_assign=_on_preview_texture_drop,
+        on_clear=_clear_preview,
+        ping_path=preview_override or None,
+        has_value=bool(preview_override),
+        reference_value=(
+            {"asset_type": "Texture", "path_hint": preview_override}
+            if preview_override else None
+        ),
+    )
 
     # ── FPS (editable) ─────────────────────────────────────────
-    changed = False
     field_label(ctx, t("asset.animclip_fps"), lw)
     new_fps = ctx.drag_float("##animclip_fps", clip.fps, 0.1, 0.1, 120.0)
     if new_fps != clip.fps:
-        clip.fps = max(0.1, new_fps)
-        changed = True
+        document = clip.serialize_document()
+        document["fps"] = max(0.1, new_fps)
+        _apply_editable_resource_document(
+            state,
+            document,
+            edit_key="fps",
+            description="Set Animation Clip FPS",
+        )
 
     ctx.separator()
 
@@ -849,7 +1207,7 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
 
     ctx.separator()
 
-    # ── Frame indices (read-only) ──────────────────────────────
+    # ── Stable source-frame IDs (read-only) ────────────────────
     if render_compact_section_header(ctx, t("asset.animclip_frames")):
         frame_count = clip.frame_count
         duration = clip.duration
@@ -860,19 +1218,15 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
 
         ctx.dummy(0, 4)
 
-        frame_str = ", ".join(str(i) for i in clip.frame_indices)
+        frame_str = ", ".join(
+            frame.sprite_frame_id for frame in clip.frames
+        )
         field_label(ctx, t("asset.animclip_sequence"), lw)
         ctx.begin_disabled(True)
         ctx.text_input("##animclip_frame_seq", frame_str, 2048)
         ctx.end_disabled()
 
     ctx.separator()
-
-    # ── Auto-save (only FPS changes) ──────────────────────────
-    if changed and state.exec_layer:
-        clip.file_path = state.file_path
-        state.exec_layer.schedule_rw_save(clip)
-
 
 def _load_animclip3d(path: str):
     from Infernux.core.animation_clip3d import AnimationClip3D
@@ -891,7 +1245,7 @@ def _load_animclip3d(path: str):
 def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
     from Infernux.core.animation_clip3d import AnimationClip3D
     from Infernux.core.assets import AssetManager
-    from .inspector_components import render_object_field, _picker_assets
+    from .inspector_components import render_asset_reference_field
 
     clip: AnimationClip3D = state.settings
     if not isinstance(clip, AnimationClip3D):
@@ -939,59 +1293,76 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
     else:
         model_display = "None (Model)"
 
-    changed = False
-
     if embedded:
         ctx.begin_disabled(True)
 
     field_label(ctx, t("asset.animclip3d_source_model"), lw)
 
-    def _pick_models(filt: str):
-        items = []
-        try:
-            from Infernux.core.asset_types import MESH_EXTENSIONS
-
-            for ext in sorted(MESH_EXTENSIONS):
-                pattern = f"*{ext}"
-                items += _picker_assets(filt, pattern, assets_only=False)
-        except Exception:
-            items += _picker_assets(filt, "*.fbx", assets_only=False)
-        return items
-
-    def _on_model_pick(path: str, _clip=clip):
-        nonlocal changed
-        p = (path or "").strip()
+    def _on_model_pick(path, _clip=clip):
+        supplied_guid = ""
+        if isinstance(path, dict):
+            supplied_guid = str(path.get("guid") or "").strip()
+            p = str(path.get("path_hint") or path.get("path") or "").strip()
+            if supplied_guid and not p:
+                try:
+                    adb = getattr(AssetManager, "_asset_database", None)
+                    p = str(adb.get_path_from_guid(supplied_guid) or "") if adb else ""
+                except (AttributeError, RuntimeError):
+                    p = ""
+        else:
+            p = str(path or "").strip()
         if not p:
             return
-        _clip.source_model_path = p
+        model_guid = supplied_guid
         try:
-            _clip.source_model_guid = AssetManager._get_guid_from_path(p) or ""
+            model_guid = model_guid or AssetManager._get_guid_from_path(p) or ""
         except Exception:
-            _clip.source_model_guid = ""
+            pass
+        bone_names = []
         # Pull bind pose bone names from import metadata (cheap UX).
         meta = read_meta_file(p) or {}
         csv = str(meta.get("bone_names_csv", "") or "")
         if csv:
-            _clip.bind_pose_bone_names = [x.strip() for x in csv.split(",") if x.strip()]
-        changed = True
+            bone_names = [x.strip() for x in csv.split(",") if x.strip()]
+        document = _clip.serialize_document()
+        document["source_model_path"] = p
+        document["source_model_guid"] = model_guid
+        document["bind_pose_bone_names"] = bone_names
+        _apply_editable_resource_document(
+            state,
+            document,
+            edit_key="source_model",
+            description="Set Animation Clip 3D Source Model",
+        )
 
     def _on_model_clear(_clip=clip):
-        nonlocal changed
-        _clip.source_model_guid = ""
-        _clip.source_model_path = ""
-        _clip.bind_pose_bone_names = []
-        changed = True
+        document = _clip.serialize_document()
+        document["source_model_guid"] = ""
+        document["source_model_path"] = ""
+        document["bind_pose_bone_names"] = []
+        _apply_editable_resource_document(
+            state,
+            document,
+            edit_key="source_model",
+            description="Clear Animation Clip 3D Source Model",
+        )
 
-    render_object_field(
+    render_asset_reference_field(
         ctx,
         "##animclip3d_model",
         model_display,
         "Model",
+        asset_type="Mesh",
         accept_drag_type=("MODEL_FILE", "MODEL_GUID"),
-        on_drop_callback=_on_model_pick,
-        picker_asset_items=_pick_models,
-        on_pick=_on_model_pick,
+        on_assign=_on_model_pick,
         on_clear=_on_model_clear,
+        ping_path=model_path or None,
+        has_value=bool(clip.source_model_guid or clip.source_model_path),
+        reference_value={
+            "asset_type": "Mesh",
+            "guid": str(clip.source_model_guid or ""),
+            "path_hint": str(model_path or clip.source_model_path or ""),
+        },
     )
 
     # ── Take name ─────────────────────────────────────────────────
@@ -999,8 +1370,14 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
     take_buf = clip.take_name or ""
     new_take = ctx.text_input("##animclip3d_take", take_buf, 256)
     if not embedded and new_take != take_buf:
-        clip.take_name = new_take
-        changed = True
+        document = clip.serialize_document()
+        document["take_name"] = new_take
+        _apply_editable_resource_document(
+            state,
+            document,
+            edit_key="take_name",
+            description="Set Animation Clip 3D Take",
+        )
 
     if embedded:
         ctx.end_disabled()
@@ -1015,11 +1392,6 @@ def _render_animclip3d_body(ctx: InxGUIContext, panel, state: _State):
             preview += ", …"
         ctx.label(preview)
         ctx.pop_style_color(1)
-
-    if changed and not embedded and state.exec_layer:
-        clip.file_path = state.file_path
-        state.exec_layer.schedule_rw_save(clip)
-
 
 def _resolve_authoring_texture_path(clip) -> str:
     """Resolve the actual file path for the clip's authoring texture."""
@@ -1151,9 +1523,6 @@ def _ensure_animclip_preview_texture(state: _State, tex_file: str) -> bool:
         if source_h <= 0:
             source_h = tex_h
 
-        if not frames:
-            frames = [SpriteFrame(name="frame_0", x=0, y=0, w=source_w, h=source_h)]
-
         state.extra["_animclip_pv"] = {
             "file": norm_path,
             "resource_key": resource_key,
@@ -1186,7 +1555,7 @@ def _render_animclip_preview(ctx: InxGUIContext, clip, state: _State):
             render_info_text(ctx, t("asset.animclip_texture_missing"))
         return
 
-    if not clip.frame_indices:
+    if not clip.frames:
         return
 
     if not _ensure_animclip_preview_texture(state, tex_file):
@@ -1200,7 +1569,7 @@ def _render_animclip_preview(ctx: InxGUIContext, clip, state: _State):
     tex_w = pv["tex_w"]
     tex_h = pv["tex_h"]
     frames = pv["frames"]
-    fc = len(clip.frame_indices)
+    fc = len(clip.frames)
 
     # Playback state in state.extra
     pb = state.extra.get("_animclip_pb")
@@ -1238,11 +1607,14 @@ def _render_animclip_preview(ctx: InxGUIContext, clip, state: _State):
                 pb["frame_idx"] = pb["frame_idx"] % fc
 
     fi = max(0, min(pb["frame_idx"], fc - 1))
-    src_idx = clip.frame_indices[fi]
-    if src_idx < 0 or src_idx >= len(frames):
+    source_id = clip.frames[fi].sprite_frame_id
+    frame = next(
+        (candidate for candidate in frames if candidate.stable_id == source_id),
+        None,
+    )
+    if frame is None:
         return
 
-    frame = frames[src_idx]
     uv0_x, uv0_y, uv1_x, uv1_y = _sprite_frame_imgui_uv(frame, tex_w, tex_h)
 
     # Fit into available width, max 200px
@@ -1268,9 +1640,9 @@ def _render_animclip_quickfill(ctx: InxGUIContext, clip, state: _State):
     """Render quick-fill buttons: generate sequential frame range from sprite sheet."""
     from .inspector_utils import render_info_text
 
-    # Try to get frame count from the referenced texture's sprite_frames
-    sprite_frame_count = _get_sprite_frame_count(
+    sprite_frames = _get_sprite_frames(
         clip.authoring_texture_guid, clip.authoring_texture_path)
+    sprite_frame_count = len(sprite_frames)
 
     ctx.dummy(0, 2)
     if sprite_frame_count > 0:
@@ -1279,18 +1651,35 @@ def _render_animclip_quickfill(ctx: InxGUIContext, clip, state: _State):
         ctx.pop_style_color(1)
 
         def _fill_sequential():
-            clip.frame_indices = list(range(sprite_frame_count))
-            if state.exec_layer:
-                clip.file_path = state.file_path
-                state.exec_layer.schedule_rw_save(clip)
+            from Infernux.core.animation_clip import AnimationFrame
+
+            document = clip.serialize_document()
+            document["frames"] = [
+                AnimationFrame(sprite_frame_id=frame.stable_id).to_dict()
+                for frame in sprite_frames
+            ]
+            _apply_editable_resource_document(
+                state,
+                document,
+                edit_key="frames",
+                description="Fill Animation Clip Frames",
+            )
 
         def _fill_pingpong():
-            fwd = list(range(sprite_frame_count))
-            rev = list(range(sprite_frame_count - 2, 0, -1))
-            clip.frame_indices = fwd + rev
-            if state.exec_layer:
-                clip.file_path = state.file_path
-                state.exec_layer.schedule_rw_save(clip)
+            from Infernux.core.animation_clip import AnimationFrame
+
+            ordered = sprite_frames + list(reversed(sprite_frames[1:-1]))
+            document = clip.serialize_document()
+            document["frames"] = [
+                AnimationFrame(sprite_frame_id=frame.stable_id).to_dict()
+                for frame in ordered
+            ]
+            _apply_editable_resource_document(
+                state,
+                document,
+                edit_key="frames",
+                description="Fill Animation Clip Ping-Pong Frames",
+            )
 
         ctx.button(t("asset.animclip_fill_sequential"), _fill_sequential)
         ctx.same_line()
@@ -1299,7 +1688,7 @@ def _render_animclip_quickfill(ctx: InxGUIContext, clip, state: _State):
         render_info_text(ctx, t("asset.animclip_no_texture_hint"))
 
 
-def _get_sprite_frame_count(texture_guid: str, texture_path: str = "") -> int:
+def _get_sprite_frames(texture_guid: str, texture_path: str = "") -> list[SpriteFrame]:
     path = ""
     if texture_guid:
         try:
@@ -1312,13 +1701,13 @@ def _get_sprite_frame_count(texture_guid: str, texture_path: str = "") -> int:
     if not path and texture_path:
         path = texture_path
     if not path:
-        return 0
+        return []
     try:
         from Infernux.core.asset_types import read_texture_import_settings
         settings = read_texture_import_settings(path)
-        return len(settings.sprite_frames)
+        return list(settings.sprite_frames)
     except Exception:
-        return 0
+        return []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1368,18 +1757,21 @@ def _render_particlegraph_body(ctx: InxGUIContext, panel, state: _State):
         open_fn(state.file_path)
         return
     try:
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        from Infernux.engine.ui.window_manager import WindowManager
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            DocumentOpenStatus,
+            EditorInteractionCore,
+        )
 
-        wm = WindowManager.instance()
-        editor = wm.open_window("particle_graph_editor") if wm is not None else None
-        if editor is not None and hasattr(editor, "_open_particlegraph"):
-            editor._open_particlegraph(state.file_path)
-            ClosablePanel.focus_panel_by_id("particle_graph_editor")
-            try:
-                wm._engine.select_docked_window("particle_graph_editor")
-            except Exception:
-                pass
+        core = EditorInteractionCore.instance()
+        if core is None:
+            raise RuntimeError("document open requires EditorInteractionCore")
+        result = core.document_open.open_resource(
+            DocumentKind.PARTICLE_GRAPH,
+            state.file_path,
+        )
+        if result.status is DocumentOpenStatus.FAILED:
+            raise RuntimeError(result.message or "Particle Graph open failed")
     except Exception as exc:
         Debug.log_suppressed("asset_details_renderer.open_particlegraph", exc)
 
@@ -1509,6 +1901,7 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
         _state.exec_layer, category, file_path, cat_def.access_mode,
         autosave_debounce_sec=cat_def.autosave_debounce,
     )
+    _bind_asset_document(_state, cat_def)
 
     # ── Header (shared for all categories) ─────────────────────────────
     if cat_def.show_header:
@@ -1534,12 +1927,22 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
             semantic_prefix=f"asset.{category}.import",
         )
     elif cat_def.access_mode == AssetAccessMode.READ_WRITE_RESOURCE:
-        if _state.exec_layer:
+        if _state.resource_controller is not None:
+            _state.resource_controller.flush_autosave()
+        elif _state.exec_layer:
             _state.exec_layer.flush_rw_autosave()
 
 
 def invalidate():
     """Reset all inspector state (called on selection change)."""
+    from Infernux.engine.interaction import ContinuousEditService, DocumentRegistry
+
+    ContinuousEditService.instance().commit_owner("inspector")
+    if _state.resource_controller is not None:
+        _state.resource_controller.flush_autosave(force=True)
+    for controller in tuple(_state.extra.get("linked_resource_controllers", {}).values()):
+        controller.flush_autosave(force=True)
+    DocumentRegistry.instance().detach_view("inspector")
     if _state.category == "texture" and _state.file_path:
         from .asset_resource_preview import invalidate_live_texture_preview
         invalidate_live_texture_preview(_state.file_path)
@@ -1561,6 +1964,13 @@ def invalidate_asset(path: str):
     if not _state.file_path or not path:
         return
     if same_path(_state.file_path, path):
+        from Infernux.engine.interaction import ContinuousEditService
+
+        ContinuousEditService.instance().commit_owner("inspector")
+        for controller in tuple(
+            _state.extra.get("linked_resource_controllers", {}).values()
+        ):
+            controller.flush_autosave(force=True)
         if _state.category in {"texture", "material"}:
             from .asset_resource_preview import (
                 invalidate_live_material_preview,
@@ -1713,7 +2123,12 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                     "checkbox", t(fdef.label), not disabled, semantic_id, bool(new_val),
                 )
                 if new_val != cur:
-                    setattr(state.settings, fdef.key, new_val)
+                    _edit_import_settings(
+                        state,
+                        fdef.key,
+                        lambda settings, key=fdef.key, value=new_val: setattr(settings, key, value),
+                        f"Set {t(fdef.label)}",
+                    )
                 if disabled:
                     ctx.end_disabled()
 
@@ -1731,14 +2146,40 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                     "combo", f"{t(fdef.label)}: {display_value}", True, semantic_id,
                 )
                 if new_idx != idx:
-                    setattr(state.settings, fdef.key, values[new_idx])
-                    # Only sync derived fields when texture_type itself changes
-                    if fdef.key == "texture_type" and hasattr(state.settings, '_sync_derived_fields'):
-                        state.settings._sync_derived_fields()
-                    elif fdef.key == "format" and new_idx >= 0 and values[new_idx] != TextureFormat.AUTO:
-                        state.settings.compression = TextureCompression.NONE
-                    elif fdef.key == "compression" and new_idx >= 0 and values[new_idx] != TextureCompression.NONE:
-                        state.settings.format = TextureFormat.AUTO
+                    selected_value = values[new_idx]
+
+                    def _apply_combo(settings, key=fdef.key, value=selected_value):
+                        setattr(settings, key, value)
+                        if key == "texture_type" and hasattr(settings, "_sync_derived_fields"):
+                            settings._sync_derived_fields()
+                            if value is TextureType.SPRITE and not settings.sprite_frames:
+                                metadata = state.meta or read_meta_file(state.file_path) or {}
+                                width = int(metadata.get("width", 0) or 0)
+                                height = int(metadata.get("height", 0) or 0)
+                                if width <= 0 or height <= 0:
+                                    raise ValueError(
+                                        "sprite texture dimensions are unavailable; reimport the texture before changing its type"
+                                    )
+                                settings.sprite_frames = [
+                                    SpriteFrame(
+                                        name="frame_0",
+                                        x=0,
+                                        y=0,
+                                        w=width,
+                                        h=height,
+                                    )
+                                ]
+                        elif key == "format" and value != TextureFormat.AUTO:
+                            settings.compression = TextureCompression.NONE
+                        elif key == "compression" and value != TextureCompression.NONE:
+                            settings.format = TextureFormat.AUTO
+
+                    _edit_import_settings(
+                        state,
+                        fdef.key,
+                        _apply_combo,
+                        f"Set {t(fdef.label)}",
+                    )
 
             elif fdef.field_type == WidgetType.FLOAT:
                 field_label(ctx, t(fdef.label), lw)
@@ -1750,21 +2191,55 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                     "drag_float", f"{t(fdef.label)}: {new_val:g}", True, semantic_id,
                 )
                 if new_val != cur:
-                    setattr(state.settings, fdef.key, new_val)
+                    _edit_import_settings(
+                        state,
+                        fdef.key,
+                        lambda settings, key=fdef.key, value=new_val: setattr(settings, key, value),
+                        f"Set {t(fdef.label)}",
+                    )
 
 
 # ── Apply / Revert actions ─────────────────────────────────────────────
 
 
+def _edit_import_settings(
+    state: _State,
+    edit_key: str,
+    mutator: Callable[[Any], None],
+    description: str,
+    *,
+    selection_after: Optional[Callable[[Any, Any, Any], Any]] = None,
+) -> bool:
+    """Apply one import draft edit through the global Action Journal."""
+    controller = state.import_controller
+    if controller is None or not state.document_id:
+        return False
+
+    return controller.apply_mutation(
+        mutator,
+        view_id="inspector",
+        edit_key=edit_key,
+        description=description,
+        selection_after=selection_after,
+    )
+
+
 def _on_apply():
     if _state.settings is None or _state.exec_layer is None:
         return
-    ok = _state.exec_layer.apply_import_settings(_state.settings)
-    if ok and hasattr(_state.settings, "copy"):
-        _state.disk_settings = _state.settings.copy()
+    if not _state.document_id:
+        return
+    from Infernux.engine.interaction import DocumentRegistry
+
+    DocumentRegistry.instance().request_save(_state.document_id)
 
 
 def _on_revert():
+    if _state.document_id:
+        from Infernux.engine.interaction import DocumentRegistry
+
+        DocumentRegistry.instance().request_discard(_state.document_id)
+        return
     if _state.category == "texture" and _state.file_path:
         from .asset_resource_preview import invalidate_live_texture_preview
         invalidate_live_texture_preview(_state.file_path)
@@ -1888,11 +2363,10 @@ class _SpriteEditorState:
         self.tex_w: int = 0
         self.tex_h: int = 0
         self.texture_id: int = 0
-        self.selected_frame: int = -1
         self.slice_rows: int = 1
         self.slice_cols: int = 1
         self.drag_edge: str = ""  # "", "left", "right", "top", "bottom"
-        self.drag_frame_idx: int = -1
+        self.drag_frame_id: str = ""
         self.zoom: float = 0.0
         self.pan_x: float = 0.0
         self.pan_y: float = 0.0
@@ -1905,6 +2379,96 @@ class _SpriteEditorState:
 
 
 _sprite_state = _SpriteEditorState()
+
+
+def _selected_sprite_frame_index(
+    state: _State,
+    settings: TextureImportSettings,
+) -> int:
+    from Infernux.engine.interaction import (
+        SelectionDomain,
+        SelectionService,
+    )
+
+    primary = SelectionService.instance().snapshot.primary
+    if (
+        primary is None
+        or primary.domain is not SelectionDomain.ASSET_SUBRESOURCE
+        or primary.sub_kind != "sprite_frame"
+        or not same_path(primary.document_id, state.file_path)
+    ):
+        return -1
+    index = next(
+        (
+            index
+            for index, frame in enumerate(settings.sprite_frames)
+            if frame.stable_id == primary.target_id
+        ),
+        -1,
+    )
+    if index < 0:
+        selection = SelectionService.instance()
+        selection.apply_snapshot(
+            _sprite_selection_after(
+                state,
+                settings,
+                selection.snapshot,
+            ),
+            reason="sprite_frame_removed",
+            record_history=False,
+        )
+    return index
+
+
+def _sprite_selection_after(
+    state: _State,
+    settings: TextureImportSettings,
+    before,
+):
+    from Infernux.engine.interaction import (
+        SelectionDomain,
+        SelectionService,
+        SelectionTarget,
+    )
+
+    valid_ids = {frame.stable_id for frame in settings.sprite_frames}
+
+    def is_valid(target) -> bool:
+        return not (
+            target.domain is SelectionDomain.ASSET_SUBRESOURCE
+            and target.sub_kind == "sprite_frame"
+            and same_path(target.document_id, state.file_path)
+            and target.target_id not in valid_ids
+        )
+
+    return SelectionService.reconciled_snapshot(
+        before,
+        is_valid,
+        fallback=SelectionTarget.asset(state.file_path),
+        fallback_owner_id="inspector",
+    )
+
+
+def _select_sprite_frame(state: _State, frame: Optional[SpriteFrame]) -> None:
+    from Infernux.engine.interaction import SelectionService, SelectionTarget
+
+    selection = SelectionService.instance()
+    if frame is None:
+        target = SelectionTarget.asset(state.file_path)
+        reason = "sprite_frame_deselect"
+    else:
+        target = SelectionTarget.asset_subresource(
+            state.file_path,
+            frame.stable_id,
+            sub_kind="sprite_frame",
+        )
+        reason = "sprite_frame_select"
+    selection.select(
+        target,
+        owner_id="inspector",
+        reason=reason,
+        record_history=True,
+    )
 
 
 def _live_sprite_texture_id(ss: "_SpriteEditorState", cur_srgb, cur_filter) -> int:
@@ -1952,7 +2516,6 @@ def _ensure_sprite_texture(state: _State) -> bool:
     same_file = (ss.file_path == state.file_path)
     saved_rows = ss.slice_rows if same_file else 1
     saved_cols = ss.slice_cols if same_file else 1
-    saved_selected = ss.selected_frame if same_file else -1
     saved_zoom = ss.zoom if same_file else 0.0
     saved_pan_x = ss.pan_x if same_file else 0.0
     saved_pan_y = ss.pan_y if same_file else 0.0
@@ -1960,7 +2523,6 @@ def _ensure_sprite_texture(state: _State) -> bool:
     ss.reset()
     ss.slice_rows = saved_rows
     ss.slice_cols = saved_cols
-    ss.selected_frame = saved_selected
     ss.zoom = saved_zoom
     ss.pan_x = saved_pan_x
     ss.pan_y = saved_pan_y
@@ -2092,34 +2654,57 @@ def _auto_slice(settings: TextureImportSettings, ss: _SpriteEditorState):
         return
     fw = ss.tex_w // cols
     fh = ss.tex_h // rows
+    existing = {
+        (frame.x, frame.y, frame.w, frame.h): frame
+        for frame in settings.sprite_frames
+    }
     frames = []
     idx = 0
     for r in range(rows):
         for c in range(cols):
-            frames.append(SpriteFrame(
-                name=f"frame_{idx}",
-                x=c * fw, y=r * fh,
-                w=fw, h=fh,
-            ))
+            rect = (c * fw, r * fh, fw, fh)
+            previous = existing.get(rect)
+            frames.append(
+                SpriteFrame(
+                    stable_id=(previous.stable_id if previous else uuid.uuid4().hex),
+                    name=(previous.name if previous else f"frame_{idx}"),
+                    x=rect[0],
+                    y=rect[1],
+                    w=rect[2],
+                    h=rect[3],
+                    pivot_x=(previous.pivot_x if previous else 0.5),
+                    pivot_y=(previous.pivot_y if previous else 0.5),
+                )
+            )
             idx += 1
     settings.sprite_frames = frames
-    ss.selected_frame = -1
 
 
 def _auto_slice_and_save(state: _State, ss: _SpriteEditorState):
     settings = state.settings
     if not isinstance(settings, TextureImportSettings):
         return
-    _auto_slice(settings, ss)
-    _auto_save_sprite(state)
+    if _edit_import_settings(
+        state,
+        "sprite_frames.auto_slice",
+        lambda draft: _auto_slice(draft, ss),
+        "Auto Slice Sprite",
+        selection_after=lambda _old, new, before: _sprite_selection_after(
+            state,
+            new,
+            before,
+        ),
+    ):
+        _auto_save_sprite(state)
 
 
 def _auto_save_sprite(state: _State):
-    """Persist sprite_frames to .meta immediately."""
-    if state.exec_layer and state.settings:
-        state.exec_layer.apply_import_settings(state.settings)
-        if hasattr(state.settings, 'copy'):
-            state.disk_settings = state.settings.copy()
+    """Persist the current sprite import-settings document."""
+    if not state.document_id:
+        return False
+    from Infernux.engine.interaction import DocumentRegistry
+
+    return DocumentRegistry.instance().request_save(state.document_id).accepted
 
 
 def _collect_dividers(settings: TextureImportSettings,
@@ -2147,16 +2732,33 @@ def _rebuild_frames_from_dividers(settings: TextureImportSettings,
     """Regenerate sprite_frames from the current divider positions."""
     xs = [0] + v_divs + [tex_w]
     ys = [0] + h_divs + [tex_h]
+    existing = {
+        (frame.x, frame.y, frame.w, frame.h): frame
+        for frame in settings.sprite_frames
+    }
     frames = []
     idx = 0
     for ri in range(len(ys) - 1):
         for ci in range(len(xs) - 1):
-            frames.append(SpriteFrame(
-                name=f"frame_{idx}",
-                x=xs[ci], y=ys[ri],
-                w=xs[ci + 1] - xs[ci],
-                h=ys[ri + 1] - ys[ri],
-            ))
+            rect = (
+                xs[ci],
+                ys[ri],
+                xs[ci + 1] - xs[ci],
+                ys[ri + 1] - ys[ri],
+            )
+            previous = existing.get(rect)
+            frames.append(
+                SpriteFrame(
+                    stable_id=(previous.stable_id if previous else uuid.uuid4().hex),
+                    name=(previous.name if previous else f"frame_{idx}"),
+                    x=rect[0],
+                    y=rect[1],
+                    w=rect[2],
+                    h=rect[3],
+                    pivot_x=(previous.pivot_x if previous else 0.5),
+                    pivot_y=(previous.pivot_y if previous else 0.5),
+                )
+            )
             idx += 1
     settings.sprite_frames = frames
 
@@ -2239,9 +2841,9 @@ def _apply_frame_edge_drag(frame: SpriteFrame, edge: str, tex_x: float, tex_y: f
     frame.h = max(min_size, bottom - top)
 
 
-def _begin_frame_edge_drag(ss: _SpriteEditorState, frame_idx: int,
+def _begin_frame_edge_drag(ss: _SpriteEditorState,
                            frame: SpriteFrame, edge: str) -> None:
-    ss.drag_frame_idx = frame_idx
+    ss.drag_frame_id = frame.stable_id
     ss.drag_edge = edge
     ss.drag_left = float(frame.x)
     ss.drag_right = float(frame.x + frame.w)
@@ -2284,8 +2886,7 @@ def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
     if avail_w < 32.0 or ss.tex_w <= 0 or ss.tex_h <= 0:
         return
 
-    if ss.selected_frame >= len(settings.sprite_frames):
-        ss.selected_frame = -1
+    selected_frame = _selected_sprite_frame_index(state, settings)
 
     canvas_h = min(max(320.0, avail_w * 0.6), 720.0)
     fit_zoom_hint = _fit_sprite_zoom(ss.tex_w, ss.tex_h, avail_w, canvas_h)
@@ -2294,8 +2895,8 @@ def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
         ss.view_initialized = False
     ctx.same_line(0, 10)
     selected_label = t("sprite.preview_none")
-    if 0 <= ss.selected_frame < len(settings.sprite_frames):
-        selected_label = f"#{ss.selected_frame}"
+    if 0 <= selected_frame < len(settings.sprite_frames):
+        selected_label = f"#{selected_frame}"
     shown_zoom = ss.zoom if ss.zoom > 0.0 else fit_zoom_hint
     ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
     ctx.label(t("sprite.preview_status").format(
@@ -2379,8 +2980,8 @@ def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
 
             if 0.0 <= tex_x <= ss.tex_w and 0.0 <= tex_y <= ss.tex_h:
                 indices = list(range(len(settings.sprite_frames) - 1, -1, -1))
-                if 0 <= ss.selected_frame < len(settings.sprite_frames):
-                    indices = [ss.selected_frame] + [i for i in indices if i != ss.selected_frame]
+                if 0 <= selected_frame < len(settings.sprite_frames):
+                    indices = [selected_frame] + [i for i in indices if i != selected_frame]
 
                 for idx in indices:
                     edge = _hit_test_sprite_frame_edge(settings.sprite_frames[idx], tex_x, tex_y, threshold_tex)
@@ -2408,13 +3009,18 @@ def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
                 ss.pan_drag_button = 2
 
             if ctx.is_mouse_button_clicked(0):
-                ss.selected_frame = hovered_frame
-                ss.drag_frame_idx = -1
+                _select_sprite_frame(
+                    state,
+                    settings.sprite_frames[hovered_frame]
+                    if hovered_frame >= 0
+                    else None,
+                )
+                selected_frame = hovered_frame
+                ss.drag_frame_id = ""
                 ss.drag_edge = ""
                 if hovered_frame >= 0 and hovered_edge:
                     _begin_frame_edge_drag(
                         ss,
-                        hovered_frame,
                         settings.sprite_frames[hovered_frame],
                         hovered_edge,
                     )
@@ -2425,20 +3031,47 @@ def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
             if ss.texture_id:
                 ctx.draw_image_rect(ss.texture_id, img_min_x, img_min_y, img_max_x, img_max_y)
 
-            if ss.drag_frame_idx >= 0 and ss.drag_edge:
+            if ss.drag_frame_id and ss.drag_edge:
                 if ctx.is_mouse_button_down(0):
                     drag_tex_x = (ctx.get_mouse_pos_x() - img_min_x) / max(ss.zoom, 0.001)
                     drag_tex_y = (ctx.get_mouse_pos_y() - img_min_y) / max(ss.zoom, 0.001)
                     _apply_frame_edge_drag_preview(ss, drag_tex_x, drag_tex_y, ss.tex_w, ss.tex_h)
                 else:
-                    frame = settings.sprite_frames[ss.drag_frame_idx]
-                    _commit_frame_edge_drag(ss, frame, ss.tex_w, ss.tex_h)
-                    ss.drag_frame_idx = -1
+                    frame_id = ss.drag_frame_id
+
+                    def _commit_edge(draft, stable_id=frame_id):
+                        frame = next(
+                            (
+                                value
+                                for value in draft.sprite_frames
+                                if value.stable_id == stable_id
+                            ),
+                            None,
+                        )
+                        if frame is None:
+                            raise RuntimeError(
+                                "sprite frame disappeared during edge drag"
+                            )
+                        _commit_frame_edge_drag(
+                            ss,
+                            frame,
+                            ss.tex_w,
+                            ss.tex_h,
+                        )
+
+                    changed = _edit_import_settings(
+                        state,
+                        f"sprite_frames.{frame_id}",
+                        _commit_edge,
+                        "Resize Sprite Frame",
+                    )
+                    ss.drag_frame_id = ""
                     ss.drag_edge = ""
-                    _auto_save_sprite(state)
+                    if changed:
+                        _auto_save_sprite(state)
 
             for idx, frame in enumerate(settings.sprite_frames):
-                if idx == ss.drag_frame_idx and ss.drag_edge:
+                if frame.stable_id == ss.drag_frame_id and ss.drag_edge:
                     frame_left = ss.drag_left
                     frame_right = ss.drag_right
                     frame_top = ss.drag_top
@@ -2454,7 +3087,7 @@ def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
                 fx1 = img_min_x + frame_right * ss.zoom
                 fy1 = img_min_y + frame_bottom * ss.zoom
 
-                is_selected = idx == ss.selected_frame
+                is_selected = idx == selected_frame
                 is_hovered = idx == hovered_frame
 
                 if is_selected:
@@ -2574,13 +3207,17 @@ def _render_font_body(ctx: InxGUIContext, panel, state: _State):
 def _apply_shader_path(state: _State, new_path: str):
     info = state.settings
     old_path = info.source_path
-    if state.exec_layer:
-        state.exec_layer.move_asset_path(new_path)
+    if state.exec_layer is None or not state.exec_layer.move_asset_path(new_path):
+        from Infernux.debug import Debug
+
+        Debug.log_error(f"Shader path change was rejected: {old_path} -> {new_path}")
+        return False
     from Infernux.core.shader import Shader
     shader_id = os.path.splitext(os.path.basename(old_path))[0]
     Shader.invalidate(shader_id)
     info.source_path = new_path
     info.shader_type = ShaderAssetInfo.from_path(new_path).shader_type
+    return True
 
 
 def _render_shader_source(ctx: InxGUIContext, file_path: str):
@@ -2616,12 +3253,40 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
     from .render_effect_inspector import render_render_effect_parameters
     from Infernux.renderstack.render_effect import RenderEffect
 
+    def linked_effect_controller(effect):
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            ensure_editable_resource_document,
+        )
+
+        file_path = str(getattr(effect, "file_path", "") or "")
+        guid = str(getattr(effect, "guid", "") or "")
+        if not file_path and not guid:
+            return None
+        controller = ensure_editable_resource_document(
+            category="render_effect",
+            document_kind=DocumentKind.RENDER_EFFECT,
+            file_path=file_path,
+            resource=effect,
+            guid=guid,
+            title=os.path.basename(file_path) or getattr(effect, "name", "Render Effect"),
+            autosave_debounce_sec=0.5,
+        )
+        controllers = state.extra.setdefault("linked_resource_controllers", {})
+        controllers[controller.document_id] = controller
+        return controller
+
     resource = state.settings
     if isinstance(resource, RenderEffect):
         field_label(ctx, "Feature", max_label_w(ctx, ["Feature"]))
         ctx.label(resource.feature_type)
         ctx.separator()
-        render_render_effect_parameters(ctx, resource, widget_prefix="asset_effect")
+        render_render_effect_parameters(
+            ctx,
+            resource,
+            widget_prefix="asset_effect",
+            resource_controller=state.resource_controller,
+        )
         return
 
     # Effect groups remain structural assets, but expose their referenced
@@ -2646,12 +3311,16 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
             continue
         if not entry.enabled:
             ctx.begin_disabled(True)
+        controller = linked_effect_controller(effect)
         try:
             render_render_effect_parameters(
                 ctx,
                 effect,
                 widget_prefix=f"asset_effect_group_{index}",
+                resource_controller=controller,
             )
         finally:
             if not entry.enabled:
                 ctx.end_disabled()
+        if controller is not None:
+            controller.flush_autosave()

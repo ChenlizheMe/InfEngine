@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import platform
 import shutil
 import subprocess
 import sys
@@ -11,11 +10,13 @@ import tempfile
 import urllib.request
 import zipfile
 
-try:
-    import winreg
-except ImportError:
-    winreg = None
-
+from private_python_runtime import (
+    extract_runtime_archive,
+    is_current_private_runtime_root,
+    remove_legacy_installer_artifacts,
+    runtime_archive_for_machine,
+    verify_runtime_archive,
+)
 from runtime_requirements import RUNTIME_PROFILE_VERSION, runtime_modules, runtime_packages
 import logging
 
@@ -59,44 +60,6 @@ def _run(args: list[str], *, timeout: int = 20) -> subprocess.CompletedProcess:
     if sys.platform == "win32":
         kwargs["creationflags"] = 0x08000000
     return subprocess.run(args, **kwargs)
-
-
-def _runtime_installer_info_for_machine() -> tuple[str, str]:
-    machine = (platform.machine() if sys.platform != "win32" else os.environ.get("PROCESSOR_ARCHITECTURE", "")).lower()
-    if sys.platform == "darwin":
-        return (
-            "python-3.12.8-macos11.pkg",
-            "https://www.python.org/ftp/python/3.12.8/python-3.12.8-macos11.pkg",
-        )
-    if sys.platform.startswith("linux"):
-        # python.org publishes no Linux binaries; use the relocatable
-        # python-build-standalone "install_only" archive (Astral).
-        arch = "aarch64" if machine in {"arm64", "aarch64"} else "x86_64"
-        name = f"cpython-3.12.8+20241206-{arch}-unknown-linux-gnu-install_only.tar.gz"
-        return (
-            name,
-            "https://github.com/astral-sh/python-build-standalone/releases/download/"
-            f"20241206/cpython-3.12.8%2B20241206-{arch}-unknown-linux-gnu-install_only.tar.gz",
-        )
-    if machine in {"amd64", "x86_64"}:
-        return (
-            "python-3.12.8-amd64.exe",
-            "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe",
-        )
-    if machine in {"arm64", "aarch64"}:
-        return (
-            "python-3.12.8-arm64.exe",
-            "https://www.python.org/ftp/python/3.12.8/python-3.12.8-arm64.exe",
-        )
-    if machine in {"x86", "i386", "i686"}:
-        return (
-            "python-3.12.8.exe",
-            "https://www.python.org/ftp/python/3.12.8/python-3.12.8.exe",
-        )
-    return (
-        "python-3.12.8-amd64.exe",
-        "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe",
-    )
 
 
 def _is_python312(python_exe: str) -> bool:
@@ -256,11 +219,12 @@ def _runtime_profile_path(dest_root: str) -> str:
 
 
 def _runtime_profile_payload() -> dict[str, object]:
-    installer_name, _installer_url = _runtime_installer_info_for_machine()
+    archive = runtime_archive_for_machine()
     return {
         "profile_version": RUNTIME_PROFILE_VERSION,
         "source": "runtime-cache",
-        "python_installer": installer_name,
+        "python_archive": archive.name,
+        "python_archive_sha256": archive.sha256,
         "packages": list(_RUNTIME_PACKAGES),
     }
 
@@ -391,98 +355,39 @@ def _create_runtime_bundle(dest_root: str) -> None:
     os.replace(tmp_bundle, bundle_path)
 
 
-def _installer_cache_path(cache_root: str) -> str:
-    installer_name, _installer_url = _runtime_installer_info_for_machine()
-    return os.path.join(cache_root, installer_name)
+def _archive_cache_path(cache_root: str) -> str:
+    return os.path.join(cache_root, runtime_archive_for_machine().name)
 
 
-def _install_full_runtime(dest_root: str, *, installer_cache_root: str | None = None) -> None:
+def _extract_full_runtime(dest_root: str, *, archive_cache_root: str | None = None) -> None:
     parent = os.path.dirname(dest_root)
     os.makedirs(parent, exist_ok=True)
-    cache_root = os.path.abspath(installer_cache_root) if installer_cache_root else parent
+    cache_root = os.path.abspath(archive_cache_root) if archive_cache_root else parent
     os.makedirs(cache_root, exist_ok=True)
-    installer_path = _installer_cache_path(cache_root)
-    if not os.path.isfile(installer_path):
-        _installer_name, installer_url = _runtime_installer_info_for_machine()
-        print(f"Downloading official Python installer: {installer_url}")
-        _download_file(installer_url, installer_path)
+    archive = runtime_archive_for_machine()
+    archive_path = _archive_cache_path(cache_root)
+    if os.path.isfile(archive_path):
+        try:
+            verify_runtime_archive(archive_path, archive.sha256)
+        except RuntimeError:
+            os.remove(archive_path)
+    if not os.path.isfile(archive_path):
+        print(f"Downloading isolated Python runtime archive: {archive.url}")
+        temporary = archive_path + ".tmp"
+        if os.path.isfile(temporary):
+            os.remove(temporary)
+        _download_file(archive.url, temporary)
+        verify_runtime_archive(temporary, archive.sha256)
+        os.replace(temporary, archive_path)
 
-    _remove_tree(dest_root)
-
-    if sys.platform == "darwin":
-        # macOS: use the python.org .pkg installer
-        completed = _run([
-            "installer", "-pkg", installer_path, "-target", "CurrentUserHomeDirectory",
-        ], timeout=3600)
-        if completed.returncode != 0:
-            raise SystemExit(
-                "Failed to install official Python 3.12 on macOS.\n"
-                f"{(completed.stderr or completed.stdout or '').strip()}"
-            )
-        # Link the framework python into dest_root
-        framework_candidates = [
-            os.path.expanduser("~/Library/Frameworks/Python.framework/Versions/3.12"),
-            "/Library/Frameworks/Python.framework/Versions/3.12",
-        ]
-        for fw_root in framework_candidates:
-            fw_python = os.path.join(fw_root, "bin", "python3.12")
-            if os.path.isfile(fw_python) and _is_python312(fw_python):
-                shutil.copytree(fw_root, dest_root, symlinks=True)
-                return
-        raise SystemExit(
-            "Python 3.12 .pkg installation completed, but the framework was not found afterwards."
-        )
-
-    if sys.platform.startswith("linux"):
-        # python-build-standalone "install_only" tarball: extract and relocate.
-        import tarfile
-
-        extract_root = dest_root + ".extract"
-        _remove_tree(extract_root)
-        os.makedirs(extract_root, exist_ok=True)
-        with tarfile.open(installer_path, "r:gz") as tar:
-            tar.extractall(extract_root)  # noqa: S202 — trusted release artifact
-        # Archive layout: python/{bin,lib,include,...}
-        inner = os.path.join(extract_root, "python")
-        if not os.path.isdir(inner):
-            raise SystemExit(
-                "Unexpected python-build-standalone archive layout: missing 'python/' root."
-            )
-        shutil.move(inner, dest_root)
-        _remove_tree(extract_root)
-        staged = os.path.join(dest_root, "bin", "python3.12")
-        if not _is_python312(staged):
-            raise SystemExit("Staged Linux Python runtime failed the 3.12 verification.")
-        return
-
-    if sys.platform != "win32":
-        raise SystemExit("Bundled full Python staging is only supported on Windows, macOS, and Linux.")
-
-    completed = _run([
-        installer_path,
-        "/quiet",
-        "InstallAllUsers=0",
-        f"TargetDir={dest_root}",
-        "AssociateFiles=0",
-        "PrependPath=0",
-        "Shortcuts=0",
-        "CompileAll=0",
-        "Include_test=0",
-        "Include_launcher=0",
-        "InstallLauncherAllUsers=0",
-        "Include_pip=1",
-        "Include_dev=1",
-    ], timeout=3600)
-    if completed.returncode != 0:
-        raise SystemExit(
-            "Failed to install official Python 3.12 into the bundled runtime directory.\n"
-            f"{(completed.stderr or completed.stdout or '').strip()}"
-        )
+    extract_runtime_archive(
+        archive_path, dest_root, expected_sha256=archive.sha256
+    )
 
     python_exe = _find_python_in_root(dest_root)
     if not python_exe or not _is_python312(python_exe) or _is_embedded_root(dest_root):
         raise SystemExit(
-            "Python 3.12 installation completed, but a valid full python.exe was not found afterwards."
+            "Python 3.12 archive extraction completed, but a valid private runtime was not found afterwards."
         )
 
 
@@ -490,10 +395,10 @@ def _stage_clean_runtime_fallback(dest_root: str) -> None:
     os.makedirs(_BOOTSTRAP_ROOT, exist_ok=True)
     bootstrap_dir = tempfile.mkdtemp(prefix="bundle-", dir=_BOOTSTRAP_ROOT)
     bootstrap_root = os.path.join(bootstrap_dir, "python312")
-    installer_cache_root = os.path.dirname(dest_root)
+    archive_cache_root = os.path.dirname(dest_root)
 
     try:
-        _install_full_runtime(bootstrap_root, installer_cache_root=installer_cache_root)
+        _extract_full_runtime(bootstrap_root, archive_cache_root=archive_cache_root)
         _ensure_builder_packages(bootstrap_root)
         _prune_runtime_root(bootstrap_root)
 
@@ -512,44 +417,6 @@ def _is_usable_full_runtime(root: str) -> bool:
         and _has_dev_support(root)
         and _has_modules(python_exe, *_RUNTIME_MODULES)
     )
-
-
-def _prepare_existing_runtime_cache(dest_root: str) -> bool:
-    python_exe = _find_python_in_root(dest_root)
-    if not python_exe or not _is_python312(python_exe) or _is_embedded_root(dest_root):
-        return False
-    if not _has_dev_support(dest_root):
-        return False
-
-    _ensure_builder_packages(dest_root)
-    _prune_runtime_root(dest_root)
-    _write_runtime_profile(dest_root)
-    _create_runtime_bundle(dest_root)
-    return _is_usable_full_runtime(dest_root)
-
-
-def _registry_candidates() -> list[str]:
-    if winreg is None:
-        return []
-
-    candidates: list[str] = []
-    keys = [
-        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Python\PythonCore\3.12\InstallPath"),
-        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Python\PythonCore\3.12\InstallPath"),
-        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Python\PythonCore\3.12\InstallPath"),
-    ]
-
-    for hive, subkey in keys:
-        try:
-            with winreg.OpenKey(hive, subkey) as key:
-                install_path, _ = winreg.QueryValueEx(key, None)
-        except OSError as _exc:
-            logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-            continue
-
-        if install_path:
-            candidates.append(os.path.join(install_path, "python.exe"))
-    return candidates
 
 
 def _candidate_python_paths() -> list[str]:
@@ -594,8 +461,6 @@ def _candidate_python_paths() -> list[str]:
             "/usr/local/bin/python3.12",
         ])
 
-    candidates.extend(_registry_candidates())
-
     current_python = sys.executable
     if current_python:
         candidates.append(current_python)
@@ -634,29 +499,20 @@ def main() -> int:
 
     dest_root = os.path.abspath(args.dest_root)
     bundle_path = _runtime_bundle_path(dest_root)
+    remove_legacy_installer_artifacts(os.path.dirname(dest_root))
 
     existing = _find_python_in_root(dest_root)
     if existing and _is_python312(existing):
-        if _is_usable_full_runtime(dest_root):
-            if not os.path.isfile(bundle_path):
-                _write_runtime_profile(dest_root)
-                _create_runtime_bundle(dest_root)
-            print(f"Bundled minimal Python 3.12 already present: {existing}")
-            return 0
-
-        if _prepare_existing_runtime_cache(dest_root):
-            print(f"Prepared bundled runtime cache from existing runtime folder: {dest_root}")
-            return 0
-
-        if os.path.isfile(bundle_path):
-            print(f"Runtime folder is incomplete; using cached bundled runtime package: {bundle_path}")
+        if (
+            _is_usable_full_runtime(dest_root)
+            and is_current_private_runtime_root(dest_root)
+            and _profile_matches(dest_root)
+            and os.path.isfile(bundle_path)
+        ):
+            print(f"Bundled private Python 3.12 already present: {existing}")
             return 0
 
         _remove_tree(dest_root)
-
-    if os.path.isfile(bundle_path):
-        print(f"Using cached bundled runtime package: {bundle_path}")
-        return 0
 
     parent = os.path.dirname(dest_root)
     os.makedirs(parent, exist_ok=True)
@@ -667,9 +523,8 @@ def main() -> int:
     if os.path.isfile(profile_path):
         os.remove(profile_path)
 
-    if os.path.isdir(dest_root) and _prepare_existing_runtime_cache(dest_root):
-        print(f"Prepared bundled runtime cache from runtime folder: {dest_root}")
-        return 0
+    if os.path.isdir(dest_root):
+        _remove_tree(dest_root)
 
     print("Runtime cache missing; generating a new bundled Python 3.12 package...")
     _stage_clean_runtime_fallback(dest_root)
@@ -677,7 +532,7 @@ def main() -> int:
     _create_runtime_bundle(dest_root)
     staged = _find_python_in_root(dest_root)
     if staged and _is_usable_full_runtime(dest_root):
-        print(f"Bundled minimal Python 3.12 staged from official installer: {dest_root}")
+        print(f"Bundled Python 3.12 staged from an isolated archive: {dest_root}")
         return 0
 
     raise SystemExit(

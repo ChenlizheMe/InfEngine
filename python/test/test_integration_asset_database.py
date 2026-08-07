@@ -573,6 +573,130 @@ def test_asset_database_does_not_expose_legacy_resource_crud(engine):
         assert not hasattr(asset_db, name)
 
 
+def test_asset_database_moves_registered_assets_as_one_published_batch(engine, tmp_path: Path):
+    asset_db = engine.get_asset_database()
+    source_a = tmp_path / "batch-a.txt"
+    source_b = tmp_path / "batch-b.txt"
+    destination = tmp_path / "Moved"
+    destination.mkdir()
+    source_a.write_text("a", encoding="utf-8")
+    source_b.write_text("b", encoding="utf-8")
+    imported_a = asset_db.import_asset(str(source_a))
+    imported_b = asset_db.import_asset(str(source_b))
+    assert imported_a and imported_b
+    generation_before = asset_db.query_generation
+    moved_a = destination / source_a.name
+    moved_b = destination / source_b.name
+    source_a.replace(moved_a)
+    source_b.replace(moved_b)
+
+    results = asset_db.move_assets_batch(
+        [(str(source_a), str(moved_a)), (str(source_b), str(moved_b))]
+    )
+
+    assert len(results) == 2
+    assert all(results)
+    assert asset_db.query_generation == generation_before + 1
+    assert asset_db.get_guid_from_path(str(moved_a)) == imported_a.guid
+    assert asset_db.get_guid_from_path(str(moved_b)) == imported_b.guid
+    assert not asset_db.contains_path(str(source_a))
+    assert not asset_db.contains_path(str(source_b))
+
+    moved_a.replace(source_a)
+    moved_b.replace(source_b)
+    restored = asset_db.move_assets_batch(
+        [(str(moved_a), str(source_a)), (str(moved_b), str(source_b))]
+    )
+    assert len(restored) == 2 and all(restored)
+    assert asset_db.delete_asset(str(source_a))
+    assert asset_db.delete_asset(str(source_b))
+
+
+def test_asset_database_batch_rejects_destination_guid_collision(engine, tmp_path: Path):
+    asset_db = engine.get_asset_database()
+    source = tmp_path / "source.txt"
+    occupied = tmp_path / "occupied.txt"
+    source.write_text("source", encoding="utf-8")
+    occupied.write_text("occupied", encoding="utf-8")
+    source_result = asset_db.import_asset(str(source))
+    occupied_result = asset_db.import_asset(str(occupied))
+    assert source_result and occupied_result
+    generation_before = asset_db.query_generation
+
+    results = asset_db.move_assets_batch([(str(source), str(occupied))])
+
+    assert len(results) == 1
+    assert not results[0]
+    assert asset_db.query_generation == generation_before
+    assert asset_db.get_guid_from_path(str(source)) == source_result.guid
+    assert asset_db.get_guid_from_path(str(occupied)) == occupied_result.guid
+    assert asset_db.delete_asset(str(source))
+    assert asset_db.delete_asset(str(occupied))
+
+
+def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
+    engine, tmp_path: Path
+):
+    from Infernux.engine.interaction import (
+        AssetMutationService,
+        DocumentRegistry,
+        SelectionService,
+        SelectionTarget,
+    )
+    from Infernux.engine.ui import project_file_ops
+
+    asset_db = engine.get_asset_database()
+    source_dir = tmp_path / "Source"
+    destination_dir = tmp_path / "Destination"
+    source_dir.mkdir()
+    source_a = source_dir / "A.txt"
+    source_b = source_dir / "B.txt"
+    source_a.write_text("a", encoding="utf-8")
+    source_b.write_text("b", encoding="utf-8")
+    imported_a = asset_db.import_asset(str(source_a))
+    imported_b = asset_db.import_asset(str(source_b))
+    assert imported_a and imported_b
+
+    selection = SelectionService()
+    selection.select(
+        SelectionTarget.asset(str(source_a)),
+        owner_id="project",
+        record_history=False,
+    )
+    mutations = AssetMutationService(DocumentRegistry(), selection)
+    published = []
+    mutations.add_listener(published.append)
+    generation_before = asset_db.query_generation
+    moved_a = destination_dir / source_a.name
+    moved_b = destination_dir / source_b.name
+
+    try:
+        result = project_file_ops.move_path(
+            str(source_dir),
+            str(destination_dir),
+            asset_db,
+            origin="user",
+            operation_id="directory-transaction",
+        )
+
+        assert same_path(result, str(destination_dir))
+        assert asset_db.query_generation == generation_before + 1
+        assert asset_db.get_guid_from_path(str(moved_a)) == imported_a.guid
+        assert asset_db.get_guid_from_path(str(moved_b)) == imported_b.guid
+        assert selection.snapshot.primary == SelectionTarget.asset(str(moved_a))
+        assert len(published) == 1
+        assert published[0].operation_id == "directory-transaction"
+        assert len(published[0].changes) == 2
+        assert Path(f"{moved_a}.meta").is_file()
+        assert Path(f"{moved_b}.meta").is_file()
+        assert not list(destination_dir.rglob("*.meta.meta"))
+    finally:
+        mutations.shutdown()
+        for path in (moved_a, moved_b, source_a, source_b):
+            if asset_db.contains_path(str(path)):
+                asset_db.delete_asset(str(path))
+
+
 def test_metadata_creation_uses_the_submitted_source_bytes(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     text = tmp_path / "metadata-source.txt"

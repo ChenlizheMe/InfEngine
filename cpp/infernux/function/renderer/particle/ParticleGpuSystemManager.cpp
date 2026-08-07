@@ -2354,17 +2354,33 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
 bool ParticleGpuSystemManager::CanExecuteAsync() const noexcept
 {
     if (!m_impl || !m_impl->context || !m_impl->context->HasIndependentComputeQueue() || !m_impl->graphState ||
-        !m_impl->graphState->graph)
+        !m_impl->graphState->graph || m_impl->emitters.empty())
         return false;
     const auto &plan = m_impl->graphState->graph->GetSubmissionPlan();
     const uint32_t boundary = m_impl->graphState->renderExportBatch;
     if (boundary == rhi::InvalidSubmissionBatchIndex || boundary == 0 || boundary >= plan.batches.size())
         return false;
     return !m_impl->HasQueuedFrameRequests() &&
+           std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
+                       [](const auto &scheduler) { return scheduler && scheduler->HasPendingFrame(); }) &&
            std::all_of(m_impl->emitters.begin(), m_impl->emitters.end(), [](const auto &entry) {
                return !entry.second->hasFrameRequest ||
                       entry.second->lastOffscreenPolicy == GpuParticleOffscreenPolicy::AlwaysSimulate;
            });
+}
+
+bool ParticleGpuSystemManager::HasPendingGpuWork() const noexcept
+{
+    if (!m_impl || !m_impl->graphState || m_impl->emitters.empty())
+        return false;
+
+    if (m_impl->collisionScene && m_impl->collisionScene->HasPendingUpload())
+        return true;
+    if (!m_impl->pendingDiagnostics.empty() || m_impl->HasQueuedFrameRequests())
+        return true;
+
+    return std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
+                       [](const auto &scheduler) { return scheduler && scheduler->HasPendingFrame(); });
 }
 
 uint64_t ParticleGpuSystemManager::AsyncExecutionGeneration() const noexcept

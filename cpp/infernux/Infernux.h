@@ -72,7 +72,7 @@ class Infernux
     void InitRenderer(int width, int height, const std::string &projectPath,
                       const std::string &builtinResourcePath = "");
     void ResetImGuiLayout();
-    void SelectDockedWindow(const std::string &windowId);
+    void SelectDockedWindow(const std::string &windowId, bool allowDuringModal = false);
 
     // Automation input is queued and consumed by the graphical event loop.
     // It is kept separate from gameplay's InputManager query API.
@@ -335,14 +335,6 @@ class Infernux
     void PumpTimelineCubePreviewIfDirty();
     /// Process queued material preview renders (returns uploads consumed).
     int PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown);
-
-    /// @brief Schedule async material save from JSON snapshot.
-    /// @param key Coalescing key (usually file path)
-    /// @param filePath Target .mat path
-    /// @param jsonSnapshot Serialized material JSON snapshot
-    /// @return true if task accepted
-    bool ScheduleMaterialSaveSnapshotTask(const std::string &key, const std::string &filePath,
-                                          const std::string &jsonSnapshot);
 
     // debug
     void SetLogLevel(LogLevel engineLevel);

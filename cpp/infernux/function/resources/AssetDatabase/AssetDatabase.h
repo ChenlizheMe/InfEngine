@@ -145,6 +145,10 @@ class AssetDatabase
     /// Notifies dependents via AssetDependencyGraph::NotifyEvent(Moved).
     [[nodiscard]] AssetMutationResult MoveAsset(const std::string &oldPath, const std::string &newPath);
 
+    /// Commit a preflighted relocation batch with one catalog publication.
+    [[nodiscard]] std::vector<AssetMutationResult>
+    MoveAssetsBatch(const std::vector<std::pair<std::string, std::string>> &moves);
+
     /// @brief Check if a GUID exists
     [[nodiscard]] bool ContainsGuid(const std::string &guid) const;
 

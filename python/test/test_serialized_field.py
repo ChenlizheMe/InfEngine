@@ -27,7 +27,7 @@ from Infernux.components.serialized_field import (
     build_field_from_annotation, _unwrap_annotation, _UNSET,
 )
 from Infernux.components.ref_wrappers import MaterialRef, GameObjectRef, ComponentRef
-from Infernux.core.asset_ref import TextureRef
+from Infernux.core.asset_ref import AudioClipRef, ParticleGraphRef, TextureRef
 
 
 # ── annotation unwrapping ────────────────────────────────────────────────
@@ -130,6 +130,36 @@ class TestBuildField:
             pass
         meta = build_field_from_annotation(Weird, default=2.5)
         assert meta is not None and meta.field_type == FieldType.FLOAT
+
+    def test_audio_asset_annotation_carries_explicit_contract(self):
+        meta = build_field_from_annotation(AudioClipRef, default=_UNSET)
+
+        assert meta.field_type == FieldType.ASSET
+        assert meta.asset_type == "AudioClip"
+
+    def test_registered_asset_ref_annotation_infers_contract(self):
+        meta = build_field_from_annotation(ParticleGraphRef, default=_UNSET)
+
+        assert meta.field_type == FieldType.ASSET
+        assert meta.asset_type == "ParticleGraph"
+
+    def test_asset_list_annotation_propagates_element_contract(self):
+        meta = build_field_from_annotation(list[AudioClipRef], default=_UNSET)
+
+        assert meta.field_type == FieldType.LIST
+        assert meta.element_type == FieldType.ASSET
+        assert meta.asset_type == "AudioClip"
+
+    def test_untyped_asset_field_is_rejected_at_schema_construction(self):
+        with pytest.raises(ValueError, match="explicit asset_type"):
+            serialized_field(default=None, field_type=FieldType.ASSET)
+
+        with pytest.raises(ValueError, match="explicit asset_type"):
+            serialized_field(
+                default=[],
+                field_type=FieldType.LIST,
+                element_type=FieldType.ASSET,
+            )
 
 
 # ── full component declarations ──────────────────────────────────────────

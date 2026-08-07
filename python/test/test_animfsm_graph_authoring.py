@@ -22,11 +22,14 @@ def _panel_with_history():
     manager = UndoManager()
     manager.set_context_hooks(
         lambda: EditorContextSnapshot(selection=selection.snapshot),
-        lambda context, phase: selection.apply_snapshot(
-            context.selection,
-            reason=phase,
-            record_history=False,
-        ),
+        lambda context, phase: (
+            selection.apply_snapshot(
+                context.selection,
+                reason=phase,
+                record_history=False,
+            ),
+            True,
+        )[1],
     )
     panel = AnimFSMEditorPanel()
     panel._graph_selection.bind(selection)
@@ -40,7 +43,41 @@ def test_animfsm_uses_the_shared_node_graph_editor_and_domain_adapter():
     assert isinstance(panel._graph, AnimFSMGraphAuthoringModel)
     assert panel._view.on_link_created == panel._on_link_created
     assert panel._view.on_nodes_deleted == panel._on_nodes_deleted
-    assert panel._view.on_copy == panel._on_graph_copy
+    assert not hasattr(panel._view, "on_copy")
+    assert not hasattr(panel._view, "on_paste")
+    assert not hasattr(panel._view, "on_can_execute_edit_command")
+    assert not hasattr(panel._view, "on_execute_edit_command")
+
+
+def test_animfsm_disk_discard_reconciles_document_revision(tmp_path):
+    from Infernux.core.anim_state_machine import AnimStateMachine
+    from Infernux.engine.interaction import DocumentActionStatus
+
+    target = tmp_path / "Saved.animfsm"
+    assert AnimStateMachine(name="Saved").save(str(target))
+    panel, _manager = _panel_with_history()
+    panel.open_document_resource_immediate(str(target))
+    registry = DocumentRegistry.instance()
+    document = registry.require(panel.document_id)
+    registry.mark_changed(document.document_id)
+
+    result = registry.request_discard(document.document_id)
+
+    assert result.status is DocumentActionStatus.APPLIED
+    assert registry.require(panel.document_id).is_dirty is False
+    assert panel._document_is_dirty() is False
+
+
+def test_animfsm_title_refresh_cannot_redirty_a_saved_document():
+    panel, _manager = _panel_with_history()
+    registry = DocumentRegistry.instance()
+    document = registry.require(panel.document_id)
+    registry.mark_changed(document.document_id)
+    registry.mark_saved(document.document_id)
+
+    assert panel._window_title_suffix() == ""
+    assert document.is_dirty is False
+    assert panel._document_is_dirty() is False
 
 
 def test_animfsm_stages_structure_in_node_graph_without_mutating_fsm(monkeypatch):
@@ -60,6 +97,18 @@ def test_animfsm_stages_structure_in_node_graph_without_mutating_fsm(monkeypatch
     assert observed["mutation_count"] == 2
     assert observed["fsm_states"] == ()
     assert observed["graph_node"] is None
+
+
+def test_node_graph_host_rejects_mutation_when_history_is_disabled():
+    panel, manager = _panel_with_history()
+    document = panel._fsm_document()
+    initial_revision = document.revision
+    manager.enabled = False
+
+    assert not panel._insert_parameter()
+    assert panel._fsm.parameters == []
+    assert document.revision == initial_revision
+    assert manager.action_journal.entries == ()
 
 
 def test_animfsm_parameter_edit_uses_stable_diff_and_document_revision():
@@ -99,6 +148,137 @@ def test_animfsm_parameter_edit_uses_stable_diff_and_document_revision():
     manager.redo()
     assert panel._fsm.parameters[0].name == "speed"
     assert document.revision == rename_revision
+
+
+def test_node_graph_edit_records_revealed_panel_before_its_mutation():
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import FocusService
+    from Infernux.engine.undo import GlobalFocusCommand
+
+    DocumentRegistry()
+    selection = SelectionService()
+    focus = FocusService()
+    manager = UndoManager()
+    panel = AnimFSMEditorPanel()
+    panel._graph_selection.bind(selection)
+
+    class _HiddenGraphWindow:
+        @staticmethod
+        def is_window_content_visible(_window_id):
+            return False
+
+    panel._window_manager = _HiddenGraphWindow()
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.window_manager = panel._window_manager
+    bootstrap.interaction_core = SimpleNamespace(
+        focus=focus,
+        capture_context=lambda **overrides: EditorContextSnapshot(
+            overrides.get("focus", focus.snapshot),
+            overrides.get("selection", selection.snapshot),
+        ),
+    )
+    focus.add_change_listener(bootstrap._on_global_focus_changed)
+    focus.activate_panel("scene_view", view_id="scene_view", record_history=False)
+    manager.set_context_hooks(
+        bootstrap.interaction_core.capture_context,
+        lambda context, _phase: (
+            focus.apply_snapshot(context.focus, record_history=False),
+            selection.apply_snapshot(context.selection, record_history=False),
+            True,
+        )[-1],
+    )
+
+    assert panel._insert_parameter()
+
+    entries = manager.action_journal.entries
+    assert len(entries) == 2
+    assert isinstance(entries[0].action, GlobalFocusCommand)
+    assert entries[0].after_context.focus.active_view_id == panel.window_id
+    assert entries[1].before_context.focus.active_view_id == panel.window_id
+    assert entries[1].after_context.focus.active_view_id == panel.window_id
+
+    manager.undo()
+    assert panel._fsm.parameters == []
+    assert focus.snapshot.active_view_id == panel.window_id
+    manager.undo()
+    assert focus.snapshot.active_view_id == "scene_view"
+
+
+def test_node_graph_edit_scene_switch_and_scene_edit_undo_in_exact_order():
+    from types import SimpleNamespace
+
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import FocusService
+    from Infernux.engine.undo import GlobalFocusCommand, LambdaCommand
+
+    DocumentRegistry()
+    selection = SelectionService()
+    focus = FocusService()
+    manager = UndoManager()
+    panel = AnimFSMEditorPanel()
+    panel._graph_selection.bind(selection)
+
+    class _VisibleGraphWindow:
+        @staticmethod
+        def is_window_content_visible(window_id):
+            return window_id == panel.window_id
+
+    panel._window_manager = _VisibleGraphWindow()
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.window_manager = panel._window_manager
+    bootstrap.interaction_core = SimpleNamespace(
+        focus=focus,
+        capture_context=lambda **overrides: EditorContextSnapshot(
+            overrides.get("focus", focus.snapshot),
+            overrides.get("selection", selection.snapshot),
+        ),
+    )
+    focus.add_change_listener(bootstrap._on_global_focus_changed)
+    focus.activate_panel(
+        panel.window_id,
+        view_id=panel.window_id,
+        document_id=panel.document_id,
+        record_history=False,
+    )
+    manager.set_context_hooks(
+        bootstrap.interaction_core.capture_context,
+        lambda context, _phase: (
+            focus.apply_snapshot(context.focus, record_history=False),
+            selection.apply_snapshot(context.selection, record_history=False),
+            True,
+        )[-1],
+    )
+
+    assert panel._insert_parameter()
+    scene_value = {"x": 0.0}
+    focus.activate_panel("scene_view", view_id="scene_view", record_history=True)
+    assert manager.execute(
+        LambdaCommand(
+            "Move Camera",
+            undo_fn=lambda: scene_value.update(x=0.0),
+            redo_fn=lambda: scene_value.update(x=1.0),
+        )
+    )
+
+    entries = manager.action_journal.entries
+    assert [entry.action.description for entry in entries] == [
+        "Add parameter",
+        "Focus scene_view",
+        "Move Camera",
+    ]
+    assert isinstance(entries[1].action, GlobalFocusCommand)
+
+    manager.undo()
+    assert scene_value["x"] == 0.0
+    assert focus.snapshot.active_view_id == "scene_view"
+    manager.undo()
+    assert focus.snapshot.active_view_id == panel.window_id
+    manager.undo()
+    assert panel._fsm.parameters == []
+    assert focus.snapshot.active_view_id == panel.window_id
+    assert len(manager.action_journal.entries) == 3
 
 
 def test_animfsm_parameter_rename_preserves_transition_reference_and_undo():
@@ -142,7 +322,7 @@ def test_animfsm_parameter_rename_preserves_transition_reference_and_undo():
     assert panel._fsm.states[0].transitions[0].conditions[0].parameter_id == (
         parameter.stable_id
     )
-    rename_diff = manager._undo_stack[-1].diff
+    rename_diff = manager.action_journal.applied_entries()[-1].action.diff
     assert [mutation.element.kind for mutation in rename_diff.mutations] == [
         GraphElementKind.PARAMETER,
     ]
@@ -197,7 +377,7 @@ def test_animfsm_node_move_does_not_snapshot_the_whole_fsm():
 
     assert state.position == [110.0, 220.0]
     assert document.revision > initial_revision
-    assert len(manager._undo_stack[-1].diff.mutations) == 1
+    assert len(manager.action_journal.applied_entries()[-1].action.diff.mutations) == 1
 
     manager.undo()
     assert state.position == [10.0, 20.0]
@@ -211,16 +391,18 @@ def test_animfsm_structural_undo_uses_shared_node_graph_payloads():
 
     assert panel._insert_state(state, "Add Shared Core", make_default=True)
 
-    mutations = manager._undo_stack[-1].diff.mutations
+    mutations = manager.action_journal.applied_entries()[-1].action.diff.mutations
     node_insert = next(
         mutation
         for mutation in mutations
         if mutation.element.kind is GraphElementKind.NODE
     )
-    assert node_insert.after["type_id"] == "anim_state"
+    assert node_insert.after["type_id"] == "animfsm.state"
     assert node_insert.after["position"] == [64.0, 96.0]
     assert node_insert.after["properties"]["fsm_state"]["stable_id"] == state.stable_id
-    assert not hasattr(manager._undo_stack[-1], "before_snapshot")
+    assert not hasattr(
+        manager.action_journal.applied_entries()[-1].action, "before_snapshot"
+    )
 
 
 def test_animfsm_state_delete_undo_restores_tree_links_default_and_selection():
@@ -257,7 +439,7 @@ def test_animfsm_state_delete_undo_restores_tree_links_default_and_selection():
         for transition in state.transitions
     )
     assert panel._graph_selection.elements == ()
-    assert len(manager._undo_stack[-1].diff.mutations) == 5
+    assert len(manager.action_journal.applied_entries()[-1].action.diff.mutations) == 5
 
     manager.undo()
 
@@ -327,7 +509,7 @@ def test_animfsm_transition_reconnect_is_one_precise_undo_step():
     owner, current = panel._fsm.get_transition_by_id(transition.stable_id)
     assert owner.stable_id == other_source.stable_id
     assert current.target_state == "Other Target"
-    assert len(manager._undo_stack[-1].diff.mutations) == 1
+    assert len(manager.action_journal.applied_entries()[-1].action.diff.mutations) == 1
 
     manager.undo()
     owner, current = panel._fsm.get_transition_by_id(transition.stable_id)
@@ -362,7 +544,10 @@ def test_animfsm_copy_paste_uses_global_typed_clipboard_and_is_atomic():
 
     payload = ClipboardService.instance().peek(ClipboardDomain.GRAPH_ELEMENT)
     assert payload is not None
-    assert {item.sub_kind for item in payload.items} == {"animfsm_state"}
+    assert len(payload.items) == 1
+    assert payload.items[0].sub_kind == "node_graph_subgraph"
+    assert len(payload.items[0].data.state.nodes) == 2
+    assert len(payload.items[0].data.state.links) == 1
     baseline = panel._fsm.to_dict()
     baseline_revision = panel._fsm_document().revision
     manager.clear()
@@ -380,7 +565,7 @@ def test_animfsm_copy_paste_uses_global_typed_clipboard_and_is_atomic():
     assert pasted_first.position == [58.0, 68.0]
     assert pasted_second.position == [78.0, 88.0]
     assert [item.target_state for item in pasted_first.transitions] == ["Second 2"]
-    assert len(manager._undo_stack[-1].diff.mutations) == 3
+    assert len(manager.action_journal.applied_entries()[-1].action.diff.mutations) == 3
 
     manager.undo()
     assert panel._fsm.to_dict() == baseline
@@ -401,3 +586,46 @@ def test_animfsm_paste_rejects_another_graph_domain_payload():
 
     assert panel._fsm.to_dict() == baseline
     assert manager.can_undo is False
+
+
+def test_animfsm_duplicate_and_cut_use_shared_graph_commands():
+    panel, manager = _panel_with_history()
+    first = AnimState(name="First", position=[10.0, 20.0])
+    second = AnimState(name="Second", position=[30.0, 40.0])
+    assert panel._insert_state(first, "Add First", make_default=True)
+    assert panel._insert_state(second, "Add Second", make_default=False)
+    transition = AnimTransition(target_state="Second")
+    assert panel._insert_transition(first, transition, "Connect")
+    panel._graph_selection.select(
+        (
+            GraphElementRef(GraphElementKind.NODE, first.stable_id),
+            GraphElementRef(GraphElementKind.NODE, second.stable_id),
+        ),
+        record_history=False,
+    )
+    manager.clear()
+
+    assert panel.command_edit_duplicate()
+    assert [state.name for state in panel._fsm.states] == [
+        "First",
+        "Second",
+        "First 2",
+        "Second 2",
+    ]
+    assert manager.undo_description == "Duplicate graph nodes"
+    manager.undo()
+    assert [state.name for state in panel._fsm.states] == ["First", "Second"]
+
+    panel._graph_selection.select(
+        (
+            GraphElementRef(GraphElementKind.NODE, first.stable_id),
+            GraphElementRef(GraphElementKind.NODE, second.stable_id),
+        ),
+        record_history=False,
+    )
+    manager.clear()
+    assert panel.command_edit_cut()
+    assert panel._fsm.states == []
+    assert manager.undo_description == "Delete states"
+    manager.undo()
+    assert [state.name for state in panel._fsm.states] == ["First", "Second"]
