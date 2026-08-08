@@ -236,6 +236,7 @@ void OutlineRenderer::Cleanup(bool waitForIdle)
     m_outlineCompositeDescSet = VK_NULL_HANDLE;
     m_outlineMaskRenderPass = VK_NULL_HANDLE;
     m_outlineCompositeRenderPass = VK_NULL_HANDLE;
+    m_outlineCompositeSamples = VK_SAMPLE_COUNT_1_BIT;
     m_resourcesReady = false;
 }
 
@@ -243,18 +244,22 @@ void OutlineRenderer::Cleanup(bool waitForIdle)
 // Rendering
 // ============================================================================
 
-bool OutlineRenderer::EnsureGraphPipelines(VkRenderPass maskRenderPass, VkRenderPass compositeRenderPass)
+bool OutlineRenderer::EnsureGraphPipelines(VkRenderPass maskRenderPass, VkRenderPass compositeRenderPass,
+                                           VkSampleCountFlagBits compositeSamples)
 {
-    if (!m_resourcesReady || maskRenderPass == VK_NULL_HANDLE || compositeRenderPass == VK_NULL_HANDLE)
+    if (!m_resourcesReady || maskRenderPass == VK_NULL_HANDLE || compositeRenderPass == VK_NULL_HANDLE ||
+        compositeSamples == 0)
         return false;
     if (m_outlineMaskRenderPass == maskRenderPass && m_outlineCompositeRenderPass == compositeRenderPass &&
-        m_outlineMaskPipeline != VK_NULL_HANDLE && m_outlineCompositePipeline != VK_NULL_HANDLE) {
+        m_outlineCompositeSamples == compositeSamples && m_outlineMaskPipeline != VK_NULL_HANDLE &&
+        m_outlineCompositePipeline != VK_NULL_HANDLE) {
         return true;
     }
 
     DestroyOutlinePipelines();
     m_outlineMaskRenderPass = maskRenderPass;
     m_outlineCompositeRenderPass = compositeRenderPass;
+    m_outlineCompositeSamples = compositeSamples;
     return CreateOutlinePipelines();
 }
 
@@ -372,7 +377,7 @@ bool OutlineRenderer::CreateOutlinePipelines()
         DynamicViewportState viewportState;
         VkPipelineRasterizationStateCreateInfo raster = MakeRasterizationState(VK_CULL_MODE_NONE);
         VkPipelineDepthStencilStateCreateInfo depthStencil = MakeDepthStencilState(VK_FALSE, VK_FALSE);
-        VkPipelineMultisampleStateCreateInfo multisampling = MakeMultisampleState(VK_SAMPLE_COUNT_1_BIT);
+        VkPipelineMultisampleStateCreateInfo multisampling = MakeMultisampleState(m_outlineCompositeSamples);
         VkPipelineColorBlendAttachmentState colorBlendAttach = MakeAlphaBlendAttachment();
         VkPipelineColorBlendStateCreateInfo colorBlend = MakeColorBlendState(colorBlendAttach);
 

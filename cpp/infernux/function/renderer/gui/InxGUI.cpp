@@ -577,12 +577,16 @@ void InxGUI::BuildFrameInternal()
             ImGui::DockBuilderDockWindow("###hierarchy", dockLeft);
             ImGui::DockBuilderDockWindow("###inspector", dockRight);
             ImGui::DockBuilderDockWindow("###toolbar", dockToolbar);
-            ImGui::DockBuilderDockWindow("###scene_view", dockScene);
             ImGui::DockBuilderDockWindow("###game_view", dockScene);
             ImGui::DockBuilderDockWindow("###ui_editor", dockScene);
             ImGui::DockBuilderDockWindow("###animclip2d_editor", dockScene);
             ImGui::DockBuilderDockWindow("###animfsm_editor", dockScene);
             ImGui::DockBuilderDockWindow("###animtimeline_editor", dockScene);
+            ImGui::DockBuilderDockWindow("###particle_graph_editor", dockScene);
+            // Dock Scene last so it is the selected central tab on a fresh
+            // workspace. UI Editor then remains hidden and cannot switch the
+            // Hierarchy into UI mode during the first editor frame.
+            ImGui::DockBuilderDockWindow("###scene_view", dockScene);
             ImGui::DockBuilderDockWindow("###console", dockBottom);
             ImGui::DockBuilderDockWindow("###project", dockBottom);
 

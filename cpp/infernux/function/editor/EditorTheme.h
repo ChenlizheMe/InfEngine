@@ -86,9 +86,9 @@ constexpr float TOOLBAR_FRAME_RND = 3.0f;
 // (reuses TOOLBAR_FRAME_PAD / TOOLBAR_ITEM_SPC / TOOLBAR_WIN_PAD)
 
 // ── Popup spacing ────────────────────────────────────────────────────
-constexpr ImVec2 POPUP_WIN_PAD{8.0f, 8.0f};
-constexpr ImVec2 POPUP_ITEM_SPC{8.0f, 4.0f};
-constexpr ImVec2 POPUP_FRAME_PAD{4.0f, 3.0f};
+constexpr ImVec2 POPUP_WIN_PAD{12.0f, 10.0f};
+constexpr ImVec2 POPUP_ITEM_SPC{10.0f, 8.0f};
+constexpr ImVec2 POPUP_FRAME_PAD{8.0f, 6.0f};
 
 // ── Status bar spacing ───────────────────────────────────────────────
 constexpr ImVec2 STATUS_BAR_WIN_PAD{6.0f, 4.0f};
@@ -143,7 +143,7 @@ constexpr ImVec2 INSPECTOR_ITEM_SPC{4.0f, 2.0f};
 constexpr float INSPECTOR_SECTION_GAP = 6.0f;
 constexpr float INSPECTOR_TITLE_GAP = 10.0f;
 constexpr float INSPECTOR_ACTION_ALIGN_X = 0.0f;
-constexpr float INSPECTOR_HEADER_CONTENT_INDENT = 28.0f;
+constexpr float INSPECTOR_HEADER_CONTENT_INDENT = 34.0f;
 constexpr float COMPONENT_ICON_SIZE = 16.0f;
 
 constexpr ImVec2 INSPECTOR_HEADER_PRIMARY_FRAME_PAD{4.0f, 2.0f};
@@ -168,6 +168,8 @@ constexpr ImVec2 INSPECTOR_CHECKBOX_FRAME_PAD{3.0f, 1.5f};
 /// Scales only the checkbox square (label text stays at ambient font size).
 constexpr float INSPECTOR_CHECKBOX_BOX_SCALE = 0.75f;
 constexpr float INSPECTOR_CHECKBOX_SLOT_W = 16.5f;
+/// Fixed side length (px) of every checkbox square — one size everywhere.
+constexpr float INSPECTOR_CHECKBOX_BOX_PX = 14.0f;
 /// Fixed width of the numeric input box beside a ranged slider row.
 constexpr float INSPECTOR_RANGED_INPUT_WIDTH = 52.0f;
 constexpr float INSPECTOR_SLIDER_LINE_PAD = 2.0f;

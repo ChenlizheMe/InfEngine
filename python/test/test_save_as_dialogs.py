@@ -5,10 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from Infernux.core.animation_timeline import TimelineKeyframe
 from Infernux.engine.interaction import ModalService
+from Infernux.engine.ui.animclip2d_editor_panel import AnimClip2DEditorPanel
+from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
 from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 from Infernux.engine.ui.asset_save_dialog import AssetSaveAsDialog
+from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
 
 class _SemanticContext:
@@ -69,6 +74,22 @@ class _SemanticContext:
 
     def get_content_region_avail_width(self):
         return 320.0
+
+
+@pytest.mark.parametrize(
+    "panel_factory",
+    (
+        pytest.param(AnimClip2DEditorPanel, id="animclip2d"),
+        pytest.param(AnimFSMEditorPanel, id="animfsm"),
+        pytest.param(AnimTimelineEditorPanel, id="timeline"),
+        pytest.param(ParticleGraphEditorPanel, id="particle_graph"),
+    ),
+)
+def test_authoring_windows_open_with_a_clean_blank_document(panel_factory):
+    panel = panel_factory()
+
+    assert panel.document_id
+    assert panel._document_is_dirty() is False
 
 
 def test_asset_save_dialog_resolves_project_relative_asset_path(tmp_path):
@@ -206,6 +227,8 @@ def test_timeline_new_document_and_dirty_draft_round_trip_through_registry_sessi
     from Infernux.engine.interaction import DocumentRegistry
 
     panel = AnimTimelineEditorPanel()
+    assert panel._document_is_dirty() is False
+    assert panel._new_timeline_immediate()
     assert panel._document_is_dirty() is True
     panel._timeline.duration = 7.5
     panel._timeline.keyframes.append(TimelineKeyframe(time=1.25))
@@ -531,6 +554,10 @@ def test_particle_graph_save_as_clears_document_dirty_state(
     )
     try:
         panel = ParticleGraphEditorPanel()
+        core.documents.mark_changed(
+            panel.document_id,
+            view_id=panel.window_id,
+        )
         result = core.documents.request_save(panel.document_id)
         assert result.status is DocumentActionStatus.PENDING
         assert core.documents.require(panel.document_id).is_dirty is True

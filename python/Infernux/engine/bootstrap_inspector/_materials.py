@@ -129,12 +129,6 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
         if not renderers:
             return
 
-        ctx.dummy(0, Theme.INSPECTOR_SECTION_GAP * 1.5)
-        ctx.separator()
-        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT)
-        ctx.label(_t("inspector.material_overrides"))
-        ctx.pop_style_color(1)
-        ctx.separator()
         if not render_compact_section_header(
             ctx, "Materials##obj_mat_sections", level="primary", default_open=True
         ):

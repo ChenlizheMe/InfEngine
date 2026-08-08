@@ -760,6 +760,38 @@ def test_python_asset_reference_field_uses_component_semantic(monkeypatch):
     assert captured["semantic_id"] == "inspector.object.143.component.547.controller"
 
 
+def test_python_generic_asset_field_uses_unified_reference_widget(monkeypatch):
+    import Infernux.engine.ui.inspector_components as module
+    from Infernux.components.particle_system import ParticleSystem
+    from Infernux.components.serialized_field import FieldType, get_serialized_fields
+
+    metadata = get_serialized_fields(ParticleSystem)["graph"]
+    rendered = []
+    flushed = []
+    monkeypatch.setattr(
+        module,
+        "_render_asset_reference_field",
+        lambda *args, **kwargs: rendered.append((args, kwargs)),
+    )
+    monkeypatch.setattr(module, "_tooltip_and_info", lambda *_args: None)
+
+    handled = module._render_py_nonscalar_field(
+        SimpleNamespace(),
+        SimpleNamespace(graph=metadata.default),
+        "graph",
+        metadata,
+        metadata.default,
+        120.0,
+        lambda: flushed.append(True),
+    )
+
+    assert metadata.field_type == FieldType.ASSET
+    assert metadata.asset_type == "ParticleGraph"
+    assert handled is True
+    assert flushed == [True]
+    assert len(rendered) == 1
+
+
 def test_all_asset_reference_widgets_use_the_unified_typed_contract():
     import ast
     from pathlib import Path

@@ -224,7 +224,9 @@ class AnimTimelineEditorPanel(EditorPanel):
             owner_id=self._window_id,
         )
         self._pending_save_ticket_id: str = ""
-        self._replace_timeline_document(resource_path="", dirty=True)
+        # An untouched window owns a clean blank baseline. User-authored New
+        # timelines continue to be unsaved drafts.
+        self._replace_timeline_document(resource_path="", dirty=False)
 
     def on_enable(self) -> None:
         pass
@@ -472,9 +474,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         )
 
         mutations = AuthoringMutationService.require()
-        if not mutations.can_record(
-            require_edit_mode=False
-        ):
+        if not mutations.can_record():
             return False
 
         edits = ContinuousEditService.instance()
@@ -579,7 +579,6 @@ class AnimTimelineEditorPanel(EditorPanel):
                 field_name,
                 copy.deepcopy(session.initial_value),
             ),
-            require_edit_mode=False,
         )
         return recorded
 
@@ -639,7 +638,6 @@ class AnimTimelineEditorPanel(EditorPanel):
                 description,
             ),
             view_id=self.window_id,
-            require_edit_mode=False,
         )
         return applied
 
@@ -925,7 +923,6 @@ class AnimTimelineEditorPanel(EditorPanel):
             view_id=self.window_id,
             before_selection=before_selection,
             after_selection=after_selection,
-            require_edit_mode=False,
         )
         if applied:
             inserted = self._timeline.find_keyframe(key.stable_id)
@@ -961,7 +958,6 @@ class AnimTimelineEditorPanel(EditorPanel):
             view_id=self.window_id,
             before_selection=SelectionService.instance().snapshot,
             after_selection=SelectionSnapshot(),
-            require_edit_mode=False,
         )
         if applied:
             self._clear_key_selection(record_history=False)

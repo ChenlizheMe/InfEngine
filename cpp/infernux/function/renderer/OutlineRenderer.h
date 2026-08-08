@@ -149,7 +149,8 @@ class OutlineRenderer
     // ========================================================================
 
     /// @brief Build pipelines against the graph-owned compatible render passes.
-    bool EnsureGraphPipelines(VkRenderPass maskRenderPass, VkRenderPass compositeRenderPass);
+    bool EnsureGraphPipelines(VkRenderPass maskRenderPass, VkRenderPass compositeRenderPass,
+                              VkSampleCountFlagBits compositeSamples);
 
     /// @brief Record selected-object draws inside the active graph mask pass.
     void RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls,
@@ -202,6 +203,7 @@ class OutlineRenderer
     // Non-owning graph render-pass compatibility handles.
     VkRenderPass m_outlineMaskRenderPass = VK_NULL_HANDLE;
     VkRenderPass m_outlineCompositeRenderPass = VK_NULL_HANDLE;
+    VkSampleCountFlagBits m_outlineCompositeSamples = VK_SAMPLE_COUNT_1_BIT;
 
     // Mask pipeline (renders selected object as white silhouette)
     VkPipeline m_outlineMaskPipeline = VK_NULL_HANDLE;

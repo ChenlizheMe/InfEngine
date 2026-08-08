@@ -309,6 +309,17 @@ def test_node_graph_view_gesture_commits_one_non_dirty_history_step():
         assert (view.pan_x, view.pan_y, view.zoom) == (10.0, 20.0, 1.0)
         manager.redo()
         assert (view.pan_x, view.pan_y, view.zoom) == (48.0, -12.0, 1.0)
+
+        entries_before_zoom = manager.action_journal.entries
+        cursor_before_zoom = manager.action_journal.cursor
+        view.zoom = 1.5
+        assert panel._on_node_graph_view_gesture_committed(
+            "zoom",
+            (48.0, -12.0, 1.0),
+            (48.0, -12.0, 1.5),
+        )
+        assert manager.action_journal.entries == entries_before_zoom
+        assert manager.action_journal.cursor == cursor_before_zoom
     finally:
         core.shutdown()
         EditorInteractionCore._instance = previous_core

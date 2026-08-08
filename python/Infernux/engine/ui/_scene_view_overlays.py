@@ -770,8 +770,10 @@ class SceneViewOverlaysMixin:
             ctx.draw_filled_circle(ex, ey, er, clr[0], clr[1], clr[2], a, 16)
 
             # Unity-style: label the endpoint that currently faces the camera.
+            # Center the label on the circle so it never pokes out of the ball.
             if front_facing:
-                ctx.draw_text(ex - 3, ey - 5, label, 1.0, 1.0, 1.0, 1.0)
+                tw, th = ctx.calc_text_size(label)
+                ctx.draw_text(ex - tw * 0.5, ey - th * 0.5, label, 1.0, 1.0, 1.0, 1.0)
 
             # Hit test
             dx = mouse_x - ex

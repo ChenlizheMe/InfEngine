@@ -298,7 +298,7 @@ bool DrawInspectorSliderScalar(const char *id, ImGuiDataType dataType, void *dat
     return changed;
 }
 
-bool DrawUnityRangedFloat(const char *baseId, float *value, float min, float max)
+bool DrawUnityRangedFloat(const char *baseId, float *value, float min, float max, const char *format)
 {
     const ImGuiStyle &style = ImGui::GetStyle();
     const float spacing = style.ItemInnerSpacing.x;
@@ -311,7 +311,7 @@ bool DrawUnityRangedFloat(const char *baseId, float *value, float min, float max
     bool changed = DrawInspectorSliderScalar("##slider", ImGuiDataType_Float, value, &min, &max);
     ImGui::SameLine(0.0f, spacing);
     ImGui::SetNextItemWidth(inputW);
-    if (ImGui::InputFloat("##input", value, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_CharsDecimal))
+    if (ImGui::InputFloat("##input", value, 0.0f, 0.0f, format ? format : "%.3f", ImGuiInputTextFlags_CharsDecimal))
         changed = true;
     *value = std::clamp(*value, min, max);
     ImGui::PopID();
@@ -405,11 +405,14 @@ int InxGUIContext::SelectableListClipped(size_t itemCount, const std::function<s
 }
 
 /* value editors */
-void InxGUIContext::Checkbox(const std::string &label, bool *value)
+bool InxGUIContext::Checkbox(const std::string &label, bool *value)
 {
-    ImGui::Checkbox(label.c_str(), value);
+    // Unified compact checkbox (75% square, ambient-size label) everywhere,
+    // matching CheckboxInspector. Semantics are recorded here.
+    const bool changed = CheckboxInspector(label, value);
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("checkbox", label, true, "", *value);
+    return changed;
 }
 
 namespace
@@ -417,8 +420,8 @@ namespace
 
 bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::string *outVisible)
 {
-    // Split "Visible##id" so only the square is scaled — label text stays at
-    // the ambient inspector font size.
+    // Split "Visible##id" so only the square is drawn — label text stays at
+    // the ambient font size.
     std::string visible;
     std::string id;
     const size_t hashPos = label.find("##");
@@ -432,31 +435,55 @@ bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::str
     if (id.empty() || id == "##")
         id = "##inx_cb";
 
-    // Center the compact square in the current row. Prefer the previous item's
-    // height (component header / icon dummy) over text-line height so the box
-    // sits vertically centered in tall header bars.
-    const float rowY = ImGui::GetCursorPosY();
-    const float rowH = (std::max)(ImGui::GetFrameHeight(), ImGui::GetItemRectSize().y);
+    ImGuiWindow *window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+        return false;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_CHECKBOX_FRAME_PAD);
-    ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_CHECKBOX_BOX_SCALE);
-    const float boxH = ImGui::GetFrameHeight();
-    if (boxH < rowH)
-        ImGui::SetCursorPosY(rowY + (rowH - boxH) * 0.5f);
+    // One fixed square size everywhere. The square and its optional label are
+    // submitted as one item so ImGui advances the row exactly once.
+    const float boxSize = EditorTheme::INSPECTOR_CHECKBOX_BOX_PX;
+    const float textHeight = ImGui::GetTextLineHeight();
+    const float rowHeight = (std::max)(boxSize, textHeight);
+    const float labelWidth = visible.empty() ? 0.0f : ImGui::CalcTextSize(visible.c_str()).x;
+    const float labelSpacing = visible.empty() ? 0.0f : ImGui::GetStyle().ItemInnerSpacing.x;
+    const float itemWidth = boxSize + labelSpacing + labelWidth;
 
-    const bool changed = ImGui::Checkbox(id.c_str(), value);
-    ImGui::SetWindowFontScale(1.0f);
-    ImGui::PopStyleVar();
+    const bool clicked = ImGui::InvisibleButton(id.c_str(), ImVec2(itemWidth, rowHeight));
+    const bool hovered = ImGui::IsItemHovered();
+
+    const ImVec2 itemMin = ImGui::GetItemRectMin();
+    const float boxOffsetY = (rowHeight - boxSize) * 0.5f;
+    const ImVec2 boxMin(itemMin.x, itemMin.y + boxOffsetY);
+    const ImVec2 boxMax(itemMin.x + boxSize, itemMin.y + boxOffsetY + boxSize);
+    ImDrawList *drawList = ImGui::GetWindowDrawList();
+    const float rounding = 3.0f;
+    const ImU32 bgColor = ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+    const ImU32 borderColor = ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgActive : ImGuiCol_Border);
+    drawList->AddRectFilled(boxMin, boxMax, bgColor, rounding);
+    drawList->AddRect(boxMin, boxMax, borderColor, rounding, 0, 1.0f);
+
+    if (*value) {
+        const ImU32 checkColor = ImGui::GetColorU32(ImGuiCol_CheckMark);
+        const float s = boxSize;
+        const ImVec2 check[3] = {
+            {boxMin.x + s * 0.18f, boxMin.y + s * 0.52f},
+            {boxMin.x + s * 0.42f, boxMin.y + s * 0.76f},
+            {boxMin.x + s * 0.84f, boxMin.y + s * 0.26f},
+        };
+        drawList->AddPolyline(check, 3, checkColor, ImDrawFlags_None, 2.0f);
+    }
+
+    if (clicked)
+        *value = !*value;
 
     if (!visible.empty()) {
-        ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(visible.c_str());
+        const ImVec2 textPos(boxMax.x + labelSpacing, itemMin.y + (rowHeight - textHeight) * 0.5f);
+        drawList->AddText(textPos, ImGui::GetColorU32(ImGuiCol_Text), visible.c_str());
     }
 
     if (outVisible)
         *outVisible = std::move(visible);
-    return changed;
+    return clicked;
 }
 
 } // namespace
@@ -474,9 +501,9 @@ void InxGUIContext::IntSlider(const std::string &label, int *value, int min, int
         RecordSemanticItem("int_slider", label, true, "", std::nullopt, static_cast<double>(*value));
 }
 
-void InxGUIContext::FloatSlider(const std::string &label, float *value, float min, float max)
+void InxGUIContext::FloatSlider(const std::string &label, float *value, float min, float max, const char *format)
 {
-    DrawUnityRangedFloat(label.c_str(), value, min, max);
+    DrawUnityRangedFloat(label.c_str(), value, min, max, format);
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("float_slider", label, true, "", std::nullopt, static_cast<double>(*value));
 }
@@ -938,7 +965,9 @@ std::vector<PopupContentStyle> s_popupContentStyleStack;
 int PushPopupWindowChrome()
 {
     const float em = ImGui::GetFontSize();
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.45f, em * 0.5f));
+    // Keep horizontal bleed (content-to-edge breathing room) but keep the
+    // popup itself compact vertically.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.7f, em * 0.5f));
     return 1;
 }
 
@@ -947,11 +976,9 @@ void PushPopupContentStyle()
 {
     PopupContentStyle entry;
     const float em = ImGui::GetFontSize();
-    // Taller rows: Selectable/MenuItem extend their hover band across the
-    // ItemSpacing gap, so a larger vertical spacing yields a contiguous,
-    // Unity-like highlight instead of thin strips.
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.5f, em * 0.5f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(em * 0.5f, em * 0.3f));
+    // Compact rows: tight ItemSpacing / FramePadding so popups stay dense.
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.3f, em * 0.3f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(em * 0.4f, em * 0.25f));
     entry.styleVars = 2;
 
     // Clearer hover / click feedback, derived from the active theme so any
@@ -1035,6 +1062,14 @@ bool InxGUIContext::MenuItem(const std::string &label, const std::string &shortc
 /* child & windows */
 bool InxGUIContext::BeginChild(const std::string &id, float width, float height, bool border, int flags)
 {
+    // Inside a popup, child scroll regions must not draw their own background
+    // (the popup window already provides one). Keep the stack balanced via the
+    // matching EndChild.
+    const bool inPopup = !s_popupContentStyleStack.empty();
+    if (inPopup) {
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ++m_childBgTransparentCount;
+    }
     return ImGui::BeginChild(id.c_str(), ImVec2(width, height), border ? ImGuiChildFlags_Borders : 0,
                              static_cast<ImGuiWindowFlags>(flags));
 }
@@ -1042,6 +1077,10 @@ bool InxGUIContext::BeginChild(const std::string &id, float width, float height,
 void InxGUIContext::EndChild()
 {
     ImGui::EndChild();
+    if (m_childBgTransparentCount > 0) {
+        --m_childBgTransparentCount;
+        ImGui::PopStyleColor();
+    }
 }
 
 /* popups & tooltips */
@@ -1467,7 +1506,11 @@ int InxGUIContext::SearchableCombo(const std::string &id, int currentItem, const
     const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
     const float listHeight = rowHeight * static_cast<float>(maxVisibleItems) + ImGui::GetStyle().WindowPadding.y * 2.0f;
     ImGui::SetNextWindowSizeConstraints(ImVec2(popupWidth, 0.0f), ImVec2(popupWidth, FLT_MAX));
-    if (ImGui::BeginPopup("##popup")) {
+    const int comboChromeVars = PushPopupWindowChrome();
+    const bool comboOpen = ImGui::BeginPopup("##popup");
+    ImGui::PopStyleVar(comboChromeVars);
+    if (comboOpen) {
+        PushPopupContentStyle();
         if (captureSemantics)
             RecordSemanticWindow("combo_popup", id, id);
         const std::string transientToken = "searchable_combo:" + id;
@@ -1542,6 +1585,7 @@ int InxGUIContext::SearchableCombo(const std::string &id, int currentItem, const
         }
 
         ImGui::Separator();
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         if (ImGui::BeginChild("##results", ImVec2(0.0f, listHeight), ImGuiChildFlags_None)) {
             if (filtered.empty()) {
                 ImGui::TextDisabled("%s", emptyText.c_str());
@@ -1567,6 +1611,7 @@ int InxGUIContext::SearchableCombo(const std::string &id, int currentItem, const
             }
         }
         ImGui::EndChild();
+        ImGui::PopStyleColor(1);
 
         if (closePopup) {
             ImGui::CloseCurrentPopup();
@@ -1575,6 +1620,7 @@ int InxGUIContext::SearchableCombo(const std::string &id, int currentItem, const
             if (m_transientEnd)
                 m_transientEnd(transientToken);
         }
+        PopPopupContentStyle();
         ImGui::EndPopup();
     } else if (state.wasOpen) {
         state.wasOpen = false;
@@ -2401,7 +2447,7 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
             float orig = val;
             CompensateWarp();
             if (d.slider && d.rangeMin > -1e5f)
-                DrawUnityRangedFloat(d.widgetId.c_str(), &val, d.rangeMin, d.rangeMax);
+                DrawUnityRangedFloat(d.widgetId.c_str(), &val, d.rangeMin, d.rangeMax, "%.3f");
             else {
                 const ImGuiSliderFlags flags =
                     d.rangeMin < d.rangeMax ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;

@@ -46,6 +46,7 @@ class ClosablePanel(InxGUIRenderable):
         self._dirty_close_approved: bool = False
         self._dirty_registry_snapshot = None
         self._missing_document_binding_reported: bool = False
+        self._discard_document_on_unbind: bool = False
     
     @property
     def window_id(self) -> str:
@@ -128,6 +129,7 @@ class ClosablePanel(InxGUIRenderable):
             registry.attach_view(identifier, self._window_id)
         self._document_id = identifier
         self._dormant_document_locator = None
+        self._discard_document_on_unbind = False
         self._dirty_registry_snapshot = None
         self._missing_document_binding_reported = False
         from Infernux.engine.interaction import FocusService
@@ -165,14 +167,19 @@ class ClosablePanel(InxGUIRenderable):
         from Infernux.engine.interaction import DocumentRegistry
 
         registry = DocumentRegistry.instance()
-        locator = registry.locate(self._document_id)
+        terminal_discard = self._discard_document_on_unbind
+        locator = None if terminal_discard else registry.locate(self._document_id)
         # The absence of a locator is authoritative too.  A terminal discard
         # may retire the document before the native window finishes closing;
         # retaining an older locator would make the next open revive a stale
         # authoring session.
         self._dormant_document_locator = locator
-        registry.close_view(self._window_id)
+        registry.close_view(
+            self._window_id,
+            preserve_dormant=not terminal_discard,
+        )
         self._document_id = ""
+        self._discard_document_on_unbind = False
         self._dirty_registry_snapshot = None
         self._missing_document_binding_reported = False
         from Infernux.engine.interaction import FocusService
@@ -186,6 +193,14 @@ class ClosablePanel(InxGUIRenderable):
                 reason="panel_document_unbound",
                 record_history=False,
             )
+
+    def retire_deleted_document(self, document_id: str) -> bool:
+        """Make the current resource document terminal for the next close."""
+        if not self._document_id or self._document_id != str(document_id or ""):
+            return False
+        self._discard_document_on_unbind = True
+        self._dormant_document_locator = None
+        return True
 
     def request_document_replacement(self, replace) -> bool:
         """Run one destructive new/reset operation through shared close policy."""

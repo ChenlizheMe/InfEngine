@@ -393,6 +393,7 @@ class Theme:
     INSPECTOR_CHECKBOX_BOX_SCALE = 0.75  # Scales only the checkbox square
     INSPECTOR_CHECKBOX_FRAME_PAD = (3.0, 1.5)  # Checkbox frame padding
     INSPECTOR_CHECKBOX_SLOT_W    = 16.5  # Checkbox slot width
+    INSPECTOR_CHECKBOX_BOX_PX    = 14.0  # Fixed square side length (one size everywhere)
 
     # -- Inspector Header Colors
     INSPECTOR_HEADER_PRIMARY    : RGBA = (0.235, 0.235, 0.235, 1.0)  # Primary (Unity gray)
@@ -444,7 +445,7 @@ class Theme:
     #  Popup Spacing ( Gizmos/Camera )
     # ══════════════════════════════════════════════════════════════════════
 
-    POPUP_WIN_PAD     = (16.0, 12.0)  # Popup window padding
+    POPUP_WIN_PAD     = (12.0, 10.0)  # Popup window padding
     POPUP_ITEM_SPC    = (10.0, 8.0)  # Popup item spacing
     POPUP_FRAME_PAD   = (8.0, 6.0)  # Popup frame padding
 

@@ -1700,6 +1700,20 @@ class TestMaterial:
             material.set_texture("texSampler", "missing-texture-guid")
         assert material.get_texture("texSampler") == "white"
 
+    def test_material_deserialization_preserves_a_deleted_texture_reference(self, engine):
+        material = InxMaterial.create_default_unlit()
+        material.set_texture("texSampler", "white")
+        document = json.loads(material.serialize())
+        missing_guid = "52f6a608180f248634255ab26ccbd0a3"
+        document["properties"]["texSampler"]["guid"] = missing_guid
+
+        assert material.deserialize(json.dumps(document)) is True
+        assert material.get_texture("texSampler") == missing_guid
+        assert (
+            json.loads(material.serialize())["properties"]["texSampler"]["guid"]
+            == missing_guid
+        )
+
     def test_create_default_lit(self, engine):
         mat = InxMaterial.create_default_lit()
         assert mat is not None

@@ -244,8 +244,10 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
         self._pending_save_ticket_id: str = ""
 
-        # Start with a blank FSM
-        self._new_fsm_immediate()
+        # Opening the editor is presentation, not authoring. Keep the initial
+        # blank FSM clean; the explicit New command retains dirty draft
+        # semantics through the helper's default argument.
+        self._new_fsm_immediate(dirty=False)
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -1002,7 +1004,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             return False
         return self.request_document_replacement(self._new_fsm_immediate)
 
-    def _new_fsm_immediate(self, *, mode: str = "2d"):
+    def _new_fsm_immediate(self, *, mode: str = "2d", dirty: bool = True):
         """Create a blank FSM for editing."""
         if mode not in {"2d", "3d", "timeline"}:
             raise ValueError(f"unsupported animation FSM mode: {mode!r}")
@@ -1011,7 +1013,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         self._fsm = AnimStateMachine(name="New State Machine", mode=mode)
         self._file_path = ""
         self._sync_graph_from_fsm()
-        self._replace_fsm_document(resource_path="", dirty=True)
+        self._replace_fsm_document(resource_path="", dirty=dirty)
         self._graph_selection.clear(record_history=False)
 
     def can_switch_mode(self, mode: str) -> bool:

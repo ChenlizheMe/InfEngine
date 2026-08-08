@@ -134,7 +134,7 @@ class EditorTools
     static constexpr float PLANE_OFFSET = 0.0f;
     static constexpr float PLANE_SIZE = 0.28f;
     /// Half-extent of the uniform-scale cube at the gizmo origin.
-    static constexpr float CENTER_CUBE_HALF = 0.07f;
+    static constexpr float CENTER_CUBE_HALF = 0.062f;
 
     // ====================================================================
     // Reserved queue range

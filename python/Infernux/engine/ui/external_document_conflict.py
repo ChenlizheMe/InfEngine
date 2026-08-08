@@ -90,6 +90,10 @@ class ExternalDocumentConflictCoordinator:
     def waiting_for_save_copy(self) -> bool:
         return self._service.waiting_for_save_copy
 
+    @property
+    def waiting_for_reload(self) -> bool:
+        return self._service.waiting_for_reload
+
     def poll(self) -> None:
         previous_id = self.active_document_id
         self._service.poll()
@@ -103,6 +107,10 @@ class ExternalDocumentConflictCoordinator:
 
         document = self._document()
         if document is None:
+            return
+        if self._service.waiting_for_reload:
+            self._modals.deactivate(self.MODAL_ID)
+            self._show_popup = False
             return
         if conflict.document_id != self._presented_document_id:
             self._presented_document_id = conflict.document_id
@@ -213,6 +221,7 @@ class ExternalDocumentConflictCoordinator:
 
     def _finish_choice(self, result) -> bool:
         if result.status not in {
+            DocumentActionStatus.PENDING,
             DocumentActionStatus.APPLIED,
             DocumentActionStatus.NO_OP,
         }:

@@ -86,8 +86,6 @@ _PALETTE_THUMB_SIZE = 40.0   # frame slices in palette (bottom)
 _SEQ_THUMB_SIZE = 36.0       # thumbnails in sequence strip
 _THUMB_PAD = 3.0
 _PREVIEW_MAX_SIZE = 320.0
-_TOOLBAR_CARD_H = 34.0
-_INFO_CARD_H = 42.0
 _DETAILS_CARD_H = 220.0
 _PREVIEW_CARD_H = 310.0
 _SEQ_VISIBLE_ROWS = 2
@@ -297,8 +295,10 @@ class AnimClip2DEditorPanel(EditorPanel):
         )
         self._pending_save_as_clip: Optional[_ClipState] = None
         self._pending_save_ticket_id: str = ""
-        # A newly opened authoring window owns an untitled in-memory document.
-        self._replace_animclip_document(resource_path="", dirty=True)
+        # Window construction establishes a clean blank baseline. An explicit
+        # New command still creates an unsaved draft through
+        # _new_clip_document_immediate().
+        self._replace_animclip_document(resource_path="", dirty=False)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -827,25 +827,13 @@ class AnimClip2DEditorPanel(EditorPanel):
         wide = avail_w >= _WIDE_LAYOUT_MIN_W
 
         # A .animclip2d editor owns exactly one document.  Document commands
-        # belong in one compact toolbar; clip collections are authored by other
-        # assets rather than hidden inside this panel session.
-        ctx.begin_child("##animclip_toolbar", avail_w, _TOOLBAR_CARD_H, True)
-        try:
-            self._pad_child_cursor(ctx, 10.0, 4.0)
-            self._render_document_toolbar(ctx, clip)
-        finally:
-            ctx.dummy(0.0, 0.0)
-            ctx.end_child()
-        ctx.dummy(0, 8)
-        ctx.begin_child("##animclip_info", avail_w, _INFO_CARD_H, True)
-        try:
-            self._pad_child_cursor(ctx, 10.0, 6.0)
-            self._render_clip_info(ctx, clip, max(avail_w - 20.0, 120.0))
-        finally:
-            ctx.dummy(0.0, 0.0)
-            ctx.end_child()
+        # and clip metadata are flat rows on the panel — no card chrome.
+        self._render_document_toolbar(ctx, clip)
+        ctx.separator()
+        self._render_clip_info(ctx, clip, max(avail_w - 20.0, 120.0))
+        ctx.separator()
 
-        ctx.dummy(0, 8)
+        ctx.dummy(0, 6)
 
         if wide:
             preview_w = min(max(avail_w * 0.42, 320.0), 520.0)
@@ -1398,6 +1386,7 @@ class AnimClip2DEditorPanel(EditorPanel):
         palette_h = max(ctx.get_content_region_avail_height(), _PALETTE_H)
         ctx.begin_child("##animclip_palette_card", avail_w, palette_h, True)
         try:
+            self._pad_child_cursor(ctx)
             ctx.label(t("animclip_editor.frame_palette"))
             field_width = min(360.0, max(220.0, avail_w * 0.38))
             ctx.same_line(max(160.0, avail_w - field_width - 12.0))

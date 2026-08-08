@@ -494,6 +494,7 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     RenderObjectHeader(ctx, objId, info);
 
     // Tag & Layer
+    ImGui::Dummy(ImVec2(0.0f, 3.0f));
     RenderTagLayerRow(ctx, objId, info);
 
     ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_TITLE_GAP));
@@ -518,10 +519,10 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
         if (header.selectionRequested && info.transformComponentId != 0 && onComponentSelectionChanged)
             onComponentSelectionChanged({objId}, {info.transformComponentId}, true);
 
-        if (ImGui::BeginPopup("transform_ctx")) {
+        if (ctx->BeginPopup("transform_ctx")) {
             if (renderComponentContextMenu)
                 renderComponentContextMenu(ctx, objId, "Transform", info.transformComponentId, true);
-            ImGui::EndPopup();
+            ctx->EndPopup();
         }
 
         if (header.open) {
@@ -606,12 +607,12 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
         bool componentRemoved = false;
         {
             const char *ctxPopupId = comp.isScript ? "py_comp_ctx" : "comp_ctx";
-            if (ImGui::BeginPopup(ctxPopupId)) {
+            if (ctx->BeginPopup(ctxPopupId)) {
                 if (renderComponentContextMenu) {
                     componentRemoved =
                         renderComponentContextMenu(ctx, objId, comp.typeName, comp.componentId, comp.isNative);
                 }
-                ImGui::EndPopup();
+                ctx->EndPopup();
             }
         }
 
@@ -826,10 +827,10 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
             onComponentSelectionChanged)
             onComponentSelectionChanged(ids, transformComponentIds, true);
 
-        if (ImGui::BeginPopup("multi_transform_ctx")) {
+        if (ctx->BeginPopup("multi_transform_ctx")) {
             if (renderComponentContextMenu && transformComponentIds.size() == ids.size())
                 renderComponentContextMenu(ctx, ids.front(), "Transform", transformComponentIds.front(), true);
-            ImGui::EndPopup();
+            ctx->EndPopup();
         }
 
 #if INFERNUX_FRAME_PROFILE
@@ -872,11 +873,11 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
 
             bool componentRemoved = false;
             const char *contextPopupId = comp.isScript ? "multi_py_comp_ctx" : "multi_comp_ctx";
-            if (ImGui::BeginPopup(contextPopupId)) {
+            if (ctx->BeginPopup(contextPopupId)) {
                 if (renderComponentContextMenu)
                     componentRemoved = renderComponentContextMenu(ctx, ids.front(), comp.typeName,
                                                                   entry.componentIds.front(), comp.isNative);
-                ImGui::EndPopup();
+                ctx->EndPopup();
             }
 
             if (!componentRemoved && componentHeader.enabled != comp.enabled) {
@@ -990,10 +991,14 @@ void InspectorPanel::RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
     RefreshTagLayerCache();
 
-    float availW = ImGui::GetContentRegionAvail().x;
-    float halfW = availW * 0.5f - 4.0f;
+    const float rowStartX = ImGui::GetCursorPosX();
+    const float availW = ImGui::GetContentRegionAvail().x;
+    constexpr float outerInset = 3.0f;
+    constexpr float columnGap = 10.0f;
+    const float columnW = (std::max)(40.0f, (availW - outerInset * 2.0f - columnGap) * 0.5f);
 
     // --- Tag (left column) ---
+    ImGui::SetCursorPosX(rowStartX + outerInset);
     ImGui::TextUnformatted(Tr("inspector.tag").c_str());
     ImGui::SameLine(0, 4.0f);
 
@@ -1005,7 +1010,9 @@ void InspectorPanel::RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const
         }
     }
 
-    int newTagIdx = ctx->SearchableCombo("Inspector.Tag", tagIdx, m_cachedTagItems, halfW - 30, 8,
+    const float tagLabelW = ImGui::CalcTextSize(Tr("inspector.tag").c_str()).x;
+    const float tagComboW = (std::max)(40.0f, columnW - tagLabelW - 4.0f);
+    int newTagIdx = ctx->SearchableCombo("Inspector.Tag", tagIdx, m_cachedTagItems, tagComboW, 8,
                                          Tr("igui.search_hint").c_str(), Tr("igui.no_results").c_str());
     if (captureSemantics)
         ctx->RecordSemanticItem("inspector_tag", Tr("inspector.tag"), true,
@@ -1023,10 +1030,11 @@ void InspectorPanel::RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const
     }
 
     // --- Layer (right column) ---
-    ImGui::SameLine(halfW + 8);
+    ImGui::SameLine(rowStartX + outerInset + columnW + columnGap);
     ImGui::TextUnformatted(Tr("inspector.layer").c_str());
     ImGui::SameLine(0, 4.0f);
-    float layerComboW = ImGui::GetContentRegionAvail().x;
+    const float layerLabelW = ImGui::CalcTextSize(Tr("inspector.layer").c_str()).x;
+    const float layerComboW = (std::max)(40.0f, columnW - layerLabelW - 4.0f);
 
     int newLayer = ctx->SearchableCombo("Inspector.Layer", info.layer, m_cachedLayerItems, layerComboW, 8,
                                         Tr("igui.search_hint").c_str(), Tr("igui.no_results").c_str());
@@ -1314,12 +1322,10 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     // Styling
     ImGui::PushStyleColor(ImGuiCol_Header,
                           selected ? EditorTheme::INSPECTOR_HEADER_SELECTED : EditorTheme::INSPECTOR_HEADER_PRIMARY);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered,
-                          selected ? EditorTheme::INSPECTOR_HEADER_SELECTED_HOVERED
-                                   : EditorTheme::INSPECTOR_HEADER_PRIMARY_HOVERED);
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive,
-                          selected ? EditorTheme::INSPECTOR_HEADER_SELECTED_ACTIVE
-                                   : EditorTheme::INSPECTOR_HEADER_PRIMARY_ACTIVE);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, selected ? EditorTheme::INSPECTOR_HEADER_SELECTED_HOVERED
+                                                           : EditorTheme::INSPECTOR_HEADER_PRIMARY_HOVERED);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, selected ? EditorTheme::INSPECTOR_HEADER_SELECTED_ACTIVE
+                                                          : EditorTheme::INSPECTOR_HEADER_PRIMARY_ACTIVE);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::INSPECTOR_HEADER_ITEM_SPC);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::INSPECTOR_HEADER_BORDER_SIZE);
@@ -1459,26 +1465,24 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
 
     bool enabledClicked = false;
     if (showEnabled) {
-        // Compact enabled box: center against the header bar height. The shared
-        // CheckboxInspector centers against ambient frame/text metrics, which
-        // sits high inside these taller collapsing-header rows.
-        const float rowY = ImGui::GetCursorPosY();
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_CHECKBOX_FRAME_PAD);
-        ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_CHECKBOX_BOX_SCALE);
-        const float boxH = ImGui::GetFrameHeight();
-        if (boxH < headerHeight)
-            ImGui::SetCursorPosY(rowY + (headerHeight - boxH) * 0.5f);
-        ImGui::Checkbox("##hdr_en", &newEnabled);
+        const float checkboxRowHeight = (std::max)(EditorTheme::INSPECTOR_CHECKBOX_BOX_PX, ImGui::GetTextLineHeight());
+        ImGui::SetCursorPosY(headerMin.y - ImGui::GetWindowPos().y + (headerHeight - checkboxRowHeight) * 0.5f);
+        ctx->CheckboxInspector("##hdr_en", &newEnabled);
         enabledClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
-        ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_HEADER_PRIMARY_FONT_SCALE);
-        ImGui::PopStyleVar();
         if (ctx && captureSemantics)
             ctx->RecordSemanticItem("component_enabled", displayName, true, semanticBase + ".enabled");
         ImGui::SameLine(0, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x);
+        // Center the component name on the checkbox's center line so the text
+        // always lines up with the square regardless of header-row height.
+        const ImVec2 cbMin = ImGui::GetItemRectMin();
+        const ImVec2 cbMax = ImGui::GetItemRectMax();
+        const float labelH = ImGui::GetTextLineHeight();
+        ImGui::SetCursorPosY((cbMin.y + cbMax.y) * 0.5f - ImGui::GetWindowPos().y - labelH * 0.5f);
+        ImGui::TextUnformatted(displayName.c_str());
+    } else {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(displayName.c_str());
     }
-
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(displayName.c_str());
 
     bool optionsClicked = false;
     if (!contextPopupId.empty()) {
@@ -1555,13 +1559,11 @@ void InspectorPanel::RenderAddComponentButton(InxGUIContext *ctx)
 void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
 {
     // Unity-style component browser: generous bleed, full-width search and
-    // tall rows with a clear hover band.
+    // tall rows with a clear hover band (shared popup chrome below).
     const float em = ImGui::GetFontSize();
     ImGui::SetNextWindowSizeConstraints(ImVec2(em * 18.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.7f, em * 0.7f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.4f, em * 0.4f));
 
-    const bool popupVisible = ImGui::BeginPopup("##add_component_popup");
+    const bool popupVisible = ctx->BeginPopup("##add_component_popup");
     if (popupVisible) {
         if (!m_addCompPopupOpen) {
             m_addCompPopupOpen = true;
@@ -1595,8 +1597,8 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
 
         ImGui::Separator();
 
-        // Scrollable region
-        if (ImGui::BeginChild("##comp_list", ImVec2(0, 350), ImGuiChildFlags_None)) {
+        // Scrollable region (transparent bg inside popup via BeginChild)
+        if (ctx->BeginChild("##comp_list", 0, 350, false, 0)) {
             std::string searchLower(m_addCompSearch);
             std::transform(searchLower.begin(), searchLower.end(), searchLower.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -1674,15 +1676,13 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
                 ImGui::TextUnformatted(Tr("inspector.no_components_found").c_str());
             }
         }
-        ImGui::EndChild();
-        ImGui::EndPopup();
+        ctx->EndChild();
+        ctx->EndPopup();
     } else if (m_addCompPopupOpen) {
         m_addCompPopupOpen = false;
         m_addCompCloseRequested = false;
         EndTransientInteraction("add_component_popup");
     }
-
-    ImGui::PopStyleVar(2);
 }
 
 } // namespace infernux

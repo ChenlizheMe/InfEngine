@@ -5,6 +5,7 @@
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/gui/InxGUISemantics.h>
 #include <function/renderer/gui/InxResourcePreviewer.h>
+#include <function/renderer/gui/InxTextLayout.h>
 #include <function/resources/AssetFormatRegistry.h>
 #include <platform/filesystem/InxPath.h>
 
@@ -1795,8 +1796,8 @@ const ProjectPanel::LabelEntry &ProjectPanel::GetCachedItemLabel(InxGUIContext *
     if (textW > maxTextW) {
         // Truncate with ASCII ellipsis
         std::string truncated = nameDisplay;
-        while (truncated.size() > 1) {
-            truncated.pop_back();
+        while (!truncated.empty()) {
+            infernux::textlayout::PopBackUtf8Codepoint(truncated);
             float tw = ctx->CalcTextWidth(std::string(truncated) + kEllipsisAscii);
             if (tw <= maxTextW) {
                 nameDisplay = truncated + kEllipsisAscii;
@@ -1804,7 +1805,7 @@ const ProjectPanel::LabelEntry &ProjectPanel::GetCachedItemLabel(InxGUIContext *
                 break;
             }
         }
-        if (truncated.size() <= 1) {
+        if (truncated.empty()) {
             nameDisplay = kEllipsisAscii;
             textW = ctx->CalcTextWidth(nameDisplay);
         }
@@ -2348,7 +2349,7 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
     if (ctx->CalcTextSizeA(pathLabel).first > pathBudget && pathLabel.size() > 4) {
         // Keep the trailing folders readable when the Path row is tight.
         while (pathLabel.size() > 1 && ctx->CalcTextSizeA(std::string("...") + pathLabel).first > pathBudget) {
-            pathLabel.erase(pathLabel.begin());
+            infernux::textlayout::EraseFirstUtf8Codepoint(pathLabel);
         }
         pathLabel = "..." + pathLabel;
     }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from Infernux.engine.interaction import (
     DocumentActionResult,
@@ -46,8 +47,8 @@ class _Controller:
         self.registry.complete_save(
             ticket.ticket_id,
             success=True,
-            key=DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, "copy.particlegraph"),
-            resource_path="copy.particlegraph",
+            key=DocumentKey.resource(DocumentKind.SCENE, "copy.scene"),
+            resource_path="copy.scene",
             title="Copy",
         )
         self.pending_save = None
@@ -61,12 +62,12 @@ def _conflicted_document(
     resource_path: Path | None = None,
 ):
     controller = _Controller(registry)
-    path = resource_path or Path(f"{title}.particlegraph")
+    path = resource_path or Path(f"{title}.scene")
     document = registry.create(
-        DocumentKind.PARTICLE_GRAPH,
+        DocumentKind.SCENE,
         title,
         key=DocumentKey.resource(
-            DocumentKind.PARTICLE_GRAPH,
+            DocumentKind.SCENE,
             str(path),
         ),
         resource_path=str(path),
@@ -116,6 +117,84 @@ def test_external_conflict_reload_establishes_the_disk_version_as_clean_baseline
     assert not document.is_dirty
 
 
+def test_scene_conflict_reload_stops_play_and_waits_for_edit_restore(
+    monkeypatch,
+    tmp_path,
+):
+    from Infernux.engine.deferred_task import DeferredTaskRunner
+    from Infernux.engine.play_mode import PlayModeManager
+    from Infernux.engine.scene_manager import SceneFileManager
+
+    registry = DocumentRegistry()
+    manager = SceneFileManager()
+    path = tmp_path / "PlayConflict.scene"
+    path.write_text("disk-version", encoding="utf-8")
+    registry.update_metadata(
+        manager.document_id,
+        resource_path=str(path),
+        controller=manager,
+    )
+    document = registry.require(manager.document_id)
+    manager._current_scene_path = str(path)
+    registry.mark_changed(document.document_id, view_id="scene_view")
+    registry.mark_conflict(document.document_id)
+
+    state = {"playing": True}
+    runner = SimpleNamespace(is_busy=False)
+    stop_calls = []
+
+    def exit_play_mode():
+        stop_calls.append(True)
+        state["playing"] = False
+        runner.is_busy = True
+        return True
+
+    monkeypatch.setattr(manager, "_is_play_mode", lambda: state["playing"])
+    monkeypatch.setattr(
+        DeferredTaskRunner,
+        "instance",
+        classmethod(lambda _cls: runner),
+    )
+    monkeypatch.setattr(
+        PlayModeManager,
+        "instance",
+        classmethod(
+            lambda _cls: SimpleNamespace(exit_play_mode=exit_play_mode)
+        ),
+    )
+    loaded = []
+    monkeypatch.setattr(
+        manager,
+        "reload_from_resource",
+        lambda **payload: loaded.append(
+            Path(payload["resource_path"]).read_text(encoding="utf-8")
+        )
+        or True,
+    )
+
+    service = ExternalDocumentConflictService(registry)
+    service.poll()
+    conflict = service.active
+    assert conflict is not None
+
+    result = service.reload(conflict.conflict_id)
+
+    assert result.status is DocumentActionStatus.PENDING
+    assert service.waiting_for_reload
+    assert stop_calls == [True]
+    assert loaded == []
+    assert manager.poll_pending_writes() == 0
+
+    runner.is_busy = False
+    assert manager.poll_pending_writes() == 1
+    service.poll()
+
+    assert loaded == ["disk-version"]
+    assert not service.is_active
+    assert document.state is DocumentState.READY
+    assert not document.is_dirty
+
+
 def test_external_conflict_save_copy_waits_for_document_save_completion():
     registry = DocumentRegistry()
     modals = ModalService()
@@ -132,7 +211,7 @@ def test_external_conflict_save_copy_waits_for_document_save_completion():
 
     assert controller.pending_save is None
     assert document.state is DocumentState.READY
-    assert document.resource_path == "copy.particlegraph"
+    assert document.resource_path == "copy.scene"
     assert not coordinator.is_active
 
 
@@ -151,6 +230,27 @@ def test_external_conflicts_are_serialized_one_document_at_a_time():
     assert coordinator.active_document_id == second.document_id
     assert coordinator.choose_keep_local()
     assert not coordinator.is_active
+
+
+def test_non_scene_conflict_never_opens_the_external_change_dialog():
+    registry = DocumentRegistry()
+    document = registry.create(
+        DocumentKind.PARTICLE_GRAPH,
+        "Smoke",
+        key=DocumentKey.resource(
+            DocumentKind.PARTICLE_GRAPH,
+            "Smoke.particlegraph",
+        ),
+        resource_path="Smoke.particlegraph",
+        revision=1,
+        saved_revision=0,
+    )
+    registry.mark_conflict(document.document_id)
+    service = ExternalDocumentConflictService(registry)
+
+    service.poll()
+
+    assert service.active is None
 
 
 def test_stale_conflict_revision_cannot_resolve_a_new_external_change(tmp_path):

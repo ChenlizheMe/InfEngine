@@ -332,6 +332,8 @@ class DocumentRegistry:
         self._active_save_by_document: dict[str, str] = {}
         self._deferred_save_requests: dict[str, bool] = {}
         self._external_change_preflights: dict[str, tuple[str, ...]] = {}
+        self._pending_external_reloads: set[str] = set()
+        self._external_reload_results: dict[str, DocumentActionResult] = {}
         self._pending_session_records: dict[str, dict[str, Any]] = {}
         self._pending_session_document_by_view: dict[str, str] = {}
         self._session_restore_suppressed_stable_ids: set[str] = set()
@@ -1180,14 +1182,19 @@ class DocumentRegistry:
         self._touch()
         return document_id
 
-    def close_view(self, view_id: str) -> Optional[str]:
+    def close_view(
+        self,
+        view_id: str,
+        *,
+        preserve_dormant: bool = True,
+    ) -> Optional[str]:
         """Detach one view and retire its document when no views remain."""
         document_id = self.detach_view(view_id)
         if document_id is None:
             return None
         document = self.get(document_id)
         if document is not None and not document.view_ids:
-            self.unregister(document_id)
+            self.unregister(document_id, preserve_dormant=preserve_dormant)
         return document_id
 
     def unregister(self, document_id: str, *, preserve_dormant: bool = True) -> bool:
@@ -1217,6 +1224,8 @@ class DocumentRegistry:
                     )
         self._documents.pop(identifier)
         self._deferred_save_requests.pop(document.document_id, None)
+        self._pending_external_reloads.discard(document.document_id)
+        self._external_reload_results.pop(document.document_id, None)
         self._document_ids_by_key.pop(document.key, None)
         self._document_ids_by_stable_id.pop(document.stable_id, None)
         locator = DocumentLocator(
@@ -1582,6 +1591,51 @@ class DocumentRegistry:
         self._touch()
         return document.revision
 
+    def retire_deleted_resource_document(self, document_id: str) -> tuple[str, ...]:
+        """Prepare a non-scene document for terminal closure after deletion.
+
+        A deleted asset has no durable source to reload or preserve as a
+        dormant editor draft.  Pending saves are cancelled, future autosaves
+        are disarmed, and every owning view is returned to the window layer so
+        it can close the corresponding authoring surface without prompting.
+        """
+        document = self.require(document_id)
+        if document.kind is DocumentKind.SCENE:
+            raise ValueError("scene deletion requires scene conflict arbitration")
+
+        ticket_id = self._active_save_by_document.pop(document.document_id, None)
+        if ticket_id:
+            ticket = self._save_tickets.get(ticket_id)
+            if ticket is not None and ticket.is_pending:
+                ticket.status = SaveTicketStatus.CANCELLED
+                ticket.message = "document resource was deleted"
+
+        try:
+            from Infernux.core.assets import AssetManager
+
+            AssetManager.cancel_scheduled_save(document.resource_path)
+        except (ImportError, RuntimeError):
+            pass
+
+        callback = getattr(document.controller, "resource_deleted", None)
+        if callable(callback):
+            try:
+                callback(
+                    document_id=document.document_id,
+                    resource_path=document.resource_path,
+                )
+            except Exception as exc:
+                from Infernux.debug import Debug
+
+                Debug.log_suppressed("DocumentRegistry.resource_deleted", exc)
+
+        views = tuple(document.view_ids)
+        self.abandon_session_changes(document.document_id)
+        document.durable_file_state = _capture_durable_file_state(
+            document.resource_path
+        )
+        return views
+
     def restore_content_revision(self, document_id: str, revision: int) -> int:
         """Move a document through existing content history without moving its save point."""
         document = self.require(document_id)
@@ -1634,21 +1688,43 @@ class DocumentRegistry:
         here instead of making every watcher and conflict presenter special
         case scenes independently.
         """
+        if document.kind is DocumentKind.SCENE:
+            try:
+                from Infernux.engine.scene_manager import SceneFileManager
+
+                manager = SceneFileManager.instance()
+            except (ImportError, RuntimeError):
+                manager = None
+            if manager is not None and manager.owns_document(document.document_id):
+                document.controller = manager
+                return getattr(manager, "reload_from_resource", None)
+            if manager is not None and isinstance(document.controller, SceneFileManager):
+                # Never send a scene reload through a retired manager binding.
+                return None
         callback = getattr(document.controller, "reload_from_resource", None)
+        return callback if callable(callback) else None
+
+    @staticmethod
+    def _external_reload_callback(document: EditorDocument):
+        """Resolve the explicit user-confirmed durable reload entry point."""
+        if document.kind is DocumentKind.SCENE:
+            try:
+                from Infernux.engine.scene_manager import SceneFileManager
+
+                manager = SceneFileManager.instance()
+            except (ImportError, RuntimeError):
+                manager = None
+            if manager is not None and manager.owns_document(document.document_id):
+                document.controller = manager
+                callback = getattr(manager, "request_external_reload", None)
+                if callable(callback):
+                    return callback
+            if manager is not None and isinstance(document.controller, SceneFileManager):
+                return None
+        callback = getattr(document.controller, "request_external_reload", None)
         if callable(callback):
             return callback
-        if document.kind is not DocumentKind.SCENE:
-            return None
-        try:
-            from Infernux.engine.scene_manager import SceneFileManager
-
-            manager = SceneFileManager.instance()
-        except (ImportError, RuntimeError):
-            manager = None
-        if manager is None or manager.document_id != document.document_id:
-            return None
-        document.controller = manager
-        return getattr(manager, "reload_from_resource", None)
+        return DocumentRegistry._reload_callback(document)
 
     def durable_resource_content_changed(
         self,
@@ -1692,10 +1768,12 @@ class DocumentRegistry:
     ) -> bool:
         """Reserve one real content change before AssetManager mutates resources.
 
-        A dirty or saving document keeps its current in-memory model and enters
-        conflict before reimport. Clean documents may be reimported and are
-        finalized by :meth:`publish_external_resource_change`. A watcher event
-        whose durable identity still matches every live baseline is a no-op.
+        Scene documents preserve conflict arbitration because a scene owns a
+        graph of live references. Other asset documents follow the durable
+        file automatically: local drafts/pending saves are cancelled before
+        reimport and the current disk content becomes the new clean baseline.
+        A watcher event whose durable identity still matches every live
+        baseline is a no-op.
         """
         identity = path_key(resource_path)
         affected = self.documents_for_resource(resource_path)
@@ -1713,19 +1791,45 @@ class DocumentRegistry:
         if content_changed is None:
             return False
 
-        blocked = bool(deleted) or any(
-            document.is_dirty
-            or self.active_save_ticket(document.document_id) is not None
-            or not callable(self._reload_callback(document))
-            for document in affected
-        )
         for document in affected:
             document.external_revision += 1
-        if blocked:
-            for document in affected:
+
+        scene_documents = tuple(
+            document
+            for document in affected
+            if document.kind is DocumentKind.SCENE
+        )
+        blocked_scene = any(
+            bool(deleted)
+            or document.is_dirty
+            or self.active_save_ticket(document.document_id) is not None
+            or not callable(self._reload_callback(document))
+            for document in scene_documents
+        )
+        if blocked_scene:
+            for document in scene_documents:
                 document.state = DocumentState.CONFLICT
             self._touch()
             return False
+
+        for document in affected:
+            if document.kind is DocumentKind.SCENE:
+                continue
+            ticket_id = self._active_save_by_document.pop(
+                document.document_id,
+                None,
+            )
+            if ticket_id:
+                ticket = self._save_tickets.get(ticket_id)
+                if ticket is not None and ticket.is_pending:
+                    ticket.status = SaveTicketStatus.CANCELLED
+                    ticket.message = "superseded by an external asset change"
+            try:
+                from Infernux.core.assets import AssetManager
+
+                AssetManager.cancel_scheduled_save(document.resource_path)
+            except (ImportError, RuntimeError):
+                pass
 
         self._external_change_preflights[identity] = tuple(
             document.document_id for document in affected
@@ -1764,11 +1868,11 @@ class DocumentRegistry:
     ) -> tuple[str, ...]:
         """Apply one watcher-confirmed external content revision.
 
-        Clean documents reload their model from the durable source. Dirty,
-        saving, deleted, or non-reloadable documents enter ``CONFLICT`` and
-        keep their in-memory authoring state intact. External changes are
-        consequences, never user actions, so this method does not touch the
-        global action journal.
+        Scene conflicts retain their in-memory graph for explicit arbitration.
+        Every other asset document follows the durable source automatically;
+        deletion is finalized by the window lifecycle subscriber. External
+        changes are consequences, never user actions, so this method does not
+        touch the global action journal.
         """
         identity = path_key(resource_path)
         document_ids = self._external_change_preflights.pop(identity, ())
@@ -1789,6 +1893,15 @@ class DocumentRegistry:
             if (document := self.get(document_id)) is not None
         )
         for document in affected:
+            if deleted:
+                if document.kind is DocumentKind.SCENE:
+                    document.state = DocumentState.CONFLICT
+                else:
+                    document.state = DocumentState.READY
+                    document.durable_file_state = _capture_durable_file_state(
+                        resource_path
+                    )
+                continue
             reload_from_disk = self._reload_callback(document)
             if not callable(reload_from_disk):
                 document.state = DocumentState.CONFLICT
@@ -1830,7 +1943,10 @@ class DocumentRegistry:
                 DocumentActionStatus.REJECTED,
                 "the external conflict cannot reload while a save is pending",
             )
-        reload_from_disk = self._reload_callback(document)
+        if document.document_id in self._pending_external_reloads:
+            return DocumentActionResult(DocumentActionStatus.PENDING)
+        self._external_reload_results.pop(document.document_id, None)
+        reload_from_disk = self._external_reload_callback(document)
         if not callable(reload_from_disk):
             return DocumentActionResult(
                 DocumentActionStatus.REJECTED,
@@ -1844,6 +1960,9 @@ class DocumentRegistry:
         except Exception as exc:
             return DocumentActionResult(DocumentActionStatus.FAILED, str(exc))
         if isinstance(result, DocumentActionResult):
+            if result.status is DocumentActionStatus.PENDING:
+                self._pending_external_reloads.add(document.document_id)
+                return result
             if result.status not in {
                 DocumentActionStatus.APPLIED,
                 DocumentActionStatus.NO_OP,
@@ -1860,6 +1979,47 @@ class DocumentRegistry:
             current.resource_path
         )
         return DocumentActionResult(DocumentActionStatus.APPLIED)
+
+    def complete_external_reload(
+        self,
+        document_id: str,
+        *,
+        success: bool,
+        message: str = "",
+    ) -> DocumentActionResult:
+        """Complete a controller-owned asynchronous durable reload."""
+        identifier = str(document_id or "")
+        self._pending_external_reloads.discard(identifier)
+        document = self.get(identifier)
+        if document is None:
+            result = DocumentActionResult(
+                DocumentActionStatus.FAILED,
+                message or "the document closed before durable reload completed",
+            )
+        elif success:
+            self.establish_loaded_baseline(identifier)
+            document = self.require(identifier)
+            document.durable_file_state = _capture_durable_file_state(
+                document.resource_path
+            )
+            document.state = DocumentState.READY
+            result = DocumentActionResult(DocumentActionStatus.APPLIED)
+        else:
+            document.state = DocumentState.CONFLICT
+            result = DocumentActionResult(
+                DocumentActionStatus.FAILED,
+                message or "the document controller rejected the durable reload",
+            )
+            self._touch()
+        self._external_reload_results[identifier] = result
+        return result
+
+    def take_external_reload_result(
+        self,
+        document_id: str,
+    ) -> Optional[DocumentActionResult]:
+        """Consume the completion result of an asynchronous durable reload."""
+        return self._external_reload_results.pop(str(document_id or ""), None)
 
     def resolve_conflict_keep_local(self, document_id: str) -> DocumentActionResult:
         """Acknowledge the external revision while retaining the local draft."""
@@ -2065,7 +2225,6 @@ class DocumentRegistry:
         """Run queued UI saves after the frame that requested them."""
         requests = tuple(self._deferred_save_requests.items())
         self._deferred_save_requests.clear()
-        self._external_change_preflights.clear()
         results = []
         for document_id, save_as in requests:
             if self.get(document_id) is None:
@@ -2395,6 +2554,9 @@ class DocumentRegistry:
                 ticket.message = "document registry was cleared"
         self._active_save_by_document.clear()
         self._deferred_save_requests.clear()
+        self._external_change_preflights.clear()
+        self._pending_external_reloads.clear()
+        self._external_reload_results.clear()
         self._pending_session_records.clear()
         self._pending_session_document_by_view.clear()
         self._session_restore_suppressed_stable_ids.clear()

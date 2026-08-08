@@ -89,14 +89,14 @@ def _isolate_animclip_panel_dirty_tracking():
         FocusService._instance = previous_focus
 
 
-def test_animclip_panel_owns_one_dirty_registered_document():
+def test_animclip_panel_owns_one_clean_registered_document_until_first_edit():
     from Infernux.engine.interaction import DocumentKind, DocumentRegistry
 
     panel = AnimClip2DEditorPanel()
     document = DocumentRegistry.instance().require(panel.document_id)
 
     assert document.kind is DocumentKind.ANIMATION_CLIP
-    assert document.is_dirty is True
+    assert document.is_dirty is False
     assert document.resource_path == ""
     assert document.view_ids == {"animclip2d_editor"}
 
@@ -678,6 +678,8 @@ def test_animclip_new_document_and_dirty_draft_round_trip_through_registry_sessi
     from Infernux.engine.interaction import DocumentRegistry
 
     panel = AnimClip2DEditorPanel()
+    assert panel._document_is_dirty() is False
+    assert panel._new_clip_document_immediate()
     assert panel._document_is_dirty() is True
     panel._clips[0].name = "Recovered Clip"
     panel._clips[0].fps = 18.0

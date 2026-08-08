@@ -577,6 +577,84 @@ class TestWindowManager:
         finally:
             WindowManager._instance = previous
 
+    def test_deleted_asset_closes_its_authoring_view_without_dormant_draft(
+        self,
+        _reset_editor_interaction_state,
+        tmp_path,
+    ):
+        from Infernux.engine.interaction import (
+            AssetContentChange,
+            AssetMutation,
+            AssetMutationKind,
+            DocumentKey,
+            DocumentKind,
+            PanelInteractionDescriptor,
+            PanelInteractionRegistry,
+        )
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            @staticmethod
+            def register_gui(_window_id, _instance):
+                pass
+
+            @staticmethod
+            def unregister_gui(_window_id):
+                pass
+
+        previous = WindowManager._instance
+        try:
+            manager = WindowManager(Engine())
+            panels = PanelInteractionRegistry()
+            panels.register_type(
+                "particle_graph_editor",
+                PanelInteractionDescriptor(document_backed=True),
+            )
+            manager.set_panel_interaction_registry(panels)
+            manager.register_window_type(
+                "particle_graph_editor",
+                ClosablePanel,
+                "Particle Graph",
+                factory=lambda: ClosablePanel(
+                    "Particle Graph",
+                    "particle_graph_editor",
+                ),
+            )
+            panel = manager.open_window("particle_graph_editor")
+            manager.process_pending_actions()
+
+            path = tmp_path / "Smoke.particlegraph"
+            path.write_text("{}", encoding="utf-8")
+            document = _reset_editor_interaction_state.create(
+                DocumentKind.PARTICLE_GRAPH,
+                "Smoke",
+                key=DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, str(path)),
+                resource_path=str(path),
+                revision=1,
+                saved_revision=0,
+            )
+            panel.bind_document(document.document_id)
+            locator = _reset_editor_interaction_state.locate(document.document_id)
+            path.unlink()
+
+            manager.on_asset_mutation(
+                AssetContentChange(
+                    AssetMutation(AssetMutationKind.DELETED, str(path)),
+                    1,
+                )
+            )
+            manager.process_pending_actions()
+
+            assert manager.get_window_state(
+                "particle_graph_editor"
+            ) is WindowState.CLOSED
+            assert panel.document_id == ""
+            assert _reset_editor_interaction_state.get(document.document_id) is None
+            assert _reset_editor_interaction_state.resolve_locator(locator) is None
+        finally:
+            WindowManager._instance = previous
+
     def test_startup_does_not_recreate_document_panel_without_snapshot(
         self,
         _reset_editor_interaction_state,

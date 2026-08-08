@@ -141,7 +141,6 @@ def test_authoring_command_service_owns_revision_reservation_and_execution():
                 or _SetValueCommand(target, 1, 2)
             ),
             view_id="timeline-editor",
-            require_edit_mode=False,
         )
         assert revisions == [(0, 1)]
         assert target == {"value": 2}
@@ -186,7 +185,6 @@ def test_applied_authoring_command_rolls_back_when_journal_is_unavailable():
             before_revision=before_revision,
             after_revision=after_revision,
             rollback=lambda: target.__setitem__("value", 1),
-            require_edit_mode=False,
         )
         assert target == {"value": 1}
         assert document.revision == 0

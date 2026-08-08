@@ -36,7 +36,7 @@ from Infernux.engine.ui import panel_state as _panel_state
 
 _log = logging.getLogger("Infernux.bootstrap")
 
-_LAYOUT_VERSION = 5
+_LAYOUT_VERSION = 6
 _TOTAL_STEPS = 13
 
 
@@ -299,6 +299,9 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.scene_file_manager.set_engine(self.engine.get_native_engine())
 
         self.window_manager = WindowManager(self.engine)
+        self.interaction_core.asset_mutations.add_listener(
+            self.window_manager.on_asset_mutation
+        )
 
         self.services = EditorServices()
         self.services._engine = self.engine

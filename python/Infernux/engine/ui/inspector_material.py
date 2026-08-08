@@ -260,7 +260,7 @@ def _resolve_texture_display(prop):
         tex_path = adb.get_path_from_guid(tex_guid)
         if tex_path:
             return os.path.basename(tex_path)
-    return tex_guid[:8] + "..."
+    return f"{t('material.missing_texture')} ({tex_guid[:8]}...)"
 
 
 def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
@@ -280,7 +280,8 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
             reference_cache["path"] = tex_path or ""
             reference_cache["display"] = (
                 os.path.basename(tex_path) if tex_path else (
-                    tex_guid[:8] + "..." if tex_guid else t("igui.none")
+                    f"{t('material.missing_texture')} ({tex_guid[:8]}...)"
+                    if tex_guid else t("igui.none")
                 )
             )
         display = reference_cache["display"]
@@ -950,7 +951,7 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
     del exec_layer
     from Infernux.engine.interaction import AuthoringMutationService
 
-    if not AuthoringMutationService.require().can_record(require_edit_mode=False):
+    if not AuthoringMutationService.require().can_record():
         _restore_rejected_material_edit(
             panel, state, native_mat, mat_data, old_document
         )

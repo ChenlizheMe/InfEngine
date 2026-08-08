@@ -373,7 +373,10 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             on_changed=self._on_graph_selection_projected,
         )
         self._bind_stage()
-        self._replace_particle_document(resource_path="", dirty=True)
+        # Merely opening an authoring window is not an edit. The blank model
+        # becomes dirty only after the first authored mutation (or an explicit
+        # New command), so closing an untouched panel never prompts to save.
+        self._replace_particle_document(resource_path="", dirty=False)
 
     @property
     def asset(self) -> ParticleGraphAsset:

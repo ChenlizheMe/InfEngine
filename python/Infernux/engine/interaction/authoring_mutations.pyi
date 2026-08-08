@@ -20,7 +20,7 @@ class AuthoringMutationService:
         before_selection: Any = ...,
         after_selection: Any = ...,
     ) -> bool: ...
-    def can_record(self, *, require_edit_mode: bool = ...) -> bool: ...
+    def can_record(self) -> bool: ...
     def execute_command(
         self,
         document_id: str,
@@ -29,7 +29,6 @@ class AuthoringMutationService:
         view_id: str,
         before_selection: Any = ...,
         after_selection: Any = ...,
-        require_edit_mode: bool = ...,
     ) -> bool: ...
     def record_applied_command(
         self,
@@ -40,6 +39,5 @@ class AuthoringMutationService:
         before_revision: int,
         after_revision: int,
         rollback: Callable[[], Any],
-        require_edit_mode: bool = ...,
     ) -> bool: ...
     def shutdown(self) -> None: ...

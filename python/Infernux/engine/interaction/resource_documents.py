@@ -301,7 +301,10 @@ class EditableResourceDocumentController:
                 "changed outside the editor" in diagnostic.casefold()
             ):
                 editor_document = registry.get(self.document_id)
-                if editor_document is not None:
+                if (
+                    editor_document is not None
+                    and editor_document.kind is DocumentKind.SCENE
+                ):
                     registry.mark_conflict(editor_document.document_id)
             self._pending_writes.pop(key, None)
             completed += 1

@@ -919,6 +919,60 @@ class WindowManager:
 
         self._enqueue_action(_unregister_instance)
         return True
+
+    def close_deleted_resource_editors(self, resource_path: str) -> tuple[str, ...]:
+        """Close authoring views whose durable non-scene asset was deleted."""
+        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+
+        registry = DocumentRegistry.instance()
+        closed: list[str] = []
+        for document in tuple(registry.documents_for_resource(resource_path)):
+            if document.kind is DocumentKind.SCENE:
+                continue
+            view_ids = registry.retire_deleted_resource_document(
+                document.document_id
+            )
+            for view_id in view_ids:
+                if not self.is_document_backed_view(view_id):
+                    registry.close_view(view_id, preserve_dormant=False)
+                    continue
+                instance = self.get_window_instance(view_id)
+                if instance is None or view_id not in self._window_states:
+                    registry.close_view(view_id, preserve_dormant=False)
+                    continue
+                retire = getattr(instance, "retire_deleted_document", None)
+                if callable(retire):
+                    retire(document.document_id)
+                if self.close_window(view_id):
+                    closed.append(view_id)
+                    # Built-in authoring windows are hidden rather than
+                    # destroyed, so explicitly release their deleted source.
+                    if registry.document_for_view(view_id) is not None:
+                        unbind = getattr(instance, "unbind_document", None)
+                        if callable(unbind):
+                            unbind()
+                        else:
+                            registry.close_view(
+                                view_id,
+                                preserve_dormant=False,
+                            )
+            if registry.get(document.document_id) is not None:
+                registry.unregister(
+                    document.document_id,
+                    preserve_dormant=False,
+                )
+        return tuple(closed)
+
+    def on_asset_mutation(self, change) -> None:
+        """Project committed asset consequences into editor window lifecycle."""
+        from Infernux.engine.interaction import (
+            AssetMutationKind,
+            iter_asset_mutations,
+        )
+
+        for mutation in iter_asset_mutations(change):
+            if mutation.kind is AssetMutationKind.DELETED:
+                self.close_deleted_resource_editors(mutation.source_path)
     
     def is_window_open(self, window_id: str) -> bool:
         """Check if a window is currently open."""

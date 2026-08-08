@@ -83,7 +83,6 @@ void surface(out SurfaceData s) {
         textureGrad(negativeAxesMap, inxFlipbookUv(v_ParticleLocalTexCoord, firstFrame), atlasGradientX, atlasGradientY),
         textureGrad(negativeAxesMap, inxFlipbookUv(v_ParticleLocalTexCoord, secondFrame), atlasGradientX, atlasGradientY),
         frameBlend);
-    const float inversePi = 0.31830988618;
     // The six-way maps are authored premultiplied by their own density. The
     // material and lifetime fades are additional coverage and therefore must
     // attenuate RGB as well as output alpha.
@@ -91,8 +90,11 @@ void surface(out SurfaceData s) {
         material.alphaScale * lifetimeFade * material.baseColor.a,
         0.0,
         1.0);
-    _inxSixWayPositive = max(positiveAxes.rgb, vec3(0.0)) * inversePi * dynamicCoverage;
-    _inxSixWayNegative = max(negativeAxes.rgb, vec3(0.0)) * inversePi * dynamicCoverage;
+    // Six-way maps store linear, density-premultiplied directional
+    // transmission. Keep the authored coefficients in their native scale;
+    // the lighting model applies the energy-conserving PI factor.
+    _inxSixWayPositive = max(positiveAxes.rgb, vec3(0.0)) * dynamicCoverage;
+    _inxSixWayNegative = max(negativeAxes.rgb, vec3(0.0)) * dynamicCoverage;
 
     s.albedo = material.baseColor.rgb * v_Color;
     s.emission = material.emissionColor.rgb * negativeAxes.a * material.emissionIntensity;

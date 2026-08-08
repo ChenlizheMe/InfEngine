@@ -174,6 +174,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self._post_prefab_exit_callback: Optional[Callable[[], None]] = None
         self._scene_transaction = None
         self._scene_transaction_path: Optional[str] = None
+        self._pending_external_reload: Optional[tuple[str, str]] = None
         self._scene_restore_snapshots: dict[str, _SceneRestoreSnapshot] = {}
         self._pending_scene_before_context = None
 
@@ -244,6 +245,15 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
     @property
     def document_id(self) -> str:
         return self._scene_document_id
+
+    def owns_document(self, document_id: str) -> bool:
+        """Return whether this manager owns the active or suspended scene document."""
+        identifier = str(document_id or "")
+        return bool(
+            identifier
+            and identifier
+            in {self._scene_document_id, self._previous_scene_document_id}
+        )
 
     @property
     def is_dirty(self) -> bool:
@@ -959,6 +969,105 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             controller=self,
         )
         return True
+
+    def request_external_reload(self, *, document_id: str, resource_path: str):
+        """Reload a scene after the user resolves an external-change conflict.
+
+        Play-mode restoration and scene replacement both own deferred work. A
+        confirmed disk reload therefore waits for those transactions instead
+        of rejecting the user's choice or reading into the runtime scene.
+        """
+        from Infernux.engine.interaction import (
+            DocumentActionResult,
+            DocumentActionStatus,
+        )
+
+        identifier = str(document_id or "")
+        target = resolved_path(resource_path or self._current_scene_path or "")
+        if not self.owns_document(identifier):
+            return DocumentActionResult(
+                DocumentActionStatus.REJECTED,
+                "the scene document is no longer owned by the active scene manager",
+            )
+        if not target or not os.path.isfile(target):
+            return DocumentActionResult(
+                DocumentActionStatus.FAILED,
+                "the scene file no longer exists on disk",
+            )
+        pending = self._pending_external_reload
+        if pending is not None and pending != (identifier, target):
+            return DocumentActionResult(
+                DocumentActionStatus.REJECTED,
+                "another scene durable reload is already pending",
+            )
+
+        if self._is_play_mode() or self.is_loading or self.is_prefab_mode:
+            self._pending_external_reload = (identifier, target)
+            self._advance_pending_external_reload()
+            return DocumentActionResult(DocumentActionStatus.PENDING)
+
+        if not self.reload_from_resource(
+            document_id=identifier,
+            resource_path=target,
+        ):
+            return DocumentActionResult(
+                DocumentActionStatus.FAILED,
+                "the current scene could not be replaced from disk",
+            )
+        return DocumentActionResult(DocumentActionStatus.APPLIED)
+
+    def _advance_pending_external_reload(self) -> int:
+        pending = self._pending_external_reload
+        if pending is None:
+            return 0
+
+        from Infernux.engine.deferred_task import DeferredTaskRunner
+
+        runner = DeferredTaskRunner.instance()
+        if self._is_play_mode():
+            if runner.is_busy:
+                return 0
+            from Infernux.engine.play_mode import PlayModeManager
+
+            play_mode = PlayModeManager.instance()
+            if play_mode is None or not play_mode.exit_play_mode():
+                return 0
+            return 0
+        if runner.is_busy or self.is_loading:
+            return 0
+        if self.is_prefab_mode:
+            if not self._deferred_exit_prefab:
+                self._request_prefab_exit()
+            return 0
+
+        document_id, target = pending
+        self._pending_external_reload = None
+        message = ""
+        try:
+            success = bool(
+                self.reload_from_resource(
+                    document_id=document_id,
+                    resource_path=target,
+                )
+            )
+            if not success:
+                message = "the current scene could not be replaced from disk"
+        except Exception as exc:
+            success = False
+            message = str(exc)
+
+        from Infernux.engine.interaction import DocumentRegistry
+
+        DocumentRegistry.instance().complete_external_reload(
+            document_id,
+            success=success,
+            message=message,
+        )
+        return 1
+
+    def poll_pending_writes(self) -> int:
+        """Advance controller-owned persistence and durable reload work."""
+        return self._advance_pending_external_reload()
 
     def restore_document_locator(self, locator) -> bool:
         """Restore a Scene required by the global history replay barrier."""

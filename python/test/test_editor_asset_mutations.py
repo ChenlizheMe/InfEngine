@@ -42,9 +42,14 @@ def _isolate_asset_mutation_service():
 class _Controller:
     def __init__(self) -> None:
         self.moves = []
+        self.reloaded = False
 
     def resource_moved(self, **payload) -> None:
         self.moves.append(payload)
+
+    def reload_from_resource(self, **_payload) -> bool:
+        self.reloaded = True
+        return True
 
 
 def test_content_mutations_are_typed_ordered_and_never_create_undo(tmp_path):
@@ -90,6 +95,7 @@ def test_only_external_content_mutation_advances_document_external_revision(tmp_
     service = AssetMutationService(documents, SelectionService())
     path = tmp_path / "Smoke.particlegraph"
     path.write_text("baseline", encoding="utf-8")
+    controller = _Controller()
     document = documents.create(
         DocumentKind.PARTICLE_GRAPH,
         "Smoke",
@@ -97,6 +103,7 @@ def test_only_external_content_mutation_advances_document_external_revision(tmp_
         resource_path=str(path),
         revision=1,
         saved_revision=0,
+        controller=controller,
     )
 
     service.publish_content_change(
@@ -114,7 +121,9 @@ def test_only_external_content_mutation_advances_document_external_revision(tmp_
         origin=ActionOrigin.EXTERNAL,
     )
     assert document.external_revision == 1
-    assert document.state is DocumentState.CONFLICT
+    assert controller.reloaded
+    assert document.state is DocumentState.READY
+    assert not document.is_dirty
 
 
 def test_project_directory_listener_flattens_typed_asset_notifications():

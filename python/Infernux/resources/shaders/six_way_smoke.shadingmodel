@@ -215,7 +215,10 @@ vec3 inxSixWayDirectLighting(vec3 shadowNormal, float alpha) {
     }
 #endif
 
-    return directLighting;
+    // Six-way coefficients are baked diffuse transmission. Match the
+    // standard six-way lighting convention by restoring the Lambert PI
+    // factor after blending the directional coefficients.
+    return directLighting * 3.14159265359;
 }
 
 void shading(in SurfaceData s, out vec4 color) {

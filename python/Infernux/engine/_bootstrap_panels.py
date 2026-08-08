@@ -482,6 +482,16 @@ class BootstrapPanelsMixin:
         if ts:
             cam_settings = ts.get("camera_settings")
             if cam_settings:
+                # Migrate legacy rotation sensitivity stored against the old
+                # 0.05 default. The current UI maps 0.15 (deg/px) to 100%, so
+                # legacy values < 0.1 get normalized relative to the new base.
+                try:
+                    legacy = float(cam_settings.get("rotation_speed", 0.15))
+                    if legacy < 0.1:
+                        cam_settings = dict(cam_settings)
+                        cam_settings["rotation_speed"] = legacy / 0.05 * 0.15
+                except (TypeError, ValueError):
+                    pass
                 self.toolbar.set_camera_settings(cam_settings)
 
         # Hierarchy (native C++ panel)

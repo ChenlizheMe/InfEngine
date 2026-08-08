@@ -367,7 +367,7 @@ def test_active_registered_scene_external_edit_is_reimported(monkeypatch, tmp_pa
     assert [entry[0] for entry in asset_calls] == ["invalidate", "asset-modified"]
 
 
-def test_dirty_document_blocks_external_reimport_before_live_asset_mutation(
+def test_dirty_asset_document_allows_external_reimport_before_publication(
     monkeypatch,
     tmp_path,
 ):
@@ -380,8 +380,12 @@ def test_dirty_document_blocks_external_reimport_before_live_asset_mutation(
     )
 
     class _ReloadableController:
+        def __init__(self):
+            self.reloaded = False
+
         def reload_from_resource(self, *, document_id: str, resource_path: str):
             del document_id, resource_path
+            self.reloaded = True
             return True
 
     database = _AssetDatabaseProbe()
@@ -389,10 +393,19 @@ def test_dirty_document_blocks_external_reimport_before_live_asset_mutation(
     asset_calls = []
     _patch_asset_manager(monkeypatch, asset_calls)
     target = tmp_path / "Dirty.effect"
-    target.write_text("{}", encoding="utf-8")
+    effect_document = {
+        "$schema": "infernux.render_effect",
+        "feature_type": "infernux.post.bloom",
+        "parameters": {},
+        "dependencies": [],
+    }
+    import json
+
+    target.write_text(json.dumps(effect_document), encoding="utf-8")
     target_path = str(target.resolve())
     database.guid_by_path[target_path] = "dirty-guid"
     registry = DocumentRegistry()
+    controller = _ReloadableController()
     document = registry.create(
         DocumentKind.RENDER_EFFECT,
         "Dirty",
@@ -401,7 +414,59 @@ def test_dirty_document_blocks_external_reimport_before_live_asset_mutation(
         revision=1,
         saved_revision=0,
         capabilities=DocumentCapability.SAVE | DocumentCapability.DISCARD,
-        controller=_ReloadableController(),
+        controller=controller,
+    )
+
+    target.write_text(json.dumps(effect_document, indent=2), encoding="utf-8")
+    handler.on_modified(_event(target))
+
+    assert handler.process_pending_reloads(force=True) == 1
+    assert database.mutations == [
+        ("modified", target_path, threading.get_ident())
+    ]
+    assert [entry[0] for entry in asset_calls] == ["asset-modified"]
+    assert controller.reloaded
+    assert document.external_revision == 1
+    assert document.state is DocumentState.READY
+    assert not document.is_dirty
+
+
+def test_dirty_scene_still_blocks_external_reimport_for_user_arbitration(
+    monkeypatch,
+    tmp_path,
+):
+    from Infernux.engine.interaction import (
+        DocumentCapability,
+        DocumentKey,
+        DocumentKind,
+        DocumentRegistry,
+        DocumentState,
+    )
+
+    class _SceneController:
+        @staticmethod
+        def reload_from_resource(*, document_id: str, resource_path: str):
+            del document_id, resource_path
+            return True
+
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    asset_calls = []
+    _patch_asset_manager(monkeypatch, asset_calls)
+    target = tmp_path / "Dirty.scene"
+    target.write_text("{}", encoding="utf-8")
+    target_path = str(target.resolve())
+    database.guid_by_path[target_path] = "scene-guid"
+    registry = DocumentRegistry()
+    document = registry.create(
+        DocumentKind.SCENE,
+        "Dirty",
+        key=DocumentKey.resource(DocumentKind.SCENE, target_path),
+        resource_path=target_path,
+        revision=1,
+        saved_revision=0,
+        capabilities=DocumentCapability.SAVE | DocumentCapability.DISCARD,
+        controller=_SceneController(),
     )
 
     target.write_text('{"changed": true}', encoding="utf-8")

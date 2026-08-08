@@ -3537,8 +3537,6 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
 
 void Infernux::ReloadTexture(const std::string &texturePath)
 {
-    INXLOG_INFO("Infernux::ReloadTexture called: ", texturePath);
-
     if (!CheckEngineValid("reload texture") || !m_renderer) {
         INXLOG_ERROR("Infernux::ReloadTexture: engine or renderer invalid");
         return;
@@ -3568,13 +3566,8 @@ void Infernux::ReloadTexture(const std::string &texturePath)
     if (!guid.empty() && registry.IsLoaded(guid)) {
         registry.ReloadAsset(guid);
 
-        // Log the reloaded import settings for diagnostics
-        auto infTex = registry.LoadAsset<InxTexture>(guid, ResourceType::Texture);
-        if (infTex) {
-            INXLOG_INFO(
-                "Infernux::ReloadTexture: InxTexture reloaded — IsLinear=", infTex->IsLinear() ? "true" : "false",
-                ", GenerateMipmaps=", infTex->GenerateMipmaps() ? "true" : "false", ", GUID=", guid);
-        }
+        // Reload the asset so import settings changes propagate to the GPU path.
+        registry.LoadAsset<InxTexture>(guid, ResourceType::Texture);
     }
 
     // GUID-only invalidation (path fallback removed by design).
@@ -3584,11 +3577,8 @@ void Infernux::ReloadTexture(const std::string &texturePath)
     // invalidated via the Texture Modified callback.
     {
         auto dependents = AssetDependencyGraph::Instance().GetDependents(guid);
-        INXLOG_INFO("Infernux::ReloadTexture: NotifyEvent guid=", guid, " dependents=", dependents.size());
         AssetDependencyGraph::Instance().NotifyEvent(guid, ResourceType::Texture, AssetEvent::Modified);
     }
-
-    INXLOG_INFO("Infernux::ReloadTexture: done for '", texturePath, "'");
 }
 
 void Infernux::ReloadMesh(const std::string &meshPath)

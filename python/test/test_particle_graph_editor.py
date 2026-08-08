@@ -3305,7 +3305,7 @@ def test_particle_graph_document_state_does_not_serialize_stale_model(monkeypatc
 
     assert panel.authoring_document_state() == {
         "file_path": "Assets/VFX/Legacy.particlegraph",
-        "dirty": True,
+        "dirty": False,
     }
 
 

@@ -1224,7 +1224,7 @@ class NodeGraphEditorPanel(EditorPanel):
     def _node_graph_undo_enabled() -> bool:
         from Infernux.engine.interaction import AuthoringMutationService
 
-        return AuthoringMutationService.require().can_record(require_edit_mode=True)
+        return AuthoringMutationService.require().can_record()
 
     def _execute_graph_mutations(
         self,
@@ -1279,7 +1279,6 @@ class NodeGraphEditorPanel(EditorPanel):
             view_id=self.window_id,
             before_selection=before_selection,
             after_selection=after_selection,
-            require_edit_mode=True,
         )
         if applied and selection_after is not None:
             selection = getattr(self, "_graph_selection", None)
@@ -1456,10 +1455,14 @@ class NodeGraphEditorPanel(EditorPanel):
         before: tuple[float, float, float],
         after: tuple[float, float, float],
     ) -> bool:
+        gesture_kind = str(kind)
+        if gesture_kind == "zoom":
+            # Wheel zoom is transient canvas navigation. It must not displace
+            # the user's last authoring action in the global undo/redo chain.
+            return before != after
         description = {
             "pan": "Pan Node Graph View",
-            "zoom": "Zoom Node Graph View",
-        }.get(str(kind), "Change Node Graph View")
+        }.get(gesture_kind, "Change Node Graph View")
         return ViewCommandService.require().set_value(
             before,
             after,

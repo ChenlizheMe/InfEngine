@@ -541,6 +541,12 @@ def test_timeline_document_replacement_waits_for_dirty_resolution(
         classmethod(lambda cls: _Coordinator()),
     )
     panel = AnimTimelineEditorPanel()
+    # Replacement confirmation is required only after a real authored edit;
+    # opening the blank editor itself is a clean presentation action.
+    _reset_editor_interaction_state.mark_changed(
+        panel.document_id,
+        view_id=panel.window_id,
+    )
     original = panel._timeline
 
     assert panel.command_new_timeline()

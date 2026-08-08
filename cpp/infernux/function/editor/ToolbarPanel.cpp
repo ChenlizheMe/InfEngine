@@ -181,15 +181,11 @@ void ToolbarPanel::RenderRightDropdowns(InxGUIContext *ctx, float winW)
         ImGui::OpenPopup("##giz");
     ImGui::PopStyleColor(3);
 
-    if (ImGui::BeginPopup("##giz")) {
+    if (ctx->BeginPopup("##giz")) {
         if (captureSemantics)
             ctx->RecordSemanticWindow("toolbar_popup", gizLabel, "toolbar.gizmos.popup");
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, EditorTheme::POPUP_WIN_PAD);
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::POPUP_ITEM_SPC);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::POPUP_FRAME_PAD);
         PopupGizmos(ctx);
-        ImGui::PopStyleVar(3);
-        ImGui::EndPopup();
+        ctx->EndPopup();
     }
 
     ImGui::SameLine(0.0f, 4.0f);
@@ -204,15 +200,11 @@ void ToolbarPanel::RenderRightDropdowns(InxGUIContext *ctx, float winW)
         ImGui::OpenPopup("##cam");
     ImGui::PopStyleColor(3);
 
-    if (ImGui::BeginPopup("##cam")) {
+    if (ctx->BeginPopup("##cam")) {
         if (captureSemantics)
             ctx->RecordSemanticWindow("toolbar_popup", camLabel, "toolbar.camera.popup");
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, EditorTheme::POPUP_WIN_PAD);
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::POPUP_ITEM_SPC);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::POPUP_FRAME_PAD);
         PopupCamera(ctx);
-        ImGui::PopStyleVar(3);
-        ImGui::EndPopup();
+        ctx->EndPopup();
     }
 }
 
@@ -230,16 +222,14 @@ void ToolbarPanel::PopupGizmos(InxGUIContext *ctx)
     ImGui::Dummy(ImVec2(200.0f, 0.0f)); // minimum popup width
     ImGui::TextUnformatted(T("toolbar.gizmos_header").c_str());
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
 
     bool grid = isShowGrid();
     const std::string gridLabel = T("toolbar.show_grid");
-    const bool gridChanged = ImGui::Checkbox(gridLabel.c_str(), &grid);
+    const bool gridChanged = ctx->Checkbox(gridLabel, &grid);
     if (InxGUISemantics::IsCaptureEnabled())
         ctx->RecordSemanticItem("toolbar_show_grid", gridLabel, true, "toolbar.gizmos.show_grid");
     if (gridChanged && executeCommand)
         executeCommand("scene.toggle_grid", "toolbar", "");
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -255,7 +245,6 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
     ImGui::Dummy(ImVec2(360.0f, 0.0f)); // minimum popup width
     ImGui::TextUnformatted(T("toolbar.scene_camera").c_str());
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
 
     ImGui::TextUnformatted(T("toolbar.projection_mode").c_str());
     ImGui::SameLine(145.0f);
@@ -273,7 +262,6 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
         applyCameraToEngine(m_cameraSettings);
     if (ImGui::IsItemDeactivatedAfterEdit() && endCameraEdit)
         endCameraEdit("projection", m_cameraSettings);
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
 
     struct CamParam
     {
@@ -281,6 +269,12 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
         float *value;
         float mn, mx, step, stepFast;
         const char *headerKey; // null if no header
+    // Percent remap: when nonzero, the slider works in display-percent space
+    // (value*scale), clamped to [mn, mx], and writes value/scale back. This
+    // lets raw values with awkward magnitudes (e.g. 0.005 deg/px, 5.0 m/s)
+    // be presented as an intuitive percentage instead of leading zeros.
+    // The baseline differs per parameter: "100%" always means the default.
+    float percentScale = 0.0f;
     };
 
     CamParam perspectiveParams[] = {
@@ -289,13 +283,22 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
     CamParam orthographicParams[] = {
         {"toolbar.orthographic_size", &m_cameraSettings.orthographicSize, 0.01f, 1000.0f, 0.1f, 1.0f, nullptr},
     };
+    // 100% == default for every navigation parameter. Symmetric range
+    // [25%, 175%] keeps the 100% grab centered on the track.
+    constexpr float kRotationPercentScale = 100.0f / CAMERA_DEFAULTS_ROTATION;
+    constexpr float kPanPercentScale = 100.0f / CAMERA_DEFAULTS_PAN;
+    constexpr float kZoomPercentScale = 100.0f / CAMERA_DEFAULTS_ZOOM;
+    constexpr float kMovePercentScale = 100.0f / CAMERA_DEFAULTS_MOVE;
+    // Speed boost baseline: 100% == default (3.0x).
+    constexpr float kBoostPercentScale = 100.0f / CAMERA_DEFAULTS_BOOST;
     CamParam navigationParams[] = {
-        {"toolbar.rotation_sensitivity", &m_cameraSettings.rotationSpeed, 0.005f, 1.0f, 0.005f, 0.05f,
-         "toolbar.navigation_header"},
-        {"toolbar.pan_speed", &m_cameraSettings.panSpeed, 0.1f, 10.0f, 0.1f, 1.0f, nullptr},
-        {"toolbar.zoom_speed", &m_cameraSettings.zoomSpeed, 0.1f, 10.0f, 0.1f, 1.0f, nullptr},
-        {"toolbar.move_speed", &m_cameraSettings.moveSpeed, 0.1f, 50.0f, 0.1f, 1.0f, nullptr},
-        {"toolbar.speed_boost", &m_cameraSettings.moveSpeedBoost, 1.0f, 20.0f, 0.1f, 1.0f, nullptr},
+        {"toolbar.rotation_sensitivity", &m_cameraSettings.rotationSpeed, 25.0f, 175.0f, 5.0f, 25.0f,
+         "toolbar.navigation_header", kRotationPercentScale},
+        {"toolbar.pan_speed", &m_cameraSettings.panSpeed, 25.0f, 175.0f, 5.0f, 25.0f, nullptr, kPanPercentScale},
+        {"toolbar.zoom_speed", &m_cameraSettings.zoomSpeed, 25.0f, 175.0f, 5.0f, 25.0f, nullptr, kZoomPercentScale},
+        {"toolbar.move_speed", &m_cameraSettings.moveSpeed, 25.0f, 175.0f, 5.0f, 25.0f, nullptr, kMovePercentScale},
+        {"toolbar.speed_boost", &m_cameraSettings.moveSpeedBoost, 25.0f, 175.0f, 5.0f, 25.0f, nullptr,
+         kBoostPercentScale},
     };
 
     auto renderParams = [&](CamParam *params, size_t count) {
@@ -304,45 +307,33 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
             if (p.headerKey) {
                 ImGui::TextUnformatted(T(p.headerKey).c_str());
                 ImGui::Separator();
-                ImGui::Dummy(ImVec2(0.0f, 4.0f));
             }
 
             ImGui::TextUnformatted(T(p.key).c_str());
             ImGui::SameLine(145.0f);
 
+            // Unity-style ranged slider (thin track + grab + numeric input),
+            // matching the Game View scale slider. No FrameBg box.
             char sliderId[64];
-            snprintf(sliderId, sizeof(sliderId), "##%s_slider", p.key);
-            ImGui::SetNextItemWidth(120.0f);
-            const CameraSettings sliderBefore = m_cameraSettings;
-            const float sliderValueBefore = *p.value;
-            ImGui::SliderFloat(sliderId, p.value, p.mn, p.mx);
-            *p.value = (std::min)((std::max)(*p.value, p.mn), p.mx);
-            const bool sliderChanged = *p.value != sliderValueBefore;
+            snprintf(sliderId, sizeof(sliderId), "##%s_value", p.key);
+            ImGui::SetNextItemWidth(210.0f);
+            const CameraSettings valueBefore = m_cameraSettings;
+            const float valueBeforeFloat = *p.value;
+
+            const bool isPercent = p.percentScale > 0.0f;
+            float displayValue = isPercent ? (*p.value * p.percentScale) : *p.value;
+            ctx->FloatSlider(sliderId, &displayValue, p.mn, p.mx, isPercent ? "%.0f%%" : nullptr);
+            // Clamp in display space, then map back to the raw value.
+            displayValue = (std::min)((std::max)(displayValue, p.mn), p.mx);
+            *p.value = isPercent ? (displayValue / p.percentScale) : displayValue;
+
+            const bool valueChanged = *p.value != valueBeforeFloat;
             if (ImGui::IsItemActivated() && beginCameraEdit)
-                beginCameraEdit(p.key, sliderBefore);
-            if (sliderChanged && applyCameraToEngine)
+                beginCameraEdit(p.key, valueBefore);
+            if (valueChanged && applyCameraToEngine)
                 applyCameraToEngine(m_cameraSettings);
             if (ImGui::IsItemDeactivatedAfterEdit() && endCameraEdit)
                 endCameraEdit(p.key, m_cameraSettings);
-
-            ImGui::SameLine(0.0f, 6.0f);
-
-            char inputId[64];
-            snprintf(inputId, sizeof(inputId), "##%s_input", p.key);
-            ImGui::SetNextItemWidth(72.0f);
-            const CameraSettings inputBefore = m_cameraSettings;
-            const float inputValueBefore = *p.value;
-            ImGui::InputFloat(inputId, p.value, p.step, p.stepFast, "%.3f");
-            *p.value = (std::min)((std::max)(*p.value, p.mn), p.mx);
-            const bool inputChanged = *p.value != inputValueBefore;
-            if (ImGui::IsItemActivated() && beginCameraEdit)
-                beginCameraEdit(p.key, inputBefore);
-            if (inputChanged && applyCameraToEngine)
-                applyCameraToEngine(m_cameraSettings);
-            if (ImGui::IsItemDeactivatedAfterEdit() && endCameraEdit)
-                endCameraEdit(p.key, m_cameraSettings);
-
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
         }
     };
 

@@ -637,7 +637,7 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
 
     auto optionCheckbox = [&](const char *label, const char *option, const char *semanticId) {
         bool value = GetViewOption(option);
-        if (ImGui::Checkbox(label, &value))
+        if (ctx->Checkbox(label, &value))
             ExecuteEditorCommand("console.set_option", "pointer",
                                  std::string(option) + "\t" + (value ? "1" : "0"));
         ctx->RecordSemanticItem("checkbox", label, true, semanticId, GetViewOption(option));
@@ -657,7 +657,7 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
 
     ImGui::SameLine();
     bool follow = GetViewOption("follow");
-    if (ImGui::Checkbox("Follow", &follow))
+    if (ctx->Checkbox("Follow", &follow))
         ExecuteEditorCommand("console.set_option", "pointer", std::string("follow\t") + (follow ? "1" : "0"));
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Keep the view pinned to incoming messages");

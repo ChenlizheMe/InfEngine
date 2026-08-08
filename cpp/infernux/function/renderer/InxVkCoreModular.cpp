@@ -525,8 +525,6 @@ void InxVkCoreModular::InvalidateTextureCache(const std::string &textureGuid)
     }
 #endif
 
-    INXLOG_INFO("Invalidating texture cache for GUID: ", textureGuid);
-
     m_pendingTextureCpuLoads.erase(textureGuid);
     for (auto pending = m_pendingTextureGpuUploads.begin(); pending != m_pendingTextureGpuUploads.end();) {
         if (pending->second.guid != textureGuid) {

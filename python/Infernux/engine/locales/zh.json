@@ -1004,6 +1004,7 @@
   "igui.search_hint": "搜索...",
   "igui.no_results": "无匹配项",
   "igui.none": "无",
+  "material.missing_texture": "贴图缺失",
   "igui.tab_scene": "场景",
   "igui.tab_assets": "资产",
   "node_graph.add_node": "添加节点...",

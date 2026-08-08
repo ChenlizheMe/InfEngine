@@ -1133,7 +1133,7 @@ def _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value
         _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_value, lw)
         _tooltip_and_info(ctx, metadata)
         return True
-    if ft in _get_asset_ref_config():
+    if ft == FieldType.ASSET or ft in _get_asset_ref_config():
         flush_fn()
         _render_asset_reference_field(ctx, py_comp, field_name, metadata, current_value, metadata.field_type, lw)
         _tooltip_and_info(ctx, metadata)

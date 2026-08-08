@@ -10,6 +10,7 @@ from .documents import (
     DocumentActionResult,
     DocumentActionStatus,
     DocumentRegistry,
+    DocumentKind,
     DocumentState,
 )
 
@@ -32,6 +33,7 @@ class ExternalDocumentConflictService:
         self._queue: list[ExternalDocumentConflict] = []
         self._active: Optional[ExternalDocumentConflict] = None
         self._waiting_for_save_copy = False
+        self._waiting_for_reload = False
         self._error = ""
 
     @property
@@ -55,6 +57,10 @@ class ExternalDocumentConflictService:
         return self._waiting_for_save_copy
 
     @property
+    def waiting_for_reload(self) -> bool:
+        return self._waiting_for_reload
+
+    @property
     def error(self) -> str:
         return self._error
 
@@ -70,6 +76,7 @@ class ExternalDocumentConflictService:
             for document in self._registry.documents:
                 if (
                     document.state is DocumentState.CONFLICT
+                    and document.kind is DocumentKind.SCENE
                     and document.document_id not in known
                 ):
                     self._queue.append(self._snapshot(document))
@@ -82,6 +89,18 @@ class ExternalDocumentConflictService:
 
         if self._active is not None:
             document = self._registry.get(self._active.document_id)
+            if self._waiting_for_reload:
+                result = self._registry.take_external_reload_result(
+                    self._active.document_id
+                )
+                if result is None:
+                    return
+                self._waiting_for_reload = False
+                if result.accepted:
+                    self._finish_active()
+                    return
+                self._error = result.message
+                return
             if self._waiting_for_save_copy:
                 if document is not None and self._registry.is_save_pending(
                     document.document_id
@@ -112,7 +131,10 @@ class ExternalDocumentConflictService:
         if conflict is None:
             return self._stale_result()
         result = self._registry.request_reload_external(conflict.document_id)
-        if result.accepted:
+        if result.status is DocumentActionStatus.PENDING:
+            self._waiting_for_reload = True
+            self._error = ""
+        elif result.accepted:
             self._finish_active()
         else:
             self._error = result.message
@@ -147,6 +169,7 @@ class ExternalDocumentConflictService:
         self._queue.clear()
         self._active = None
         self._waiting_for_save_copy = False
+        self._waiting_for_reload = False
         self._error = ""
         self._observed_registry_revision = -1
 
@@ -163,6 +186,7 @@ class ExternalDocumentConflictService:
         document = self._registry.get(conflict.document_id)
         return bool(
             document is not None
+            and document.kind is DocumentKind.SCENE
             and document.state is DocumentState.CONFLICT
         )
 
@@ -192,6 +216,7 @@ class ExternalDocumentConflictService:
     def _finish_active(self) -> None:
         self._active = None
         self._waiting_for_save_copy = False
+        self._waiting_for_reload = False
         self._error = ""
 
 

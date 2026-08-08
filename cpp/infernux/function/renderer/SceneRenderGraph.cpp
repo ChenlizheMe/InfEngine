@@ -1676,10 +1676,10 @@ void SceneRenderGraph::EnsureGraphBuilt()
     }
 
     if (m_graphBuilt && m_outlinePassesEnabled) {
-        const bool outlineReady =
-            m_outlineRenderer &&
-            m_outlineRenderer->EnsureGraphPipelines(m_renderGraph->GetPassRenderPass("__EditorOutlineMask"),
-                                                    m_renderGraph->GetPassRenderPass("__EditorOutlineComposite"));
+        const bool outlineReady = m_outlineRenderer && m_outlineRenderer->EnsureGraphPipelines(
+                                                           m_renderGraph->GetPassRenderPass("__EditorOutlineMask"),
+                                                           m_renderGraph->GetPassRenderPass("__EditorOutlineComposite"),
+                                                           m_sceneTarget->GetMsaaSampleCount());
         if (outlineReady) {
             m_outlinePipelineFailureReported = false;
         } else if (!m_outlinePipelineFailureReported) {
@@ -2416,15 +2416,6 @@ void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string,
             m_importedResolveTarget = resolvedVersion;
             displayTarget = resolvedVersion;
         }
-    }
-
-    const vk::ResourceHandle outlinedDisplay = AppendEditorOutline(displayTarget);
-    if (outlinedDisplay.IsValid() && outlinedDisplay != displayTarget) {
-        displayTarget = outlinedDisplay;
-        if (m_importedResolveTarget.IsValid() && displayTarget.id == m_importedResolveTarget.id)
-            m_importedResolveTarget = displayTarget;
-        else if (m_importedColorTarget.IsValid() && displayTarget.id == m_importedColorTarget.id)
-            m_importedColorTarget = displayTarget;
     }
 
     if (!graphOutput.IsValid())
@@ -4056,11 +4047,13 @@ void SceneRenderGraph::BuildRenderGraph()
         }
 
         // ====================================================================
-        // Auto-append system passes: component gizmos, editor gizmos,
-        // and editor tools — all draw into the backbuffer with depth testing.
+        // Component and editor gizmos participate in the scene before the
+        // selection outline. Manipulation tools are deliberately appended
+        // after the outline so their handles remain readable.
         // ====================================================================
         m_importedColorTarget = AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
         m_importedColorTarget = AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
+        m_importedColorTarget = AppendEditorOutline(m_importedColorTarget);
         m_importedColorTarget = AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
     }
 

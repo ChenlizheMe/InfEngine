@@ -226,7 +226,6 @@ class _ImportSettingsController:
             view_id=view_id,
             before_selection=before_selection,
             after_selection=after_selection,
-            require_edit_mode=False,
         )
 
     @staticmethod

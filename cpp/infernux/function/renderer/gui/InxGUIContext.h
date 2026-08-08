@@ -126,11 +126,11 @@ class InxGUIContext
     int SelectableListClipped(size_t itemCount, const std::function<std::string(size_t)> &labelAt);
 
     /* value editors */
-    void Checkbox(const std::string &label, bool *value);
+    bool Checkbox(const std::string &label, bool *value);
     /// Inspector checkbox: square at ``INSPECTOR_CHECKBOX_BOX_SCALE``, label at normal font size.
     bool CheckboxInspector(const std::string &label, bool *value);
     void IntSlider(const std::string &label, int *value, int min, int max);
-    void FloatSlider(const std::string &label, float *value, float min, float max);
+    void FloatSlider(const std::string &label, float *value, float min, float max, const char *format = nullptr);
     bool DragFloat(const std::string &label, float *value, float speed = 1.0f, float min = 0.0f, float max = 0.0f,
                    const char *fmt = "%.3f", float power = 1.0f, const std::string &semanticId = "");
     bool DragInt(const std::string &label, int *value, float speed = 1.0f, int min = 0, int max = 0,
@@ -475,6 +475,7 @@ class InxGUIContext
     bool m_dragCaptured = false;
     int m_ignoreMouseDeltaFrames = 0; // suppress N frames after SDL warp
     bool m_popupOwnedPointerAtFrameStart = false;
+    int m_childBgTransparentCount = 0; // ChildBg transparency pushed inside popups
     std::unordered_map<std::string, SearchableComboState> m_searchableComboStates;
     TransientBeginHandler m_transientBegin;
     TransientEndHandler m_transientEnd;

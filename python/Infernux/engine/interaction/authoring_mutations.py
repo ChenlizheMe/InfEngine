@@ -123,23 +123,21 @@ class AuthoringMutationService:
         return False
 
     @staticmethod
-    def _undo_manager(*, require_edit_mode: bool):
+    def _undo_manager():
         from Infernux.engine.undo import UndoManager
 
         manager = UndoManager.instance()
         if manager is None or not manager.enabled or manager.is_executing:
             return None
-        if require_edit_mode:
-            from Infernux.engine.play_mode import PlayModeManager, PlayModeState
-
-            play_mode = PlayModeManager.instance()
-            if play_mode is not None and play_mode.state is not PlayModeState.EDIT:
-                return None
         return manager
 
-    def can_record(self, *, require_edit_mode: bool = True) -> bool:
-        """Return whether an authoring command may enter the global journal."""
-        return self._undo_manager(require_edit_mode=require_edit_mode) is not None
+    def can_record(self) -> bool:
+        """Return whether an asset-authoring command may enter the journal.
+
+        Asset documents remain editable while the scene is playing or paused,
+        matching the editor/runtime separation used by Unity-style Play Mode.
+        """
+        return self._undo_manager() is not None
 
     def execute_command(
         self,
@@ -149,7 +147,6 @@ class AuthoringMutationService:
         view_id: str,
         before_selection: Any = None,
         after_selection: Any = None,
-        require_edit_mode: bool = True,
     ) -> bool:
         """Create and execute one document-bound command through the global journal.
 
@@ -165,7 +162,7 @@ class AuthoringMutationService:
         if not callable(command_factory):
             raise TypeError("authoring command factory must be callable")
 
-        manager = self._undo_manager(require_edit_mode=require_edit_mode)
+        manager = self._undo_manager()
         if manager is None:
             return False
         document = self._documents.require(identifier)
@@ -221,7 +218,6 @@ class AuthoringMutationService:
         before_revision: int,
         after_revision: int,
         rollback: Callable[[], Any],
-        require_edit_mode: bool = True,
     ) -> bool:
         """Record a continuous edit whose model value is already visible.
 
@@ -245,7 +241,7 @@ class AuthoringMutationService:
             raise RuntimeError(
                 "applied authoring command revision no longer matches its gesture"
             )
-        manager = self._undo_manager(require_edit_mode=require_edit_mode)
+        manager = self._undo_manager()
         locator = self._documents.locate(identifier)
         if locator is None:
             command.dispose()

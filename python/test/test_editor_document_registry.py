@@ -55,9 +55,14 @@ class _Controller:
         self.resource_path = resource_path
         return self.save(ticket=ticket, save_as=True)
 
-def _document(registry: DocumentRegistry, *, dirty: bool = False):
+def _document(
+    registry: DocumentRegistry,
+    *,
+    dirty: bool = False,
+    kind: DocumentKind = DocumentKind.PARTICLE_GRAPH,
+):
     document = registry.create(
-        DocumentKind.PARTICLE_GRAPH,
+        kind,
         "Smoke",
         document_id="particle:smoke",
         revision=1 if dirty else 0,
@@ -73,7 +78,7 @@ def _document(registry: DocumentRegistry, *, dirty: bool = False):
     return document, controller
 
 
-def test_external_change_conflicts_with_dirty_document_and_blocks_plain_save(tmp_path):
+def test_external_change_replaces_dirty_asset_document_without_prompt(tmp_path):
     registry = DocumentRegistry()
     path = tmp_path / "Smoke.particlegraph"
     path.write_text("baseline", encoding="utf-8")
@@ -89,12 +94,13 @@ def test_external_change_conflicts_with_dirty_document_and_blocks_plain_save(tmp
         document.document_id,
     )
     assert document.external_revision == 1
-    assert document.state is DocumentState.CONFLICT
+    assert document.state is DocumentState.READY
+    assert controller.reloaded
+    assert not document.is_dirty
     assert not controller.discarded
 
     result = registry.request_save(document.document_id)
-    assert result.status is DocumentActionStatus.REJECTED
-    assert "outside the Editor" in result.message
+    assert result.status is DocumentActionStatus.NO_OP
     assert controller.save_calls == 0
 
 
@@ -123,7 +129,50 @@ def test_clean_external_change_reloads_and_establishes_a_new_baseline(tmp_path):
     assert not document.is_dirty
 
 
-def test_external_change_during_save_rejects_stale_completion(tmp_path):
+def test_external_asset_deletion_is_terminal_without_a_reload_conflict(tmp_path):
+    registry = DocumentRegistry()
+    path = tmp_path / "Smoke.particlegraph"
+    path.write_text("baseline", encoding="utf-8")
+    document, controller = _document(registry, dirty=True)
+    registry.rekey(
+        document.document_id,
+        DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, str(path)),
+        resource_path=str(path),
+    )
+    path.unlink()
+
+    assert registry.preflight_external_resource_change(str(path), deleted=True)
+    assert registry.publish_external_resource_change(
+        str(path),
+        deleted=True,
+    ) == (document.document_id,)
+    assert document.state is DocumentState.READY
+    assert not controller.reloaded
+
+
+def test_external_scene_deletion_keeps_explicit_conflict_arbitration(tmp_path):
+    registry = DocumentRegistry()
+    path = tmp_path / "Level.scene"
+    path.write_text("baseline", encoding="utf-8")
+    document, _controller = _document(
+        registry,
+        kind=DocumentKind.SCENE,
+    )
+    registry.rekey(
+        document.document_id,
+        DocumentKey.resource(DocumentKind.SCENE, str(path)),
+        resource_path=str(path),
+    )
+    path.unlink()
+
+    assert not registry.preflight_external_resource_change(
+        str(path),
+        deleted=True,
+    )
+    assert document.state is DocumentState.CONFLICT
+
+
+def test_external_change_during_asset_save_cancels_stale_write_and_reloads(tmp_path):
     registry = DocumentRegistry()
     path = tmp_path / "Smoke.particlegraph"
     path.write_text("baseline", encoding="utf-8")
@@ -144,20 +193,25 @@ def test_external_change_during_save_rejects_stale_completion(tmp_path):
     registry.publish_external_resource_change(str(path))
     completed = registry.complete_save(ticket.ticket_id, success=True)
 
-    assert completed.status is SaveTicketStatus.FAILED
-    assert document.state is DocumentState.CONFLICT
-    assert document.saved_revision == 0
-    assert document.is_dirty
+    assert completed.status is SaveTicketStatus.CANCELLED
+    assert controller.reloaded
+    assert document.state is DocumentState.READY
+    assert document.saved_revision == document.revision
+    assert not document.is_dirty
 
 
 def test_keep_local_acknowledges_conflict_before_intentional_overwrite(tmp_path):
     registry = DocumentRegistry()
-    path = tmp_path / "Smoke.particlegraph"
+    path = tmp_path / "Smoke.scene"
     path.write_text("baseline", encoding="utf-8")
-    document, controller = _document(registry, dirty=True)
+    document, controller = _document(
+        registry,
+        dirty=True,
+        kind=DocumentKind.SCENE,
+    )
     registry.rekey(
         document.document_id,
-        DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, str(path)),
+        DocumentKey.resource(DocumentKind.SCENE, str(path)),
         resource_path=str(path),
     )
     path.write_text("external-change", encoding="utf-8")
@@ -785,7 +839,7 @@ def test_timeline_panel_binds_a_real_revisioned_document():
     assert document is not None
     assert document.kind is DocumentKind.TIMELINE
     assert document.view_ids == {panel.window_id}
-    assert document.is_dirty
+    assert not document.is_dirty
 
     previous_revision = document.revision
     registry.mark_changed(document.document_id, view_id=panel.window_id)

@@ -35,6 +35,23 @@ bool IsBuiltinTextureToken(const std::string &value)
     return value == "white" || value == "black" || value == "normal";
 }
 
+std::string RestoreTextureGuidReference(const std::string &textureGuid)
+{
+    if (textureGuid.empty() || IsBuiltinTextureToken(textureGuid))
+        return textureGuid;
+
+    auto *database = AssetRegistry::Instance().GetAssetDatabase();
+    if (database == nullptr)
+        return textureGuid;
+
+    const auto metadata = database->GetMetaByGuid(textureGuid);
+    if (!metadata)
+        return textureGuid;
+    if (metadata->GetResourceType() != ResourceType::Texture)
+        throw std::invalid_argument("asset GUID is not a Texture: " + textureGuid);
+    return textureGuid;
+}
+
 json SerializeShaderReference(const ShaderAssetReference &reference)
 {
     return {
@@ -1042,7 +1059,11 @@ bool InxMaterial::ApplyDocument(const nlohmann::json &document)
                 break;
             }
             case MaterialPropertyType::Texture2D:
-                prop.value = RequireTextureGuid(propJson["guid"].get<std::string>());
+                // A durable material reference survives deletion of its target.
+                // Keep the GUID so Undo/reimport can reconnect it and the
+                // Inspector can present a recoverable Missing Texture field.
+                // Interactive assignment remains strict in SetTextureGuid().
+                prop.value = RestoreTextureGuidReference(propJson["guid"].get<std::string>());
                 break;
             }
             m_properties[propName] = std::move(prop);

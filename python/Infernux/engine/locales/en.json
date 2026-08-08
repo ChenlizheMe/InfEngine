@@ -1004,6 +1004,7 @@
   "igui.search_hint": "Search...",
   "igui.no_results": "No results",
   "igui.none": "None",
+  "material.missing_texture": "Missing Texture",
   "igui.tab_scene": "Scene",
   "igui.tab_assets": "Assets",
   "node_graph.add_node": "Add Node...",

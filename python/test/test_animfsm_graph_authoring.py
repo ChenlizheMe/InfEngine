@@ -12,6 +12,7 @@ from Infernux.core.anim_state_machine import AnimCondition, AnimState, AnimTrans
 from Infernux.engine.ui.animfsm_graph_authoring import AnimFSMGraphAuthoringModel
 from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
 from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
+from Infernux.engine.play_mode import PlayModeManager, PlayModeState
 from Infernux.engine.undo import UndoManager
 
 
@@ -109,6 +110,29 @@ def test_node_graph_host_rejects_mutation_when_history_is_disabled():
     assert panel._fsm.parameters == []
     assert document.revision == initial_revision
     assert manager.action_journal.entries == ()
+
+
+def test_node_graph_asset_authoring_remains_available_in_play_and_pause():
+    previous_play_mode = PlayModeManager._instance
+    try:
+        for state in (PlayModeState.PLAYING, PlayModeState.PAUSED):
+            play_mode = PlayModeManager.__new__(PlayModeManager)
+            play_mode._state = state
+            PlayModeManager._instance = play_mode
+
+            panel, manager = _panel_with_history()
+            document = panel._fsm_document()
+
+            assert panel._insert_parameter()
+            assert len(panel._fsm.parameters) == 1
+            assert document.is_dirty
+            assert len(manager.action_journal.entries) == 1
+
+            manager.undo()
+            assert panel._fsm.parameters == []
+            assert not document.is_dirty
+    finally:
+        PlayModeManager._instance = previous_play_mode
 
 
 def test_animfsm_parameter_edit_uses_stable_diff_and_document_revision():
