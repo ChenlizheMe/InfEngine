@@ -43,11 +43,14 @@ def write_document_text(
     *,
     create_backup: bool = False,
     expected_file_state=None,
+    commit_chain_token: str = "",
+    chain_id: str = "",
 ) -> int:
     """Write one UTF-8 document and return its path generation."""
     options = DocumentWriteOptions()
     options.create_backup = create_backup
     options.expected_file_state = expected_file_state
+    options.commit_chain_token = str(commit_chain_token or chain_id or "")
     return NativeDocumentStore.instance().write_and_wait(path, content, options)
 
 
@@ -57,6 +60,8 @@ def submit_document_text(
     *,
     create_backup: bool = False,
     expected_file_state=None,
+    commit_chain_token: str = "",
+    chain_id: str = "",
 ) -> DocumentWriteTicket:
     """Queue one UTF-8 document write without blocking the caller.
 
@@ -67,6 +72,7 @@ def submit_document_text(
     options = DocumentWriteOptions()
     options.create_backup = create_backup
     options.expected_file_state = expected_file_state
+    options.commit_chain_token = str(commit_chain_token or chain_id or "")
     return NativeDocumentStore.instance().submit(path, content, options)
 
 

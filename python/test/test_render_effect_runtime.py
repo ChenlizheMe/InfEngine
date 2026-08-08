@@ -131,7 +131,11 @@ def test_render_effect_inspector_edit_updates_shared_instance_and_queues_snapsho
     monkeypatch.setattr(
         AssetManager,
         "set_render_effect_save_snapshot",
-        classmethod(lambda _cls, asset_path, text: snapshots.append((asset_path, text))),
+        classmethod(
+            lambda _cls, asset_path, text, **_kwargs: snapshots.append(
+                (asset_path, text)
+            )
+        ),
     )
     monkeypatch.setattr(
         AssetManager,

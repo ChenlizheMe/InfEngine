@@ -239,6 +239,7 @@ class Infernux
         uint64_t failedUploadVersion = 0;
         uint64_t textureId = 0;
         bool inFlight = false;
+        bool authoring = false;
         bool hasRenderTicket = false;
         bool renderTicketDone = false;
         int pendingWidth = 0;
@@ -462,6 +463,12 @@ class Infernux
         uint32_t nonTransparentPixelCount = 0;
         uint8_t minRgb = 0;
         uint8_t maxRgb = 0;
+        // Latest accepted source for this key. A newer authoring revision may
+        // arrive while an older GPU readback/upload is still in flight; keep
+        // the source here so the preview pump can immediately continue with
+        // the newest generation instead of waiting for another UI query.
+        std::string latestMatFilePath;
+        std::string latestMaterialJson;
     };
 
     struct TexturePreviewState

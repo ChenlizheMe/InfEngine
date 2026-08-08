@@ -7,6 +7,8 @@
 #include "VkDescriptorManager.h"
 
 #include <cstdint>
+#include <memory>
+#include <string_view>
 #include <vector>
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
@@ -36,13 +38,112 @@ struct VulkanTransferCommandContext
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 };
 
+/// Inputs captured from one physical device. Keeping this as a value type
+/// makes capability policy testable without requiring a live VkDevice.
+struct VulkanCapabilityProbeData final
+{
+    uint32_t apiVersion = VK_API_VERSION_1_0;
+    VkPhysicalDeviceFeatures coreFeatures{};
+    VkPhysicalDeviceVulkan12Features vulkan12Features{};
+    VkPhysicalDeviceVulkan13Features vulkan13Features{};
+    VkPhysicalDeviceDescriptorIndexingFeaturesEXT descriptorIndexingFeaturesEXT{};
+    VkPhysicalDeviceTimelineSemaphoreFeaturesKHR timelineSemaphoreFeaturesKHR{};
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeaturesKHR{};
+    VkPhysicalDeviceSynchronization2FeaturesKHR synchronization2FeaturesKHR{};
+
+    VkPhysicalDeviceProperties properties{};
+    VkPhysicalDeviceVulkan12Properties vulkan12Properties{};
+    VkPhysicalDeviceVulkan13Properties vulkan13Properties{};
+
+    bool descriptorIndexingExtension = false;
+    bool timelineSemaphoreExtension = false;
+    bool dynamicRenderingExtension = false;
+    bool synchronization2Extension = false;
+};
+
+struct VulkanCapabilitySnapshot final
+{
+    /// These are the physical-device properties captured by QueryProbe. They
+    /// stay with the feature result so policy code can inspect device limits
+    /// without querying Vulkan again.
+    uint32_t apiVersion = VK_API_VERSION_1_0;
+    VkPhysicalDeviceProperties properties{};
+    VkPhysicalDeviceVulkan12Properties vulkan12Properties{};
+    VkPhysicalDeviceVulkan13Properties vulkan13Properties{};
+    bool descriptorIndexingExtension = false;
+    bool timelineSemaphoreExtension = false;
+    bool dynamicRenderingExtension = false;
+    bool synchronization2Extension = false;
+    rhi::DeviceCapabilityState supported;
+
+    [[nodiscard]] static VulkanCapabilityProbeData QueryProbe(VkPhysicalDevice physicalDevice);
+    [[nodiscard]] static VulkanCapabilitySnapshot FromProbe(const VulkanCapabilityProbeData &probe) noexcept;
+};
+
+/// Builds only the capability feature chain requested by the caller. The
+/// object owns every pNext node, so the returned VkPhysicalDeviceFeatures2
+/// remains valid until this builder is destroyed or reset.
+class VulkanDeviceFeatureChain final
+{
+  public:
+    explicit VulkanDeviceFeatureChain(const VulkanCapabilitySnapshot &supported) noexcept;
+
+    VulkanDeviceFeatureChain(const VulkanDeviceFeatureChain &) = delete;
+    VulkanDeviceFeatureChain &operator=(const VulkanDeviceFeatureChain &) = delete;
+
+    [[nodiscard]] bool Enable(const rhi::DeviceCapabilityRequest &request) noexcept;
+    [[nodiscard]] const VkPhysicalDeviceFeatures2 &GetFeatures2() const noexcept
+    {
+        return m_features2;
+    }
+    [[nodiscard]] const rhi::DeviceCapabilityState &GetEnabledState() const noexcept
+    {
+        return m_enabled;
+    }
+    [[nodiscard]] const rhi::DeviceCapabilityCheck &GetFailure() const noexcept
+    {
+        return m_failure;
+    }
+    [[nodiscard]] std::string_view GetFailureMessage() const noexcept
+    {
+        return m_failure.Message();
+    }
+
+  private:
+    void ResetChain() noexcept;
+    void Link(void *feature) noexcept;
+    [[nodiscard]] bool EnableDescriptorIndexing() noexcept;
+    [[nodiscard]] bool EnableTimelineSemaphore() noexcept;
+    [[nodiscard]] bool EnableDynamicRendering() noexcept;
+    [[nodiscard]] bool EnableSynchronization2() noexcept;
+
+    VulkanCapabilitySnapshot m_supported;
+    rhi::DeviceCapabilityState m_enabled{};
+    rhi::DeviceCapabilityCheck m_failure{};
+    VkPhysicalDeviceFeatures2 m_features2{};
+    VkPhysicalDeviceVulkan12Features m_vulkan12{};
+    VkPhysicalDeviceVulkan13Features m_vulkan13{};
+    VkPhysicalDeviceDescriptorIndexingFeaturesEXT m_descriptorIndexingEXT{};
+    VkPhysicalDeviceTimelineSemaphoreFeaturesKHR m_timelineSemaphoreKHR{};
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR m_dynamicRenderingKHR{};
+    VkPhysicalDeviceSynchronization2FeaturesKHR m_synchronization2KHR{};
+    void *m_lastFeature = nullptr;
+    bool m_vulkan12Linked = false;
+    bool m_vulkan13Linked = false;
+    bool m_descriptorIndexingEXTLinked = false;
+    bool m_timelineSemaphoreKHRLinked = false;
+    bool m_dynamicRenderingKHRLinked = false;
+    bool m_synchronization2KHRLinked = false;
+};
+
 class VulkanRhiDevice final : public rhi::Device
 {
   public:
     VulkanRhiDevice();
     explicit VulkanRhiDevice(VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE,
                              const rhi::DeviceCaps &capabilities = {}, uint32_t graphicsQueueFamily = 0,
-                             uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0) noexcept;
+                             uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0,
+                             const rhi::DeviceCapabilityState &capabilityState = {}) noexcept;
 
     VulkanRhiDevice(const VulkanRhiDevice &) = delete;
     VulkanRhiDevice &operator=(const VulkanRhiDevice &) = delete;
@@ -59,10 +160,19 @@ class VulkanRhiDevice final : public rhi::Device
     {
         return m_capabilities;
     }
+    [[nodiscard]] const rhi::DeviceCapabilityState &GetCapabilityState() const noexcept override
+    {
+        return m_capabilityState;
+    }
+    [[nodiscard]] std::shared_ptr<rhi::DeviceLifetime> GetLifetime() const noexcept override
+    {
+        return m_lifetime;
+    }
 
     void Reset(VkDevice device = VK_NULL_HANDLE, VmaAllocator allocator = VK_NULL_HANDLE,
                const rhi::DeviceCaps &capabilities = {}, uint32_t graphicsQueueFamily = 0,
-               uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0) noexcept;
+               uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0,
+               const rhi::DeviceCapabilityState &capabilityState = {}) noexcept;
 
     [[nodiscard]] rhi::BufferHandle RegisterBuffer(VkBuffer buffer, uint64_t byteSize = 0);
     [[nodiscard]] rhi::TextureHandle RegisterTexture(VkImage image);
@@ -249,6 +359,7 @@ class VulkanRhiDevice final : public rhi::Device
     VkDevice m_device = VK_NULL_HANDLE;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
     rhi::DeviceCaps m_capabilities{};
+    rhi::DeviceCapabilityState m_capabilityState{};
     uint32_t m_graphicsQueueFamily = 0;
     uint32_t m_computeQueueFamily = 0;
     uint32_t m_transferQueueFamily = 0;
@@ -263,6 +374,7 @@ class VulkanRhiDevice final : public rhi::Device
     std::vector<Slot<GraphicsPipelinePayload>> m_computePipelines;
     std::vector<Slot<VkRenderPass>> m_renderTargetLayouts;
     VkDescriptorManager m_descriptorManager;
+    std::shared_ptr<rhi::DeviceLifetime> m_lifetime = std::make_shared<rhi::DeviceLifetime>();
     rhi::SubmissionSerial m_recordingSubmissionSerial = rhi::InvalidSubmissionSerial;
 
     uint32_t m_freeBuffer = UINT32_MAX;

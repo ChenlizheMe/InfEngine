@@ -77,8 +77,11 @@ uint32_t DivideRoundUp(uint32_t value, uint32_t divisor) noexcept
 std::string_view GpuParticleSortShaderSources::Small() noexcept
 {
     static const std::string Source = BuildShader({}, "layout(local_size_x = 256) in;\n", R"glsl(
-shared uvec2 shared_keys[256];
-shared uint shared_indices[256];
+const uint INX_SMALL_SORT_CAPACITY = 1024u;
+const uint INX_SMALL_SORT_LANES = 256u;
+const uint INX_SMALL_SORT_VALUES_PER_LANE = 4u;
+shared uvec2 shared_keys[INX_SMALL_SORT_CAPACITY];
+shared uint shared_indices[INX_SMALL_SORT_CAPACITY];
 
 uint inx_ordered_float(float value) {
     uint bits = floatBitsToUint(value);
@@ -91,6 +94,10 @@ bool inx_greater(uvec2 left_key, uint left_index, uvec2 right_key, uint right_in
             (left_key.y > right_key.y || (left_key.y == right_key.y && left_index > right_index)));
 }
 
+bool inx_less(uvec2 left_key, uint left_index, uvec2 right_key, uint right_index) {
+    return inx_greater(right_key, right_index, left_key, left_index);
+}
+
 uvec2 inx_particle_sort_key(float view_depth, uint particle_id) {
     uint depth_key = inx_ordered_float(view_depth);
     depth_key = pc.descending != 0u ? ~depth_key : depth_key;
@@ -101,37 +108,53 @@ uvec2 inx_particle_sort_key(float view_depth, uint particle_id) {
 void main() {
     uint lane = gl_LocalInvocationID.x;
     uint live_count = min(indirect_args.instance_count, pc.capacity);
-    uint particle_index = lane < live_count ? source_indices[lane] : 0xffffffffu;
-    uvec2 key = uvec2(0xffffffffu, 0xffffffffu);
-    if (lane < live_count) {
-        vec4 view_position = pc.view * vec4(instances[particle_index].position_size.xyz, 1.0);
-        key = inx_particle_sort_key(view_position.z, instances[particle_index].ribbon_data.w);
+    for (uint item = 0u; item < INX_SMALL_SORT_VALUES_PER_LANE; ++item) {
+        uint index = lane + item * INX_SMALL_SORT_LANES;
+        uint particle_index = index < live_count ? source_indices[index] : 0xffffffffu;
+        uvec2 key = uvec2(0xffffffffu, 0xffffffffu);
+        if (index < live_count) {
+            vec4 view_position = pc.view * vec4(instances[particle_index].position_size.xyz, 1.0);
+            key = inx_particle_sort_key(view_position.z, instances[particle_index].ribbon_data.w);
+        }
+        shared_keys[index] = key;
+        shared_indices[index] = particle_index;
     }
-    shared_keys[lane] = key;
-    shared_indices[lane] = particle_index;
     barrier();
 
-    // The visible set is deliberately small on this path. Odd-even sorting
-    // keeps every compare/exchange disjoint within a phase, which avoids the
-    // shared-memory corruption that is easy to introduce in an in-place
-    // bitonic implementation while retaining deterministic particle-ID ties.
-    for (uint phase = 0u; phase < live_count; ++phase) {
-        uint left = lane * 2u + (phase & 1u);
-        uint right = left + 1u;
-        if (right < live_count &&
-            inx_greater(shared_keys[left], shared_indices[left], shared_keys[right], shared_indices[right])) {
-            uvec2 key = shared_keys[left];
-            uint index = shared_indices[left];
-            shared_keys[left] = shared_keys[right];
-            shared_indices[left] = shared_indices[right];
-            shared_keys[right] = key;
-            shared_indices[right] = index;
+    // Sort the full power-of-two workspace. Invalid lanes carry the maximum
+    // tuple and therefore remain at the tail; every compare/exchange pair is
+    // handled by exactly one lane before the barrier.
+    for (uint k = 2u; k <= INX_SMALL_SORT_CAPACITY; k <<= 1u) {
+        for (uint j = k >> 1u; j > 0u; j >>= 1u) {
+            for (uint item = 0u; item < INX_SMALL_SORT_VALUES_PER_LANE; ++item) {
+                uint index = lane + item * INX_SMALL_SORT_LANES;
+                uint partner = index ^ j;
+                if (partner > index) {
+                    const bool ascending = (index & k) == 0u;
+                    const bool swap = ascending
+                                          ? inx_greater(shared_keys[index], shared_indices[index],
+                                                        shared_keys[partner], shared_indices[partner])
+                                          : inx_less(shared_keys[index], shared_indices[index],
+                                                     shared_keys[partner], shared_indices[partner]);
+                    if (swap) {
+                        uvec2 key = shared_keys[index];
+                        uint particle_index = shared_indices[index];
+                        shared_keys[index] = shared_keys[partner];
+                        shared_indices[index] = shared_indices[partner];
+                        shared_keys[partner] = key;
+                        shared_indices[partner] = particle_index;
+                    }
+                }
+            }
+            barrier();
         }
-        barrier();
     }
 
-    if (lane < live_count)
-        input_indices[lane] = shared_indices[lane];
+    for (uint item = 0u; item < INX_SMALL_SORT_VALUES_PER_LANE; ++item) {
+        uint index = lane + item * INX_SMALL_SORT_LANES;
+        if (index < live_count)
+            input_indices[index] = shared_indices[index];
+    }
 }
 )glsl");
     return Source;

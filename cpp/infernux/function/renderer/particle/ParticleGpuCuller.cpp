@@ -99,6 +99,7 @@ void main() {
     stats_source_count = source_count;
     stats_flags = (bounds_valid != 0u ? 1u : 0u) | (ribbon_segments ? 4u : 0u);
     bool bounds_visible = true;
+    bool bounds_fully_inside = false;
     if (bounds_valid != 0u) {
         uint ordered_min[3] = uint[3](bounds_min_x, bounds_min_y, bounds_min_z);
         uint ordered_max[3] = uint[3](bounds_max_x, bounds_max_y, bounds_max_z);
@@ -114,16 +115,22 @@ void main() {
             lower[axis] = uintBitsToFloat(min_bits);
             upper[axis] = uintBitsToFloat(max_bits);
         }
+        bounds_fully_inside = true;
         for (uint plane_index = 0u; plane_index < 6u; ++plane_index) {
             vec4 plane = pc.frustum_planes[plane_index];
             vec3 positive_vertex = mix(lower, upper, greaterThanEqual(plane.xyz, vec3(0.0)));
-            if (dot(plane.xyz, positive_vertex) + plane.w < 0.0) {
+            if (dot(plane.xyz, positive_vertex) + plane.w < 0.0)
                 bounds_visible = false;
-                break;
-            }
+            vec3 negative_vertex = mix(lower, upper, lessThan(plane.xyz, vec3(0.0)));
+            if (dot(plane.xyz, negative_vertex) + plane.w < 0.0)
+                bounds_fully_inside = false;
         }
     }
     if (bounds_valid == 0u || bounds_visible) stats_flags |= 2u;
+    // The cull pass already declares draw arguments as compute read/write. Use
+    // the high bit as a transient marker so the fast path does not introduce a
+    // second shader read of the profile-only stats buffer.
+    if (bounds_fully_inside) draw_instance_count = 0x80000000u;
     if (bounds_valid == 0u || bounds_visible) atomicOr(any_view_visible, 1u);
     sort_group_count_x = bounds_visible ? (source_count + 255u) / 256u : 0u;
     sort_group_count_y = 1u;
@@ -136,6 +143,9 @@ void main() {
 std::string_view GpuParticleCullShaderSources::Cull() noexcept
 {
     static const std::string Source = BuildShader("layout(local_size_x = 256) in;\n", R"glsl(
+shared uint local_visible_count;
+shared uint global_base;
+
 bool inx_visible_sphere(vec3 center, float radius) {
     for (uint plane_index = 0u; plane_index < 6u; ++plane_index) {
         vec4 plane = pc.frustum_planes[plane_index];
@@ -144,35 +154,62 @@ bool inx_visible_sphere(vec3 center, float radius) {
     return true;
 }
 void main() {
+    bool bounds_fully_inside = (draw_instance_count & 0x80000000u) != 0u;
+    if (gl_LocalInvocationIndex == 0u) {
+        local_visible_count = 0u;
+        global_base = 0u;
+        draw_instance_count = 0u;
+    }
+    barrier();
+
     uint source_index = gl_GlobalInvocationID.x;
     bool ribbon_segments = pc.mode == 1u;
     uint source_count = ribbon_segments
         ? min(source_vertex_count / 6u, pc.capacity > 0u ? pc.capacity - 1u : 0u)
         : min(source_instance_count, pc.capacity);
-    if (source_index >= source_count) return;
+    bool visible = false;
+    uint output_value = 0u;
     if (ribbon_segments) {
-        uint first_index = source_indices[source_index];
-        uint second_index = source_indices[source_index + 1u];
-        if (first_index >= pc.capacity || second_index >= pc.capacity) return;
-        ParticleInstance first = instances[first_index];
-        ParticleInstance second = instances[second_index];
-        if (first.ribbon_data.x != second.ribbon_data.x || (second.ribbon_data.z & 1u) != 0u) return;
-        vec3 center = (first.position_size.xyz + second.position_size.xyz) * 0.5;
-        float half_length = length(second.position_size.xyz - first.position_size.xyz) * 0.5;
-        float half_width = max(abs(first.position_size.w), abs(second.position_size.w)) * 0.5;
-        if (!inx_visible_sphere(center, half_length + half_width)) return;
+        if (source_index < source_count) {
+            uint first_index = source_indices[source_index];
+            uint second_index = source_indices[source_index + 1u];
+            if (first_index < pc.capacity && second_index < pc.capacity) {
+                ParticleInstance first = instances[first_index];
+                ParticleInstance second = instances[second_index];
+                if (first.ribbon_data.x == second.ribbon_data.x && (second.ribbon_data.z & 1u) == 0u) {
+                    visible = bounds_fully_inside || inx_visible_sphere(
+                                                          (first.position_size.xyz + second.position_size.xyz) * 0.5,
+                                                          length(second.position_size.xyz - first.position_size.xyz) * 0.5 +
+                                                              max(abs(first.position_size.w), abs(second.position_size.w)) *
+                                                                  0.5);
+                    output_value = source_index;
+                }
+            }
+        }
     } else {
-        uint particle_index = source_indices[source_index];
-        if (particle_index >= pc.capacity) return;
-        ParticleInstance instance = instances[particle_index];
-        float radius = abs(instance.position_size.w) *
-            max(max(abs(instance.scale_custom.x), abs(instance.scale_custom.y)), abs(instance.scale_custom.z)) *
-            1.41421356237;
-        if (!inx_visible_sphere(instance.position_size.xyz, radius)) return;
+        if (source_index < source_count) {
+            uint particle_index = source_indices[source_index];
+            if (particle_index < pc.capacity) {
+                ParticleInstance instance = instances[particle_index];
+                visible = bounds_fully_inside || inx_visible_sphere(
+                                                   instance.position_size.xyz,
+                                                   abs(instance.position_size.w) *
+                                                       max(max(abs(instance.scale_custom.x), abs(instance.scale_custom.y)),
+                                                           abs(instance.scale_custom.z)) *
+                                                       1.41421356237);
+                output_value = particle_index;
+            }
+        }
     }
-    uint output_index = atomicAdd(draw_instance_count, 1u);
-    if (output_index < pc.capacity) {
-        visible_indices[output_index] = ribbon_segments ? source_index : source_indices[source_index];
+
+    uint local_output_index = 0u;
+    if (visible) local_output_index = atomicAdd(local_visible_count, 1u);
+    barrier();
+    if (gl_LocalInvocationIndex == 0u) global_base = atomicAdd(draw_instance_count, local_visible_count);
+    barrier();
+
+    if (visible && global_base < pc.capacity && local_output_index < pc.capacity - global_base) {
+        visible_indices[global_base + local_output_index] = output_value;
     }
 }
 )glsl");
@@ -183,7 +220,10 @@ std::string_view GpuParticleCullShaderSources::Finalize() noexcept
 {
     static const std::string Source = BuildShader("layout(local_size_x = 1) in;\n", R"glsl(
 void main() {
-    uint visible_count = min(draw_instance_count, pc.capacity);
+    // Reset uses the high bit as a transient fully-inside marker. Cull normally
+    // clears it before writing the real count, but a zero-source dispatch is
+    // intentionally skipped and still reaches this finalizer.
+    uint visible_count = min(draw_instance_count & 0x7fffffffu, pc.capacity);
     draw_instance_count = visible_count;
     sort_group_count_x = (visible_count + 255u) / 256u;
     sort_group_count_y = 1u;

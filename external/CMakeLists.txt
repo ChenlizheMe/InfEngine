@@ -90,6 +90,62 @@ set(JPH_USE_CPU_COMPUTE ON CACHE BOOL "" FORCE)               # CPU physics only
 # External Libraries
 # ------------------------------------------------------------------------------
 
+# ------------------------------------------------------------------------------
+# InxPack codec — the only codec available to exported Player containers.
+# ------------------------------------------------------------------------------
+# A source override keeps offline and air-gapped builds deterministic.  When it
+# is not supplied, FetchContent uses a pinned upstream release.  There is no
+# silent fallback to zlib/Deflate or to the removed Python LZMA container.
+option(INFERNUX_PLAYER_PACK_FETCH_ZSTD
+    "Fetch the pinned Zstandard source when INFERNUX_ZSTD_SOURCE_DIR is empty"
+    ON
+)
+set(INFERNUX_ZSTD_SOURCE_DIR "" CACHE PATH
+    "Pinned local Zstandard source tree for offline Player package builds"
+)
+if(INFERNUX_ZSTD_SOURCE_DIR)
+    if(NOT EXISTS "${INFERNUX_ZSTD_SOURCE_DIR}/build/cmake/CMakeLists.txt")
+        message(FATAL_ERROR
+            "INFERNUX_ZSTD_SOURCE_DIR must point to a Zstandard source tree containing build/cmake/CMakeLists.txt"
+        )
+    endif()
+    add_subdirectory(
+        "${INFERNUX_ZSTD_SOURCE_DIR}/build/cmake"
+        "${CMAKE_BINARY_DIR}/_deps/infernux-zstd-local"
+        EXCLUDE_FROM_ALL
+    )
+elseif(INFERNUX_PLAYER_PACK_FETCH_ZSTD)
+    include(FetchContent)
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        infernux_zstd
+        GIT_REPOSITORY https://github.com/facebook/zstd.git
+        # Full commit pin: v1.5.6 (do not replace this with a moving tag).
+        GIT_TAG 35016bc1c0b9a2f7121b7ecc312100aad7d9f2ad
+        SOURCE_SUBDIR build/cmake
+    )
+    FetchContent_MakeAvailable(infernux_zstd)
+else()
+    message(FATAL_ERROR
+        "Player InxPack requires Zstandard. Set INFERNUX_ZSTD_SOURCE_DIR to a pinned local checkout "
+        "or enable INFERNUX_PLAYER_PACK_FETCH_ZSTD; no Deflate/LZMA fallback exists."
+    )
+endif()
+if(TARGET libzstd_static)
+    set(INFERNUX_ZSTD_TARGET libzstd_static PARENT_SCOPE)
+elseif(TARGET zstd::libzstd_static)
+    set(INFERNUX_ZSTD_TARGET zstd::libzstd_static PARENT_SCOPE)
+else()
+    message(FATAL_ERROR
+        "The pinned Zstandard source did not provide the required libzstd_static target"
+    )
+endif()
+
 # assimp
 add_subdirectory(assimp)
 add_library(assimp::assimp ALIAS assimp)

@@ -120,6 +120,8 @@ class ComponentNativeMixin:
                 elif self not in lst:
                     lst.append(self)
                 self._registered_go_id = go_id
+                from ._component_lifecycle import notify_runtime_component_added
+                notify_runtime_component_added(self)
         else:
             self._game_object_ref = None
 
@@ -137,6 +139,8 @@ class ComponentNativeMixin:
             if not lst:
                 _registry.pop(old_id, None)
         self._registered_go_id = None
+        from ._component_lifecycle import notify_runtime_component_removed
+        notify_runtime_component_removed(self)
 
     def _bind_native_component(self, cpp_component, game_object=None):
         """Bind this Python instance to its native lifecycle authority."""
@@ -164,6 +168,10 @@ class ComponentNativeMixin:
             except Exception as exc:
                 from Infernux.debug import Debug
                 Debug.log_warning(f"[InxComponent] Failed to read enabled during bind: {exc}")
+            # A coroutine may have started before the native proxy existed, or
+            # this may be a rebind to a new proxy. Do not let the cached Python
+            # publication state suppress the first authoritative update.
+            self._sync_native_coroutine_scheduler_state(force=True)
 
     def _sync_native_state(
         self,
@@ -192,6 +200,7 @@ class ComponentNativeMixin:
         """Invalidate native references after scene rebuild/destruction."""
         self._release_component_data_slot()
         self._cpp_component = None
+        self.__dict__.pop("_native_coroutine_scheduler_state", None)
         self._native_handle = None
         self._native_scene = None
         self._native_game_object_handle = None
@@ -208,6 +217,7 @@ class ComponentNativeMixin:
         scheduler = getattr(self, '_coroutine_scheduler', None)
         if scheduler is not None:
             scheduler.stop_all()
+            self._sync_native_coroutine_scheduler_state()
             self._coroutine_scheduler = None
         self._invalidate_native_binding()
 

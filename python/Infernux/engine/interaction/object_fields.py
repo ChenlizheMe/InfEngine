@@ -61,32 +61,78 @@ class AssetReferenceCatalog:
     _database_identity: int = 0
     _generation: int = -1
     _paths: tuple[str, ...] = ()
+    _typed_items: dict[str, tuple[tuple[str, str], ...]] = field(
+        default_factory=dict
+    )
 
     def invalidate(self) -> None:
         self._database_identity = 0
         self._generation = -1
         self._paths = ()
+        self._typed_items.clear()
 
     def items(self, asset_type: str, query: str) -> tuple[tuple[str, str], ...]:
+        query_token = str(query or "").strip().casefold()
+        candidates = self._items_for_type(asset_type)
+        if not query_token:
+            return candidates
+        return tuple(
+            (name, path)
+            for name, path in candidates
+            if query_token in name.casefold()
+            or query_token in path.replace("\\", "/").casefold()
+        )
+
+    def _items_for_type(self, asset_type: str) -> tuple[tuple[str, str], ...]:
         from Infernux.core.asset_reference_types import asset_type_registry
+        from Infernux.engine.path_utils import lexical_path, lexical_path_key
+        from Infernux.engine.project_context import get_project_root
 
         descriptor = asset_type_registry.require(asset_type)
-        query_token = str(query or "").strip().casefold()
-        project_only = descriptor.type_id == "Texture"
-        matches = []
-        for path in self._snapshot():
+        paths = self._snapshot()
+        cache_key = descriptor.type_id.casefold()
+        cached = self._typed_items.get(cache_key)
+        if cached is not None:
+            return cached
+
+        shader_type = cache_key.startswith("shader")
+        project_root = get_project_root()
+        assets_root = (
+            lexical_path_key(os.path.join(project_root, "Assets"))
+            if project_root
+            else ""
+        )
+        assets_prefix = assets_root.rstrip("\\/") + os.sep if assets_root else ""
+        matches: list[tuple[str, str]] = []
+        for path in paths:
             portable = path.replace("\\", "/")
             folded = portable.casefold()
-            if project_only and "/assets/" not in folded and not folded.startswith("assets/"):
-                continue
+            candidate_path = (
+                os.path.join(project_root, path)
+                if project_root and not os.path.isabs(path)
+                else path
+            )
+            if not shader_type:
+                candidate_key = lexical_path_key(candidate_path)
+                inside_assets = bool(assets_root) and (
+                    candidate_key == assets_root
+                    or candidate_key.startswith(assets_prefix)
+                )
+                if not inside_assets:
+                    continue
             if not any(folded.endswith(extension) for extension in descriptor.extensions):
                 continue
+            if shader_type:
+                from Infernux.engine.ui.inspector_shader_utils import is_shader_hidden
+
+                if is_shader_hidden(lexical_path(candidate_path)):
+                    continue
             name = os.path.basename(portable)
-            if query_token and query_token not in name.casefold() and query_token not in folded:
-                continue
             matches.append((name, path))
         matches.sort(key=lambda item: (item[0].casefold(), item[1].casefold()))
-        return tuple(matches)
+        result = tuple(matches)
+        self._typed_items[cache_key] = result
+        return result
 
     def provider(self, asset_type: str) -> PickerProvider:
         type_id = str(asset_type or "").strip()
@@ -106,8 +152,8 @@ class AssetReferenceCatalog:
 
         paths = []
         seen = set()
-        for guid in database.get_all_guids():
-            path = str(database.get_path_from_guid(guid) or "").strip()
+        for asset_path in database.get_all_asset_paths():
+            path = str(asset_path or "").strip()
             key = path.replace("\\", "/").casefold()
             if not path or key in seen:
                 continue
@@ -117,6 +163,7 @@ class AssetReferenceCatalog:
         self._database_identity = identity
         self._generation = generation
         self._paths = tuple(paths)
+        self._typed_items.clear()
         return self._paths
 
 
@@ -126,11 +173,19 @@ class ObjectPickerModel:
 
     _queries: dict[str, SearchQueryModel] = field(default_factory=dict)
     _focus_requests: set[str] = field(default_factory=set)
+    _open_requests: set[str] = field(default_factory=set)
 
     def request_open(self, field_id: str) -> None:
         key = self._key(field_id)
         self.query_model(key).clear()
         self._focus_requests.add(key)
+        self._open_requests.add(key)
+
+    def open_requested(self, field_id: str) -> bool:
+        return self._key(field_id) in self._open_requests
+
+    def confirm_open(self, field_id: str) -> None:
+        self._open_requests.discard(self._key(field_id))
 
     def consume_focus_request(self, field_id: str) -> bool:
         key = self._key(field_id)
@@ -155,7 +210,9 @@ class ObjectPickerModel:
         return model
 
     def close(self, field_id: str) -> None:
-        self._focus_requests.discard(self._key(field_id))
+        key = self._key(field_id)
+        self._focus_requests.discard(key)
+        self._open_requests.discard(key)
 
     @staticmethod
     def _key(field_id: str) -> str:
@@ -349,24 +406,16 @@ class AssetReferenceFieldModel(ObjectReferenceFieldModel):
         if gesture & (ObjectFieldGesture.OPEN | ObjectFieldGesture.KEYBOARD_OPEN):
             if not self.has_value and self.has_picker:
                 gesture |= ObjectFieldGesture.OPEN_PICKER
-            elif self.on_open is not None:
-                self.on_open()
-                return gesture
             else:
-                path = str(self.ping_path or "").strip()
-                if path:
-                    from Infernux.engine.ui._inspector_references import (
-                        open_asset_reference,
-                    )
-
-                    if open_asset_reference(path):
-                        return gesture
+                # Resource ObjectFields use double-click/Enter to reveal the
+                # referenced file.  Editing/opening the resource remains an
+                # explicit context-menu command so every field has identical
+                # body semantics.
                 self.locate()
-        elif gesture & ObjectFieldGesture.LOCATE:
-            if not self.has_value and self.has_picker:
-                gesture |= ObjectFieldGesture.OPEN_PICKER
-            else:
-                self.locate()
+        # A resource field body single-click only focuses/selects the field.
+        # The dedicated picker button owns OPEN_PICKER, while double-click and
+        # Enter own resource location.  Keeping these gestures disjoint avoids
+        # a first click navigating away before the second click can complete.
         if gesture & ObjectFieldGesture.CLEAR and self.has_value:
             self._clear()
         return gesture
@@ -555,8 +604,15 @@ def register_asset_reference_commands(registry=None) -> None:
         target = _target(context)
         if target is None:
             return False
-        target.model.dispatch_chrome(int(ObjectFieldGesture.OPEN))
-        return True
+        if target.model.on_open is not None:
+            target.model.on_open()
+            return True
+        path = str(target.model.ping_path or "").strip()
+        if not path:
+            return False
+        from Infernux.engine.ui._inspector_references import open_asset_reference
+
+        return bool(open_asset_reference(path))
 
     def _reveal(context) -> bool:
         target = _target(context)

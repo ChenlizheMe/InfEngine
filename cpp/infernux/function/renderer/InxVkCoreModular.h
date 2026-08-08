@@ -56,6 +56,7 @@
 #include <function/scene/LightingData.h>
 
 #include <functional>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -122,6 +123,9 @@ class InxVkCoreModular
     ///        vkDeviceWaitIdle calls — the caller already did a single drain.
     void SetShuttingDown(bool v)
     {
+        if (v && !m_shuttingDown) {
+            ReleaseMaterialPassResolutionCache();
+        }
         m_shuttingDown = v;
         m_backend.SetShuttingDown(v);
     }
@@ -369,6 +373,7 @@ class InxVkCoreModular
         PumpPendingTextureLoads();
         PumpPendingMeshUploads();
         ++m_ensureFrameCounter;
+        m_textureCache.AdvanceFrame(m_ensureFrameCounter);
         m_fullObjectBufferEnsureThisFrame = false;
         m_skipObjectBufferCleanupThisFrame = false;
     }
@@ -988,6 +993,7 @@ class InxVkCoreModular
     // ========================================================================
 
     void RecreateSwapchain();
+    void ReleaseMaterialPassResolutionCache() noexcept;
     void CreateDepthResources();
 
     void CreateUniformBuffers();
@@ -1139,6 +1145,56 @@ class InxVkCoreModular
     // of attempting to combine its Forward pass with incompatible new passes.
     std::unordered_set<std::string> m_rejectedGeometryMaterialPrograms;
 
+    // Resolved semantic pass handles are stable across frames. Keep this
+    // cache outside DrawSceneFiltered so a stable material does not repeatedly
+    // rebuild MaterialPassRenderDataKey, walk descriptor ABI bindings, or
+    // materialize shader variants. The manager publication generation and the
+    // material pipeline-dirty flag invalidate it on relevant hot updates;
+    // descriptor liveness is still checked immediately before a cached result
+    // is used.
+    struct MaterialPassResolutionCacheKey
+    {
+        const InxMaterial *material = nullptr;
+        size_t pipelineHash = 0;
+
+        friend bool operator==(const MaterialPassResolutionCacheKey &lhs,
+                               const MaterialPassResolutionCacheKey &rhs) noexcept
+        {
+            return lhs.material == rhs.material && lhs.pipelineHash == rhs.pipelineHash;
+        }
+    };
+
+    struct MaterialPassResolutionCacheKeyHash
+    {
+        [[nodiscard]] size_t operator()(const MaterialPassResolutionCacheKey &key) const noexcept
+        {
+            size_t hash = std::hash<const InxMaterial *>{}(key.material);
+            hash ^= key.pipelineHash + static_cast<size_t>(0x9e3779b97f4a7c15ull) + (hash << 6u) + (hash >> 2u);
+            return hash;
+        }
+    };
+
+    struct MaterialPassResolutionCacheEntry
+    {
+        std::weak_ptr<InxMaterial> owner;
+        MaterialPassPipelineDescriptor pipeline;
+        VkPipeline pipelineHandle = VK_NULL_HANDLE;
+        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+        ShaderProgramPublication shaderProgram;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return pipelineHandle != VK_NULL_HANDLE && pipelineLayout != VK_NULL_HANDLE &&
+                   descriptorSet != VK_NULL_HANDLE && shaderProgram != nullptr;
+        }
+    };
+
+    std::unordered_map<MaterialPassResolutionCacheKey, MaterialPassResolutionCacheEntry,
+                       MaterialPassResolutionCacheKeyHash>
+        m_materialPassResolutionCache;
+    uint64_t m_materialPassResolutionCacheGeneration = 0;
+
     // Texture cache (GPU textures keyed by name/GUID, thread-safe)
     VkTextureCache m_textureCache;
     struct PendingTextureGpuUpload
@@ -1269,6 +1325,9 @@ class InxVkCoreModular
     /// @brief Map from objectId → persistent GPU buffers.
     /// Objects with identical mesh storage share the same GPU buffers.
     std::unordered_map<uint64_t, PerObjectBuffers> m_perObjectBuffers;
+    // Invalidates metadata snapshots whenever an object binding is inserted,
+    // replaced, or erased. Revision mismatch takes the safe lookup path.
+    uint64_t m_objectBufferRevision = 1;
     uint64_t m_ensureFrameCounter = 0; // incremented once per frame
     struct ObjectBufferBindingCacheEntry
     {
@@ -1316,6 +1375,33 @@ class InxVkCoreModular
     // Unity-style draw calls for multi-material rendering (pointer to external storage, no copy)
     const std::vector<DrawCall> *m_drawCallsPtr = nullptr;
     const std::vector<DrawCall> *m_shadowDrawCallsPtr = nullptr;
+
+    // Per-list metadata is built once when a graph activates its draw list.
+    // DrawSceneFiltered and DrawShadowCasters can run several passes over the
+    // same list; keeping the material queue and stable GPU-buffer leases here
+    // avoids repeating material accessors and unordered_map lookups in every
+    // pass. The leases deliberately do not point into m_perObjectBuffers:
+    // cleanup, replacement, and unordered_map rehash must not invalidate a
+    // draw list that is already being recorded.
+    struct DrawListMetadata
+    {
+        uint64_t objectId = 0;
+        InxMaterial *material = nullptr;
+        int renderQueue = 2000;
+        std::shared_ptr<vk::VkBufferHandle> vertexBuffer;
+        std::shared_ptr<vk::VkBufferHandle> indexBuffer;
+        size_t indexCapacity = 0;
+    };
+    const std::vector<DrawCall> *m_drawListMetadataSource = nullptr;
+    const std::vector<DrawCall> *m_shadowListMetadataSource = nullptr;
+    uint64_t m_drawListBufferRevision = 0;
+    uint64_t m_shadowListBufferRevision = 0;
+    std::vector<DrawListMetadata> m_drawListMetadata;
+    std::vector<DrawListMetadata> m_shadowListMetadata;
+    // SkyboxPass has an explicit RenderDomain contract. Keep its indices so
+    // the pass does not rescan the full camera list on every callback.
+    const std::vector<DrawCall> *m_skyboxDrawListSource = nullptr;
+    std::vector<size_t> m_skyboxDrawCallIndices;
     std::vector<int> m_drawQueueValues;
     bool m_drawQueueValuesOverflow = false;
     static inline const std::vector<DrawCall> s_emptyDrawCalls{};
@@ -1334,10 +1420,12 @@ class InxVkCoreModular
         const DrawCall *dc;
         float sortKey;
         size_t materialHash;
+        // Raw handles are used only during the current recording. Their
+        // VkBufferHandle owners live in the active/fallback metadata leases.
         VkBuffer vertexBuf;
+        VkBuffer indexBuf;
         const std::shared_ptr<InxMaterial> *materialOwner;
         InxMaterial *material; // Resolved once in the filter loop; materialOwner keeps it alive.
-        std::unordered_map<uint64_t, PerObjectBuffers>::const_iterator bufIt;
     };
     std::vector<SortableDrawCall> m_eligibleScratch;
 
@@ -1348,7 +1436,9 @@ class InxVkCoreModular
     struct ShadowDraw
     {
         const DrawCall *dc;
-        std::unordered_map<uint64_t, PerObjectBuffers>::const_iterator bufIt;
+        // Backed by draw-list metadata leases for this recording.
+        VkBuffer vertexBuf = VK_NULL_HANDLE;
+        VkBuffer indexBuf = VK_NULL_HANDLE;
         VkPipeline shadowPipeline;
         VkDescriptorSet shadowMaterialDescSet = VK_NULL_HANDLE;
         AABB worldBounds; // Cached for per-cascade frustum culling

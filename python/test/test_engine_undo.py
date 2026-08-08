@@ -466,6 +466,50 @@ class TestMaterialDocumentCommand:
         cmd.undo()
         assert mat._document == {"properties": {"x": [1]}}
 
+    def test_undo_publishes_live_material_without_durable_invalidation(
+        self,
+        monkeypatch,
+    ):
+        publications = []
+
+        class _AsyncMaterial(_FakeComp):
+            file_path = "Assets/Materials/Undo.mat"
+
+            def save(self):
+                return True
+
+        class _AssetManagerProbe:
+            @classmethod
+            def note_asset_edit(cls, path, **kwargs):
+                publications.append((path, kwargs))
+
+            @classmethod
+            def on_material_saved(cls, _path):
+                raise AssertionError(
+                    "Undo/Redo must not publish durable completion before IO finishes"
+                )
+
+        assets_module = types.ModuleType("Infernux.core.assets")
+        assets_module.AssetManager = _AssetManagerProbe
+        monkeypatch.setitem(sys.modules, "Infernux.core.assets", assets_module)
+
+        material = _AsyncMaterial()
+        command = MaterialDocumentCommand(
+            material,
+            {"color": "A"},
+            {"color": "B"},
+        )
+
+        command.execute()
+        command.undo()
+
+        assert [entry[0] for entry in publications] == [
+            material.file_path,
+            material.file_path,
+        ]
+        assert '"color":"B"' in publications[0][1]["material_json"]
+        assert '"color":"A"' in publications[1][1]["material_json"]
+
 
 # ══════════════════════════════════════════════════════════════════════
 # CompoundCommand

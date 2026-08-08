@@ -38,7 +38,7 @@ DEFAULT_PHYSICS_SETTINGS: Dict[str, object] = {
     "max_bodies": 65536,
     "max_body_pairs": 65536,
     "max_contact_constraints": 65536,
-    "max_worker_threads": 0,
+    "max_concurrency": 0,
 }
 
 _DOCUMENT_KEYS = set(DEFAULT_PHYSICS_SETTINGS)
@@ -107,7 +107,7 @@ def normalize(data: object) -> dict:
         max_contact_constraints=_integer(
             data["max_contact_constraints"], "max_contact_constraints", 1024, 10_000_000
         ),
-        max_worker_threads=_integer(data["max_worker_threads"], "max_worker_threads", 0, 256),
+        max_concurrency=_integer(data["max_concurrency"], "max_concurrency", 0, 256),
     )
     for field in (
         "penetration_slop",
@@ -207,7 +207,7 @@ def apply(settings: dict) -> None:
     config.physics_max_bodies = validated["max_bodies"]
     config.physics_max_body_pairs = validated["max_body_pairs"]
     config.physics_max_contact_constraints = validated["max_contact_constraints"]
-    config.physics_max_worker_threads = validated["max_worker_threads"]
+    config.physics_max_concurrency = validated["max_concurrency"]
 
     Physics.gravity = coerce_vec3(gravity)
     sm = SceneManager.instance()

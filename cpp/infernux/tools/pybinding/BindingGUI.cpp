@@ -568,6 +568,15 @@ void RegisterGUIBindings(py::module_ &m)
              py::arg("search_hint") = "Filter...", py::arg("empty_text") = "No results",
              "Render the shared keyboard-navigable searchable dropdown")
         .def(
+            "selectable_list_clipped",
+            [](InxGUIContext &ctx, const py::object &items) {
+                const auto count = static_cast<size_t>(py::len(items));
+                return ctx.SelectableListClipped(count, [&items](size_t index) {
+                    return py::cast<std::string>(items.attr("__getitem__")(index));
+                });
+            },
+            py::arg("items"), "Render only visible rows from a large selectable string sequence")
+        .def(
             "list_box",
             [](InxGUIContext &ctx, const std::string &label, int currentItem, const std::vector<std::string> &items,
                int heightInItems) {

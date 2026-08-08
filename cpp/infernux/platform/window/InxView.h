@@ -207,6 +207,10 @@ class InxView
     std::deque<SyntheticInputEvent> m_syntheticInputEvents;
     uint64_t m_nextSyntheticInputSequence = 1;
     std::atomic<uint64_t> m_lastProcessedSyntheticInputSequence{0};
+    // A synthetic mouse release is held until InxRenderer confirms that a
+    // real ImGui frame has consumed the corresponding press transition.
+    uint8_t m_syntheticMouseButtonsAwaitingGuiFrame = 0;
+    uint8_t m_syntheticMouseButtonsReadyForRelease = 0;
     // SDL does not update its global modifier state for events injected by
     // automation, so retain the synthetic contribution for subsequent keys.
     SDL_Keymod m_syntheticKeyModifiers = SDL_KMOD_NONE;
@@ -215,6 +219,7 @@ class InxView
     uint64_t QueueSyntheticInput(SyntheticInputEvent event);
     [[nodiscard]] bool HasPendingSyntheticInput() const;
     void DrainSyntheticInputEvents(bool &hadInputEvent);
-    bool ProcessOneEvent(SDL_Event &event);
+    void NotifyGuiFrameBuilt() noexcept;
+    bool ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates = false);
 };
 } // namespace infernux

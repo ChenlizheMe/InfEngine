@@ -1,6 +1,7 @@
 """Tests for Infernux.engine.play_mode — PlayModeState, PlayModeEvent, PlayModeManager."""
 
 import threading
+import time
 
 from Infernux.components import InxComponent
 from Infernux.components.component_identity import bind_asset_script_guid
@@ -110,6 +111,60 @@ class TestPlayModeManager:
         assert mgr._delta_time == 0.0
         assert mgr._time_scale == 1.0
         assert mgr._total_play_time == 0.0
+
+    def test_tick_does_not_poll_scene_load_service_without_pending_work(self, monkeypatch):
+        mgr = PlayModeManager()
+        mgr._state = PlayModeState.PLAYING
+        mgr._native_engine = None
+
+        from Infernux.scene import SceneManager
+
+        monkeypatch.setattr(SceneManager, "_pending_scene_load", None)
+        monkeypatch.setattr(SceneManager, "_active_scene_transaction", None)
+        monkeypatch.setattr(
+            SceneManager,
+            "process_pending_load",
+            staticmethod(lambda: (_ for _ in ()).throw(
+                AssertionError("empty play tick must not poll scene loading")
+            )),
+        )
+
+        mgr.tick(1.0 / 60.0)
+
+        assert mgr._delta_time > 0.0
+
+    def test_engine_steady_play_tick_does_not_prepare_python_phase_plan(self):
+        from Infernux.engine.engine import Engine
+
+        class Scheduler:
+            prepare_calls = 0
+
+            def prepare_frame(self):
+                self.prepare_calls += 1
+                raise AssertionError(
+                    "steady Editor frames must not prepare a Python phase plan"
+                )
+
+        class PlayMode:
+            is_playing = True
+
+            def tick(self, _delta_time):
+                return None
+
+        scheduler = Scheduler()
+        engine = Engine.__new__(Engine)
+        engine._last_frame_time = time.time()
+        engine._editor_frame_sync_callback = None
+        engine._resources_manager = None
+        engine._play_mode_manager = PlayMode()
+        engine._player_runtime = None
+        engine._runtime_scheduler = scheduler
+        engine._scene_view_visible = False
+        engine._tick_runtime_acceptance = lambda _delta_time: None
+        engine._clear_uploaded_gizmos = lambda: None
+
+        assert engine.tick_play_mode(1.0 / 60.0) == 1.0 / 60.0
+        assert scheduler.prepare_calls == 0
 
     def test_debug_frame_gate_pauses_after_exact_completed_frame_budget(self):
         class _SceneManager:

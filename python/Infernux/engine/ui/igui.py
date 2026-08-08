@@ -64,6 +64,19 @@ _REORDER_LINE_COLOR = Theme.DND_REORDER_LINE
 _REORDER_LINE_THICKNESS = Theme.DND_REORDER_LINE_THICKNESS
 _REORDER_SEPARATOR_H = Theme.DND_REORDER_SEPARATOR_H
 
+
+class _PickerLabels:
+    """Lazy label view consumed only for rows selected by ImGuiListClipper."""
+
+    def __init__(self, items: Sequence[tuple]) -> None:
+        self._items = items
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __getitem__(self, index: int) -> str:
+        return str(self._items[index][0])
+
 # Internal drag-drop type for generic list reordering
 _LIST_REORDER_TYPE = "IGUI_LIST_REORDER"
 
@@ -215,9 +228,9 @@ class IGUI:
         *picker_scene_items* / *picker_asset_items*: ``filter_text -> [(label, value), ...]``
         *on_pick*: called with the selected value when user picks an item.
         *on_clear*: called when user picks "None" to clear the field.
-        *on_ping*: called on body single-click (e.g. reveal asset in Project).
-        *on_open*: called on body double-click. When omitted, double-click uses
-        the same locate action as a single-click.
+        *on_ping*: resource location callback used by double-click/Enter and
+        explicit reveal commands. A body single-click only focuses the field.
+        *on_open*: called on body double-click for non-asset object fields.
         *ping_path*: when *on_ping* is omitted, auto-reveals this asset path in
         Project from the body navigation action.
 
@@ -415,6 +428,18 @@ class IGUI:
         if gesture & ObjectFieldGesture.OPEN_PICKER:
             object_picker_model.request_open(model.field_id)
 
+        open_requested = object_picker_model.open_requested(model.field_id)
+        if open_requested:
+            # Keep requesting the popup until BeginPopup confirms that ImGui
+            # accepted it. Native-batched Inspector fields report their click
+            # after their table has closed, so a one-frame OpenPopup request
+            # can otherwise be lost during focus/popup arbitration.
+            ctx.push_id_str(model.field_id)
+            try:
+                ctx.open_popup("##obj_picker")
+            finally:
+                ctx.pop_id()
+
         if isinstance(model, AssetReferenceFieldModel):
             context_requested = bool(gesture & ObjectFieldGesture.CONTEXT_MENU)
             if context_requested:
@@ -428,9 +453,7 @@ class IGUI:
 
         if not model.has_picker:
             return
-        if not poll_picker and not (
-            picker_open or gesture & ObjectFieldGesture.OPEN_PICKER
-        ):
+        if not poll_picker and not (picker_open or open_requested):
             return
 
         picker_intent = None
@@ -466,6 +489,8 @@ class IGUI:
         """Render the picker and return an intent after all ImGui scopes close."""
         if not ctx.begin_popup("##obj_picker"):
             return None
+
+        object_picker_model.confirm_open(field_id)
 
         intent = None
         try:
@@ -546,14 +571,10 @@ class IGUI:
     ) -> Optional[tuple[str, Any]]:
         """Render picker rows and return the selected value without mutating it."""
         items = items_fn(filter_text)
-        for idx, (label, value) in enumerate(items):
-            ctx.push_id(idx)
-            try:
-                if ctx.selectable(label, False):
-                    ctx.close_current_popup()
-                    return ("pick", value)
-            finally:
-                ctx.pop_id()
+        selected = ctx.selectable_list_clipped(_PickerLabels(items))
+        if 0 <= selected < len(items):
+            ctx.close_current_popup()
+            return ("pick", items[selected][1])
         return None
 
     # ------------------------------------------------------------------

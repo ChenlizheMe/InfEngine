@@ -409,6 +409,12 @@ void InxGUI::RequestFrame() noexcept
     m_editorFrameScheduler.Request();
 }
 
+void InxGUI::RequestSyntheticInputFrame() noexcept
+{
+    m_syntheticInputRearm.BeginBatch();
+    m_editorFrameScheduler.Request();
+}
+
 void InxGUI::BuildFrameInternal()
 {
     static auto ctx = std::make_unique<InxGUIContext>();
@@ -452,8 +458,6 @@ void InxGUI::BuildFrameInternal()
         m_deferredTextureReleases.swap(stillDeferred);
     }
 
-    (void)TrimImGuiTextureBudget();
-
     ImGui_ImplSDL3_NewFrame();
     ImGui_ImplVulkan_NewFrame();
 
@@ -466,6 +470,15 @@ void InxGUI::BuildFrameInternal()
         ImGui::GetIO().AddMousePosEvent(syntheticMouseX, syntheticMouseY);
     }
     ImGui::NewFrame();
+    // Dear ImGui may leave later transitions in InputEventsQueue. Only a synthetic input
+    // batch may re-arm the scheduler, and it has a fixed four-build budget;
+    // physical mouse movement cannot keep the editor permanently unthrottled.
+    ImGuiContext *imguiContext = ImGui::GetCurrentContext();
+    if (imguiContext != nullptr) {
+        const bool hasPendingTransitions = !imguiContext->InputEventsQueue.empty();
+        if (m_syntheticInputRearm.AfterBuild(hasPendingTransitions))
+            m_editorFrameScheduler.Request();
+    }
     ctx->BeginFrameInteractionState();
     InxGUISemantics::BeginFrame(m_guiFrameCounter);
     ImGuiBuildFrameGuard frameGuard;
@@ -647,6 +660,11 @@ void InxGUI::BuildFrameInternal()
         activeModal->Flags = activeModalFlags;
     const ImDrawData *drawData = ImGui::GetDrawData();
     m_hasDrawData = drawData != nullptr && drawData->Valid;
+
+    // Reclaim only after panels have touched every texture referenced by this
+    // frame. Resources are retired through the existing grace queue, so draw
+    // data assembled above remains valid through GPU submission.
+    (void)TrimImGuiTextureBudget();
 }
 
 void InxGUI::QueueDockTabSelection(const std::string &windowId, bool allowDuringModal)
@@ -892,6 +910,18 @@ uint64_t InxGUI::SubmitTextureForImGui(const std::string &name, const unsigned c
     return generation;
 }
 
+void InxGUI::SupersedePendingImGuiTextureUploads(const std::string &name)
+{
+    if (name.empty())
+        throw std::invalid_argument("ImGui texture name cannot be empty");
+    auto found = m_textureUploadGenerations.find(name);
+    if (found == m_textureUploadGenerations.end())
+        return;
+    if (found->second == std::numeric_limits<uint64_t>::max())
+        throw std::overflow_error("ImGui texture upload version overflow");
+    ++found->second;
+}
+
 void InxGUI::RemoveImGuiTexture(const std::string &name)
 {
     if (name.empty())
@@ -986,7 +1016,7 @@ size_t InxGUI::TrimImGuiTextureBudget()
     while (m_textureResidentBytes > m_textureBudgetBytes) {
         auto candidate = m_textures_umap.end();
         for (auto entry = m_textures_umap.begin(); entry != m_textures_umap.end(); ++entry) {
-            if (entry->second.pinned)
+            if (entry->second.pinned || entry->second.lastUsedFrame >= m_guiFrameCounter)
                 continue;
             if (candidate == m_textures_umap.end() || entry->second.lastUsedFrame < candidate->second.lastUsedFrame)
                 candidate = entry;
@@ -1014,7 +1044,7 @@ GpuEvictionCandidate InxGUI::PeekOldestImGuiTextureEvictable() const noexcept
 {
     auto candidate = m_textures_umap.end();
     for (auto entry = m_textures_umap.begin(); entry != m_textures_umap.end(); ++entry) {
-        if (entry->second.pinned)
+        if (entry->second.pinned || entry->second.lastUsedFrame >= m_guiFrameCounter)
             continue;
         if (candidate == m_textures_umap.end() || entry->second.lastUsedFrame < candidate->second.lastUsedFrame)
             candidate = entry;
@@ -1028,7 +1058,7 @@ uint64_t InxGUI::EvictOldestImGuiTexture()
 {
     auto candidate = m_textures_umap.end();
     for (auto entry = m_textures_umap.begin(); entry != m_textures_umap.end(); ++entry) {
-        if (entry->second.pinned)
+        if (entry->second.pinned || entry->second.lastUsedFrame >= m_guiFrameCounter)
             continue;
         if (candidate == m_textures_umap.end() || entry->second.lastUsedFrame < candidate->second.lastUsedFrame)
             candidate = entry;

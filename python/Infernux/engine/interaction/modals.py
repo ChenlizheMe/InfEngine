@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Optional
 
 
@@ -13,7 +13,7 @@ class ModalRegistration:
 
     modal_id: str
     is_active: Callable[[], bool]
-    render: Callable[[Any], None]
+    render: Callable[[Any], object]
     cancel: Callable[[], None]
     allowed_parent_ids: frozenset[str]
 
@@ -25,6 +25,12 @@ class ActiveModal:
     modal_id: str
     owner_id: str = ""
     parent_id: str = ""
+    # None means the modal has been activated but has not reached its first
+    # presentation yet. False means its presenter ran but ImGui did not
+    # produce a visible modal surface this frame. The distinction preserves
+    # first-frame input exclusivity without allowing a lost popup to become a
+    # permanent invisible input lock.
+    presented: Optional[bool] = None
 
 
 class ModalService:
@@ -33,6 +39,12 @@ class ModalService:
     Presenters own domain state and drawing, while this service owns modal
     exclusivity, nesting, Escape cancellation, and owner destruction.  A
     presenter may only become active after it has been registered here.
+
+    ``render`` callbacks may return ``False`` when their ImGui surface was not
+    actually begun. The stack entry is retained for domain recovery, but it no
+    longer participates in shortcut input capture until a later frame renders
+    it successfully. Returning ``None`` remains compatible with presenters
+    that do not expose a visibility result and is treated as presented.
     """
 
     def __init__(self) -> None:
@@ -41,22 +53,40 @@ class ModalService:
 
     @property
     def active_modal_id(self) -> str:
-        return self._stack[-1].modal_id if self._stack else ""
+        for entry in reversed(self._stack):
+            if entry.presented is not False:
+                return entry.modal_id
+        return ""
 
     @property
     def active_owner_id(self) -> str:
-        return self._stack[-1].owner_id if self._stack else ""
+        for entry in reversed(self._stack):
+            if entry.presented is not False:
+                return entry.owner_id
+        return ""
 
     @property
     def active_stack(self) -> tuple[ActiveModal, ...]:
         return tuple(self._stack)
+
+    def is_presented(self, modal_id: str) -> bool:
+        """Return whether a registered stack entry is visibly presented.
+
+        A pending first presentation is intentionally not considered visible;
+        callers that need the input barrier should use ``active_modal_id``.
+        """
+        identifier = self._require_id(modal_id)
+        return any(
+            entry.modal_id == identifier and entry.presented is True
+            for entry in self._stack
+        )
 
     def register(
         self,
         modal_id: str,
         *,
         is_active: Callable[[], bool],
-        render: Callable[[Any], None],
+        render: Callable[[Any], object],
         cancel: Callable[[], None],
         allowed_parent_ids: Iterable[str] = (),
     ) -> None:
@@ -142,7 +172,13 @@ class ModalService:
         return True
 
     def cancel_active(self) -> bool:
-        return self.cancel(self.active_modal_id) if self._stack else False
+        if not self._stack:
+            return False
+        # A lost popup is deliberately absent from ``active_modal_id`` so it
+        # cannot block shortcuts. Explicit lifecycle cleanup must still be
+        # able to cancel that pending domain entry during shutdown or owner
+        # destruction.
+        return self.cancel(self.active_modal_id or self._stack[-1].modal_id)
 
     def cancel_owner(self, owner_id: str) -> bool:
         owner = str(owner_id or "").strip()
@@ -170,7 +206,22 @@ class ModalService:
                 self._stack.pop()
                 continue
 
-            registration.render(ctx)
+            # Clear the previous heartbeat before entering the presenter. A
+            # presenter that cannot begin its popup must explicitly return
+            # False, which releases the shortcut barrier while keeping the
+            # domain transaction alive for a retry on the next frame.
+            index = len(self._stack) - 1
+            self._stack[index] = replace(entry, presented=False)
+            rendered = registration.render(ctx)
+            if (
+                index < len(self._stack)
+                and self._stack[index].modal_id == entry.modal_id
+                and rendered is not False
+            ):
+                self._stack[index] = replace(
+                    self._stack[index],
+                    presented=True,
+                )
             if not bool(registration.is_active()):
                 self.deactivate(entry.modal_id)
             return

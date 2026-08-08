@@ -1313,11 +1313,13 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
 
     // Styling
     ImGui::PushStyleColor(ImGuiCol_Header,
-                          selected ? EditorTheme::SELECTION_BG : EditorTheme::INSPECTOR_HEADER_PRIMARY);
+                          selected ? EditorTheme::INSPECTOR_HEADER_SELECTED : EditorTheme::INSPECTOR_HEADER_PRIMARY);
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered,
-                          selected ? EditorTheme::SELECTION_BG : EditorTheme::INSPECTOR_HEADER_PRIMARY_HOVERED);
+                          selected ? EditorTheme::INSPECTOR_HEADER_SELECTED_HOVERED
+                                   : EditorTheme::INSPECTOR_HEADER_PRIMARY_HOVERED);
     ImGui::PushStyleColor(ImGuiCol_HeaderActive,
-                          selected ? EditorTheme::SELECTION_BG : EditorTheme::INSPECTOR_HEADER_PRIMARY_ACTIVE);
+                          selected ? EditorTheme::INSPECTOR_HEADER_SELECTED_ACTIVE
+                                   : EditorTheme::INSPECTOR_HEADER_PRIMARY_ACTIVE);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::INSPECTOR_HEADER_ITEM_SPC);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::INSPECTOR_HEADER_BORDER_SIZE);

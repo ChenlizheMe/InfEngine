@@ -76,12 +76,14 @@ def _document(registry: DocumentRegistry, *, dirty: bool = False):
 def test_external_change_conflicts_with_dirty_document_and_blocks_plain_save(tmp_path):
     registry = DocumentRegistry()
     path = tmp_path / "Smoke.particlegraph"
+    path.write_text("baseline", encoding="utf-8")
     document, controller = _document(registry, dirty=True)
     registry.rekey(
         document.document_id,
         DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, str(path)),
         resource_path=str(path),
     )
+    path.write_text("external-change", encoding="utf-8")
 
     assert registry.publish_external_resource_change(str(path)) == (
         document.document_id,
@@ -99,6 +101,7 @@ def test_external_change_conflicts_with_dirty_document_and_blocks_plain_save(tmp
 def test_clean_external_change_reloads_and_establishes_a_new_baseline(tmp_path):
     registry = DocumentRegistry()
     path = tmp_path / "Smoke.particlegraph"
+    path.write_text("baseline", encoding="utf-8")
     document, controller = _document(registry)
     registry.rekey(
         document.document_id,
@@ -106,7 +109,9 @@ def test_clean_external_change_reloads_and_establishes_a_new_baseline(tmp_path):
         resource_path=str(path),
     )
     previous_revision = document.revision
+    path.write_text("external-change", encoding="utf-8")
 
+    assert registry.preflight_external_resource_change(str(path))
     registry.publish_external_resource_change(str(path))
 
     assert controller.reloaded
@@ -121,6 +126,7 @@ def test_clean_external_change_reloads_and_establishes_a_new_baseline(tmp_path):
 def test_external_change_during_save_rejects_stale_completion(tmp_path):
     registry = DocumentRegistry()
     path = tmp_path / "Smoke.particlegraph"
+    path.write_text("baseline", encoding="utf-8")
     document, controller = _document(registry, dirty=True)
     registry.rekey(
         document.document_id,
@@ -134,6 +140,7 @@ def test_external_change_during_save_rejects_stale_completion(tmp_path):
     ticket = registry.active_save_ticket(document.document_id)
     assert ticket is not None
 
+    path.write_text("external-change", encoding="utf-8")
     registry.publish_external_resource_change(str(path))
     completed = registry.complete_save(ticket.ticket_id, success=True)
 
@@ -146,12 +153,14 @@ def test_external_change_during_save_rejects_stale_completion(tmp_path):
 def test_keep_local_acknowledges_conflict_before_intentional_overwrite(tmp_path):
     registry = DocumentRegistry()
     path = tmp_path / "Smoke.particlegraph"
+    path.write_text("baseline", encoding="utf-8")
     document, controller = _document(registry, dirty=True)
     registry.rekey(
         document.document_id,
         DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, str(path)),
         resource_path=str(path),
     )
+    path.write_text("external-change", encoding="utf-8")
     registry.publish_external_resource_change(str(path))
 
     resolved = registry.resolve_conflict_keep_local(document.document_id)
@@ -529,7 +538,7 @@ def test_saving_an_older_revision_does_not_clear_newer_edits():
     assert ticket.status is SaveTicketStatus.SUCCEEDED
 
 
-def test_save_publication_absorbs_only_matching_content_bookkeeping_revision():
+def test_save_completion_preserves_the_exact_captured_content_revision():
     registry = DocumentRegistry()
     document, _controller = _document(registry, dirty=True)
     ticket = registry.begin_save(document.document_id)
@@ -543,8 +552,8 @@ def test_save_publication_absorbs_only_matching_content_bookkeeping_revision():
     )
 
     assert document.revision == publication_revision
-    assert document.saved_revision == publication_revision
-    assert document.is_dirty is False
+    assert document.saved_revision == ticket.captured_revision
+    assert document.is_dirty is True
 
 
 def test_save_publication_preserves_newer_content_when_token_changed():
@@ -611,6 +620,26 @@ def test_async_save_records_the_exact_captured_revision_after_undo():
     assert document.revision == 0
     assert newer_revision > saved_revision
     assert document.is_dirty
+
+
+def test_async_save_can_make_an_older_undo_revision_durable():
+    registry = DocumentRegistry()
+    document, _controller = _document(registry)
+    edited_revision = registry.mark_changed(document.document_id)
+    first = registry.begin_save(document.document_id)
+    registry.complete_save(first.ticket_id, success=True)
+    assert document.saved_revision == edited_revision
+
+    registry.restore_content_revision(document.document_id, 0)
+    assert document.is_dirty
+    second = registry.begin_save(document.document_id)
+    registry.complete_save(second.ticket_id, success=True)
+
+    assert second.captured_revision == 0
+    assert document.revision == 0
+    assert document.saved_revision == 0
+    assert document.persisted_revision == 0
+    assert document.is_dirty is False
 
 
 def test_one_document_can_have_multiple_views_without_duplicate_dirty_entries():
@@ -1100,6 +1129,93 @@ def test_live_document_is_rekeyed_when_asset_guid_becomes_available(tmp_path):
     assert reopened.key == guid_key
 
 
+def test_history_locator_uses_post_save_as_identity_after_scene_navigation(tmp_path):
+    registry = DocumentRegistry()
+    draft_path = tmp_path / "Draft.scene"
+    saved_path = tmp_path / "Saved.scene"
+
+    draft, _ = registry.open_or_create(
+        DocumentKey.session(DocumentKind.SCENE, "unsaved-scene"),
+        "Draft",
+        resource_path="",
+    )
+    history_locator = registry.locate(draft.document_id)
+    assert history_locator is not None
+
+    save_ticket = registry.begin_save(draft.document_id, save_as=True)
+    saved_key = DocumentKey.asset(DocumentKind.SCENE, "saved-scene-guid")
+    registry.complete_save(
+        save_ticket.ticket_id,
+        success=True,
+        key=saved_key,
+        resource_path=str(saved_path),
+        title="Saved",
+    )
+    assert draft.stable_id == history_locator.stable_id
+
+    registry.unregister(draft.document_id)
+    other, _ = registry.open_or_create(
+        DocumentKey.resource(DocumentKind.SCENE, str(draft_path)),
+        "Other",
+        resource_path=str(draft_path),
+    )
+    assert other.stable_id != history_locator.stable_id
+
+    restored_locator = registry.canonical_locator(history_locator)
+
+    assert restored_locator.stable_id == history_locator.stable_id
+    assert restored_locator.key_hint == saved_key
+    reopened, created = registry.open_or_create(
+        restored_locator.key_hint,
+        "Saved",
+        resource_path=str(saved_path),
+    )
+    assert not created
+    assert reopened.stable_id == history_locator.stable_id
+    assert reopened is draft
+
+
+def test_stale_history_key_cannot_canonicalize_to_another_scene_identity(tmp_path):
+    registry = DocumentRegistry()
+    old_path = tmp_path / "Draft.scene"
+    saved_path = tmp_path / "Saved.scene"
+    old_key = DocumentKey.resource(DocumentKind.SCENE, str(old_path))
+    saved_key = DocumentKey.resource(DocumentKind.SCENE, str(saved_path))
+
+    draft, _ = registry.open_or_create(
+        old_key,
+        "Draft",
+        stable_id="scene-history-stable",
+        resource_path=str(old_path),
+    )
+    history_locator = registry.locate(draft.document_id)
+    assert history_locator is not None
+    registry.rekey(draft.document_id, saved_key, resource_path=str(saved_path))
+    registry.unregister(draft.document_id)
+
+    replacement, _ = registry.open_or_create(
+        old_key,
+        "Replacement",
+        resource_path=str(old_path),
+    )
+    assert registry.resolve_locator(history_locator) is None
+    canonical = registry.canonical_locator(history_locator)
+
+    assert replacement.stable_id != history_locator.stable_id
+    assert canonical.stable_id == history_locator.stable_id
+    assert canonical.key_hint == saved_key
+
+    restored, created = registry.open_or_create(
+        canonical.key_hint,
+        "Saved",
+        stable_id=canonical.stable_id,
+        resource_path=str(saved_path),
+    )
+    assert created is False
+    assert restored is draft
+    assert restored.stable_id == history_locator.stable_id
+
+
 def test_dormant_document_is_rekeyed_without_losing_command_identity(tmp_path):
     registry = DocumentRegistry()
     asset_path = tmp_path / "Walk.animclip2d"
@@ -1359,6 +1475,57 @@ def test_scene_dirty_view_ownership_survives_session_restore():
     assert restored.is_dirty_for_view("ui_editor")
     assert not restored.is_dirty_for_view("scene_view")
     assert not restored.is_dirty_for_view("game_view")
+
+
+def test_locate_resource_preserves_pending_session_document_identity(tmp_path):
+    class SessionController:
+        @staticmethod
+        def capture_document_restore_state(_document_id):
+            return {"scene": "snapshot"}
+
+    scene_path = tmp_path / "Results.scene"
+    source = DocumentRegistry()
+    document = source.create(
+        DocumentKind.SCENE,
+        "Results",
+        key=DocumentKey.resource(DocumentKind.SCENE, str(scene_path)),
+        resource_path=str(scene_path),
+        controller=SessionController(),
+    )
+    source.attach_view(document.document_id, "scene_view")
+
+    restored = DocumentRegistry()
+    assert restored.queue_session_restore(source.capture_session_state()) == 1
+
+    locator = restored.locate_resource(
+        DocumentKind.SCENE,
+        str(scene_path),
+        title="Results",
+    )
+
+    assert locator.stable_id == document.stable_id
+    assert locator.key_hint == document.key
+
+
+def test_locate_resource_preserves_guid_document_identity_by_resource_path(tmp_path):
+    scene_path = tmp_path / "Results.scene"
+    registry = DocumentRegistry()
+    document = registry.create(
+        DocumentKind.SCENE,
+        "Results",
+        key=DocumentKey.asset(DocumentKind.SCENE, "results-guid"),
+        resource_path=str(scene_path),
+    )
+    registry.unregister(document.document_id)
+
+    locator = registry.locate_resource(
+        DocumentKind.SCENE,
+        str(scene_path),
+        title="Results",
+    )
+
+    assert locator.stable_id == document.stable_id
+    assert locator.key_hint == document.key
 
 
 def test_pending_session_prunes_closed_views_and_drops_orphan_drafts():

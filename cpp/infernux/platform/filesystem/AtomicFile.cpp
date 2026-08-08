@@ -195,12 +195,12 @@ AtomicFileState CaptureAtomicFileState(const std::string &path)
     const auto modified = std::filesystem::last_write_time(target, error);
     if (error)
         throw std::runtime_error("failed to inspect modification time for '" + path + "'");
-    return AtomicFileState{
-        true,
-        static_cast<uint64_t>(size),
-        static_cast<int64_t>(modified.time_since_epoch().count()),
-        HashFileContents(target),
-    };
+    AtomicFileState state;
+    state.exists = true;
+    state.size = static_cast<uint64_t>(size);
+    state.modifiedNs = static_cast<int64_t>(modified.time_since_epoch().count());
+    state.contentHash = HashFileContents(target);
+    return state;
 }
 
 bool WriteTextFileAtomically(const std::string &path, std::string_view content, std::string &error,

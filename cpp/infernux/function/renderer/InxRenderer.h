@@ -188,6 +188,7 @@ struct UIPerformanceMetricStats
     double meanMs = 0.0;
     double medianMs = 0.0;
     double p95Ms = 0.0;
+    double p99Ms = 0.0;
     double maxMs = 0.0;
 };
 
@@ -199,6 +200,20 @@ struct RendererUIPerformanceSnapshot
     UIPerformanceMetricStats guiBuild;
     std::unordered_map<std::string, UIPerformanceMetricStats> panelTimes;
     std::unordered_map<std::string, std::unordered_map<std::string, UIPerformanceMetricStats>> panelSubTimes;
+};
+
+struct RendererFramePerformanceSnapshot
+{
+    uint64_t firstFrame = 0;
+    uint64_t lastFrame = 0;
+    size_t sampleCount = 0;
+    size_t droppedSampleCount = 0;
+    UIPerformanceMetricStats frame;
+    UIPerformanceMetricStats gameOnly;
+    UIPerformanceMetricStats render;
+    UIPerformanceMetricStats scene;
+    UIPerformanceMetricStats gui;
+    UIPerformanceMetricStats prepare;
 };
 
 class InxRenderer
@@ -265,6 +280,8 @@ class InxRenderer
     /// currently advancing DrawFrame(). Never waits for a queue or device.
     void PollGpuCompletions();
     [[nodiscard]] RendererFrameTelemetrySnapshot GetFrameTelemetrySnapshot();
+    [[nodiscard]] uint64_t BeginFramePerformanceWindow();
+    [[nodiscard]] RendererFramePerformanceSnapshot GetFramePerformanceWindow() const;
     [[nodiscard]] uint64_t RequestGpuParticleViewDiagnostics(bool gameView, uint64_t graphInstanceId,
                                                              uint64_t cameraComponentId = 0);
     [[nodiscard]] particle::GpuParticleViewDiagnosticSnapshot
@@ -321,6 +338,7 @@ class InxRenderer
     // ImGui texture management
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
                                    int height, VkFilter filter = VK_FILTER_LINEAR, bool pinned = false);
+    void SupersedePendingImGuiTextureUploads(const std::string &name);
     void RemoveImGuiTexture(const std::string &name);
     bool HasImGuiTexture(const std::string &name) const;
     uint64_t GetImGuiTextureId(const std::string &name) const;
@@ -658,6 +676,23 @@ class InxRenderer
     double m_guiBuildMs = 0.0;       ///< GUI::BuildFrame (all ImGui panels) (ms)
     double m_prepareFrameMs = 0.0;   ///< PrepareFrame (collect/cull) (ms)
     double m_gameOnlyFrameMs = 0.0;  ///< Sum of game-only phases (ms)
+
+    static constexpr size_t FRAME_PERFORMANCE_HISTORY_SIZE = 240;
+    struct FramePerformanceSample
+    {
+        uint64_t frame = 0;
+        double frameMs = 0.0;
+        double gameOnlyMs = 0.0;
+        double renderMs = 0.0;
+        double sceneMs = 0.0;
+        double guiMs = 0.0;
+        double prepareMs = 0.0;
+    };
+    std::array<FramePerformanceSample, FRAME_PERFORMANCE_HISTORY_SIZE> m_framePerformanceHistory{};
+    size_t m_framePerformanceWriteIndex = 0;
+    size_t m_framePerformanceSampleCount = 0;
+    size_t m_framePerformanceDroppedSampleCount = 0;
+    void RecordFramePerformanceSample(double frameMs);
 
     static constexpr size_t UI_PERFORMANCE_HISTORY_SIZE = 240;
     struct UIMetricHistory

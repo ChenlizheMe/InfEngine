@@ -197,6 +197,7 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
     std::swap(m_collisionSceneLayout, replacement.m_collisionSceneLayout);
     std::swap(m_collisionSceneGroup, replacement.m_collisionSceneGroup);
     std::swap(m_pipelines, replacement.m_pipelines);
+    std::swap(m_supportsFusedUpdateRendering, replacement.m_supportsFusedUpdateRendering);
     std::swap(m_continuation, replacement.m_continuation);
     std::swap(m_contacts, replacement.m_contacts);
     return true;
@@ -213,7 +214,15 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     if (!CheckedBufferSize(desc.capacity, desc.stateStride, stateBytes) ||
         !CheckedBufferSize(desc.capacity, RenderInstanceStride, instanceBytes))
         return false;
-    for (const auto &kernel : desc.kernels) {
+    const bool fusedUpdateRendering =
+        desc.supportsFusedUpdateRendering && !desc.collisionEnabled && desc.continuation.capacity == 0 &&
+        desc.meshInterfaces.empty() && desc.vectorFields.vectorFields.empty() &&
+        desc.vectorFields.textureParameters.empty();
+    for (size_t index = 0; index < desc.kernels.size(); ++index) {
+        if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused &&
+            !fusedUpdateRendering)
+            continue;
+        const auto &kernel = desc.kernels[index];
         if (!kernel.words || kernel.wordCount == 0)
             return false;
     }
@@ -222,6 +231,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     m_stateStride = desc.stateStride;
     m_eventTypeCount = desc.eventTypeCount;
     m_collisionEnabled = desc.collisionEnabled;
+    m_supportsFusedUpdateRendering = fusedUpdateRendering;
     if (residentState) {
         if (residentState->device != &device) {
             Destroy();
@@ -625,6 +635,9 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     }
 
     for (size_t index = 0; index < desc.kernels.size(); ++index) {
+        if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused &&
+            !m_supportsFusedUpdateRendering)
+            continue;
         const auto shader = device.CreateShaderModule({desc.kernels[index].words, desc.kernels[index].wordCount});
         if (!shader.IsValid()) {
             Destroy();
@@ -676,6 +689,7 @@ void ParticleGpuRuntime::Destroy() noexcept
     m_stateStride = 0;
     m_eventTypeCount = 0;
     m_collisionEnabled = false;
+    m_supportsFusedUpdateRendering = false;
     m_contactPrepareRecordCalls = 0;
     m_contactSolveRecordCalls = 0;
     m_contactDispatchRecordCalls = 0;
@@ -687,6 +701,8 @@ void ParticleGpuRuntime::Destroy() noexcept
     m_collisionSceneLayout = {};
     m_collisionSceneGroup = {};
     m_pipelines.fill({});
+    m_cachedTransforms = {};
+    m_hasCachedTransforms = false;
 }
 
 bool ParticleGpuRuntime::IsValid() const noexcept
@@ -711,8 +727,11 @@ bool ParticleGpuRuntime::IsValid() const noexcept
         return false;
     if (m_collisionEnabled != static_cast<bool>(m_contacts))
         return false;
-    for (auto pipeline : m_pipelines) {
-        if (!pipeline.IsValid())
+    for (size_t index = 0; index < m_pipelines.size(); ++index) {
+        if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused &&
+            !m_supportsFusedUpdateRendering)
+            continue;
+        if (!m_pipelines[index].IsValid())
             return false;
     }
     return true;
@@ -837,9 +856,16 @@ bool ParticleGpuRuntime::UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMe
 
 bool ParticleGpuRuntime::UpdateTransforms(const GpuParticleTransforms &transforms)
 {
+    if (m_hasCachedTransforms &&
+        std::memcmp(&m_cachedTransforms, &transforms, sizeof(GpuParticleTransforms)) == 0)
+        return true;
     if (!m_device || !m_device->WriteBuffer(TransformBuffer(), 0, &transforms, sizeof(transforms)))
         return false;
-    return UpdateMeshInterfaceMetadata(transforms) && UpdateVectorFieldMetadata(transforms);
+    if (!UpdateMeshInterfaceMetadata(transforms) || !UpdateVectorFieldMetadata(transforms))
+        return false;
+    m_cachedTransforms = transforms;
+    m_hasCachedTransforms = true;
+    return true;
 }
 
 bool ParticleGpuRuntime::UpdateMeshInterfaceMetadata(const GpuParticleTransforms &transforms)
@@ -993,6 +1019,21 @@ void ParticleGpuRuntime::RecordUpdate(const rhi::ComputeCommandEncoder &encoder,
     Record(encoder, GpuKernelStage::Update, constants, m_capacity, graphSpawnGroup);
 }
 
+void ParticleGpuRuntime::RecordUpdateRenderingFused(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+                                                    uint32_t simulationStep, float deltaTime,
+                                                    rhi::BindGroupHandle graphSpawnGroup) const
+{
+    if (!SupportsFusedUpdateRendering())
+        return;
+    GpuParticlePushConstants constants;
+    constants.capacity = m_capacity;
+    constants.invocationCount = m_capacity;
+    constants.systemSeed = systemSeed;
+    constants.simulationStep = simulationStep;
+    constants.deltaTime = deltaTime;
+    Record(encoder, GpuKernelStage::UpdateRenderingFused, constants, m_capacity, graphSpawnGroup);
+}
+
 void ParticleGpuRuntime::RecordContactPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
                                               rhi::BindGroupHandle graphSpawnGroup, bool resetAll) const
 {
@@ -1070,6 +1111,8 @@ void ParticleGpuRuntime::Record(const rhi::ComputeCommandEncoder &encoder, GpuKe
     if (!IsValid() || !encoder.IsValid() || invocationCount == 0 || !graphSpawnGroup.IsValid())
         return;
     const auto pipeline = m_pipelines[StageIndex(stage)];
+    if (!pipeline.IsValid())
+        return;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, m_group);
     encoder.BindGroup(pipeline, 1, m_dataInterfaces ? m_dataInterfaces->group : m_emptyDataInterfaceGroup);

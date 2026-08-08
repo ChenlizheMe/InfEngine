@@ -261,7 +261,16 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
         break;
 
     // ---- File drop from OS ----
+    // SDL drop events carry the last drop position even when the window did
+    // not receive ordinary mouse-motion events while another application
+    // owned the drag. Keep the shared pointer state aligned with that target.
+    case SDL_EVENT_DROP_POSITION:
+        m_mouseX = event.drop.x;
+        m_mouseY = event.drop.y;
+        break;
     case SDL_EVENT_DROP_FILE: {
+        m_mouseX = event.drop.x;
+        m_mouseY = event.drop.y;
         if (event.drop.data) {
             m_droppedFiles.emplace_back(event.drop.data);
         }

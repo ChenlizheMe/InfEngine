@@ -223,6 +223,7 @@ class SkeletalAnimator(InxComponent):
     _blend_elapsed: float = 0.0
     _blend_duration: float = 0.0
     _last_native_take_name: str = ""
+    _last_native_pose_key = None
     _duration_cache: Dict[str, float] = {}
     _current_timeline = None
     _timeline_cache: Dict[str, object] = {}
@@ -236,6 +237,7 @@ class SkeletalAnimator(InxComponent):
         self._current_timeline = None
         self._timeline_base = None
         self._last_native_take_name = ""
+        self._last_native_pose_key = None
         self._current_state_name = ""
         self._current_clip = None
         self._elapsed = 0.0
@@ -258,7 +260,6 @@ class SkeletalAnimator(InxComponent):
             self._update_timeline(delta_time)
             return
         if not self._playing or not self._current_clip:
-            self._sync_native_runtime_playback()
             return
 
         state = self._get_current_state()
@@ -350,6 +351,7 @@ class SkeletalAnimator(InxComponent):
     def stop(self):
         self._playing = False
         self._clear_blend_state()
+        self._last_native_pose_key = None
         self._sync_native_runtime_playback()
 
     def set_parameter(self, name: str, value: object):
@@ -391,6 +393,7 @@ class SkeletalAnimator(InxComponent):
         self._current_timeline = None
         self._timeline_base = None
         self._last_native_take_name = ""
+        self._last_native_pose_key = None
         self._parameters = {}
         self._clear_blend_state()
 
@@ -472,7 +475,7 @@ class SkeletalAnimator(InxComponent):
     def _update_timeline(self, delta_time: float):
         """Advance + apply a timeline state, driving the owner GameObject transform."""
         tl = self._current_timeline
-        if tl is None:
+        if tl is None or not self._playing:
             return
         state = self._get_current_state()
         # Looping is decided by the owning FSM state, not the timeline asset.
@@ -528,18 +531,21 @@ class SkeletalAnimator(InxComponent):
         tr = getattr(self.game_object, "transform", None)
         if tr is None:
             return
+        pose = tuple(float(value) for value in (*pos, *rot, *scl))
+        if pose == getattr(self, "_last_timeline_pose", None):
+            return
         try:
             trs = getattr(tr, "set_local_trs", None)
             if trs is not None:
                 # Single boundary crossing + one subtree invalidate (no Vector3 allocs).
-                trs(float(pos[0]), float(pos[1]), float(pos[2]),
-                    float(rot[0]), float(rot[1]), float(rot[2]),
-                    float(scl[0]), float(scl[1]), float(scl[2]))
+                trs(*pose)
+                self._last_timeline_pose = pose
                 return
             from Infernux.lib import Vector3
-            tr.local_position = Vector3(float(pos[0]), float(pos[1]), float(pos[2]))
-            tr.local_euler_angles = Vector3(float(rot[0]), float(rot[1]), float(rot[2]))
-            tr.local_scale = Vector3(float(scl[0]), float(scl[1]), float(scl[2]))
+            tr.local_position = Vector3(*pose[0:3])
+            tr.local_euler_angles = Vector3(*pose[3:6])
+            tr.local_scale = Vector3(*pose[6:9])
+            self._last_timeline_pose = pose
         except Exception as exc:
             Debug.log_suppressed("SkeletalAnimator._apply_timeline", exc)
 
@@ -571,21 +577,32 @@ class SkeletalAnimator(InxComponent):
         # native pose-stack API); otherwise fall back to the 2-clip crossfade slot.
         submit_stack = getattr(cpp, "submit_pose_stack", None)
         if callable(submit_stack) and take_a and take_b:
+            pose_key = ("stack", self._playing, take_a, take_b, t, lerp, loop)
+            if pose_key == self._last_native_pose_key:
+                return True
             try:
                 submit_stack([
                     {"take_name": take_a, "time": t, "weight": 1.0 - lerp, "loop": loop},
                     {"take_name": take_b, "time": t, "weight": lerp, "loop": loop},
                 ])
                 self._last_native_take_name = take_a
+                self._last_native_pose_key = pose_key
                 return True
             except Exception as exc:
                 Debug.log_suppressed("SkeletalAnimator._submit_blend_state.pose_stack", exc)
 
         submit_pose = getattr(cpp, "submit_animation_pose", None)
         if callable(submit_pose):
+            pose_key = (
+                "blend", self._playing, take_a or take_b, t, normalized,
+                take_b if take_a else "", lerp if take_a else 0.0, loop,
+            )
+            if pose_key == self._last_native_pose_key:
+                return True
             submit_pose(take_a or take_b, t, normalized,
                         take_b if take_a else "", t, lerp if take_a else 0.0, loop)
             self._last_native_take_name = take_a or take_b
+            self._last_native_pose_key = pose_key
             return True
         return False
 
@@ -611,6 +628,7 @@ class SkeletalAnimator(InxComponent):
             self._prev_event_norm = 0.0
             self._playing = True
             self._capture_timeline_base()  # additive deltas apply on top of this
+            self._last_timeline_pose = None
             self._apply_active_take()  # clear skeletal take → bind pose
             if self._current_timeline is not None:
                 self._apply_timeline(self._current_timeline, 0.0)
@@ -760,6 +778,12 @@ class SkeletalAnimator(InxComponent):
             blend_take = self._blend_from_take_name
             blend_time = float(self._blend_from_elapsed)
             blend_weight = float(1.0 - progress)
+        pose_key = (
+            "clip", self._playing, take_name, float(self._elapsed), normalized,
+            blend_take, blend_time, blend_weight, loop,
+        )
+        if pose_key == self._last_native_pose_key:
+            return
         cpp.submit_animation_pose(
             take_name,
             float(self._elapsed) if take_name else 0.0,
@@ -770,6 +794,7 @@ class SkeletalAnimator(InxComponent):
             loop,
         )
         self._last_native_take_name = take_name
+        self._last_native_pose_key = pose_key
 
     def _get_current_state(self) -> Optional[AnimState]:
         if self._fsm and self._current_state_name:

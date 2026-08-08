@@ -89,6 +89,7 @@ def test_only_external_content_mutation_advances_document_external_revision(tmp_
     documents = DocumentRegistry()
     service = AssetMutationService(documents, SelectionService())
     path = tmp_path / "Smoke.particlegraph"
+    path.write_text("baseline", encoding="utf-8")
     document = documents.create(
         DocumentKind.PARTICLE_GRAPH,
         "Smoke",
@@ -106,6 +107,7 @@ def test_only_external_content_mutation_advances_document_external_revision(tmp_
     assert document.external_revision == 0
     assert document.state is DocumentState.READY
 
+    path.write_text("external-change", encoding="utf-8")
     service.publish_content_change(
         str(path),
         AssetMutationKind.MODIFIED,

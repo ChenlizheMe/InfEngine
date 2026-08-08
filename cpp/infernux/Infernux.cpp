@@ -1115,10 +1115,16 @@ uint64_t Infernux::QueryOrScheduleMaterialPreview(const std::string &resourceKey
         state.textureName = BuildPreviewTextureName(key);
 
     state.textureId = LiveImGuiTextureId(m_renderer.get(), state.textureName);
+    // An open authored document owns this shared preview until its durable
+    // write has completed. Passive ProjectPanel requests must not publish the
+    // previous disk revision while that hand-off is still in progress.
     if (!authoring && state.authoring)
         return state.textureId;
     if (authoring)
         state.authoring = true;
+
+    state.latestMatFilePath = matFilePath;
+    state.latestMaterialJson = materialJson;
 
     // ── Detect content changes ──────────────────────────────────
     std::string renderJson; // JSON to use if we schedule a render
@@ -1128,6 +1134,13 @@ uint64_t Infernux::QueryOrScheduleMaterialPreview(const std::string &resourceKey
         if (h != state.lastJsonHash) {
             state.lastJsonHash = h;
             state.generation++;
+            if (state.pendingUploadVersion != 0) {
+                m_renderer->SupersedePendingImGuiTextureUploads(state.textureName);
+                state.pendingUploadVersion = 0;
+                state.pendingPreviewGeneration = 0;
+                state.pendingSize = 0;
+                state.inFlight = false;
+            }
         }
         renderJson = materialJson; // prefer JSON for rendering
     }
@@ -1136,8 +1149,16 @@ uint64_t Infernux::QueryOrScheduleMaterialPreview(const std::string &resourceKey
         state.lastFileMtime = fileMtimeHint;
         // Only bump generation from mtime if no JSON was provided in this call
         // (avoids double-bump when both are present).
-        if (materialJson.empty())
+        if (materialJson.empty()) {
             state.generation++;
+            if (state.pendingUploadVersion != 0) {
+                m_renderer->SupersedePendingImGuiTextureUploads(state.textureName);
+                state.pendingUploadVersion = 0;
+                state.pendingPreviewGeneration = 0;
+                state.pendingSize = 0;
+                state.inFlight = false;
+            }
+        }
     }
 
     // First-ever request from a passive caller (the inspector shares this "mat|"
@@ -1211,6 +1232,17 @@ int Infernux::PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown)
             it->second.renderGeneration = 0;
             if (pixels.empty() || it->second.generation != completed.generation) {
                 it->second.inFlight = false;
+                if (!pixels.empty() && it->second.readyGeneration < it->second.generation) {
+                    it->second.inFlight = true;
+                    m_previewRequestQueue.push(MaterialPreviewRequest{
+                        completed.resourceKey,
+                        it->second.latestMatFilePath,
+                        it->second.generation,
+                        it->second.latestMaterialJson,
+                    });
+                    m_hasPreviewPumpWork.store(true, std::memory_order_release);
+                    m_renderer->RequestFullSpeedFrame();
+                }
                 continue;
             }
             if (it->second.textureName.empty())
@@ -1316,6 +1348,17 @@ int Infernux::PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown)
                 return consumed;
             if (it->second.generation != request.generation) {
                 it->second.inFlight = false;
+                if (it->second.readyGeneration < it->second.generation) {
+                    it->second.inFlight = true;
+                    m_previewRequestQueue.push(MaterialPreviewRequest{
+                        request.resourceKey,
+                        it->second.latestMatFilePath,
+                        it->second.generation,
+                        it->second.latestMaterialJson,
+                    });
+                    m_hasPreviewPumpWork.store(true, std::memory_order_release);
+                    m_renderer->RequestFullSpeedFrame();
+                }
                 return consumed;
             }
             if (it->second.textureName.empty())
@@ -1441,8 +1484,22 @@ void Infernux::CommitPublishedPreviewTextures()
     };
     bool hasUnpublishedUploads = false;
     for (auto &[key, state] : m_materialPreviewStates) {
-        (void)key;
-        hasUnpublishedUploads |= commitMaterial(state);
+        const uint64_t publishingGeneration = state.pendingPreviewGeneration;
+        const bool stillPublishing = commitMaterial(state);
+        hasUnpublishedUploads |= stillPublishing;
+        if (!stillPublishing && publishingGeneration != 0 &&
+            publishingGeneration != state.generation && !state.inFlight &&
+            state.readyGeneration < state.generation) {
+            state.inFlight = true;
+            m_previewRequestQueue.push(MaterialPreviewRequest{
+                key,
+                state.latestMatFilePath,
+                state.generation,
+                state.latestMaterialJson,
+            });
+            m_hasPreviewPumpWork.store(true, std::memory_order_release);
+            m_renderer->RequestFullSpeedFrame();
+        }
     }
     for (auto &[key, state] : m_texturePreviewStates) {
         (void)key;
@@ -1867,6 +1924,7 @@ std::vector<Infernux::PreviewTaskSnapshot> Infernux::GetPreviewTaskSnapshots() c
         snapshot.pendingUploadVersion = state.pendingUploadVersion;
         snapshot.pendingPreviewGeneration = state.pendingPreviewGeneration;
         snapshot.inFlight = state.inFlight;
+        snapshot.authoring = state.authoring;
         snapshot.hasRenderTicket = static_cast<bool>(state.renderTicket);
         snapshot.renderTicketDone = state.renderTicket && state.renderTicket->IsDone();
         snapshot.pendingWidth = state.pendingSize;
@@ -1888,6 +1946,7 @@ std::vector<Infernux::PreviewTaskSnapshot> Infernux::GetPreviewTaskSnapshots() c
         snapshot.pendingUploadVersion = state.pendingUploadVersion;
         snapshot.pendingPreviewGeneration = state.pendingPreviewGeneration;
         snapshot.inFlight = state.inFlight;
+        snapshot.authoring = state.authoring;
         snapshot.pendingWidth = state.pendingWidth;
         snapshot.pendingHeight = state.pendingHeight;
         snapshot.readyWidth = state.readyWidth;
@@ -1962,6 +2021,13 @@ void Infernux::InvalidateMaterialPreviewTask(const std::string &resourceKey)
         it->second.generation++;
         it->second.lastJsonHash = 0;
         it->second.lastFileMtime = 0;
+        if (it->second.pendingUploadVersion != 0 && m_renderer) {
+            m_renderer->SupersedePendingImGuiTextureUploads(it->second.textureName);
+            it->second.pendingUploadVersion = 0;
+            it->second.pendingPreviewGeneration = 0;
+            it->second.pendingSize = 0;
+            it->second.inFlight = false;
+        }
     }
 }
 

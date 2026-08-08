@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include "../rhi/RhiDevice.h"
 #include "VkTypes.h"
 #include <core/log/InxLog.h>
+#include <memory>
 #include <vector>
 #include <vk_mem_alloc.h>
 
@@ -208,7 +210,8 @@ class VkBufferHandle
      * @return true if creation succeeded
      */
     bool Create(VmaAllocator allocator, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage,
-                VkMemoryPropertyFlags properties, const std::vector<uint32_t> &queueFamilies = {});
+                VkMemoryPropertyFlags properties, const std::vector<uint32_t> &queueFamilies = {},
+                std::shared_ptr<rhi::DeviceLifetime> lifetime = {});
 
     /**
      * @brief Destroy the buffer and free memory
@@ -257,7 +260,7 @@ class VkBufferHandle
     }
     [[nodiscard]] bool IsValid() const noexcept
     {
-        return m_buffer != VK_NULL_HANDLE;
+        return m_buffer != VK_NULL_HANDLE && (!m_lifetime || m_lifetime->alive.load(std::memory_order_acquire));
     }
     [[nodiscard]] bool IsMapped() const noexcept
     {
@@ -284,6 +287,7 @@ class VkBufferHandle
     VmaAllocation m_allocation = VK_NULL_HANDLE;
     VkDeviceSize m_size = 0;
     void *m_mappedPtr = nullptr;
+    std::shared_ptr<rhi::DeviceLifetime> m_lifetime;
 };
 
 // ============================================================================
@@ -325,7 +329,8 @@ class VkImageHandle
      */
     bool Create(VmaAllocator allocator, VkDevice device, uint32_t width, uint32_t height, VkFormat format,
                 VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties,
-                VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t mipLevels = 1);
+                VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t mipLevels = 1,
+                std::shared_ptr<rhi::DeviceLifetime> lifetime = {});
 
     /**
      * @brief Create an image with explicit cross-queue concurrent sharing.
@@ -346,7 +351,8 @@ class VkImageHandle
     bool CreateConcurrent(VmaAllocator allocator, VkDevice device, uint32_t width, uint32_t height, VkFormat format,
                           VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties,
                           const std::vector<uint32_t> &sharedQueueFamilies,
-                          VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t mipLevels = 1);
+                          VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t mipLevels = 1,
+                          std::shared_ptr<rhi::DeviceLifetime> lifetime = {});
 
     /**
      * @brief Create an image view for this image
@@ -393,7 +399,7 @@ class VkImageHandle
     }
     [[nodiscard]] bool IsValid() const noexcept
     {
-        return m_image != VK_NULL_HANDLE;
+        return m_image != VK_NULL_HANDLE && (!m_lifetime || m_lifetime->alive.load(std::memory_order_acquire));
     }
     [[nodiscard]] bool HasView() const noexcept
     {
@@ -419,6 +425,7 @@ class VkImageHandle
     uint32_t m_height = 0;
     uint32_t m_mipLevels = 1;
     VkFormat m_format = VK_FORMAT_UNDEFINED;
+    std::shared_ptr<rhi::DeviceLifetime> m_lifetime;
 };
 
 // ============================================================================

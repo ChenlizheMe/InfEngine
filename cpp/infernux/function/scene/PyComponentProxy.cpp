@@ -357,11 +357,23 @@ void PyComponentProxy::RefreshCoroutineSchedulerFlag()
             return;
         }
 
-        m_hasCoroutineScheduler = !m_pyComponent.attr("_coroutine_scheduler").is_none();
+        const py::object scheduler = m_pyComponent.attr("_coroutine_scheduler");
+        // The scheduler object is retained after natural completion and
+        // stop_all(). Dispatch is required only while it owns live work.
+        m_hasCoroutineScheduler = ReadCoroutineSchedulerCount(scheduler) > 0;
     } catch (const py::error_already_set &e) {
         INXLOG_WARN("[PyComponentProxy] Failed to inspect coroutine scheduler for '", m_typeName, "': ", e.what());
         m_hasCoroutineScheduler = true;
     }
+}
+
+std::size_t PyComponentProxy::ReadCoroutineSchedulerCount(const py::handle &scheduler)
+{
+    if (scheduler.is_none())
+        return 0;
+
+    const py::object countMethod = py::reinterpret_borrow<py::object>(scheduler).attr("count");
+    return countMethod().cast<std::size_t>();
 }
 
 void PyComponentProxy::RefreshPythonLifecycleDispatchPlan()
@@ -431,8 +443,35 @@ void PyComponentProxy::RebindPythonMirror()
 {
     py::gil_scoped_acquire acquire;
     BindPythonMirror();
-    RefreshPythonLifecycleDispatchPlan();
+    RefreshPythonLifecycleDispatch();
     SyncPythonMirror();
+}
+
+void PyComponentProxy::RefreshPythonLifecycleDispatch()
+{
+    py::gil_scoped_acquire acquire;
+    RefreshPythonLifecycleDispatchPlan();
+    if (m_pyComponent.is_none()) {
+        m_overridesUpdate = false;
+        m_overridesFixedUpdate = false;
+        m_overridesLateUpdate = false;
+        m_hasCoroutineScheduler = false;
+        return;
+    }
+
+    try {
+        const py::object pyType = m_pyComponent.attr("__class__");
+        const py::object inxComponentType = py::module_::import("Infernux.components").attr("InxComponent");
+        m_overridesUpdate = !pyType.attr("update").is(inxComponentType.attr("update"));
+        m_overridesFixedUpdate = !pyType.attr("fixed_update").is(inxComponentType.attr("fixed_update"));
+        m_overridesLateUpdate = !pyType.attr("late_update").is(inxComponentType.attr("late_update"));
+    } catch (const py::error_already_set &error) {
+        INXLOG_WARN("[PyComponentProxy] Failed to refresh lifecycle override mask for '", m_typeName,
+                    "': ", error.what());
+        m_overridesUpdate = true;
+        m_overridesFixedUpdate = true;
+        m_overridesLateUpdate = true;
+    }
     RefreshCoroutineSchedulerFlag();
 }
 

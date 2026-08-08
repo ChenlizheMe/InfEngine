@@ -8,7 +8,7 @@ that callers can provide for per-session caching.
 import json
 import os
 import re
-from Infernux.engine.path_utils import path_key, portable_path
+from Infernux.engine.path_utils import lexical_path_key, path_key, portable_path
 
 
 def _normalize_imported_property(item: dict) -> dict:
@@ -222,6 +222,7 @@ def _read_source_shader_metadata(filepath: str) -> dict[str, object]:
 _shader_property_generation: int = 0
 _shader_catalog_cache: dict[tuple[str, tuple[str, ...]], dict[str, object]] = {}
 _shader_properties_cache: dict[tuple[str, str], list] = {}
+_shader_visibility_cache: dict[str, tuple[int, int, bool]] = {}
 
 
 def bump_shader_property_generation():
@@ -230,6 +231,7 @@ def bump_shader_property_generation():
     _shader_property_generation += 1
     _shader_catalog_cache.clear()
     _shader_properties_cache.clear()
+    _shader_visibility_cache.clear()
 
 
 def get_shader_property_generation() -> int:
@@ -250,6 +252,31 @@ def _get_shader_search_roots() -> list[str]:
     builtin_root = os.path.join(resources_path, "shaders")
     search_roots.append(builtin_root)
     return search_roots
+
+
+def _is_builtin_shader_path(filepath: str) -> bool:
+    """Return whether a shader path is generated/package-owned engine data."""
+    if not filepath:
+        return False
+    from Infernux.engine.project_context import get_project_root
+    from Infernux.resources import resources_path
+
+    candidate = lexical_path_key(filepath)
+    portable_candidate = portable_path(candidate).casefold()
+    if "/library/resources/shaders/" in portable_candidate:
+        # Library is generated project data.  This remains identifiable while
+        # opening/materializing a document before ProjectContext is published.
+        return True
+    project_root = get_project_root()
+    roots = [os.path.join(resources_path, "shaders")]
+    if project_root:
+        roots.append(os.path.join(project_root, "Library", "Resources", "shaders"))
+    for root in roots:
+        root_key = lexical_path_key(root)
+        prefix = root_key.rstrip("\\/") + os.sep
+        if candidate == root_key or candidate.startswith(prefix):
+            return True
+    return False
 
 
 def _scan_shader_catalog(ext: str, search_roots: list[str] | None = None) -> dict[str, object]:
@@ -363,13 +390,24 @@ def parse_shader_properties(filepath: str) -> list:
 
 def is_shader_hidden(filepath: str) -> bool:
     """Check imported visibility, with a ShaderInfo source fallback."""
+    cache_key = path_key(filepath)
+    try:
+        stat = os.stat(filepath)
+        signature = (int(stat.st_mtime_ns), int(stat.st_size))
+    except OSError:
+        signature = (-1, -1)
+    cached = _shader_visibility_cache.get(cache_key)
+    if cached is not None and cached[:2] == signature:
+        return cached[2]
+
     metadata = _read_compiled_shader_metadata(filepath)
     if metadata is not None and isinstance(metadata.get("shader_hidden"), bool):
-        return metadata["shader_hidden"]
-    source_metadata = _read_source_shader_metadata(filepath)
-    if isinstance(source_metadata.get("shader_hidden"), bool):
-        return source_metadata["shader_hidden"]
-    return False
+        hidden = metadata["shader_hidden"]
+    else:
+        source_metadata = _read_source_shader_metadata(filepath)
+        hidden = bool(source_metadata.get("shader_hidden", False))
+    _shader_visibility_cache[cache_key] = (*signature, hidden)
+    return hidden
 
 
 def get_shader_file_path(shader_id: str, ext: str) -> str:
@@ -403,6 +441,10 @@ def make_shader_reference(value, ext: str) -> dict[str, str]:
         candidate = value.strip()
         if candidate.lower().endswith(ext) or os.path.isfile(candidate):
             path_hint = candidate
+            # A picker/drop payload is a source location, never a shader ID.
+            # Resolve ShaderInfo.Name below so material pipeline keys remain
+            # stable and never contain project-specific absolute paths.
+            shader_id = ""
         else:
             shader_id = candidate
 
@@ -436,6 +478,13 @@ def make_shader_reference(value, ext: str) -> dict[str, str]:
         if not guid and database:
             guid = database.get_guid_from_path(resolved_path) or ""
         path_hint = resolved_path
+
+    if _is_builtin_shader_path(path_hint):
+        # Engine shaders are addressed by ShaderInfo.Name. Persisting a
+        # generated Library or package path makes materials machine-specific
+        # and leaks the implementation path into pipeline IDs.
+        guid = ""
+        path_hint = ""
 
     return {
         "guid": guid,

@@ -161,23 +161,33 @@ class CoroutineScheduler:
     The scheduler is lazily created on the first ``start_coroutine()`` call to
     avoid overhead on components that never use coroutines.
     """
-    __slots__ = ("_coroutines",)
+    __slots__ = ("_coroutines", "_on_active_changed")
 
-    def __init__(self) -> None:
+    def __init__(self, on_active_changed=None) -> None:
         self._coroutines: list[Coroutine] = []
+        self._on_active_changed = on_active_changed
+
+    def _notify_active_changed(self, was_active: bool) -> None:
+        is_active = bool(self._coroutines)
+        if was_active == is_active or self._on_active_changed is None:
+            return
+        self._on_active_changed(is_active)
 
     # -- Public API (used by InxComponent) ----------------------------------
 
     def start(self, generator: Generator, owner: Any = None) -> Coroutine:
         """Start a new coroutine and return a handle."""
+        was_active = bool(self._coroutines)
         co = Coroutine(generator, owner)
         self._advance(co)                       # run until first yield
         if not co._is_finished:
             self._coroutines.append(co)
+        self._notify_active_changed(was_active)
         return co
 
     def stop(self, coroutine: Coroutine) -> None:
         """Immediately stop *coroutine*."""
+        was_active = bool(self._coroutines)
         if coroutine._is_finished:
             return
         coroutine._is_finished = True
@@ -193,9 +203,11 @@ class CoroutineScheduler:
         except ValueError as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
+        self._notify_active_changed(was_active)
 
     def stop_all(self) -> None:
         """Stop every running coroutine."""
+        was_active = bool(self._coroutines)
         for co in self._coroutines:
             co._is_finished = True
             if co._generator is not None:
@@ -206,6 +218,7 @@ class CoroutineScheduler:
                     pass
                 co._generator = None
         self._coroutines.clear()
+        self._notify_active_changed(was_active)
 
     @property
     def count(self) -> int:
@@ -232,6 +245,7 @@ class CoroutineScheduler:
         if not self._coroutines:
             return
 
+        was_active = True
         to_remove: list[Coroutine] = []
 
         # Iterate a snapshot so that coroutines started from within user code
@@ -281,6 +295,7 @@ class CoroutineScheduler:
             except ValueError as _exc:
                 Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
                 pass
+        self._notify_active_changed(was_active)
 
     def _advance(self, co: Coroutine) -> None:
         """Call ``next()`` on the generator and update the coroutine state."""

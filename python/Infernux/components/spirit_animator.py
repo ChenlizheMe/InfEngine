@@ -124,6 +124,7 @@ class SpiritAnimator(InxComponent):
     _current_timeline = None
     _timeline_cache: Dict[str, object] = {}
     _timeline_base = None
+    _last_timeline_pose = None
 
     # ── Lifecycle ───────────────────────────────────────────────────
 
@@ -133,6 +134,7 @@ class SpiritAnimator(InxComponent):
         self._timeline_cache = {}
         self._current_timeline = None
         self._timeline_base = None
+        self._last_timeline_pose = None
         self._current_state_name = ""
         self._current_clip = None
         self._elapsed = 0.0
@@ -307,6 +309,7 @@ class SpiritAnimator(InxComponent):
         self._timeline_cache = {}
         self._current_timeline = None
         self._timeline_base = None
+        self._last_timeline_pose = None
         self._parameters = {}
 
     # ── Internals ───────────────────────────────────────────────────
@@ -567,7 +570,7 @@ class SpiritAnimator(InxComponent):
     def _update_timeline(self, delta_time: float):
         """Advance + apply a timeline state, driving the owner GameObject transform."""
         tl = self._current_timeline
-        if tl is None:
+        if tl is None or not self._playing:
             return
         state = self._get_current_state()
         loop = bool(state.loop) if state is not None else True
@@ -618,11 +621,15 @@ class SpiritAnimator(InxComponent):
         tr = getattr(self.game_object, "transform", None)
         if tr is None:
             return
+        pose = tuple(float(value) for value in (*pos, *rot, *scl))
+        if pose == self._last_timeline_pose:
+            return
         try:
             from Infernux.lib import Vector3
-            tr.local_position = Vector3(float(pos[0]), float(pos[1]), float(pos[2]))
-            tr.local_euler_angles = Vector3(float(rot[0]), float(rot[1]), float(rot[2]))
-            tr.local_scale = Vector3(float(scl[0]), float(scl[1]), float(scl[2]))
+            tr.local_position = Vector3(*pose[0:3])
+            tr.local_euler_angles = Vector3(*pose[3:6])
+            tr.local_scale = Vector3(*pose[6:9])
+            self._last_timeline_pose = pose
         except Exception:
             pass
 
@@ -647,6 +654,7 @@ class SpiritAnimator(InxComponent):
             self._prev_event_norm = 0.0
             self._playing = True
             self._capture_timeline_base()
+            self._last_timeline_pose = None
             if self._current_timeline is not None:
                 self._apply_timeline(self._current_timeline, 0.0)
             return True

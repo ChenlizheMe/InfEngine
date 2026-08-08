@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import math
@@ -692,6 +692,18 @@ class KernelSuspensionPoint:
         )
 
 
+_UPDATE_RENDER_FUSION_FORBIDDEN_OPCODES = frozenset(
+    {
+        "suspend_frames", "suspend_seconds", "until_frames", "until_seconds",
+        "event_payload", "event_enqueue", "event_begin", "event_complete",
+        "burst_enqueue", "emitter_set_playing", "collide_scene",
+        "sample_vector_field", "sample_sdf_distance", "sample_sdf_gradient",
+        "sample_mesh", "collide_sdf_position", "collide_sdf_velocity",
+        "store_parameter",
+    }
+)
+
+
 @dataclass(frozen=True)
 class ParticleEmitterKernelIR:
     stable_id: str
@@ -704,6 +716,65 @@ class ParticleEmitterKernelIR:
     flows: tuple[KernelLifecycleFlow, ...]
     data_interfaces: tuple[ParticleRuntimeResource, ...] = ()
     suspensions: tuple[KernelSuspensionPoint, ...] = ()
+    supports_fused_update_rendering: bool = False
+
+    def update_render_fusion_capability(self) -> dict[str, Any]:
+        """Describe the conservative phase-1 Update+Rendering capability."""
+
+        def result(eligible: bool, reason_code: str) -> dict[str, Any]:
+            return {
+                "schema": "infernux.particle_update_render_fusion",
+                "version": 1,
+                "eligible": eligible,
+                "reason_code": reason_code,
+                "fallback_stages": ["update", "rendering"],
+                "fused_stage": "",
+            }
+
+        if self.suspensions:
+            return result(False, "continuation")
+        if self.data_interfaces:
+            return result(False, "data_interface")
+        if any(
+            instruction.opcode.startswith("event_")
+            or instruction.opcode.startswith("collide_")
+            for function in (self.init, self.update, self.contact, self.rendering)
+            for instruction in function.instructions
+        ):
+            return result(False, "stage_boundary_side_effect")
+        if any(
+            instruction.opcode in _UPDATE_RENDER_FUSION_FORBIDDEN_OPCODES
+            for function in (self.update, self.rendering)
+            for instruction in function.instructions
+        ):
+            return result(False, "stage_boundary_side_effect")
+        if any(
+            flow.lifecycle_stage not in {
+                ParticleStage.INIT,
+                ParticleStage.UPDATE,
+                ParticleStage.RENDERING,
+            }
+            or flow.flow_id
+            or len(flow.lanes) != 1
+            or not flow.blocks
+            or any(block.lane_index != 0 for block in flow.blocks)
+            or flow.joins
+            for flow in self.flows
+        ):
+            return result(False, "nonlinear_lifecycle")
+        update_flows = [
+            flow for flow in self.flows if flow.lifecycle_stage is ParticleStage.UPDATE
+        ]
+        rendering_flows = [
+            flow
+            for flow in self.flows
+            if flow.lifecycle_stage is ParticleStage.RENDERING
+        ]
+        if len(update_flows) != 1 or len(rendering_flows) != 1:
+            return result(False, "missing_primary_flow")
+        result_value = result(True, "eligible")
+        result_value["fused_stage"] = "update_rendering_fused"
+        return result_value
 
     def __post_init__(self) -> None:
         interfaces = tuple(self.data_interfaces)
@@ -711,6 +782,10 @@ class ParticleEmitterKernelIR:
             raise KernelCompileError("kernel emitter stable_id cannot be empty")
         if type(self.random_seed) is not int or not 0 <= self.random_seed <= 0xFFFFFFFF:
             raise KernelCompileError("kernel emitter random_seed must be an unsigned 32-bit integer")
+        if type(self.supports_fused_update_rendering) is not bool:
+            raise KernelCompileError(
+                "kernel emitter fused update/rendering support must be a boolean"
+            )
         if len({stable_id for stable_id, _type, _default in self.attributes}) != len(self.attributes):
             raise KernelCompileError("kernel emitter attribute stable ids must be unique")
         if not all(
@@ -867,6 +942,13 @@ class ParticleEmitterKernelIR:
                 raise KernelCompileError(
                     "kernel suspension metadata is inconsistent with lifecycle flow"
                 )
+        if (
+            self.supports_fused_update_rendering
+            and not self.update_render_fusion_capability()["eligible"]
+        ):
+            raise KernelCompileError(
+                "kernel emitter fused update/rendering support is not eligible"
+            )
 
     def _validate_data_interface_access(self, function: ParticleKernelFunction) -> None:
         interfaces = {interface.stable_id: interface for interface in self.data_interfaces}
@@ -971,26 +1053,42 @@ class ParticleEmitterKernelIR:
                 suspension.to_dict(include_source=include_source)
                 for suspension in self.suspensions
             ],
+            "supports_fused_update_rendering": self.supports_fused_update_rendering,
+            "update_render_fusion": self.update_render_fusion_capability(),
         }
 
     @classmethod
     def from_dict(cls, value: Any) -> "ParticleEmitterKernelIR":
-        _exact_dict(
-            value,
-            {
-                "stable_id",
-                "random_seed",
-                "attributes",
-                "data_interfaces",
-                "init",
-                "update",
-                "contact",
-                "rendering",
-                "flows",
-                "suspensions",
-            },
-            "kernel emitter",
+        expected = {
+            "stable_id",
+            "random_seed",
+            "attributes",
+            "data_interfaces",
+            "init",
+            "update",
+            "contact",
+            "rendering",
+            "flows",
+            "suspensions",
+        }
+        optional = {"supports_fused_update_rendering", "update_render_fusion"}
+        allowed_keys = (
+            expected,
+            expected | optional,
+            expected | {"supports_fused_update_rendering"},
+            expected | {"update_render_fusion"},
         )
+        if type(value) is not dict or not any(
+            set(value) == candidate for candidate in allowed_keys
+        ):
+            raise KernelCompileError("kernel emitter keys do not match the schema")
+        if (
+            "supports_fused_update_rendering" in value
+            and type(value["supports_fused_update_rendering"]) is not bool
+        ):
+            raise KernelCompileError(
+                "kernel emitter fused update/rendering support must be a boolean"
+            )
         if (
             type(value["attributes"]) is not list
             or type(value["data_interfaces"]) is not list
@@ -1008,7 +1106,7 @@ class ParticleEmitterKernelIR:
             except (TypeError, ValueError) as exc:
                 raise KernelCompileError("kernel attribute type is invalid") from exc
             attributes.append((item["stable_id"], value_type, item["default"]))
-        return cls(
+        emitter = cls(
             value["stable_id"],
             value["random_seed"],
             tuple(attributes),
@@ -1027,7 +1125,16 @@ class ParticleEmitterKernelIR:
                 KernelSuspensionPoint.from_dict(item)
                 for item in value["suspensions"]
             ),
+            value.get("supports_fused_update_rendering", False),
         )
+        expected_support = emitter.update_render_fusion_capability()["eligible"]
+        if emitter.supports_fused_update_rendering and not expected_support:
+            raise KernelCompileError(
+                "kernel emitter fused update/rendering support is not eligible"
+            )
+        if "update_render_fusion" in value and value["update_render_fusion"] != emitter.update_render_fusion_capability():
+            raise KernelCompileError("kernel emitter update/render fusion metadata is stale")
+        return emitter
 
 
 @dataclass(frozen=True)
@@ -1647,7 +1754,7 @@ class ParticleKernelLowerer:
             )
             for stage, suspension, program_counter in suspension_sources
         )
-        return ParticleEmitterKernelIR(
+        emitter_ir = ParticleEmitterKernelIR(
             emitter.stable_id,
             emitter.settings.seed,
             schema,
@@ -1658,6 +1765,12 @@ class ParticleKernelLowerer:
             flows,
             emitter.data_interfaces,
             suspensions,
+        )
+        return replace(
+            emitter_ir,
+            supports_fused_update_rendering=bool(
+                emitter_ir.update_render_fusion_capability()["eligible"]
+            ),
         )
 
     @staticmethod
@@ -2921,6 +3034,100 @@ class ParticleKernelLowerer:
         )
 
 
+_PURE_KERNEL_VALUE_OPCODES = frozenset(
+    {
+        "add",
+        "subtract",
+        "multiply",
+        "divide",
+        "minimum",
+        "maximum",
+        "logical_and",
+        "logical_or",
+        "logical_not",
+        "absolute",
+        "clamp",
+        "saturate",
+    }
+)
+
+
+def _is_numeric_literal(value: Any) -> bool:
+    if type(value) not in {int, float}:
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError):
+        return False
+
+
+def _map_literal(value: Any, operation) -> Any:
+    if isinstance(value, (list, tuple)):
+        mapped = [_map_literal(item, operation) for item in value]
+        return tuple(mapped) if isinstance(value, tuple) else mapped
+    return operation(value)
+
+
+def _map_binary_literal(left: Any, right: Any, operation) -> Any | None:
+    if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
+        if not isinstance(left, (list, tuple)) or not isinstance(right, (list, tuple)):
+            return None
+        if len(left) != len(right):
+            return None
+        mapped = []
+        for left_item, right_item in zip(left, right):
+            item = _map_binary_literal(left_item, right_item, operation)
+            if item is None:
+                return None
+            mapped.append(item)
+        return tuple(mapped) if isinstance(left, tuple) else mapped
+    if not (_is_numeric_literal(left) and _is_numeric_literal(right)):
+        return None
+    try:
+        result = operation(left, right)
+        return result if _is_numeric_literal(result) else None
+    except (ArithmeticError, ValueError, TypeError):
+        return None
+
+
+def _fold_kernel_value(opcode: str, values: tuple[Any, ...]) -> Any | None:
+    """Fold only finite, side-effect-free literals."""
+    if opcode == "logical_not" and len(values) == 1 and type(values[0]) is bool:
+        return not values[0]
+    if opcode in {"logical_and", "logical_or"} and len(values) == 2:
+        if type(values[0]) is bool and type(values[1]) is bool:
+            return (
+                values[0] and values[1]
+                if opcode == "logical_and"
+                else values[0] or values[1]
+            )
+    if opcode in {"add", "subtract", "multiply", "divide", "minimum", "maximum"}:
+        if len(values) != 2:
+            return None
+        operations = {
+            "add": lambda left, right: left + right,
+            "subtract": lambda left, right: left - right,
+            "multiply": lambda left, right: left * right,
+            "divide": lambda left, right: left / right,
+            "minimum": min,
+            "maximum": max,
+        }
+        return _map_binary_literal(values[0], values[1], operations[opcode])
+    if opcode == "absolute" and len(values) == 1:
+        if isinstance(values[0], (list, tuple)):
+            return _map_literal(values[0], abs)
+        return abs(values[0]) if _is_numeric_literal(values[0]) else None
+    if opcode == "saturate" and len(values) == 1:
+        if isinstance(values[0], (list, tuple)):
+            return _map_literal(values[0], lambda item: max(0.0, min(1.0, item)))
+        return max(0.0, min(1.0, values[0])) if _is_numeric_literal(values[0]) else None
+    if opcode == "clamp" and len(values) == 3:
+        value, lower, upper = values
+        raised = _map_binary_literal(value, lower, max)
+        return _map_binary_literal(raised, upper, min) if raised is not None else None
+    return None
+
+
 class _KernelBuilder:
     def __init__(
         self,
@@ -2935,6 +3142,7 @@ class _KernelBuilder:
         self.read_attributes: set[str] = set()
         self.written_attributes: set[str] = set()
         self._value_types: dict[str, TypeRef] = {}
+        self._constant_values: dict[str, Any] = {}
         self._runtime_predicates: dict[str, str] = {}
         self._random_slot = 0
 
@@ -2953,6 +3161,43 @@ class _KernelBuilder:
         immediates: Mapping[str, Any],
         source: KernelSourceRef,
     ) -> str:
+        if opcode in _PURE_KERNEL_VALUE_OPCODES:
+            if not immediates:
+                if opcode == "add" and len(values) == 2:
+                    if self._is_zero_value(values[0]):
+                        return values[1]
+                    if self._is_zero_value(values[1]):
+                        return values[0]
+                elif opcode == "subtract" and len(values) == 2 and self._is_zero_value(values[1]):
+                    return values[0]
+                elif opcode == "multiply" and len(values) == 2:
+                    if self._is_one_value(values[0]):
+                        return values[1]
+                    if self._is_one_value(values[1]):
+                        return values[0]
+                elif opcode == "divide" and len(values) == 2 and self._is_one_value(values[1]):
+                    return values[0]
+                elif opcode == "logical_and" and len(values) == 2:
+                    if self._is_boolean_value(values[0], True):
+                        return values[1]
+                    if self._is_boolean_value(values[1], True):
+                        return values[0]
+                elif opcode == "logical_or" and len(values) == 2:
+                    if self._is_boolean_value(values[0], False):
+                        return values[1]
+                    if self._is_boolean_value(values[1], False):
+                        return values[0]
+
+                constant_values = []
+                for value in values:
+                    if value not in self._constant_values:
+                        break
+                    constant_values.append(self._constant_values[value])
+                else:
+                    folded = _fold_kernel_value(opcode, tuple(constant_values))
+                    if folded is not None:
+                        return self.constant(result_type, folded, source)
+
         result_id = f"%{len(self._value_types)}"
         operands = tuple(KernelOperand(self._value_types[value], value_id=value) for value in values)
         instruction = KernelInstruction(
@@ -2985,7 +3230,20 @@ class _KernelBuilder:
         )
 
     def constant(self, value_type: TypeRef, literal: Any, source: KernelSourceRef) -> str:
-        return self.emit("constant", value_type, (), {"value": literal}, source)
+        result = self.emit("constant", value_type, (), {"value": literal}, source)
+        self._constant_values[result] = literal
+        return result
+
+    def _is_zero_value(self, value_id: str) -> bool:
+        literal = self._constant_values.get(value_id)
+        return literal == 0 and type(literal) in {int, float}
+
+    def _is_one_value(self, value_id: str) -> bool:
+        literal = self._constant_values.get(value_id)
+        return literal == 1 and type(literal) in {int, float}
+
+    def _is_boolean_value(self, value_id: str, expected: bool) -> bool:
+        return self._constant_values.get(value_id) is expected
 
     def load(self, stable_id: str, source: KernelSourceRef) -> str:
         value_type = self.attribute_types.get(stable_id)

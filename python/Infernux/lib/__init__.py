@@ -1,5 +1,8 @@
 import ctypes
 import glob
+import importlib
+import importlib.machinery
+import importlib.util
 import os
 import sys
 from functools import wraps
@@ -16,6 +19,7 @@ def _log_suppressed(exc: BaseException) -> None:
 
 lib_dir = os.path.join(os.path.dirname(__file__))
 lib_dir = os.path.abspath(lib_dir)
+native_dir = lib_dir
 
 _dll_dir_handles = []
 
@@ -46,10 +50,12 @@ def _register_native_search_dir(path: str) -> None:
             os.environ["LD_LIBRARY_PATH"] = norm + ((":" + ld_path) if ld_path else "")
 
 
-def _register_native_module_override() -> None:
+def _register_native_module_override() -> str | None:
+    global native_dir
+
     override = os.environ.get("INFERNUX_NATIVE_MODULE_DIR")
     if override is None:
-        return
+        return None
 
     native_dir = os.path.abspath(override)
     if not os.path.isdir(native_dir):
@@ -57,6 +63,56 @@ def _register_native_module_override() -> None:
     if native_dir not in __path__:
         __path__.insert(0, native_dir)
     _register_native_search_dir(native_dir)
+    return native_dir
+
+
+def _native_module_candidate(directory: str) -> str:
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        candidate = os.path.join(directory, f"_Infernux{suffix}")
+        if os.path.isfile(candidate):
+            return candidate
+    suffixes = ", ".join(importlib.machinery.EXTENSION_SUFFIXES)
+    raise ImportError(
+        f"No ABI-compatible _Infernux extension found under {directory}; "
+        f"expected one of: {suffixes}"
+    )
+
+
+def _load_native_module_from_dir(directory: str):
+    """Load the package-qualified native module from an explicit directory."""
+
+    module_name = f"{__name__}._Infernux"
+    module_path = _native_module_candidate(directory)
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot create an extension loader for {module_path}")
+
+    previous = sys.modules.get(module_name)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
+        raise
+    return module
+
+
+def _load_native_module(override_dir: str | None):
+    if override_dir is not None:
+        return _load_native_module_from_dir(override_dir)
+    return importlib.import_module(f"{__name__}._Infernux")
+
+
+def _export_native_module(module) -> None:
+    globals()["_Infernux"] = module
+    export_names = getattr(module, "__all__", None)
+    if export_names is None:
+        export_names = [name for name in vars(module) if not name.startswith("_")]
+    globals().update({name: getattr(module, name) for name in export_names})
 
 
 def _iter_dev_native_search_dirs():
@@ -104,11 +160,11 @@ def _collect_windows_native_load_hints():
         except OSError:
             hints.append(f"Missing system DLL: {dll_name}. {remedy}")
 
-    if not glob.glob(os.path.join(lib_dir, "_Infernux*.pyd")):
-        hints.append(f"Missing _Infernux*.pyd under {lib_dir}. Reinstall the Infernux wheel.")
+    if not glob.glob(os.path.join(native_dir, "_Infernux*.pyd")):
+        hints.append(f"Missing _Infernux*.pyd under {native_dir}. Reinstall the Infernux wheel.")
 
     for dll_name in _ENGINE_DLLS:
-        full = os.path.join(lib_dir, dll_name)
+        full = os.path.join(native_dir, dll_name)
         if not os.path.isfile(full):
             hints.append(f"Missing engine DLL: {dll_name}. Reinstall the Infernux wheel.")
         else:
@@ -138,7 +194,7 @@ def _collect_windows_native_load_hints():
 
 def _list_lib_dir_contents():
     try:
-        entries = sorted(os.listdir(lib_dir))
+        entries = sorted(os.listdir(native_dir))
         dlls = [e for e in entries if e.lower().endswith((".dll", ".pyd", ".so", ".dylib"))]
         return dlls
     except OSError:
@@ -148,7 +204,7 @@ def _list_lib_dir_contents():
 def _raise_native_import_error(exc):
     lines = [
         "Failed to load the Infernux native module.",
-        f"Library directory: {lib_dir}",
+        f"Native directory: {native_dir}",
         f"Original error: {exc}",
     ]
 
@@ -157,8 +213,8 @@ def _raise_native_import_error(exc):
         lines.append("Diagnostic results:")
         lines.extend(f"  - {hint}" for hint in hints)
     elif sys.platform == "darwin":
-        if not glob.glob(os.path.join(lib_dir, "_Infernux*.so")):
-            lines.append(f"Missing _Infernux*.so under {lib_dir}. Build the native module first.")
+        if not glob.glob(os.path.join(native_dir, "_Infernux*.so")):
+            lines.append(f"Missing _Infernux*.so under {native_dir}. Build the native module first.")
         lines.append(
             "Likely causes: missing Vulkan SDK (MoltenVK), or the native module was not built for this architecture."
         )
@@ -185,9 +241,9 @@ def _preload_bundled_crt_dlls() -> None:
     ``_Infernux.pyd`` (and the engine DLLs it depends on) may still fail
     to resolve ``vcruntime140.dll`` / ``msvcp140.dll`` at load time.
 
-    Explicitly loading them via ``ctypes.WinDLL`` before the ``from
-    ._Infernux import *`` guarantees they are resident in the process
-    and the dynamic linker can satisfy the dependency.
+    Explicitly loading them via ``ctypes.WinDLL`` before the native module
+    guarantees they are resident in the process and the dynamic linker can
+    satisfy the dependency.
     """
     if sys.platform != "win32":
         return
@@ -206,7 +262,7 @@ def _preload_bundled_crt_dlls() -> None:
     )
 
     for name in _CRT_LOAD_ORDER:
-        full = os.path.join(lib_dir, name)
+        full = os.path.join(native_dir, name)
         if os.path.isfile(full):
             try:
                 ctypes.WinDLL(full)
@@ -215,49 +271,51 @@ def _preload_bundled_crt_dlls() -> None:
                 pass  # Best-effort; the import below will give a clear error.
 
 
-_register_native_module_override()
+_native_override_dir = _register_native_module_override()
 _register_native_search_dir(lib_dir)
 _preload_bundled_crt_dlls()
 
 try:
-    from ._Infernux import *
-except (ModuleNotFoundError, ImportError):
+    _native_module = _load_native_module(_native_override_dir)
+except (ModuleNotFoundError, ImportError, OSError) as _initial_native_error:
+    if _native_override_dir is not None:
+        _raise_native_import_error(_initial_native_error)
     for candidate in _iter_dev_native_search_dirs():
         _register_native_search_dir(candidate)
     try:
-        from ._Infernux import *
-    except (ModuleNotFoundError, ImportError) as exc:
+        _native_module = _load_native_module(None)
+    except (ModuleNotFoundError, ImportError, OSError) as exc:
         _raise_native_import_error(exc)
 
-from ._Infernux import (
-    _SceneDocumentReadTicket,
-    _preflight_scene_resource_dependencies,
-    _schedule_scene_document_read,
+_export_native_module(_native_module)
+_SceneDocumentReadTicket = _native_module._SceneDocumentReadTicket
+_preflight_scene_resource_dependencies = (
+    _native_module._preflight_scene_resource_dependencies
 )
+_schedule_scene_document_read = _native_module._schedule_scene_document_read
 
 # `import *` skips underscore-prefixed names.  Re-export internal C++
 # helpers so that `from Infernux import lib; lib._cds_register_class`
 # works for the Python-side CDS bridge and batch API.
-try:
-    from ._Infernux import (
-        _cds_register_class,
-        _cds_register_field,
-        _cds_alloc,
-        _cds_free,
-        _cds_is_alive,
-        _cds_reserve,
-        _cds_capacity,
-        _cds_alive_count,
-        _cds_get,
-        _cds_set,
-        _cds_batch_gather,
-        _cds_batch_scatter,
-        _transform_batch_read,
-        _transform_batch_write,
-        _create_scene_transform_batch_handle,
-    )
-except ImportError:
-    pass  # graceful fallback if built without batch support
+for _internal_name in (
+    "_cds_register_class",
+    "_cds_register_field",
+    "_cds_alloc",
+    "_cds_free",
+    "_cds_is_alive",
+    "_cds_reserve",
+    "_cds_capacity",
+    "_cds_alive_count",
+    "_cds_get",
+    "_cds_set",
+    "_cds_batch_gather",
+    "_cds_batch_scatter",
+    "_transform_batch_read",
+    "_transform_batch_write",
+    "_create_scene_transform_batch_handle",
+):
+    if hasattr(_native_module, _internal_name):
+        globals()[_internal_name] = getattr(_native_module, _internal_name)
 
 
 _INVALID_NATIVE_LIFETIME_MARKERS = (

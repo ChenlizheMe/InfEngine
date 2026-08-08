@@ -285,15 +285,23 @@ class BootstrapSelectionMixin:
         import os
 
         from Infernux.engine.interaction import SelectionDomain, ViewCommandService
-        from Infernux.engine.path_utils import lexical_path, same_path
+        from Infernux.engine.path_utils import is_path_within, lexical_path, same_path
+        from Infernux.engine.project_context import get_project_root
 
         if self.project_panel is None:
             return False
-        if target.domain is SelectionDomain.ASSET_SUBRESOURCE:
-            backing_path = lexical_path(target.document_id)
-        else:
-            backing_path = lexical_path(target.target_id)
+        raw_path = (
+            target.document_id
+            if target.domain is SelectionDomain.ASSET_SUBRESOURCE
+            else target.target_id
+        )
+        project_root = get_project_root()
+        if project_root and not os.path.isabs(str(raw_path or "")):
+            raw_path = os.path.join(project_root, str(raw_path))
+        backing_path = lexical_path(raw_path)
         if not backing_path or not os.path.exists(backing_path):
+            return False
+        if project_root and not is_path_within(backing_path, project_root):
             return False
         parent = lexical_path(
             backing_path if os.path.isdir(backing_path) else os.path.dirname(backing_path)

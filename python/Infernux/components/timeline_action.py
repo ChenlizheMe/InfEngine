@@ -66,6 +66,11 @@ class TimelineAction(InxComponent):
         rt = self._runtime
         if rt is None:
             return
+        # A stopped timeline is already holding its last pose. Avoid resolving
+        # the native transform and crossing the binding boundary until playback
+        # is explicitly resumed.
+        if not getattr(rt, "needs_update", rt.is_playing):
+            return
         rt.playback_speed = self.playback_speed
         rt.update(delta_time, self._transform())
 

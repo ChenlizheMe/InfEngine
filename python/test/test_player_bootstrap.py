@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import os
 
 
 def _stub_engine_status(monkeypatch):
@@ -41,73 +42,70 @@ def test_player_queues_initial_scene_activation_until_main_loop(monkeypatch):
     assert not runner.is_busy
 
 
-def test_player_starts_fresh_scene_without_second_document_transaction(monkeypatch):
-    import Infernux.lib as native_lib
+def test_player_bootstrap_forces_player_mode_before_engine_creation(monkeypatch):
+    from Infernux.engine import engine as engine_module
     from Infernux.engine.player_bootstrap import PlayerBootstrap
-    from Infernux.engine.play_mode import PlayModeState
-    from Infernux.renderstack.render_stack import RenderStack
+
+    monkeypatch.delenv("_INFERNUX_PLAYER_MODE", raising=False)
+    monkeypatch.setattr(engine_module, "_PLAYER_MODE", None)
+
+    PlayerBootstrap._force_player_mode()
+
+    assert os.environ["_INFERNUX_PLAYER_MODE"] == "1"
+    assert engine_module._PLAYER_MODE == "1"
+
+
+def test_player_starts_fresh_scene_without_second_document_transaction(monkeypatch):
+    from Infernux.engine.player_bootstrap import PlayerBootstrap
 
     calls = []
 
-    class Scene:
-        def serialize_document(self):
-            calls.append("snapshot")
-            return {"scene": "fresh"}
-
-        def set_playing(self, playing):
-            calls.append(("scene_playing", playing))
-
-    scene = Scene()
-
-    class NativeSceneManager:
-        def get_active_scene(self):
-            return scene
-
-        def play(self):
-            calls.append("native_play")
-
-    native_scene_manager = NativeSceneManager()
-
-    class SceneManagerBinding:
-        @staticmethod
-        def instance():
-            return native_scene_manager
-
-    class PlayModeManager:
-        def __init__(self):
-            self._state = PlayModeState.EDIT
-            self._scene_backup = None
-            self._last_frame_time = 0.0
-
-        def _notify_state_change(self, old_state, new_state):
-            calls.append(("notify", old_state, new_state))
-
-    play_mode = PlayModeManager()
+    class PlayerRuntimeSession:
+        def activate(self):
+            calls.append("activate")
+            return True
 
     class Engine:
-        def get_play_mode_manager(self):
-            return play_mode
-
-    monkeypatch.setattr(native_lib, "SceneManager", SceneManagerBinding)
-    monkeypatch.setattr("Infernux.timing.Time._reset", lambda: calls.append("time_reset"))
-    monkeypatch.setattr(
-        "Infernux.components.builtin.sprite_renderer.SpriteRenderer.init_all_in_scene",
-        lambda current: calls.append(("sprite_init", current)),
-    )
-    monkeypatch.setattr(RenderStack, "_active_instance", object())
+        def get_player_runtime(self):
+            return PlayerRuntimeSession()
 
     bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
     bootstrap.engine = Engine()
+    bootstrap.runtime_session = None
+
+    bootstrap._create_managers()
+    assert bootstrap.runtime_session is not None
 
     assert bootstrap._activate_initial_scene_for_play() is True
-    assert play_mode._scene_backup == {"scene": "fresh"}
-    assert play_mode._state is PlayModeState.PLAYING
-    assert RenderStack._active_instance is None
-    assert calls == [
-        "snapshot",
-        "time_reset",
-        ("notify", PlayModeState.EDIT, PlayModeState.PLAYING),
-        ("scene_playing", True),
-        ("sprite_init", scene),
-        "native_play",
-    ]
+    assert calls == ["activate"]
+
+
+def test_player_runtime_session_does_not_construct_editor_managers():
+    from Infernux.engine.player_bootstrap import PlayerBootstrap
+
+    class RuntimeSession:
+        pass
+
+    class Engine:
+        def get_player_runtime(self):
+            return RuntimeSession()
+
+    bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
+    bootstrap.engine = Engine()
+    bootstrap.runtime_session = None
+    bootstrap._create_managers()
+
+    assert bootstrap.runtime_session is not None
+    assert getattr(bootstrap, "scene_file_manager", None) is None
+
+
+def test_player_bootstrap_uses_boot_validated_archive_summary(monkeypatch):
+    from Infernux.engine.player_bootstrap import PlayerBootstrap
+
+    digest = "a" * 64
+    monkeypatch.setenv("_INFERNUX_PLAYER_CONTENT_ARCHIVE_SHA256", digest)
+    monkeypatch.setenv("_INFERNUX_PLAYER_CONTENT_ARCHIVE_BYTES", "4096")
+
+    assert PlayerBootstrap._validated_archive_summary(
+        "Game_Data/Content.inxpkg"
+    ) == (digest, 4096)

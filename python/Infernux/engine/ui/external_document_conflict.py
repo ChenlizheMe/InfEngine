@@ -128,11 +128,11 @@ class ExternalDocumentConflictCoordinator:
         ):
             self._show_popup = True
 
-    def render(self, ctx) -> None:
+    def render(self, ctx) -> bool:
         conflict = self._service.active
         document = self._document()
         if conflict is None or document is None:
-            return
+            return False
         popup_id = (
             f"{t('editor.external_conflict.title')}"
             "###editor_external_document_conflict"
@@ -147,7 +147,12 @@ class ExternalDocumentConflictCoordinator:
             request_open=request_open,
             height=250.0,
         ):
-            return
+            # ImGui may retire the popup because focus/docking/play-mode
+            # changed underneath us. Keep the domain conflict active, but ask
+            # for a fresh popup next frame and release the invisible modal's
+            # shortcut barrier through ModalService's presentation heartbeat.
+            self._show_popup = True
+            return False
 
         ctx.text_wrapped(
             t("editor.external_conflict.message").format(document=document.title)
@@ -179,6 +184,7 @@ class ExternalDocumentConflictCoordinator:
             semantic_prefix="editor.external_conflict",
         )
         end_editor_modal(ctx)
+        return True
 
     def choose_reload(self) -> bool:
         conflict = self._service.active

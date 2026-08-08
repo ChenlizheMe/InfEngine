@@ -4,7 +4,7 @@ PlayerBootstrap — minimal startup sequence for standalone game playback.
 Replaces :class:`EditorBootstrap` with a stripped-down path that:
   1. Creates the Engine (no editor panels)
   2. Loads tag/layer settings
-  3. Sets up SceneFileManager + PlayModeManager (scene loading needs them)
+  3. Creates the dedicated PlayerRuntimeSession
   4. Enables the game camera
   5. Registers the fullscreen PlayerGUI (with optional splash sequence)
   6. Loads the first scene from BuildSettings.json (or a Supervisor-approved Debug validation scene)
@@ -17,16 +17,26 @@ No undo, no selection, no hierarchy, no inspector, no docking layout.
 from __future__ import annotations
 
 import logging
+import hashlib
 import json
 import os
 from typing import Dict, List, Optional
 
 import Infernux.resources as _resources
 from Infernux.engine.engine import Engine, LogLevel
-from Infernux.engine.scene_manager import SceneFileManager
-from Infernux.engine.play_mode import PlayModeManager
 from Infernux.engine.player_gui import PlayerGUI
-from Infernux.engine.path_utils import is_path_within, resolved_path, safe_path as _safe_path
+from Infernux.engine.path_utils import (
+    is_path_within,
+    relative_path,
+    resolved_path,
+    safe_path as _safe_path,
+)
+from Infernux.engine.runtime_artifact_catalog import (
+    CATALOG_SCHEMA,
+    CATALOG_VERSION,
+    package_kind,
+    runtime_artifact_id,
+)
 from Infernux.debug import Debug
 
 _log = logging.getLogger("Infernux.player")
@@ -70,13 +80,15 @@ class PlayerBootstrap:
         self.window_height = window_height
         self.splash_items = splash_items or []
         self.engine: Optional[Engine] = None
-        self.scene_file_manager: Optional[SceneFileManager] = None
+        self.runtime_session = None
         self._player_gui: Optional[PlayerGUI] = None
+        self._runtime_catalog: Optional[Dict] = None
 
     # ── Public entry point ─────────────────────────────────────────────
 
     def run(self):
         """Execute all bootstrap phases and start the main loop."""
+        self._force_player_mode()
         self._ensure_project_requirements()
         self._init_engine()
         self._create_managers()
@@ -84,6 +96,23 @@ class PlayerBootstrap:
         self._register_player_gui()
         self._load_initial_scene()
         self._enter_play_mode()
+
+    @staticmethod
+    def _force_player_mode() -> None:
+        """Establish the no-editor boundary before constructing ``Engine``.
+
+        Packaged boots set this variable before importing Infernux. A
+        development Player may enter through an already imported package, so
+        update the engine module's cached mode flag as well. This prevents
+        ``Engine.init_renderer`` from constructing the editor
+        ``ResourcesManager`` and its file watcher in either path.
+        """
+        os.environ["_INFERNUX_PLAYER_MODE"] = "1"
+        try:
+            from Infernux.engine import engine as engine_module
+            engine_module._PLAYER_MODE = "1"
+        except Exception as exc:
+            raise RuntimeError("Unable to establish Infernux Player mode") from exc
 
     def _ensure_project_requirements(self):
         self._validate_runtime_manifest()
@@ -97,17 +126,17 @@ class PlayerBootstrap:
             pass
 
     def _validate_runtime_manifest(self) -> None:
-        """Reject stale or legacy Player payloads before engine startup."""
-        candidates = [
-            os.path.join(self.project_path, "PlayerRuntimeManifest.json"),
-            os.path.join(
-                os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", ""),
-                "PlayerRuntimeManifest.json",
-            ),
-        ]
-        manifest_path = next((path for path in candidates if path and os.path.isfile(path)), "")
-        if not manifest_path:
-            return
+        """Require the current Player.inxmanifest before engine startup."""
+        data_root = os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", "").strip()
+        manifest_path = os.path.join(
+            data_root or self.project_path,
+            "Player.inxmanifest",
+        )
+        if not os.path.isfile(manifest_path):
+            raise RuntimeError(
+                "Player.inxmanifest is missing; legacy Player runtime manifests "
+                "are not supported"
+            )
         try:
             with open(manifest_path, "r", encoding="utf-8") as stream:
                 manifest = json.load(stream)
@@ -119,18 +148,147 @@ class PlayerBootstrap:
         audit = manifest.get("audit", {})
         if audit.get("passed") is not True:
             raise RuntimeError("Player runtime package audit did not pass")
-        if audit.get("legacy_zip_files"):
-            raise RuntimeError(
-                "Legacy ZIP Player containers are not supported: "
-                + ", ".join(audit["legacy_zip_files"][:4])
-            )
+        if audit.get("legacy_zip_files") or audit.get("legacy_inxpack_files"):
+            raise RuntimeError("Legacy Player containers are not supported")
+        if audit.get("player_host_gap") or audit.get("library_artifact_gap"):
+            raise RuntimeError("Player host/library artifact verification is incomplete")
         product = manifest.get("product", {})
         if product.get("single_entry_point") is not True:
             raise RuntimeError("Player package must have exactly one executable entry point")
+        required_root = data_root or os.path.dirname(manifest_path)
+        for artifact in ("Runtime.inxrt", "Content.inxpkg"):
+            if not os.path.isfile(os.path.join(required_root, artifact)):
+                raise RuntimeError(f"Player package artifact is missing: {artifact}")
+
+        catalog_path = os.path.join(required_root, "Library", "RuntimeAssetCatalog.json")
+        try:
+            with open(catalog_path, "r", encoding="utf-8") as stream:
+                catalog = json.load(stream)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Runtime asset catalog is unreadable: {catalog_path}") from exc
+        if catalog.get("$schema") != CATALOG_SCHEMA:
+            raise RuntimeError("Unsupported runtime asset catalog schema")
+        if catalog.get("catalog_version") != CATALOG_VERSION:
+            raise RuntimeError("Unsupported runtime asset catalog version")
+
+        expected_catalog_hash = str(
+            audit.get("runtime_asset_catalog_sha256", "")
+        ).casefold()
+        actual_catalog_hash = self._sha256_file(catalog_path)
+        if expected_catalog_hash and expected_catalog_hash != actual_catalog_hash:
+            raise RuntimeError("Runtime asset catalog checksum does not match Player manifest")
+
+        packages = catalog.get("packages")
+        artifacts = catalog.get("artifacts")
+        if not isinstance(packages, list) or not isinstance(artifacts, list):
+            raise RuntimeError("Runtime asset catalog is missing packages or artifacts")
+        for package in packages:
+            if not isinstance(package, dict):
+                raise RuntimeError("Runtime asset catalog contains an invalid package entry")
+            package_path = self._catalog_path(required_root, package.get("path"))
+            if not package_path or not os.path.isfile(package_path):
+                raise RuntimeError("Runtime asset catalog references a missing package")
+            validated = self._validated_archive_summary(str(package.get("path", "")))
+            if validated is None:
+                raise RuntimeError(
+                    "Runtime asset catalog package has no boot-validated native manifest"
+                )
+            validated_hash, validated_bytes = validated
+            if int(package.get("archive_bytes", -1)) != validated_bytes:
+                raise RuntimeError("Runtime asset catalog package size disagrees with native manifest")
+            if str(package.get("archive_sha256", "")).casefold() != validated_hash:
+                raise RuntimeError("Runtime asset catalog package checksum disagrees with native manifest")
+            if validated_bytes != os.path.getsize(package_path):
+                raise RuntimeError("Runtime asset catalog package size mismatch")
+
+        artifact_ids = set()
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                raise RuntimeError("Runtime asset catalog contains an invalid artifact entry")
+            artifact_id = artifact.get("runtime_artifact_id")
+            package = artifact.get("package")
+            runtime_path = artifact.get("runtime_path")
+            if not all(isinstance(value, str) and value for value in (artifact_id, package, runtime_path)):
+                raise RuntimeError("Runtime asset catalog artifact identity is incomplete")
+            if artifact_id != runtime_artifact_id(package, runtime_path):
+                raise RuntimeError("Runtime asset catalog contains an unstable artifact ID")
+            if artifact_id in artifact_ids:
+                raise RuntimeError("Runtime asset catalog contains duplicate artifact IDs")
+            artifact_ids.add(artifact_id)
+            digest = str(artifact.get("content_sha256", ""))
+            if len(digest) != 64 or any(char not in "0123456789abcdefABCDEF" for char in digest):
+                raise RuntimeError("Runtime asset catalog contains an invalid artifact checksum")
+        for artifact in artifacts:
+            for dependency in artifact.get("dependencies", []):
+                if dependency not in artifact_ids:
+                    raise RuntimeError("Runtime asset catalog contains an unknown dependency")
+        self._runtime_catalog = catalog
+
+    @staticmethod
+    def _sha256_file(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _validated_archive_summary(package_path: str) -> Optional[tuple[str, int]]:
+        """Read the summary produced by the boot-time native manifest pass."""
+
+        kind = package_kind(package_path).upper()
+        digest = os.environ.get(f"_INFERNUX_PLAYER_{kind}_ARCHIVE_SHA256", "").casefold()
+        raw_bytes = os.environ.get(f"_INFERNUX_PLAYER_{kind}_ARCHIVE_BYTES", "")
+        try:
+            archive_bytes = int(raw_bytes)
+        except (TypeError, ValueError):
+            return None
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            return None
+        if archive_bytes < 0:
+            return None
+        return digest, archive_bytes
+
+    @staticmethod
+    def _catalog_path(data_root: str, value: object) -> Optional[str]:
+        if not isinstance(value, str) or not value:
+            return None
+        normalized = value.replace("\\", "/")
+        root_name = os.path.basename(resolved_path(data_root)).replace("\\", "/")
+        prefix = root_name + "/"
+        if not normalized.startswith(prefix):
+            return None
+        candidate = resolved_path(os.path.join(data_root, normalized[len(prefix):]))
+        return candidate if is_path_within(candidate, data_root, allow_root=False) else None
+
+    def _resolve_runtime_scene(self, scene_reference: str) -> Optional[str]:
+        if self._runtime_catalog is None:
+            return None
+        normalized = scene_reference.replace("\\", "/").lstrip("./")
+        if os.path.isabs(scene_reference):
+            candidate = resolved_path(scene_reference)
+            if not is_path_within(candidate, self.project_path, allow_root=False):
+                return None
+            normalized = relative_path(candidate, self.project_path)
+        for artifact in self._runtime_catalog.get("artifacts", []):
+            if not isinstance(artifact, dict) or artifact.get("logical_type") != "scene":
+                continue
+            if package_kind(str(artifact.get("package", ""))) != "content":
+                continue
+            if artifact.get("runtime_path") == normalized:
+                candidate = resolved_path(os.path.join(self.project_path, normalized))
+                if is_path_within(candidate, self.project_path, allow_root=False) and os.path.isfile(candidate):
+                    return candidate
+        return None
 
     def _init_engine(self):
         self.engine = Engine(self.engine_log_level)
         self.engine._set_application_role("player")
+
+        if getattr(self.engine, "_resources_manager", None) is not None:
+            raise RuntimeError(
+                "Player startup created the editor ResourcesManager/file watcher"
+            )
 
         # For windowed mode, use the requested size;
         # for fullscreen borderless, start at a default size — the
@@ -158,14 +316,9 @@ class PlayerBootstrap:
 
 
     def _create_managers(self):
-        self.scene_file_manager = SceneFileManager()
-        self.scene_file_manager.set_asset_database(self.engine.get_asset_database())
-        self.scene_file_manager.set_engine(self.engine.get_native_engine())
-
-        # PlayModeManager is already created inside Engine.init_renderer()
-        pm = self.engine.get_play_mode_manager()
-        if pm:
-            pm.set_asset_database(self.engine.get_asset_database())
+        self.runtime_session = self.engine.get_player_runtime()
+        if self.runtime_session is None:
+            raise RuntimeError("Player startup did not create a PlayerRuntimeSession")
 
 
     def _setup_game_camera(self):
@@ -214,27 +367,18 @@ class PlayerBootstrap:
                 Debug.log_warning("Ignored invalid Supervisor Player start-scene override")
         # Resolve relative paths against project root (packaged builds
         # store scene paths relative to the game folder)
-        if not os.path.isabs(first_scene):
-            first_scene = os.path.join(self.project_path, first_scene)
+        catalog_scene = self._resolve_runtime_scene(first_scene)
+        if catalog_scene is None:
+            raise RuntimeError(
+                f"Build scene is not reachable through RuntimeAssetCatalog: {first_scene}"
+            )
+        first_scene = catalog_scene
 
         if not os.path.isfile(first_scene):
             raise RuntimeError(f"First scene file not found: {first_scene}")
 
-        if self.scene_file_manager:
-            if not self.scene_file_manager._do_open_scene(
-                first_scene,
-                record_navigation=False,
-            ):
-                raise RuntimeError(f"Failed to load initial scene: {first_scene}")
-            from Infernux.lib import SceneManager as _NativeSM
-
-            scene = _NativeSM.instance().get_active_scene()
-            if scene is None:
-                raise RuntimeError("Initial scene load completed without an active scene")
-            Debug.log_internal(
-                f"Loaded initial scene: {os.path.basename(first_scene)} "
-                f"(objects={len(scene.get_all_objects())}, camera={scene.main_camera is not None})"
-            )
+        if self.runtime_session is None or not self.runtime_session.load_scene(first_scene):
+            raise RuntimeError(f"Failed to load initial scene: {first_scene}")
 
     def _enter_play_mode(self):
         """Activate the initial scene on the first safe main-loop frame."""
@@ -250,47 +394,7 @@ class PlayerBootstrap:
 
     def _activate_initial_scene_for_play(self):
         """Start the freshly loaded scene without rebuilding it a second time."""
-        from Infernux.lib import SceneManager as _NativeSM
-        from Infernux.renderstack.render_stack import RenderStack
-        from Infernux.timing import Time
-        from Infernux.engine.play_mode import PlayModeState
-
-        pm = self.engine.get_play_mode_manager()
-        if not pm:
-            Debug.log_error("No PlayModeManager available")
+        if self.runtime_session is None:
+            Debug.log_error("No PlayerRuntimeSession available")
             return
-
-        sm = _NativeSM.instance()
-        scene = sm.get_active_scene()
-        if not scene:
-            Debug.log_warning("No active scene — play mode skipped")
-            return
-
-        # Capture a typed document (player never restores it, but PM needs it).
-        snapshot = scene.serialize_document()
-        if not snapshot:
-            Debug.log_error("Scene serialization failed - play mode skipped")
-            return False
-        pm._scene_backup = snapshot
-
-        Time._reset()
-        old_state = pm._state
-        pm._state = PlayModeState.PLAYING
-        pm._last_frame_time = __import__("time").time()
-        pm._notify_state_change(old_state, PlayModeState.PLAYING)
-
-        RenderStack._active_instance = None
-        scene.set_playing(True)
-        try:
-            from Infernux.components.builtin.sprite_renderer import SpriteRenderer
-
-            SpriteRenderer.init_all_in_scene(scene)
-        except Exception as exc:
-            Debug.log_internal(f"Player SpriteRenderer init: {exc}")
-
-        # This is the same lifecycle boundary used after a runtime scene load.
-        # The initial load already published fresh Python components, so a
-        # second Scene transaction here only creates competing object graphs.
-        sm.play()
-        Debug.log_internal("Player: Play mode activated")
-        return True
+        return self.runtime_session.activate()

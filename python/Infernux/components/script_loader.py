@@ -10,7 +10,9 @@ import sys
 import importlib
 import importlib.util
 import inspect
-from typing import Type, List, Optional
+import tokenize
+from dataclasses import fields as dataclass_fields
+from typing import Iterable, Type, List, Optional
 
 from Infernux.engine.path_utils import path_key, resolved_path
 from Infernux.engine.project_context import (
@@ -25,6 +27,285 @@ from .component import InxComponent
 class ScriptLoadError(Exception):
     """Raised when a script cannot be loaded or doesn't contain valid components."""
     pass
+
+
+class ScriptReloadRejected(ScriptLoadError):
+    """Raised when a saved script is not a body-only compatible reload."""
+
+
+_BODY_PATCH_GENERATED_KEYS = frozenset({
+    "_serialized_fields_",
+    "_runtime_phase_dispatch",
+    "_runtime_phase_invokers",
+    "_intrinsic_script_guid_",
+    "_type_guid_",
+    "_asset_script_guid_",
+})
+
+_BODY_PATCH_CONTRACT_KEYS = frozenset({
+    "_require_components_",
+    "_incompatible_components_",
+    "_component_exclusive_groups_",
+    "_component_satisfied_types_",
+    "_disallow_multiple_",
+    "_component_user_addable_",
+    "_component_removable_",
+    "_component_intrinsic_",
+    "_component_menu_path_",
+    "_component_category_",
+    "_execute_in_edit_mode_",
+    "_uses_component_data_store",
+    "_uses_component_data_store_",
+})
+
+
+def _reload_value_signature(value):
+    """Make class-contract values comparable without invoking descriptors."""
+    if isinstance(value, type):
+        return ("type", value.__module__, value.__qualname__)
+    if isinstance(value, (list, tuple)):
+        return tuple(_reload_value_signature(item) for item in value)
+    if isinstance(value, set):
+        return tuple(sorted(_reload_value_signature(item) for item in value))
+    if isinstance(value, dict):
+        return tuple(sorted(
+            (_reload_value_signature(key), _reload_value_signature(item))
+            for key, item in value.items()
+        ))
+    if callable(value):
+        return (
+            "callable",
+            getattr(value, "__module__", ""),
+            getattr(value, "__qualname__", repr(value)),
+        )
+    try:
+        hash(value)
+    except TypeError:
+        return repr(value)
+    return value
+
+
+def _serialized_schema_signature(component_type):
+    from .serialized_field import get_serialized_fields
+
+    signature = []
+    for name, metadata in sorted(get_serialized_fields(component_type).items()):
+        values = []
+        for field in dataclass_fields(metadata):
+            # UI callbacks are implementation details and are not field schema.
+            if field.name in {"getter", "setter", "visible_when"}:
+                continue
+            values.append((field.name, _reload_value_signature(getattr(metadata, field.name))))
+        signature.append((name, tuple(values)))
+    return tuple(signature)
+
+
+def _plan_component_class_body_patch(
+    target_type: type,
+    candidate_type: type,
+) -> tuple[tuple[str, bool, object], ...]:
+    """Validate one candidate and return its mutation-free body patch plan."""
+    if target_type.__name__ != candidate_type.__name__ or (
+        target_type.__qualname__ != candidate_type.__qualname__
+    ):
+        raise ScriptReloadRejected(
+            "component type identity changed; class rename is not supported during Play Mode"
+        )
+    if target_type.__bases__ != candidate_type.__bases__:
+        raise ScriptReloadRejected(
+            f"component '{target_type.__name__}' base classes changed; reload rejected"
+        )
+    if _serialized_schema_signature(target_type) != _serialized_schema_signature(candidate_type):
+        raise ScriptReloadRejected(
+            f"component '{target_type.__name__}' serialized field schema changed; reload rejected"
+        )
+
+    for key in _BODY_PATCH_CONTRACT_KEYS:
+        if _reload_value_signature(getattr(target_type, key, None)) != _reload_value_signature(
+            getattr(candidate_type, key, None)
+        ):
+            raise ScriptReloadRejected(
+                f"component '{target_type.__name__}' contract '{key}' changed; reload rejected"
+            )
+
+    field_names = {name for name, _ in _serialized_schema_signature(target_type)}
+    target_body = target_type.__dict__
+    candidate_body = candidate_type.__dict__
+    operations = []
+    keys = set(target_body) | set(candidate_body)
+    for name in sorted(keys):
+        if (
+            name in _BODY_PATCH_GENERATED_KEYS
+            or name in field_names
+            or name in _BODY_PATCH_CONTRACT_KEYS
+            or name.startswith("__")
+        ):
+            continue
+        target_has = name in target_body
+        candidate_has = name in candidate_body
+        if candidate_has:
+            value = candidate_body[name]
+            if not target_has or target_body[name] is not value:
+                operations.append((name, True, value))
+        elif target_has:
+            operations.append((name, False, None))
+    return tuple(operations)
+
+
+def _apply_component_body_patch_plans(
+    plans: tuple[tuple[type, tuple[tuple[str, bool, object], ...]], ...],
+    instances_by_type: Optional[dict[type, tuple[object, ...]]] = None,
+) -> dict[type, tuple[str, ...]]:
+    """Publish all validated class patches, rolling back on mutation failure."""
+    snapshots = {}
+    for target_type, operations in plans:
+        target_body = target_type.__dict__
+        snapshots[target_type] = {
+            name: (name in target_body, target_body.get(name))
+            for name, _candidate_has, _value in operations
+        }
+
+    try:
+        for target_type, operations in plans:
+            for name, candidate_has, value in operations:
+                if candidate_has:
+                    setattr(target_type, name, value)
+                    set_name = getattr(value, "__set_name__", None)
+                    if callable(set_name):
+                        set_name(target_type, name)
+                else:
+                    delattr(target_type, name)
+        from ._component_lifecycle import refresh_runtime_dispatch_cache
+        result = {}
+        for target_type, operations in plans:
+            refresh_runtime_dispatch_cache(
+                target_type,
+                (instances_by_type or {}).get(target_type, ()),
+            )
+            result[target_type] = tuple(name for name, _candidate_has, _value in operations)
+        return result
+    except Exception:
+        for target_type, snapshot in snapshots.items():
+            for name, (previous_has, previous_value) in snapshot.items():
+                if previous_has:
+                    setattr(target_type, name, previous_value)
+                elif name in target_type.__dict__:
+                    delattr(target_type, name)
+        from ._component_lifecycle import refresh_runtime_dispatch_cache
+        for target_type, _operations in plans:
+            refresh_runtime_dispatch_cache(
+                target_type,
+                (instances_by_type or {}).get(target_type, ()),
+            )
+        raise
+
+
+def patch_component_class_body(target_type: type, candidate_type: type) -> tuple[str, ...]:
+    """Apply one validated body patch while retaining class/instance identity."""
+    plan = _plan_component_class_body_patch(target_type, candidate_type)
+    return _apply_component_body_patch_plans(((target_type, plan),))[target_type]
+
+
+def reload_component_bodies(
+    file_path: str,
+    target_types: Iterable[type],
+    *,
+    script_guid: str = "",
+    instances_by_type: Optional[dict[type, tuple[object, ...]]] = None,
+) -> dict[type, tuple[str, ...]]:
+    """Import, validate, and atomically publish all live types from one script."""
+    file_path = resolve_script_path(file_path)
+    if not file_path or not os.path.exists(file_path):
+        raise ScriptLoadError(f"Script file not found: {file_path}")
+
+    targets = tuple(dict.fromkeys(target_types))
+    if not targets:
+        return {}
+
+    module_name = get_script_module_name(file_path) or _unique_module_name_for_path(file_path)
+    previous_module = sys.modules.get(module_name)
+    from .registry import (
+        publish_component_script_types,
+        restore_component_script_registry,
+        snapshot_component_script_registry,
+    )
+    registry_snapshot = snapshot_component_script_registry(file_path)
+    published = False
+    try:
+        try:
+            candidates = load_all_components_from_file(
+                file_path,
+                preserve_classes=targets,
+                register=False,
+                source_only=True,
+            )
+        finally:
+            # Candidate class creation registers from __init_subclass__ before
+            # the loader can opt out. Always erase that temporary publication.
+            restore_component_script_registry(file_path, registry_snapshot)
+
+        diagnostic = get_script_error_by_path(file_path)
+        if diagnostic:
+            raise ScriptLoadError(
+                f"component candidate import failed; keeping last-known-good: {diagnostic}"
+            )
+
+        candidate_by_identity = {
+            (candidate.__name__, candidate.__qualname__): candidate
+            for candidate in candidates
+        }
+        plans = []
+        for target_type in targets:
+            if script_guid and getattr(target_type, "_asset_script_guid_", "") != script_guid:
+                raise ScriptReloadRejected(
+                    f"component type '{target_type.__qualname__}' script identity changed; reload rejected"
+                )
+            identity = (target_type.__name__, target_type.__qualname__)
+            candidate_type = candidate_by_identity.get(identity)
+            if candidate_type is None:
+                raise ScriptReloadRejected(
+                    f"component type '{target_type.__qualname__}' was removed or renamed; reload rejected"
+                )
+            plans.append((
+                target_type,
+                _plan_component_class_body_patch(target_type, candidate_type),
+            ))
+
+        candidate_module = sys.modules.get(module_name)
+        if candidate_module is not None:
+            for target_type in targets:
+                setattr(candidate_module, target_type.__name__, target_type)
+
+        # Registry publication points at the existing classes and is safe to
+        # restore independently if class mutation fails below.
+        publish_component_script_types(file_path, targets)
+        result = _apply_component_body_patch_plans(
+            tuple(plans),
+            instances_by_type=instances_by_type,
+        )
+        published = True
+        return result
+    finally:
+        if not published:
+            if previous_module is None:
+                sys.modules.pop(module_name, None)
+            else:
+                sys.modules[module_name] = previous_module
+            restore_component_script_registry(file_path, registry_snapshot)
+
+
+def reload_component_body(
+    file_path: str,
+    target_type: type,
+    *,
+    script_guid: str = "",
+) -> tuple[str, ...]:
+    """Compatibility wrapper for a one-target body-only reload."""
+    return reload_component_bodies(
+        file_path,
+        (target_type,),
+        script_guid=script_guid,
+    )[target_type]
 
 
 # ---------------------------------------------------------------------------
@@ -69,13 +350,18 @@ def _unique_module_name_for_path(file_path: str) -> str:
     return f"infernux_script_{module_name}_{path_hash}"
 
 
-def _clear_loaded_script_modules(module_names: List[str]) -> None:
+def _clear_loaded_script_modules(
+    module_names: List[str],
+    *,
+    preserve_classes: Iterable[type] = (),
+) -> None:
     """Drop cached script modules and clear serialized-field metadata."""
     if not module_names:
         return
 
     from .serialized_field import clear_serialized_fields_cache
 
+    preserved_ids = {id(component_type) for component_type in preserve_classes}
     seen_module_ids: set[int] = set()
     for module_name in module_names:
         old_module = sys.modules.get(module_name)
@@ -85,7 +371,7 @@ def _clear_loaded_script_modules(module_names: List[str]) -> None:
 
         old_module_name = getattr(old_module, "__name__", "")
         for _, obj in inspect.getmembers(old_module, inspect.isclass):
-            if getattr(obj, '__module__', None) != old_module_name:
+            if getattr(obj, '__module__', None) != old_module_name or id(obj) in preserved_ids:
                 continue
             if '_serialized_fields_' in obj.__dict__:
                 clear_serialized_fields_cache(obj)
@@ -110,7 +396,12 @@ def _record_script_error(file_path: str, exc: Exception) -> None:
         print(tb_str, file=sys.stderr)
 
 
-def _load_script_module(file_path: str, module_name: str):
+def _load_script_module(
+    file_path: str,
+    module_name: str,
+    *,
+    source_only: bool = False,
+):
     """Execute the exact script artifact resolved from its asset GUID.
 
     ``import_module`` performs a second path search. That is unnecessary for
@@ -125,7 +416,20 @@ def _load_script_module(file_path: str, module_name: str):
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     try:
-        spec.loader.exec_module(module)
+        if source_only:
+            if not file_path.endswith(".py"):
+                raise ScriptLoadError(
+                    f"Source-only script reload requires a .py file: {file_path}"
+                )
+            # Play-mode candidates must reflect the bytes just saved to disk.
+            # SourceFileLoader.exec_module() may reuse a timestamp-based .pyc
+            # when a same-second edit also preserves the file size.
+            with tokenize.open(file_path) as source_file:
+                source = source_file.read()
+            code = compile(source, file_path, "exec", dont_inherit=True)
+            exec(code, module.__dict__)
+        else:
+            spec.loader.exec_module(module)
     except Exception:
         if sys.modules.get(module_name) is module:
             sys.modules.pop(module_name, None)
@@ -215,7 +519,13 @@ def load_component_from_file(file_path: str) -> Type[InxComponent]:
     return components[0]
 
 
-def load_all_components_from_file(file_path: str) -> List[Type[InxComponent]]:
+def load_all_components_from_file(
+    file_path: str,
+    *,
+    preserve_classes: Iterable[type] = (),
+    register: bool = True,
+    source_only: bool = False,
+) -> List[Type[InxComponent]]:
     """
     Load all InxComponent subclasses from a Python file.
     
@@ -239,14 +549,18 @@ def load_all_components_from_file(file_path: str) -> List[Type[InxComponent]]:
         raise ScriptLoadError(f"Not a Python file: {file_path}")
     
     module_name = get_script_module_name(file_path) or _unique_module_name_for_path(file_path)
-    _clear_loaded_script_modules([module_name])
+    _clear_loaded_script_modules([module_name], preserve_classes=preserve_classes)
 
     importlib.invalidate_caches()
 
     # Execute the module — catch errors so a broken script never crashes the editor
     try:
         with temporary_script_import_paths(file_path):
-            module = _load_script_module(file_path, module_name)
+            module = _load_script_module(
+                file_path,
+                module_name,
+                source_only=source_only,
+            )
     except Exception as exc:
         # Track this script as having a load error
         _record_script_error(file_path, exc)
@@ -269,9 +583,10 @@ def load_all_components_from_file(file_path: str) -> List[Type[InxComponent]]:
             if obj.__module__ == module_name:
                 components.append(obj)
 
-    from .registry import register_component_type
-    for component_type in components:
-        register_component_type(component_type, script_path=file_path)
+    if register:
+        from .registry import register_component_type
+        for component_type in components:
+            register_component_type(component_type, script_path=file_path)
 
     return components
 

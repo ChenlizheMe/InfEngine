@@ -205,7 +205,27 @@ INTENT_RECOMMENDATIONS: dict[str, dict[str, Any]] = {
     "audio_authoring": {
         "match": ["audio", "sound", "music", "sfx", "listener", "audiosource", "audioclip", "音频", "声音"],
         "summary": "Understand AudioSource multi-track playback, AudioClip loading, and AudioListener placement.",
-        "tools": ["audio_guide", "api_get", "component_describe_type", "gameobject_add_component"],
+        "tools": [
+            "audio_guide",
+            "api_get",
+            "component_describe_type",
+            "gameobject_add_component",
+            "audio_source_inspect",
+            "audio_source_configure_track",
+            "audio_source_play",
+            "audio_source_pause",
+            "audio_source_stop",
+        ],
+    },
+    "animation_authoring": {
+        "match": ["animation", "timeline", "timelinefsm", "animtimeline", "动画", "时间轴"],
+        "summary": "Create and edit public transform timelines and timeline-mode state machines.",
+        "tools": [
+            "animation_timeline_create",
+            "animation_timeline_add_keyframe",
+            "timeline_fsm_create",
+            "timeline_fsm_add_state",
+        ],
     },
 }
 

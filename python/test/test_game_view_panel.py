@@ -281,6 +281,131 @@ def test_hidden_game_view_disables_rendering_without_runtime_acceptance(monkeypa
     assert panel._game_camera_was_enabled is False
 
 
+def test_game_view_retains_canvas_snapshot_until_scene_structure_changes(monkeypatch):
+    import Infernux.engine.ui.game_view_panel as module
+
+    class _Scene:
+        structure_version = 7
+
+    scene = _Scene()
+    collect_calls = []
+    clear_calls = []
+    canvases = [SimpleNamespace()]
+    monkeypatch.setattr(
+        module,
+        "_SM",
+        SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: scene)),
+    )
+    monkeypatch.setattr(
+        module,
+        "collect_sorted_canvases",
+        lambda current, **kwargs: collect_calls.append((current, kwargs)) or canvases,
+    )
+    monkeypatch.setattr(module, "clear_rect_cache", lambda token: clear_calls.append(token))
+
+    panel = GameViewPanel(engine=_Engine())
+    first_scene, first_canvases = panel._get_scene_and_canvases()
+    second_scene, second_canvases = panel._get_scene_and_canvases()
+
+    assert first_scene is second_scene is scene
+    assert first_canvases == second_canvases == tuple(canvases)
+    assert len(collect_calls) == 1
+    assert clear_calls == [(id(scene), 7)]
+
+    scene.structure_version = 8
+    _, refreshed_canvases = panel._get_scene_and_canvases()
+
+    assert refreshed_canvases == tuple(canvases)
+    assert len(collect_calls) == 2
+    assert clear_calls[-1] == (id(scene), 8)
+
+
+def test_game_view_invalidates_canvas_snapshot_when_scene_is_cleared(monkeypatch):
+    import Infernux.engine.ui.game_view_panel as module
+
+    class _Scene:
+        structure_version = 1
+
+    scene = _Scene()
+    active_scene = [scene]
+    monkeypatch.setattr(
+        module,
+        "_SM",
+        SimpleNamespace(
+            instance=lambda: SimpleNamespace(get_active_scene=lambda: active_scene[0])
+        ),
+    )
+    monkeypatch.setattr(module, "collect_sorted_canvases", lambda *_args, **_kwargs: [object()])
+    monkeypatch.setattr(module, "clear_rect_cache", lambda *_args: None)
+
+    panel = GameViewPanel(engine=_Engine())
+    panel._get_scene_and_canvases()
+    active_scene[0] = None
+
+    assert panel._get_scene_and_canvases() == (None, ())
+    assert panel._cached_ui_scene is None
+    assert panel._cached_ui_canvases == ()
+
+
+def test_game_view_retries_empty_canvas_snapshot_for_late_registration(monkeypatch):
+    import Infernux.engine.ui.game_view_panel as module
+
+    class _Scene:
+        structure_version = 1
+
+    scene = _Scene()
+    late_canvas = SimpleNamespace(sort_order=4)
+    discovery_results = [[], [late_canvas]]
+    collect_calls = []
+    monkeypatch.setattr(
+        module,
+        "_SM",
+        SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: scene)),
+    )
+
+    def _collect(_scene, **_kwargs):
+        collect_calls.append(_scene)
+        return discovery_results.pop(0) if discovery_results else [late_canvas]
+
+    monkeypatch.setattr(module, "collect_sorted_canvases", _collect)
+    monkeypatch.setattr(module, "clear_rect_cache", lambda *_args: None)
+
+    panel = GameViewPanel(engine=_Engine())
+    assert panel._get_scene_and_canvases() == (scene, ())
+    assert panel._get_scene_and_canvases() == (scene, (late_canvas,))
+    assert len(collect_calls) == 2
+
+
+def test_game_view_reorders_retained_canvases_when_sort_order_changes(monkeypatch):
+    import Infernux.engine.ui.game_view_panel as module
+
+    class _Scene:
+        structure_version = 1
+
+    scene = _Scene()
+    first = SimpleNamespace(sort_order=1)
+    second = SimpleNamespace(sort_order=2)
+    monkeypatch.setattr(
+        module,
+        "_SM",
+        SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: scene)),
+    )
+    monkeypatch.setattr(
+        module,
+        "collect_sorted_canvases",
+        lambda *_args, **_kwargs: [first, second],
+    )
+    monkeypatch.setattr(module, "clear_rect_cache", lambda *_args: None)
+
+    panel = GameViewPanel(engine=_Engine())
+    assert panel._get_scene_and_canvases()[1] == (first, second)
+
+    first.sort_order = 3
+    second.sort_order = 0
+
+    assert panel._get_scene_and_canvases()[1] == (second, first)
+
+
 def test_game_view_resolution_and_fit_are_non_dirty_undoable_view_actions(monkeypatch):
     from Infernux.engine.interaction import ViewCommandService
     from Infernux.engine.undo import UndoManager

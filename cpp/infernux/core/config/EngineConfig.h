@@ -144,8 +144,8 @@ struct EngineConfig
     /// Default gravity vector.
     glm::vec3 physicsGravity{0.0f, -9.81f, 0.0f};
 
-    /// Maximum worker threads for the physics job system (0 = auto).
-    int physicsMaxWorkerThreads = 0;
+    /// Maximum concurrent physics jobs in the shared JobSystem (0 = auto).
+    uint32_t physicsMaxConcurrency = 0;
 
     // ========================================================================
     // Physics — Default Collider Properties

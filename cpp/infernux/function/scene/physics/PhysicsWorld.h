@@ -27,7 +27,6 @@ namespace JPH
 {
 class PhysicsSystem;
 class TempAllocatorImpl;
-class JobSystemThreadPool;
 class Body;
 class BodyID;
 class Shape;
@@ -39,6 +38,7 @@ namespace infernux
 class GameObject;
 class Collider;
 class Rigidbody;
+class InfernuxJoltJobSystemAdapter;
 
 struct PhysicsBodyPoseUpdate
 {
@@ -377,7 +377,7 @@ class PhysicsWorld
     bool m_initialized = false;
 
     std::unique_ptr<JPH::TempAllocatorImpl> m_tempAllocator;
-    std::unique_ptr<JPH::JobSystemThreadPool> m_jobSystem;
+    std::unique_ptr<InfernuxJoltJobSystemAdapter> m_jobSystem;
     std::unique_ptr<JPH::PhysicsSystem> m_physicsSystem;
 
     // Layer interfaces (must outlive PhysicsSystem)

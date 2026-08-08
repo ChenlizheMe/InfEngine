@@ -10,6 +10,7 @@
 #include <function/editor/EditorTheme.h>
 #include <function/editor/EditorThemeRegistry.h>
 #include <imgui_internal.h>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 
@@ -376,6 +377,31 @@ bool InxGUIContext::Selectable(const std::string &label, bool selected, int flag
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("selectable", label);
     return clicked;
+}
+
+int InxGUIContext::SelectableListClipped(size_t itemCount, const std::function<std::string(size_t)> &labelAt)
+{
+    if (!labelAt || itemCount == 0)
+        return -1;
+    if (itemCount > static_cast<size_t>(std::numeric_limits<int>::max()))
+        throw std::overflow_error("SelectableListClipped item count exceeds ImGuiListClipper range");
+
+    int selectedIndex = -1;
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(itemCount));
+    while (clipper.Step()) {
+        for (int index = clipper.DisplayStart; index < clipper.DisplayEnd; ++index) {
+            ImGui::PushID(index);
+            const std::string label = labelAt(static_cast<size_t>(index));
+            const bool clicked = ImGui::Selectable(label.c_str(), false);
+            if (InxGUISemantics::IsCaptureEnabled())
+                RecordSemanticItem("selectable", label);
+            ImGui::PopID();
+            if (clicked && selectedIndex < 0)
+                selectedIndex = index;
+        }
+    }
+    return selectedIndex;
 }
 
 /* value editors */
@@ -2323,13 +2349,13 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
     if (deactivatedAfterEditIndex)
         *deactivatedAfterEditIndex = -1;
 
-    constexpr float kMinLabelWidth = 156.0f;
+    constexpr float kMinLabelWidth = 132.0f;
 
     auto doLabel = [&](const std::string &label) {
         if (!label.empty()) {
             float w = labelWidth;
             if (w <= 0.0f)
-                w = std::max(ImGui::CalcTextSize(label.c_str()).x + 18.0f, kMinLabelWidth);
+                w = std::max(ImGui::CalcTextSize(label.c_str()).x + 12.0f, kMinLabelWidth);
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted(label.c_str());
             ImGui::SameLine(w);
@@ -2735,7 +2761,7 @@ std::vector<ObjectFieldInteraction> InxGUIContext::RenderMeshRendererInspectorFi
     if (slotLabels.size() != slotDisplays.size())
         throw std::invalid_argument("Material slot label/display counts do not match.");
 
-    constexpr float kMinLabelWidth = 156.0f;
+    constexpr float kMinLabelWidth = 132.0f;
     const auto &colors = EditorThemeRegistry::Colors();
     const auto &floats = EditorThemeRegistry::Floats();
     const auto outlineIt = colors.find("DND_DROP_OUTLINE");
@@ -2747,7 +2773,7 @@ std::vector<ObjectFieldInteraction> InxGUIContext::RenderMeshRendererInspectorFi
     auto label = [&](const std::string &text) {
         float width = labelWidth;
         if (width <= 0.0f)
-            width = (std::max)(ImGui::CalcTextSize(text.c_str()).x + 18.0f, kMinLabelWidth);
+            width = (std::max)(ImGui::CalcTextSize(text.c_str()).x + 12.0f, kMinLabelWidth);
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(text.c_str());
         ImGui::SameLine(width);

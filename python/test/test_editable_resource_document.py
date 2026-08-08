@@ -173,7 +173,7 @@ def test_editable_resource_document_tracks_autosave_and_undo_revisions():
         UndoManager._instance = previous_manager
 
 
-def test_explicit_resource_save_owns_save_point_through_ticket():
+def test_explicit_resource_save_commits_only_its_captured_revision():
     previous_registry = DocumentRegistry._instance
     registry = DocumentRegistry()
     resource = _Resource(4.0)
@@ -210,8 +210,9 @@ def test_explicit_resource_save_owns_save_point_through_ticket():
 
         assert result.accepted
         assert execution.saved == [{"value": 4.0}]
-        assert document.revision == document.saved_revision
-        assert document.is_dirty is False
+        assert document.saved_revision == 1
+        assert document.revision == 2
+        assert document.is_dirty is True
     finally:
         DocumentRegistry._instance = previous_registry
 

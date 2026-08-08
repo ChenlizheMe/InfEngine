@@ -215,6 +215,29 @@ def register_runtime_tools(mcp) -> None:
             explain={"tool": "runtime_wait", "summary": "Wait for Play Mode, scene, and deferred-task conditions."},
         ) | {"data": {"ready": False, "state": last_state, "requested_scene_name": desired_scene}}
 
+    @mcp.tool(name="runtime_wait_frames")
+    def runtime_wait_frames(frames: int, timeout_seconds: float = 120.0) -> dict:
+        """Wait for a fixed number of engine frames without issuing per-frame MCP reads."""
+        if isinstance(frames, bool) or int(frames) < 1 or int(frames) > 120_000:
+            raise ValueError("frames must be between 1 and 120000")
+        from Infernux.timing import Time
+
+        requested = int(frames)
+        start = int(Time.frame_count)
+        deadline = time.monotonic() + max(float(timeout_seconds), 0.1)
+        current = start
+        while current - start < requested and time.monotonic() < deadline:
+            time.sleep(0.001)
+            current = int(Time.frame_count)
+        elapsed = max(0, current - start)
+        if elapsed < requested:
+            return fail(
+                "error.timeout",
+                "Timed out waiting for the requested engine frames.",
+                explain={"requested_frames": requested, "elapsed_frames": elapsed},
+            )
+        return ok({"start_frame": start, "end_frame": current, "frames": elapsed})
+
     @mcp.tool(name="runtime_run_for")
     def runtime_run_for(seconds: float = 1.0, stop_on_error: bool = True, poll_interval: float = 0.25) -> dict:
         """Let Play Mode run for a duration while polling for errors."""
@@ -563,6 +586,16 @@ def register_runtime_tools(mcp) -> None:
         """Read current renderer submission and GPU residency telemetry."""
         return ok(_run_on_main("runtime_renderer_state", _renderer_state))
 
+    @mcp.tool(name="runtime_performance_window_begin")
+    def runtime_performance_window_begin() -> dict:
+        """Reset the native numeric frame performance window before a fixed-frame run."""
+        return ok(_run_on_main("runtime_performance_window_begin", _begin_performance_window))
+
+    @mcp.tool(name="runtime_performance_window")
+    def runtime_performance_window() -> dict:
+        """Read one immutable aggregate of the native frame performance window."""
+        return ok(_run_on_main("runtime_performance_window", _performance_window_state))
+
     @mcp.tool(name="runtime_ui_performance")
     def runtime_ui_performance() -> dict:
         """Read an engine-recorded rolling UI profile without active frame polling."""
@@ -765,6 +798,30 @@ def _renderer_state() -> dict[str, Any]:
         "preview_tasks": preview_tasks,
         "asset_runtime_record_count": asset_runtime_record_count,
     }
+
+
+def _runtime_native_engine():
+    from Infernux.application import Application
+    from Infernux.engine.bootstrap import EditorBootstrap
+
+    engine = Application._current_engine()
+    if engine is None:
+        bootstrap = EditorBootstrap.instance()
+        engine = bootstrap.engine if bootstrap is not None else None
+    native = engine.get_native_engine() if engine is not None else None
+    if native is None:
+        raise RuntimeError("Renderer performance telemetry requires a running graphical Editor session.")
+    return native
+
+
+def _begin_performance_window() -> dict[str, Any]:
+    native = _runtime_native_engine()
+    return {"start_frame": int(native.begin_renderer_performance_window())}
+
+
+def _performance_window_state() -> dict[str, Any]:
+    native = _runtime_native_engine()
+    return dict(native.get_renderer_performance_window())
 
 
 def _ui_performance_state() -> dict[str, Any]:
@@ -2167,6 +2224,9 @@ def _register_metadata() -> None:
         ),
         "runtime_input_state": "Read Game View focus and selected keyboard, axis, and mouse input probes.",
         "runtime_renderer_state": "Read renderer targets, camera availability, draw submissions, timings, and GPU residency.",
+        "runtime_wait_frames": "Wait for a fixed number of engine frames without per-frame MCP polling.",
+        "runtime_performance_window_begin": "Mark the start of a low-overhead fixed-frame performance window.",
+        "runtime_performance_window": "Read one aggregated low-overhead frame performance window.",
         "runtime_ui_performance": "Read the engine-recorded rolling UI profile without per-frame MCP polling.",
         "runtime_physics_state": "Read physics body population and latest fixed-step/contact profile.",
         "runtime_physics_raycast": "Run a bounded read-only raycast through the public Physics API.",

@@ -15,7 +15,8 @@ class TextureResource final
   public:
     TextureResource(Device &device, TextureHandle texture, TextureViewHandle view, SamplerHandle sampler,
                     uint64_t residentBytes) noexcept
-        : m_device(&device), m_texture(texture), m_view(view), m_sampler(sampler), m_residentBytes(residentBytes)
+        : m_device(&device), m_lifetime(device.GetLifetime()), m_texture(texture), m_view(view), m_sampler(sampler),
+          m_residentBytes(residentBytes)
     {
     }
 
@@ -31,7 +32,8 @@ class TextureResource final
 
     [[nodiscard]] bool IsValid() const noexcept
     {
-        return m_device && m_texture.IsValid() && m_view.IsValid() && m_sampler.IsValid() && m_residentBytes > 0;
+        return m_device && (!m_lifetime || m_lifetime->alive.load(std::memory_order_acquire)) && m_texture.IsValid() &&
+               m_view.IsValid() && m_sampler.IsValid() && m_residentBytes > 0;
     }
     [[nodiscard]] TextureHandle GetTexture() const noexcept
     {
@@ -55,10 +57,20 @@ class TextureResource final
     {
         if (!m_device)
             return;
-        m_device->Release(m_sampler);
-        m_device->Release(m_view);
-        m_device->Release(m_texture);
+        if (m_lifetime) {
+            std::shared_lock lock(m_lifetime->gate);
+            if (m_lifetime->alive.load(std::memory_order_acquire)) {
+                m_device->Release(m_sampler);
+                m_device->Release(m_view);
+                m_device->Release(m_texture);
+            }
+        } else {
+            m_device->Release(m_sampler);
+            m_device->Release(m_view);
+            m_device->Release(m_texture);
+        }
         m_device = nullptr;
+        m_lifetime.reset();
         m_texture = {};
         m_view = {};
         m_sampler = {};
@@ -66,6 +78,7 @@ class TextureResource final
     }
 
     Device *m_device = nullptr;
+    std::shared_ptr<DeviceLifetime> m_lifetime;
     TextureHandle m_texture;
     TextureViewHandle m_view;
     SamplerHandle m_sampler;

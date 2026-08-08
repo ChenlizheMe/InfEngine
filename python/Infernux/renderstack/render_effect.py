@@ -301,6 +301,7 @@ class RenderEffect:
         AssetManager.set_render_effect_save_snapshot(
             self._file_path,
             dump_render_effect_document(self.to_asset()),
+            edit_revision=self._revision,
         )
         AssetManager.schedule_asset_save(
             "render_effect",

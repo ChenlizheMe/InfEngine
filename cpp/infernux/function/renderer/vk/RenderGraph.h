@@ -57,6 +57,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -343,7 +344,25 @@ class RenderContext
     [[nodiscard]] rhi::BufferHandle GetBufferHandle(ResourceHandle handle) const;
     [[nodiscard]] const RendererList *GetRendererList(ResourceHandle handle) const;
 
+#if INFERNUX_FRAME_PROFILE
+    /// Record a particle draw submitted by the current graphics pass. This is
+    /// CPU-side submission telemetry only; the indirect instance count is not
+    /// read back from the GPU.
+    void RecordParticleDraw(bool indirect = true);
+
+    /// Record a compute dispatch issued by the current pass for the optional
+    /// particle profile. This only updates CPU-side counters; it never reads
+    /// the GPU or changes the command stream.
+    void RecordComputeDispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
+                               uint64_t inputCount, bool indirect = false);
+#else
+    void RecordParticleDraw(bool = true) {}
+    void RecordComputeDispatch(uint32_t, uint32_t, uint32_t, uint64_t, bool = false) {}
+#endif
+
   private:
+    friend class RenderGraph;
+
     VkCommandBuffer m_cmdBuffer;
     RenderGraph *m_graph;
     VulkanGraphicsCommandContext m_graphicsCommandContext;
@@ -354,6 +373,9 @@ class RenderContext
     rhi::TransferCommandEncoder m_transferEncoder;
     VkViewport m_viewport{};
     VkRect2D m_scissor{};
+#if INFERNUX_FRAME_PROFILE
+    uint32_t m_activePassId = UINT32_MAX;
+#endif
 };
 
 // ============================================================================
@@ -636,6 +658,20 @@ class RenderGraph
         double totalMs = 0.0;
         uint64_t calls = 0;
     };
+
+    struct ParticlePassProfileEntry
+    {
+        std::string name;
+        uint64_t passCalls = 0;
+        uint64_t dispatchCalls = 0;
+        uint64_t directDispatchCalls = 0;
+        uint64_t indirectDispatchCalls = 0;
+        uint64_t workgroups = 0;
+        uint64_t inputCount = 0;
+        uint64_t barrierPhases = 0;
+        uint64_t drawCalls = 0;
+        uint64_t indirectDrawCalls = 0;
+    };
 #endif
 
     RenderGraph();
@@ -778,6 +814,7 @@ class RenderGraph
 #if INFERNUX_FRAME_PROFILE
     static ExecuteProfileSnapshot GetExecuteProfileSnapshot();
     static std::vector<PassCallbackProfileEntry> GetTopCallbackProfiles(size_t maxEntries);
+    static std::vector<ParticlePassProfileEntry> GetParticlePassProfiles(size_t maxEntries);
     static void ResetExecuteProfileSnapshot();
 #endif
 
@@ -1030,6 +1067,11 @@ class RenderGraph
     /// resource-state cursor. Used by both Execute() and batch execution.
     void RecordPasses(VkCommandBuffer commandBuffer, const std::vector<uint32_t> &passIndices);
 
+#if INFERNUX_FRAME_PROFILE
+    void RecordParticleDispatch(uint32_t passId, uint32_t groupCountX, uint32_t groupCountY,
+                                uint32_t groupCountZ, uint64_t inputCount, bool indirect);
+#endif
+
     /// @brief Free transient resources
     void FreeResources();
 
@@ -1171,6 +1213,7 @@ class RenderGraph
 #if INFERNUX_FRAME_PROFILE
     static ExecuteProfileSnapshot s_executeProfile; // The windows msvc will parse later. But linux gcc will not.
     inline static std::unordered_map<std::string, PassCallbackProfileEntry> s_callbackProfiles;
+    inline static std::unordered_map<std::string, ParticlePassProfileEntry> s_particlePassProfiles;
 #endif
 };
 

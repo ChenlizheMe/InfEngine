@@ -30,10 +30,99 @@ from Infernux.particle import (
     particle_random_f32,
     particle_random_u32,
 )
+from Infernux.particle.kernel_ir import (
+    KernelSourceRef,
+    _PURE_KERNEL_VALUE_OPCODES,
+    _KernelBuilder,
+)
+from Infernux.particle.kernel_semantics import KERNEL_OPCODE_SPECS
 
 
 def _lower(asset: ParticleGraphAsset):
     return ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
+
+
+def test_kernel_builder_folds_constants_and_removes_arithmetic_identities():
+    source = KernelSourceRef(operation="test.constant_fold")
+    builder = _KernelBuilder(KernelStage.UPDATE, {}, {})
+    one = builder.constant(TypeRef(ValueType.F32), 1.0, source)
+    two = builder.constant(TypeRef(ValueType.F32), 2.0, source)
+    zero = builder.constant(TypeRef(ValueType.F32), 0.0, source)
+
+    folded = builder.emit("add", TypeRef(ValueType.F32), (one, two), {}, source)
+    assert builder._constant_values[folded] == 3.0
+    assert builder.emit("multiply", TypeRef(ValueType.F32), (folded, one), {}, source) == folded
+    assert builder.emit("add", TypeRef(ValueType.F32), (folded, zero), {}, source) == folded
+    assert [instruction.opcode for instruction in builder.finish().instructions] == [
+        "constant",
+        "constant",
+        "constant",
+        "constant",
+    ]
+
+
+def test_kernel_builder_does_not_reuse_values_across_control_flow_scopes():
+    source = KernelSourceRef(operation="test.control_flow_scope")
+    attribute_type = TypeRef(ValueType.F32)
+    builder = _KernelBuilder(KernelStage.UPDATE, {"value": attribute_type}, {})
+    value = builder.load("value", source)
+    one = builder.constant(attribute_type, 1.0, source)
+    condition = builder.constant(TypeRef(ValueType.BOOL), True, source)
+
+    builder.begin_guard(condition, source)
+    branch_value = builder.emit("add", attribute_type, (value, one), {}, source)
+    builder.end_guard(condition, source)
+    outer_value = builder.emit("add", attribute_type, (value, one), {}, source)
+
+    assert outer_value != branch_value
+    assert [instruction.opcode for instruction in builder.finish().instructions] == [
+        "load_attribute",
+        "constant",
+        "constant",
+        "begin_if",
+        "add",
+        "end_if",
+        "add",
+    ]
+
+
+def test_kernel_builder_does_not_intern_constants_across_control_flow_scopes():
+    source = KernelSourceRef(operation="test.constant_control_flow_scope")
+    builder = _KernelBuilder(KernelStage.UPDATE, {}, {})
+    condition = builder.constant(TypeRef(ValueType.BOOL), True, source)
+
+    builder.begin_guard(condition, source)
+    branch_constant = builder.constant(TypeRef(ValueType.F32), 2.0, source)
+    builder.end_guard(condition, source)
+    outer_constant = builder.constant(TypeRef(ValueType.F32), 2.0, source)
+
+    assert outer_constant != branch_constant
+    assert [instruction.opcode for instruction in builder.finish().instructions] == [
+        "constant",
+        "begin_if",
+        "constant",
+        "end_if",
+        "constant",
+    ]
+
+
+def test_pure_kernel_immediates_are_schema_constrained():
+    assert all(
+        not KERNEL_OPCODE_SPECS[opcode].immediate_names
+        for opcode in _PURE_KERNEL_VALUE_OPCODES
+    )
+
+    source = KernelSourceRef(operation="test.invalid_immediate")
+    builder = _KernelBuilder(KernelStage.UPDATE, {}, {})
+    value = builder.constant(TypeRef(ValueType.F32), 1.0, source)
+    with pytest.raises(KernelCompileError):
+        builder.emit(
+            "add",
+            TypeRef(ValueType.F32),
+            (value, value),
+            {"metadata": {"values": [1, 2, 3]}},
+            source,
+        )
 
 
 def test_default_particle_program_lowers_to_explicit_three_stage_kernel_ir():
@@ -69,6 +158,69 @@ def test_default_particle_program_lowers_to_explicit_three_stage_kernel_ir():
         "builtin.lifetime",
         "builtin.id",
     ]
+
+
+def test_simple_sprite_emitter_advertises_fused_update_rendering_and_round_trips():
+    program = _lower(ParticleGraphAsset(stable_id="fused-sprite"))
+    emitter = program.emitters[0]
+
+    assert emitter.supports_fused_update_rendering is True
+    encoded = program.to_dict()
+    assert encoded["emitters"][0]["supports_fused_update_rendering"] is True
+    assert ParticleKernelProgram.from_dict(encoded) == program
+
+
+@pytest.mark.parametrize(
+    "emitter",
+    (
+        ParticleEmitterAsset(
+            update=GraphDocument(
+                "particle.update",
+                nodes=(
+                    GraphNodeRecord("root.update", "particle.root.update"),
+                    GraphNodeRecord(
+                        "wait", "particle.control.wait_frames", properties={"frames": 1}
+                    ),
+                ),
+                links=(
+                    GraphLinkRecord("exec", "root.update", "out", "wait", "in", PortKind.EXEC),
+                ),
+            )
+        ),
+        ParticleEmitterAsset(
+            settings=EmitterSettings(collision_enabled=True),
+            update=GraphDocument(
+                "particle.update",
+                nodes=(
+                    GraphNodeRecord("root.update", "particle.root.update"),
+                    GraphNodeRecord("collision", "particle.collision.plane"),
+                ),
+                links=(
+                    GraphLinkRecord(
+                        "exec", "root.update", "out", "collision", "in", PortKind.EXEC
+                    ),
+                ),
+            ),
+        ),
+        ParticleEmitterAsset(
+            event_flows=(
+                ParticleEventFlow("impact", default_event_graph("impact")),
+            )
+        ),
+    ),
+)
+def test_continuation_event_and_collision_emitters_do_not_advertise_fusion(emitter):
+    event_types = (
+        (ParticleEventType("impact", "Impact", 1),)
+        if emitter.event_flows
+        else ()
+    )
+    lowered = _lower(
+        ParticleGraphAsset(stable_id="not-fused", emitters=(emitter,), event_types=event_types)
+    ).emitters[0]
+
+    assert lowered.supports_fused_update_rendering is False
+    assert lowered.update_render_fusion_capability()["eligible"] is False
 
 
 def test_update_stage_can_rewrite_lifetime_velocity_and_flipbook_frame():

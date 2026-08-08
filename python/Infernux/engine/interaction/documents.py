@@ -26,6 +26,32 @@ def _capture_durable_file_state(resource_path: str):
     return capture_document_file_state(path)
 
 
+def _durable_file_identity(state: Any):
+    """Return the content identity used for external-change decisions.
+
+    Watchers report filesystem activity, not content changes.  ``modified_ns``
+    is intentionally excluded here: a read-only inspection, timestamp repair,
+    or an atomic replace of identical bytes must not create an editor conflict.
+    The native CAS hash remains the authority for the actual file contents.
+    """
+    if state is None:
+        return None
+    if isinstance(state, dict):
+        exists = state.get("exists")
+        size = state.get("size", 0)
+        content_hash = state.get("content_hash", state.get("contentHash", 0))
+    else:
+        exists = getattr(state, "exists", None)
+        size = getattr(state, "size", 0)
+        content_hash = getattr(state, "content_hash", 0)
+    if exists is None:
+        return None
+    try:
+        return bool(exists), int(size or 0), int(content_hash or 0)
+    except (TypeError, ValueError):
+        return None
+
+
 def document_content_token(value: Any) -> str:
     """Return the canonical token used to close a document save transaction."""
     payload = json.dumps(
@@ -181,6 +207,8 @@ class SaveTicket:
     content_token: str = ""
     save_as: bool = False
     operation_id: str = ""
+    commit_token: str = ""
+    publication_bookkeeping_revision: Optional[int] = None
     status: SaveTicketStatus = SaveTicketStatus.PENDING
     message: str = ""
 
@@ -193,6 +221,8 @@ class DocumentController(Protocol):
     def save(self, *, ticket: SaveTicket, save_as: bool = False) -> Any: ...
 
     def discard(self, *, document_id: str) -> Any: ...
+
+    def reload_from_resource(self, *, document_id: str, resource_path: str) -> Any: ...
 
     def resource_moved(
         self,
@@ -226,6 +256,12 @@ class EditorDocument:
     revision: int = 0
     saved_revision: int = 0
     external_revision: int = 0
+    # Monotonic persistence and dependency milestones shared by all views.
+    edit_revision: int = 0
+    requested_write_revision: int = 0
+    persisted_revision: int = 0
+    imported_disk_revision: int = 0
+    preview_dependency_revision: int = 0
     durable_file_state: Any = field(default=None, repr=False)
     state: DocumentState = DocumentState.READY
     capabilities: DocumentCapability = DocumentCapability.NONE
@@ -716,6 +752,9 @@ class DocumentRegistry:
             revision=current_revision,
             saved_revision=clean_revision,
             external_revision=current_external_revision,
+            edit_revision=current_revision,
+            persisted_revision=clean_revision,
+            imported_disk_revision=current_external_revision,
             durable_file_state=_capture_durable_file_state(resource_path),
             state=initial_state,
             capabilities=DocumentCapability(capabilities),
@@ -762,6 +801,36 @@ class DocumentRegistry:
             title=document.title,
         )
 
+    def canonical_locator(self, locator: DocumentLocator) -> DocumentLocator:
+        """Return the registry's current address for a document identity.
+
+        History entries can outlive a Save As or a path-to-GUID promotion.  In
+        that interval their key hint is intentionally stale, while the stable
+        identity remains the same.  Restore callers must use the latest live
+        or dormant locator before opening a document; otherwise the old key
+        can create a second document with a different stable identity.
+        """
+        if not isinstance(locator, DocumentLocator):
+            raise TypeError("document locator must be a DocumentLocator")
+
+        document = self.resolve_locator(locator)
+        # The stable identity is authoritative.  A stale history key may now
+        # belong to another live document (for example after Save As followed
+        # by a new document at the old path); never canonicalize that locator
+        # to the other document merely because its key happens to match.
+        if document is not None and (
+            document.stable_id == locator.stable_id
+            or self._is_unopened_resource_locator(locator)
+        ):
+            current = self.locate(document.document_id)
+            if current is not None:
+                return current
+
+        dormant = self._dormant_locators_by_stable_id.get(locator.stable_id)
+        if dormant is not None:
+            return dormant
+        return locator
+
     def locate_resource(
         self,
         kind: DocumentKind,
@@ -781,14 +850,61 @@ class DocumentRegistry:
             if asset_guid
             else DocumentKey.resource(document_kind, path)
         )
+        resource_identity = path_key(path)
         document = self.get_by_key(key)
+        if document is None:
+            document = next(
+                (
+                    candidate
+                    for candidate in self._documents.values()
+                    if candidate.kind is document_kind
+                    and candidate.resource_path
+                    and path_key(candidate.resource_path) == resource_identity
+                ),
+                None,
+            )
         if document is not None:
             locator = self.locate(document.document_id)
             if locator is not None:
                 return locator
         dormant = self._dormant_locators_by_key.get(key)
+        if dormant is None:
+            dormant = next(
+                (
+                    locator
+                    for locator in self._dormant_locators_by_stable_id.values()
+                    if locator.key_hint.kind is document_kind
+                    and locator.resource_path
+                    and path_key(locator.resource_path) == resource_identity
+                ),
+                None,
+            )
         if dormant is not None:
             return dormant
+        # Session documents are restored lazily by their owning Views.  A
+        # resource may be opened through history or navigation before that
+        # View claims its snapshot, so the pending record still owns the
+        # durable identity for this key.
+        pending = next(
+            (
+                record
+                for record in self._pending_session_records.values()
+                if record["key"] == key
+                or (
+                    record["kind"] is document_kind
+                    and record["resource_path"]
+                    and path_key(record["resource_path"]) == resource_identity
+                )
+            ),
+            None,
+        )
+        if pending is not None:
+            return DocumentLocator(
+                str(pending["stable_id"]),
+                key,
+                resource_path=str(pending["resource_path"] or path),
+                title=str(pending["title"] or title),
+            )
         stable_seed = (
             f"infernux-editor-document:{document_kind.value}:"
             f"{key.identity_kind.value}:{key.identity}"
@@ -799,6 +915,34 @@ class DocumentRegistry:
             resource_path=path,
             title=str(title or ""),
         )
+
+    def _is_unopened_resource_locator(self, locator: DocumentLocator) -> bool:
+        """Identify a deterministic locator created before first open.
+
+        ``locate_resource`` must return an address before an adapter creates a
+        document, so it derives a UUID from the resource key.  The adapter may
+        choose the real stable identity on that first open.  Once the derived
+        identity is known to the registry (live, dormant, or pending session),
+        key fallback is no longer allowed for it.
+        """
+        if not locator.resource_path:
+            return False
+        if locator.stable_id in self._document_ids_by_stable_id:
+            return False
+        if locator.stable_id in self._dormant_locators_by_stable_id:
+            return False
+        if locator.stable_id in self._pending_session_records:
+            return False
+        if locator.key_hint.identity_kind not in {
+            DocumentIdentityKind.ASSET_GUID,
+            DocumentIdentityKind.RESOURCE_PATH,
+        }:
+            return False
+        stable_seed = (
+            f"infernux-editor-document:{locator.key_hint.kind.value}:"
+            f"{locator.key_hint.identity_kind.value}:{locator.key_hint.identity}"
+        )
+        return locator.stable_id == uuid.uuid5(uuid.NAMESPACE_URL, stable_seed).hex
 
     def resolve_locator(
         self,
@@ -813,19 +957,69 @@ class DocumentRegistry:
         document = self.get(document_id or "")
         if document is not None:
             return document
-        return self.get_by_key(locator.key_hint)
+        document = self.get_by_key(locator.key_hint)
+        if document is not None and (
+            document.stable_id == locator.stable_id
+            or self._is_unopened_resource_locator(locator)
+        ):
+            return document
+        return None
 
     def open_or_create(
         self,
         key: DocumentKey,
         title: str,
         *,
+        stable_id: str = "",
         resource_path: str = "",
         revision: int = 0,
         saved_revision: Optional[int] = None,
         capabilities: DocumentCapability = DocumentCapability.NONE,
         controller: Optional[DocumentController] = None,
     ) -> tuple[EditorDocument, bool]:
+        requested_stable_id = str(stable_id or "").strip()
+
+        # History restoration may have a canonical key while the document is
+        # dormant.  Revive by stable identity before consulting the key map so
+        # a matching path can never silently replace the history document.
+        if requested_stable_id:
+            key_owner = self.get_by_key(key)
+            if key_owner is not None and key_owner.stable_id != requested_stable_id:
+                raise RuntimeError(
+                    "document key is owned by a different stable identity: "
+                    f"{key_owner.stable_id} != {requested_stable_id}"
+                )
+            live = self.get(
+                self._document_ids_by_stable_id.get(requested_stable_id, "")
+            )
+            if live is not None:
+                if live.key != key and (key_owner is None or key_owner is live):
+                    self.rekey(live.document_id, key, resource_path=resource_path)
+                self.update_metadata(
+                    live.document_id,
+                    title=title,
+                    resource_path=resource_path,
+                    capabilities=capabilities,
+                    controller=controller,
+                )
+                return live, False
+
+            dormant = self._dormant_locators_by_stable_id.get(requested_stable_id)
+            if dormant is not None:
+                document = self.restore_dormant(dormant, controller=controller)
+                if document is None:
+                    raise RuntimeError("failed to restore stable editor document")
+                if document.key != key and (key_owner is None or key_owner is document):
+                    self.rekey(document.document_id, key, resource_path=resource_path)
+                self.update_metadata(
+                    document.document_id,
+                    title=title,
+                    resource_path=resource_path,
+                    capabilities=capabilities,
+                    controller=controller,
+                )
+                return document, False
+
         existing = self.get_by_key(key)
         if existing is None and resource_path:
             resource_identity = path_key(resource_path)
@@ -892,6 +1086,7 @@ class DocumentRegistry:
                 key.kind,
                 title,
                 key=key,
+                stable_id=requested_stable_id,
                 resource_path=resource_path,
                 revision=revision,
                 saved_revision=saved_revision,
@@ -1278,6 +1473,7 @@ class DocumentRegistry:
         """Allocate a future content token without changing the visible document state."""
         document = self.require(document_id)
         document._revision_high_watermark += 1
+        document.edit_revision = max(document.edit_revision, document._revision_high_watermark)
         return document._revision_high_watermark
 
     def reserve_changed_revision(self, document_id: str, *, view_id: str = "") -> int:
@@ -1305,6 +1501,7 @@ class DocumentRegistry:
         if target < 0 or target > document._revision_high_watermark:
             raise ValueError("saved revision must reference an existing document revision")
         document.saved_revision = target
+        document.persisted_revision = target
         document._dirty_view_ids_by_revision[target] = frozenset()
         if document.revision == target:
             document.dirty_view_ids.clear()
@@ -1329,6 +1526,9 @@ class DocumentRegistry:
         revision = self.reserve_content_revision(document.document_id)
         document.revision = revision
         document.saved_revision = revision
+        document.persisted_revision = revision
+        document.imported_disk_revision += 1
+        document.preview_dependency_revision += 1
         document.dirty_view_ids.clear()
         document._dirty_view_ids_by_revision[revision] = frozenset()
         document.state = DocumentState.READY
@@ -1391,6 +1591,7 @@ class DocumentRegistry:
         if document.revision == target:
             return target
         document.revision = target
+        document.edit_revision = max(document.edit_revision, target)
         document.dirty_view_ids = set(
             document._dirty_view_ids_by_revision.get(target, ())
         )
@@ -1423,17 +1624,78 @@ class DocumentRegistry:
             if document.resource_path and path_key(document.resource_path) == identity
         )
 
+    @staticmethod
+    def _reload_callback(document: EditorDocument):
+        """Resolve the durable reload hook without weakening document identity.
+
+        Scene documents can briefly outlive their view/controller during scene
+        navigation and session restoration.  The active SceneFileManager is
+        the canonical controller for that one document, so recover the binding
+        here instead of making every watcher and conflict presenter special
+        case scenes independently.
+        """
+        callback = getattr(document.controller, "reload_from_resource", None)
+        if callable(callback):
+            return callback
+        if document.kind is not DocumentKind.SCENE:
+            return None
+        try:
+            from Infernux.engine.scene_manager import SceneFileManager
+
+            manager = SceneFileManager.instance()
+        except (ImportError, RuntimeError):
+            manager = None
+        if manager is None or manager.document_id != document.document_id:
+            return None
+        document.controller = manager
+        return getattr(manager, "reload_from_resource", None)
+
+    def durable_resource_content_changed(
+        self,
+        resource_path: str,
+        *,
+        deleted: bool = False,
+    ) -> Optional[bool]:
+        """Compare the current disk identity with all live document baselines.
+
+        ``False`` means the watcher event is stale or a duplicate. ``True``
+        means the bytes/existence really changed. ``None`` means the registry
+        lacks a trustworthy baseline and the caller should defer until the
+        filesystem identity can be captured; it must not manufacture a
+        conflict from that uncertainty.
+        """
+        affected = self.documents_for_resource(resource_path)
+        if not affected:
+            return True
+        current = _capture_durable_file_state(resource_path)
+        current_identity = _durable_file_identity(current)
+        if current_identity is None:
+            return None
+        baselines = tuple(
+            _durable_file_identity(document.durable_file_state)
+            for document in affected
+        )
+        if any(identity is None for identity in baselines):
+            return None
+        changed = any(identity != current_identity for identity in baselines)
+        if deleted and current_identity[0]:
+            # A delete notification followed by an atomic replacement is a
+            # stale delete, not a deletion of the durable resource.
+            return changed
+        return changed
+
     def preflight_external_resource_change(
         self,
         resource_path: str,
         *,
         deleted: bool = False,
     ) -> bool:
-        """Reserve one watcher change before AssetManager mutates live resources.
+        """Reserve one real content change before AssetManager mutates resources.
 
         A dirty or saving document keeps its current in-memory model and enters
         conflict before reimport. Clean documents may be reimported and are
-        finalized by :meth:`publish_external_resource_change`.
+        finalized by :meth:`publish_external_resource_change`. A watcher event
+        whose durable identity still matches every live baseline is a no-op.
         """
         identity = path_key(resource_path)
         affected = self.documents_for_resource(resource_path)
@@ -1442,12 +1704,19 @@ class DocumentRegistry:
         if identity in self._external_change_preflights:
             return True
 
+        content_changed = self.durable_resource_content_changed(
+            resource_path,
+            deleted=deleted,
+        )
+        if content_changed is False:
+            return False
+        if content_changed is None:
+            return False
+
         blocked = bool(deleted) or any(
             document.is_dirty
             or self.active_save_ticket(document.document_id) is not None
-            or not callable(
-                getattr(document.controller, "reload_from_resource", None)
-            )
+            or not callable(self._reload_callback(document))
             for document in affected
         )
         for document in affected:
@@ -1463,6 +1732,11 @@ class DocumentRegistry:
         )
         self._touch()
         return True
+
+    def has_pending_external_change_preflight(self, resource_path: str) -> bool:
+        """Return whether a watcher change still awaits successful publish."""
+        identity = path_key(resource_path)
+        return bool(identity and identity in self._external_change_preflights)
 
     def fail_external_resource_change(
         self,
@@ -1515,11 +1789,7 @@ class DocumentRegistry:
             if (document := self.get(document_id)) is not None
         )
         for document in affected:
-            reload_from_disk = getattr(
-                document.controller,
-                "reload_from_resource",
-                None,
-            )
+            reload_from_disk = self._reload_callback(document)
             if not callable(reload_from_disk):
                 document.state = DocumentState.CONFLICT
                 continue
@@ -1560,11 +1830,7 @@ class DocumentRegistry:
                 DocumentActionStatus.REJECTED,
                 "the external conflict cannot reload while a save is pending",
             )
-        reload_from_disk = getattr(
-            document.controller,
-            "reload_from_resource",
-            None,
-        )
+        reload_from_disk = self._reload_callback(document)
         if not callable(reload_from_disk):
             return DocumentActionResult(
                 DocumentActionStatus.REJECTED,
@@ -1827,6 +2093,8 @@ class DocumentRegistry:
         active = self.active_save_ticket(document_id)
         if active is not None:
             raise RuntimeError(f"document already has a pending save: {document_id}")
+        document.requested_write_revision += 1
+        document.edit_revision = max(document.edit_revision, document.revision)
         ticket = SaveTicket(
             ticket_id=uuid.uuid4().hex,
             document_id=document.document_id,
@@ -1836,6 +2104,7 @@ class DocumentRegistry:
             resource_path=document.resource_path,
             save_as=bool(save_as),
             operation_id=uuid.uuid4().hex,
+            commit_token=uuid.uuid4().hex,
         )
         self._save_tickets[ticket.ticket_id] = ticket
         self._active_save_by_document[document.document_id] = ticket.ticket_id
@@ -1899,6 +2168,26 @@ class DocumentRegistry:
             raise RuntimeError("ordinary save cannot change the document resource path")
         return ticket.expected_file_state
 
+    def mark_save_publication_bookkeeping(self, ticket_id: str) -> int:
+        """Mark a synchronous publication-only revision for this save.
+
+        This contract is intentionally separate from ``mark_changed``. A
+        matching content token alone never proves that a later revision came
+        from reimport bookkeeping; the publishing controller must explicitly
+        identify the revision while the save ticket is still active.
+        """
+        ticket = self._save_tickets.get(str(ticket_id or ""))
+        if ticket is None:
+            raise KeyError(f"unknown document save ticket: {ticket_id}")
+        if not ticket.is_pending:
+            raise RuntimeError(
+                f"document save ticket is no longer pending: {ticket_id}"
+            )
+        document = self.require(ticket.document_id)
+        if document.revision != ticket.captured_revision:
+            ticket.publication_bookkeeping_revision = document.revision
+        return document.revision
+
     def complete_save(
         self,
         ticket_id: str,
@@ -1955,27 +2244,40 @@ class DocumentRegistry:
                 success = False
                 message = str(exc)
         if success:
-            # Reimport and runtime publication can synchronously advance a
-            # document revision for bookkeeping. Absorb those revisions only
-            # when the controller proves that the current authored content is
-            # still the exact snapshot written by this ticket. A different or
-            # missing token preserves edits made after serialization.
-            if (
-                content_token is not None
-                and ticket.content_token
-                and str(content_token) == ticket.content_token
-            ):
-                ticket.captured_revision = document.revision
-            document.saved_revision = ticket.captured_revision
-            document._dirty_view_ids_by_revision[ticket.captured_revision] = frozenset()
-            if document.revision == ticket.captured_revision:
+            # Content revisions are positions in the Undo graph, not a
+            # monotonic persistence sequence. A valid active ticket may save
+            # revision 0 after revision 1 was previously durable. Ticket and
+            # operation identity reject stale completions. A synchronous
+            # reimport may append a bookkeeping revision while publishing the
+            # exact bytes captured by this ticket. When the content token is
+            # unchanged, that revision is part of the same durable commit and
+            # must be absorbed instead of leaving a false dirty document.
+            content_unchanged = bool(
+                ticket.content_token
+                and content_token
+                and ticket.content_token == content_token
+            )
+            publication_revision = ticket.publication_bookkeeping_revision
+            absorb_publication = bool(
+                content_unchanged
+                and publication_revision is not None
+                and document.revision == publication_revision
+            )
+            saved_revision = (
+                document.revision if absorb_publication else ticket.captured_revision
+            )
+            document.saved_revision = saved_revision
+            document.persisted_revision = saved_revision
+            document._dirty_view_ids_by_revision[saved_revision] = frozenset()
+            if document.revision == saved_revision:
                 document.dirty_view_ids.clear()
-            document.state = DocumentState.READY
             document.durable_file_state = (
                 committed_file_state
                 if committed_file_state is not None
                 else _capture_durable_file_state(document.resource_path)
             )
+            document.edit_revision = max(document.edit_revision, document.revision)
+            document.state = DocumentState.READY
             if ticket.save_as:
                 document.external_revision = 0
             ticket.status = SaveTicketStatus.SUCCEEDED

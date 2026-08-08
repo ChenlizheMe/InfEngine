@@ -101,6 +101,54 @@ def test_modal_service_cancels_owned_modal_stack_before_view_destruction():
     assert service.active_stack == ()
 
 
+def test_lost_popup_releases_input_until_the_presenter_reopens_it():
+    events: list[str] = []
+    service = ModalService()
+    attempts = [False, True]
+
+    def render(_ctx):
+        visible = attempts.pop(0)
+        events.append(f"render:{visible}")
+        return visible
+
+    active = [True]
+    service.register(
+        "recoverable",
+        is_active=lambda: active[0],
+        render=render,
+        cancel=lambda: active.__setitem__(0, False),
+    )
+    assert service.activate("recoverable")
+    # Activation before the first draw still owns input.
+    assert service.active_modal_id == "recoverable"
+
+    service.render(object())
+    assert service.is_presented("recoverable") is False
+    assert service.active_modal_id == ""
+
+    service.render(object())
+    assert service.is_presented("recoverable") is True
+    assert service.active_modal_id == "recoverable"
+    assert events == ["render:False", "render:True"]
+
+
+def test_lost_popup_can_still_be_cancelled_during_core_cleanup():
+    service = ModalService()
+    active = [True]
+    service.register(
+        "recoverable",
+        is_active=lambda: active[0],
+        render=lambda _ctx: False,
+        cancel=lambda: active.__setitem__(0, False),
+    )
+    assert service.activate("recoverable")
+    service.render(object())
+    assert service.active_modal_id == ""
+    assert service.cancel_active()
+    assert not active[0]
+    assert service.active_stack == ()
+
+
 def test_dirty_confirmation_uses_the_core_close_and_modal_services():
     from Infernux.engine.interaction import EditorInteractionCore
     from Infernux.engine.ui.dirty_panel_confirmation import (

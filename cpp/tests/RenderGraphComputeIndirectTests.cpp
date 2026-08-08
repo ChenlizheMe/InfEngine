@@ -751,6 +751,14 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         infernux::particle::GpuParticleSortShaderSources::Scan(),
         infernux::particle::GpuParticleSortShaderSources::Scatter(),
     };
+    if (!Require(sortSources[0].find("layout(local_size_x = 256)") != std::string_view::npos &&
+                     sortSources[0].find("shared uvec2 shared_keys[INX_SMALL_SORT_CAPACITY]") !=
+                         std::string_view::npos &&
+                     sortSources[0].find("INX_SMALL_SORT_VALUES_PER_LANE = 4u") != std::string_view::npos &&
+                     sortSources[0].find("for (uint k = 2u; k <= INX_SMALL_SORT_CAPACITY; k <<= 1u)") !=
+                         std::string_view::npos,
+                 "Small particle sort shader contract is not the 256-lane/1024-entry bitonic path"))
+        return false;
     std::array<std::vector<uint32_t>, 5> sortCode;
     for (size_t index = 0; index < sortSources.size(); ++index) {
         sortCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
@@ -855,6 +863,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                                             particleDeletionQueue, particleDrawRegistry, {}, {}, {}, sortProgram,
                                             cullProgram, boundsProgram, migrationProgram, spawnProgram),
                  "GPU particle system manager initialization failed"))
+        return false;
+    if (!Require(!particleSystems.HasPendingGpuWork(),
+                 "An initialized GPU particle manager without emitters must not publish frame compute work"))
+        return false;
+    if (!Require(!particleSystems.CanExecuteAsync(),
+                 "An initialized GPU particle manager without emitters must not enable async compute"))
         return false;
 
     infernux::particle::GpuParticleEmitterProgram managedProgram;
@@ -1390,6 +1404,18 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Particle RenderGraph attachment failed"))
         return false;
     if (!Require(particleGraph.BeginFrame(particleFrame), "Particle frame request was rejected"))
+        return false;
+    if (!Require(!particleSpawnDomain.HasFramePending(),
+                 "Graph spawn-domain work was armed without an explicit frame mark"))
+        return false;
+    particleSpawnDomain.MarkFramePending();
+    if (!Require(particleSpawnDomain.HasFramePending() && particleSpawnDomain.ConsumeFramePending() &&
+                     !particleSpawnDomain.ConsumeFramePending(),
+                 "Graph spawn-domain frame mark was not consumed exactly once"))
+        return false;
+    // Re-arm the token that the actual RenderGraph execution below must consume.
+    particleSpawnDomain.MarkFramePending();
+    if (!Require(particleGraph.HasRenderResetPending(), "Rendering frame did not arm its RenderReset token"))
         return false;
     const auto particleOutputs = particleGraph.Outputs();
 
@@ -1994,10 +2020,20 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     if (!Require(billboardRecorded, "Particle billboard renderer did not record its indirect draw"))
         return false;
-    if (!Require(!particleGraph.HasPendingFrame() && particleGraph.LastConsumedFrame() == 42,
-                 "Particle graph did not consume exactly one armed frame"))
+    if (!Require(!particleGraph.HasPendingFrame() && particleGraph.LastConsumedFrame() == 42 &&
+                     !particleSpawnDomain.HasFramePending() && !particleGraph.HasRenderResetPending(),
+                 "Particle graph did not consume exactly one armed frame and its RenderReset token"))
         return false;
     if (!Require(!particleGraph.BeginFrame(particleFrame), "Particle graph accepted the same engine frame twice"))
+        return false;
+    auto stopParticleFrame = particleFrame;
+    stopParticleFrame.frameIndex = 43;
+    stopParticleFrame.simulate = false;
+    stopParticleFrame.render = false;
+    if (!Require(particleGraph.BeginFrame(stopParticleFrame) && particleGraph.HasRenderResetPending() &&
+                     particleGraph.ConsumeRenderResetPending() && !particleGraph.ConsumeRenderResetPending() &&
+                     !particleGraph.HasRenderResetPending(),
+                 "Stopping particle rendering did not produce exactly one reset token"))
         return false;
     if (!Require(vkEndCommandBuffer(commandBuffer) == VK_SUCCESS, "Command buffer end failed"))
         return false;
@@ -2126,11 +2162,19 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(particleSystems.ApplyGraph(managedGraphProgram, &managedError),
                  "Compatible GPU particle multi-emitter hot reload failed"))
         return false;
+    if (!Require(particleSystems.Size() == 2 && particleSystems.Contains(managedProgram.id) &&
+                     particleSystems.Contains(companionBatchProgram.id),
+                 "GPU particle companion test fixture contains unexpected emitters"))
+        return false;
 
     auto batchFrame = postMigrationFrame;
     batchFrame.frameIndex = 46;
+    batchFrame.spawnCount = 4;
+    batchFrame.simulate = true;
+    batchFrame.render = true;
     auto pausedCompanionFrame = batchFrame;
     pausedCompanionFrame.simulationStep = 7;
+    pausedCompanionFrame.spawnCount = 0;
     pausedCompanionFrame.simulate = false;
     pausedCompanionFrame.render = false;
     if (!Require(
@@ -2139,6 +2183,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                                              {companionBatchProgram.id, {}, pausedCompanionFrame, managedTransforms}}),
             "GPU particle manager rejected a multi-emitter batch with a paused emitter") ||
         !executeManagedFrame("GPU particle multi-emitter frame failed"))
+        return false;
+    const auto pausedCompanionTelemetry = particleSystems.TelemetrySnapshot();
+    if (!Require(pausedCompanionTelemetry.scheduledSystemCount == 2 &&
+                     pausedCompanionTelemetry.simulatingSystemCount == 1 &&
+                     pausedCompanionTelemetry.renderingSystemCount == 1 &&
+                     pausedCompanionTelemetry.requestedSpawnCount == batchFrame.spawnCount,
+                 "Paused companion emitter was included in graph simulation or rendering work"))
         return false;
 
     if (!Require(particleSystems.Reset(managedProgram.id),

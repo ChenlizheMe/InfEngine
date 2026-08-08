@@ -1190,6 +1190,10 @@ void RegisterSceneBindings(py::module_ &m)
         .def("get_py_component", &PyComponentProxy::GetPyComponent, "Get the underlying Python component")
         .def("get_py_type_name", &PyComponentProxy::GetPyTypeName, "Get the Python type name")
         .def("is_valid", &PyComponentProxy::IsValid, "Check if this proxy holds a valid Python component")
+        .def("set_coroutine_scheduler_active", &PyComponentProxy::SetCoroutineSchedulerActive,
+             "Update the native coroutine dispatch bit after a scheduler transition")
+        .def("refresh_python_lifecycle_dispatch", &PyComponentProxy::RefreshPythonLifecycleDispatch,
+             "Refresh cached Python lifecycle wrappers and native phase gates")
         .def_property_readonly("overrides_update", &PyComponentProxy::OverridesUpdate)
         .def_property_readonly("has_coroutine_scheduler", &PyComponentProxy::HasCoroutineScheduler)
         .def_property_readonly("update_dispatch_count", &PyComponentProxy::GetUpdateDispatchCount)

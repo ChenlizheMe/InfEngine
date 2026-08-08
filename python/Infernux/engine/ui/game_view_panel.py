@@ -8,7 +8,6 @@ It displays what the player would see through the scene's main Camera component.
 import os
 import configparser
 from time import perf_counter as _pc
-from operator import attrgetter
 from typing import Optional
 from Infernux.lib import InxGUIContext, SceneManager as _SM
 from Infernux.engine.i18n import t
@@ -42,10 +41,13 @@ from .theme import Theme, ImGuiStyleVar
 from .viewport_utils import capture_viewport_info
 from Infernux.debug import Debug
 
-_sort_by_sort_order = attrgetter('sort_order')
 _GAME_VIEWPORT_SEMANTIC_ID = "game_view.viewport"
 _GAME_VIEW_FPS_SEMANTIC_ID = "game_view.fps"
 _GAME_UI_BUTTON_SEMANTIC_PREFIX = "game_view.ui_button."
+
+
+def _canvas_sort_order(canvas):
+    return getattr(canvas, "sort_order", 0)
 
 
 @editor_panel(
@@ -93,6 +95,17 @@ class GameViewPanel(EditorPanel):
         self._last_game_height = 0
         self._game_camera_was_enabled = False
 
+        # Retain the active scene's screen-space canvases across GUI builds.
+        # The shared collector already caches its DFS, but asking it on every
+        # Game View tick still crosses the Python/native scene boundary and
+        # repeats version checks.  The cache is invalidated by scene identity
+        # or structure_version; visual field changes are handled by the UI
+        # render revision and do not require rediscovering canvases.
+        self._cached_ui_scene = None
+        self._cached_ui_scene_structure_version = None
+        self._cached_ui_canvases = ()
+        self._cached_ui_sort_signature = ()
+
         # Focus tracking for auto-exit UI Mode
         self._was_focused: bool = False
         self._on_focus_gained = None   # callback() when panel gains focus
@@ -112,6 +125,7 @@ class GameViewPanel(EditorPanel):
         # has its own 60 Hz cadence and must not be counted as engine frames.
         self._fps_sample_time = None
         self._fps_sample_frame = None
+        self._fps_next_sample_time = None
         self._display_fps = 0.0
         self._display_frame_ms = 0.0
         # Game-only FPS (excludes editor panel overhead)
@@ -343,6 +357,7 @@ class GameViewPanel(EditorPanel):
         self._last_game_width = 0
         self._last_game_height = 0
         self._game_camera_was_enabled = False
+        self._invalidate_ui_scene_cache()
 
     def on_disable(self):
         self._commit_pending_view_edits()
@@ -374,6 +389,81 @@ class GameViewPanel(EditorPanel):
             if self._on_focus_gained:
                 self._on_focus_gained()
         self._was_focused = focused
+
+    def _invalidate_ui_scene_cache(self) -> None:
+        """Drop retained scene/UI discovery state after a panel reset."""
+        self._cached_ui_scene = None
+        self._cached_ui_scene_structure_version = None
+        self._cached_ui_canvases = ()
+        self._cached_ui_sort_signature = ()
+
+    def _get_scene_and_canvases(self):
+        """Return the active scene and its sorted screen-space canvases.
+
+        Game View is rebuilt at the editor UI cadence, while canvas discovery
+        only changes when the active scene or its hierarchy structure changes.
+        Keeping this snapshot at the panel boundary avoids repeated scene and
+        canvas queries without hiding any UI updates: property changes are
+        still observed by the runtime UI revision and input uses the current
+        cached canvas objects.
+        """
+        scene = _SM.instance().get_active_scene()
+        if scene is None:
+            if self._cached_ui_scene is not None:
+                self._invalidate_ui_scene_cache()
+            return None, ()
+
+        structure_version = int(getattr(scene, "structure_version", 0))
+        if (
+            scene is not self._cached_ui_scene
+            or structure_version != self._cached_ui_scene_structure_version
+        ):
+            canvases = collect_sorted_canvases(scene, allow_stale_empty=True)
+            # Rectangles are retained by the UI components themselves.  Only
+            # clear them when the scene snapshot changes; doing this every GUI
+            # build defeats the cache and needlessly invalidates layout work.
+            clear_rect_cache((id(scene), structure_version))
+            self._cached_ui_scene = scene
+            self._cached_ui_scene_structure_version = structure_version
+            # The shared collector owns initial ordering and already promises
+            # a sorted result. Retain it directly instead of sorting twice.
+            self._cached_ui_canvases = tuple(canvases)
+            self._cached_ui_sort_signature = tuple(
+                _canvas_sort_order(canvas)
+                for canvas in self._cached_ui_canvases
+            )
+
+        elif not self._cached_ui_canvases:
+            # A Python canvas can appear after the scene has been loaded while
+            # structure_version is unchanged.  The shared collector's
+            # allow_stale_empty path performs an exponentially backed-off
+            # retry, so this is cheap on ordinary frames and still discovers
+            # late registrations instead of retaining an empty result forever.
+            canvases = collect_sorted_canvases(scene, allow_stale_empty=True)
+            if canvases:
+                self._cached_ui_canvases = tuple(canvases)
+                self._cached_ui_sort_signature = tuple(
+                    _canvas_sort_order(canvas)
+                    for canvas in self._cached_ui_canvases
+                )
+        else:
+            # Canvas.sort_order is a visual ordering property, not a scene
+            # structure mutation.  Re-read only the existing bounded list and
+            # re-sort locally when it changes; no hierarchy traversal is
+            # needed, and the retained tuple never remains in stale order.
+            sort_signature = tuple(
+                _canvas_sort_order(canvas)
+                for canvas in self._cached_ui_canvases
+            )
+            if sort_signature != self._cached_ui_sort_signature:
+                self._cached_ui_canvases = tuple(
+                    sorted(self._cached_ui_canvases, key=_canvas_sort_order)
+                )
+                self._cached_ui_sort_signature = tuple(
+                    _canvas_sort_order(canvas)
+                    for canvas in self._cached_ui_canvases
+                )
+        return scene, self._cached_ui_canvases
 
     def on_render_content(self, ctx: InxGUIContext):
         if not self._engine:
@@ -484,32 +574,46 @@ class GameViewPanel(EditorPanel):
     def _render_fps_counter(self, ctx):
         """FPS counter (right-aligned, Unity-style)."""
         is_playing = self._is_playing()
-        native_engine = getattr(self._engine, '_engine', None)
-        snapshot = getattr(native_engine, 'renderer_frame_snapshot', None) if is_playing else None
         now = _pc()
-        if snapshot is not None:
-            frame = int(snapshot.get('frame', 0))
-            if self._fps_sample_time is None or frame < self._fps_sample_frame:
-                self._fps_sample_time = now
-                self._fps_sample_frame = frame
-            else:
-                elapsed = now - self._fps_sample_time
-                if elapsed >= 1.0:
-                    completed_frames = frame - self._fps_sample_frame
-                    self._display_fps = completed_frames / elapsed
-                    self._display_frame_ms = (
-                        elapsed * 1000.0 / completed_frames if completed_frames > 0 else 0.0
-                    )
-                    game_frame_ms = float(snapshot.get('game_only_frame_ms', 0.0))
-                    self._display_game_frame_ms = max(game_frame_ms, 0.0)
-                    self._display_game_fps = (
-                        1000.0 / game_frame_ms if game_frame_ms > 0.0 else 0.0
-                    )
+        snapshot = None
+        # The native snapshot is only needed when the displayed one-second
+        # sample can change. Avoid a pybind property read on every GUI tick.
+        if is_playing and (
+            self._fps_next_sample_time is None
+            or now >= self._fps_next_sample_time
+        ):
+            native_engine = getattr(self._engine, '_engine', None)
+            snapshot = getattr(native_engine, 'renderer_frame_snapshot', None)
+            if snapshot is not None:
+                frame = int(snapshot.get('frame', 0))
+                if (
+                    self._fps_sample_time is None
+                    or self._fps_sample_frame is None
+                    or frame < self._fps_sample_frame
+                ):
                     self._fps_sample_time = now
                     self._fps_sample_frame = frame
+                else:
+                    elapsed = now - self._fps_sample_time
+                    if elapsed >= 1.0:
+                        completed_frames = frame - self._fps_sample_frame
+                        self._display_fps = completed_frames / elapsed
+                        self._display_frame_ms = (
+                            elapsed * 1000.0 / completed_frames
+                            if completed_frames > 0 else 0.0
+                        )
+                        game_frame_ms = float(snapshot.get('game_only_frame_ms', 0.0))
+                        self._display_game_frame_ms = max(game_frame_ms, 0.0)
+                        self._display_game_fps = (
+                            1000.0 / game_frame_ms if game_frame_ms > 0.0 else 0.0
+                        )
+                        self._fps_sample_time = now
+                        self._fps_sample_frame = frame
+                self._fps_next_sample_time = now + 1.0
         elif not is_playing:
             self._fps_sample_time = None
             self._fps_sample_frame = None
+            self._fps_next_sample_time = None
             self._display_fps = 0.0
             self._display_frame_ms = 0.0
 
@@ -522,8 +626,9 @@ class GameViewPanel(EditorPanel):
             self._cached_fps_text = fps_text
             self._cached_fps_text_w, _ = ctx.calc_text_size(fps_text)
         text_w = self._cached_fps_text_w
-        fps_x = max(ctx.get_window_width() - text_w - 24.0, 360.0)
-        if fps_x + text_w <= ctx.get_window_width() - 12.0:
+        window_width = ctx.get_window_width()
+        fps_x = max(window_width - text_w - 24.0, 360.0)
+        if fps_x + text_w <= window_width - 12.0:
             ctx.same_line(fps_x)
             ctx.label(fps_text)
             if bool(getattr(ctx, "semantic_capture_enabled", False)):
@@ -590,12 +695,9 @@ class GameViewPanel(EditorPanel):
 
         game_texture_id = self._engine.get_game_texture_id()
 
-        # Pre-fetch scene + canvases once (used by both render and events)
-        _scene = _SM.instance().get_active_scene()
-
-        _canvases = collect_sorted_canvases(_scene, allow_stale_empty=True) if _scene is not None else []
-        if _canvases:
-            clear_rect_cache((id(_scene), int(_scene.structure_version)))
+        # Pre-fetch scene + canvases once (used by both render and events).
+        # This snapshot is retained until the scene hierarchy changes.
+        _scene, _canvases = self._get_scene_and_canvases()
 
         viewport_hovered = False
         viewport_clicked = False

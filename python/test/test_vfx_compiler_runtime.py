@@ -19,6 +19,7 @@ from Infernux.core.asset_ref import ParticleGraphRef
 from Infernux.core.assets import AssetManager
 from Infernux.core.material import Material
 from Infernux.debug import Debug
+from Infernux.application import Application
 from Infernux.engine.undo import PythonComponentDocumentCommand
 from Infernux.graph import (
     AssetReference,
@@ -52,6 +53,141 @@ from Infernux.lib import AssetRegistry
 particle_system_module = importlib.import_module("Infernux.components.particle_system")
 
 
+def _particle_artifact_load_probe(monkeypatch, tmp_path, *, editor: bool):
+    source = tmp_path / "Recovery.particlegraph"
+    source.write_text("{}", encoding="utf-8")
+    artifact = SimpleNamespace(
+        hir={},
+        kernel_ir={},
+        gpu_glsl={"emitters": []},
+        gpu_spirv={},
+        revision=1,
+        source_key=str(source),
+    )
+    calls = []
+    monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: editor))
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "get",
+        staticmethod(lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "load_runtime_reference",
+        staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("stale artifact"))),
+    )
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "compile_path",
+        staticmethod(lambda path, **kwargs: calls.append((path, kwargs)) or artifact),
+    )
+    component = ParticleSystem()
+    monkeypatch.setattr(
+        component,
+        "_publish_gpu_particle_graph",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        particle_system_module,
+        "decode_particle_runtime_metadata",
+        lambda _hir: SimpleNamespace(parameters=(), emitters=()),
+    )
+    monkeypatch.setattr(
+        particle_system_module.ParticleKernelProgram,
+        "from_dict",
+        staticmethod(lambda _value: SimpleNamespace(emitters=())),
+    )
+    assert component._load_particle_graph_artifact(
+        ParticleGraphRef(path_hint=str(source))
+    ) is editor
+    return calls
+
+
+def test_editor_recovers_invalid_particle_artifact_from_authoring_source(
+    monkeypatch, tmp_path
+):
+    calls = _particle_artifact_load_probe(monkeypatch, tmp_path, editor=True)
+
+    assert len(calls) == 1
+    assert calls[0][0] == str(tmp_path / "Recovery.particlegraph")
+
+
+def test_editor_recompiles_after_loaded_artifact_fails_current_publish(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "PublishRecovery.particlegraph"
+    source.write_text("{}", encoding="utf-8")
+    stale_artifact = SimpleNamespace(
+        hir={},
+        kernel_ir={},
+        gpu_glsl={"emitters": []},
+        gpu_spirv={},
+        revision=1,
+        source_key=str(source),
+    )
+    rebuilt_artifact = SimpleNamespace(
+        hir={},
+        kernel_ir={},
+        gpu_glsl={"emitters": []},
+        gpu_spirv={},
+        revision=2,
+        source_key=str(source),
+    )
+    compile_calls = []
+    publish_calls = []
+    monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "get",
+        staticmethod(lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "load_runtime_reference",
+        staticmethod(lambda *_args, **_kwargs: stale_artifact),
+    )
+    monkeypatch.setattr(
+        particle_system_module.ParticleArtifactRegistry,
+        "compile_path",
+        staticmethod(
+            lambda path, **kwargs: compile_calls.append((path, kwargs))
+            or rebuilt_artifact
+        ),
+    )
+    monkeypatch.setattr(
+        particle_system_module,
+        "decode_particle_runtime_metadata",
+        lambda _hir: SimpleNamespace(parameters=(), emitters=()),
+    )
+    monkeypatch.setattr(
+        particle_system_module.ParticleKernelProgram,
+        "from_dict",
+        staticmethod(lambda _value: SimpleNamespace(emitters=())),
+    )
+    component = ParticleSystem()
+
+    def publish(*_args, **_kwargs):
+        publish_calls.append(True)
+        if len(publish_calls) == 1:
+            raise RuntimeError("missing update_render_fusion")
+
+    monkeypatch.setattr(component, "_publish_gpu_particle_graph", publish)
+
+    assert component._load_particle_graph_artifact(
+        ParticleGraphRef(path_hint=str(source))
+    ) is True
+    assert len(compile_calls) == 1
+    assert len(publish_calls) == 2
+
+
+def test_player_rejects_invalid_particle_artifact_without_source_compilation(
+    monkeypatch, tmp_path
+):
+    calls = _particle_artifact_load_probe(monkeypatch, tmp_path, editor=False)
+
+    assert calls == []
+
+
 def test_particle_runtime_batch_ids_do_not_alias_reused_scene_ids(monkeypatch):
     owner = SimpleNamespace(id=28, layer=0)
     first = ParticleSystem()
@@ -80,6 +216,34 @@ def test_inactive_particle_runtime_allocates_graph_identity_on_first_preview_acc
     assert component._batch_id > 0
     assert component._gpu_controllers == []
     assert component._gpu_emitter_ids == []
+
+
+def test_particle_override_sync_is_dirty_driven(monkeypatch):
+    component = ParticleSystem()
+    component._initialize_runtime_state(False)
+
+    module = particle_system_module
+    original_get_raw = module.get_raw_field_value
+    reads = []
+
+    def tracked_get_raw(owner, name):
+        reads.append(name)
+        return original_get_raw(owner, name)
+
+    monkeypatch.setattr(module, "get_raw_field_value", tracked_get_raw)
+    component._sync_serialized_instance_overrides()
+    assert reads == []
+
+    component._parameter_overrides_json = '{"density":0.5}'
+    component._sync_serialized_instance_overrides()
+
+    assert reads == [
+        "_parameter_overrides_json",
+        "_parameter_overrides_json",
+        "_emitter_overrides_json",
+    ]
+    assert component._instance_overrides_dirty is False
+    assert component._parameter_overrides == {"density": 0.5}
 
 
 def test_gpu_particle_default_material_state_matches_output_geometry(monkeypatch):
@@ -1214,6 +1378,7 @@ def test_particle_system_runs_gpu_emitters_by_active_index(
     published_gpu_ids = list(component._gpu_emitter_ids)
     component._remove_native_batch()
     assert native.program_batches[-1] == ([], published_gpu_ids, component._batch_id)
+
 
 
 def test_particle_system_keeps_event_queues_inside_each_gpu_emitter(

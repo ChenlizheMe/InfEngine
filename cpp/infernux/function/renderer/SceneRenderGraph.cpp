@@ -1443,7 +1443,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             case GraphCommandType::DrawSkybox: {
                 const int32_t skyboxQueue = EngineConfig::Get().skyboxQueue;
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, skyboxQueue,
-                                          skyboxQueue);
+                                          skyboxQueue, "", "", "__infernux_internal_skybox");
                 break;
             }
             case GraphCommandType::DrawShadowCasters:
@@ -2744,6 +2744,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 resources.sortDispatchArguments = builder.WriteStorageBuffer(resources.sortDispatchArguments);
                 return [this, culler](vk::RenderContext &ctx) {
                     culler->RecordReset(ctx.GetComputeCommandEncoder(), m_particleFrustumPlanes);
+                    ctx.RecordComputeDispatch(1, 1, 1, culler->Capacity(), false);
                 };
             });
             m_renderGraph->AddComputePass(prefix + "/Cull", [&, culler](vk::PassBuilder &builder) {
@@ -2756,13 +2757,17 @@ void SceneRenderGraph::BuildRenderGraph()
                     builder.ReadWrite(resources.indirectArguments, rhi::PipelineStage::ComputeShader);
                 return [this, culler](vk::RenderContext &ctx) {
                     culler->RecordCull(ctx.GetComputeCommandEncoder(), m_particleFrustumPlanes);
+                    ctx.RecordComputeDispatch(0, 0, 0, culler->Capacity(), true);
                 };
             });
             m_renderGraph->AddComputePass(prefix + "/Finalize", [&, culler](vk::PassBuilder &builder) {
                 resources.indirectArguments =
                     builder.ReadWrite(resources.indirectArguments, rhi::PipelineStage::ComputeShader);
                 resources.sortDispatchArguments = builder.WriteStorageBuffer(resources.sortDispatchArguments);
-                return [culler](vk::RenderContext &ctx) { culler->RecordFinalize(ctx.GetComputeCommandEncoder()); };
+                return [culler](vk::RenderContext &ctx) {
+                    culler->RecordFinalize(ctx.GetComputeCommandEncoder());
+                    ctx.RecordComputeDispatch(1, 1, 1, culler->Capacity(), false);
+                };
             });
             if (resources.instances.IsValid() && resources.bounds.IsValid() && resources.simulationControl.IsValid() &&
                 resources.renderIndices.IsValid() && resources.indirectArguments.IsValid() &&
@@ -2806,6 +2811,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         std::array<float, 16> view{};
                         std::memcpy(view.data(), &m_cachedView[0][0], sizeof(m_cachedView));
                         sorter->RecordSmall(ctx.GetComputeCommandEncoder(), view, mode);
+                        ctx.RecordComputeDispatch(1, 1, 1, sorter->Capacity(), false);
                     };
                 });
                 resources.renderIndices = resources.indices[0];
@@ -2859,6 +2865,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     std::array<float, 16> view{};
                     std::memcpy(view.data(), &m_cachedView[0][0], sizeof(m_cachedView));
                     sorter->RecordGenerate(ctx.GetComputeCommandEncoder(), view, mode);
+                    ctx.RecordComputeDispatch(0, 0, 0, sorter->Capacity(), true);
                 };
             });
             for (uint32_t passIndex = 0; passIndex < particle::ParticleGpuSorter::PassCount; ++passIndex) {
@@ -2873,6 +2880,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         resources.histogram = builder.WriteStorageBuffer(resources.histogram);
                         return [sorter, passIndex](vk::RenderContext &ctx) {
                             sorter->RecordHistogram(ctx.GetComputeCommandEncoder(), passIndex);
+                            ctx.RecordComputeDispatch(0, 0, 0, sorter->Capacity(), true);
                         };
                     });
                 m_renderGraph->AddComputePass(radixPrefix + "/Scan", [&, sorter, passIndex](vk::PassBuilder &builder) {
@@ -2882,6 +2890,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     resources.globalOffsets = builder.WriteStorageBuffer(resources.globalOffsets);
                     return [sorter, passIndex](vk::RenderContext &ctx) {
                         sorter->RecordScan(ctx.GetComputeCommandEncoder(), passIndex);
+                        ctx.RecordComputeDispatch(1, 1, 1, sorter->BlockCount(), false);
                     };
                 });
                 m_renderGraph->AddComputePass(
@@ -2896,6 +2905,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         resources.indices[output] = builder.WriteStorageBuffer(resources.indices[output]);
                         return [sorter, passIndex](vk::RenderContext &ctx) {
                             sorter->RecordScatter(ctx.GetComputeCommandEncoder(), passIndex);
+                            ctx.RecordComputeDispatch(0, 0, 0, sorter->Capacity(), true);
                         };
                     });
             }
@@ -3975,6 +3985,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                         packet.renderer->RecordDraw(encoder, renderTargetLayout, particlePass,
                                                                     ctx.GetBufferHandle(packet.indirectArguments),
                                                                     shadowView, packet.drawRenderIndices);
+                                    ctx.RecordParticleDraw(true);
                                 }
                             });
                         return;
@@ -4014,6 +4025,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                 ctx.GetBufferHandle(packet.indirectArguments), packetView, packet.drawRenderIndices,
                                 packet.renderer->RequiresSceneDepth() ? sceneDepth : rhi::TextureViewHandle{},
                                 particleSceneDepthIsDepth, particlePerView);
+                            ctx.RecordParticleDraw(true);
                         }
                     }
                 };

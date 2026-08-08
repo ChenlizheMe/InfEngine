@@ -308,7 +308,7 @@ class TestPhysicsSettings:
             velocity_steps=12,
             position_steps=5,
             max_bodies=32768,
-            max_worker_threads=3,
+            max_concurrency=3,
             penetration_slop=0.004,
             min_velocity_for_restitution=1.5,
             time_before_sleep=0.75,
@@ -321,7 +321,7 @@ class TestPhysicsSettings:
             assert config.physics_velocity_steps == 12
             assert config.physics_position_steps == 5
             assert config.physics_max_bodies == 32768
-            assert config.physics_max_worker_threads == 3
+            assert config.physics_max_concurrency == 3
             assert config.physics_penetration_slop == pytest.approx(0.004)
             assert config.physics_min_velocity_for_restitution == pytest.approx(1.5)
             assert config.physics_time_before_sleep == pytest.approx(0.75)

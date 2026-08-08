@@ -493,6 +493,10 @@ void InxVkCoreModular::InitializeMaterialSystem()
     AssetRegistry::Instance().InitializeBuiltinMaterials();
 
     if (!m_materialPipelineManagerInitialized) {
+        // A retry/reinitialization must not carry shader-program publications
+        // owned by the previous manager generation into the new one.
+        ReleaseMaterialPassResolutionCache();
+
         // Use SceneRenderTarget-compatible formats: HDR R16G16B16A16_SFLOAT color + device depth format
         VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
         VkFormat depthFormat = m_backend.Device().FindDepthFormat();

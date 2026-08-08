@@ -301,6 +301,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         dirty: bool,
         preserve_previous: bool = False,
         key_override=None,
+        stable_id: str = "",
         revision: Optional[int] = None,
         saved_revision: Optional[int] = None,
     ):
@@ -318,6 +319,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         document, created = registry.open_or_create(
             key_override or self._document_key(kind, path),
             title,
+            stable_id=stable_id,
             resource_path=path,
             revision=(1 if dirty else 0) if revision is None else int(revision),
             saved_revision=(
@@ -345,7 +347,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if previous_id and previous_id != document.document_id and not preserve_previous:
             previous = registry.get(previous_id)
             if previous is not None and not previous.view_ids:
-                registry.unregister(previous_id)
+                # Scene history may reopen this document after several other
+                # scene transitions. Retire it to dormant state so its
+                # stable identity and controller snapshot remain addressable.
+                registry.unregister(previous_id, preserve_dormant=True)
         if previous_id and previous_id != document.document_id:
             try:
                 from Infernux.engine.interaction import FocusService
@@ -845,6 +850,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         *,
         runtime_load: bool = False,
         record_navigation: bool = True,
+        preserve_document: bool = False,
     ) -> None:
         """Publish bookkeeping after a successful Scene transaction.
 
@@ -853,7 +859,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         clear its pre-play undo history.
         """
         self._current_scene_path = resolved_path(path)
-        if not runtime_load:
+        if not runtime_load and not preserve_document:
             self._replace_scene_document(
                 kind="scene",
                 resource_path=self._current_scene_path,
@@ -890,7 +896,13 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 f"Open Scene {os.path.splitext(os.path.basename(path))[0]}"
             )
 
-    def _do_open_scene(self, path: str, *, record_navigation: bool = True) -> bool:
+    def _do_open_scene(
+        self,
+        path: str,
+        *,
+        record_navigation: bool = True,
+        preserve_document: bool = False,
+    ) -> bool:
         """Synchronously run the same transaction used by deferred loading."""
         transaction = self._create_open_scene_transaction(path)
         if transaction is None:
@@ -899,7 +911,53 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if not transaction.succeeded:
             Debug.log_error(f"Scene load failed for '{path}': {transaction.error}")
             return False
-        self._finish_open_scene(path, record_navigation=record_navigation)
+        self._finish_open_scene(
+            path,
+            record_navigation=record_navigation,
+            preserve_document=preserve_document,
+        )
+        return True
+
+    def reload_from_resource(self, *, document_id: str, resource_path: str):
+        """Reload the current scene from its current durable disk contents.
+
+        Conflict resolution already happened in DocumentRegistry.  This
+        controller always creates a fresh path-backed transaction, so reload
+        cannot accidentally restore the session snapshot or the previous
+        in-memory scene.  The existing document identity is retained and its
+        controller binding is refreshed after the transaction publishes.
+        """
+        if str(document_id or "") != self._scene_document_id:
+            return False
+        target = resolved_path(resource_path or self._current_scene_path or "")
+        if not target or not os.path.isfile(target):
+            return False
+        if self.is_prefab_mode or self._is_play_mode() or self.is_loading:
+            return False
+        # ``_do_open_scene`` constructs SceneDocumentTransaction(path=target),
+        # which reads the current bytes on disk on every call.  Keep this
+        # explicit check close to the public durable-reload contract so a
+        # missing/replaced target cannot fall through to a stale active scene.
+        if self._current_scene_path and path_key(target) != path_key(self._current_scene_path):
+            return False
+        reloaded = self._do_open_scene(
+            target,
+            record_navigation=False,
+            preserve_document=True,
+        )
+        if not reloaded:
+            return False
+        from Infernux.engine.interaction import DocumentRegistry
+
+        registry = DocumentRegistry.instance()
+        document = registry.get(document_id)
+        if document is None:
+            return False
+        registry.update_metadata(
+            document.document_id,
+            resource_path=target,
+            controller=self,
+        )
         return True
 
     def restore_document_locator(self, locator) -> bool:
@@ -916,8 +974,16 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             return False
 
         snapshot = self._scene_restore_snapshots.get(locator.stable_id)
+        # A history entry may contain the pre-Save-As session key.  Resolve
+        # the current registry address first so restoring the scene reuses the
+        # original stable identity instead of creating a duplicate document.
+        history_locator = snapshot.locator if snapshot is not None else locator
+        canonical_locator = registry.canonical_locator(history_locator)
         path = str(
-            (snapshot.resource_path if snapshot is not None else locator.resource_path)
+            (
+                canonical_locator.resource_path
+                or (snapshot.resource_path if snapshot is not None else "")
+            )
             or ""
         ).strip()
         if snapshot is None and (not path or not os.path.isfile(path)):
@@ -958,16 +1024,20 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         document = self._replace_scene_document(
             kind="scene",
             resource_path=self._current_scene_path or "",
-            title=(snapshot.title if snapshot is not None else locator.title)
+            title=(canonical_locator.title or (snapshot.title if snapshot is not None else ""))
             or DEFAULT_SCENE_NAME,
             dirty=dirty,
-            key_override=locator.key_hint,
+            key_override=canonical_locator.key_hint,
+            stable_id=locator.stable_id,
             revision=snapshot.revision if snapshot is not None else 0,
             saved_revision=snapshot.saved_revision if snapshot is not None else 0,
         )
         if document.stable_id != locator.stable_id:
             Debug.log_error(
-                "Scene history restore resolved a different stable document identity"
+                "Scene history restore resolved a different stable document identity: "
+                f"requested={locator.stable_id} actual={document.stable_id} "
+                f"requested_key={locator.key_hint!r} canonical_key={canonical_locator.key_hint!r} "
+                f"document_key={document.key!r} path={path!r}"
             )
             return False
 

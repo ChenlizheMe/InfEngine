@@ -1012,14 +1012,21 @@ void InxRenderer::DrawFrame()
 
     // Window events
     m_view->ProcessEvent();
-    if (!m_guiPlayerMode) {
-        const uint64_t syntheticSequence = m_view->GetLastProcessedSyntheticInputSequence();
-        if (syntheticSequence != 0 && syntheticSequence != m_lastSemanticSyntheticInputSequence) {
-            m_lastSemanticSyntheticInputSequence = syntheticSequence;
-            // Capture the exact GUI frame that consumes Agent input. Requesting
-            // from Python after delivery can race past this frame.
+    const uint64_t syntheticSequence = m_view->GetLastProcessedSyntheticInputSequence();
+    if (syntheticSequence != 0 && syntheticSequence != m_lastSemanticSyntheticInputSequence) {
+        m_lastSemanticSyntheticInputSequence = syntheticSequence;
+        // Synthetic SDL events are consumed before the GUI build below.
+        // They must also wake the scheduler explicitly: semantic capture can
+        // remain enabled across frames, so treating the capture request itself
+        // as a level-triggered force would allow the scheduler's force edge to
+        // be consumed only once. A new input sequence is the authoritative
+        // wake boundary for both editor and Player GUI input.
+        if (m_gui)
+            m_gui->RequestSyntheticInputFrame();
+        // Player mode has no semantic editor snapshot, but still needs the
+        // same GUI wake/consumption boundary for its Python UI callbacks.
+        if (!m_guiPlayerMode)
             InxGUISemantics::RequestSnapshot(syntheticSequence);
-        }
     }
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [1] after input/event processing
@@ -1055,9 +1062,14 @@ void InxRenderer::DrawFrame()
     // when an on-demand semantic snapshot is pending; it consumes synthetic
     // input and publishes targets without touching Vulkan acquire/present.
     if (m_view->IsMinimized()) {
-        if (!m_guiPlayerMode && InxGUISemantics::HasPendingCaptureRequest()) {
+        // A synthetic press may be waiting for a GUI consumption boundary
+        // even in Player mode. Keep the ImGui-only build path available so a
+        // deferred release can never be stranded behind a minimized window.
+        if (m_view->NeedsImmediateGuiRefresh() || InxGUISemantics::HasPendingCaptureRequest()) {
             const auto guiBuildStart = std::chrono::high_resolution_clock::now();
-            (void)m_gui->BuildFrameIfDue(true);
+            const bool guiBuilt = m_gui->BuildFrameIfDue(true);
+            if (guiBuilt)
+                m_view->NotifyGuiFrameBuilt();
             m_guiBuildMs =
                 std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - guiBuildStart)
                     .count();
@@ -1132,6 +1144,8 @@ void InxRenderer::DrawFrame()
     const bool forceGuiBuild =
         m_view->NeedsImmediateGuiRefresh() || (!m_guiPlayerMode && InxGUISemantics::HasPendingCaptureRequest());
     const bool guiBuilt = m_gui->BuildFrameIfDue(forceGuiBuild);
+    if (guiBuilt)
+        m_view->NotifyGuiFrameBuilt();
     auto _guiBuildEnd = std::chrono::high_resolution_clock::now();
     m_guiBuildMs = guiBuilt ? std::chrono::duration<double, std::milli>(_guiBuildEnd - _guiBuildStart).count() : 0.0;
     if (guiBuilt)
@@ -1397,6 +1411,7 @@ void InxRenderer::DrawFrame()
 
         const auto &sceneProfile = SceneManager::Instance().GetLastFrameProfile();
         const double totalFrameMs = _fp.ms(0, 11);
+        RecordFramePerformanceSample(totalFrameMs);
         _frameTimeSamples.push_back(totalFrameMs);
         if (sceneProfile.fixedSteps > 0.0)
             _fixedStepFrameSamples.push_back(totalFrameMs);
@@ -1599,6 +1614,18 @@ void InxRenderer::DrawFrame()
                         for (const auto &entry : topPassProfiles) {
                             oss << ' ' << entry.name << '=' << (drawN ? entry.totalMs / n : 0.0) << "ms" << '('
                                 << entry.calls << ')';
+                        }
+                    }
+
+                    const auto particlePassProfiles = infernux::vk::RenderGraph::GetParticlePassProfiles(32);
+                    if (!particlePassProfiles.empty()) {
+                        oss << "\n    ParticleGPU:";
+                        for (const auto &entry : particlePassProfiles) {
+                            oss << ' ' << entry.name << "{passes=" << entry.passCalls
+                                << ",dispatch=" << entry.dispatchCalls << ",direct=" << entry.directDispatchCalls
+                                << ",indirect=" << entry.indirectDispatchCalls << ",workgroups=" << entry.workgroups
+                                << ",inputs=" << entry.inputCount << ",barrierPhases=" << entry.barrierPhases
+                                << ",draws=" << entry.drawCalls << ",indirectDraws=" << entry.indirectDrawCalls << '}';
                         }
                     }
 
@@ -2071,9 +2098,9 @@ uint64_t InxRenderer::GetGpuResidencyBudgetBytes() const
         return 0;
     const auto statistics = vk::QueryVmaRuntimeStatistics(m_vkCore->GetDeviceContext().GetVmaAllocator(),
                                                           m_vkCore->GetDeviceContext().GetPhysicalDevice());
-    constexpr uint64_t AutoBudgetCap = 1536ULL * 1024ULL * 1024ULL;
-    const uint64_t deviceBudget = (statistics.deviceLocalBudgetBytes / 10ULL) * 7ULL;
-    return std::min(AutoBudgetCap, deviceBudget);
+    const uint64_t totalManagedBudget = (statistics.deviceLocalBudgetBytes / 10ULL) * 7ULL;
+    const uint64_t editorTextureBudget = m_gui && !m_guiPlayerMode ? m_gui->GetImGuiTextureBudgetBytes() : 0;
+    return totalManagedBudget > editorTextureBudget ? totalManagedBudget - editorTextureBudget : totalManagedBudget;
 }
 
 GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
@@ -2084,10 +2111,9 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
 
     const auto statistics = vk::QueryVmaRuntimeStatistics(m_vkCore->GetDeviceContext().GetVmaAllocator(),
                                                           m_vkCore->GetDeviceContext().GetPhysicalDevice());
-    constexpr uint64_t AutoBudgetCap = 1536ULL * 1024ULL * 1024ULL;
-    snapshot.budgetBytes = m_gpuResidencyBudgetBytes != 0
-                               ? m_gpuResidencyBudgetBytes
-                               : std::min(AutoBudgetCap, (statistics.deviceLocalBudgetBytes / 10ULL) * 7ULL);
+    snapshot.runtimeBudgetBytes = GetGpuResidencyBudgetBytes();
+    snapshot.editorTextureBudgetBytes = m_gui && !m_guiPlayerMode ? m_gui->GetImGuiTextureBudgetBytes() : 0;
+    snapshot.budgetBytes = snapshot.runtimeBudgetBytes + snapshot.editorTextureBudgetBytes;
     snapshot.allocatorAllocationBytes = statistics.allocationBytes;
     snapshot.allocatorBlockBytes = statistics.blockBytes;
     snapshot.deviceLocalAllocationBytes = statistics.deviceLocalAllocationBytes;
@@ -2148,9 +2174,20 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
     snapshot.effectiveAllocationBytes = snapshot.deviceLocalAllocationBytes > snapshot.scheduledReleaseBytes
                                             ? snapshot.deviceLocalAllocationBytes - snapshot.scheduledReleaseBytes
                                             : 0;
-    snapshot.overBudgetBytes = snapshot.effectiveAllocationBytes > snapshot.budgetBytes
-                                   ? snapshot.effectiveAllocationBytes - snapshot.budgetBytes
-                                   : 0;
+    snapshot.editorTextureEffectiveAllocationBytes =
+        m_guiPlayerMode ? uint64_t{0} : snapshot.imguiTextureBytes + snapshot.pendingImguiTextureBytes;
+    snapshot.runtimeEffectiveAllocationBytes =
+        snapshot.effectiveAllocationBytes > snapshot.editorTextureEffectiveAllocationBytes
+            ? snapshot.effectiveAllocationBytes - snapshot.editorTextureEffectiveAllocationBytes
+            : 0;
+    snapshot.runtimeOverBudgetBytes = snapshot.runtimeEffectiveAllocationBytes > snapshot.runtimeBudgetBytes
+                                          ? snapshot.runtimeEffectiveAllocationBytes - snapshot.runtimeBudgetBytes
+                                          : 0;
+    snapshot.editorTextureOverBudgetBytes =
+        snapshot.editorTextureEffectiveAllocationBytes > snapshot.editorTextureBudgetBytes
+            ? snapshot.editorTextureEffectiveAllocationBytes - snapshot.editorTextureBudgetBytes
+            : 0;
+    snapshot.overBudgetBytes = snapshot.runtimeOverBudgetBytes + snapshot.editorTextureOverBudgetBytes;
     return snapshot;
 }
 
@@ -2174,15 +2211,14 @@ size_t InxRenderer::TrimGpuResidencyBudget()
         throw std::logic_error("Cannot trim GPU residency before renderer initialization");
 
     auto snapshot = GetGpuResidencySnapshot();
-    uint64_t projectedBytes = snapshot.effectiveAllocationBytes;
-    size_t evicted = 0;
-    while (projectedBytes > snapshot.budgetBytes) {
+    uint64_t projectedBytes = snapshot.runtimeEffectiveAllocationBytes;
+    size_t evicted = m_gui ? m_gui->TrimImGuiTextureBudget() : 0;
+    while (projectedBytes > snapshot.runtimeBudgetBytes) {
         enum class Domain
         {
             None,
             Mesh,
             Texture,
-            ImGui
         };
         Domain domain = Domain::None;
         GpuEvictionCandidate selected;
@@ -2198,8 +2234,6 @@ size_t InxRenderer::TrimGpuResidencyBudget()
         };
         consider(Domain::Mesh, m_vkCore->PeekOldestMeshGpuEvictable());
         consider(Domain::Texture, m_vkCore->PeekOldestTextureGpuEvictable());
-        if (m_gui)
-            consider(Domain::ImGui, m_gui->PeekOldestImGuiTextureEvictable());
         if (!selected.valid)
             break;
 
@@ -2210,9 +2244,6 @@ size_t InxRenderer::TrimGpuResidencyBudget()
             break;
         case Domain::Texture:
             releasedBytes = m_vkCore->EvictOldestTextureGpu();
-            break;
-        case Domain::ImGui:
-            releasedBytes = m_gui->EvictOldestImGuiTexture();
             break;
         case Domain::None:
             break;
@@ -2450,6 +2481,12 @@ uint64_t InxRenderer::SubmitTextureForImGui(const std::string &name, const unsig
     if (!m_gui)
         throw std::logic_error("ImGui texture submission requires an initialized GUI");
     return m_gui->SubmitTextureForImGui(name, pixels, byteCount, width, height, filter, pinned);
+}
+
+void InxRenderer::SupersedePendingImGuiTextureUploads(const std::string &name)
+{
+    if (m_gui)
+        m_gui->SupersedePendingImGuiTextureUploads(name);
 }
 
 void InxRenderer::RemoveImGuiTexture(const std::string &name)
@@ -2868,6 +2905,104 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
     return snapshot;
 }
 
+uint64_t InxRenderer::BeginFramePerformanceWindow()
+{
+    m_framePerformanceWriteIndex = 0;
+    m_framePerformanceSampleCount = 0;
+    m_framePerformanceDroppedSampleCount = 0;
+    return m_frameCount + 1;
+}
+
+void InxRenderer::RecordFramePerformanceSample(double frameMs)
+{
+    auto &sample = m_framePerformanceHistory[m_framePerformanceWriteIndex];
+    sample.frame = m_frameCount;
+    sample.frameMs = frameMs;
+    sample.gameOnlyMs = m_gameOnlyFrameMs;
+    sample.renderMs = m_lastGameRenderMs;
+    sample.sceneMs = m_sceneUpdateMs;
+    sample.guiMs = m_guiBuildMs;
+    sample.prepareMs = m_prepareFrameMs;
+
+    m_framePerformanceWriteIndex = (m_framePerformanceWriteIndex + 1) % FRAME_PERFORMANCE_HISTORY_SIZE;
+    if (m_framePerformanceSampleCount < FRAME_PERFORMANCE_HISTORY_SIZE)
+        ++m_framePerformanceSampleCount;
+    else
+        ++m_framePerformanceDroppedSampleCount;
+}
+
+RendererFramePerformanceSnapshot InxRenderer::GetFramePerformanceWindow() const
+{
+    RendererFramePerformanceSnapshot snapshot;
+    const size_t count = m_framePerformanceSampleCount;
+    snapshot.sampleCount = count;
+    snapshot.droppedSampleCount = m_framePerformanceDroppedSampleCount;
+    if (count == 0)
+        return snapshot;
+
+    const size_t firstSlot =
+        (m_framePerformanceWriteIndex + FRAME_PERFORMANCE_HISTORY_SIZE - count) % FRAME_PERFORMANCE_HISTORY_SIZE;
+    snapshot.firstFrame = m_framePerformanceHistory[firstSlot].frame;
+    snapshot.lastFrame =
+        m_framePerformanceHistory[(m_framePerformanceWriteIndex + FRAME_PERFORMANCE_HISTORY_SIZE - 1) %
+                                  FRAME_PERFORMANCE_HISTORY_SIZE]
+            .frame;
+
+    const auto summarize = [](std::vector<double> values) {
+        UIPerformanceMetricStats stats;
+        stats.sampleCount = values.size();
+        if (values.empty())
+            return stats;
+
+        stats.meanMs = std::accumulate(values.begin(), values.end(), 0.0) / static_cast<double>(values.size());
+        std::sort(values.begin(), values.end());
+        const auto percentile = [&values](double fraction) {
+            if (values.size() == 1)
+                return values.front();
+            const double position = fraction * static_cast<double>(values.size() - 1);
+            const size_t lower = static_cast<size_t>(std::floor(position));
+            const size_t upper = static_cast<size_t>(std::ceil(position));
+            if (lower == upper)
+                return values[lower];
+            return values[lower] + (values[upper] - values[lower]) * (position - static_cast<double>(lower));
+        };
+        stats.medianMs = percentile(0.50);
+        stats.p95Ms = percentile(0.95);
+        stats.p99Ms = percentile(0.99);
+        stats.maxMs = values.back();
+        return stats;
+    };
+
+    std::vector<double> frame;
+    std::vector<double> gameOnly;
+    std::vector<double> render;
+    std::vector<double> scene;
+    std::vector<double> gui;
+    std::vector<double> prepare;
+    frame.reserve(count);
+    gameOnly.reserve(count);
+    render.reserve(count);
+    scene.reserve(count);
+    gui.reserve(count);
+    prepare.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+        const auto &sample = m_framePerformanceHistory[(firstSlot + index) % FRAME_PERFORMANCE_HISTORY_SIZE];
+        frame.push_back(sample.frameMs);
+        gameOnly.push_back(sample.gameOnlyMs);
+        render.push_back(sample.renderMs);
+        scene.push_back(sample.sceneMs);
+        gui.push_back(sample.guiMs);
+        prepare.push_back(sample.prepareMs);
+    }
+    snapshot.frame = summarize(std::move(frame));
+    snapshot.gameOnly = summarize(std::move(gameOnly));
+    snapshot.render = summarize(std::move(render));
+    snapshot.scene = summarize(std::move(scene));
+    snapshot.gui = summarize(std::move(gui));
+    snapshot.prepare = summarize(std::move(prepare));
+    return snapshot;
+}
+
 void InxRenderer::RecordUIPerformanceFrame()
 {
     if (!m_gui)
@@ -2931,6 +3066,8 @@ RendererUIPerformanceSnapshot InxRenderer::GetUIPerformanceSnapshot(size_t maxSa
             values.size() % 2 == 0 ? (values[medianIndex] + values[medianIndex + 1]) * 0.5 : values[medianIndex];
         const size_t p95Index = static_cast<size_t>(std::ceil(static_cast<double>(values.size()) * 0.95)) - 1;
         stats.p95Ms = values[(std::min)(p95Index, values.size() - 1)];
+        const size_t p99Index = static_cast<size_t>(std::ceil(static_cast<double>(values.size()) * 0.99)) - 1;
+        stats.p99Ms = values[(std::min)(p99Index, values.size() - 1)];
         stats.maxMs = values.back();
         return stats;
     };

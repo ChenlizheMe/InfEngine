@@ -179,6 +179,9 @@ class AuthoringDocumentController:
                 continue
 
             self._publication_error = ""
+            publication_start_revision = registry.require(
+                ticket.document_id
+            ).revision
             try:
                 publication = self._call(
                     "publish_authoring_save_snapshot",
@@ -188,6 +191,14 @@ class AuthoringDocumentController:
                     self._publication_error = str(publication)
             except Exception as exc:
                 self._publication_error = str(exc)
+
+            published_document = registry.get(ticket.document_id)
+            if (
+                not self._publication_error
+                and published_document is not None
+                and published_document.revision != publication_start_revision
+            ):
+                registry.mark_save_publication_bookkeeping(ticket.ticket_id)
 
             document = registry.get(ticket.document_id)
             if document is None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from weakref import ref
+
 from PySide6.QtCore import Property, QEasingCurve, QEvent, QObject, QPropertyAnimation, Qt, QVariantAnimation
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QComboBox, QFrame, QLineEdit, QPushButton, QWidget
@@ -112,14 +114,47 @@ class AnimatedSurfaceFrame(QFrame):
         super().paintEvent(event)
 
 
+_HOVER_FILTER_OBJECT_NAME = "infernuxHubHoverAnimationFilter"
+
+
 class HoverAnimationFilter(QObject):
     """Animate common Hub controls that cannot transition through QSS alone."""
 
+    def __init__(self, app: QApplication):
+        # The application owns the filter.  Keeping this relationship in the
+        # QObject tree is important: Python attributes are not a reliable
+        # registry when PySide creates a new wrapper for the same QApplication.
+        super().__init__(app)
+        self.setObjectName(_HOVER_FILTER_OBJECT_NAME)
+        self._app_ref = ref(app)
+        self._installed = False
+        app.aboutToQuit.connect(self._on_application_quit)
+        self._install_once()
+
+    def _install_once(self) -> None:
+        app = self._app_ref()
+        if app is None or self._installed:
+            return
+        # Qt normally de-duplicates an event filter, but remove first also
+        # repairs a filter that was temporarily removed by a test or a host.
+        app.removeEventFilter(self)
+        app.installEventFilter(self)
+        self._installed = True
+
+    def uninstall(self) -> None:
+        app = self._app_ref()
+        if app is not None and self._installed:
+            app.removeEventFilter(self)
+        self._installed = False
+
+    def _on_application_quit(self) -> None:
+        self.uninstall()
+
     def eventFilter(self, watched, event):
         if isinstance(watched, (QPushButton, QLineEdit, QComboBox)):
-            if event.type() == QEvent.Type.Enter:
+            if event.type() in (QEvent.Type.Enter, QEvent.Type.HoverEnter):
                 self._animate(watched, 1.0)
-            elif event.type() == QEvent.Type.Leave:
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.HoverLeave):
                 self._animate(watched, 0.0)
             elif event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
                 self._apply(watched, float(getattr(watched, "_hub_hover_progress", 0.0)))
@@ -198,13 +233,48 @@ class HoverAnimationFilter(QObject):
         )
 
 
-def ensure_hover_animation_filter(app: QApplication) -> HoverAnimationFilter:
-    animator = getattr(app, "_infernux_hover_animator", None)
+def ensure_hover_animation_filter(app: QApplication | None = None) -> HoverAnimationFilter:
+    """Return the one hover filter owned by the live Hub QApplication.
+
+    ``QApplication.instance()`` is canonical here.  Accepting a caller's
+    wrapper only for validation avoids attaching a filter to a stale or
+    foreign application object, which was the source of order-dependent
+    tests after another Qt consumer had created and released an app.
+    """
+    current = QApplication.instance()
+    if current is None:
+        raise RuntimeError("Hub hover animation requires a live QApplication")
+    if app is not None and app is not current:
+        # Different Python wrappers can represent the same C++ object.  The
+        # QObject child lookup below is deliberately based on the canonical
+        # current application rather than Python object identity.
+        app = current
+
+    animator = current.findChild(HoverAnimationFilter, _HOVER_FILTER_OBJECT_NAME)
     if animator is None:
-        animator = HoverAnimationFilter(app)
-        app.installEventFilter(animator)
-        app._infernux_hover_animator = animator
+        animator = HoverAnimationFilter(current)
+    else:
+        animator._install_once()
+
+    # Keep the old attribute as a compatibility/debug handle, but never use it
+    # as the ownership or identity source.
+    current._infernux_hover_animator = animator
     return animator
 
 
-__all__ = ["AnimatedSurfaceFrame", "HoverAnimationFilter", "ensure_hover_animation_filter"]
+def release_hover_animation_filter(app: QApplication | None = None) -> None:
+    """Remove the Hub filter without destroying the owning QApplication."""
+    current = QApplication.instance()
+    if current is None:
+        return
+    animator = current.findChild(HoverAnimationFilter, _HOVER_FILTER_OBJECT_NAME)
+    if animator is not None:
+        animator.uninstall()
+
+
+__all__ = [
+    "AnimatedSurfaceFrame",
+    "HoverAnimationFilter",
+    "ensure_hover_animation_filter",
+    "release_hover_animation_filter",
+]

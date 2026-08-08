@@ -1962,6 +1962,26 @@ std::vector<std::string> AssetDatabase::GetAllGuids() const
     return result;
 }
 
+std::vector<std::string> AssetDatabase::GetAllAssetPaths() const
+{
+    std::vector<std::string> result;
+    if (CanReadWorkingSet()) {
+        result.reserve(m_guidToPath.size());
+        for (const auto &[guid, path] : m_guidToPath) {
+            (void)guid;
+            result.push_back(path);
+        }
+        return result;
+    }
+    const auto snapshot = LoadQuerySnapshot();
+    result.reserve(snapshot->guidToPath.size());
+    for (const auto &[guid, path] : snapshot->guidToPath) {
+        (void)guid;
+        result.push_back(path);
+    }
+    return result;
+}
+
 std::shared_ptr<const AssetCatalogSnapshot> AssetDatabase::GetCatalogSnapshot() const
 {
     return LoadQuerySnapshot()->catalog;

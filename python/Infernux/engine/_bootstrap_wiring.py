@@ -319,7 +319,9 @@ class BootstrapWiringMixin:
             return _can_panel_command(context, "edit.rename")
 
         def _create_project_folder(context):
-            return _invoke_panel_command(context, "project.create_folder")
+            return _invoke_target_panel_command(
+                context, "project", "project.create_folder"
+            )
 
         def _asset_rename_target(context) -> tuple[str, str]:
             return (
@@ -756,27 +758,31 @@ class BootstrapWiringMixin:
                 _create_project_folder,
                 display_name="Create Folder",
                 category="Assets",
-                can_execute=lambda context: _can_panel_command(
-                    context, "project.create_folder"
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "project", "project.create_folder"
                 ),
                 default_shortcut="Ctrl+Shift+N",
             ),
             EditorCommand(
                 "asset.create",
-                lambda context: _invoke_panel_command(context, "asset.create"),
+                lambda context: _invoke_target_panel_command(
+                    context, "project", "asset.create"
+                ),
                 display_name="Create Asset",
                 category="Assets",
-                can_execute=lambda context: _can_panel_command(
-                    context, "asset.create"
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "project", "asset.create"
                 ),
             ),
             EditorCommand(
                 "asset.open",
-                lambda context: _invoke_panel_command(context, "asset.open"),
+                lambda context: _invoke_target_panel_command(
+                    context, "project", "asset.open"
+                ),
                 display_name="Open Asset",
                 category="Assets",
-                can_execute=lambda context: _can_panel_command(
-                    context, "asset.open"
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "project", "asset.open"
                 ),
             ),
             EditorCommand(
@@ -795,22 +801,68 @@ class BootstrapWiringMixin:
             ),
             EditorCommand(
                 "asset.transfer",
-                lambda context: _invoke_panel_command(context, "asset.transfer"),
+                lambda context: _invoke_target_panel_command(
+                    context, "project", "asset.transfer"
+                ),
                 display_name="Move Assets",
                 category="Assets",
-                can_execute=lambda context: _can_panel_command(
-                    context, "asset.transfer"
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "project", "asset.transfer"
                 ),
             ),
             EditorCommand(
                 "project.reveal_in_explorer",
-                lambda context: _invoke_panel_command(
-                    context, "project.reveal_in_explorer"
+                lambda context: _invoke_target_panel_command(
+                    context, "project", "project.reveal_in_explorer"
                 ),
                 display_name="Reveal in File Explorer",
                 category="Assets",
-                can_execute=lambda context: _can_panel_command(
-                    context, "project.reveal_in_explorer"
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "project", "project.reveal_in_explorer"
+                ),
+            ),
+            EditorCommand(
+                "project.navigate_directory",
+                lambda context: _invoke_target_panel_command(
+                    context, "project", "project.navigate_directory"
+                ),
+                display_name="Navigate Project",
+                category="Assets",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "project", "project.navigate_directory"
+                ),
+            ),
+            EditorCommand(
+                "project.locate_asset",
+                lambda context: _invoke_target_panel_command(
+                    context, "project", "project.locate_asset"
+                ),
+                display_name="Locate Asset",
+                category="Assets",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "project", "project.locate_asset"
+                ),
+            ),
+            EditorCommand(
+                "project.set_folder_expanded",
+                lambda context: _invoke_target_panel_command(
+                    context, "project", "project.set_folder_expanded"
+                ),
+                display_name="Set Project Folder Expanded",
+                category="Assets",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "project", "project.set_folder_expanded"
+                ),
+            ),
+            EditorCommand(
+                "project.set_model_expanded",
+                lambda context: _invoke_target_panel_command(
+                    context, "project", "project.set_model_expanded"
+                ),
+                display_name="Set Model Contents Expanded",
+                category="Assets",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "project", "project.set_model_expanded"
                 ),
             ),
             EditorCommand(

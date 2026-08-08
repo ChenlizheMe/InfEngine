@@ -141,25 +141,66 @@ uint inx_ordered_float(float value) {
     uint bits = floatBitsToUint(value);
     return (bits & 0x80000000u) != 0u ? ~bits : (bits ^ 0x80000000u);
 }
+bool inx_is_finite(float value) {
+    return !isnan(value) && !isinf(value);
+}
+bool inx_is_finite_vec3(vec3 value) {
+    return inx_is_finite(value.x) && inx_is_finite(value.y) && inx_is_finite(value.z);
+}
+shared uvec3 shared_lower[256];
+shared uvec3 shared_upper[256];
 void main() {
-    if (simulation_allowed == 0u) return;
+    uint local_index = gl_LocalInvocationID.x;
+    uvec3 lower_bits = uvec3(0xffffffffu);
+    uvec3 upper_bits = uvec3(0u);
     uint index = gl_GlobalInvocationID.x;
     uint source_count = min(source_instance_count, pc.capacity);
-    if (index >= source_count) return;
-    uint particle_index = source_indices[index];
-    if (particle_index >= pc.capacity) return;
-    ParticleInstance instance = instances[particle_index];
-    float radius = abs(instance.position_size.w) *
-        max(max(abs(instance.scale_custom.x), abs(instance.scale_custom.y)), abs(instance.scale_custom.z)) *
-        1.41421356237;
-    vec3 lower = instance.position_size.xyz - vec3(radius);
-    vec3 upper = instance.position_size.xyz + vec3(radius);
-    atomicMin(min_x, inx_ordered_float(lower.x));
-    atomicMin(min_y, inx_ordered_float(lower.y));
-    atomicMin(min_z, inx_ordered_float(lower.z));
-    atomicMax(max_x, inx_ordered_float(upper.x));
-    atomicMax(max_y, inx_ordered_float(upper.y));
-    atomicMax(max_z, inx_ordered_float(upper.z));
+    if (simulation_allowed != 0u && index < source_count) {
+        uint particle_index = source_indices[index];
+        if (particle_index < pc.capacity) {
+            ParticleInstance instance = instances[particle_index];
+            vec3 position = instance.position_size.xyz;
+            vec3 scale = abs(instance.scale_custom.xyz);
+            bool valid = inx_is_finite_vec3(position) && inx_is_finite(instance.position_size.w) &&
+                         inx_is_finite_vec3(instance.scale_custom.xyz);
+            if (valid) {
+                float radius = abs(instance.position_size.w) *
+                    max(max(scale.x, scale.y), scale.z) * 1.41421356237;
+                valid = inx_is_finite(radius) && radius >= 0.0;
+                if (valid) {
+                    vec3 bounds_lower = position - vec3(radius);
+                    vec3 bounds_upper = position + vec3(radius);
+                    valid = inx_is_finite_vec3(bounds_lower) && inx_is_finite_vec3(bounds_upper);
+                    if (valid) {
+                        lower_bits = uvec3(inx_ordered_float(bounds_lower.x), inx_ordered_float(bounds_lower.y),
+                                           inx_ordered_float(bounds_lower.z));
+                        upper_bits = uvec3(inx_ordered_float(bounds_upper.x), inx_ordered_float(bounds_upper.y),
+                                           inx_ordered_float(bounds_upper.z));
+                    }
+                }
+            }
+        }
+    }
+
+    shared_lower[local_index] = lower_bits;
+    shared_upper[local_index] = upper_bits;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (local_index < stride) {
+            shared_lower[local_index] = min(shared_lower[local_index], shared_lower[local_index + stride]);
+            shared_upper[local_index] = max(shared_upper[local_index], shared_upper[local_index + stride]);
+        }
+        barrier();
+    }
+
+    if (simulation_allowed != 0u && local_index == 0u) {
+        atomicMin(min_x, shared_lower[0].x);
+        atomicMin(min_y, shared_lower[0].y);
+        atomicMin(min_z, shared_lower[0].z);
+        atomicMax(max_x, shared_upper[0].x);
+        atomicMax(max_y, shared_upper[0].y);
+        atomicMax(max_z, shared_upper[0].z);
+    }
 }
 )glsl");
     return Source;
@@ -297,6 +338,9 @@ void ParticleGpuBounds::Destroy() noexcept
     m_preparePipeline = {};
     m_resetPipeline = {};
     m_reducePipeline = {};
+    m_controlPrepared = false;
+    m_preparedPolicy = GpuParticleOffscreenPolicy::AlwaysSimulate;
+    m_preparedForceSimulation = false;
 }
 
 bool ParticleGpuBounds::IsValid() const noexcept
@@ -310,13 +354,21 @@ bool ParticleGpuBounds::IsValid() const noexcept
 void ParticleGpuBounds::RecordPrepare(const rhi::ComputeCommandEncoder &encoder, GpuParticleOffscreenPolicy policy,
                                       bool forceSimulation) const
 {
+    if (!IsValid() || !encoder.IsValid())
+        return;
+    if (m_controlPrepared && policy == GpuParticleOffscreenPolicy::AlwaysSimulate &&
+        m_preparedPolicy == GpuParticleOffscreenPolicy::AlwaysSimulate &&
+        m_preparedForceSimulation == forceSimulation)
+        return;
     GpuParticleBoundsConstants constants;
     constants.capacity = m_capacity;
     constants.offscreenPolicy = policy;
     constants.forceSimulation = forceSimulation ? 1u : 0u;
     Bind(encoder, m_preparePipeline, constants);
-    if (IsValid() && encoder.IsValid())
-        encoder.Dispatch(1, 1, 1);
+    encoder.Dispatch(1, 1, 1);
+    m_controlPrepared = true;
+    m_preparedPolicy = policy;
+    m_preparedForceSimulation = forceSimulation;
 }
 
 void ParticleGpuBounds::RecordReset(const rhi::ComputeCommandEncoder &encoder, GpuParticleBoundsMode mode,

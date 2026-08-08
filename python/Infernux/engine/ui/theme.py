@@ -295,7 +295,7 @@ class Theme:
     HEADER            : RGBA = (0.235, 0.235, 0.235, 1.0)  # Normal (Unity #3C3C3C)
     HEADER_HOVERED    : RGBA = (0.28,  0.24,  0.24,  1.0)  # Hovered (red tint)
     HEADER_ACTIVE     : RGBA = (0.32,  0.25,  0.25,  1.0)  # Active (deeper red)
-    SELECTION_BG      : RGBA = (0.173, 0.365, 0.529, 1.0)  # Selection bg (Unity blue #2C5D87)
+    SELECTION_BG      : RGBA = (0.922, 0.341, 0.341, 1.0)  # Selection bg (theme accent #EB5757)
 
     # ══════════════════════════════════════════════════════════════════════
     #  Splitter Colors
@@ -360,8 +360,8 @@ class Theme:
     INSPECTOR_MIN_RAWDATA_H    = 100  # Min raw-data height
     INSPECTOR_SPLITTER_H       = 8  # Splitter bar height
     INSPECTOR_DEFAULT_RATIO    = 0.4  # Properties ratio
-    INSPECTOR_LABEL_PAD        = 18.0  # Label padding
-    INSPECTOR_MIN_LABEL_WIDTH  = 156.0  # Min label width
+    INSPECTOR_LABEL_PAD        = 12.0  # Label padding
+    INSPECTOR_MIN_LABEL_WIDTH  = 132.0  # Min label width
     INSPECTOR_FRAME_PAD        = (4.0, 2.0)  # Frame padding
     # Left text inset for object/reference fields so the label vertically and
     # horizontally aligns with neighbouring scalar widgets (Unity ObjectField).
@@ -398,6 +398,9 @@ class Theme:
     INSPECTOR_HEADER_PRIMARY    : RGBA = (0.235, 0.235, 0.235, 1.0)  # Primary (Unity gray)
     INSPECTOR_HEADER_PRIMARY_HOVERED : RGBA = (0.28,  0.24,  0.24,  1.0)  # Primary hovered (red tint)
     INSPECTOR_HEADER_PRIMARY_ACTIVE  : RGBA = (0.32,  0.25,  0.25,  1.0)  # Primary active
+    INSPECTOR_HEADER_SELECTED   : RGBA = (0.40,  0.22,  0.22,  1.0)  # Selected component header (theme red tint)
+    INSPECTOR_HEADER_SELECTED_HOVERED : RGBA = (0.46,  0.24,  0.24,  1.0)
+    INSPECTOR_HEADER_SELECTED_ACTIVE  : RGBA = (0.50,  0.26,  0.26,  1.0)
     INSPECTOR_HEADER_SECONDARY  : RGBA = (0.18,  0.18,  0.18,  1.0)  # Secondary (same scale, darker tone)
     INSPECTOR_HEADER_SECONDARY_HOVERED : RGBA = (0.22,  0.20,  0.20,  1.0)
     INSPECTOR_HEADER_SECONDARY_ACTIVE  : RGBA = (0.26,  0.22,  0.22,  1.0)
@@ -458,7 +461,7 @@ class Theme:
     TREE_FRAME_PAD    = (2.0, 2.0)  # Tree frame padding (Unity-compact)
     TREE_INDENT       : float = 14.0  # Tree indent per level (Unity: ~14px)
     TREE_ROW_ALT_BG   : RGBA = (0.0, 0.0, 0.0, 0.08)  # Alternating row tint
-    TREE_DND_LINE_CLR : RGBA = (0.33, 0.56, 0.90, 1.0)  # Drag insertion line (Unity blue)
+    TREE_DND_LINE_CLR : RGBA = (0.922, 0.341, 0.341, 1.0)  # Drag insertion line (theme red)
     PREFAB_ICON       : str  = "\u25C6"  # Prefab icon (diamond)
 
     # ══════════════════════════════════════════════════════════════════════
@@ -528,14 +531,14 @@ class Theme:
     # -- Multi-Canvas Layout
     UI_EDITOR_CANVAS_HEADER_H      : float = 22.0   # Canvas header bar height (screen px)
     UI_EDITOR_CANVAS_HEADER_BG     : RGBA = (0.18, 0.18, 0.18, 1.0)
-    UI_EDITOR_CANVAS_HEADER_BG_FOC : RGBA = (0.22, 0.30, 0.36, 1.0)  # Focused canvas header
+    UI_EDITOR_CANVAS_HEADER_BG_FOC : RGBA = (0.35, 0.22, 0.22, 1.0)  # Focused canvas header (theme red tint)
     UI_EDITOR_CANVAS_HEADER_TEXT   : RGBA = (0.85, 0.85, 0.85, 1.0)
     UI_EDITOR_CANVAS_SPACING       : float = 60.0   # Auto-layout gap between canvases (workspace px)
     UI_EDITOR_CANVAS_INACTIVE_ALPHA: float = 0.35    # Alpha multiplier for inactive canvases
 
     # -- Element Interaction
-    UI_EDITOR_ELEMENT_HOVER   : RGBA = (0.00, 0.74, 0.83, 0.12)  # Element hover (cyan glow)
-    UI_EDITOR_ELEMENT_SELECT  : RGBA = (0.00, 0.74, 0.83, 1.0)  # Element selected (electric cyan)
+    UI_EDITOR_ELEMENT_HOVER   : RGBA = (0.922, 0.341, 0.341, 0.12)  # Element hover (red glow)
+    UI_EDITOR_ELEMENT_SELECT  : RGBA = (0.922, 0.341, 0.341, 1.0)  # Element selected (theme red)
 
     # -- Handles
     UI_EDITOR_HANDLE_COLOR    : RGBA = (1.0, 1.0, 1.0, 1.0)  # Handle color
@@ -593,8 +596,8 @@ class Theme:
     UI_EDITOR_SNAP_DEFAULT    : int = 100  # Step at smallest zoom
 
     # -- Alignment Guides
-    UI_EDITOR_ALIGN_GUIDE     : RGBA = (0.18, 0.72, 1.0, 0.95)  # Guide line color
-    UI_EDITOR_ALIGN_GUIDE_FAINT: RGBA = (0.18, 0.72, 1.0, 0.30)  # Faint guide color
+    UI_EDITOR_ALIGN_GUIDE     : RGBA = (0.922, 0.341, 0.341, 0.95)  # Guide line color
+    UI_EDITOR_ALIGN_GUIDE_FAINT: RGBA = (0.922, 0.341, 0.341, 0.30)  # Faint guide color
     UI_EDITOR_ALIGN_GUIDE_W   : float = 1.5  # Guide line width
     UI_EDITOR_ALIGN_SNAP_PX   : float = 8.0  # Snap threshold (px)
     UI_EDITOR_ALIGN_BTN_W     : float = 34.0  # Align button width
@@ -605,7 +608,7 @@ class Theme:
     #  UI UI Runtime Defaults (InxScreenUI )
     # ══════════════════════════════════════════════════════════════════════
 
-    UI_DEFAULT_BUTTON_BG      : RGBA = (0.22, 0.56, 0.92, 1.0)  # Default button bg
+    UI_DEFAULT_BUTTON_BG      : RGBA = (0.922, 0.341, 0.341, 1.0)  # Default button bg
     UI_DEFAULT_LABEL_COLOR    : RGBA = (1.0, 1.0, 1.0, 1.0)  # Default label color
     UI_DEFAULT_FONT_SIZE      : float = 18.0  # Default font size
     UI_DEFAULT_LINE_HEIGHT    : float = 1.2  # Default line height

@@ -638,7 +638,8 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
     auto optionCheckbox = [&](const char *label, const char *option, const char *semanticId) {
         bool value = GetViewOption(option);
         if (ImGui::Checkbox(label, &value))
-            ExecuteEditorCommand("console.set_option", std::string(option) + "\t" + (value ? "1" : "0"), "pointer");
+            ExecuteEditorCommand("console.set_option", "pointer",
+                                 std::string(option) + "\t" + (value ? "1" : "0"));
         ctx->RecordSemanticItem("checkbox", label, true, semanticId, GetViewOption(option));
     };
 
@@ -657,7 +658,7 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
     ImGui::SameLine();
     bool follow = GetViewOption("follow");
     if (ImGui::Checkbox("Follow", &follow))
-        ExecuteEditorCommand("console.set_option", std::string("follow\t") + (follow ? "1" : "0"), "pointer");
+        ExecuteEditorCommand("console.set_option", "pointer", std::string("follow\t") + (follow ? "1" : "0"));
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Keep the view pinned to incoming messages");
     ctx->RecordSemanticItem("checkbox", "Follow", true, "console.follow", follow);
@@ -679,7 +680,7 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         const std::string committed = m_search.data();
         if (committed != m_searchEditStart &&
-            !ExecuteEditorCommand("console.set_search", m_searchEditStart + "\n" + committed, "inline_edit"))
+            !ExecuteEditorCommand("console.set_search", "inline_edit", m_searchEditStart + "\n" + committed))
             SetSearchQuery(m_searchEditStart);
         m_searchEditStart.clear();
     }
@@ -701,7 +702,8 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorTheme::BTN_GHOST_HOVERED);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, EditorTheme::BTN_GHOST_ACTIVE);
         if (ImGui::Button(label, ImVec2(segmentWidth, 0.0f)))
-            ExecuteEditorCommand("console.set_option", std::string(option) + "\t" + (!enabled ? "1" : "0"), "pointer");
+            ExecuteEditorCommand("console.set_option", "pointer",
+                                 std::string(option) + "\t" + (!enabled ? "1" : "0"));
         ctx->RecordSemanticItem("console_filter", name, true, std::string("console.filter.") + id,
                                 GetViewOption(option), static_cast<double>(count));
         ImGui::PopStyleColor(4);
@@ -840,7 +842,7 @@ void ConsolePanel::RenderBody(InxGUIContext *ctx)
         }
         if (ImGui::IsItemDeactivated() && std::abs(m_detailHeight - m_detailResizeStart) > 0.5f) {
             const std::string argument = std::to_string(m_detailResizeStart) + "\t" + std::to_string(m_detailHeight);
-            if (!ExecuteEditorCommand("console.set_detail_height", argument, "drag"))
+            if (!ExecuteEditorCommand("console.set_detail_height", "drag", argument))
                 SetDetailHeight(m_detailResizeStart);
         }
         ImGui::PopStyleColor(3);
@@ -911,8 +913,9 @@ void ConsolePanel::RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry 
         // Source navigation is an editor command, not a panel callback. This
         // keeps pointer input, menus, shortcuts, and automation on one route.
         if (ImGui::IsMouseDoubleClicked(0) && !log.sourceFile.empty()) {
-            ExecuteEditorCommand("console.open_source",
-                                 log.sourceFile + "\t" + std::to_string((std::max)(log.sourceLine, 0)), "pointer");
+            ExecuteEditorCommand(
+                "console.open_source", "pointer",
+                log.sourceFile + "\t" + std::to_string((std::max)(log.sourceLine, 0)));
         }
         if (selectionChanged)
             PublishSelection(ve.uid, true);

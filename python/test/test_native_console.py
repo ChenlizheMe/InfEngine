@@ -119,6 +119,17 @@ class TestNativeConsolePanel:
         assert "MatchesCurrentFilters" in source
         assert "if (!m_cacheDirty && !m_filterDirty)" in source
 
+    def test_console_commands_pass_source_before_payload(self):
+        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(
+            encoding="utf-8"
+        )
+
+        assert 'ExecuteEditorCommand("console.set_option", "pointer"' in source
+        assert 'ExecuteEditorCommand("console.set_search", "inline_edit"' in source
+        assert 'ExecuteEditorCommand("console.set_detail_height", "drag", argument)' in source
+        assert 'ExecuteEditorCommand("console.set_option", std::string' not in source
+        assert 'ExecuteEditorCommand("console.set_search", m_searchEditStart' not in source
+
     def test_console_user_selection_is_intent_only_until_global_projection(self):
         source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
         select_uid = source[

@@ -123,6 +123,7 @@ class InxGUIContext
     bool RadioButton(const std::string &label, bool active);
     bool Selectable(const std::string &label, bool selected = false, int flags = 0, float width = 0.0f,
                     float height = 0.0f);
+    int SelectableListClipped(size_t itemCount, const std::function<std::string(size_t)> &labelAt);
 
     /* value editors */
     void Checkbox(const std::string &label, bool *value);

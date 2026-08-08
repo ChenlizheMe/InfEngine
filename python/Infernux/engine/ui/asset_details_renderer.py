@@ -337,7 +337,10 @@ class _State:
             if self.category == "texture":
                 invalidate_live_texture_preview(self.file_path)
             else:
-                invalidate_live_material_preview(self.file_path)
+                from Infernux.core.assets import AssetManager
+
+                if not AssetManager.has_pending_local_revision(self.file_path):
+                    invalidate_live_material_preview(self.file_path)
         self.reset()
         self.file_path = file_path
         self.category = category
@@ -1948,7 +1951,10 @@ def invalidate():
         invalidate_live_texture_preview(_state.file_path)
     if _state.category == "material" and _state.file_path:
         from .asset_resource_preview import invalidate_live_material_preview
-        invalidate_live_material_preview(_state.file_path)
+        from Infernux.core.assets import AssetManager
+
+        if not AssetManager.has_pending_local_revision(_state.file_path):
+            invalidate_live_material_preview(_state.file_path)
     if _state.category == "audio":
         _stop_audio_preview()
     _state.reset()

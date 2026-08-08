@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from Infernux.engine.interaction import (
     DocumentActionResult,
     DocumentActionStatus,
@@ -52,16 +54,22 @@ class _Controller:
         return True
 
 
-def _conflicted_document(registry: DocumentRegistry, title: str = "Smoke"):
+def _conflicted_document(
+    registry: DocumentRegistry,
+    title: str = "Smoke",
+    *,
+    resource_path: Path | None = None,
+):
     controller = _Controller(registry)
+    path = resource_path or Path(f"{title}.particlegraph")
     document = registry.create(
         DocumentKind.PARTICLE_GRAPH,
         title,
         key=DocumentKey.resource(
             DocumentKind.PARTICLE_GRAPH,
-            f"{title}.particlegraph",
+            str(path),
         ),
-        resource_path=f"{title}.particlegraph",
+        resource_path=str(path),
         revision=1,
         saved_revision=0,
         capabilities=(
@@ -145,16 +153,139 @@ def test_external_conflicts_are_serialized_one_document_at_a_time():
     assert not coordinator.is_active
 
 
-def test_stale_conflict_revision_cannot_resolve_a_new_external_change():
+def test_stale_conflict_revision_cannot_resolve_a_new_external_change(tmp_path):
     registry = DocumentRegistry()
-    document, _controller = _conflicted_document(registry)
+    path = tmp_path / "Smoke.particlegraph"
+    path.write_text("baseline", encoding="utf-8")
+    document, _controller = _conflicted_document(
+        registry,
+        resource_path=path,
+    )
     service = ExternalDocumentConflictService(registry)
     service.poll()
     conflict = service.active
     assert conflict is not None
 
+    path.write_text("external-change", encoding="utf-8")
     registry.publish_external_resource_change(document.resource_path)
     result = service.keep_local(conflict.conflict_id)
 
     assert result.status is DocumentActionStatus.REJECTED
     assert document.state is DocumentState.CONFLICT
+
+
+class _ConflictModalContext:
+    def __init__(self, begin_results):
+        self.begin_results = list(begin_results)
+        self.opened = []
+        self.semantic_windows = []
+
+    def open_popup(self, popup_id):
+        self.opened.append(popup_id)
+
+    def get_main_viewport_bounds(self):
+        return (0.0, 0.0, 1280.0, 720.0)
+
+    def set_next_window_pos(self, *_args):
+        return None
+
+    def set_next_window_size(self, *_args):
+        return None
+
+    def begin_popup_modal(self, _popup_id, _flags=0):
+        return self.begin_results.pop(0)
+
+    def record_semantic_window(self, *args):
+        self.semantic_windows.append(args)
+
+    def text_wrapped(self, *_args):
+        return None
+
+    def spacing(self):
+        return None
+
+    def separator(self):
+        return None
+
+    def get_content_region_avail_height(self):
+        return 400.0
+
+    def get_cursor_pos_y(self):
+        return 0.0
+
+    def set_cursor_pos_y(self, _value):
+        return None
+
+    def get_content_region_avail_width(self):
+        return 600.0
+
+    def get_cursor_pos_x(self):
+        return 0.0
+
+    def set_cursor_pos_x(self, _value):
+        return None
+
+    def button(self, *_args, **_kwargs):
+        return False
+
+    def record_semantic_item(self, *_args):
+        return None
+
+    def begin_disabled(self, *_args):
+        return None
+
+    def end_disabled(self):
+        return None
+
+    def same_line(self):
+        return None
+
+    def end_popup(self):
+        return None
+
+
+def test_external_conflict_popup_reopens_after_imgui_closes_it():
+    registry = DocumentRegistry()
+    modals = ModalService()
+    document, _controller = _conflicted_document(registry)
+    coordinator = ExternalDocumentConflictCoordinator(registry, modals)
+    coordinator.poll()
+
+    ctx = _ConflictModalContext([False, True])
+    modals.render(ctx)
+
+    # The conflict remains a domain transaction, but the invisible popup no
+    # longer blocks Ctrl+S/Ctrl+Z or other editor shortcuts.
+    assert coordinator.is_active
+    assert modals.active_modal_id == ""
+    assert modals.is_presented(coordinator.MODAL_ID) is False
+
+    # The next overlay frame reopens the popup and restores real modal input
+    # ownership. The action remains selectable through the coordinator API.
+    coordinator.poll()
+    modals.render(ctx)
+    assert modals.is_presented(coordinator.MODAL_ID) is True
+    assert modals.active_modal_id == coordinator.MODAL_ID
+    assert coordinator.choose_keep_local()
+    assert not coordinator.is_active
+
+
+def test_external_conflict_reacquires_overlay_after_editor_lifecycle_displaces_it():
+    registry = DocumentRegistry()
+    modals = ModalService()
+    document, _controller = _conflicted_document(registry, "PlayStopDock")
+    coordinator = ExternalDocumentConflictCoordinator(registry, modals)
+
+    coordinator.poll()
+    assert coordinator.active_document_id == document.document_id
+    assert modals.active_modal_id == coordinator.MODAL_ID
+
+    # Play/Stop and dock focus restoration may rebuild the overlay stack. They
+    # must not discard the domain conflict itself.
+    assert modals.deactivate(coordinator.MODAL_ID)
+    assert coordinator.is_active
+    assert modals.active_modal_id == ""
+
+    coordinator.poll()
+    assert coordinator.is_active
+    assert modals.active_modal_id == coordinator.MODAL_ID

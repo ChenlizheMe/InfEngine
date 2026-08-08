@@ -1,4 +1,8 @@
 recursive-include python/Infernux *
+recursive-exclude python/Infernux/_runtime_packs *
+recursive-exclude python/Infernux/_runtime_modules *
+recursive-include python/Infernux/_runtime_packs Player.inxmanifest Runtime.inxrt
+recursive-include python/Infernux/_runtime_modules Player.inxmanifest Parallel.inxmod
 recursive-exclude python/Infernux/test *
 recursive-exclude python/test *
 recursive-exclude python *.meta

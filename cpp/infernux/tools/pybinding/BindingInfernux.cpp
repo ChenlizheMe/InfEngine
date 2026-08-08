@@ -107,12 +107,12 @@ const char *ParticleSortModeName(particle::ParticleSortMode value)
 particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &value)
 {
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
-        "bootstrap",        "init",         "update",   "contact_prepare", "contact_solve",
-        "contact_dispatch", "render_reset", "rendering"};
+        "bootstrap",        "init",         "update",          "update_rendering_fused",
+        "contact_prepare",  "contact_solve", "contact_dispatch", "render_reset", "rendering"};
     for (const char *field :
          {"id", "graph_instance_id", "graph_emitter_index", "owner_object_id", "owner_layer_mask", "artifact_revision",
           "stable_id", "capacity", "state_stride", "event_type_count", "collision_enabled", "parameter_words",
-          "continuation", "stages", "billboard", "mesh_shaders", "outputs"}) {
+          "continuation", "update_render_fusion", "stages", "billboard", "mesh_shaders", "outputs"}) {
         if (!value.contains(field))
             throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
     }
@@ -348,9 +348,34 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         }
     }
 
+    if (!py::isinstance<py::dict>(value["update_render_fusion"]))
+        throw std::invalid_argument("GPU particle update_render_fusion must be a dictionary");
+    const py::dict fusion = py::cast<py::dict>(value["update_render_fusion"]);
+    if (!fusion.contains("eligible") || !fusion.contains("fused_stage") ||
+        !py::isinstance<py::bool_>(fusion["eligible"]) || !py::isinstance<py::str>(fusion["fused_stage"]))
+        throw std::invalid_argument("GPU particle update_render_fusion is missing eligibility metadata");
+    program.supportsFusedUpdateRendering = py::cast<bool>(fusion["eligible"]);
+    const std::string fusedStage = py::cast<std::string>(fusion["fused_stage"]);
+    if (program.supportsFusedUpdateRendering) {
+        if (fusedStage != "update_rendering_fused")
+            throw std::invalid_argument("GPU particle fused stage metadata is invalid");
+    } else if (!fusedStage.empty()) {
+        throw std::invalid_argument("GPU particle ineligible fusion metadata must not name a fused stage");
+    }
+
+    if (!py::isinstance<py::dict>(value["stages"]))
+        throw std::invalid_argument("GPU particle stages must be a dictionary");
     const py::dict stages = py::cast<py::dict>(value["stages"]);
+    const size_t expectedStageCount = static_cast<size_t>(particle::GpuKernelStage::Count) -
+                                      (program.supportsFusedUpdateRendering ? 0u : 1u);
+    if (py::len(stages) != expectedStageCount)
+        throw std::invalid_argument("GPU particle stages do not match update_render_fusion eligibility");
     for (size_t index = 0; index < StageNames.size(); ++index) {
         const char *stage = StageNames[index];
+        const bool isFusedStage = static_cast<particle::GpuKernelStage>(index) ==
+                                  particle::GpuKernelStage::UpdateRenderingFused;
+        if (isFusedStage && !program.supportsFusedUpdateRendering)
+            continue;
         if (!stages.contains(stage))
             throw std::invalid_argument(std::string("GPU particle program is missing stage ") + stage);
         program.kernels[index] = DecodeParticleSpirv(stages[stage], std::string("particle stage ") + stage);
@@ -584,7 +609,7 @@ PYBIND11_MODULE(_Infernux, m)
             "physics_gravity", [](EngineConfig &self) { return self.physicsGravity; },
             [](EngineConfig &self, const glm::vec3 &v) { self.physicsGravity = v; },
             "Default gravity vector (applied on physics init)")
-        .def_readwrite("physics_max_worker_threads", &EngineConfig::physicsMaxWorkerThreads)
+        .def_readwrite("physics_max_concurrency", &EngineConfig::physicsMaxConcurrency)
         // Physics — Default Collider Properties
         .def_readwrite("default_collider_friction", &EngineConfig::defaultColliderFriction)
         .def_readwrite("default_collider_bounciness", &EngineConfig::defaultColliderBounciness)
@@ -1050,6 +1075,8 @@ PYBIND11_MODULE(_Infernux, m)
                                        renderer ? renderer->GetGpuResidencySnapshot() : GpuResidencySnapshot{};
                                    py::dict result;
                                    result["budget_bytes"] = snapshot.budgetBytes;
+                                   result["runtime_budget_bytes"] = snapshot.runtimeBudgetBytes;
+                                   result["editor_texture_budget_bytes"] = snapshot.editorTextureBudgetBytes;
                                    result["allocator_allocation_bytes"] = snapshot.allocatorAllocationBytes;
                                    result["allocator_block_bytes"] = snapshot.allocatorBlockBytes;
                                    result["allocator_allocation_count"] = snapshot.allocatorAllocationCount;
@@ -1104,7 +1131,13 @@ PYBIND11_MODULE(_Infernux, m)
                                    result["tracked_bytes"] = snapshot.trackedBytes;
                                    result["unclassified_bytes"] = snapshot.unclassifiedBytes;
                                    result["effective_allocation_bytes"] = snapshot.effectiveAllocationBytes;
+                                   result["runtime_effective_allocation_bytes"] =
+                                       snapshot.runtimeEffectiveAllocationBytes;
+                                   result["editor_texture_effective_allocation_bytes"] =
+                                       snapshot.editorTextureEffectiveAllocationBytes;
                                    result["over_budget_bytes"] = snapshot.overBudgetBytes;
+                                   result["runtime_over_budget_bytes"] = snapshot.runtimeOverBudgetBytes;
+                                   result["editor_texture_over_budget_bytes"] = snapshot.editorTextureOverBudgetBytes;
                                    return result;
                                })
         .def_property_readonly("renderer_frame_snapshot",
@@ -1261,6 +1294,45 @@ PYBIND11_MODULE(_Infernux, m)
                                    result["ui_panel_sub_times_ms"] = snapshot.guiPanelSubTimesMs;
                                    return result;
                                })
+        .def(
+            "begin_renderer_performance_window",
+            [](Infernux &self) -> uint64_t {
+                auto *renderer = self.GetRenderer();
+                return renderer ? renderer->BeginFramePerformanceWindow() : uint64_t{0};
+            },
+            "Reset the bounded native frame performance window without reading renderer diagnostics")
+        .def(
+            "get_renderer_performance_window",
+            [](Infernux &self) {
+                auto *renderer = self.GetRenderer();
+                const RendererFramePerformanceSnapshot snapshot =
+                    renderer ? renderer->GetFramePerformanceWindow() : RendererFramePerformanceSnapshot{};
+                const auto encodeStats = [](const UIPerformanceMetricStats &stats) {
+                    py::dict result;
+                    result["sample_count"] = stats.sampleCount;
+                    result["avg_ms"] = stats.meanMs;
+                    result["p50_ms"] = stats.medianMs;
+                    result["p95_ms"] = stats.p95Ms;
+                    result["p99_ms"] = stats.p99Ms;
+                    result["max_ms"] = stats.maxMs;
+                    return result;
+                };
+                py::dict timings;
+                timings["frame"] = encodeStats(snapshot.frame);
+                timings["game_only"] = encodeStats(snapshot.gameOnly);
+                timings["render"] = encodeStats(snapshot.render);
+                timings["scene"] = encodeStats(snapshot.scene);
+                timings["gui"] = encodeStats(snapshot.gui);
+                timings["prepare"] = encodeStats(snapshot.prepare);
+                py::dict result;
+                result["first_frame"] = snapshot.firstFrame;
+                result["last_frame"] = snapshot.lastFrame;
+                result["sample_count"] = snapshot.sampleCount;
+                result["dropped_sample_count"] = snapshot.droppedSampleCount;
+                result["timings"] = std::move(timings);
+                return result;
+            },
+            "Read the immutable aggregated native frame performance window")
         .def_property_readonly("renderer_ui_performance_snapshot",
                                [](Infernux &self) {
                                    auto *renderer = self.GetRenderer();
@@ -1647,6 +1719,7 @@ PYBIND11_MODULE(_Infernux, m)
                     item["failed_upload_version"] = snapshot.failedUploadVersion;
                     item["texture_id"] = snapshot.textureId;
                     item["in_flight"] = snapshot.inFlight;
+                    item["authoring"] = snapshot.authoring;
                     item["has_render_ticket"] = snapshot.hasRenderTicket;
                     item["render_ticket_done"] = snapshot.renderTicketDone;
                     item["pending_width"] = snapshot.pendingWidth;

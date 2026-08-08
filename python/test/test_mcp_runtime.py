@@ -210,6 +210,43 @@ def test_runtime_ui_performance_reads_native_rolling_snapshot(monkeypatch):
     assert state["panel_times"]["project"]["median_ms"] == pytest.approx(0.04)
 
 
+def test_runtime_performance_window_uses_numeric_begin_and_read_bindings(monkeypatch):
+    class _Native:
+        def __init__(self):
+            self.begin_calls = 0
+            self.read_calls = 0
+
+        def begin_renderer_performance_window(self):
+            self.begin_calls += 1
+            return 321
+
+        def get_renderer_performance_window(self):
+            self.read_calls += 1
+            return {
+                "first_frame": 321,
+                "last_frame": 322,
+                "sample_count": 2,
+                "dropped_sample_count": 0,
+                "timings": {"frame": {"sample_count": 2, "p99_ms": 1.0}},
+            }
+
+    native = _Native()
+    fake = _FakeMcp()
+    runtime.register_runtime_tools(fake)
+    monkeypatch.setattr(runtime, "_runtime_native_engine", lambda: native)
+    monkeypatch.setattr(runtime, "_run_on_main", lambda _name, fn: fn())
+
+    started = fake.tools["runtime_performance_window_begin"]()
+    window = fake.tools["runtime_performance_window"]()
+
+    assert started["ok"] is True
+    assert started["data"]["start_frame"] == 321
+    assert window["ok"] is True
+    assert window["data"]["sample_count"] == 2
+    assert native.begin_calls == 1
+    assert native.read_calls == 1
+
+
 def test_runtime_physics_state_uses_public_world_and_frame_profile():
     class _Physics:
         body_count = 14

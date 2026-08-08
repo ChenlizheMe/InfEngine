@@ -287,6 +287,17 @@ class MaterialPipelineManager
         return m_sampleCount;
     }
 
+    /// Monotonic publication generation for renderer-side pass caches.
+    ///
+    /// The generation changes whenever a forward/semantic pipeline or its
+    /// descriptor publication can become stale. Callers can therefore keep a
+    /// resolved pass across frames without repeating shader reflection and
+    /// pass-ABI validation on every draw.
+    [[nodiscard]] uint64_t GetPublicationGeneration() const noexcept
+    {
+        return m_publicationGeneration;
+    }
+
   private:
     VkDevice m_device = VK_NULL_HANDLE;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
@@ -295,6 +306,7 @@ class MaterialPipelineManager
     VkFormat m_colorFormat = VK_FORMAT_UNDEFINED;
     VkFormat m_depthFormat = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits m_sampleCount = VK_SAMPLE_COUNT_1_BIT;
+    uint64_t m_publicationGeneration = 1;
 
     std::unordered_map<MaterialPassPipelineDescriptor, VkRenderPass, MaterialPassPipelineDescriptorHash>
         m_passRenderPassCache;

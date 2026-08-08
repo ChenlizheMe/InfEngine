@@ -8,7 +8,6 @@
 
 // Jolt includes (order matters)
 #include <Jolt/Core/Factory.h>
-#include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyActivationListener.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
@@ -32,6 +31,7 @@
 #include "PhysicsContactListener.h"
 #include "PhysicsLayers.h"
 #include "PhysicsWorld.h"
+#include "InfernuxJoltJobSystemAdapter.h"
 
 #include "../Collider.h"
 #include "../Component.h"
@@ -43,12 +43,12 @@
 #include <core/config/EngineConfig.h>
 #include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
+#include <core/threading/JobSystem.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdarg>
-#include <thread>
 #include <unordered_set>
 
 namespace infernux
@@ -345,12 +345,15 @@ void PhysicsWorld::Initialize()
     // -------------------------------------------------------------------------
     auto &cfg = EngineConfig::Get();
 
-    int hwThreads = static_cast<int>(std::thread::hardware_concurrency());
-    int numThreads = cfg.physicsMaxWorkerThreads > 0 ? cfg.physicsMaxWorkerThreads : std::clamp(hwThreads - 1, 1, 8);
+    if (!JobSystem::IsAvailable()) {
+        throw std::logic_error("PhysicsWorld requires an initialized Infernux JobSystem");
+    }
+    JobSystem::Get().SetDomainConcurrency(JobDomain::Physics, cfg.physicsMaxConcurrency);
 
     m_tempAllocator = std::make_unique<JPH::TempAllocatorImpl>(cfg.physicsTempAllocatorSize);
 
-    m_jobSystem = std::make_unique<JPH::JobSystemThreadPool>(cfg.physicsMaxJobs, cfg.physicsMaxBarriers, numThreads);
+    m_jobSystem = std::make_unique<InfernuxJoltJobSystemAdapter>(
+        cfg.physicsMaxJobs, cfg.physicsMaxBarriers, cfg.physicsMaxConcurrency);
 
     // Layer interfaces
     m_layers = std::make_unique<LayerInterfaces>();
@@ -393,11 +396,16 @@ void PhysicsWorld::Initialize()
     m_contactListener = std::make_unique<InxContactListener>();
     m_physicsSystem->SetContactListener(m_contactListener.get());
 
-    // Warm up the broadphase / job-system worker threads before the first real
-    // Step().  On a cold start with many bodies, the very first Step() generates
-    // a burst of jobs that can transiently exceed queue limits; running this
-    // no-op pass lets the thread pool spin up and avoids the burst.
-    m_physicsSystem->OptimizeBroadPhase();
+    // Warm up the broadphase through the same Physics domain used by real
+    // simulation steps. The adapter never owns a worker thread.
+    {
+        auto warmupGroup = JobSystem::Get().CreateTaskGroup(JobDomain::Physics, JobPriority::Critical);
+        m_jobSystem->BeginFrame(warmupGroup);
+        m_physicsSystem->OptimizeBroadPhase();
+        m_jobSystem->EndFrame();
+        warmupGroup.Close();
+        JobSystem::Get().Wait(warmupGroup);
+    }
 
     m_initialized = true;
     INXLOG_INFO("PhysicsWorld: Jolt Physics initialized.");
@@ -440,7 +448,13 @@ void PhysicsWorld::Shutdown()
     // Step 2: tear down subsystems in dependency order (newest first).
     m_contactListener.reset();
     m_physicsSystem.reset();
-    m_jobSystem.reset();
+    if (m_jobSystem) {
+        m_jobSystem->Shutdown();
+        m_jobSystem.reset();
+    }
+    if (JobSystem::IsAvailable()) {
+        JobSystem::Get().SetDomainConcurrency(JobDomain::Physics, 0);
+    }
     m_tempAllocator.reset();
     m_layers.reset();
 
@@ -628,23 +642,35 @@ void PhysicsWorld::Step(float deltaTime)
     constexpr int kMaxDynamicCCDSplits = 8;
     constexpr float kTOIPadding = 1e-4f;
     constexpr float kMinStepDuration = 1e-6f;
+    auto physicsGroup = JobSystem::Get().CreateTaskGroup(JobDomain::Physics, JobPriority::Critical);
+    m_jobSystem->BeginFrame(physicsGroup);
     float remainingTime = deltaTime;
     int dynamicCCDSplits = 0;
-    while (remainingTime > kMinStepDuration) {
-        const float hitFraction = FindEarliestDynamicCCDFraction(remainingTime);
-        if (hitFraction >= 1.0f || dynamicCCDSplits >= kMaxDynamicCCDSplits) {
-            m_physicsSystem->Update(remainingTime, EngineConfig::Get().physicsCollisionSteps, m_tempAllocator.get(),
-                                    m_jobSystem.get());
-            remainingTime = 0.0f;
-            break;
-        }
+    try {
+        while (remainingTime > kMinStepDuration) {
+            const float hitFraction = FindEarliestDynamicCCDFraction(remainingTime);
+            if (hitFraction >= 1.0f || dynamicCCDSplits >= kMaxDynamicCCDSplits) {
+                m_physicsSystem->Update(remainingTime, EngineConfig::Get().physicsCollisionSteps,
+                                        m_tempAllocator.get(), m_jobSystem.get());
+                remainingTime = 0.0f;
+                break;
+            }
 
-        const float segmentFraction = std::clamp(hitFraction + kTOIPadding, kTOIPadding, 0.999f);
-        const float segmentTime = remainingTime * segmentFraction;
-        m_physicsSystem->Update(segmentTime, 1, m_tempAllocator.get(), m_jobSystem.get());
-        remainingTime -= segmentTime;
-        ++dynamicCCDSplits;
+            const float segmentFraction = std::clamp(hitFraction + kTOIPadding, kTOIPadding, 0.999f);
+            const float segmentTime = remainingTime * segmentFraction;
+            m_physicsSystem->Update(segmentTime, 1, m_tempAllocator.get(), m_jobSystem.get());
+            remainingTime -= segmentTime;
+            ++dynamicCCDSplits;
+        }
+    } catch (...) {
+        m_jobSystem->EndFrame();
+        physicsGroup.Close();
+        JobSystem::Get().Wait(physicsGroup);
+        throw;
     }
+    m_jobSystem->EndFrame();
+    physicsGroup.Close();
+    JobSystem::Get().Wait(physicsGroup);
     m_lastDynamicCCDSplitCount = static_cast<size_t>(dynamicCCDSplits);
 
     JPH::BodyIDVector activeAfter;

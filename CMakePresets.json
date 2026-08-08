@@ -12,7 +12,8 @@
       "architecture": "x64",
       "binaryDir": "${sourceDir}/out/build",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "Release",
+        "INFERNUX_BUILD_PLAYER_HOST": "ON"
       }
     },
     {
@@ -20,7 +21,8 @@
       "displayName": "Debug Preset (Windows, RelWithDebInfo + Profiling)",
       "inherits": "release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "INFERNUX_BUILD_PLAYER_HOST": "OFF"
       }
     },
     {
@@ -30,6 +32,15 @@
       "binaryDir": "${sourceDir}/out/build-profile",
       "cacheVariables": {
         "INFERNUX_FRAME_PROFILE_TERMINAL": "ON"
+      }
+    },
+    {
+      "name": "debug-no-vulkan-validation",
+      "displayName": "Debug Preset (Windows, RelWithDebInfo, Vulkan validation off)",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/out/build-debug-no-vulkan-validation",
+      "cacheVariables": {
+        "INFERNUX_ENABLE_VULKAN_VALIDATION": "OFF"
       }
     },
     {
@@ -116,6 +127,18 @@
       "name": "debug-profile",
       "configurePreset": "debug-profile",
       "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "debug-no-vulkan-validation",
+      "configurePreset": "debug-no-vulkan-validation",
+      "configuration": "RelWithDebInfo",
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
+      },
+      "targets": [
+        "ALL_BUILD",
+        "package_and_install_python"
+      ]
     },
     {
       "name": "native-dev",
@@ -210,6 +233,14 @@
     {
       "name": "debug",
       "configurePreset": "debug",
+      "configuration": "RelWithDebInfo",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "debug-no-vulkan-validation",
+      "configurePreset": "debug-no-vulkan-validation",
       "configuration": "RelWithDebInfo",
       "output": {
         "outputOnFailure": true

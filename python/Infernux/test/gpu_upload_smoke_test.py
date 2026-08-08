@@ -657,7 +657,9 @@ def main() -> int:
                 assert residency["timeline_upload_publication_count"] == 0, residency
                 assert residency["required_upload_timeline_value"] == 0, residency
             assert engine.gpu_residency_budget_bytes == 1, residency
-            assert residency["budget_bytes"] == 1, residency
+            assert residency["runtime_budget_bytes"] == 1, residency
+            assert residency["editor_texture_budget_bytes"] == 1, residency
+            assert residency["budget_bytes"] == 2, residency
             assert residency["allocator_allocation_bytes"] > 0, residency
             assert residency["allocator_block_bytes"] >= residency["allocator_allocation_bytes"], residency
             assert residency["allocator_allocation_count"] > 0, residency

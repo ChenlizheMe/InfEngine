@@ -50,7 +50,44 @@ package-dir = {"" = "python"}
 include-package-data = true
 
 [tool.setuptools.package-data]
-Infernux = ["py.typed", "*.pyi", "**/*.pyi", "*.dll", "*.pyd", "*.so", "*.dylib", "_runtime_packs/**/*.json", "_runtime_packs/**/*.zip", "_runtime_modules/**/*.json", "_runtime_modules/**/*.zip", "resources/player/*.exe", "resources/icons/*.png", "resources/icons/*.ico", "resources/icons/components/*.png", "resources/fonts/*.otf", "resources/fonts/*.ttf", "resources/pictures/*.png", "resources/supports/*.txt"]
+Infernux = [
+    "py.typed",
+    "*.pyi",
+    "**/*.pyi",
+    "*.dll",
+    "*.pyd",
+    "*.so",
+    "*.dylib",
+    "**/_InfernuxBootstrap*.pyd",
+    "**/_InfernuxBootstrap*.so",
+    "**/_InfernuxBootstrap*.dylib",
+    "_runtime_packs/*/Player.inxmanifest",
+    "_runtime_packs/*/Runtime.inxrt",
+    "_runtime_modules/*/Player.inxmanifest",
+    "_runtime_modules/*/Parallel.inxmod",
+    "resources/player/*.exe",
+    "resources/icons/*.png",
+    "resources/icons/*.ico",
+    "resources/icons/components/*.png",
+    "resources/fonts/*.otf",
+    "resources/fonts/*.ttf",
+    "resources/pictures/*.png",
+    "resources/supports/*.txt",
+]
 
 [tool.setuptools.exclude-package-data]
-Infernux = ["**/*.meta", "**/*.bak", "**/*.pdb", "**/*.lib", "**/*.exp"]
+Infernux = [
+    "**/*.meta",
+    "**/*.bak",
+    "**/*.pdb",
+    "**/*.lib",
+    "**/*.exp",
+    "_runtime_packs/**/*.zip",
+    "_runtime_packs/**/*.inxpack",
+    "_runtime_packs/**/runtime-pack.json",
+    "_runtime_packs/**/*.tmp/*",
+    "_runtime_modules/**/*.zip",
+    "_runtime_modules/**/*.inxpack",
+    "_runtime_modules/**/parallel-module.json",
+    "_runtime_modules/**/*.tmp/*",
+]

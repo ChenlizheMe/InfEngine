@@ -11,6 +11,7 @@ def render_material_property(
     value: object,
     plw: float,
     wid_prefix: str = "mp",
+    reference_cache: object = None,
 ) -> bool:
     """Render a single material property widget.
 

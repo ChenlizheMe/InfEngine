@@ -10,6 +10,7 @@
 
 #include <function/resources/InxTexture/TextureDecoder.h>
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 
@@ -92,6 +93,7 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::Insert(const std::strin
                                           runtimeVersion});
         }
         m_residentBytes += residentBytes;
+        m_latestFrame = (std::max)(m_latestFrame, lastUsedFrame);
     }
     (void)TrimToBudget();
     return slot;
@@ -110,6 +112,7 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::FindAsset(const std::st
         return {};
     }
     entry->second.lastUsedFrame = frame;
+    m_latestFrame = (std::max)(m_latestFrame, frame);
     return entry->second.slot;
 }
 
@@ -120,7 +123,14 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::Find(const std::string 
     if (it == m_textures.end() || !it->second.slot || !it->second.slot->Acquire())
         return {};
     it->second.lastUsedFrame = frame;
+    m_latestFrame = (std::max)(m_latestFrame, frame);
     return it->second.slot;
+}
+
+void VkTextureCache::AdvanceFrame(uint64_t frame)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_latestFrame = (std::max)(m_latestFrame, frame);
 }
 
 size_t VkTextureCache::RequestAssetRevision(const std::string &assetGuid, uint64_t runtimeVersion)
@@ -191,7 +201,8 @@ size_t VkTextureCache::TrimToBudget()
     while (m_residentBytes > m_budgetBytes) {
         auto candidate = m_textures.end();
         for (auto entry = m_textures.begin(); entry != m_textures.end(); ++entry) {
-            if (entry->second.permanentlyPinned || !entry->second.slot || entry->second.slot.use_count() != 1)
+            if (entry->second.permanentlyPinned || !entry->second.slot || entry->second.slot.use_count() != 1 ||
+                (m_latestFrame != 0 && entry->second.lastUsedFrame >= m_latestFrame))
                 continue;
             if (candidate == m_textures.end() || entry->second.lastUsedFrame < candidate->second.lastUsedFrame)
                 candidate = entry;
@@ -254,7 +265,8 @@ GpuEvictionCandidate VkTextureCache::PeekOldestEvictable() const
     std::lock_guard<std::mutex> lock(m_mutex);
     auto candidate = m_textures.end();
     for (auto entry = m_textures.begin(); entry != m_textures.end(); ++entry) {
-        if (entry->second.permanentlyPinned || !entry->second.slot || entry->second.slot.use_count() != 1)
+        if (entry->second.permanentlyPinned || !entry->second.slot || entry->second.slot.use_count() != 1 ||
+            (m_latestFrame != 0 && entry->second.lastUsedFrame >= m_latestFrame))
             continue;
         if (candidate == m_textures.end() || entry->second.lastUsedFrame < candidate->second.lastUsedFrame)
             candidate = entry;
@@ -269,7 +281,8 @@ uint64_t VkTextureCache::EvictOldest()
     std::lock_guard<std::mutex> lock(m_mutex);
     auto candidate = m_textures.end();
     for (auto entry = m_textures.begin(); entry != m_textures.end(); ++entry) {
-        if (entry->second.permanentlyPinned || !entry->second.slot || entry->second.slot.use_count() != 1)
+        if (entry->second.permanentlyPinned || !entry->second.slot || entry->second.slot.use_count() != 1 ||
+            (m_latestFrame != 0 && entry->second.lastUsedFrame >= m_latestFrame))
             continue;
         if (candidate == m_textures.end() || entry->second.lastUsedFrame < candidate->second.lastUsedFrame)
             candidate = entry;

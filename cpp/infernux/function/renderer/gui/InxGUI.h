@@ -40,6 +40,7 @@ class InxGUI
     void BuildFrame();
     [[nodiscard]] bool BuildFrameIfDue(bool force = false);
     void RequestFrame() noexcept;
+    void RequestSyntheticInputFrame() noexcept;
     [[nodiscard]] uint64_t GetFrameCounter() const noexcept
     {
         return m_guiFrameCounter;
@@ -86,6 +87,10 @@ class InxGUI
     /// @return A monotonic submission version. Poll GetImGuiTextureVersion before consuming a replacement.
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
                                    int height, VkFilter filter = VK_FILTER_LINEAR, bool pinned = false);
+
+    /// Invalidate queued uploads for a name without removing its currently
+    /// published texture. Completed stale tickets are discarded by generation.
+    void SupersedePendingImGuiTextureUploads(const std::string &name);
 
     /// @brief Remove a previously uploaded ImGui texture
     /// @param name Texture identifier
@@ -215,6 +220,7 @@ class InxGUI
     ResourcePreviewManager m_resourcePreviewManager;
     bool m_playerMode = false;
     bool m_hasDrawData = false;
+    EditorGuiInputRearmBudget m_syntheticInputRearm;
     EditorGuiFrameScheduler m_editorFrameScheduler;
 
     void BuildFrameInternal();

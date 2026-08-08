@@ -102,6 +102,7 @@ from .skeletal_animator import SkeletalAnimator
 from .timeline_action import TimelineAction
 from .particle_system import ParticleBoundsMode, ParticleOffscreenPolicy, ParticleSystem
 from .runtime_acceptance_runner import RuntimeAcceptanceRunner
+from ._component_lifecycle import RuntimeExecutionScheduler
 
 __all__ = [
     "InxComponent",
@@ -187,4 +188,5 @@ __all__ = [
     "SkeletalAnimator",
     "TimelineAction",
     "RuntimeAcceptanceRunner",
+    "RuntimeExecutionScheduler",
 ]

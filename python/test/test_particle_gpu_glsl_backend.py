@@ -57,6 +57,68 @@ def _gpu_source():
     return GpuParticleGlslLowerer().lower(kernel)
 
 
+def _assert_generated_values_are_declared(glsl: str) -> None:
+    value_names = set(re.findall(r"\bv\d+\b", glsl))
+    declarations = set(
+        re.findall(
+            r"\b(?:bool|int|uint|float|[biu]?vec[234]|mat[234])\s+(v\d+)\b",
+            glsl,
+        )
+    )
+    assert value_names <= declarations
+
+
+def _assert_all_generated_values_are_declared(source) -> None:
+    for emitter in source.emitters:
+        for glsl in emitter.stages().values():
+            _assert_generated_values_are_declared(glsl)
+        if emitter.continuation is not None:
+            for glsl in emitter.continuation.stages().values():
+                _assert_generated_values_are_declared(glsl)
+
+
+def test_gpu_fused_update_rendering_stage_has_structured_symbols_and_workgroup_compaction():
+    emitter = _gpu_source().emitters[0]
+    fused = emitter.stages()["update_rendering_fused"]
+
+    assert emitter.update_render_fusion["eligible"] is True
+    assert emitter.update_render_fusion["fused_stage"] == "update_rendering_fused"
+    assert set(emitter.stages()) == {
+        "bootstrap",
+        "init",
+        "update",
+        "contact_prepare",
+        "contact_solve",
+        "contact_dispatch",
+        "render_reset",
+        "rendering",
+        "update_rendering_fused",
+    }
+    assert "shared uint inx_particle_render_local_count;" in fused
+    assert "shared uint inx_particle_render_group_base;" in fused
+    assert fused.count("atomicAdd(counters.visible_count") == 1
+    assert fused.count("atomicAdd(indirect_args.instance_count") == 1
+    assert fused.count("barrier();") == 3
+    assert "update_v" in fused and "render_v" in fused
+    assert fused.index("update_v") < fused.index("render_v")
+
+    render_body_start = fused.index("render_v")
+    render_finite = fused.rindex("particle_alive = particle_alive &&")
+    assert "states[particle_index] = state;" not in fused[render_body_start:render_finite]
+    assert fused.count("inx_push_free(particle_index)") == 1
+
+
+def test_gpu_noneligible_emitter_keeps_only_fallback_stages():
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(_scene_collision_asset())
+    )
+    emitter = GpuParticleGlslLowerer().lower(kernel).emitters[0]
+
+    assert emitter.update_render_fusion["eligible"] is False
+    assert emitter.update_render_fusion["fused_stage"] == ""
+    assert "update_rendering_fused" not in emitter.stages()
+
+
 def test_particle_script_until_compiles_to_valid_gpu_continuations():
     source_text = '''\
 from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
@@ -167,7 +229,8 @@ class RenderingTimeline(ParticleScript):
     assert "inx_until_seconds(" in emitter.rendering
     assert "inx_suspend_frames(" in emitter.rendering
     assert "state.rendering_resume_step != pc.simulation_step" in emitter.rendering
-    assert "atomicAdd(counters.visible_count, 1u)" in emitter.rendering
+    assert "atomicAdd(counters.visible_count," in emitter.rendering
+    assert "inx_particle_render_local_count" in emitter.rendering
     assert emitter.continuation is not None
     assert "state.rendering_resume_step = pc.simulation_step" in emitter.continuation.dispatch
     compiled = compile_gpu_particle_spirv(source)
@@ -207,7 +270,7 @@ class DelayedBirth(ParticleScript):
     assert "state.lifecycle_flags = INX_PARTICLE_ALIVE" in emitter.init
     assert "if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE" in emitter.init
     assert "INX_PARTICLE_INIT_COMPLETE) == 0u" in emitter.update
-    assert "INX_PARTICLE_INIT_COMPLETE) == 0u" in emitter.rendering
+    assert "INX_PARTICLE_INIT_COMPLETE) != 0u" in emitter.rendering
     assert emitter.continuation is not None
     assert "state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE" in emitter.continuation.dispatch
     compiled = compile_gpu_particle_spirv(source)
@@ -230,6 +293,7 @@ def test_simultaneous_init_wait_lanes_serialize_completion_and_release_gate():
     assert continuation.dispatch.count("state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE") == 2
     assert "INX_PARTICLE_CONTINUATION_LOCK" in continuation.dispatch
     assert "inx_continuation_append_active(inx_continuation_record_index)" in continuation.dispatch
+    _assert_all_generated_values_are_declared(source)
 
     compiled = compile_gpu_particle_spirv(source)
     validate_gpu_particle_spirv(compiled, source)
@@ -303,6 +367,8 @@ class ConditionalMotion(ParticleScript):
     assert "state.a_builtin_velocity =" in update
     assert "state.a_builtin_size =" in update
     assert update.count("state.a_builtin_color =") >= 2
+    assert source.emitters[0].continuation is not None
+    _assert_all_generated_values_are_declared(source)
     compiled = compile_gpu_particle_spirv(source)
     validate_gpu_particle_spirv(compiled, source)
 
@@ -2199,6 +2265,7 @@ class QueuedImpact(ParticleScript):
     assert "if (true)" in continuation
     assert "state.a_builtin_color =" in continuation
     assert "a_internal_event_0_active = 0u" in continuation
+    _assert_all_generated_values_are_declared(gpu)
     assert validate_gpu_particle_spirv(
         compile_gpu_particle_spirv(gpu), gpu
     )
@@ -2767,11 +2834,12 @@ def test_gpu_lowerer_emits_resident_compute_lifecycle_and_indirect_output():
         "contact_dispatch",
         "render_reset",
         "rendering",
+        "update_rendering_fused",
     }
     assert "buffer ParticleStates" in emitter.update
     assert "inx_pop_free" in emitter.init
     assert "states[index].spawn_generation = 0u;" in emitter.bootstrap
-    assert "atomicAdd(indirect_args.instance_count, 1u)" in emitter.rendering
+    assert "atomicAdd(indirect_args.instance_count, committed_count)" in emitter.rendering
     assert "layout(push_constant)" in emitter.rendering
     assert "Vk" not in "\n".join(emitter.stages().values())
     assert {
@@ -2789,6 +2857,34 @@ def test_gpu_lowerer_emits_resident_compute_lifecycle_and_indirect_output():
         field["offset"] >= 8 and field["byte_size"] % 4 == 0
         for field in document["attribute_fields"]
     )
+
+
+def test_gpu_init_reserves_one_free_list_block_per_workgroup_and_compiles():
+    init = _gpu_source().emitters[0].init
+    main = init.rsplit("void main()", 1)[1]
+    before_barrier = main.split("barrier();", 1)[0]
+
+    assert "shared uint inx_particle_init_old_free_count;" in init
+    assert "shared uint inx_particle_init_accepted_count;" in init
+    assert "uint inx_reserve_free_block(" in init
+    assert "attempt < attempt_limit" in init
+    assert main.count("inx_reserve_free_block(") == 1
+    assert "inx_pop_free();" not in main
+    assert "return" not in before_barrier
+    assert main.count("barrier();") == 1
+    assert "emitter_spawn.spawn_count - group_first_invocation" in main
+    assert re.search(
+        r"free_slots\[\s*inx_particle_init_old_free_count\s*-\s*1u\s*"
+        r"-\s*gl_LocalInvocationIndex\s*\]",
+        main,
+    )
+    assert "requested_count - inx_particle_init_accepted_count" in main
+    assert "atomicAdd(counters.dropped_count, dropped_count)" in main
+
+    compiled = native._compile_compute_glsl_batch(
+        {"init": init}, "particle-init-free-block-test"
+    )
+    assert set(compiled) == {"init"}
 
 
 def test_gpu_lowerer_emits_normalized_age_lerp_rotation_and_attribute_stores():
@@ -3565,6 +3661,7 @@ def test_generated_gpu_particle_kernels_compile_to_vulkan_spirv(tmp_path):
         pytest.skip("Vulkan SDK glslangValidator is unavailable")
 
     emitter = _gpu_source().emitters[0]
+    assert "update_rendering_fused" in emitter.stages()
     for stage, source in emitter.stages().items():
         source_path = tmp_path / f"{stage}.comp"
         output_path = tmp_path / f"{stage}.spv"
@@ -3597,6 +3694,10 @@ def test_persisted_particle_spirv_is_compressed_and_integrity_checked():
     payload = compile_gpu_particle_spirv(source)
 
     assert validate_gpu_particle_spirv(payload, source) is payload
+    assert payload["emitters"][0]["update_render_fusion"] == source.emitters[0].update_render_fusion
+    decoded = gpu_backend.decode_gpu_particle_spirv(payload, 0)
+    assert decoded["update_render_fusion"] == source.emitters[0].update_render_fusion
+    assert set(decoded["stages"]) == set(source.emitters[0].stages())
     descriptor = payload["emitters"][0]["stages"]["update"]
     assert descriptor["byte_size"] > 20
     assert len(descriptor["sha256"]) == 64

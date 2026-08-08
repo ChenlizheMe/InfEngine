@@ -44,6 +44,31 @@ def test_view_state_command_is_undoable_without_dirtying_documents():
         UndoManager._instance = previous_manager
 
 
+def test_view_state_still_applies_when_history_is_temporarily_disabled():
+    from Infernux.engine.interaction import ViewCommandService
+    from Infernux.engine.undo import UndoManager
+
+    previous_manager = UndoManager._instance
+    previous_service = ViewCommandService._instance
+    manager = UndoManager()
+    manager.enabled = False
+    service = ViewCommandService()
+    state = {"path": "Assets"}
+    try:
+        assert service.set_value(
+            "Assets",
+            "Assets/Nested",
+            lambda value: state.__setitem__("path", value),
+            description="Navigate Project",
+        )
+        assert state["path"] == "Assets/Nested"
+        assert manager.action_journal.entries == ()
+    finally:
+        service.shutdown()
+        ViewCommandService._instance = previous_service
+        UndoManager._instance = previous_manager
+
+
 def test_tree_foldout_uses_the_global_non_dirty_view_history():
     from Infernux.engine.interaction import TreeViewStateService, ViewCommandService
     from Infernux.engine.undo import UndoManager

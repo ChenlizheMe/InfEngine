@@ -364,6 +364,11 @@ class SceneSaveMixin:
                 resource_path=normalized,
                 title=os.path.splitext(os.path.basename(normalized))[0],
                 content_token=current_token,
+                committed_file_state=getattr(
+                    self,
+                    "_last_scene_commit_file_state",
+                    None,
+                ),
             )
             self._pending_save_ticket_id = ""
             self._pending_save_document_id = ""
@@ -372,6 +377,7 @@ class SceneSaveMixin:
             registry.complete_save(
                 active_ticket_id,
                 success=False,
+                conflict=bool(getattr(self, "_last_scene_save_conflict", False)),
                 message=f"failed to save scene: {target_path}",
             )
             self._pending_save_ticket_id = ""
@@ -421,12 +427,13 @@ class SceneSaveMixin:
             Debug.log_error("Scene serialization returned empty data.")
             return False
 
+        from Infernux.engine.interaction import (
+            DocumentRegistry,
+            document_content_token,
+        )
+
         if ticket_id:
             try:
-                from Infernux.engine.interaction import (
-                    DocumentRegistry,
-                    document_content_token,
-                )
 
                 DocumentRegistry.instance().capture_save_revision(
                     ticket_id,
@@ -437,15 +444,53 @@ class SceneSaveMixin:
                 Debug.log_error(f"Scene serialization produced an invalid document: {exc}")
                 return False
 
-        # Step 2: durably replace the scene file. The old daemon+immediate-join
-        # path was synchronous in practice and could outlive a timeout.
+        self._last_scene_commit_file_state = None
+        self._last_scene_save_conflict = False
+
+        # Step 2: durably replace the scene file through the shared CAS write
+        # ledger.  The exact committed fingerprint is registered before this
+        # method returns, so a queued watcher event can acknowledge it.
         abs_path = resolved_path(path)
         try:
             os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-            from Infernux.core.document_store import DocumentStore
-            DocumentStore.instance().write_and_wait(abs_path, json_str)
+            from Infernux.core.assets import AssetManager
+            from Infernux.core.document_store import (
+                capture_document_file_state,
+                write_document_text,
+            )
+
+            registry = DocumentRegistry.instance()
+            if ticket_id:
+                registry.capture_save_target(ticket_id, abs_path)
+                ticket = registry.get_save_ticket(ticket_id)
+                expected_file_state = ticket.expected_file_state if ticket else None
+                commit_token = ticket.commit_token if ticket else ""
+            else:
+                expected_file_state = None
+                commit_token = "scene-save"
+            content_token = document_content_token(json.loads(json_str))
+            write_document_text(
+                abs_path,
+                json_str,
+                expected_file_state=expected_file_state,
+                commit_chain_token=commit_token,
+            )
+            committed_file_state = capture_document_file_state(abs_path)
+            self._last_scene_commit_file_state = AssetManager.register_local_commit(
+                abs_path,
+                commit_token=commit_token or "scene-save",
+                content_token=content_token,
+                file_state=committed_file_state,
+                edit_revision=(
+                    registry.get_save_ticket(ticket_id).captured_revision
+                    if ticket_id and registry.get_save_ticket(ticket_id) is not None
+                    else 0
+                ),
+                document_id=self.document_id,
+            )
         except (OSError, RuntimeError) as exc:
             scene.name = previous_scene_name
+            self._last_scene_save_conflict = "changed outside the editor" in str(exc).casefold()
             Debug.log_error(f"Failed to write scene file: {exc}")
             return False
 

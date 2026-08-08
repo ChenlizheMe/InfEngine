@@ -23,6 +23,7 @@ from .documents import (
 class _PendingResourceWrite:
     ticket: Any
     revision: int
+    submission_sequence: int
     document: dict
     save_ticket_id: str = ""
 
@@ -49,6 +50,7 @@ class EditableResourceDocumentController:
         self.state: Any = None
         self._saved_document = self.capture_document()
         self._pending_writes: dict[int, _PendingResourceWrite] = {}
+        self._write_submission_sequence = 0
 
     def capture_document(self) -> dict:
         serializer = getattr(self.resource, "serialize_document", None)
@@ -110,11 +112,25 @@ class EditableResourceDocumentController:
             AssetManager.set_document_save_expected_state(
                 self.file_path,
                 editor_document.durable_file_state,
+                edit_revision=editor_document.edit_revision or editor_document.revision,
+                document_id=self.document_id,
             )
         if self.category == "material" and self.file_path:
+            snapshot = json.dumps(self.capture_document())
             AssetManager.set_material_save_snapshot(
                 self.file_path,
-                json.dumps(self.capture_document()),
+                snapshot,
+                edit_revision=(
+                    editor_document.edit_revision
+                    if editor_document is not None
+                    else 0
+                ),
+                document_id=self.document_id,
+                expected_file_state=(
+                    editor_document.durable_file_state
+                    if editor_document is not None
+                    else None
+                ),
             )
         if self.exec_layer is not None:
             self.exec_layer.schedule_rw_save(self.resource)
@@ -215,9 +231,11 @@ class EditableResourceDocumentController:
         document: dict,
         save_ticket_id: str = "",
     ) -> None:
+        self._write_submission_sequence += 1
         self._pending_writes[id(submission)] = _PendingResourceWrite(
             ticket=submission,
             revision=int(revision),
+            submission_sequence=self._write_submission_sequence,
             document=copy.deepcopy(document),
             save_ticket_id=str(save_ticket_id or ""),
         )
@@ -237,10 +255,15 @@ class EditableResourceDocumentController:
                 if succeeded
                 else diagnostic or f"asset persistence {status or 'failed'}"
             )
+            newer_submission_exists = any(
+                other is not pending
+                and other.submission_sequence > pending.submission_sequence
+                for other in self._pending_writes.values()
+            )
             if pending.save_ticket_id:
                 save_ticket = registry.get_save_ticket(pending.save_ticket_id)
                 if save_ticket is not None and save_ticket.is_pending:
-                    if succeeded:
+                    if succeeded and not newer_submission_exists:
                         self._saved_document = copy.deepcopy(pending.document)
                     registry.complete_save(
                         pending.save_ticket_id,
@@ -261,12 +284,13 @@ class EditableResourceDocumentController:
                         message=message,
                     )
             elif succeeded:
-                self._saved_document = copy.deepcopy(pending.document)
                 editor_document = registry.get(self.document_id)
                 if (
                     editor_document is not None
                     and registry.active_save_ticket(self.document_id) is None
+                    and not newer_submission_exists
                 ):
+                    self._saved_document = copy.deepcopy(pending.document)
                     registry.mark_saved(self.document_id, pending.revision)
                     editor_document.durable_file_state = getattr(
                         pending.ticket,

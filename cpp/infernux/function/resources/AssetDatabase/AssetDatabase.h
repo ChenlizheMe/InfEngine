@@ -171,6 +171,9 @@ class AssetDatabase
     /// @brief Get all GUIDs
     [[nodiscard]] std::vector<std::string> GetAllGuids() const;
 
+    /// @brief Get all asset paths from one published database generation.
+    [[nodiscard]] std::vector<std::string> GetAllAssetPaths() const;
+
     /// @brief Acquire one immutable path/type/fingerprint catalog generation.
     [[nodiscard]] std::shared_ptr<const AssetCatalogSnapshot> GetCatalogSnapshot() const;
     [[nodiscard]] std::vector<AssetCatalogEntry> GetDirectoryCatalog(const std::string &directory) const;

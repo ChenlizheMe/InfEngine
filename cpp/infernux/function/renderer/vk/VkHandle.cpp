@@ -7,6 +7,7 @@
 #include "AsyncTransferContext.h"
 #include <algorithm>
 #include <cstring>
+#include <shared_mutex>
 #include <stdexcept>
 
 namespace infernux
@@ -20,7 +21,8 @@ namespace vk
 
 VkBufferHandle::VkBufferHandle(VkBufferHandle &&other) noexcept
     : m_allocator(other.m_allocator), m_device(other.m_device), m_buffer(other.m_buffer),
-      m_allocation(other.m_allocation), m_size(other.m_size), m_mappedPtr(other.m_mappedPtr)
+      m_allocation(other.m_allocation), m_size(other.m_size), m_mappedPtr(other.m_mappedPtr),
+      m_lifetime(std::move(other.m_lifetime))
 {
     other.m_allocator = VK_NULL_HANDLE;
     other.m_device = VK_NULL_HANDLE;
@@ -40,6 +42,7 @@ VkBufferHandle &VkBufferHandle::operator=(VkBufferHandle &&other) noexcept
         m_allocation = other.m_allocation;
         m_size = other.m_size;
         m_mappedPtr = other.m_mappedPtr;
+        m_lifetime = std::move(other.m_lifetime);
 
         other.m_allocator = VK_NULL_HANDLE;
         other.m_device = VK_NULL_HANDLE;
@@ -52,13 +55,15 @@ VkBufferHandle &VkBufferHandle::operator=(VkBufferHandle &&other) noexcept
 }
 
 bool VkBufferHandle::Create(VmaAllocator allocator, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage,
-                            VkMemoryPropertyFlags properties, const std::vector<uint32_t> &queueFamilies)
+                            VkMemoryPropertyFlags properties, const std::vector<uint32_t> &queueFamilies,
+                            std::shared_ptr<rhi::DeviceLifetime> lifetime)
 {
     Destroy();
 
     m_allocator = allocator;
     m_device = device;
     m_size = size;
+    m_lifetime = std::move(lifetime);
 
     // Create buffer via VMA
     VkBufferCreateInfo bufferInfo{};
@@ -115,15 +120,23 @@ bool VkBufferHandle::Create(VmaAllocator allocator, VkDevice device, VkDeviceSiz
 
 void VkBufferHandle::Destroy() noexcept
 {
-    if (m_mappedPtr != nullptr) {
-        Unmap();
+    std::shared_lock<std::shared_mutex> lifetimeLock;
+    if (m_lifetime)
+        lifetimeLock = std::shared_lock(m_lifetime->gate);
+    const bool deviceAlive = !m_lifetime || m_lifetime->alive.load(std::memory_order_acquire);
+    if (deviceAlive && m_mappedPtr != nullptr && m_allocation != VK_NULL_HANDLE) {
+        vmaUnmapMemory(m_allocator, m_allocation);
     }
-    if (m_buffer != VK_NULL_HANDLE && m_allocator != VK_NULL_HANDLE) {
+    if (deviceAlive && m_buffer != VK_NULL_HANDLE && m_allocator != VK_NULL_HANDLE) {
         vmaDestroyBuffer(m_allocator, m_buffer, m_allocation);
-        m_buffer = VK_NULL_HANDLE;
-        m_allocation = VK_NULL_HANDLE;
     }
+    m_mappedPtr = nullptr;
+    m_buffer = VK_NULL_HANDLE;
+    m_allocation = VK_NULL_HANDLE;
+    m_allocator = VK_NULL_HANDLE;
+    m_device = VK_NULL_HANDLE;
     m_size = 0;
+    m_lifetime.reset();
 }
 
 void *VkBufferHandle::Map()
@@ -133,6 +146,11 @@ void *VkBufferHandle::Map()
 
 void *VkBufferHandle::Map(VkDeviceSize offset, VkDeviceSize size)
 {
+    std::shared_lock<std::shared_mutex> lifetimeLock;
+    if (m_lifetime)
+        lifetimeLock = std::shared_lock(m_lifetime->gate);
+    if (m_lifetime && !m_lifetime->alive.load(std::memory_order_acquire))
+        return nullptr;
     if (m_mappedPtr != nullptr) {
         return m_mappedPtr;
     }
@@ -153,6 +171,13 @@ void *VkBufferHandle::Map(VkDeviceSize offset, VkDeviceSize size)
 
 void VkBufferHandle::Unmap() noexcept
 {
+    std::shared_lock<std::shared_mutex> lifetimeLock;
+    if (m_lifetime)
+        lifetimeLock = std::shared_lock(m_lifetime->gate);
+    if (m_lifetime && !m_lifetime->alive.load(std::memory_order_acquire)) {
+        m_mappedPtr = nullptr;
+        return;
+    }
     if (m_mappedPtr != nullptr && m_allocation != VK_NULL_HANDLE) {
         vmaUnmapMemory(m_allocator, m_allocation);
         m_mappedPtr = nullptr;
@@ -179,7 +204,7 @@ void VkBufferHandle::CopyFrom(const void *data, VkDeviceSize size, VkDeviceSize 
 VkImageHandle::VkImageHandle(VkImageHandle &&other) noexcept
     : m_allocator(other.m_allocator), m_device(other.m_device), m_image(other.m_image), m_view(other.m_view),
       m_allocation(other.m_allocation), m_width(other.m_width), m_height(other.m_height),
-      m_mipLevels(other.m_mipLevels), m_format(other.m_format)
+      m_mipLevels(other.m_mipLevels), m_format(other.m_format), m_lifetime(std::move(other.m_lifetime))
 {
     other.m_allocator = VK_NULL_HANDLE;
     other.m_device = VK_NULL_HANDLE;
@@ -205,6 +230,7 @@ VkImageHandle &VkImageHandle::operator=(VkImageHandle &&other) noexcept
         m_height = other.m_height;
         m_mipLevels = other.m_mipLevels;
         m_format = other.m_format;
+        m_lifetime = std::move(other.m_lifetime);
 
         other.m_allocator = VK_NULL_HANDLE;
         other.m_device = VK_NULL_HANDLE;
@@ -221,7 +247,8 @@ VkImageHandle &VkImageHandle::operator=(VkImageHandle &&other) noexcept
 
 bool VkImageHandle::Create(VmaAllocator allocator, VkDevice device, uint32_t width, uint32_t height, VkFormat format,
                            VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties,
-                           VkSampleCountFlagBits samples, uint32_t mipLevels)
+                           VkSampleCountFlagBits samples, uint32_t mipLevels,
+                           std::shared_ptr<rhi::DeviceLifetime> lifetime)
 {
     Destroy();
 
@@ -231,6 +258,7 @@ bool VkImageHandle::Create(VmaAllocator allocator, VkDevice device, uint32_t wid
     m_height = height;
     m_format = format;
     m_mipLevels = mipLevels;
+    m_lifetime = std::move(lifetime);
 
     // Create image via VMA
     VkImageCreateInfo imageInfo{};
@@ -271,14 +299,16 @@ bool VkImageHandle::Create(VmaAllocator allocator, VkDevice device, uint32_t wid
 bool VkImageHandle::CreateConcurrent(VmaAllocator allocator, VkDevice device, uint32_t width, uint32_t height,
                                      VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage,
                                      VkMemoryPropertyFlags properties, const std::vector<uint32_t> &sharedQueueFamilies,
-                                     VkSampleCountFlagBits samples, uint32_t mipLevels)
+                                     VkSampleCountFlagBits samples, uint32_t mipLevels,
+                                     std::shared_ptr<rhi::DeviceLifetime> lifetime)
 {
     // CONCURRENT sharing requires at least 2 distinct queue families per
     // the Vulkan spec; silently downgrade if the caller can't actually
     // satisfy that (e.g. iGPU with a single queue family). Same fast path
     // as Create() below for that case.
     if (sharedQueueFamilies.size() < 2) {
-        return Create(allocator, device, width, height, format, tiling, usage, properties, samples, mipLevels);
+        return Create(allocator, device, width, height, format, tiling, usage, properties, samples, mipLevels,
+                      std::move(lifetime));
     }
 
     Destroy();
@@ -289,6 +319,7 @@ bool VkImageHandle::CreateConcurrent(VmaAllocator allocator, VkDevice device, ui
     m_height = height;
     m_format = format;
     m_mipLevels = mipLevels;
+    m_lifetime = std::move(lifetime);
 
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -327,8 +358,11 @@ bool VkImageHandle::CreateConcurrent(VmaAllocator allocator, VkDevice device, ui
 
 bool VkImageHandle::CreateView(VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels)
 {
-    if (m_image == VK_NULL_HANDLE) {
-        INXLOG_ERROR("Cannot create view for null image");
+    std::shared_lock<std::shared_mutex> lifetimeLock;
+    if (m_lifetime)
+        lifetimeLock = std::shared_lock(m_lifetime->gate);
+    if (m_image == VK_NULL_HANDLE || (m_lifetime && !m_lifetime->alive.load(std::memory_order_acquire))) {
+        INXLOG_ERROR("Cannot create view for null image or inactive Vulkan device");
         return false;
     }
 
@@ -359,19 +393,26 @@ bool VkImageHandle::CreateView(VkFormat format, VkImageAspectFlags aspectFlags, 
 
 void VkImageHandle::Destroy() noexcept
 {
-    if (m_view != VK_NULL_HANDLE && m_device != VK_NULL_HANDLE) {
+    std::shared_lock<std::shared_mutex> lifetimeLock;
+    if (m_lifetime)
+        lifetimeLock = std::shared_lock(m_lifetime->gate);
+    const bool deviceAlive = !m_lifetime || m_lifetime->alive.load(std::memory_order_acquire);
+    if (deviceAlive && m_view != VK_NULL_HANDLE && m_device != VK_NULL_HANDLE) {
         vkDestroyImageView(m_device, m_view, nullptr);
-        m_view = VK_NULL_HANDLE;
     }
-    if (m_image != VK_NULL_HANDLE && m_allocator != VK_NULL_HANDLE) {
+    if (deviceAlive && m_image != VK_NULL_HANDLE && m_allocator != VK_NULL_HANDLE) {
         vmaDestroyImage(m_allocator, m_image, m_allocation);
-        m_image = VK_NULL_HANDLE;
-        m_allocation = VK_NULL_HANDLE;
     }
+    m_view = VK_NULL_HANDLE;
+    m_image = VK_NULL_HANDLE;
+    m_allocation = VK_NULL_HANDLE;
+    m_allocator = VK_NULL_HANDLE;
+    m_device = VK_NULL_HANDLE;
     m_width = 0;
     m_height = 0;
     m_mipLevels = 1;
     m_format = VK_FORMAT_UNDEFINED;
+    m_lifetime.reset();
 }
 
 // ============================================================================

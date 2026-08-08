@@ -392,7 +392,13 @@ class ParticleArtifactRegistry:
         )
 
     @classmethod
-    def compile_path(cls, path: str, *, guid: str = "") -> ParticleArtifact:
+    def compile_path(
+        cls,
+        path: str,
+        *,
+        guid: str = "",
+        force_recompile: bool = False,
+    ) -> ParticleArtifact:
         source_path = resolved_path(path)
         try:
             source = Path(source_path).read_text(encoding="utf-8")
@@ -425,7 +431,8 @@ class ParticleArtifactRegistry:
         with cls._lock:
             existing = cls._current_unlocked(source_path, guid)
             if (
-                cls._request_generation.get(path_identity) == ticket
+                not force_recompile
+                and cls._request_generation.get(path_identity) == ticket
                 and existing is not None
                 and existing.source_hash == source_hash
                 and bool(existing.artifact_path)
@@ -435,7 +442,7 @@ class ParticleArtifactRegistry:
                 return alias
 
         artifact_path = cls._artifact_path(stable_id)
-        if existing is None and artifact_path:
+        if not force_recompile and existing is None and artifact_path:
             persisted = cls._load_persisted(
                 artifact_path,
                 key=key,
@@ -450,7 +457,7 @@ class ParticleArtifactRegistry:
                     cls._revision = max(cls._revision, persisted.revision)
                     return persisted
 
-        if existing is not None and existing.source_hash == source_hash:
+        if not force_recompile and existing is not None and existing.source_hash == source_hash:
             compiled = cls._compiled_from_artifact(existing, stable_id=stable_id)
         else:
             try:

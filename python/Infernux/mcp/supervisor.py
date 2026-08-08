@@ -34,6 +34,7 @@ from Infernux.mcp import checkpoints as checkpoint_store
 
 VALID_MODES = frozenset({"developer_assist", "global_validation"})
 VALID_BUILD_PROFILES = frozenset({"debug_feedback", "release_exploration"})
+HANDOFF_STATES = frozenset({"idle", "started", "completed", "failed"})
 
 
 @dataclass
@@ -62,6 +63,7 @@ class SupervisorSession:
     _mcp_ready: bool = field(default=False, init=False, repr=False)
     _editor_log_handle: Any = field(default=None, init=False, repr=False)
     _player_log_handle: Any = field(default=None, init=False, repr=False)
+    _last_handoff: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.project_root = resolved_path(self.project_root)
@@ -185,6 +187,7 @@ class SupervisorSession:
         resumed._player_executable = resolved_path(str(state.get("player_executable", "") or "")) if state.get("player_executable") else ""
         resumed._player_start_scene = str(state.get("player_start_scene", "") or "").strip()
         resumed._player_ready = bool(state.get("player_ready", False))
+        resumed._last_handoff = _normalize_handoff_record(state.get("last_handoff"))
         persisted_pid = int(state.get("editor_pid", 0) or 0)
         if persisted_pid > 0 and _pid_is_running(persisted_pid):
             if not resumed._has_leased_editor_identity():
@@ -1009,7 +1012,12 @@ class SupervisorSession:
         restart_editor: bool = True,
         timeout_seconds: float = 30.0,
     ) -> dict[str, Any]:
-        """Serialize a mode transition so no second Supervisor can rewrite its policy mid-handoff."""
+        """Compatibility spelling for the explicit :meth:`switch_mode` API.
+
+        Legacy callers must still provide a checkpoint. New orchestration code
+        should use ``switch_mode`` so the default un-managed session checkpoint
+        is explicit in the returned audit record.
+        """
         with self._operation_lock():
             return self._handoff_mode_locked(
                 target_mode,
@@ -1020,6 +1028,56 @@ class SupervisorSession:
                 restart_editor=restart_editor,
                 timeout_seconds=timeout_seconds,
             )
+
+    def switch_mode(
+        self,
+        target_mode: str,
+        *,
+        checkpoint: str = "",
+        reason: str = "",
+        build_profile: str | None = None,
+        recording_enabled: bool | None = None,
+        restart_editor: bool = True,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        """Atomically hand one visible Editor session to another MCP mode.
+
+        The two profiles remain disjoint. This method only changes the
+        Supervisor-owned project policy after the old endpoint has shut down,
+        then starts a fresh Editor identity and verifies its project, session,
+        mode, profile, lease, and project lock before returning success.
+        """
+        requested_checkpoint = str(checkpoint or "").strip()
+        if not requested_checkpoint:
+            if self.managed_checkpoints_required:
+                raise ValueError("Managed mode switches require an explicit checkpoint.")
+            requested_checkpoint = "session-start"
+        with self._operation_lock():
+            return self._handoff_mode_locked(
+                target_mode,
+                checkpoint=requested_checkpoint,
+                reason=reason,
+                build_profile=build_profile,
+                recording_enabled=recording_enabled,
+                restart_editor=restart_editor,
+                timeout_seconds=timeout_seconds,
+            )
+
+    def handoff_history(self) -> list[dict[str, Any]]:
+        """Return the secret-free mode handoff audit trail for this session."""
+        path = self.handoff_history_path
+        if not os.path.isfile(path):
+            return []
+        records: list[dict[str, Any]] = []
+        try:
+            with open(path, "r", encoding="utf-8") as stream:
+                for line in stream:
+                    value = _read_json_line(line)
+                    if value:
+                        records.append(value)
+        except OSError:
+            return records
+        return records
 
     def _handoff_mode_locked(
         self,
@@ -1055,6 +1113,7 @@ class SupervisorSession:
             "handoff_id": f"handoff-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
             "started_at": time.time(),
             "state": "started",
+            "phase": "preflight",
             "checkpoint": checkpoint,
             "reason": str(reason or ""),
             "from": {
@@ -1099,11 +1158,34 @@ class SupervisorSession:
             _append_json_line(self.handoff_history_path, event)
 
             was_running = bool(previous_status["editor_running"])
+            same_policy = (
+                self.mode == next_mode
+                and self.build_profile == next_build_profile
+                and self.recording_enabled == next_recording_enabled
+            )
+            if same_policy:
+                event.update({
+                    "state": "completed",
+                    "phase": "noop",
+                    "completed_at": time.time(),
+                    "result": {
+                        "editor_restarted": False,
+                        "mcp_ready": bool(previous_status["mcp_ready"]),
+                        "no_change": True,
+                    },
+                })
+                self._last_handoff = dict(event)
+                _append_json_line(self.handoff_history_path, event)
+                self._persist_state()
+                return self.status() | {"handoff": event, "launch": None}
+
             if was_running:
+                event["phase"] = "stopping_old_editor"
                 stopped = self.stop_editor(timeout_seconds=timeout_seconds)
                 if not stopped.get("stopped") or stopped.get("editor_running"):
                     raise RuntimeError("Supervisor could not stop the Editor during mode handoff.")
 
+            event["phase"] = "publishing_policy"
             self.mode = next_mode
             self.build_profile = next_build_profile
             self.recording_enabled = next_recording_enabled
@@ -1117,6 +1199,7 @@ class SupervisorSession:
 
             launch_status: dict[str, Any] | None = None
             if was_running and restart_editor:
+                event["phase"] = "starting_new_editor"
                 launch_status = self.launch_editor(wait_for_mcp=True, timeout_seconds=timeout_seconds)
                 if not launch_status.get("mcp_ready"):
                     raise RuntimeError(
@@ -1125,18 +1208,24 @@ class SupervisorSession:
                     )
 
             event["state"] = "completed"
+            event["phase"] = "verified"
             event["completed_at"] = time.time()
             event["result"] = {
                 "editor_restarted": bool(was_running and restart_editor),
                 "mcp_ready": bool(launch_status and launch_status.get("mcp_ready")),
             }
+            self._last_handoff = dict(event)
             _append_json_line(self.handoff_history_path, event)
+            self._persist_state()
             return self.status() | {"handoff": event, "launch": launch_status}
         except Exception as exc:
             event["state"] = "failed"
+            event["phase"] = "failed"
             event["failed_at"] = time.time()
             event["error"] = str(exc)
+            self._last_handoff = dict(event)
             _append_json_line(self.handoff_history_path, event)
+            self._persist_state()
             raise
 
     def _preflight_handoff(self, *, timeout_seconds: float) -> dict[str, Any]:
@@ -1298,6 +1387,7 @@ class SupervisorSession:
             "player_debug_log_path": self.player_debug_log_path,
             "player_crash_log_path": self.player_crash_log_path,
             "player_control_fingerprint": _secret_fingerprint(self._player_control_token),
+            "last_handoff": dict(self._last_handoff),
             "agent_handoff": self.agent_handoff(),
         }
 
@@ -1318,6 +1408,7 @@ class SupervisorSession:
             "build_profile": self.build_profile,
             "recording_enabled": self.recording_enabled,
             "managed_checkpoints_required": self.managed_checkpoints_required,
+            "last_handoff": dict(self._last_handoff),
             "endpoint": self.mcp_endpoint,
             "health_endpoint": self.mcp_health_endpoint,
             "environment_activation": ["conda", "activate", "infernux"],
@@ -1329,6 +1420,7 @@ class SupervisorSession:
                 "Run probe_argv through the available shell before deciding that MCP tools are unavailable.",
                 "Use the returned MCP tool schema and current mode policy; do not infer unavailable privileged tools.",
                 "A missing directly injected connector is not an MCP outage when probe_argv succeeds.",
+                "Use Supervisor.switch_mode to move between developer_assist and global_validation; never assume a mode change happened until the returned endpoint identity and mode are verified.",
                 "For a managed attempt, call mcp_checkpoint_list, then mcp_checkpoint_status for the selected checkpoint before mcp_attempt_start; only the external Supervisor may create or restore checkpoints.",
             ],
         }
@@ -1675,6 +1767,23 @@ def _read_json_object(path: str) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _read_json_line(line: str) -> dict[str, Any]:
+    try:
+        value = json.loads(str(line or ""))
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _normalize_handoff_record(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    state = str(value.get("state", "") or "")
+    if state and state not in HANDOFF_STATES:
+        return {}
+    return dict(value)
 
 
 def _normalize_player_component_probes(

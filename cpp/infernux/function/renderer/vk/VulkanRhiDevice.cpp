@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 
 namespace infernux::vk
 {
@@ -215,7 +216,393 @@ VkCompareOp ToVkCompareOp(rhi::CompareFunction function)
     return VK_COMPARE_OP_MAX_ENUM;
 }
 
+bool IsCoreVersionAtLeast(uint32_t version, uint32_t major, uint32_t minor) noexcept
+{
+    return VK_VERSION_MAJOR(version) > major ||
+           (VK_VERSION_MAJOR(version) == major && VK_VERSION_MINOR(version) >= minor);
+}
+
+bool HasExtension(const std::vector<VkExtensionProperties> &extensions, const char *name) noexcept
+{
+    return std::any_of(extensions.begin(), extensions.end(), [name](const VkExtensionProperties &extension) {
+        return std::strcmp(extension.extensionName, name) == 0;
+    });
+}
+
+template <typename Feature> void AppendFeature(void *&tail, VkPhysicalDeviceFeatures2 &root, Feature &feature) noexcept
+{
+    auto *node = reinterpret_cast<VkBaseOutStructure *>(&feature);
+    node->pNext = nullptr;
+    if (tail == nullptr)
+        root.pNext = node;
+    else
+        reinterpret_cast<VkBaseOutStructure *>(tail)->pNext = node;
+    tail = node;
+}
+
+template <typename Property> void AppendProperty(void *&tail, VkPhysicalDeviceProperties2 &root,
+                                                  Property &property) noexcept
+{
+    auto *node = reinterpret_cast<VkBaseOutStructure *>(&property);
+    node->pNext = nullptr;
+    if (tail == nullptr)
+        root.pNext = node;
+    else
+        reinterpret_cast<VkBaseOutStructure *>(tail)->pNext = node;
+    tail = node;
+}
+
+void SetEnabled(rhi::DeviceCapabilityStatus &status) noexcept
+{
+    status.enabled = status.supported;
+}
+
 } // namespace
+
+VulkanCapabilityProbeData VulkanCapabilitySnapshot::QueryProbe(VkPhysicalDevice physicalDevice)
+{
+    VulkanCapabilityProbeData probe{};
+    if (physicalDevice == VK_NULL_HANDLE)
+        return probe;
+
+    vkGetPhysicalDeviceProperties(physicalDevice, &probe.properties);
+    probe.apiVersion = probe.properties.apiVersion;
+    vkGetPhysicalDeviceFeatures(physicalDevice, &probe.coreFeatures);
+
+    uint32_t extensionCount = 0;
+    if (vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr) != VK_SUCCESS)
+        return probe;
+    std::vector<VkExtensionProperties> extensions(extensionCount);
+    if (extensionCount != 0 &&
+        vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, extensions.data()) != VK_SUCCESS)
+        return probe;
+
+    probe.descriptorIndexingExtension = HasExtension(extensions, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+    probe.timelineSemaphoreExtension = HasExtension(extensions, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+    probe.dynamicRenderingExtension = HasExtension(extensions, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    probe.synchronization2Extension = HasExtension(extensions, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+
+    if (IsCoreVersionAtLeast(probe.apiVersion, 1, 1)) {
+        VkPhysicalDeviceFeatures2 features2{};
+        features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        probe.vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        probe.vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        probe.descriptorIndexingFeaturesEXT.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT;
+        probe.timelineSemaphoreFeaturesKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR;
+        probe.dynamicRenderingFeaturesKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+        probe.synchronization2FeaturesKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR;
+        void *tail = nullptr;
+        if (IsCoreVersionAtLeast(probe.apiVersion, 1, 2))
+            AppendFeature(tail, features2, probe.vulkan12Features);
+        if (IsCoreVersionAtLeast(probe.apiVersion, 1, 3))
+            AppendFeature(tail, features2, probe.vulkan13Features);
+        if (!IsCoreVersionAtLeast(probe.apiVersion, 1, 2) && probe.descriptorIndexingExtension)
+            AppendFeature(tail, features2, probe.descriptorIndexingFeaturesEXT);
+        if (!IsCoreVersionAtLeast(probe.apiVersion, 1, 2) && probe.timelineSemaphoreExtension)
+            AppendFeature(tail, features2, probe.timelineSemaphoreFeaturesKHR);
+        if (!IsCoreVersionAtLeast(probe.apiVersion, 1, 3) && probe.dynamicRenderingExtension)
+            AppendFeature(tail, features2, probe.dynamicRenderingFeaturesKHR);
+        if (!IsCoreVersionAtLeast(probe.apiVersion, 1, 3) && probe.synchronization2Extension)
+            AppendFeature(tail, features2, probe.synchronization2FeaturesKHR);
+        vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
+        probe.coreFeatures = features2.features;
+
+        VkPhysicalDeviceProperties2 properties2{};
+        properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        probe.vulkan12Properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;
+        probe.vulkan13Properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES;
+        void *propertyTail = nullptr;
+        if (IsCoreVersionAtLeast(probe.apiVersion, 1, 2))
+            AppendProperty(propertyTail, properties2, probe.vulkan12Properties);
+        if (IsCoreVersionAtLeast(probe.apiVersion, 1, 3))
+            AppendProperty(propertyTail, properties2, probe.vulkan13Properties);
+        vkGetPhysicalDeviceProperties2(physicalDevice, &properties2);
+        probe.properties = properties2.properties;
+    }
+    return probe;
+}
+
+VulkanCapabilitySnapshot VulkanCapabilitySnapshot::FromProbe(const VulkanCapabilityProbeData &probe) noexcept
+{
+    VulkanCapabilitySnapshot result{};
+    result.apiVersion = probe.apiVersion;
+    result.properties = probe.properties;
+    result.vulkan12Properties = probe.vulkan12Properties;
+    result.vulkan13Properties = probe.vulkan13Properties;
+    result.descriptorIndexingExtension = probe.descriptorIndexingExtension;
+    result.timelineSemaphoreExtension = probe.timelineSemaphoreExtension;
+    result.dynamicRenderingExtension = probe.dynamicRenderingExtension;
+    result.synchronization2Extension = probe.synchronization2Extension;
+
+    const bool core12 = IsCoreVersionAtLeast(probe.apiVersion, 1, 2);
+    const bool core13 = IsCoreVersionAtLeast(probe.apiVersion, 1, 3);
+    const auto &v12 = probe.vulkan12Features;
+    const auto &v13 = probe.vulkan13Features;
+    const auto &descriptor = probe.descriptorIndexingFeaturesEXT;
+    const bool descriptorIndexing = core12 ? v12.descriptorIndexing == VK_TRUE
+                                           : probe.descriptorIndexingExtension &&
+                                                 descriptor.runtimeDescriptorArray == VK_TRUE &&
+                                                 descriptor.descriptorBindingPartiallyBound == VK_TRUE &&
+                                                 descriptor.descriptorBindingVariableDescriptorCount == VK_TRUE &&
+                                                 descriptor.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
+    const bool runtimeDescriptorArray = core12 ? v12.runtimeDescriptorArray == VK_TRUE
+                                               : probe.descriptorIndexingExtension &&
+                                                     descriptor.runtimeDescriptorArray == VK_TRUE;
+    const bool partiallyBound = core12 ? v12.descriptorBindingPartiallyBound == VK_TRUE
+                                       : probe.descriptorIndexingExtension &&
+                                             descriptor.descriptorBindingPartiallyBound == VK_TRUE;
+    const bool variableCount = core12 ? v12.descriptorBindingVariableDescriptorCount == VK_TRUE
+                                      : probe.descriptorIndexingExtension &&
+                                            descriptor.descriptorBindingVariableDescriptorCount == VK_TRUE;
+    const bool sampledUpdateAfterBind =
+        core12 ? v12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE
+               : probe.descriptorIndexingExtension && descriptor.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
+    const bool storageUpdateAfterBind =
+        core12 ? v12.descriptorBindingStorageBufferUpdateAfterBind == VK_TRUE
+               : probe.descriptorIndexingExtension && descriptor.descriptorBindingStorageBufferUpdateAfterBind == VK_TRUE;
+    const bool uniformUpdateAfterBind =
+        core12 ? v12.descriptorBindingUniformBufferUpdateAfterBind == VK_TRUE
+               : probe.descriptorIndexingExtension && descriptor.descriptorBindingUniformBufferUpdateAfterBind == VK_TRUE;
+    const bool updateUnused = core12 ? v12.descriptorBindingUpdateUnusedWhilePending == VK_TRUE
+                                     : probe.descriptorIndexingExtension &&
+                                           descriptor.descriptorBindingUpdateUnusedWhilePending == VK_TRUE;
+
+    result.supported.bindless.descriptorIndexing = {descriptorIndexing, false};
+    result.supported.bindless.runtimeDescriptorArray = {runtimeDescriptorArray, false};
+    result.supported.bindless.descriptorBindingPartiallyBound = {partiallyBound, false};
+    result.supported.bindless.descriptorBindingVariableDescriptorCount = {variableCount, false};
+    result.supported.bindless.descriptorBindingSampledImageUpdateAfterBind = {sampledUpdateAfterBind, false};
+    result.supported.bindless.descriptorBindingUniformBufferUpdateAfterBind = {uniformUpdateAfterBind, false};
+    result.supported.bindless.descriptorBindingStorageBufferUpdateAfterBind = {storageUpdateAfterBind, false};
+    result.supported.bindless.descriptorBindingUpdateUnusedWhilePending = {updateUnused, false};
+
+    const bool timeline = core12 ? v12.timelineSemaphore == VK_TRUE
+                                 : probe.timelineSemaphoreExtension &&
+                                       probe.timelineSemaphoreFeaturesKHR.timelineSemaphore == VK_TRUE;
+    const bool dynamicRendering = core13 ? v13.dynamicRendering == VK_TRUE
+                                         : probe.dynamicRenderingExtension &&
+                                               probe.dynamicRenderingFeaturesKHR.dynamicRendering == VK_TRUE;
+    const bool synchronization2 = core13 ? v13.synchronization2 == VK_TRUE
+                                         : probe.synchronization2Extension &&
+                                               probe.synchronization2FeaturesKHR.synchronization2 == VK_TRUE;
+    result.supported.timelineSemaphore = {timeline, false};
+    result.supported.dynamicRendering = {dynamicRendering, false};
+    result.supported.synchronization2 = {synchronization2, false};
+    result.supported.submit2 = {synchronization2, false};
+    return result;
+}
+
+VulkanDeviceFeatureChain::VulkanDeviceFeatureChain(const VulkanCapabilitySnapshot &supported) noexcept
+    : m_supported(supported)
+{
+    ResetChain();
+}
+
+void VulkanDeviceFeatureChain::ResetChain() noexcept
+{
+    m_features2 = {};
+    m_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    m_vulkan12 = {};
+    m_vulkan12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    m_vulkan13 = {};
+    m_vulkan13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    m_descriptorIndexingEXT = {};
+    m_descriptorIndexingEXT.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT;
+    m_timelineSemaphoreKHR = {};
+    m_timelineSemaphoreKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR;
+    m_dynamicRenderingKHR = {};
+    m_dynamicRenderingKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+    m_synchronization2KHR = {};
+    m_synchronization2KHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR;
+    m_lastFeature = nullptr;
+    m_vulkan12Linked = false;
+    m_vulkan13Linked = false;
+    m_descriptorIndexingEXTLinked = false;
+    m_timelineSemaphoreKHRLinked = false;
+    m_dynamicRenderingKHRLinked = false;
+    m_synchronization2KHRLinked = false;
+    m_enabled = m_supported.supported;
+    m_enabled.bindless.descriptorIndexing.enabled = false;
+    m_enabled.bindless.runtimeDescriptorArray.enabled = false;
+    m_enabled.bindless.descriptorBindingPartiallyBound.enabled = false;
+    m_enabled.bindless.descriptorBindingVariableDescriptorCount.enabled = false;
+    m_enabled.bindless.descriptorBindingSampledImageUpdateAfterBind.enabled = false;
+    m_enabled.bindless.descriptorBindingUniformBufferUpdateAfterBind.enabled = false;
+    m_enabled.bindless.descriptorBindingStorageBufferUpdateAfterBind.enabled = false;
+    m_enabled.bindless.descriptorBindingUpdateUnusedWhilePending.enabled = false;
+    m_enabled.dynamicRendering.enabled = false;
+    m_enabled.timelineSemaphore.enabled = false;
+    m_enabled.synchronization2.enabled = false;
+    m_enabled.submit2.enabled = false;
+}
+
+void VulkanDeviceFeatureChain::Link(void *feature) noexcept
+{
+    auto *node = reinterpret_cast<VkBaseOutStructure *>(feature);
+    node->pNext = nullptr;
+    if (m_lastFeature == nullptr)
+        m_features2.pNext = node;
+    else
+        reinterpret_cast<VkBaseOutStructure *>(m_lastFeature)->pNext = node;
+    m_lastFeature = node;
+}
+
+bool VulkanDeviceFeatureChain::EnableDescriptorIndexing() noexcept
+{
+    if (!m_supported.supported.bindless.IsSupported()) {
+        m_failure = {rhi::DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing,
+                     rhi::DeviceCapability::DescriptorIndexing};
+        return false;
+    }
+    const bool core12 = IsCoreVersionAtLeast(m_supported.apiVersion, 1, 2);
+    if (core12) {
+        if (!m_vulkan12Linked) {
+            Link(&m_vulkan12);
+            m_vulkan12Linked = true;
+        }
+        m_vulkan12.descriptorIndexing = VK_TRUE;
+        m_vulkan12.runtimeDescriptorArray = VK_TRUE;
+        m_vulkan12.descriptorBindingPartiallyBound = VK_TRUE;
+        m_vulkan12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+        m_vulkan12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+        m_vulkan12.descriptorBindingUniformBufferUpdateAfterBind =
+            m_supported.supported.bindless.descriptorBindingUniformBufferUpdateAfterBind.supported;
+        m_vulkan12.descriptorBindingStorageBufferUpdateAfterBind =
+            m_supported.supported.bindless.descriptorBindingStorageBufferUpdateAfterBind.supported;
+        m_vulkan12.descriptorBindingUpdateUnusedWhilePending =
+            m_supported.supported.bindless.descriptorBindingUpdateUnusedWhilePending.supported;
+    } else if (m_supported.descriptorIndexingExtension) {
+        if (!m_descriptorIndexingEXTLinked) {
+            Link(&m_descriptorIndexingEXT);
+            m_descriptorIndexingEXTLinked = true;
+        }
+        m_descriptorIndexingEXT.runtimeDescriptorArray = VK_TRUE;
+        m_descriptorIndexingEXT.descriptorBindingPartiallyBound = VK_TRUE;
+        m_descriptorIndexingEXT.descriptorBindingVariableDescriptorCount = VK_TRUE;
+        m_descriptorIndexingEXT.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+        m_descriptorIndexingEXT.descriptorBindingUniformBufferUpdateAfterBind =
+            m_supported.supported.bindless.descriptorBindingUniformBufferUpdateAfterBind.supported;
+        m_descriptorIndexingEXT.descriptorBindingStorageBufferUpdateAfterBind =
+            m_supported.supported.bindless.descriptorBindingStorageBufferUpdateAfterBind.supported;
+        m_descriptorIndexingEXT.descriptorBindingUpdateUnusedWhilePending =
+            m_supported.supported.bindless.descriptorBindingUpdateUnusedWhilePending.supported;
+    } else {
+        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::DescriptorIndexing};
+        return false;
+    }
+    m_enabled.bindless = m_supported.supported.bindless;
+    SetEnabled(m_enabled.bindless.descriptorIndexing);
+    SetEnabled(m_enabled.bindless.runtimeDescriptorArray);
+    SetEnabled(m_enabled.bindless.descriptorBindingPartiallyBound);
+    SetEnabled(m_enabled.bindless.descriptorBindingVariableDescriptorCount);
+    SetEnabled(m_enabled.bindless.descriptorBindingSampledImageUpdateAfterBind);
+    SetEnabled(m_enabled.bindless.descriptorBindingUniformBufferUpdateAfterBind);
+    SetEnabled(m_enabled.bindless.descriptorBindingStorageBufferUpdateAfterBind);
+    SetEnabled(m_enabled.bindless.descriptorBindingUpdateUnusedWhilePending);
+    return true;
+}
+
+bool VulkanDeviceFeatureChain::EnableTimelineSemaphore() noexcept
+{
+    if (!m_supported.supported.timelineSemaphore.supported) {
+        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::TimelineSemaphore};
+        return false;
+    }
+    if (IsCoreVersionAtLeast(m_supported.apiVersion, 1, 2)) {
+        if (!m_vulkan12Linked) {
+            Link(&m_vulkan12);
+            m_vulkan12Linked = true;
+        }
+        m_vulkan12.timelineSemaphore = VK_TRUE;
+    } else if (m_supported.timelineSemaphoreExtension) {
+        if (!m_timelineSemaphoreKHRLinked) {
+            Link(&m_timelineSemaphoreKHR);
+            m_timelineSemaphoreKHRLinked = true;
+        }
+        m_timelineSemaphoreKHR.timelineSemaphore = VK_TRUE;
+    } else {
+        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::TimelineSemaphore};
+        return false;
+    }
+    m_enabled.timelineSemaphore = {true, true};
+    return true;
+}
+
+bool VulkanDeviceFeatureChain::EnableDynamicRendering() noexcept
+{
+    if (!m_supported.supported.dynamicRendering.supported) {
+        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::DynamicRendering};
+        return false;
+    }
+    if (IsCoreVersionAtLeast(m_supported.apiVersion, 1, 3)) {
+        if (!m_vulkan13Linked) {
+            Link(&m_vulkan13);
+            m_vulkan13Linked = true;
+        }
+        m_vulkan13.dynamicRendering = VK_TRUE;
+    } else if (m_supported.dynamicRenderingExtension) {
+        if (!m_dynamicRenderingKHRLinked) {
+            Link(&m_dynamicRenderingKHR);
+            m_dynamicRenderingKHRLinked = true;
+        }
+        m_dynamicRenderingKHR.dynamicRendering = VK_TRUE;
+    } else {
+        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::DynamicRendering};
+        return false;
+    }
+    m_enabled.dynamicRendering = {true, true};
+    return true;
+}
+
+bool VulkanDeviceFeatureChain::EnableSynchronization2() noexcept
+{
+    if (!m_supported.supported.synchronization2.supported) {
+        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::Synchronization2};
+        return false;
+    }
+    if (IsCoreVersionAtLeast(m_supported.apiVersion, 1, 3)) {
+        if (!m_vulkan13Linked) {
+            Link(&m_vulkan13);
+            m_vulkan13Linked = true;
+        }
+        m_vulkan13.synchronization2 = VK_TRUE;
+    } else if (m_supported.synchronization2Extension) {
+        if (!m_synchronization2KHRLinked) {
+            Link(&m_synchronization2KHR);
+            m_synchronization2KHRLinked = true;
+        }
+        m_synchronization2KHR.synchronization2 = VK_TRUE;
+    } else {
+        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::Synchronization2};
+        return false;
+    }
+    m_enabled.synchronization2 = {true, true};
+    return true;
+}
+
+bool VulkanDeviceFeatureChain::Enable(const rhi::DeviceCapabilityRequest &request) noexcept
+{
+    ResetChain();
+    m_failure = {};
+    const auto reject = [this]() noexcept {
+        const auto failure = m_failure;
+        ResetChain();
+        m_failure = failure;
+        return false;
+    };
+    if (request.descriptorIndexing && !EnableDescriptorIndexing())
+        return reject();
+    if (request.timelineSemaphore && !EnableTimelineSemaphore())
+        return reject();
+    if (request.dynamicRendering && !EnableDynamicRendering())
+        return reject();
+    if ((request.synchronization2 || request.submit2) && !EnableSynchronization2())
+        return reject();
+    if (request.submit2) {
+        m_enabled.submit2 = {true, true};
+    }
+    return true;
+}
 
 bool VulkanRhiDevice::IsValidTextureDesc(const rhi::TextureDesc &desc) noexcept
 {
@@ -256,26 +643,43 @@ VulkanRhiDevice::VulkanRhiDevice() : m_deviceId(rhi::AllocateDeviceId())
 
 VulkanRhiDevice::VulkanRhiDevice(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
                                  uint32_t graphicsQueueFamily, uint32_t computeQueueFamily,
-                                 uint32_t transferQueueFamily) noexcept
+                                 uint32_t transferQueueFamily,
+                                 const rhi::DeviceCapabilityState &capabilityState) noexcept
     : m_deviceId(rhi::AllocateDeviceId()), m_device(device), m_allocator(allocator), m_capabilities(capabilities),
       m_graphicsQueueFamily(graphicsQueueFamily), m_computeQueueFamily(computeQueueFamily),
-      m_transferQueueFamily(transferQueueFamily), m_descriptorManager(device, m_deviceId)
+      m_transferQueueFamily(transferQueueFamily), m_capabilityState(capabilityState),
+      m_descriptorManager(device, m_deviceId)
 {
 }
 
 VulkanRhiDevice::~VulkanRhiDevice()
 {
+    if (m_lifetime) {
+        std::unique_lock lock(m_lifetime->gate);
+        m_lifetime->alive.store(false, std::memory_order_release);
+        DestroyOwnedResources();
+        return;
+    }
     DestroyOwnedResources();
 }
 
 void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
                             uint32_t graphicsQueueFamily, uint32_t computeQueueFamily,
-                            uint32_t transferQueueFamily) noexcept
+                            uint32_t transferQueueFamily,
+                            const rhi::DeviceCapabilityState &capabilityState) noexcept
 {
-    DestroyOwnedResources();
+    if (m_lifetime) {
+        std::unique_lock lock(m_lifetime->gate);
+        m_lifetime->alive.store(false, std::memory_order_release);
+        DestroyOwnedResources();
+    } else {
+        DestroyOwnedResources();
+    }
+    m_lifetime = std::make_shared<rhi::DeviceLifetime>();
     m_device = device;
     m_allocator = allocator;
     m_capabilities = capabilities;
+    m_capabilityState = capabilityState;
     m_graphicsQueueFamily = graphicsQueueFamily;
     m_computeQueueFamily = computeQueueFamily;
     m_transferQueueFamily = transferQueueFamily;

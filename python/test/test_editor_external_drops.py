@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from Infernux.engine.interaction import (
     ExternalDropKind,
     ExternalDropStatus,
@@ -136,3 +138,26 @@ def test_project_panel_descriptor_declares_external_file_drop() -> None:
     assert descriptor.external_drop_kinds == frozenset(
         {ExternalDropKind.FILES}
     )
+
+
+def test_external_drop_forwarder_runs_after_native_panels() -> None:
+    source = Path("python/Infernux/engine/bootstrap_project.py").read_text(
+        encoding="utf-8"
+    )
+    registration = source[source.index('"project_drop_forwarder"') :]
+
+    assert "priority=100" in registration[:240]
+
+
+def test_native_drop_coordinates_feed_panel_hit_testing() -> None:
+    view_source = Path("cpp/infernux/platform/window/InxView.cpp").read_text(
+        encoding="utf-8"
+    )
+    input_source = Path(
+        "cpp/infernux/platform/input/InputManager.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "dropPointerEvent.type = SDL_EVENT_MOUSE_MOTION" in view_source
+    assert "dropPointerEvent.motion.x = event.drop.x" in view_source
+    assert "case SDL_EVENT_DROP_POSITION:" in input_source
+    assert "m_mouseX = event.drop.x" in input_source

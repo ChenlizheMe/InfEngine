@@ -67,11 +67,25 @@ def _try_get_cpp_mesh_preview(native: Any, norm_path: str) -> int:
     if native is None:
         return 0
     cache_key = f"mesh|{norm_path}"
-    mtime_hint = _cached_mtime_ns(norm_path)
+    # Prefab/model previews are dependency products.  The AssetManager stamp
+    # advances when an in-memory material or imported dependency changes, so a
+    # selected prefab refreshes without polling or ordering by wall-clock mtime.
+    try:
+        from Infernux.core.assets import AssetManager
+
+        dependency_stamp = AssetManager.preview_dependency_signature(norm_path)
+    except (ImportError, RuntimeError, AttributeError, TypeError, ValueError):
+        dependency_stamp = 0
     try:
         if hasattr(native, "pump_preview_tasks"):
             native.pump_preview_tasks()
-        return int(native.query_or_schedule_mesh_preview(cache_key, norm_path, int(mtime_hint)))
+        return int(
+            native.query_or_schedule_mesh_preview(
+                cache_key,
+                norm_path,
+                int(dependency_stamp),
+            )
+        )
     except Exception as exc:
         Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
     return 0
@@ -339,17 +353,24 @@ def invalidate_live_material_preview(file_path: str) -> None:
 
 def release_all_preview_authoring() -> None:
     """Return all Inspector-owned previews to passive asset observation."""
-    if not _AUTHORING_PREVIEW_KEYS:
+    keys = tuple(_AUTHORING_PREVIEW_KEYS)
+    if not keys:
         return
     native = _resolve_native_engine(None)
-    if native is None:
-        return
-    for key in tuple(_AUTHORING_PREVIEW_KEYS):
-        try:
-            native.release_preview_authoring(key)
-        except Exception as exc:
-            Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-    _AUTHORING_PREVIEW_KEYS.clear()
+    try:
+        if native is None:
+            return
+        for key in keys:
+            try:
+                native.release_preview_authoring(key)
+            except Exception as exc:
+                Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+    finally:
+        # Ownership is a Python-side session fact as well as a native fact.
+        # Do not retain keys when the native bridge is unavailable (for
+        # example during teardown or an isolated authoring test), otherwise a
+        # later session can inherit stale Inspector ownership.
+        _AUTHORING_PREVIEW_KEYS.difference_update(keys)
 
 
 def invalidate_all_resource_previews() -> None:

@@ -78,6 +78,10 @@ class SceneFileManager:
         """
         ...
 
+    def reload_from_resource(self, *, document_id: str, resource_path: str) -> object:
+        """Reload the current scene from its latest durable disk contents."""
+        ...
+
     def new_scene(self) -> None:
         """Create a blank scene, prompting to save the current one first."""
         ...

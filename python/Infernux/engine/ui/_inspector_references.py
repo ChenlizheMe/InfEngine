@@ -74,6 +74,18 @@ def _is_project_asset_path(file_path: str) -> bool:
     )
 
 
+def _is_project_path(file_path: str) -> bool:
+    """Return whether *file_path* belongs to the active project worktree."""
+    from Infernux.engine.path_utils import is_path_within
+    from Infernux.engine.project_context import get_project_root
+
+    project_root = get_project_root()
+    return bool(
+        project_root
+        and is_path_within(_resolve_project_asset_path(file_path), project_root)
+    )
+
+
 def _asset_guid_from_path(file_path: str) -> str:
     from Infernux.debug import Debug
     from Infernux.core.asset_types import read_meta_guid
@@ -834,30 +846,34 @@ def _resolve_asset_disk_path(value) -> str:
     return ""
 
 
-def ping_asset_in_project(path: str) -> None:
-    """Focus Project panel and select *path* (navigates to its folder)."""
+def ping_asset_in_project(path: str) -> bool:
+    """Focus FileManager for a referenced asset stored under ``Assets``."""
     disk_path = str(path or "").strip()
     if not disk_path:
-        return
+        return False
     for token in ("::submat:", "::subanim:", "::subbone:"):
         if token in disk_path:
             disk_path = disk_path.split(token, 1)[0]
             break
+    disk_path = _resolve_project_asset_path(disk_path)
+    if not _is_project_asset_path(disk_path):
+        return False
     try:
         from Infernux.engine.interaction import EditorInteractionCore, SelectionTarget
 
         core = EditorInteractionCore.instance()
         if core is None:
-            return
-        core.navigation.locate(
+            return False
+        return bool(core.navigation.locate(
             SelectionTarget.asset(disk_path),
             owner_id="project",
             reason="ping_asset",
             record_history=True,
-        )
+        ))
     except Exception as exc:
         from Infernux.debug import Debug
         Debug.log_suppressed("ping_asset_in_project", exc)
+        return False
 
 
 def ping_scene_object_in_hierarchy(object_id: int) -> None:

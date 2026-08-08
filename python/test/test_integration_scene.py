@@ -2371,6 +2371,126 @@ class TestSceneSerialization:
         finally:
             SceneFileManager._instance = previous_manager
 
+    def test_scene_history_restore_reuses_stable_id_after_save_as_key_change(
+        self,
+        scene,
+        monkeypatch,
+        tmp_path,
+    ):
+        from Infernux.engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
+        from Infernux.engine.path_utils import resolved_path
+
+        previous_manager = SceneFileManager._instance
+        try:
+            manager = SceneFileManager()
+            monkeypatch.setattr(manager, "_prepare_native_scene_swap", lambda: None)
+            monkeypatch.setattr(manager, "_restore_camera_state", lambda _path: None)
+            monkeypatch.setattr(manager, "sync_all_prefab_instances", lambda _scene: None)
+
+            registry = DocumentRegistry.instance()
+            old_path = tmp_path / "Draft.scene"
+            saved_path = tmp_path / "Saved.scene"
+            old_key = DocumentKey.resource(DocumentKind.SCENE, str(old_path))
+            saved_key = DocumentKey.resource(DocumentKind.SCENE, str(saved_path))
+            registry.rekey(manager.document_id, old_key, resource_path=str(old_path))
+            manager._current_scene_path = str(old_path)
+
+            scene.create_game_object("SavedAsHistoryObject")
+            manager.mark_dirty()
+            snapshot = manager._archive_active_scene()
+            assert snapshot is not None
+            history_locator = snapshot.locator
+
+            # Simulate a completed Save As after the history entry was made.
+            registry.rekey(manager.document_id, saved_key, resource_path=str(saved_path))
+            manager._current_scene_path = str(saved_path)
+            registry.unregister(manager.document_id)
+            replacement, _ = registry.open_or_create(
+                old_key,
+                "Replacement",
+                resource_path=str(old_path),
+            )
+
+            assert replacement.stable_id != history_locator.stable_id
+            assert manager.restore_document_locator(history_locator) is True
+            restored = registry.get(manager.document_id)
+            assert restored is not None
+            assert restored.stable_id == history_locator.stable_id
+            assert restored.key == saved_key
+            assert manager.current_scene_path == resolved_path(str(saved_path))
+            assert scene.find("SavedAsHistoryObject") is not None
+        finally:
+            SceneFileManager._instance = previous_manager
+
+    def test_scene_history_open_cycles_preserve_identity_through_open_service(
+        self,
+        scene,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Repeated MCP-style scene opens must revive each archived identity.
+
+        This intentionally exercises the same path as ``scene_open``: each
+        scene is archived before replacement, the previous registry entry is
+        retired to dormant state, and the next open is resolved through
+        ``DocumentOpenService.open_resource`` rather than calling the scene
+        manager directly.
+        """
+        from Infernux.engine.interaction import (
+            DocumentKind,
+            DocumentOpenService,
+            DocumentOpenStatus,
+            DocumentRegistry,
+        )
+
+        previous_manager = SceneFileManager._instance
+        try:
+            manager = SceneFileManager()
+            monkeypatch.setattr(manager, "_prepare_native_scene_swap", lambda: None)
+            monkeypatch.setattr(manager, "_restore_camera_state", lambda _path: None)
+            monkeypatch.setattr(manager, "sync_all_prefab_instances", lambda _scene: None)
+
+            registry = DocumentRegistry.instance()
+            service = DocumentOpenService(registry)
+            service.register(DocumentKind.SCENE, manager.restore_document_locator)
+
+            paths = tuple(
+                tmp_path / name
+                for name in ("Menu.scene", "Results.scene", "Course.scene")
+            )
+            locators = {}
+
+            # Match SceneFileManager's replacement ordering.  The departure
+            # snapshot must be captured before its live document is retired.
+            for path in paths:
+                manager._archive_active_scene()
+                manager._current_scene_path = str(path)
+                manager._replace_scene_document(
+                    kind="scene",
+                    resource_path=str(path),
+                    title=path.stem,
+                    dirty=False,
+                )
+                locator = registry.locate(manager.document_id)
+                assert locator is not None
+                locators[path] = locator
+
+            # Reopen every scene through the public adapter boundary.  The
+            # last scene is already live, so this also checks the adapter's
+            # idempotent live-document path alongside dormant revival.
+            for path in paths:
+                result = service.open_resource(
+                    DocumentKind.SCENE,
+                    str(path),
+                    title=path.stem,
+                )
+                assert result.status is DocumentOpenStatus.READY
+                assert result.document is not None
+                assert result.document.stable_id == locators[path].stable_id
+                assert manager.document_id == result.document.document_id
+        finally:
+            SceneFileManager._instance = previous_manager
+
     def test_scene_navigation_undo_redo_restores_both_session_scenes(
         self,
         scene,

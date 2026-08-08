@@ -226,6 +226,7 @@ bool VkResourceManager::Initialize(VkDeviceContext &context, VulkanQueueManager 
     m_vmaAllocator = context.GetVmaAllocator();
     m_graphicsQueue = context.GetGraphicsQueue();
     m_rhiDevice = &context.GetRhiDevice();
+    m_deviceLifetime = m_rhiDevice->GetLifetime();
     m_queueManager = queueManager;
 
     // Create command pool
@@ -308,6 +309,7 @@ void VkResourceManager::Destroy() noexcept
     m_physicalDevice = VK_NULL_HANDLE;
     m_graphicsQueue = VK_NULL_HANDLE;
     m_rhiDevice = nullptr;
+    m_deviceLifetime.reset();
     m_queueManager = nullptr;
     m_asyncTransfer = nullptr;
     m_asyncReadback = nullptr;
@@ -1046,7 +1048,7 @@ std::unique_ptr<VkBufferHandle> VkResourceManager::CreateBufferInternal(VkDevice
                                                                         const std::vector<uint32_t> &queueFamilies)
 {
     auto buffer = std::make_unique<VkBufferHandle>();
-    if (!buffer->Create(m_vmaAllocator, m_device, size, usage, properties, queueFamilies)) {
+    if (!buffer->Create(m_vmaAllocator, m_device, size, usage, properties, queueFamilies, m_deviceLifetime)) {
         return nullptr;
     }
     return buffer;
@@ -1060,7 +1062,8 @@ std::unique_ptr<VkImageHandle> VkResourceManager::CreateImage(uint32_t width, ui
                                                               VkImageUsageFlags usage, VkMemoryPropertyFlags properties)
 {
     auto image = std::make_unique<VkImageHandle>();
-    if (!image->Create(m_vmaAllocator, m_device, width, height, format, VK_IMAGE_TILING_OPTIMAL, usage, properties)) {
+    if (!image->Create(m_vmaAllocator, m_device, width, height, format, VK_IMAGE_TILING_OPTIMAL, usage, properties,
+                       VK_SAMPLE_COUNT_1_BIT, 1, m_deviceLifetime)) {
         return nullptr;
     }
     return image;

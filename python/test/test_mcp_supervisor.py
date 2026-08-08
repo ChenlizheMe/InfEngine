@@ -230,6 +230,50 @@ def test_supervisor_handoff_persists_mode_transition_without_running_editor(tmp_
     assert [entry["state"] for entry in history] == ["started", "completed"]
 
 
+def test_supervisor_switch_mode_is_explicit_and_records_a_secret_free_audit(tmp_path, monkeypatch):
+    project = tmp_path / "Desktop" / "ExplicitSwitchPilot"
+    supervisor = SupervisorSession(str(project), mode="developer_assist")
+    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
+
+    result = supervisor.switch_mode(
+        "global_validation",
+        reason="Run the human-equivalent validation pass.",
+        restart_editor=False,
+    )
+
+    assert result["mode"] == "global_validation"
+    assert result["handoff"]["checkpoint"] == "session-start"
+    assert result["handoff"]["phase"] == "verified"
+    assert result["last_handoff"]["handoff_id"] == result["handoff"]["handoff_id"]
+    assert "lease" not in json.dumps(result["handoff"]).lower()
+    assert supervisor.handoff_history()[-1]["state"] == "completed"
+
+
+def test_supervisor_switch_mode_is_idempotent_when_policy_already_matches(tmp_path, monkeypatch):
+    project = tmp_path / "Desktop" / "IdempotentSwitchPilot"
+    supervisor = SupervisorSession(str(project), mode="global_validation")
+    supervisor.prepare_project()
+    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
+
+    result = supervisor.switch_mode("global_validation", reason="Confirm validation mode.")
+
+    assert result["handoff"]["phase"] == "noop"
+    assert result["handoff"]["result"]["no_change"] is True
+    assert result["launch"] is None
+    assert result["mode"] == "global_validation"
+
+
+def test_supervisor_shutdown_quiescence_rejects_a_live_endpoint(tmp_path, monkeypatch):
+    supervisor = SupervisorSession(str(tmp_path / "LiveEndpointPilot"))
+    ticks = iter((0.0, 0.0, 0.2))
+    monkeypatch.setattr(supervisor_module.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(supervisor_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(supervisor_module, "_pid_is_running", lambda _pid: False)
+    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: True)
+
+    assert supervisor._wait_for_clean_editor_shutdown(7331, timeout_seconds=0.1) is False
+
+
 def test_supervisor_handoff_requires_a_current_managed_checkpoint(tmp_path, monkeypatch):
     project = tmp_path / "Desktop" / "ManagedHandoffPilot"
     supervisor = SupervisorSession(str(project), mode="developer_assist")

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Component.h"
+#include <cstddef>
 #include <cstdint>
 #include <pybind11/pybind11.h>
 #include <optional>
@@ -173,6 +174,19 @@ class PyComponentProxy : public Component
         return m_hasCoroutineScheduler;
     }
 
+    /// Read the live coroutine count from the scheduler contract. The
+    /// scheduler object remains allocated after completion, so presence alone
+    /// must not enable per-frame coroutine dispatch.
+    [[nodiscard]] static std::size_t ReadCoroutineSchedulerCount(const py::handle &scheduler);
+
+    /// Update the cached coroutine dispatch bit after a Python-side scheduler
+    /// transition. This is event-driven; phase dispatch must not reflect on
+    /// the Python object every frame.
+    void SetCoroutineSchedulerActive(bool active) noexcept
+    {
+        m_hasCoroutineScheduler = active;
+    }
+
     [[nodiscard]] uint64_t GetUpdateDispatchCount() const
     {
         return m_updateDispatchCount;
@@ -186,6 +200,9 @@ class PyComponentProxy : public Component
     /// Bind a newly published Python mirror and copy the preserved native
     /// lifecycle state into it without invoking user lifecycle methods.
     void RebindPythonMirror();
+    /// Refresh cached Python lifecycle wrappers and native phase gates after
+    /// an in-place class-body reload. This never invokes user lifecycle code.
+    void RefreshPythonLifecycleDispatch();
     void RefreshPythonMirrorIdentity() noexcept;
     void InvalidatePythonMirrorBinding() noexcept;
 

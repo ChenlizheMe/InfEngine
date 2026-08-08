@@ -202,6 +202,23 @@ class ResourceChangeHandler(FileSystemEventHandler):
         from Infernux.engine.interaction import DocumentRegistry
 
         documents = DocumentRegistry.instance()
+        # A self-write watcher event may arrive before AssetManager has polled
+        # its ticket. Acknowledge an exact committed fingerprint and defer an
+        # incomplete write; neither path is an external edit.
+        local_write_state = AssetManager.local_write_event_state(path)
+        if local_write_state == "ack":
+            return
+        if local_write_state == "pending":
+            raise _AssetImportNotReady(
+                f"local document write is still pending: {path}"
+            )
+        durable_change = documents.durable_resource_content_changed(path)
+        if durable_change is None:
+            raise _AssetImportNotReady(
+                f"durable resource identity is not ready: {path}"
+            )
+        if durable_change is False:
+            return
         if not documents.preflight_external_resource_change(path):
             return
         was_registered = self._asset_database.contains_path(path)
@@ -232,6 +249,10 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     raise _AssetImportNotReady(
                         f"import failed: {path}: {detail}"
                     )
+            # AssetMutationService normally consumes this preflight while
+            # publishing a registered reimport. If it did not, finalize the
+            # same successful external change here for both branches.
+            if documents.has_pending_external_change_preflight(path):
                 documents.publish_external_resource_change(path)
         except Exception as exc:
             documents.fail_external_resource_change(path, message=str(exc))
@@ -251,7 +272,16 @@ class ResourceChangeHandler(FileSystemEventHandler):
             return
         from Infernux.engine.interaction import DocumentRegistry
 
-        if not DocumentRegistry.instance().preflight_external_resource_change(
+        documents = DocumentRegistry.instance()
+        durable_change = documents.durable_resource_content_changed(
+            path,
+            deleted=True,
+        )
+        if durable_change is None:
+            raise _AssetImportNotReady(
+                f"durable resource identity is not ready: {path}"
+            )
+        if not durable_change or not documents.preflight_external_resource_change(
             path,
             deleted=True,
         ):
@@ -355,7 +385,13 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if errors:
             from Infernux.components.script_loader import set_script_error
             from Infernux.components.registry import unregister_component_script
-            unregister_component_script(file_path)
+            from Infernux.engine.play_mode import PlayModeManager
+            play_mode = PlayModeManager.instance()
+            # A syntax error must not remove the last valid component class
+            # while Play/Pause is using it. Edit mode retains its established
+            # catalog behavior for invalid scripts.
+            if play_mode is None or not play_mode.is_playing:
+                unregister_component_script(file_path)
             combined = "\n".join(
                 f"{os.path.basename(e.file_path)}:{e.line_number}  {e.message}"
                 for e in errors

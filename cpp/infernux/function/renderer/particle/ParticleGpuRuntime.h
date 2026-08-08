@@ -25,6 +25,7 @@ enum class GpuKernelStage : uint8_t
     Bootstrap,
     Init,
     Update,
+    UpdateRenderingFused,
     ContactPrepare,
     ContactSolve,
     ContactDispatch,
@@ -132,6 +133,7 @@ struct GpuEmitterDesc
     uint32_t stateStride = 0;
     uint32_t eventTypeCount = 0;
     bool collisionEnabled = false;
+    bool supportsFusedUpdateRendering = false;
     std::array<ShaderBytecode, static_cast<size_t>(GpuKernelStage::Count)> kernels{};
     std::vector<GpuMeshInterfaceDesc> meshInterfaces;
     GpuVectorFieldLayoutDesc vectorFields;
@@ -214,6 +216,9 @@ class ParticleGpuRuntime
     void RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
                       float deltaTime, rhi::BindGroupHandle graphSpawnGroup,
                       bool collectCollisionDiagnostics = false) const;
+    void RecordUpdateRenderingFused(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
+                                    uint32_t simulationStep, float deltaTime,
+                                    rhi::BindGroupHandle graphSpawnGroup) const;
     void RecordContactPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
                               rhi::BindGroupHandle graphSpawnGroup, bool resetAll = false) const;
     void RecordContactSolve(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
@@ -225,6 +230,10 @@ class ParticleGpuRuntime
                            bool resetCollisionDiagnostics = false) const;
     void RecordRendering(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
                          rhi::BindGroupHandle graphSpawnGroup) const;
+    [[nodiscard]] bool SupportsFusedUpdateRendering() const noexcept
+    {
+        return m_supportsFusedUpdateRendering;
+    }
     [[nodiscard]] bool HasContinuations() const noexcept;
     [[nodiscard]] const GpuParticleContinuationResources &ContinuationResources() const noexcept;
     [[nodiscard]] GpuParticleContinuationTelemetry ContinuationTelemetry() const noexcept;
@@ -311,6 +320,7 @@ class ParticleGpuRuntime
     uint32_t m_stateStride = 0;
     uint32_t m_eventTypeCount = 0;
     bool m_collisionEnabled = false;
+    bool m_supportsFusedUpdateRendering = false;
     mutable uint64_t m_contactPrepareRecordCalls = 0;
     mutable uint64_t m_contactSolveRecordCalls = 0;
     mutable uint64_t m_contactDispatchRecordCalls = 0;
@@ -327,6 +337,8 @@ class ParticleGpuRuntime
     rhi::BindingLayoutHandle m_collisionSceneLayout;
     rhi::BindGroupHandle m_collisionSceneGroup;
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};
+    GpuParticleTransforms m_cachedTransforms{};
+    bool m_hasCachedTransforms = false;
 };
 
 static_assert(sizeof(GpuParticleTransforms) == 256);

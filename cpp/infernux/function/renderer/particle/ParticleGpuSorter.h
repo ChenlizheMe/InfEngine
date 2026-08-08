@@ -71,7 +71,9 @@ class ParticleGpuSorter
     // Full 64-bit stable key sorting: depth primary (low 32b) + particle id (high 32b).
     // 8-bitwise passes per u32 lane => 16 total passes.
     static constexpr uint32_t PassCount = 16;
-    static constexpr uint32_t SmallSortCapacity = WorkgroupSize;
+    // One 256-lane workgroup loads four entries per lane.  Keep this a
+    // power-of-two so the in-workgroup bitonic network has no partial stage.
+    static constexpr uint32_t SmallSortCapacity = WorkgroupSize * 4u;
 
     ParticleGpuSorter() = default;
     ~ParticleGpuSorter();

@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 from Infernux.lib import InxGUIContext
-from Infernux.engine.i18n import t
+from Infernux.engine.i18n import get_locale, t
 from . import inspector_support as _inspector_support
 from .asset_execution_layer import AssetAccessMode, get_asset_execution_layer
 from .asset_resource_preview import get_resource_preview_texture_id
@@ -176,6 +176,16 @@ def _get_cached_material_preview_tex(panel, native_mat, mat_data, state, cache_t
     handle across frames binds a freed descriptor — Vulkan validation errors,
     previews rendering as the font atlas, and intermittent crashes.
     """
+    embedded = isinstance(preview_path, str) and "::submat:" in preview_path
+    # Asset refreshes publish a new in-memory JSON document before the next
+    # inspector frame.  Do not let the old preview token survive that refresh;
+    # this keeps external/native version changes on the same generation path
+    # as an inline edit without reading the file from disk.
+    live_json = state.extra.get("cached_json", "")
+    if not embedded and live_json and live_json != (cache_tag or ""):
+        cache_tag = live_json
+        state.extra["_material_cache_tag"] = cache_tag
+
     preview_key = (preview_path or "", cache_tag or "")
     cached_key = state.extra.get("_material_preview_query_key")
     cached_ready = bool(state.extra.get("_material_preview_tex_ready", False))
@@ -253,10 +263,31 @@ def _resolve_texture_display(prop):
     return tex_guid[:8] + "..."
 
 
-def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
+def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
+                              reference_cache=None):
     """Render a canonical GUID-backed Texture2D property. Returns True if changed."""
     changed = False
-    display = _resolve_texture_display(prop)
+    tex_guid = str(prop.get("guid", "") or "")
+    if isinstance(reference_cache, dict):
+        if "database" not in reference_cache:
+            reference_cache["database"] = _get_asset_database()
+        adb = reference_cache["database"]
+        database_generation = getattr(adb, "query_generation", -1) if adb else -1
+        cache_key = (id(adb), int(database_generation or 0), tex_guid)
+        if reference_cache.get("key") != cache_key:
+            tex_path = adb.get_path_from_guid(tex_guid) if adb and tex_guid else ""
+            reference_cache["key"] = cache_key
+            reference_cache["path"] = tex_path or ""
+            reference_cache["display"] = (
+                os.path.basename(tex_path) if tex_path else (
+                    tex_guid[:8] + "..." if tex_guid else t("igui.none")
+                )
+            )
+        display = reference_cache["display"]
+        texture_path = reference_cache["path"]
+    else:
+        display = _resolve_texture_display(prop)
+        texture_path = ""
     field_label(ctx, prop_name, plw)
 
     from .igui import IGUI
@@ -277,7 +308,8 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
         changed = True
 
     def _texture_path():
-        tex_guid = str(prop.get("guid", "") or "")
+        if texture_path:
+            return texture_path
         adb = _get_asset_database()
         return adb.get_path_from_guid(tex_guid) if adb and tex_guid else ""
 
@@ -295,7 +327,7 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
         reference_value={
             "asset_type": "Texture",
             "guid": str(prop.get("guid", "") or ""),
-            "path_hint": _texture_path(),
+            "path_hint": texture_path or _texture_path(),
         },
     )
     return changed
@@ -309,6 +341,7 @@ def render_material_property(
     value,
     plw: float,
     wid_prefix: str = "mp",
+    reference_cache=None,
 ) -> bool:
     """Render one material property row.  Returns ``True`` if changed."""
     changed = False
@@ -382,7 +415,10 @@ def render_material_property(
             changed = True
 
     elif ptype == 6:  # Texture2D
-        changed = _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw)
+        changed = _render_texture2d_property(
+            ctx, prop, prop_name, wid_prefix, plw,
+            reference_cache=reference_cache,
+        )
 
     elif ptype == 7:  # Color
         if value is not None and len(value) >= 4:
@@ -410,7 +446,78 @@ def render_material_property(
 _native_mat = None
 _cached_data: Optional[dict] = None
 _shader_cache: dict = {".vert": None, ".frag": None}
-_surface_batch_plans: dict = {}
+_SURFACE_BATCH_SCHEMA = 2
+
+
+def _shader_value_token(value):
+    """Return a stable, value-only key for a serialized shader reference."""
+    if isinstance(value, dict):
+        return (
+            str(value.get("guid", "") or ""),
+            str(value.get("shader_id", "") or ""),
+            str(value.get("path_hint", "") or ""),
+            str(value.get("builtin", "") or ""),
+        )
+    return (type(value).__name__, str(value or ""))
+
+
+def _bump_material_schema_revision(state) -> int:
+    revision = int(state.extra.get("_material_schema_revision", 0)) + 1
+    state.extra["_material_schema_revision"] = revision
+    state.extra.pop("_material_property_layout_cache", None)
+    state.extra.pop("_material_shader_ui_cache", None)
+    return revision
+
+
+def _get_material_shader_ui_cache(state, vert_ref, frag_ref):
+    """Cache dropdown catalogs and stable display/path data per shader revision."""
+    generation = int(state.extra.get("_shader_catalog_generation", -1))
+    key = (
+        generation,
+        _shader_value_token(vert_ref),
+        _shader_value_token(frag_ref),
+    )
+    cache = state.extra.get("_material_shader_ui_cache")
+    if isinstance(cache, dict) and cache.get("key") == key:
+        return cache
+
+    vert_items = shader_utils.get_shader_candidates(".vert", _shader_cache)
+    frag_items = shader_utils.get_shader_candidates(".frag", _shader_cache)
+    cache = {
+        "key": key,
+        "vertex_items": vert_items,
+        "fragment_items": frag_items,
+        "vertex_id": shader_utils.shader_ref_id(vert_ref),
+        "fragment_id": shader_utils.shader_ref_id(frag_ref),
+        "vertex_display": shader_utils.shader_display_from_value(vert_ref, vert_items),
+        "fragment_display": shader_utils.shader_display_from_value(frag_ref, frag_items),
+        "vertex_path": _shader_reference_path(vert_ref, ".vert"),
+        "fragment_path": _shader_reference_path(frag_ref, ".frag"),
+    }
+    state.extra["_material_shader_ui_cache"] = cache
+    return cache
+
+
+def _get_material_property_layout_cache(ctx, state, mat_data):
+    """Cache property order and label width; values never invalidate this cache."""
+    locale = get_locale()
+    key = (
+        id(ctx),
+        locale,
+        int(state.extra.get("_material_schema_revision", 0)),
+    )
+    cache = state.extra.get("_material_property_layout_cache")
+    if isinstance(cache, dict) and cache.get("key") == key:
+        return cache
+
+    prop_names = tuple(shader_utils.get_material_property_display_order(mat_data))
+    cache = {
+        "key": key,
+        "property_names": prop_names,
+        "label_width": max_label_w(ctx, prop_names),
+    }
+    state.extra["_material_property_layout_cache"] = cache
+    return cache
 
 
 def _shader_reference_path(value, ext: str) -> str:
@@ -421,6 +528,36 @@ def _shader_reference_path(value, ext: str) -> str:
             shader_utils.shader_ref_id(reference), ext,
         ) or "")
     return path
+
+
+def _surface_batch_cache_is_current(entries) -> bool:
+    """Check the Python/native descriptor contract before reusing a plan."""
+    if not isinstance(entries, list):
+        return False
+    for entry in entries:
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            return False
+        descriptor = entry[1]
+        if not isinstance(descriptor, dict):
+            return False
+        try:
+            property_type = int(descriptor.get("t", -1))
+        except (TypeError, ValueError):
+            return False
+        required_keys = {
+            0: ("f",),
+            1: ("i",),
+            2: ("b",),
+            3: ("s",),
+            4: ("f", "f2"),
+            5: ("f", "f2", "f3"),
+            6: ("f", "f2", "f3", "f4"),
+            7: ("ei", "en"),
+            8: ("f", "f2", "f3", "f4"),
+        }.get(property_type)
+        if required_keys is None or any(key not in descriptor for key in required_keys):
+            return False
+    return True
 
 
 def _ping_shader_reference(value, ext: str) -> None:
@@ -436,7 +573,8 @@ def _ping_shader_reference(value, ext: str) -> None:
 # Extracted section renderers (called from render_material_body)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
+def _render_shader_section(ctx, mat_data, state, is_builtin, default_open,
+                           layout_cache=None):
     """Render the vertex/fragment shader selection section.
 
     Returns ``(changed, requires_deserialize, requires_pipeline_refresh, change_key)``.
@@ -449,12 +587,20 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
     if is_builtin:
         ctx.begin_disabled(True)
     section_t0 = _profile_start()
-    if render_compact_section_header(ctx, t("material.shader_section"), level="secondary",
+    section_label = (
+        layout_cache["shader_section_label"]
+        if isinstance(layout_cache, dict)
+        else t("material.shader_section")
+    )
+    if render_compact_section_header(ctx, section_label, level="secondary",
                                      default_open=default_open):
         shaders = mat_data.setdefault("shaders", {})
         vert_ref = shaders.get("vertex", "")
         frag_ref = shaders.get("fragment", "")
-        s_lw = max_label_w(ctx, [t("material.vertex"), t("material.fragment")])
+        if isinstance(layout_cache, dict):
+            s_lw = layout_cache["shader_label_width"]
+        else:
+            s_lw = max_label_w(ctx, [t("material.vertex"), t("material.fragment")])
         def _apply_shader(shader_key, new_value, other_key):
             nonlocal changed, requires_deserialize, requires_pipeline_refresh, change_key
             old_val = shaders.get(shader_key, "")
@@ -463,6 +609,8 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
             if not new_ref["guid"] and not new_ref["shader_id"]:
                 return
             shaders[shader_key] = new_ref
+            if new_ref != old_val:
+                _bump_material_schema_revision(state)
             changed = True
             change_key = f"shader.{shader_key}"
             requires_deserialize = True
@@ -475,28 +623,32 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
                 state.extra["shader_sync_key"] = f"{v}|{f}:{shader_utils.get_shader_property_generation()}"
 
         # Vertex shader
-        field_label(ctx, t("material.vertex"), s_lw)
-        vert_items = shader_utils.get_shader_candidates(".vert", _shader_cache)
-        vert_display = shader_utils.shader_display_from_value(vert_ref, vert_items)
+        shader_ui = _get_material_shader_ui_cache(state, vert_ref, frag_ref)
+        shader_labels = (
+            layout_cache["shader_labels"]
+            if isinstance(layout_cache, dict)
+            else (t("material.vertex"), t("material.fragment"))
+        )
+        field_label(ctx, shader_labels[0], s_lw)
+        vert_display = shader_ui["vertex_display"]
 
         _render_obj_field(
             ctx, "mat_vert", vert_display, "Vert", "SHADER_FILE",
             lambda p: _apply_shader("vertex", p, "fragment"),
-            ping_path=_shader_reference_path(vert_ref, ".vert") or None,
-            has_value=bool(shader_utils.shader_ref_id(vert_ref)),
+            ping_path=shader_ui["vertex_path"] or None,
+            has_value=bool(shader_ui["vertex_id"]),
             semantic_id="asset.material.shader.vertex",
         )
 
         # Fragment shader
-        field_label(ctx, t("material.fragment"), s_lw)
-        frag_items = shader_utils.get_shader_candidates(".frag", _shader_cache)
-        frag_display = shader_utils.shader_display_from_value(frag_ref, frag_items)
+        field_label(ctx, shader_labels[1], s_lw)
+        frag_display = shader_ui["fragment_display"]
 
         _render_obj_field(
             ctx, "mat_frag", frag_display, "Frag", "SHADER_FILE",
             lambda p: _apply_shader("fragment", p, "vertex"),
-            ping_path=_shader_reference_path(frag_ref, ".frag") or None,
-            has_value=bool(shader_utils.shader_ref_id(frag_ref)),
+            ping_path=shader_ui["fragment_path"] or None,
+            has_value=bool(shader_ui["fragment_id"]),
             semantic_id="asset.material.shader.fragment",
         )
     _record_profile_timing("materialShader", section_t0)
@@ -505,86 +657,130 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
     return changed, requires_deserialize, requires_pipeline_refresh, change_key
 
 
-def _prepare_surface_options_batch(ctx, rs, so_lw):
-    """Prepare the reusable native surface plan and its current values."""
-    entries = []
+def _prepare_surface_options_batch(ctx, rs, so_lw, cache=None):
+    """Prepare the reusable native surface plan and its current values.
 
-    def add(key, desc):
-        entries.append((key, desc))
-
-    surface_items = [t("material.opaque"), t("material.transparent")]
-    add("surface", {"t": 7, "w": "##mat_surface_type", "n": t("material.surface_type"),
-                    "ei": 1 if rs.get("blendEnable", False) else 0, "en": surface_items,
-                    "sid": "asset.material.surface.type"})
-
-    cull_items = [t("material.cull_none"), t("material.cull_front"), t("material.cull_back")]
-    cull_idx = {0: 0, 1: 1, 2: 2}.get(int(rs.get("cullMode", 2)), 2)
-    add("cull", {"t": 7, "w": "##mat_cull_mode", "n": t("material.cull_mode"),
-                 "ei": cull_idx, "en": cull_items, "sid": "asset.material.surface.cull"})
-
-    add("depth_write", {"t": 2, "w": "##mat_depth_write", "n": t("material.depth_write"),
-                        "b": bool(rs.get("depthWriteEnable", True)), "fl": True,
-                        "sid": "asset.material.surface.depth_write"})
-
-    compare_items = [t("material.compare_never"), t("material.compare_less"),
-                     t("material.compare_equal"), t("material.compare_less_equal"),
-                     t("material.compare_greater"), t("material.compare_not_equal"),
-                     t("material.compare_greater_equal"), t("material.compare_always")]
-    depth_enabled = bool(rs.get("depthTestEnable", True))
-    depth_op = int(rs.get("depthCompareOp", 1))
-    depth_names = compare_items if depth_enabled else ["Off"] + compare_items[1:]
-    add("depth_test", {"t": 7, "w": "##mat_depth_test", "n": t("material.depth_test"),
-                       "ei": depth_op if depth_enabled else 7, "en": depth_names,
-                       "sid": "asset.material.surface.depth_test"})
-
-    if rs.get("blendEnable", False):
-        src = int(rs.get("srcColorBlendFactor", 6))
-        dst = int(rs.get("dstColorBlendFactor", 7))
-        blend_idx = 1 if (src, dst) == (1, 1) else 2 if (src, dst) == (1, 7) else 0
-        add("blend", {"t": 7, "w": "##mat_blend_mode", "n": t("material.blend_mode"),
-                      "ei": blend_idx,
-                      "en": [t("material.blend_alpha"), t("material.blend_additive"),
-                             t("material.blend_premultiply")],
-                      "sid": "asset.material.surface.blend"})
-
+    The native batch still receives fresh values every frame so controls remain
+    fully interactive. Descriptor dictionaries and the native plan only depend
+    on the shape of the surface section, the label width, and the context that
+    owns the plan, so those objects are reused by inline material inspectors.
+    """
+    blend_enabled = bool(rs.get("blendEnable", False))
     alpha_clip = bool(rs.get("alphaClipEnabled", False))
-    add("alpha_clip", {"t": 2, "w": "##mat_alpha_clip", "n": t("material.alpha_clip"),
-                       "b": alpha_clip, "fl": True,
-                       "sid": "asset.material.surface.alpha_clip"})
-    if alpha_clip:
-        add("alpha_threshold", {"t": 0, "w": "##mat_alpha_threshold", "n": t("material.threshold"),
-                                "f": float(rs.get("alphaClipThreshold", 0.5)),
-                                "mn": 0.0, "mx": 1.0, "sl": True,
-                                "sid": "asset.material.surface.alpha_threshold"})
-
-    is_transparent = bool(rs.get("blendEnable", False))
-    rq_min, rq_max = (2501, 5000) if is_transparent else (0, 2500)
-    rq = max(rq_min, min(int(rs.get("renderQueue", 2000)), rq_max))
-    add("render_queue", {"t": 1, "w": "##mat_render_queue", "n": t("material.render_queue"),
-                         "i": rq, "sp": 1.0, "mn": rq_min, "mx": rq_max,
-                         "sid": "asset.material.surface.render_queue"})
-
-    plan_key = tuple(
-        (key, desc["t"], desc["w"], desc["n"], tuple(desc.get("en", ())),
-         desc.get("mn"), desc.get("mx"), desc.get("sp"), desc.get("sl"), desc.get("fl"),
-         desc.get("sid", ""))
-        for key, desc in entries
+    depth_enabled = bool(rs.get("depthTestEnable", True))
+    # ``ei`` is part of the native enum descriptor contract even when the
+    # current value is refreshed through ``render_property_batch_plan_values``.
+    # Keep it on every cached enum descriptor so first-use plan construction
+    # and cache reuse have the same complete schema.
+    surface_index = 1 if blend_enabled else 0
+    cull_index = {0: 0, 1: 1, 2: 2}.get(int(rs.get("cullMode", 2)), 2)
+    depth_compare = int(rs.get("depthCompareOp", 1))
+    depth_index = depth_compare if depth_enabled else 7
+    src = int(rs.get("srcColorBlendFactor", 6))
+    dst = int(rs.get("dstColorBlendFactor", 7))
+    blend_index = 1 if (src, dst) == (1, 1) else 2 if (src, dst) == (1, 7) else 0
+    rq_min, rq_max = (2501, 5000) if blend_enabled else (0, 2500)
+    render_queue = max(rq_min, min(int(rs.get("renderQueue", 2000)), rq_max))
+    locale = get_locale()
+    shape_key = (
+        _SURFACE_BATCH_SCHEMA, id(ctx), locale, float(so_lw),
+        blend_enabled, alpha_clip, depth_enabled,
     )
-    plan = _surface_batch_plans.get(plan_key)
-    if plan is None:
-        plan = ctx.create_property_batch_plan([desc for _, desc in entries])
-        _surface_batch_plans[plan_key] = plan
+    cached_entries = cache.get("entries") if isinstance(cache, dict) else None
+    cached_schema_valid = _surface_batch_cache_is_current(cached_entries)
+    if (isinstance(cache, dict) and cache.get("shape_key") == shape_key
+            and cache.get("context") is ctx and cached_schema_valid
+            and cache.get("plan") is not None):
+        entries = cache["entries"]
+        plan = cache["plan"]
+    else:
+        entries = []
 
+        def add(key, desc):
+            entries.append((key, desc))
+
+        surface_items = [t("material.opaque"), t("material.transparent")]
+        add("surface", {"t": 7, "w": "##mat_surface_type", "n": t("material.surface_type"),
+                        "ei": surface_index, "en": surface_items,
+                        "sid": "asset.material.surface.type"})
+
+        cull_items = [t("material.cull_none"), t("material.cull_front"), t("material.cull_back")]
+        add("cull", {"t": 7, "w": "##mat_cull_mode", "n": t("material.cull_mode"),
+                     "ei": cull_index, "en": cull_items,
+                     "sid": "asset.material.surface.cull"})
+
+        add("depth_write", {"t": 2, "w": "##mat_depth_write", "n": t("material.depth_write"),
+                             "b": bool(rs.get("depthWriteEnable", True)), "fl": True,
+                             "sid": "asset.material.surface.depth_write"})
+
+        compare_items = [t("material.compare_never"), t("material.compare_less"),
+                         t("material.compare_equal"), t("material.compare_less_equal"),
+                         t("material.compare_greater"), t("material.compare_not_equal"),
+                         t("material.compare_greater_equal"), t("material.compare_always")]
+        depth_names = compare_items if depth_enabled else ["Off"] + compare_items[1:]
+        add("depth_test", {"t": 7, "w": "##mat_depth_test", "n": t("material.depth_test"),
+                            "ei": depth_index, "en": depth_names,
+                            "sid": "asset.material.surface.depth_test"})
+
+        if blend_enabled:
+            add("blend", {"t": 7, "w": "##mat_blend_mode", "n": t("material.blend_mode"),
+                           "ei": blend_index,
+                           "en": [t("material.blend_alpha"), t("material.blend_additive"),
+                                  t("material.blend_premultiply")],
+                           "sid": "asset.material.surface.blend"})
+
+        add("alpha_clip", {"t": 2, "w": "##mat_alpha_clip", "n": t("material.alpha_clip"),
+                           "b": alpha_clip, "fl": True,
+                           "sid": "asset.material.surface.alpha_clip"})
+        if alpha_clip:
+            add("alpha_threshold", {"t": 0, "w": "##mat_alpha_threshold", "n": t("material.threshold"),
+                                     "f": float(rs.get("alphaClipThreshold", 0.5)),
+                                     "mn": 0.0, "mx": 1.0, "sl": True,
+                                     "sid": "asset.material.surface.alpha_threshold"})
+
+        add("render_queue", {"t": 1, "w": "##mat_render_queue", "n": t("material.render_queue"),
+                             "i": render_queue,
+                             "sp": 1.0, "mn": rq_min, "mx": rq_max,
+                             "sid": "asset.material.surface.render_queue"})
+
+        # The per-document cache owns the native plan.  Keeping a module-level
+        # map keyed by ``id(ctx)`` lets a recycled Python object identity reuse
+        # a plan compiled from a different descriptor schema.
+        plan = ctx.create_property_batch_plan([desc for _, desc in entries])
+        if isinstance(cache, dict):
+            cache.clear()
+            cache.update({
+                "shape_key": shape_key,
+                "context": ctx,
+                "entries": entries,
+                "plan": plan,
+            })
+
+    depth_op = depth_compare
+    cull_idx = cull_index
+    blend_idx = blend_index
+    rq = render_queue
+    value_by_key = {
+        "surface": 1 if blend_enabled else 0,
+        "cull": cull_idx,
+        "depth_write": bool(rs.get("depthWriteEnable", True)),
+        "depth_test": depth_op if depth_enabled else 7,
+        "blend": blend_idx,
+        "alpha_clip": alpha_clip,
+        "alpha_threshold": float(rs.get("alphaClipThreshold", 0.5)),
+        "render_queue": rq,
+    }
     values = []
-    for _, desc in entries:
+    for key, desc in entries:
+        value = value_by_key[key]
         if desc["t"] == 0:
-            values.append(desc["f"])
+            values.append(value)
         elif desc["t"] == 1:
-            values.append(desc["i"])
+            values.append(value)
         elif desc["t"] == 2:
-            values.append(desc["b"])
+            values.append(value)
         else:
-            values.append(desc["ei"])
+            values.append(value)
     return entries, plan, values, depth_enabled, depth_op
 
 
@@ -642,16 +838,17 @@ def _apply_surface_option_changes(changes, entries, rs, mat_data, overrides,
     return overrides, change_key
 
 
-def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw):
+def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw, cache=None):
     """Render all steady-state surface controls through one native bridge call."""
     entries, plan, values, depth_enabled, depth_op = _prepare_surface_options_batch(
-        ctx, rs, so_lw)
+        ctx, rs, so_lw, cache=cache)
     changes = ctx.render_property_batch_plan_values(plan, values, so_lw)
     return _apply_surface_option_changes(
         changes, entries, rs, mat_data, overrides, depth_enabled, depth_op)
 
 
-def _render_surface_options_section(ctx, mat_data, is_builtin, default_open):
+def _render_surface_options_section(ctx, mat_data, is_builtin, default_open,
+                                    cache=None, layout_cache=None):
     """Render surface options (cull, depth, blend, alpha clip, render queue).
 
     Returns ``(changed, requires_deserialize, requires_pipeline_refresh, change_key)``.
@@ -664,17 +861,29 @@ def _render_surface_options_section(ctx, mat_data, is_builtin, default_open):
     if is_builtin:
         ctx.begin_disabled(True)
     section_t0 = _profile_start()
-    if render_compact_section_header(ctx, t("material.surface_options"), level="secondary",
+    section_label = (
+        layout_cache["surface_section_label"]
+        if isinstance(layout_cache, dict)
+        else t("material.surface_options")
+    )
+    if render_compact_section_header(ctx, section_label, level="secondary",
                                      default_open=default_open):
         rs = mat_data.setdefault("renderState", {})
         overrides = int(mat_data.get("renderStateOverrides", 0))
 
-        so_labels = [t("material.surface_type"), t("material.cull_mode"), t("material.depth_write"),
-                     t("material.depth_test"), t("material.blend_mode"), t("material.alpha_clip"),
-                     t("material.render_queue")]
-        so_lw = max_label_w(ctx, so_labels)
+        so_lw = (
+            layout_cache["surface_label_width"]
+            if isinstance(layout_cache, dict)
+            else max_label_w(ctx, [
+                t("material.surface_type"), t("material.cull_mode"),
+                t("material.depth_write"), t("material.depth_test"),
+                t("material.blend_mode"), t("material.alpha_clip"),
+                t("material.render_queue"),
+            ])
+        )
 
-        overrides, change_key = _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw)
+        overrides, change_key = _render_surface_options_batch(
+            ctx, rs, mat_data, overrides, so_lw, cache=cache)
         if change_key:
             changed = True
             requires_deserialize = True
@@ -686,7 +895,7 @@ def _render_surface_options_section(ctx, mat_data, is_builtin, default_open):
     return changed, requires_deserialize, requires_pipeline_refresh, change_key
 
 
-def _render_properties_section(ctx, mat_data, is_builtin, default_open):
+def _render_properties_section(ctx, mat_data, state, is_builtin, default_open):
     """Render material shader properties.
 
     Returns ``(changed, change_key, requires_deserialize)``.
@@ -698,20 +907,26 @@ def _render_properties_section(ctx, mat_data, is_builtin, default_open):
     if is_builtin:
         ctx.begin_disabled(True)
     section_t0 = _profile_start()
-    if render_compact_section_header(ctx, t("material.properties_section"), level="secondary",
+    layout_cache = _get_material_layout_cache(ctx, state)
+    if render_compact_section_header(
+            ctx, layout_cache["properties_section_label"], level="secondary",
                                      default_open=default_open):
         props = mat_data.get("properties", {})
         if not props:
-            ctx.label(t("material.no_properties"))
+            ctx.label(layout_cache["no_properties_label"])
         else:
-            prop_names = shader_utils.get_material_property_display_order(mat_data)
-            plw = max_label_w(ctx, prop_names)
+            layout_cache = _get_material_property_layout_cache(ctx, state, mat_data)
+            prop_names = layout_cache["property_names"]
+            plw = layout_cache["label_width"]
             for prop_name in prop_names:
                 prop = props[prop_name]
                 ptype = int(prop.get("type", 0))
                 value = prop.get("value")
                 prop_changed = render_material_property(
                     ctx, prop_name, prop, ptype, value, plw,
+                    reference_cache=state.extra.setdefault(
+                        "_material_texture_reference_cache", {}
+                    ),
                 )
                 if prop_changed:
                     if ptype == 6:
@@ -942,18 +1157,40 @@ def _sync_shader_annotations(mat_data, state):
     Returns ``(changed, requires_deserialize)`` — True if new/removed
     properties were detected and pushed to the native material.
     """
-    vert_shader_id = shader_utils.shader_ref_id(mat_data.get("shaders", {}).get("vertex", ""))
-    frag_shader_id = shader_utils.shader_ref_id(mat_data.get("shaders", {}).get("fragment", ""))
+    shaders = mat_data.get("shaders", {})
+    vert_ref = shaders.get("vertex", "")
+    frag_ref = shaders.get("fragment", "")
+    ref_token = (_shader_value_token(vert_ref), _shader_value_token(frag_ref))
+    cached_ids = state.extra.get("_material_shader_ids")
+    if isinstance(cached_ids, dict) and cached_ids.get("refs") == ref_token:
+        vert_shader_id = cached_ids["vertex"]
+        frag_shader_id = cached_ids["fragment"]
+    else:
+        vert_shader_id = shader_utils.shader_ref_id(vert_ref)
+        frag_shader_id = shader_utils.shader_ref_id(frag_ref)
+        state.extra["_material_shader_ids"] = {
+            "refs": ref_token,
+            "vertex": vert_shader_id,
+            "fragment": frag_shader_id,
+        }
     prop_gen = shader_utils.get_shader_property_generation()
+    if state.extra.get("_shader_catalog_generation", -1) != prop_gen:
+        state.extra["_shader_catalog_generation"] = prop_gen
+        if isinstance(state.extra.get("shader_cache"), dict):
+            state.extra["shader_cache"][".vert"] = None
+            state.extra["shader_cache"][".frag"] = None
+        state.extra.pop("_material_shader_ui_cache", None)
     sync_key = f"{vert_shader_id}|{frag_shader_id}:{prop_gen}"
     last_sync_key = state.extra.get("shader_sync_key", "")
     last_validation_key = state.extra.get("shader_validation_key", "")
-    mat_version = state.extra.get("mat_version", -1)
-    last_validation_version = state.extra.get("shader_validation_mat_version", -2)
+    current_property_names = tuple(sorted(
+        str(name) for name in mat_data.get("properties", {}).keys()))
+    last_validation_property_names = tuple(
+        state.extra.get("shader_validation_property_names", ()))
     needs_validation = (
         sync_key != last_validation_key
         or not mat_data.get("_shader_property_order")
-        or (mat_version != -1 and mat_version != last_validation_version)
+        or current_property_names != last_validation_property_names
     )
     missing_shader_props = False
     if needs_validation and (vert_shader_id or frag_shader_id):
@@ -961,11 +1198,12 @@ def _sync_shader_annotations(mat_data, state):
         expected_shader_props = shader_utils.get_all_shader_property_names(vert_shader_id, frag_shader_id)
         missing_shader_props = any(name not in current_props for name in expected_shader_props)
         state.extra["shader_validation_key"] = sync_key
-        if mat_version != -1:
-            state.extra["shader_validation_mat_version"] = mat_version
+        state.extra["shader_validation_property_names"] = current_property_names
 
     changed = False
     requires_deserialize = False
+    if sync_key != last_sync_key:
+        _bump_material_schema_revision(state)
     if (vert_shader_id or frag_shader_id) and (sync_key != last_sync_key or missing_shader_props):
         old_key = last_sync_key.rsplit(":", 1)[0] if last_sync_key else ""
         remove = (f"{vert_shader_id}|{frag_shader_id}" == old_key) and bool(old_key)
@@ -998,6 +1236,33 @@ def _prepare_shader_annotations(mat_data, state, *, read_only: bool):
     return False, False
 
 
+def _get_material_layout_cache(ctx, state):
+    """Cache translated labels/widths while keeping locale changes observable."""
+    cache = state.extra.setdefault("_material_layout_cache", {})
+    key = (id(ctx), get_locale())
+    if cache.get("key") != key:
+        shader_labels = (t("material.vertex"), t("material.fragment"))
+        surface_labels = (
+            t("material.surface_type"), t("material.cull_mode"),
+            t("material.depth_write"), t("material.depth_test"),
+            t("material.blend_mode"), t("material.alpha_clip"),
+            t("material.render_queue"),
+        )
+        cache.clear()
+        cache.update({
+            "key": key,
+            "shader_labels": shader_labels,
+            "surface_labels": surface_labels,
+            "shader_section_label": t("material.shader_section"),
+            "surface_section_label": t("material.surface_options"),
+            "properties_section_label": t("material.properties_section"),
+            "no_properties_label": t("material.no_properties"),
+            "shader_label_width": max_label_w(ctx, shader_labels),
+            "surface_label_width": max_label_w(ctx, surface_labels),
+        })
+    return cache
+
+
 def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
                                 default_open_sections, is_embedded_slot):
     """Render the stable material top area in one native bridge call."""
@@ -1005,24 +1270,23 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
     if not callable(native_renderer):
         return None
 
+    layout_cache = _get_material_layout_cache(ctx, state)
     shaders = mat_data.setdefault("shaders", {})
     vert_ref = shaders.get("vertex", "")
     frag_ref = shaders.get("fragment", "")
-    vert_items = shader_utils.get_shader_candidates(".vert", _shader_cache)
-    frag_items = shader_utils.get_shader_candidates(".frag", _shader_cache)
-    vert_display = shader_utils.shader_display_from_value(vert_ref, vert_items)
-    frag_display = shader_utils.shader_display_from_value(frag_ref, frag_items)
-    shader_lw = max_label_w(ctx, [t("material.vertex"), t("material.fragment")])
+    shader_ui = _get_material_shader_ui_cache(state, vert_ref, frag_ref)
+    vert_items = shader_ui["vertex_items"]
+    frag_items = shader_ui["fragment_items"]
+    vert_display = shader_ui["vertex_display"]
+    frag_display = shader_ui["fragment_display"]
+    shader_lw = layout_cache["shader_label_width"]
 
     rs = mat_data.setdefault("renderState", {})
     overrides = int(mat_data.get("renderStateOverrides", 0))
-    surface_labels = [t("material.surface_type"), t("material.cull_mode"),
-                      t("material.depth_write"), t("material.depth_test"),
-                      t("material.blend_mode"), t("material.alpha_clip"),
-                      t("material.render_queue")]
-    surface_lw = max_label_w(ctx, surface_labels)
+    surface_lw = layout_cache["surface_label_width"]
+    surface_cache = state.extra.setdefault("_material_surface_batch_cache", {})
     entries, surface_plan, surface_values, depth_enabled, depth_op = (
-        _prepare_surface_options_batch(ctx, rs, surface_lw)
+        _prepare_surface_options_batch(ctx, rs, surface_lw, cache=surface_cache)
     )
 
     cache_tag = state.extra.get("_material_cache_tag", "")
@@ -1060,9 +1324,9 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
 
     from .editor_icons import EditorIcons
     interaction = native_renderer(
-        t("material.shader_section"), t("material.vertex"), vert_display,
-        t("material.fragment"), frag_display, shader_lw,
-        t("material.surface_options"), surface_plan, surface_values, surface_lw,
+        layout_cache["shader_section_label"], layout_cache["shader_labels"][0], vert_display,
+        layout_cache["shader_labels"][1], frag_display, shader_lw,
+        layout_cache["surface_section_label"], surface_plan, surface_values, surface_lw,
         int(EditorIcons.get_cached(Theme.ICON_IMG_PICKER) or 0),
         int(preview_tex_id or 0), "Material preview unavailable.",
         bool(default_open_sections), bool(section_readonly),
@@ -1092,6 +1356,8 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
         if not new_ref["guid"] and not new_ref["shader_id"]:
             return
         shaders[shader_key] = new_ref
+        if new_ref != old_val:
+            _bump_material_schema_revision(state)
         changed = True
         change_key = f"shader.{shader_key}"
         requires_deserialize = True
@@ -1112,10 +1378,9 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
 
     def process_shader_field(field_id, flags, picker_open, list_open,
                              popup_id, items, selected_id, selected_ref,
-                             payload, apply):
+                             reference_path, payload, apply):
         del list_open, popup_id, items
         ext = ".vert" if field_id == "mat_vert" else ".frag"
-        reference_path = _shader_reference_path(selected_id, ext)
         asset_type = "Shader.Vertex" if ext == ".vert" else "Shader.Fragment"
         reference_value = {
             "asset_type": asset_type,
@@ -1155,13 +1420,15 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
 
     process_shader_field(
         "mat_vert", int(vert_flags), bool(vert_picker_open), bool(vert_list_open),
-        "mat_vert_popup", vert_items, shader_utils.shader_ref_id(vert_ref), vert_ref,
+        "mat_vert_popup", vert_items, shader_ui["vertex_id"], vert_ref,
+        shader_ui["vertex_path"],
         vert_payload,
         lambda value: apply_shader("vertex", value, "fragment"),
     )
     process_shader_field(
         "mat_frag", int(frag_flags), bool(frag_picker_open), bool(frag_list_open),
-        "mat_frag_popup", frag_items, shader_utils.shader_ref_id(frag_ref), frag_ref,
+        "mat_frag_popup", frag_items, shader_ui["fragment_id"], frag_ref,
+        shader_ui["fragment_path"],
         frag_payload,
         lambda value: apply_shader("fragment", value, "vertex"),
     )
@@ -1196,8 +1463,10 @@ def _render_material_top_legacy(ctx, panel, state, mat_data, section_readonly,
     if did_split:
         ctx.table_next_column()
 
+    layout_cache = _get_material_layout_cache(ctx, state)
     s_ch, s_ds, s_pr, s_ck = _render_shader_section(
-        ctx, mat_data, state, section_readonly, default_open_sections)
+        ctx, mat_data, state, section_readonly, default_open_sections,
+        layout_cache=layout_cache)
     changed |= s_ch
     requires_deserialize |= s_ds
     requires_pipeline_refresh |= s_pr
@@ -1205,8 +1474,10 @@ def _render_material_top_legacy(ctx, panel, state, mat_data, section_readonly,
         change_key = s_ck
 
     ctx.separator()
+    surface_cache = state.extra.setdefault("_material_surface_batch_cache", {})
     so_ch, so_ds, so_pr, so_ck = _render_surface_options_section(
-        ctx, mat_data, section_readonly, default_open_sections)
+        ctx, mat_data, section_readonly, default_open_sections,
+        cache=surface_cache, layout_cache=layout_cache)
     changed |= so_ch
     requires_deserialize |= so_ds
     requires_pipeline_refresh |= so_pr
@@ -1337,13 +1608,13 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
     requires_deserialize |= sync_ds
 
     # ── Top row: Shader + Surface + live preview ───────────────────────
-    top_result = _render_material_top_native(
+    # Shader ObjectFields own live ImGui popups. Keep their chrome and popup
+    # contents on the shared field call path instead of folding them into the
+    # native material-top batch, whose return boundary breaks popup identity.
+    # Surface controls remain native-batched inside the shared implementation.
+    top_result = _render_material_top_legacy(
         ctx, panel, state, mat_data, section_readonly,
         default_open_sections, is_embedded_slot)
-    if top_result is None:
-        top_result = _render_material_top_legacy(
-            ctx, panel, state, mat_data, section_readonly,
-            default_open_sections, is_embedded_slot)
     (
         top_changed,
         top_deserialize,
@@ -1362,7 +1633,7 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
     p_ch, p_ck, p_ds = _render_virtualized_material_block(
         ctx, state, "properties",
         lambda: _render_properties_section(
-            ctx, mat_data, section_readonly, default_open_sections,
+            ctx, mat_data, state, section_readonly, default_open_sections,
         ),
         (False, "", False),
     )
@@ -1378,6 +1649,7 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
         # Publish the latest document on the following frame.
         state.extra["_material_preview_pending"] = True
         state.extra["_material_preview_ready_at"] = _time.time()
+        state.extra["_inline_autosave_pending"] = True
         old_document = _document_before_material_edit(state, mat_data)
         _apply_material_changes(panel, state, mat_data, _native_mat,
                                 requires_deserialize, requires_pipeline_refresh,
@@ -1422,8 +1694,9 @@ def render_inline_material_body(ctx: InxGUIContext, panel, native_mat, cache_key
     # Inline materials don't go through render_asset_inspector's footer,
     # so the debounced save would never be flushed.  Drive it here.
     _inline_layer = getattr(panel, "_inline_material_exec_layer", None)
-    if _inline_layer is not None:
-        _inline_layer.flush_rw_autosave()
+    if _inline_layer is not None and state.extra.get("_inline_autosave_pending", False):
+        if _inline_layer.flush_rw_autosave():
+            state.extra["_inline_autosave_pending"] = False
 
 
 # ---------------------------------------------------------------------------
@@ -1548,9 +1821,17 @@ def _build_inline_state(panel, native_mat):
         extra["_inline_state"] = state
     else:
         state.file_path = mat_path
-    if mat_path and "::submat:" not in mat_path and not bool(
+    binding_key = (
+        mat_path,
+        str(getattr(native_mat, "guid", "") or ""),
+        id(state.exec_layer),
+    )
+    if (mat_path and "::submat:" not in mat_path and not bool(
         getattr(native_mat, "is_builtin", False)
-    ):
+    ) and (
+        state.resource_controller is None
+        or extra.get("_inline_document_binding_key") != binding_key
+    )):
         from Infernux.engine.interaction import (
             DocumentKind,
             ensure_editable_resource_document,
@@ -1570,6 +1851,7 @@ def _build_inline_state(panel, native_mat):
         )
         state.resource_controller = controller
         state.document_id = controller.document_id
+        extra["_inline_document_binding_key"] = binding_key
     return state
 
 
@@ -1586,10 +1868,11 @@ def _get_inline_material_extra(panel, native_mat) -> dict:
         mat_version = -1
 
     extra = cache.get(mat_id)
-    cache_hit = (extra is not None
-                 and mat_version != -1
-                 and (extra.get("mat_version", -1) == mat_version
-                      or extra.get("_applied_version", -2) == mat_version))
+    cache_hit = (extra is not None and (
+        mat_version == -1
+        or extra.get("mat_version", -1) == mat_version
+        or extra.get("_applied_version", -2) == mat_version
+    ))
     if cache_hit:
         extra["mat_version"] = mat_version
         return extra

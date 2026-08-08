@@ -13,6 +13,7 @@
 #include <function/renderer/particle/ParticleGpuRibbonTopology.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
+#include <function/renderer/particle/ParticleRenderGraph.h>
 #include <function/renderer/rhi/GpuRetirementQueue.h>
 #include <function/renderer/rhi/RhiBuffer.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -26,6 +27,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -33,6 +35,9 @@ namespace
 {
 
 using namespace infernux;
+
+constexpr size_t RequiredGpuKernelStageCount = static_cast<size_t>(particle::GpuKernelStage::Count) - 1u;
+constexpr size_t FusedGpuKernelStageCount = static_cast<size_t>(particle::GpuKernelStage::Count);
 
 std::array<float, 4> ExpectedLinearTint(const glm::vec4 &authoredSrgb)
 {
@@ -761,6 +766,7 @@ int main()
         runtimeDesc.eventTypeCount = 5;
         for (auto &kernel : runtimeDesc.kernels)
             kernel = {shader.data(), shader.size()};
+        runtimeDesc.kernels[static_cast<size_t>(particle::GpuKernelStage::UpdateRenderingFused)] = {};
         runtimeDesc.collisionSceneHeader = {901, 1};
         runtimeDesc.collisionSceneColliders = {902, 1};
         runtimeDesc.collisionSceneGridOffsets = {903, 1};
@@ -1125,6 +1131,7 @@ int main()
             sharingWords[index][0] = 0x07230203;
             sharingDesc.kernels[index] = {sharingWords[index].data(), sharingWords[index].size()};
         }
+        sharingDesc.kernels[static_cast<size_t>(particle::GpuKernelStage::UpdateRenderingFused)] = {};
 
         particle::ParticleGpuRuntime previous;
         particle::ParticleGpuRuntime compatible;
@@ -1155,8 +1162,9 @@ int main()
         previous.Destroy();
         assert(compatible.IsValid() && sharingDevice.bufferReleases == 0);
         compatible.Destroy();
-        assert(sharingDevice.bufferReleases == 8 && sharingDevice.pipelineReleases == 16 &&
-               sharingDevice.groupReleases == 4 && sharingDevice.layoutReleases == 6);
+        assert(sharingDevice.bufferReleases == 8 &&
+               sharingDevice.pipelineReleases == 2u * RequiredGpuKernelStageCount && sharingDevice.groupReleases == 4 &&
+               sharingDevice.layoutReleases == 6);
     }
 
     {
@@ -1177,10 +1185,12 @@ int main()
             collisionWords[index][0] = 0x07230203u;
             collisionDesc.kernels[index] = {collisionWords[index].data(), collisionWords[index].size()};
         }
+        collisionDesc.kernels[static_cast<size_t>(particle::GpuKernelStage::UpdateRenderingFused)] = {};
 
         particle::ParticleGpuRuntime collisionRuntime;
         assert(collisionRuntime.Create(collisionRuntimeDevice, collisionDesc));
-        assert(collisionRuntime.CollisionEnabled() && collisionRuntime.HasContactRuntime());
+        assert(collisionRuntime.CollisionEnabled() && collisionRuntime.HasContactRuntime() &&
+               !collisionRuntime.SupportsFusedUpdateRendering());
         const auto contactTelemetry = collisionRuntime.ContactTelemetry();
         assert(contactTelemetry.particleCapacity == 32 && contactTelemetry.contactsPerParticle == 8 &&
                contactTelemetry.contactRecordCapacity == 256 && contactTelemetry.contactHashCapacity == 512 &&
@@ -1192,8 +1202,7 @@ int main()
                contactTelemetry.continuationJoinBytes == 2u * sizeof(particle::GpuParticleContactJoinState));
         assert(collisionRuntimeDevice.layoutEntryCounts == std::vector<uint32_t>({8, 0, 5, 7, 9}));
         assert(collisionRuntimeDevice.groupBufferCounts == std::vector<uint32_t>({8, 0, 7, 9}));
-        assert(collisionRuntimeDevice.computePipelineDescs.size() ==
-               static_cast<size_t>(particle::GpuKernelStage::Count));
+        assert(collisionRuntimeDevice.computePipelineDescs.size() == RequiredGpuKernelStageCount);
         for (const auto &pipeline : collisionRuntimeDevice.computePipelineDescs)
             assert(pipeline.bindingLayoutCount == 8);
 
@@ -1254,6 +1263,7 @@ int main()
         meshInterfaceDesc.stateStride = 16;
         for (auto &kernel : meshInterfaceDesc.kernels)
             kernel = {shader.data(), shader.size()};
+        meshInterfaceDesc.kernels[static_cast<size_t>(particle::GpuKernelStage::UpdateRenderingFused)] = {};
 
         const auto meshLease = std::make_shared<uint32_t>(1u);
         particle::GpuMeshInterfaceDesc firstMesh;
@@ -1353,11 +1363,13 @@ int main()
         words[index][0] = 0x07230203;
         desc.kernels[index] = {words[index].data(), words[index].size()};
     }
+    desc.kernels[static_cast<size_t>(particle::GpuKernelStage::UpdateRenderingFused)] = {};
 
     particle::ParticleGpuRuntime runtime;
     assert(runtime.Create(device, desc));
     assert(runtime.IsValid() && runtime.Capacity() == 1000 && runtime.StateStride() == 64 &&
-           runtime.EventTypeCount() == 5 && !runtime.CollisionEnabled() && runtime.CounterBufferByteSize() == 112);
+           runtime.EventTypeCount() == 5 && !runtime.CollisionEnabled() && !runtime.SupportsFusedUpdateRendering() &&
+           runtime.CounterBufferByteSize() == 112);
     assert(device.buffers.size() == 8);
     assert(device.buffers[0].byteSize == 64000);
     assert(rhi::HasBufferUsage(device.buffers[0].usage, rhi::BufferUsageFlags::Storage) &&
@@ -1373,8 +1385,9 @@ int main()
     assert(device.buffers[7].byteSize == sizeof(particle::GpuParticleSimulationControl) &&
            device.buffers[7].usage == (rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferSource) &&
            device.buffers[7].memory == rhi::BufferMemory::DeviceLocal && device.initialBufferBytes[7].empty());
-    assert(device.shaderCreates == 8 && device.shaderReleases == 8);
-    assert(device.layoutCreates == 3 && device.groupCreates == 2 && device.pipelineCreates == 8);
+    assert(device.shaderCreates == RequiredGpuKernelStageCount && device.shaderReleases == RequiredGpuKernelStageCount);
+    assert(device.layoutCreates == 3 && device.groupCreates == 2 &&
+           device.pipelineCreates == RequiredGpuKernelStageCount);
 
     particle::GpuParticleTransforms transforms;
     assert(runtime.UpdateTransforms(transforms));
@@ -1404,6 +1417,32 @@ int main()
     assert(trace.constants[1].diagnosticFlags == 0u);
     assert(trace.constants[2].diagnosticFlags == 1u);
     assert(trace.constants[3].diagnosticFlags == 2u);
+
+    auto fusedDesc = desc;
+    fusedDesc.supportsFusedUpdateRendering = true;
+    fusedDesc.kernels[static_cast<size_t>(particle::GpuKernelStage::UpdateRenderingFused)] = {
+        words[static_cast<size_t>(particle::GpuKernelStage::UpdateRenderingFused)].data(),
+        words[static_cast<size_t>(particle::GpuKernelStage::UpdateRenderingFused)].size()};
+    particle::ParticleGpuRuntime missingFusedRuntime;
+    auto missingFusedDesc = fusedDesc;
+    missingFusedDesc.kernels[static_cast<size_t>(particle::GpuKernelStage::UpdateRenderingFused)] = {};
+    assert(!missingFusedRuntime.CreateCompatible(device, missingFusedDesc, runtime));
+    particle::ParticleGpuRuntime fusedRuntime;
+    assert(fusedRuntime.CreateCompatible(device, fusedDesc, runtime));
+    assert(fusedRuntime.SupportsFusedUpdateRendering());
+    trace = {};
+    fusedRuntime.RecordUpdateRenderingFused(encoder, 7, 9, 1.0f / 60.0f, graphSpawnGroup);
+    assert(trace.pipelines.size() == 1 && trace.dispatches == std::vector<uint32_t>({4}) &&
+           trace.constants.size() == 1 && trace.constants[0].simulationStep == 9);
+    assert(runtime.AdoptCompatibleRevision(fusedRuntime));
+    assert(runtime.SupportsFusedUpdateRendering() && !fusedRuntime.SupportsFusedUpdateRendering());
+    particle::GpuParticleFrameRequest routeRequest;
+    assert(particle::ParticleRenderGraph::ShouldUseFusedUpdateRendering(routeRequest, runtime));
+    routeRequest.render = false;
+    assert(!particle::ParticleRenderGraph::ShouldUseFusedUpdateRendering(routeRequest, runtime));
+    routeRequest.render = true;
+    routeRequest.simulate = false;
+    assert(!particle::ParticleRenderGraph::ShouldUseFusedUpdateRendering(routeRequest, runtime));
 
     FakeDevice boundsDevice;
     std::array<std::array<uint32_t, 5>, 3> boundsWords{};
@@ -1447,23 +1486,51 @@ int main()
         &BoundsTrace::DispatchIndirect};
     const rhi::ComputeCommandEncoder boundsEncoder(&boundsTrace, &boundsDispatch);
     bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::PauseWhenOffscreen, false);
+    bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::AlwaysSimulate, false);
+    const size_t alwaysSimulatePrepareCount = boundsTrace.dispatches.size();
+    bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::AlwaysSimulate, false);
+    assert(boundsTrace.dispatches.size() == alwaysSimulatePrepareCount &&
+           "AlwaysSimulate prepare must be cached until a control input changes");
+    bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::AlwaysSimulate, true);
+    const size_t forcedPrepareCount = boundsTrace.dispatches.size();
+    assert(forcedPrepareCount == alwaysSimulatePrepareCount + 1 &&
+           "forceSimulation changes must invalidate the AlwaysSimulate prepare cache");
+    bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::AlwaysSimulate, true);
+    assert(boundsTrace.dispatches.size() == forcedPrepareCount &&
+           "unchanged forceSimulation must reuse the prepared control state");
+    bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::AlwaysSimulate, false);
+    const size_t unforcedPrepareCount = boundsTrace.dispatches.size();
+    assert(unforcedPrepareCount == forcedPrepareCount + 1 &&
+           "clearing forceSimulation must invalidate the AlwaysSimulate prepare cache");
+    bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::AlwaysSimulate, false);
+    assert(boundsTrace.dispatches.size() == unforcedPrepareCount &&
+           "an unchanged unforced AlwaysSimulate state must remain cached");
+    bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::PauseWhenOffscreen, false);
     bounds.RecordReset(boundsEncoder, particle::GpuParticleBoundsMode::Automatic, {}, {});
     const std::array<float, 3> manualLower = {-4.0f, -2.0f, 1.0f};
     const std::array<float, 3> manualUpper = {8.0f, 6.0f, 9.0f};
     bounds.RecordReset(boundsEncoder, particle::GpuParticleBoundsMode::Manual, manualLower, manualUpper);
     bounds.RecordReduce(boundsEncoder);
-    assert(boundsTrace.pipelines.size() == 4 && boundsTrace.groups.size() == 4 && boundsTrace.constants.size() == 4);
-    assert(boundsTrace.dispatches == std::vector<uint32_t>({1, 1, 1}));
+    assert(boundsTrace.pipelines.size() == 8 && boundsTrace.groups.size() == 8 && boundsTrace.constants.size() == 8);
+    assert(boundsTrace.dispatches == std::vector<uint32_t>({1, 1, 1, 1, 1, 1, 1}));
     assert(boundsTrace.indirectDispatches == std::vector<rhi::BufferHandle>({bounds.DispatchBuffer()}));
     assert(boundsTrace.constants[0].capacity == 1000 &&
            boundsTrace.constants[0].offscreenPolicy == particle::GpuParticleOffscreenPolicy::PauseWhenOffscreen &&
            boundsTrace.constants[1].capacity == 1000 &&
-           boundsTrace.constants[1].boundsMode == particle::GpuParticleBoundsMode::Automatic &&
+           boundsTrace.constants[1].offscreenPolicy == particle::GpuParticleOffscreenPolicy::AlwaysSimulate &&
            boundsTrace.constants[2].capacity == 1000 &&
-           boundsTrace.constants[2].boundsMode == particle::GpuParticleBoundsMode::Manual &&
-           std::equal(manualLower.begin(), manualLower.end(), boundsTrace.constants[2].manualLower.begin()) &&
-           std::equal(manualUpper.begin(), manualUpper.end(), boundsTrace.constants[2].manualUpper.begin()) &&
-           boundsTrace.constants[3].capacity == 1000);
+           boundsTrace.constants[2].offscreenPolicy == particle::GpuParticleOffscreenPolicy::AlwaysSimulate &&
+           boundsTrace.constants[2].forceSimulation == 1 && boundsTrace.constants[3].capacity == 1000 &&
+           boundsTrace.constants[3].offscreenPolicy == particle::GpuParticleOffscreenPolicy::AlwaysSimulate &&
+           boundsTrace.constants[3].forceSimulation == 0 && boundsTrace.constants[4].capacity == 1000 &&
+           boundsTrace.constants[4].offscreenPolicy == particle::GpuParticleOffscreenPolicy::PauseWhenOffscreen &&
+           boundsTrace.constants[5].capacity == 1000 &&
+           boundsTrace.constants[5].boundsMode == particle::GpuParticleBoundsMode::Automatic &&
+           boundsTrace.constants[6].capacity == 1000 &&
+           boundsTrace.constants[6].boundsMode == particle::GpuParticleBoundsMode::Manual &&
+           std::equal(manualLower.begin(), manualLower.end(), boundsTrace.constants[6].manualLower.begin()) &&
+           std::equal(manualUpper.begin(), manualUpper.end(), boundsTrace.constants[6].manualUpper.begin()) &&
+           boundsTrace.constants[7].capacity == 1000);
     bounds.Destroy();
     assert(!bounds.IsValid() && boundsDevice.bufferReleases == 2 && boundsDevice.groupReleases == 1 &&
            boundsDevice.layoutReleases == 1 && boundsDevice.pipelineReleases == 3);
@@ -1489,6 +1556,24 @@ int main()
     assert(cullProgramStorage.Assign(cullerDesc.program) && cullProgramStorage.IsValid());
     assert(cullProgramStorage.View().reset.words != cullerDesc.program.reset.words &&
            cullProgramStorage.View().reset.wordCount == cullerDesc.program.reset.wordCount);
+    const std::string_view cullSource = particle::GpuParticleCullShaderSources::Cull();
+    const std::string_view cullResetSource = particle::GpuParticleCullShaderSources::Reset();
+    assert(cullSource.find("shared uint local_visible_count;") != std::string_view::npos &&
+           cullSource.find("shared uint global_base;") != std::string_view::npos &&
+           cullSource.find("atomicAdd(local_visible_count, 1u)") != std::string_view::npos &&
+           cullSource.find("atomicAdd(draw_instance_count, local_visible_count)") != std::string_view::npos &&
+           cullSource.find("atomicAdd(draw_instance_count, 1u)") == std::string_view::npos &&
+           cullSource.find("barrier();") != std::string_view::npos &&
+           cullSource.find("source_index >= source_count) return") == std::string_view::npos &&
+           cullSource.find("ribbon_segments ? source_index : source_indices[source_index]") == std::string_view::npos &&
+           cullSource.find("output_value = source_index") != std::string_view::npos &&
+           cullSource.find("output_value = particle_index") != std::string_view::npos &&
+           cullSource.find("bounds_fully_inside") != std::string_view::npos &&
+           cullSource.find("draw_instance_count & 0x80000000u") != std::string_view::npos &&
+           cullResetSource.find("bounds_fully_inside") != std::string_view::npos &&
+           cullResetSource.find("draw_instance_count = 0x80000000u") != std::string_view::npos &&
+           particle::GpuParticleCullShaderSources::Finalize().find("draw_instance_count & 0x7fffffffu") !=
+               std::string_view::npos);
     particle::ParticleGpuCuller sceneCuller;
     particle::ParticleGpuCuller gameCuller;
     assert(sceneCuller.Create(cullDevice, cullerDesc));
@@ -1610,22 +1695,33 @@ int main()
     assert(!sorter.IsValid() && !gameViewSorter.IsValid() && sortDevice.bufferReleases == 14 &&
            sortDevice.groupReleases == 4 && sortDevice.layoutReleases == 2 && sortDevice.pipelineReleases == 10);
 
+    static_assert(particle::ParticleGpuSorter::SmallSortCapacity == 1024);
     FakeDevice smallSortDevice;
     auto smallSorterDesc = sorterDesc;
-    smallSorterDesc.capacity = 64;
+    smallSorterDesc.capacity = particle::ParticleGpuSorter::SmallSortCapacity;
     particle::ParticleGpuSorter smallSorter;
     assert(smallSorter.Create(smallSortDevice, smallSorterDesc));
-    assert(smallSorter.IsValid() && smallSorter.UsesSmallSort() && smallSorter.BlockCount() == 1);
+    assert(smallSorter.IsValid() && smallSorter.UsesSmallSort() && smallSorter.BlockCount() == 4);
     SortTrace smallSortTrace;
     const rhi::ComputeCommandEncoder smallSortEncoder(&smallSortTrace, &sortDispatch);
     smallSorter.RecordSmall(smallSortEncoder, sortView, particle::ParticleSortMode::BackToFront);
     assert(smallSortTrace.dispatches == std::vector<uint32_t>({1}) && smallSortTrace.indirectDispatches.empty());
     assert(smallSortTrace.constants.size() == 1 && smallSortTrace.constants[0].view == sortView &&
-           smallSortTrace.constants[0].descending == 1 && smallSortTrace.constants[0].capacity == 64 &&
-           smallSortTrace.constants[0].blockCount == 1);
+           smallSortTrace.constants[0].descending == 1 &&
+           smallSortTrace.constants[0].capacity == particle::ParticleGpuSorter::SmallSortCapacity &&
+           smallSortTrace.constants[0].blockCount == 4);
     smallSorter.Destroy();
     assert(!smallSorter.IsValid() && smallSortDevice.bufferReleases == 7 && smallSortDevice.groupReleases == 2 &&
            smallSortDevice.layoutReleases == 1 && smallSortDevice.pipelineReleases == 5);
+
+    FakeDevice radixThresholdDevice;
+    auto radixThresholdDesc = sorterDesc;
+    radixThresholdDesc.capacity = particle::ParticleGpuSorter::SmallSortCapacity + 1u;
+    particle::ParticleGpuSorter radixThresholdSorter;
+    assert(radixThresholdSorter.Create(radixThresholdDevice, radixThresholdDesc));
+    assert(radixThresholdSorter.IsValid() && !radixThresholdSorter.UsesSmallSort() &&
+           radixThresholdSorter.BlockCount() == 5);
+    radixThresholdSorter.Destroy();
 
     FakeDevice ribbonDevice;
     std::array<std::array<uint32_t, 5>, 5> ribbonTopologyWords{};
@@ -1813,6 +1909,10 @@ int main()
     const auto indirectBuffer = runtime.IndirectBuffer();
     const uint32_t textureReleasesBeforeBillboard = device.textureReleases;
     const uint32_t samplerReleasesBeforeBillboard = device.samplerReleases;
+    const size_t layoutsBeforeBillboard = device.layoutEntryCounts.size();
+    const size_t groupsBeforeBillboard = device.groupBufferCounts.size();
+    const uint32_t groupCreatesBeforeBillboard = device.groupCreates;
+    const uint32_t groupReleasesBeforeBillboard = device.groupReleases;
     std::array<uint32_t, 4> billboardVertex = {0x07230203};
     std::array<uint32_t, 4> billboardFragment = {0x07230203};
     auto billboardArtifact = std::make_shared<ShaderProgramArtifact>();
@@ -1873,9 +1973,18 @@ int main()
     particle::ParticleGpuBillboardRenderer billboard;
     assert(billboard.Create(device, billboardDesc));
     assert(billboard.IsValid() && billboard.RenderQueue() == 3100 && billboard.InstanceBuffer() == instanceBuffer);
-    assert(device.layoutEntryCounts == std::vector<uint32_t>({8, 0, 5, 2, 0, 2}));
-    assert(device.groupBufferCounts == std::vector<uint32_t>({8, 0, 0, 0, 2}));
-    assert(device.groupTextureCounts == std::vector<uint32_t>({0, 0, 0, 2, 0}));
+    const std::array<uint32_t, 3> billboardLayoutEntryCounts = {2, 0, 2};
+    const std::array<uint32_t, 3> billboardGroupBufferCounts = {0, 0, 2};
+    const std::array<uint32_t, 3> billboardGroupTextureCounts = {0, 2, 0};
+    assert(device.layoutEntryCounts.size() == layoutsBeforeBillboard + billboardLayoutEntryCounts.size() &&
+           std::equal(billboardLayoutEntryCounts.begin(), billboardLayoutEntryCounts.end(),
+                      device.layoutEntryCounts.begin() + layoutsBeforeBillboard));
+    assert(device.groupBufferCounts.size() == groupsBeforeBillboard + billboardGroupBufferCounts.size() &&
+           device.groupTextureCounts.size() == groupsBeforeBillboard + billboardGroupTextureCounts.size() &&
+           std::equal(billboardGroupBufferCounts.begin(), billboardGroupBufferCounts.end(),
+                      device.groupBufferCounts.begin() + groupsBeforeBillboard) &&
+           std::equal(billboardGroupTextureCounts.begin(), billboardGroupTextureCounts.end(),
+                      device.groupTextureCounts.begin() + groupsBeforeBillboard));
     const auto &billboardSurfaceGroup = device.bindGroups[device.bindGroups.size() - 2];
     assert(billboardSurfaceGroup.textures[0].binding == 2 && billboardSurfaceGroup.textures[1].binding == 15 &&
            !billboardSurfaceGroup.textures[1].depthRead);
@@ -1920,24 +2029,27 @@ int main()
     assert(
         billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineReleases == 0);
-    assert(textureResolveCount == 1 && device.groupCreates == 5);
+    assert(textureResolveCount == 1 && device.groupCreates == groupCreatesBeforeBillboard + 3u);
     assert(graphicsTrace.constants.back().materialTint == (std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}));
-    assert(textureResolveCount == 1 && device.groupCreates == 5);
+    assert(textureResolveCount == 1 && device.groupCreates == groupCreatesBeforeBillboard + 3u);
     billboardDesc.material->SetTextureGuid("texSampler", "normal");
     assert(
         billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == 3 && device.groupCreates == 6 && device.groupReleases == 0);
+    assert(textureResolveCount == 3 && device.groupCreates == groupCreatesBeforeBillboard + 4u &&
+           device.groupReleases == groupReleasesBeforeBillboard);
     assert(device.textureReleases == textureReleasesBeforeBillboard &&
            device.samplerReleases == samplerReleasesBeforeBillboard);
     assert(
         billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == 4 && device.groupCreates == 6);
+    assert(textureResolveCount == 4 && device.groupCreates == groupCreatesBeforeBillboard + 4u);
     normalTextureReady = true;
     assert(
         billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == 5 && device.groupCreates == 7 && device.groupReleases == 0);
+    assert(textureResolveCount == 5 && device.groupCreates == groupCreatesBeforeBillboard + 5u &&
+           device.groupReleases == groupReleasesBeforeBillboard);
     (void)deletionQueue.Collect(1);
-    assert(device.groupReleases == 2 && device.textureReleases == textureReleasesBeforeBillboard &&
+    assert(device.groupReleases == groupReleasesBeforeBillboard + 2u &&
+           device.textureReleases == textureReleasesBeforeBillboard &&
            device.samplerReleases == samplerReleasesBeforeBillboard);
 
     auto normalSlot = textureSlots.at("normal");
@@ -1948,7 +2060,8 @@ int main()
     normalTextureReady = false;
     assert(
         billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == 6 && device.groupCreates == 7 && !normalRevisionTwo.expired());
+    assert(textureResolveCount == 6 && device.groupCreates == groupCreatesBeforeBillboard + 5u &&
+           !normalRevisionTwo.expired());
     auto normalRevisionThree = AcquireTestTexture(device, textureSlots, "normal", 3, {403, 1}, {503, 1});
     assert(normalRevisionThree.gpuSlot == normalSlot && normalRevisionThree.gpuView->GetRevision() == 3);
     normalRevisionTwoOwner.reset();
@@ -1956,10 +2069,10 @@ int main()
     const uint32_t resolvesBeforeSlotPublication = textureResolveCount;
     assert(
         billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == resolvesBeforeSlotPublication && device.groupCreates == 8 &&
-           !normalRevisionTwo.expired());
+    assert(textureResolveCount == resolvesBeforeSlotPublication &&
+           device.groupCreates == groupCreatesBeforeBillboard + 6u && !normalRevisionTwo.expired());
     (void)deletionQueue.Collect(1);
-    assert(device.groupReleases == 3 && normalRevisionTwo.expired() &&
+    assert(device.groupReleases == groupReleasesBeforeBillboard + 3u && normalRevisionTwo.expired() &&
            device.textureReleases == textureReleasesBeforeBillboard + 1 &&
            device.samplerReleases == samplerReleasesBeforeBillboard + 1);
     normalRevisionThree = {};
@@ -2408,17 +2521,38 @@ int main()
         assert(registry.Snapshot(0, 2999).empty());
         assert(registry.Remove(77) && !registry.Remove(77) && registry.Size() == 0);
     }
+    const uint32_t textureReleasesBeforeSlotsClear = device.textureReleases;
+    const uint32_t samplerReleasesBeforeSlotsClear = device.samplerReleases;
     textureSlots.clear();
+    assert(device.textureReleases == textureReleasesBeforeSlotsClear + 2u);
+    assert(device.samplerReleases == samplerReleasesBeforeSlotsClear + 2u);
 
+    const uint32_t bufferReleasesBeforeRuntimeDestroy = device.bufferReleases;
+    const uint32_t pipelineReleasesBeforeRuntimeDestroy = device.pipelineReleases;
+    const uint32_t shaderReleasesBeforeRuntimeDestroy = device.shaderReleases;
+    const uint32_t groupReleasesBeforeRuntimeDestroy = device.groupReleases;
+    const uint32_t layoutReleasesBeforeRuntimeDestroy = device.layoutReleases;
+    const uint32_t textureReleasesBeforeRuntimeDestroy = device.textureReleases;
+    const uint32_t samplerReleasesBeforeRuntimeDestroy = device.samplerReleases;
     runtime.Destroy();
     assert(!runtime.IsValid() && runtime.StateStride() == 0);
-    if (device.pipelineReleases != 8 || device.groupReleases != 7 || device.layoutReleases != 9) {
-        std::cerr << "release counts: pipelines=" << device.pipelineReleases << " groups=" << device.groupReleases
-                  << " layouts=" << device.layoutReleases << '\n';
-    }
-    assert(device.pipelineReleases == 8 && device.groupReleases == 7 && device.layoutReleases == 9);
-    assert(device.textureReleases == 3 && device.samplerReleases == 3);
-    assert(device.shaderReleases == 16);
-    assert(device.bufferReleases == 8);
+    assert(device.pipelineReleases == pipelineReleasesBeforeRuntimeDestroy + FusedGpuKernelStageCount);
+    assert(device.groupReleases == groupReleasesBeforeRuntimeDestroy + 2u);
+    assert(device.layoutReleases == layoutReleasesBeforeRuntimeDestroy + 3u);
+    assert(device.bufferReleases == bufferReleasesBeforeRuntimeDestroy);
+    assert(device.shaderReleases == shaderReleasesBeforeRuntimeDestroy);
+    assert(device.textureReleases == textureReleasesBeforeRuntimeDestroy);
+    assert(device.samplerReleases == samplerReleasesBeforeRuntimeDestroy);
+
+    fusedRuntime.Destroy();
+    assert(!fusedRuntime.IsValid() && fusedRuntime.StateStride() == 0);
+    assert(device.pipelineReleases ==
+           pipelineReleasesBeforeRuntimeDestroy + FusedGpuKernelStageCount + RequiredGpuKernelStageCount);
+    assert(device.groupReleases == groupReleasesBeforeRuntimeDestroy + 4u);
+    assert(device.layoutReleases == layoutReleasesBeforeRuntimeDestroy + 6u);
+    assert(device.bufferReleases == bufferReleasesBeforeRuntimeDestroy + 8u);
+    assert(device.shaderReleases == shaderReleasesBeforeRuntimeDestroy);
+    assert(device.textureReleases == textureReleasesBeforeRuntimeDestroy);
+    assert(device.samplerReleases == samplerReleasesBeforeRuntimeDestroy);
     return 0;
 }

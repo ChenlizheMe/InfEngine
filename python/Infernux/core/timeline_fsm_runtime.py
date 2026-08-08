@@ -92,6 +92,7 @@ class TimelineFSMRuntime:
         # Cache against the native lifetime handle, never the wrapper address.
         self._trs_handle = None
         self._trs_setter = None
+        self._last_applied_trs = None
 
     # ── Setup ──────────────────────────────────────────────────────────
     def set_fsm(self, fsm: Optional[AnimStateMachine]):
@@ -109,6 +110,7 @@ class TimelineFSMRuntime:
         self._duration = _DEFAULT_PERIOD
         self._trs_handle = None
         self._trs_setter = None
+        self._last_applied_trs = None
         if fsm is not None:
             for p in fsm.parameters:
                 if p.value_type.value_type is ValueType.BOOL:
@@ -180,8 +182,13 @@ class TimelineFSMRuntime:
     def stop(self):
         self._playing = False
 
+    @property
+    def needs_update(self) -> bool:
+        """Whether this runtime has simulation work for the current frame."""
+        return self._playing
+
     def update(self, delta_time: float, transform=None):
-        if self._fsm is None or self._timeline is None:
+        if self._fsm is None or self._timeline is None or not self._playing:
             return
         tl = self._timeline
         state = self._state
@@ -256,6 +263,7 @@ class TimelineFSMRuntime:
             self._apply_additive = True
             self._duration = _DEFAULT_PERIOD
         self._capture_base(transform)
+        self._last_applied_trs = None
         if tl is not None:
             self._apply_timeline(tl, 0.0, transform)
         return True
@@ -304,16 +312,24 @@ class TimelineFSMRuntime:
 
             if trs is not None:
                 # Single pybind crossing, no Vector3 objects, one subtree invalidate.
-                trs(px, py, pz, rx, ry, rz, sx, sy, sz)
+                applied = (px, py, pz, rx, ry, rz, sx, sy, sz)
+                if applied == self._last_applied_trs:
+                    return
+                trs(*applied)
+                self._last_applied_trs = applied
                 return
 
             # Fallback for older native builds without set_local_trs.
             V = _Vector3 or _resolve_vector3()
             if V is None:
                 return
+            applied = (px, py, pz, rx, ry, rz, sx, sy, sz)
+            if applied == self._last_applied_trs:
+                return
             transform.local_position = V(px, py, pz)
             transform.local_euler_angles = V(rx, ry, rz)
             transform.local_scale = V(sx, sy, sz)
+            self._last_applied_trs = applied
         except Exception as exc:
             Debug.log_suppressed("TimelineFSMRuntime._apply_timeline", exc)
 

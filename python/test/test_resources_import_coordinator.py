@@ -404,6 +404,7 @@ def test_dirty_document_blocks_external_reimport_before_live_asset_mutation(
         controller=_ReloadableController(),
     )
 
+    target.write_text('{"changed": true}', encoding="utf-8")
     handler.on_modified(_event(target))
 
     assert handler.process_pending_reloads(force=True) == 1

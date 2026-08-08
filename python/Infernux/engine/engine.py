@@ -2,14 +2,31 @@ import gc
 import os
 import time
 import weakref
+from typing import TYPE_CHECKING
 
 from Infernux.lib import Infernux, InxGUIRenderable, LogLevel, RuntimeMode, lib_dir
-from Infernux.engine.play_mode import PlayModeManager
 from Infernux.engine.project_context import set_project_root
 from Infernux.engine.path_utils import safe_path as _safe_path
 from Infernux.debug import Debug
 
+if TYPE_CHECKING:
+    from Infernux.engine.play_mode import PlayModeManager
+
 _PLAYER_MODE = os.environ.get("_INFERNUX_PLAYER_MODE")
+_RUNTIME_ACCEPTANCE_TYPE = None
+_APPLICATION_TYPE = None
+
+
+def _runtime_acceptance_services():
+    """Resolve opt-in acceptance services once per Python process."""
+    global _RUNTIME_ACCEPTANCE_TYPE, _APPLICATION_TYPE
+    if _RUNTIME_ACCEPTANCE_TYPE is None:
+        from Infernux.acceptance import RuntimeAcceptance
+        _RUNTIME_ACCEPTANCE_TYPE = RuntimeAcceptance
+    if _APPLICATION_TYPE is None:
+        from Infernux.application import Application
+        _APPLICATION_TYPE = Application
+    return _RUNTIME_ACCEPTANCE_TYPE, _APPLICATION_TYPE
 
 
 class Engine():
@@ -24,6 +41,12 @@ class Engine():
         self.set_log_level(engine_log_level)
         self._gui_objects = {}
         self._play_mode_manager = None
+        self._player_runtime = None
+        # Editor and Player share the same on-demand Python phase-plan service.
+        # Native Scene remains the single lifecycle executor and does not yet
+        # consume this plan, so steady frames must not prepare it.
+        from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
+        self._runtime_scheduler = RuntimeExecutionScheduler(name=self._application_role)
         self._render_pipeline = None  # prevents GC of pybind11 trampoline
         self._last_frame_time = time.time()
         self._gizmos_collector = None  # lazy-init GizmosCollector
@@ -115,12 +138,24 @@ class Engine():
         AssetManager.initialize(self)
         Debug.log_internal("AssetManager initialized")
 
-        # Initialize PlayModeManager (SceneManager will be set later via binding)
-        self._play_mode_manager = PlayModeManager()
-        self._play_mode_manager.set_asset_database(self.get_asset_database())
-        self._play_mode_manager._native_engine = self._engine
+        if _PLAYER_MODE:
+            from Infernux.engine.player_runtime import PlayerRuntimeSession
+
+            self._player_runtime = PlayerRuntimeSession(
+                asset_database=self.get_asset_database(),
+                native_engine=self._engine,
+                scheduler=self._runtime_scheduler,
+            )
+            Debug.log_internal("PlayerRuntimeSession initialized")
+        else:
+            from Infernux.engine.play_mode import PlayModeManager
+
+            self._play_mode_manager = PlayModeManager()
+            self._play_mode_manager.set_asset_database(self.get_asset_database())
+            self._play_mode_manager._native_engine = self._engine
         self._install_pre_scene_time_callback()
-        Debug.log_internal("PlayModeManager initialized")
+        if self._play_mode_manager is not None:
+            Debug.log_internal("PlayModeManager initialized")
 
         # Auto-activate Python SRP rendering path
         # All rendering passes (opaque, skybox, transparent) are driven by Python
@@ -142,6 +177,8 @@ class Engine():
 
         from Infernux.core.assets import AssetManager
         AssetManager.initialize(self)
+
+        from Infernux.engine.play_mode import PlayModeManager
 
         self._play_mode_manager = PlayModeManager()
         self._play_mode_manager.set_asset_database(self.get_asset_database())
@@ -249,21 +286,22 @@ class Engine():
                     MainThreadCommandQueue.instance().drain()
                 except Exception as exc:
                     Debug.log_suppressed("Engine.pre_gui_tick.MainThreadCommandQueue", exc)
-            try:
-                from Infernux.engine.ui.window_manager import WindowManager
-                manager = WindowManager.instance()
-                if manager is not None:
-                    manager.process_pending_actions()
-                    manager.sync_native_gui_focus()
-            except Exception as exc:
-                Debug.log_suppressed("Engine.pre_gui_tick.WindowManager", exc)
-            try:
-                from Infernux.engine.undo import UndoManager
-                undo_manager = UndoManager.instance()
-                if undo_manager is not None:
-                    undo_manager.process_pending_replay()
-            except Exception as exc:
-                Debug.log_suppressed("Engine.pre_gui_tick.UndoReplay", exc)
+            if not _PLAYER_MODE:
+                try:
+                    from Infernux.engine.ui.window_manager import WindowManager
+                    manager = WindowManager.instance()
+                    if manager is not None:
+                        manager.process_pending_actions()
+                        manager.sync_native_gui_focus()
+                except Exception as exc:
+                    Debug.log_suppressed("Engine.pre_gui_tick.WindowManager", exc)
+                try:
+                    from Infernux.engine.undo import UndoManager
+                    undo_manager = UndoManager.instance()
+                    if undo_manager is not None:
+                        undo_manager.process_pending_replay()
+                except Exception as exc:
+                    Debug.log_suppressed("Engine.pre_gui_tick.UndoReplay", exc)
         self._engine.set_pre_gui_callback(_pre_gui_tick)
 
         # Install a post-draw callback that runs AFTER GPU submit + present.
@@ -279,27 +317,30 @@ class Engine():
         # nearly every frame inside random timing windows.
         _gc_frame = [0]  # mutable counter for closure
         def _post_draw_tick():
-            try:
-                from Infernux.engine.interaction import DocumentRegistry
-                DocumentRegistry.instance().process_deferred_saves()
-            except Exception as exc:
-                Debug.log_suppressed("Engine.post_draw_tick.process_deferred_saves", exc)
+            if not _PLAYER_MODE:
+                try:
+                    from Infernux.engine.interaction import DocumentRegistry
+                    DocumentRegistry.instance().process_deferred_saves()
+                except Exception as exc:
+                    Debug.log_suppressed("Engine.post_draw_tick.process_deferred_saves", exc)
             try:
                 from Infernux.core.assets import AssetManager
                 AssetManager.flush_pending_gpu_texture_reloads()
-                AssetManager.poll_pending_asset_writes()
-                from Infernux.engine.interaction import DocumentRegistry
-                DocumentRegistry.instance().process_pending_saves()
+                if not _PLAYER_MODE:
+                    AssetManager.poll_pending_asset_writes()
+                    from Infernux.engine.interaction import DocumentRegistry
+                    DocumentRegistry.instance().process_pending_saves()
             except Exception as exc:
                 Debug.log_suppressed("Engine.post_draw_tick.flush_texture_reloads", exc)
 
-            from Infernux.engine.scene_manager import SceneFileManager
-            sfm = SceneFileManager.instance()
-            if sfm is not None:
-                try:
-                    sfm.poll_deferred_load()
-                except Exception as exc:
-                    Debug.log_suppressed("Engine.post_draw_tick.poll_deferred_load", exc)
+            if not _PLAYER_MODE:
+                from Infernux.engine.scene_manager import SceneFileManager
+                sfm = SceneFileManager.instance()
+                if sfm is not None:
+                    try:
+                        sfm.poll_deferred_load()
+                    except Exception as exc:
+                        Debug.log_suppressed("Engine.post_draw_tick.poll_deferred_load", exc)
             # Periodic manual GC: gen0 every 120 frames (~1s at 120fps),
             # gen1 every 600 frames (~5s), full every 3000 frames (~25s).
             _gc_frame[0] += 1
@@ -380,23 +421,40 @@ class Engine():
             self._next_reload_poll_time = current_time + self._reload_poll_interval
         
         pmm = self._play_mode_manager
-        is_playing = pmm is not None and pmm.is_playing
+        player_runtime = self._player_runtime
+        is_playing = (
+            player_runtime.is_playing
+            if player_runtime is not None
+            else pmm is not None and pmm.is_playing
+        )
 
         # The editor owns play transitions through PlayModeManager. Headless
         # callers may drive the native SceneManager directly, so keep Time
         # valid for that composition as well.
-        if is_playing:
+        if player_runtime is not None:
+            player_runtime.tick(delta_time)
+            if player_runtime.is_playing:
+                self._tick_runtime_acceptance(delta_time)
+            else:
+                RuntimeAcceptance, _ = _runtime_acceptance_services()
+                if RuntimeAcceptance.is_active():
+                    RuntimeAcceptance.reset()
+        elif is_playing:
             pmm.tick(delta_time)
             self._tick_runtime_acceptance(delta_time)
         else:
-            from Infernux.acceptance import RuntimeAcceptance
+            RuntimeAcceptance, _ = _runtime_acceptance_services()
             if RuntimeAcceptance.is_active():
                 RuntimeAcceptance.reset()
-            from Infernux.lib import SceneManager
-            native_scene_manager = SceneManager.instance()
-            if native_scene_manager.is_playing() and not native_scene_manager.is_paused():
-                from Infernux.timing import Time
-                Time._tick(delta_time)
+            # Graphical Editor play state is authoritative in PlayModeManager.
+            # Only headless composition may drive the native SceneManager
+            # directly, so avoid two native queries on every editor frame.
+            if self._mode == RuntimeMode.Headless:
+                from Infernux.lib import SceneManager
+                native_scene_manager = SceneManager.instance()
+                if native_scene_manager.is_playing() and not native_scene_manager.is_paused():
+                    from Infernux.timing import Time
+                    Time._tick(delta_time)
 
         # Flush throttled material saves — skip during play mode
         if not is_playing:
@@ -416,8 +474,7 @@ class Engine():
     @staticmethod
     def _tick_runtime_acceptance(delta_time: float) -> None:
         """Advance the opt-in Editor/Player acceptance control plane."""
-        from Infernux.acceptance import RuntimeAcceptance
-        from Infernux.application import Application
+        RuntimeAcceptance, Application = _runtime_acceptance_services()
 
         if RuntimeAcceptance.is_active():
             try:
@@ -496,9 +553,17 @@ class Engine():
         else:
             self._clear_uploaded_gizmos()
     
-    def get_play_mode_manager(self) -> PlayModeManager:
+    def get_play_mode_manager(self) -> "PlayModeManager":
         """Get the play mode manager for controlling play/pause/stop."""
         return self._play_mode_manager
+
+    def get_player_runtime(self):
+        """Get the standalone Player runtime session, if active."""
+        return self._player_runtime
+
+    def get_runtime_execution_scheduler(self):
+        """Get the shared phase-plan service for diagnostics and profiling."""
+        return self._runtime_scheduler
 
     def set_before_exit_callback(self, callback):
         """Register a callback invoked right before native engine cleanup."""
@@ -516,7 +581,11 @@ class Engine():
         # Dirty-panel decisions are completed by SceneFileManager's non-blocking
         # Editor modal before native close is confirmed. This call is now only a
         # teardown audit and must never open a platform dialog.
-        if self._mode == RuntimeMode.Graphical and not self._confirm_dirty_panels_before_exit():
+        if (
+            not _PLAYER_MODE
+            and self._mode == RuntimeMode.Graphical
+            and not self._confirm_dirty_panels_before_exit()
+        ):
             return
 
         if callable(self._before_exit_callback):
@@ -540,15 +609,25 @@ class Engine():
         #    objects are destroyed.  Without this, the C++ renderer
         #    destruction can trigger PyComponentProxy::OnDestroy callbacks
         #    on already-invalid Python state, and physics/audio may block.
-        self._shutdown_play_mode()
+        if _PLAYER_MODE:
+            if self._player_runtime is not None:
+                self._player_runtime.shutdown()
+        else:
+            self._shutdown_play_mode()
 
         try:
-            from Infernux.core.assets import AssetManager
-            AssetManager.flush_all_asset_writes()
-            from Infernux.engine.interaction import DocumentRegistry
-            DocumentRegistry.instance().process_pending_saves()
+            self._runtime_scheduler.clear()
         except Exception as exc:
-            Debug.log_error(f"Failed to flush pending asset writes during shutdown: {exc}")
+            Debug.log_suppressed("Engine.clear_runtime_scheduler", exc)
+
+        if not _PLAYER_MODE:
+            try:
+                from Infernux.core.assets import AssetManager
+                AssetManager.flush_all_asset_writes()
+                from Infernux.engine.interaction import DocumentRegistry
+                DocumentRegistry.instance().process_pending_saves()
+            except Exception as exc:
+                Debug.log_error(f"Failed to flush pending asset writes during shutdown: {exc}")
 
         # 1. Stop the observer and commit any events it already delivered while
         #    AssetDatabase, AssetRegistry, renderer, and editor caches are alive.
@@ -575,6 +654,8 @@ class Engine():
         cleanup needed so that the subsequent C++ ``Cleanup()`` does not
         encounter live Python component state.
         """
+        if _PLAYER_MODE:
+            return
         from Infernux.engine.play_mode import PlayModeState
 
         pmm = self._play_mode_manager

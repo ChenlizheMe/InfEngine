@@ -57,6 +57,29 @@ def test_object_field_without_opener_locates_for_open_gesture():
     assert actions == ["locate"]
 
 
+def test_asset_field_double_click_always_reveals_in_file_manager():
+    from Infernux.engine.interaction.object_fields import (
+        AssetReferenceFieldModel,
+        ObjectFieldGesture,
+    )
+
+    actions = []
+    model = AssetReferenceFieldModel(
+        "material",
+        "Smoke",
+        "Material",
+        has_value=True,
+        on_locate=lambda: actions.append("locate"),
+        on_open=lambda: actions.append("open"),
+    )
+
+    model.dispatch_chrome(int(ObjectFieldGesture.OPEN))
+    model.dispatch_chrome(int(ObjectFieldGesture.KEYBOARD_OPEN))
+    model.dispatch_chrome(int(ObjectFieldGesture.LOCATE))
+
+    assert actions == ["locate", "locate"]
+
+
 def test_object_picker_model_isolates_query_and_focus_per_field():
     from Infernux.engine.interaction.object_fields import ObjectPickerModel
 
@@ -67,8 +90,11 @@ def test_object_picker_model_isolates_query_and_focus_per_field():
 
     assert picker.query("mesh") == ""
     assert picker.query("material") == "smoke"
+    assert picker.open_requested("mesh") is True
     assert picker.consume_focus_request("mesh") is True
     assert picker.consume_focus_request("mesh") is False
+    picker.confirm_open("mesh")
+    assert picker.open_requested("mesh") is False
 
 
 def test_object_picker_queries_share_search_revision_and_completion_tokens():
@@ -466,7 +492,7 @@ def test_asset_reference_context_menu_contains_no_private_business_handlers():
     assert "_dispatch_asset_reference_context_intent" not in source
 
 
-def test_empty_asset_field_body_and_enter_open_the_shared_picker():
+def test_empty_asset_field_single_click_is_inert_but_enter_opens_picker():
     from Infernux.engine.interaction.object_fields import (
         AssetReferenceFieldModel,
         ObjectFieldGesture,
@@ -484,7 +510,7 @@ def test_empty_asset_field_body_and_enter_open_the_shared_picker():
     click = model.dispatch_chrome(int(ObjectFieldGesture.LOCATE))
     enter = model.dispatch_chrome(int(ObjectFieldGesture.KEYBOARD_OPEN))
 
-    assert click & ObjectFieldGesture.OPEN_PICKER
+    assert not click & ObjectFieldGesture.OPEN_PICKER
     assert enter & ObjectFieldGesture.OPEN_PICKER
     assert located == []
 
@@ -520,26 +546,24 @@ def test_asset_field_clear_only_mutates_a_nonempty_reference():
 def test_asset_reference_catalog_reuses_one_database_generation(monkeypatch):
     from Infernux.core.assets import AssetManager
     from Infernux.engine.interaction.object_fields import AssetReferenceCatalog
+    from Infernux.engine import project_context
+
+    monkeypatch.setattr(project_context, "_project_root", "C:/Project")
 
     class Database:
         query_generation = 7
 
         def __init__(self):
-            self.guid_queries = 0
-            self.path_queries = 0
+            self.catalog_queries = 0
             self.paths = {
                 "a": "C:/Project/Assets/Art/smoke.png",
                 "b": "C:/Project/Assets/Materials/smoke.mat",
                 "c": "C:/Engine/Resources/default.png",
             }
 
-        def get_all_guids(self):
-            self.guid_queries += 1
-            return list(self.paths)
-
-        def get_path_from_guid(self, guid):
-            self.path_queries += 1
-            return self.paths[guid]
+        def get_all_asset_paths(self):
+            self.catalog_queries += 1
+            return list(self.paths.values())
 
     database = Database()
     monkeypatch.setattr(AssetManager, "_asset_database", database)
@@ -551,16 +575,59 @@ def test_asset_reference_catalog_reuses_one_database_generation(monkeypatch):
     assert catalog.items("Material", "smoke") == (
         ("smoke.mat", "C:/Project/Assets/Materials/smoke.mat"),
     )
-    assert database.guid_queries == 1
-    assert database.path_queries == 3
+    assert database.catalog_queries == 1
 
     database.query_generation = 8
     database.paths["d"] = "C:/Project/Assets/Art/cloud.tga"
     assert catalog.items("Texture", "cloud") == (
         ("cloud.tga", "C:/Project/Assets/Art/cloud.tga"),
     )
-    assert database.guid_queries == 2
-    assert database.path_queries == 7
+    assert database.catalog_queries == 2
+
+
+def test_asset_reference_catalog_uses_assets_except_for_visible_shaders(monkeypatch):
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine import project_context
+    from Infernux.engine.interaction.object_fields import AssetReferenceCatalog
+    from Infernux.engine.ui import inspector_shader_utils
+
+    class Database:
+        query_generation = 1
+        paths = {
+            "asset_mat": "C:/Project/Assets/Materials/visible.mat",
+            "library_mat": "C:/Project/Library/Generated/internal.mat",
+            "asset_shader": "C:/Project/Assets/Shaders/custom.vert",
+            "builtin_shader": "C:/Project/Library/Resources/shaders/standard.vert",
+            "hidden_shader": "C:/Project/Library/Resources/shaders/internal.vert",
+        }
+
+        def get_all_asset_paths(self):
+            return tuple(self.paths.values())
+
+    monkeypatch.setattr(project_context, "_project_root", "C:/Project")
+    monkeypatch.setattr(AssetManager, "_asset_database", Database())
+    hidden_queries = []
+    monkeypatch.setattr(
+        inspector_shader_utils,
+        "is_shader_hidden",
+        lambda path: hidden_queries.append(path)
+        or path.replace("\\", "/").endswith("/internal.vert"),
+    )
+    catalog = AssetReferenceCatalog()
+
+    assert catalog.items("Material", "") == (
+        ("visible.mat", "C:/Project/Assets/Materials/visible.mat"),
+    )
+    assert catalog.items("Shader.Vertex", "") == (
+        ("custom.vert", "C:/Project/Assets/Shaders/custom.vert"),
+        ("standard.vert", "C:/Project/Library/Resources/shaders/standard.vert"),
+    )
+    assert len(hidden_queries) == 3
+
+    assert catalog.items("Shader.Vertex", "standard") == (
+        ("standard.vert", "C:/Project/Library/Resources/shaders/standard.vert"),
+    )
+    assert len(hidden_queries) == 3
 
 
 def test_asset_reference_virtual_candidates_extend_the_shared_catalog(monkeypatch):

@@ -4,6 +4,7 @@ import math
 from types import SimpleNamespace
 
 from Infernux.gizmos.gizmos import Gizmos
+from Infernux.gizmos.collector import GizmosCollector
 from Infernux.components.particle_system import ParticleBoundsMode, ParticleSystem
 from Infernux.lib import Vector3
 from Infernux.particle import EmitterShape, EmitterShapeKind
@@ -204,6 +205,40 @@ class TestParticleEmitterShapes:
         )
         assert Gizmos.matrix == original_matrix
         assert Gizmos.color == original_color
+
+
+class TestGizmosCollectorSelectionCache:
+    def test_selected_subtree_is_reused_until_selection_or_scene_changes(self, monkeypatch):
+        collector = GizmosCollector()
+        scene = SimpleNamespace()
+        calls = []
+
+        def build(_scene, selected_id):
+            calls.append(selected_id)
+            return {selected_id, selected_id + 1}
+
+        monkeypatch.setattr(collector, "_build_ancestor_set", build)
+
+        assert collector._get_selected_ancestor_ids(scene, 7) == frozenset({7, 8})
+        assert collector._get_selected_ancestor_ids(scene, 7) == frozenset({7, 8})
+        assert calls == [7]
+
+        assert collector._get_selected_ancestor_ids(scene, 9) == frozenset({9, 10})
+        assert calls == [7, 9]
+
+        collector.invalidate_cache()
+        assert collector._get_selected_ancestor_ids(scene, 9) == frozenset({9, 10})
+        assert calls == [7, 9, 9]
+
+    def test_no_selection_does_not_cross_the_scene_binding(self, monkeypatch):
+        collector = GizmosCollector()
+
+        def unexpected_walk(*_args):
+            raise AssertionError("no selection walk")
+
+        monkeypatch.setattr(collector, "_build_ancestor_set", unexpected_walk)
+
+        assert collector._get_selected_ancestor_ids(SimpleNamespace(), 0) == frozenset()
 
 
 import pytest  # noqa: E402 — needed for approx

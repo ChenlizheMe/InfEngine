@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any, Callable, Optional
 
 from Infernux.debug import Debug
@@ -277,9 +278,30 @@ class MaterialDocumentCommand(UndoCommand):
             if fp:
                 try:
                     from Infernux.core.assets import AssetManager
-                    AssetManager.on_material_saved(fp)
+
+                    serialize = getattr(self._material, "serialize", None)
+                    material_json = serialize() if callable(serialize) else ""
+                    if not isinstance(material_json, str) or not material_json:
+                        material_json = json.dumps(
+                            document,
+                            ensure_ascii=False,
+                            allow_nan=False,
+                            separators=(",", ":"),
+                        )
+                    # save() only submits durability. The restored material is
+                    # already the authoritative live value, so publish its
+                    # preview revision without evicting/reloading the cache.
+                    # note_asset_edit deduplicates a snapshot already emitted
+                    # by set_material_save_snapshot.
+                    AssetManager.note_asset_edit(
+                        fp,
+                        material_json=material_json,
+                    )
                 except Exception as exc:
-                    Debug.log_suppressed("undo._property_commands.AssetManager.on_material_saved", exc)
+                    Debug.log_suppressed(
+                        "undo._property_commands.AssetManager.note_asset_edit",
+                        exc,
+                    )
         if self._refresh_callback:
             self._refresh_callback(self._material)
 

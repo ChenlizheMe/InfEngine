@@ -601,6 +601,7 @@ class VkResourceManager
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     VulkanRhiDevice *m_rhiDevice = nullptr;
+    std::shared_ptr<rhi::DeviceLifetime> m_deviceLifetime;
     VulkanQueueManager *m_queueManager = nullptr;
     VkCommandPool m_commandPool = VK_NULL_HANDLE;
     std::thread::id m_ownerThread;

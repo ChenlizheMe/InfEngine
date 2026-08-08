@@ -129,6 +129,7 @@ class ProjectPanel : public EditorPanel
         Type type = File;
         std::string name;
         std::string path;
+        std::string selectionKey;
         std::string ext;
         std::string parentPath; // for sub-assets
         uint64_t mtimeNs = 0;
@@ -152,6 +153,10 @@ class ProjectPanel : public EditorPanel
         std::vector<FileItem> dirs;
         std::vector<FileItem> files;
         std::vector<FileItem> items; // dirs + files
+        // Stable model candidates.  GetProjectItems uses this instead of
+        // rescanning every visible item when the model expansion projection
+        // has not changed.
+        std::vector<std::string> modelPaths;
     };
 
     struct DirTreeMeta
@@ -211,6 +216,43 @@ class ProjectPanel : public EditorPanel
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_materialMtimeCache;
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_textureMtimeCache;
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_modelMtimeCache;
+
+    struct TexturePreviewSizeCacheEntry
+    {
+        uint64_t textureId = 0;
+        int width = 0;
+        int height = 0;
+    };
+    // GetTexturePreviewSize takes the renderer preview mutex and canonicalizes
+    // the key. Keep the stable-frame dimensions keyed by the live texture id;
+    // a new id naturally invalidates the entry after a preview rebuild.
+    std::unordered_map<std::string, TexturePreviewSizeCacheEntry> m_texturePreviewSizes;
+
+    struct TexturePreviewContract
+    {
+        uint64_t catalogGeneration = 0;
+        uint64_t contentStamp = 0;
+        bool nearest = false;
+        bool srgb = false;
+        int maxSize = 2048;
+        std::string textureFormat = "auto";
+        std::string textureType = "default";
+    };
+    std::unordered_map<std::string, TexturePreviewContract> m_texturePreviewContracts;
+
+    struct PreviewRequestCacheEntry
+    {
+        uint64_t fingerprint = 0;
+        uint64_t textureId = 0;
+        uint64_t lastRequestFrame = 0;
+    };
+    std::unordered_map<std::string, PreviewRequestCacheEntry> m_texturePreviewRequests;
+    // Material preview queries are more expensive than the read-only texture
+    // lookup. Keep the last published id beside the source fingerprint so a
+    // stable Project frame does not re-enter the preview state machine.
+    std::unordered_map<std::string, PreviewRequestCacheEntry> m_materialPreviewResults;
+    std::unordered_map<std::string, PreviewRequestCacheEntry> m_modelPreviewRequests;
+    uint64_t m_previewFrameSerial = 0;
     // FileManager must not enqueue a whole directory's previews in one frame.
     // These are scheduling budgets, not display limits: ready thumbnails remain visible.
     int m_texturePreviewRequestsThisFrame = 0;
@@ -276,6 +318,7 @@ class ProjectPanel : public EditorPanel
     /// When true, bare project root is not a valid browse target ([..] stops at subfolders).
     bool m_navHasSubfolders = false;
     bool m_canNavigateUp = false;
+    std::string m_currentPathKey;
     double m_subPreIcons = 0.0;
     double m_subPrePreview = 0.0;
     double m_subPreOther = 0.0;
@@ -288,6 +331,18 @@ class ProjectPanel : public EditorPanel
     double m_subGridItems = 0.0;
     double m_subGridTail = 0.0;
     std::string m_lastNotifiedPath;
+
+    // Lightweight counters are intentionally exposed through
+    // ConsumeSubTimings().  They make cache invalidation testable without
+    // requiring an editor or a GPU build.
+    uint64_t m_dirSnapshotBuilds = 0;
+    uint64_t m_folderTreeRebuilds = 0;
+    uint64_t m_projectItemsRebuilds = 0;
+    uint64_t m_previewScheduleAttempts = 0;
+    uint64_t m_folderRowsSubmitted = 0;
+    uint64_t m_folderRowsVisible = 0;
+    uint64_t m_gridItemsSubmitted = 0;
+    uint64_t m_gridItemsVisible = 0;
 
     // Breadcrumb
     std::string m_breadcrumbPath;
@@ -350,14 +405,35 @@ class ProjectPanel : public EditorPanel
     {
         std::string path;
         std::string name;
+        std::string imguiId;
+        std::string pathKey;
+        std::string semanticId;
         int depth = 0;
         bool hasSubdirs = false;
         bool isRoot = false;
+        bool expanded = false;
     };
     std::vector<FolderTreeRow> m_folderTreeRows;
     uint64_t m_directoryRevision = 1;
     uint64_t m_folderTreeRowsDirectoryRevision = 0;
     uint64_t m_folderTreeRowsProjectionRevision = UINT64_MAX;
+    uint64_t m_folderTreeAppliedProjectionRevision = UINT64_MAX;
+
+    enum class ProjectItemsCacheSource : uint8_t
+    {
+        None,
+        Snapshot,
+        Augmented,
+    };
+
+    // Current-directory projection cache stores only stable identity and
+    // revisions. Container values are reacquired on every access so an
+    // unordered_map insertion/rehash cannot invalidate a retained pointer.
+    std::string m_projectItemsCachePath;
+    uint64_t m_projectItemsCacheDirectoryRevision = 0;
+    uint64_t m_projectItemsCacheProjectionRevision = UINT64_MAX;
+    uint64_t m_projectItemsCacheSnapshotMtime = 0;
+    ProjectItemsCacheSource m_projectItemsCacheSource = ProjectItemsCacheSource::None;
 
     // Visible items for shift-range select
     std::vector<FileItem> *m_visibleItems = nullptr;

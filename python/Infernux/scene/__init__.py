@@ -334,12 +334,17 @@ class SceneManager:
 
     @staticmethod
     def _is_in_play_mode() -> bool:
-        """Check whether the engine is currently in play mode."""
+        """Check whether the engine is currently in play mode.
+
+        The editor owns this state through ``PlayModeManager``. Packaged
+        Players intentionally do not construct that editor service, so the
+        native scene manager is the authoritative fallback there.
+        """
         from Infernux.engine.play_mode import PlayModeManager, PlayModeState
         pm = PlayModeManager.instance()
-        if pm and pm.state != PlayModeState.EDIT:
-            return True
-        return False
+        if pm is not None:
+            return pm.state != PlayModeState.EDIT
+        return bool(_NativeSceneManager.instance().is_playing())
 
     @staticmethod
     def _do_load(path: str) -> bool:

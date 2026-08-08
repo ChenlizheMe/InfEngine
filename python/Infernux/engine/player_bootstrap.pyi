@@ -23,7 +23,7 @@ class PlayerBootstrap:
     window_width: int
     window_height: int
     splash_items: list
-    scene_file_manager: Optional[object]
+    runtime_session: Optional[object]
 
     def __init__(
         self,

@@ -116,6 +116,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
             py::arg("path"), py::call_guard<py::gil_scoped_release>(), "Get immutable meta by path")
         .def("get_all_guids", &AssetDatabase::GetAllGuids, py::call_guard<py::gil_scoped_release>(),
              "Get all GUIDs in one published generation")
+        .def("get_all_asset_paths", &AssetDatabase::GetAllAssetPaths, py::call_guard<py::gil_scoped_release>(),
+             "Get all asset paths in one published generation")
         .def(
             "get_directory_catalog",
             [](const AssetDatabase &database, const std::string &directory) {

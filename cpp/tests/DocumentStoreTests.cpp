@@ -1,5 +1,6 @@
 #include "platform/filesystem/DocumentStore.h"
 
+#include <chrono>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
@@ -238,17 +239,25 @@ void TestConditionalWriteRejectsAChangedTarget()
         file << "before";
     }
     DocumentStore store;
-    const auto expected = store.CaptureFileState(path.string());
+    const auto expected = store.CaptureFileState(path.u8string());
     const auto originalTime = std::filesystem::last_write_time(path);
     {
         std::ofstream file(path, std::ios::binary | std::ios::trunc);
         file << "extern";
     }
     std::filesystem::last_write_time(path, originalTime);
+    const auto external = store.CaptureFileState(path.u8string());
+    Require(external.size == expected.size, "CAS test external content changed file size");
+    Require(external.modifiedNs == expected.modifiedNs, "CAS test failed to restore modification time");
+    const std::string hashDiagnostic =
+        "CAS state did not distinguish same-size same-mtime external content (before=" +
+        std::to_string(expected.contentHash) + ", external=" + std::to_string(external.contentHash) + ")";
+    Require(external.contentHash != expected.contentHash, hashDiagnostic.c_str());
 
     infernux::DocumentWriteOptions options;
     options.expectedFileState = expected;
-    auto rejected = store.Submit(path.string(), "editor", options);
+    Require(options.commitChainToken.empty(), "standalone CAS test unexpectedly joined a commit chain");
+    auto rejected = store.Submit(path.u8string(), "editor", options);
     bool failed = false;
     try {
         rejected->Wait();
@@ -265,6 +274,115 @@ void TestConditionalWriteRejectsAChangedTarget()
     Require(contents == "extern", "conditional write overwrote the external target");
 }
 
+void TestExplicitCommitChainAdvancesItsCasBaseline()
+{
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("infernux-document-chain-" + std::to_string(
+                           std::chrono::steady_clock::now().time_since_epoch().count()) +
+                       ".txt");
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << "base";
+    }
+
+    DocumentStore store;
+    infernux::DocumentWriteOptions options;
+    options.expectedFileState = store.CaptureFileState(path.u8string());
+    options.commitChainToken = "document-chain";
+
+    for (const std::string &content : {"A", "B", "C"}) {
+        auto ticket = store.Submit(path.u8string(), content, options);
+        ticket->Wait();
+    }
+    std::ifstream current(path, std::ios::binary);
+    const std::string contents((std::istreambuf_iterator<char>(current)), std::istreambuf_iterator<char>());
+    store.Shutdown();
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+
+    Require(contents == "C", "same commit chain did not advance through A, B, and C");
+}
+
+void TestDifferentCommitChainsDoNotShareCasBaseline()
+{
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("infernux-document-independent-chain-" + std::to_string(
+                           std::chrono::steady_clock::now().time_since_epoch().count()) +
+                       ".txt");
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << "base";
+    }
+
+    DocumentStore store;
+    const auto original = store.CaptureFileState(path.u8string());
+    infernux::DocumentWriteOptions firstOptions;
+    firstOptions.expectedFileState = original;
+    firstOptions.commitChainToken = "first-document";
+    auto first = store.Submit(path.u8string(), "first", firstOptions);
+    first->Wait();
+
+    infernux::DocumentWriteOptions secondOptions;
+    secondOptions.expectedFileState = original;
+    secondOptions.commitChainToken = "second-document";
+    auto second = store.Submit(path.u8string(), "second", secondOptions);
+    bool failed = false;
+    try {
+        second->Wait();
+    } catch (const std::runtime_error &error) {
+        failed = std::string(error.what()).find("changed outside the editor") != std::string::npos;
+    }
+    std::ifstream current(path, std::ios::binary);
+    const std::string contents((std::istreambuf_iterator<char>(current)), std::istreambuf_iterator<char>());
+    store.Shutdown();
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+
+    Require(failed, "different commit chains incorrectly shared a CAS baseline");
+    Require(contents == "first", "independent commit chain overwrote the first writer");
+}
+
+void TestCommitChainRejectsAnInterveningExternalEdit()
+{
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("infernux-document-chain-external-" + std::to_string(
+                           std::chrono::steady_clock::now().time_since_epoch().count()) +
+                       ".txt");
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << "base";
+    }
+
+    DocumentStore store;
+    infernux::DocumentWriteOptions options;
+    options.expectedFileState = store.CaptureFileState(path.u8string());
+    options.commitChainToken = "external-guarded-document";
+    auto first = store.Submit(path.u8string(), "first", options);
+    first->Wait();
+    const auto committedTime = std::filesystem::last_write_time(path);
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << "other";
+    }
+    std::filesystem::last_write_time(path, committedTime);
+
+    auto rejected = store.Submit(path.u8string(), "second", options);
+    bool failed = false;
+    try {
+        rejected->Wait();
+    } catch (const std::runtime_error &error) {
+        failed = std::string(error.what()).find("changed outside the editor") != std::string::npos;
+    }
+    std::ifstream current(path, std::ios::binary);
+    const std::string contents((std::istreambuf_iterator<char>(current)), std::istreambuf_iterator<char>());
+    store.Shutdown();
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+
+    Require(failed, "same commit chain ignored an intervening external edit");
+    Require(contents == "other", "same commit chain overwrote external content");
+}
+
 } // namespace
 
 int main()
@@ -278,6 +396,9 @@ int main()
         TestWriterPreservesPathCasing();
         TestQueuedCancellationAndGenerationMetrics();
         TestConditionalWriteRejectsAChangedTarget();
+        TestExplicitCommitChainAdvancesItsCasBaseline();
+        TestDifferentCommitChainsDoNotShareCasBaseline();
+        TestCommitChainRejectsAnInterveningExternalEdit();
         std::cout << "DocumentStore tests passed\n";
         return 0;
     } catch (const std::exception &error) {

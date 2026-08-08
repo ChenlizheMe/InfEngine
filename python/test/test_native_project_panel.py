@@ -161,7 +161,7 @@ class TestProjectPanelCreation:
         native.queries.clear()
         AssetManager._prime_material_preview(str(path), '{"name":"Fresh"}')
         assert native.queries == [(
-            f"mat|{normalized}", normalized, '{"name":"Fresh"}', 0, False,
+            f"mat|{normalized}", normalized, '{"name":"Fresh"}', 0, True,
         )]
 
     def test_create_prefab_links_the_saved_source(self, tmp_path, monkeypatch):
@@ -199,6 +199,26 @@ class TestProjectPanelPaths:
             assert pp.can_navigate_to_path(d)
             assert pp.set_current_path(d)
             assert pp.get_current_path() == d
+
+    def test_project_worktree_navigation_is_not_limited_to_assets(self, tmp_path):
+        assets = tmp_path / "Assets"
+        asset_folder = assets / "Materials"
+        library_folder = tmp_path / "Library" / "Resources" / "shaders"
+        asset_folder.mkdir(parents=True)
+        library_folder.mkdir(parents=True)
+        outside = tmp_path.parent / "OutsideProject"
+        outside.mkdir(exist_ok=True)
+
+        pp = ProjectPanel()
+        pp.set_root_path(str(tmp_path))
+
+        for path in (tmp_path, assets, asset_folder, library_folder):
+            assert pp.can_navigate_to_path(str(path))
+            assert pp.set_current_path(str(path))
+            assert pp.get_current_path() == str(path)
+
+        assert pp.can_navigate_to_path(str(outside)) is False
+        assert pp.set_current_path(str(outside)) is False
 
     def test_set_current_path_empty(self):
         pp = ProjectPanel()
@@ -459,9 +479,13 @@ class TestProjectPanelCallbacks:
         grid = source[source.index("void ProjectPanel::RenderFileGrid"):
                       source.index("void ProjectPanel::RenderContextMenu")]
 
-        assert "m_selectedSet.insert(AssetSelectionPathKey(path))" in selection
+        assert "SetSelectedFiles({path}, path, notify)" in selection
         assert "m_selectedSet = std::move(keys)" in selection
-        assert "m_selectedSet.count(AssetSelectionPathKey(item.path))" in grid
+        assert "m_rootPath" in selection
+        assert "IsFilesystemPathWithin(backingPath, m_rootPath)" in selection
+        assert "std::string selectionKey" not in grid
+        assert "item.selectionKey" in grid
+        assert "m_selectedSet.find(*selectionKey)" in grid
         assert "m_selectedSet.count(item.path)" not in grid
         assert 'itemSemanticId, isSelected' in grid
 
@@ -489,6 +513,30 @@ class TestProjectPanelCallbacks:
         assert "PublishSelectionIntent({item.path}, item.path)" in click
         assert "m_selectedFile = item.path" not in grid
         assert "PublishSelectionIntent(alreadySelected" in grid
+
+    def test_project_folder_open_uses_native_double_click_state(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(
+            encoding="utf-8"
+        )
+        click = source[
+            source.index("void ProjectPanel::HandleItemClick") : source.index(
+                "bool ProjectPanel::HasSelectedAssets"
+            )
+        ]
+
+        assert "ctx->IsMouseDoubleClicked(0)" in click
+        assert "const bool doubleClicked = nativeDoubleClick || repeatedClick" in click
+
+    def test_object_field_picker_opens_in_the_native_activation_frame(self):
+        source = Path(
+            "cpp/infernux/function/renderer/gui/InxGUIContext.cpp"
+        ).read_text(encoding="utf-8")
+        picker = source.split('ImGui::Button("##picker"', 1)[1].split(
+            "ImGui::EndGroup();", 1
+        )[0]
+
+        assert "result |= 2u" in picker
+        assert 'ImGui::OpenPopup("##obj_picker")' in picker
 
     def test_project_context_menu_lifecycle_is_independent_of_directory_data(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(
@@ -529,8 +577,7 @@ class TestProjectPanelCallbacks:
         tree = source[source.index("void ProjectPanel::RenderFolderTree"):
                       source.index("void ProjectPanel::RenderFileGrid")]
 
-        assert 'row.isRoot ? "project.folder.root" : MakeProjectFolderSemanticId(row.path)' in tree
-        assert "ctx->RecordSemanticItem(\"project_folder\", row.name, true, semanticId, selected)" in tree
+        assert 'ctx->RecordSemanticItem("project_folder", row.name, true, row.semanticId, selected)' in tree
 
     def test_project_folder_tree_uses_revision_cache_and_clipper(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
@@ -593,6 +640,99 @@ class TestProjectPanelCallbacks:
         assert "GetModelThumbnail(item.path, item.mtimeNs)" in grid_preview
         assert "IsUiPrefabFile(item.path, item.mtimeNs)" in grid_preview
         assert grid_preview.count("IsUiPrefabFile(") == 1
+
+    def test_material_preview_requests_keep_the_shared_generation_path(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        header = Path("cpp/infernux/function/editor/ProjectPanel.h").read_text(encoding="utf-8")
+        material = source[
+            source.index("uint64_t ProjectPanel::GetMaterialThumbnail") : source.index(
+                "uint64_t ProjectPanel::GetEmbeddedMaterialThumbnail"
+            )
+        ]
+        embedded = source[
+            source.index("uint64_t ProjectPanel::GetEmbeddedMaterialThumbnail") : source.index(
+                "uint64_t ProjectPanel::GetModelThumbnail"
+            )
+        ]
+
+        assert "QueryOrScheduleMaterialPreview" in material
+        assert "QueryOrScheduleMaterialPreview" in embedded
+        assert "GetMaterialPreviewTextureId(resourceKey)" in material
+        assert "GetMaterialPreviewTextureId(resourceKey)" in embedded
+        assert "QueryOrScheduleMaterialPreview" in material
+        assert "QueryOrScheduleMaterialPreview" in embedded
+        assert "m_materialPreviewResults" in header
+
+    def test_stable_material_preview_uses_published_id_before_querying(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        header = Path("cpp/infernux/function/editor/ProjectPanel.h").read_text(encoding="utf-8")
+        material = source[
+            source.index("uint64_t ProjectPanel::GetMaterialThumbnail") : source.index(
+                "uint64_t ProjectPanel::GetEmbeddedMaterialThumbnail"
+            )
+        ]
+        embedded = source[
+            source.index("uint64_t ProjectPanel::GetEmbeddedMaterialThumbnail") : source.index(
+                "uint64_t ProjectPanel::GetModelThumbnail"
+            )
+        ]
+
+        assert "m_materialPreviewResults" in header
+        for block in (material, embedded):
+            assert "GetMaterialPreviewTextureId(resourceKey)" in block
+            assert "IsMaterialPreviewReady(resourceKey)" in block
+            assert block.index("GetMaterialPreviewTextureId(resourceKey)") < block.index(
+                "QueryOrScheduleMaterialPreview"
+            )
+            assert "result.fingerprint" in block
+            assert "result.textureId" in block
+        assert "m_materialPreviewResults.clear()" in source
+
+    def test_augmented_projection_cache_reacquires_storage_after_rehash_or_navigation(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        header = Path("cpp/infernux/function/editor/ProjectPanel.h").read_text(encoding="utf-8")
+        projection = source[
+            source.index("std::vector<ProjectPanel::FileItem> *ProjectPanel::GetProjectItems") : source.index(
+                "// Thumbnail system"
+            )
+        ]
+
+        assert "enum class ProjectItemsCacheSource" in header
+        assert "std::vector<FileItem> *m_projectItemsCache" not in header
+        assert "m_projectItemsCachePath == path" in projection
+        assert "m_augmentedCache.find(path)" in projection
+        assert "return &cached->second.items" in projection
+        assert "m_projectItemsCache =" not in projection
+        assert "m_projectItemsCacheSource = ProjectItemsCacheSource::None" in source
+
+    def test_project_panel_exposes_visible_submission_counters_and_caches_tree_ids(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        header = Path("cpp/infernux/function/editor/ProjectPanel.h").read_text(encoding="utf-8")
+
+        for counter in (
+            "folderRowsSubmitted",
+            "folderRowsVisible",
+            "gridItemsSubmitted",
+            "gridItemsVisible",
+        ):
+            assert f'{{"{counter}"' in source
+            assert f"m_{counter}" in header
+
+        # Stable rows must not rebuild the visible TreeNode label string every frame.
+        assert 'rootName + "###" + m_rootPath' in source
+        assert 'directory.name + "###" + directory.path' in source
+        assert "TreeNodeEx((row.name +" not in source
+        assert "ImGui::TreeNodeEx(row.imguiId.c_str(), static_cast<ImGuiTreeNodeFlags>(flags))" in source
+        assert 'ctx->RecordSemanticItem("tree_node", row.imguiId)' in source
+        assert "kFolderTreeClipperThreshold" in source
+        assert "row.semanticId" in source
+        assert "currentPathKey == row.pathKey" in source
+        assert "syncExpandedState" in source
+        assert "SetNextItemOpen(row.expanded" in source
+        assert "m_texturePreviewSizes.insert_or_assign" in source
+        assert "m_texturePreviewSizes.clear()" in source
+        assert "m_engine->GetTexturePreviewSize(resourceKey)" in source
+        assert "m_selectedSet.find(*selectionKey)" in source
 
     def test_project_search_filters_a_generation_cached_memory_index(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")

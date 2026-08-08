@@ -81,6 +81,14 @@ class PlayModeManager(PlayModeSerializationMixin):
     
     def __init__(self):
         self._state = PlayModeState.EDIT
+
+        # These modules are stable process-level services.  Cache their
+        # classes once at manager construction so the frame callback does not
+        # repeat import resolution before every timing/load check.
+        from Infernux.scene import SceneManager as _SceneManagerAPI
+        from Infernux.timing import Time as _TimeAPI
+        self._scene_manager_api = _SceneManagerAPI
+        self._time_api = _TimeAPI
         
         # Timing
         self._last_frame_time: float = 0.0
@@ -671,8 +679,15 @@ class PlayModeManager(PlayModeSerializationMixin):
                 return
 
         # --- Process deferred scene loads (must run outside C++ iteration) ---
-        from Infernux.scene import SceneManager as _SceneMgr
-        _SceneMgr.process_pending_load()
+        # The common path has no pending request.  Avoid crossing into the
+        # scene-load service until a script actually queued a load or an
+        # existing transaction needs polling.
+        scene_manager_api = self._scene_manager_api
+        if (
+            scene_manager_api._pending_scene_load is not None
+            or scene_manager_api._active_scene_transaction is not None
+        ):
+            scene_manager_api.process_pending_load()
         
         if self._state == PlayModeState.PAUSED:
             # Don't update timing when paused
@@ -689,7 +704,7 @@ class PlayModeManager(PlayModeSerializationMixin):
 
         # Sync time_scale from the static Time class (user may set Time.time_scale)
         try:
-            from Infernux.timing import Time
+            Time = self._time_api
             self._time_scale = Time.time_scale
             Time._tick(raw_dt)
             # Read back computed values so PlayModeManager stays in sync
@@ -787,8 +802,13 @@ class PlayModeManager(PlayModeSerializationMixin):
         """
         Reload all Python components that originate from the given script file.
 
-        This is intended for Edit mode live-updates when a script changes.
+        Edit mode keeps its established instance replacement behavior. During
+        Play/Pause, a compatible script is patched into the existing class so
+        every live Python/native identity and cross-component reference remains
+        intact.
         """
+        if self._state in (PlayModeState.PLAYING, PlayModeState.PAUSED):
+            return self._reload_play_component_body(file_path)
         if self._state != PlayModeState.EDIT:
             return
         if not self._asset_database:
@@ -916,6 +936,73 @@ class PlayModeManager(PlayModeSerializationMixin):
             except Exception as exc:
                 Debug.log_suppressed("PlayModeManager.reload_components.bump_inspector_structure", exc)
             Debug.log_internal(f"Reloaded {reloaded_count} component(s) from {os.path.basename(script_path_abs)}")
+
+    def _reload_play_component_body(self, file_path: str) -> int:
+        """Apply a body-only reload without replacing live component objects."""
+        if not self._asset_database:
+            return 0
+
+        script_path_abs = resolve_script_path(file_path)
+        if not script_path_abs or not os.path.exists(script_path_abs):
+            return 0
+        scene_manager = self._get_scene_manager()
+        scene = scene_manager.get_active_scene() if scene_manager else None
+        if scene is None:
+            return 0
+
+        target_guid = self._asset_database.get_guid_from_path(script_path_abs)
+        if not target_guid:
+            return 0
+
+        targets = {}
+        for obj in scene.get_all_objects():
+            if not hasattr(obj, "get_py_components"):
+                continue
+            for component in obj.get_py_components() or ():
+                if getattr(component, "_script_guid", "") != target_guid:
+                    continue
+                component_type = type(component)
+                targets.setdefault(component_type, []).append(component)
+
+        if not targets:
+            return 0
+
+        from Infernux.components.script_loader import (
+            ScriptReloadRejected,
+            get_script_error_by_path,
+            reload_component_bodies,
+            set_script_error,
+        )
+
+        try:
+            changed_by_type = reload_component_bodies(
+                script_path_abs,
+                tuple(targets),
+                script_guid=target_guid,
+                instances_by_type={
+                    component_type: tuple(instances)
+                    for component_type, instances in targets.items()
+                },
+            )
+        except Exception as exc:
+            diagnostic = get_script_error_by_path(script_path_abs)
+            message = diagnostic or str(exc)
+            if isinstance(exc, ScriptReloadRejected) or not diagnostic:
+                set_script_error(script_path_abs, message)
+            Debug.log_error(
+                f"Script hot reload rejected for {os.path.basename(script_path_abs)}: {message}",
+                source_file=script_path_abs,
+            )
+            return 0
+
+        for component_type, changed in changed_by_type.items():
+            instances = targets[component_type]
+            Debug.log_internal(
+                f"Reloaded body for {component_type.__name__} "
+                f"({len(instances)} live instance(s), {len(changed)} body member(s)) "
+                f"from {os.path.basename(script_path_abs)}"
+            )
+        return len(changed_by_type)
 
     def mark_components_missing_for_script(self, script_guid: str, file_path: str) -> int:
         """Replace live instances of a deleted script with field-preserving placeholders."""

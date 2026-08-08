@@ -38,6 +38,9 @@ struct DocumentWriteOptions
 {
     bool createBackup = false;
     std::optional<DocumentFileState> expectedFileState;
+    // Explicit identity of one editor/document persistence chain.  A path is
+    // only a lookup key; it must never make independent writers share CAS.
+    std::string commitChainToken;
 };
 
 struct DocumentPathMetrics
@@ -137,6 +140,12 @@ class DocumentStore final
         std::shared_ptr<DocumentWriteTicket> ticket;
     };
 
+    struct CommittedChainState
+    {
+        std::string commitChainToken;
+        DocumentFileState fileState;
+    };
+
     static std::string ResolvePath(const std::string &path);
     void StartWorkerLocked();
     void WorkerMain();
@@ -156,6 +165,9 @@ class DocumentStore final
     std::unordered_map<std::string, uint64_t> m_succeededGenerations;
     std::unordered_map<std::string, uint64_t> m_failedGenerations;
     std::unordered_map<std::string, uint64_t> m_activeGenerations;
+    // The last state published by an explicit chain for each path.  Requests
+    // from another chain must continue using their own expected state.
+    std::unordered_map<std::string, CommittedChainState> m_committedFileStates;
 };
 
 } // namespace infernux

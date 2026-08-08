@@ -100,6 +100,12 @@ InxVkCoreModular::~InxVkCoreModular()
     // still alive, then destroy both previewers in the controlled order below.
     m_resourceManager.DrainAsyncGraphicsSubmissions();
 
+    // Pass-resolution entries retain immutable ShaderProgram publications.
+    // Drop those external owners before MaterialPipelineManager shuts down its
+    // program cache; otherwise their Vulkan layouts/modules can outlive the
+    // device and be destroyed by member teardown with an invalid VkDevice.
+    ReleaseMaterialPassResolutionCache();
+
     // Flush all deferred deletions before tearing down subsystems
     m_deletionQueue.FlushAll();
 
@@ -647,6 +653,10 @@ void InxVkCoreModular::RecreateSwapchain()
     // and swapchain generation untouched.
     const bool recreated =
         m_backend.Presentation().Recreate(m_backend.Device(), m_backend.Queues(), width, height, [this]() {
+            // The old render-graph generation is about to retire. Release pass
+            // publications at the commit boundary while their device and
+            // material manager are still valid.
+            ReleaseMaterialPassResolutionCache();
             DestroyGuiRenderGraphs();
             m_depthImage.reset();
         });
@@ -664,6 +674,12 @@ void InxVkCoreModular::RecreateSwapchain()
 
     // Recreate depth resources
     CreateDepthResources();
+}
+
+void InxVkCoreModular::ReleaseMaterialPassResolutionCache() noexcept
+{
+    m_materialPassResolutionCache.clear();
+    m_materialPassResolutionCacheGeneration = 0;
 }
 
 void InxVkCoreModular::SetPresentMode(int mode)

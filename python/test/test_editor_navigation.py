@@ -237,3 +237,65 @@ def test_explicit_asset_navigation_changes_project_directory_as_non_dirty_view_s
         EditorInteractionCore._instance = previous_core
         UndoManager._instance = previous_manager
         SelectionService._instance = previous_selection
+
+
+def test_asset_navigation_rejects_existing_engine_path(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from Infernux.engine import project_context
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import SelectionTarget
+    from Infernux.engine.path_utils import lexical_path
+
+    project = tmp_path / "Project"
+    (project / "Assets").mkdir(parents=True)
+    builtin = tmp_path / "Infernux" / "lib" / "standard.vert"
+    builtin.parent.mkdir(parents=True)
+    builtin.write_text("builtin", encoding="ascii")
+    monkeypatch.setattr(project_context, "_project_root", str(project))
+
+    panel = SimpleNamespace(
+        get_current_path=lambda: lexical_path(project / "Assets"),
+        can_navigate_to_path=lambda path: True,
+        set_current_path=lambda path: True,
+    )
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.project_panel = panel
+
+    assert not bootstrap._present_asset_navigation_target(
+        SelectionTarget.asset(str(builtin)),
+        SimpleNamespace(activate_panel=False, record_history=False),
+    )
+
+
+def test_asset_navigation_can_restore_the_assets_folder(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from Infernux.engine import project_context
+    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from Infernux.engine.interaction import SelectionTarget
+    from Infernux.engine.path_utils import lexical_path
+
+    project = tmp_path / "Project"
+    assets = project / "Assets"
+    asset = assets / "Materials" / "Test.mat"
+    asset.parent.mkdir(parents=True)
+    asset.write_text("{}", encoding="ascii")
+    monkeypatch.setattr(project_context, "_project_root", str(project))
+
+    state = {"path": lexical_path(tmp_path / "External")}
+    panel = SimpleNamespace(
+        get_current_path=lambda: state["path"],
+        can_navigate_to_path=lambda path: True,
+        set_current_path=lambda path: bool(
+            state.__setitem__("path", lexical_path(path)) is None
+        ),
+    )
+    bootstrap = BootstrapSelectionMixin()
+    bootstrap.project_panel = panel
+
+    assert bootstrap._present_asset_navigation_target(
+        SelectionTarget.asset(str(asset)),
+        SimpleNamespace(activate_panel=False, record_history=False),
+    )
+    assert state["path"] == lexical_path(asset.parent)

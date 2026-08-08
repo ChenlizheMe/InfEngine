@@ -266,6 +266,18 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
 
         from .registry import register_component_type
         register_component_type(cls)
+
+        # Publish one immutable phase table per runtime type.  The native
+        # proxy may enter the Python phase wrappers thousands of times per
+        # second; resolving update/fixed_update/late_update by name for every
+        # instance is unnecessary once the class is known.  The helper keeps
+        # descriptor semantics for the uncommon static/classmethod case.
+        from ._component_lifecycle import (
+            _build_runtime_phase_dispatch,
+            _build_runtime_phase_invokers,
+        )
+        cls._runtime_phase_dispatch = _build_runtime_phase_dispatch(cls)
+        cls._runtime_phase_invokers = _build_runtime_phase_invokers(cls)
     
     def __init__(self):
         """Internal framework initialization — **do not override**.
@@ -294,6 +306,12 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         self._has_started = False
         self._awake_called = False
         self._is_destroyed = False  # Track destruction state
+        # Published once per component type.  Script hot reload creates a new
+        # component instance, so the new instance receives the new table while
+        # the old instance can finish teardown without touching the hot path.
+        self._runtime_phase_invokers_instance = type(self).__dict__.get(
+            "_runtime_phase_invokers"
+        )
         self._component_name = self.__class__.__name__
         self._script_guid: str = self.__class__._intrinsic_script_guid_
         self._registered_go_id: Optional[int] = None  # go_id this comp is registered under
@@ -412,9 +430,17 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         cpp_component = getattr(self, '_cpp_component', None)
         if cpp_component is not None:
             cpp_component.enabled = value
+            # Keep the Python mirror authoritative for direct lifecycle calls
+            # made before the next native state synchronization.  The native
+            # proxy remains authoritative for the actual scene traversal.
+            self._enabled = value
+            from ._component_lifecycle import notify_runtime_component_changed
+            notify_runtime_component_changed(self)
             return
 
         self._enabled = value
+        from ._component_lifecycle import notify_runtime_component_changed
+        notify_runtime_component_changed(self)
     
     @property
     def type_name(self) -> str:
@@ -438,8 +464,13 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         cpp_component = getattr(self, '_cpp_component', None)
         if cpp_component is not None:
             cpp_component.execution_order = int(value)
+            self._execution_order = int(value)
+            from ._component_lifecycle import notify_runtime_component_changed
+            notify_runtime_component_changed(self)
             return
         self._execution_order = int(value)
+        from ._component_lifecycle import notify_runtime_component_changed
+        notify_runtime_component_changed(self)
 
     @property
     def component_id(self) -> int:

@@ -81,7 +81,7 @@ class UIButton(UISelectable):
         group="Fill",
     )
     background_color: list = serialized_field(
-        default=[0.22, 0.56, 0.92, 1.0], field_type=FieldType.COLOR,
+        default=[0.922, 0.341, 0.341, 1.0], field_type=FieldType.COLOR,
         hdr=True, tooltip="Background fill colour (RGBA)", group="Fill",
     )
 

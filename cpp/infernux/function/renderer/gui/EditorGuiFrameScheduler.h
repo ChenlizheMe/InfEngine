@@ -7,6 +7,37 @@
 namespace infernux
 {
 
+/// Limits the extra editor builds needed to drain one synthetic ImGui input
+/// batch. Physical input arriving on later frames never extends this budget.
+class EditorGuiInputRearmBudget final
+{
+  public:
+    static constexpr uint32_t kMaxFrames = 4;
+
+    void BeginBatch() noexcept
+    {
+        m_remaining = kMaxFrames;
+    }
+
+    [[nodiscard]] bool AfterBuild(bool hasPendingTransitions) noexcept
+    {
+        if (m_remaining == 0 || !hasPendingTransitions) {
+            m_remaining = 0;
+            return false;
+        }
+        --m_remaining;
+        return m_remaining != 0;
+    }
+
+    [[nodiscard]] uint32_t Remaining() const noexcept
+    {
+        return m_remaining;
+    }
+
+  private:
+    uint32_t m_remaining = 0;
+};
+
 /// Limits expensive Editor ImGui construction without limiting scene or game rendering.
 class EditorGuiFrameScheduler
 {

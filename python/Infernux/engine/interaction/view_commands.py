@@ -42,7 +42,11 @@ class ViewCommandService:
 
         manager = UndoManager.instance()
         if manager is None or not manager.enabled or manager.is_executing:
-            return False
+            # View state must not become inert merely because history is
+            # temporarily unavailable. This is especially important for
+            # pointer-driven Project navigation, which previously accepted
+            # the click but silently kept the old directory.
+            return apply(copy.deepcopy(new_value)) is not False
         before = copy.deepcopy(old_value)
         after = copy.deepcopy(new_value)
         command = LambdaCommand(

@@ -12,6 +12,7 @@ from Infernux.mcp.client import create_loopback_client
 from Infernux.mcp.threading import MainThreadCommandQueue
 from Infernux.mcp.tools import register_all_tools
 from Infernux.mcp.tools import api, common, material, project, runtime, scene
+from Infernux.mcp.tools import docs
 from Infernux.mcp.tools import session as session_tools
 
 
@@ -157,6 +158,46 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
     assert "particle_graph_disconnect_stream" not in tools
     assert "input_key" not in tools
     assert "editor_ui_click" not in tools
+
+
+def test_developer_assist_exposes_public_animation_audio_and_external_import_tools(tmp_path):
+    tools = _registered_tools(tmp_path, "developer_assist")
+
+    assert {
+        "asset_import_external_binary",
+        "audio_source_inspect",
+        "audio_source_configure_track",
+        "audio_source_play",
+        "audio_source_pause",
+        "audio_source_stop",
+        "animation_timeline_create",
+        "animation_timeline_add_keyframe",
+        "timeline_fsm_create",
+        "timeline_fsm_add_state",
+    } <= tools
+
+
+def test_global_validation_does_not_expose_editor_authoring_mutations(tmp_path):
+    tools = _registered_tools(tmp_path, "global_validation")
+
+    assert not {
+        "asset_import_external_binary",
+        "audio_source_inspect",
+        "audio_source_configure_track",
+        "audio_source_play",
+        "audio_source_pause",
+        "audio_source_stop",
+        "animation_timeline_create",
+        "animation_timeline_add_keyframe",
+        "timeline_fsm_create",
+        "timeline_fsm_add_state",
+    } & tools
+
+
+def test_authoring_workflows_reference_only_registered_public_tools():
+    assert "animation_authoring" in docs.INTENT_RECOMMENDATIONS
+    assert "audio_source_configure_track" in docs.INTENT_RECOMMENDATIONS["audio_authoring"]["tools"]
+    assert "timeline_fsm_create" in docs.INTENT_RECOMMENDATIONS["animation_authoring"]["tools"]
 
 
 def test_global_validation_exposes_blocker_tools_without_script_or_scene_mutation(tmp_path):

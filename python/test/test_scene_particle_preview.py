@@ -391,6 +391,18 @@ def test_invalid_particle_preview_wrapper_never_removes_native_batch():
     assert calls == []
 
 
+def test_preview_authoring_ownership_is_released_without_native_bridge(monkeypatch):
+    preview_module = importlib.import_module(
+        "Infernux.engine.ui.asset_resource_preview"
+    )
+    preview_module._AUTHORING_PREVIEW_KEYS.add("mat|stale-session")
+    monkeypatch.setattr(preview_module, "_resolve_native_engine", lambda _panel: None)
+
+    preview_module.release_all_preview_authoring()
+
+    assert "mat|stale-session" not in preview_module._AUTHORING_PREVIEW_KEYS
+
+
 def test_particle_preview_component_controls_are_hard_disabled_in_play(monkeypatch):
     from Infernux.engine.play_mode import PlayModeManager
 

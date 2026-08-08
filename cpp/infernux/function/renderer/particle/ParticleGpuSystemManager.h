@@ -145,6 +145,7 @@ struct GpuParticleEmitterProgram
     uint32_t stateStride = 0;
     uint32_t eventTypeCount = 0;
     bool collisionEnabled = false;
+    bool supportsFusedUpdateRendering = false;
     std::vector<uint32_t> parameterWords;
     bool preserveState = false;
     struct StateMigration

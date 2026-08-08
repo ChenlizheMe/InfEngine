@@ -1124,7 +1124,7 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
         can_rename_selected_asset=lambda path="": True,
         can_navigate_to_path=lambda path: bool(path),
         get_current_path=lambda: "C:/Project/Assets",
-        set_current_path=lambda path: bool(path),
+        set_current_path=lambda path: calls.append(("navigate", path)) or True,
         get_folder_expanded_paths=lambda: [],
         set_folder_expanded_paths=lambda paths: calls.append(
             ("folder_expanded", tuple(paths))
@@ -1212,6 +1212,19 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
         "reveal",
         "C:/Project/Assets/Smoke.particlegraph",
     )
+
+    # Pointer commands emitted by the native Project panel must keep their
+    # concrete destination even if ImGui focus projection still names another
+    # panel during the click frame.
+    core.focus.activate_panel("inspector", view_id="inspector", record_history=False)
+    navigated = core.commands.execute(
+        "project.navigate_directory",
+        source=CommandSource.POINTER,
+        payload={"target_id": "C:/Project/Assets/Materials"},
+    )
+    assert navigated.accepted
+    assert calls[-1] == ("navigate", os.path.normpath("C:/Project/Assets/Materials"))
+    core.focus.activate_panel("project", view_id="project", record_history=False)
 
     frozen_target = core.commands.context(
         CommandSource.CONTEXT_MENU,

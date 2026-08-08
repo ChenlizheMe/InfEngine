@@ -411,7 +411,14 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
                 Debug.log_suppressed("bootstrap_project.ExternalDropForwarder.on_render", exc)
 
     bs._external_drop_forwarder = _ExternalDropForwarder()
-    bs.engine.register_gui("project_drop_forwarder", bs._external_drop_forwarder)
+    # External drops are edge-triggered and survive only this input frame.
+    # Render after native panels so ProjectPanel has published the current
+    # frame's visibility/hover state before Interaction Core resolves ownership.
+    bs.engine.register_gui(
+        "project_drop_forwarder",
+        bs._external_drop_forwarder,
+        priority=100,
+    )
 
     # -- Panel focus sync --
     pp.on_panel_focused = bs.window_manager.native_panel_focus_callback(

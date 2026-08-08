@@ -278,16 +278,36 @@ struct ParticleGpuSystemManager::Impl
         }
         if (pending.empty())
             return false;
+        std::vector<bool> previousAcceptance;
+        previousAcceptance.reserve(pending.size());
+        // Preflight every scheduler before mutating the spawn domain. BeginFrame
+        // has no fallible work after CanBeginFrame, so this keeps the graph
+        // mark out of a partially accepted batch even if the defensive check
+        // below is ever reached.
         for (const auto &entry : pending) {
+            const auto emitter = entry.emitter;
+            previousAcceptance.push_back(emitter->lastSimulate);
             const auto &request = entry.emitter->queuedFrameRequests.front();
             if (!entry.spawnDomain->SetEmitterAcceptingBurstRequests(entry.emitter->sourceProgram.graphEmitterIndex,
-                                                                     request.simulate))
+                                                                     request.simulate)) {
+                for (size_t rollback = 0; rollback + 1 < previousAcceptance.size(); ++rollback) {
+                    (void)pending[rollback].spawnDomain->SetEmitterAcceptingBurstRequests(
+                        pending[rollback].emitter->sourceProgram.graphEmitterIndex, previousAcceptance[rollback]);
+                }
                 return false;
+            }
         }
         for (const auto &entry : pending) {
-            if (!entry.scheduler->BeginFrame(entry.emitter->queuedFrameRequests.front()))
+            if (!entry.scheduler->BeginFrame(entry.emitter->queuedFrameRequests.front())) {
+                for (size_t rollback = 0; rollback < previousAcceptance.size(); ++rollback) {
+                    (void)pending[rollback].spawnDomain->SetEmitterAcceptingBurstRequests(
+                        pending[rollback].emitter->sourceProgram.graphEmitterIndex, previousAcceptance[rollback]);
+                }
                 return false;
+            }
         }
+        for (const auto &entry : pending)
+            entry.spawnDomain->MarkFramePending();
         for (const auto &entry : pending)
             entry.emitter->queuedFrameRequests.erase(entry.emitter->queuedFrameRequests.begin());
         return true;
@@ -818,6 +838,7 @@ struct ParticleGpuSystemManager::Impl
         runtimeDesc.stateStride = program.stateStride;
         runtimeDesc.eventTypeCount = program.eventTypeCount;
         runtimeDesc.collisionEnabled = program.collisionEnabled;
+        runtimeDesc.supportsFusedUpdateRendering = program.supportsFusedUpdateRendering;
         for (size_t index = 0; index < program.kernels.size(); ++index)
             runtimeDesc.kernels[index] = {program.kernels[index].data(), program.kernels[index].size()};
         runtimeDesc.continuation.capacity = program.continuationCapacity;
@@ -1055,8 +1076,13 @@ struct ParticleGpuSystemManager::Impl
                      "must be valid");
             return false;
         }
+        const auto &fusedKernel = program.kernels[static_cast<size_t>(GpuKernelStage::UpdateRenderingFused)];
         if (!std::all_of(program.kernels.begin(), program.kernels.end(),
-                         [](const auto &kernel) { return IsSpirv(kernel); })) {
+                         [&](const auto &kernel) {
+                             return (&kernel == &fusedKernel && !program.supportsFusedUpdateRendering) ||
+                                    IsSpirv(kernel);
+                         }) ||
+            (program.supportsFusedUpdateRendering && !IsSpirv(fusedKernel))) {
             SetError(error, "GPU particle program contains invalid compute SPIR-V");
             return false;
         }
@@ -1177,7 +1203,11 @@ struct ParticleGpuSystemManager::Impl
                      "must be valid");
             return {};
         }
-        for (const auto &kernel : program.kernels) {
+        for (size_t index = 0; index < program.kernels.size(); ++index) {
+            const auto &kernel = program.kernels[index];
+            if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused &&
+                !program.supportsFusedUpdateRendering)
+                continue;
             if (!IsSpirv(kernel)) {
                 SetError(error, "GPU particle program contains invalid compute SPIR-V");
                 return {};
@@ -2222,6 +2252,9 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
     for (const auto &entry : prepared)
         (void)m_impl->RefreshResources(*entry.emitter);
 
+    // This is the transaction boundary for the batch: all schedulers are
+    // preflighted before any one of them is armed, and the graph-level spawn
+    // token is published only after every BeginFrame succeeds.
     for (const auto &entry : prepared) {
         if (!entry.scheduler->CanBeginFrame(entry.sequence.front()))
             return false;
@@ -2270,6 +2303,7 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
             return false;
         }
     }
+    spawnDomain->second->MarkFramePending();
     for (const auto &entry : prepared) {
         entry.emitter->queuedFrameRequests.assign(entry.sequence.begin() + 1, entry.sequence.end());
         entry.emitter->hasFrameRequest = true;
@@ -2323,6 +2357,7 @@ bool ParticleGpuSystemManager::Reset(uint64_t id)
     emitter->second->lastSimulate = false;
     emitter->second->queuedFrameRequests.clear();
     scheduler->second->Reset();
+    domain->second->MarkFramePending();
     m_impl->FailDiagnostics(emitter->second->graphInstanceId,
                             "GPU particle graph was reset before diagnostic recording completed");
     return true;

@@ -191,10 +191,11 @@ MaterialPipelineManager::~MaterialPipelineManager()
 }
 
 void MaterialPipelineManager::Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
-                                         VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits sampleCount,
-                                         ShaderProgramCache &shaderProgramCache, GpuRetirementQueue *deletionQueue,
-                                         bool descriptorIndexingEnabled, vk::VkDescriptorManager *descriptorManager)
+                                          VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits sampleCount,
+                                          ShaderProgramCache &shaderProgramCache, GpuRetirementQueue *deletionQueue,
+                                          bool descriptorIndexingEnabled, vk::VkDescriptorManager *descriptorManager)
 {
+    ++m_publicationGeneration;
     m_device = device;
     m_allocator = allocator;
     m_physicalDevice = physicalDevice;
@@ -235,6 +236,8 @@ void MaterialPipelineManager::Shutdown(bool skipWaitIdle)
     if (m_device == VK_NULL_HANDLE) {
         return;
     }
+
+    ++m_publicationGeneration;
 
     if (!skipWaitIdle) {
         vkDeviceWaitIdle(m_device);
@@ -471,6 +474,8 @@ bool MaterialPipelineManager::ReconfigureSampleCount(VkSampleCountFlagBits sampl
         if (retiredInternalRenderPass != VK_NULL_HANDLE)
             vkDestroyRenderPass(device, retiredInternalRenderPass, nullptr);
     });
+
+    ++m_publicationGeneration;
 
     return true;
 }
@@ -1005,11 +1010,14 @@ void MaterialPipelineManager::RefreshPublishedDescriptorHandle(const std::string
     if (published == VK_NULL_HANDLE || !m_descriptorManager.IsDescriptorSetLive(published))
         return;
 
+    const bool changed = forward->second->descriptorSet != published;
     forward->second->descriptorSet = published;
     for (auto &[key, passData] : m_passRenderDataMap) {
         if (key.materialKey == materialName && passData)
             passData->descriptorSet = published;
     }
+    if (changed)
+        ++m_publicationGeneration;
 }
 
 void MaterialPipelineManager::SetDefaultTexture(VkImageView imageView, VkSampler sampler,
@@ -1163,6 +1171,10 @@ void MaterialPipelineManager::InvalidateAllMaterialPipelines()
         data->material->MarkPipelineDirty();
         ++count;
     }
+    // MarkPipelineDirty is intentionally a material-local flag and does not
+    // change InxMaterial::GetVersion(). Publish a manager generation as well so
+    // renderer-side resolved-pass caches cannot reuse the old pipeline.
+    ++m_publicationGeneration;
     // if (count > 0) {
     //     INXLOG_INFO("InvalidateAllMaterialPipelines: marked ", count, " materials dirty");
     // }
@@ -1170,9 +1182,11 @@ void MaterialPipelineManager::InvalidateAllMaterialPipelines()
 
 void MaterialPipelineManager::RemovePassRenderData(const std::string &materialKey)
 {
+    bool removed = false;
     std::unordered_set<VkPipeline> pipelines;
     for (auto it = m_passRenderDataMap.begin(); it != m_passRenderDataMap.end();) {
         if (it->first.materialKey == materialKey) {
+            removed = true;
             if (it->second && it->second->pipeline != VK_NULL_HANDLE)
                 pipelines.insert(it->second->pipeline);
             it = m_passRenderDataMap.erase(it);
@@ -1182,6 +1196,8 @@ void MaterialPipelineManager::RemovePassRenderData(const std::string &materialKe
     }
     for (VkPipeline pipeline : pipelines)
         RetirePipelineIfUnreferenced(pipeline);
+    if (removed)
+        ++m_publicationGeneration;
 }
 
 void MaterialPipelineManager::RemoveAllPassRenderData()
@@ -1196,6 +1212,8 @@ void MaterialPipelineManager::RemoveAllPassRenderData()
     m_passRenderDataMap.clear();
     for (VkPipeline pipeline : pipelines)
         RetirePipelineIfUnreferenced(pipeline);
+    if (!pipelines.empty())
+        ++m_publicationGeneration;
 }
 
 void MaterialPipelineManager::RetirePipelineIfUnreferenced(VkPipeline pipeline)
@@ -1261,6 +1279,7 @@ void MaterialPipelineManager::RemoveRenderData(const std::string &materialName)
     }
 
     m_renderDataMap.erase(it);
+    ++m_publicationGeneration;
     INXLOG_DEBUG("Removed render data for material: ", materialName);
 }
 

@@ -5047,6 +5047,32 @@ def test_particle_runtime_index_loads_aot_without_authoring_source(tmp_path, mon
     assert restored.artifact_path == compiled.artifact_path
 
 
+def test_particle_force_recompile_replaces_registered_artifact(
+    tmp_path, monkeypatch
+):
+    from Infernux.engine import project_context
+
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    source_path = tmp_path / "Assets" / "ForceRecovery.particlegraph"
+    source_path.parent.mkdir()
+    ParticleGraphAsset(stable_id="force-recovery").save(str(source_path))
+    current = ParticleArtifactRegistry.get(str(source_path))
+    assert current is not None
+
+    stale = replace(current, gpu_glsl={"emitters": []}, gpu_spirv={})
+    source_key = ParticleArtifactRegistry._source_key(str(source_path))
+    with ParticleArtifactRegistry._lock:
+        ParticleArtifactRegistry._register_unlocked(stale, source_key, source_key)
+
+    rebuilt = ParticleArtifactRegistry.compile_path(
+        str(source_path), force_recompile=True
+    )
+
+    assert rebuilt is not stale
+    assert rebuilt.gpu_glsl["$schema"] == "infernux.particle_gpu_glsl"
+    assert ParticleArtifactRegistry.get(str(source_path)) is rebuilt
+
+
 def test_particle_graph_save_compiles_the_in_memory_snapshot_once(tmp_path, monkeypatch):
     from Infernux.engine import project_context
 

@@ -350,7 +350,7 @@ void InxView::ProcessEvent()
     SDL_GetWindowSize(m_window, &m_windowWidth, &m_windowHeight);
 }
 
-bool InxView::ProcessOneEvent(SDL_Event &event)
+bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
 {
     bool hadInputEvent = false;
     bool forwardToImGui = true;
@@ -359,7 +359,34 @@ bool InxView::ProcessOneEvent(SDL_Event &event)
     }
 
     if (forwardToImGui) {
-        ImGui_ImplSDL3_ProcessEvent(&event);
+        // Dear ImGui's SDL backend does not consume SDL drop-position/file
+        // events. Re-publish the drop coordinates as pointer motion first so
+        // docked panels resolve the OS gesture against the actual drop target,
+        // including the first frame after the Editor regains focus.
+        if (event.type == SDL_EVENT_DROP_POSITION || event.type == SDL_EVENT_DROP_FILE ||
+            event.type == SDL_EVENT_DROP_TEXT || event.type == SDL_EVENT_DROP_COMPLETE) {
+            SDL_Event dropPointerEvent{};
+            dropPointerEvent.type = SDL_EVENT_MOUSE_MOTION;
+            dropPointerEvent.motion.windowID = event.drop.windowID;
+            dropPointerEvent.motion.x = event.drop.x;
+            dropPointerEvent.motion.y = event.drop.y;
+            ImGui_ImplSDL3_ProcessEvent(&dropPointerEvent);
+        }
+        SDL_Event imguiEvent = event;
+        if (syntheticScreenCoordinates && imguiEvent.type == SDL_EVENT_MOUSE_MOTION &&
+            (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0 && m_window) {
+            // Semantic item rectangles use Dear ImGui screen coordinates when
+            // multi-viewport support is enabled. SDL mouse events are local to
+            // their source window and the backend adds that window's origin.
+            // Convert only the backend copy; gameplay input keeps the exact
+            // coordinates submitted by automation.
+            int windowX = 0;
+            int windowY = 0;
+            SDL_GetWindowPosition(m_window, &windowX, &windowY);
+            imguiEvent.motion.x -= static_cast<float>(windowX);
+            imguiEvent.motion.y -= static_cast<float>(windowY);
+        }
+        ImGui_ImplSDL3_ProcessEvent(&imguiEvent);
     }
 
     InputManager::Instance().ProcessSDLEvent(event);
@@ -417,7 +444,53 @@ void InxView::DrainSyntheticInputEvents(bool &hadInputEvent)
     }
 
     const SDL_WindowID windowId = m_window ? SDL_GetWindowID(m_window) : 0;
-    for (auto &synthetic : events) {
+    std::deque<SyntheticInputEvent> deferredEvents;
+    bool mouseButtonPressedInBatch[5] = {};
+    bool pointerMotionProcessedInBatch = false;
+    for (size_t eventIndex = 0; eventIndex < events.size(); ++eventIndex) {
+        auto &synthetic = events[eventIndex];
+
+        // A synthetic click may be submitted as motion + press + release in
+        // one MCP call. Keep the release on the next graphical frame when it
+        // follows a press from this same batch. This preserves ImGui's
+        // press-frame/active-id and release-frame/click contract while still
+        // sending both transitions through the normal SDL path.
+        const bool isValidMouseButton = synthetic.type == SyntheticInputType::MouseButton &&
+                                        synthetic.keyOrButton >= 0 && synthetic.keyOrButton < 5;
+        const uint8_t mouseButtonMask = isValidMouseButton ?
+            static_cast<uint8_t>(1u << synthetic.keyOrButton) : 0;
+        bool hasMatchingReleaseLater = false;
+        if (isValidMouseButton && synthetic.pressed) {
+            for (size_t laterIndex = eventIndex + 1; laterIndex < events.size(); ++laterIndex) {
+                const auto &later = events[laterIndex];
+                if (later.type == SyntheticInputType::MouseButton &&
+                    later.keyOrButton == synthetic.keyOrButton && !later.pressed) {
+                    hasMatchingReleaseLater = true;
+                    break;
+                }
+            }
+        }
+        // Dear ImGui decides window moving/focus ownership in NewFrame(),
+        // before this frame's widgets are submitted. A motion and press
+        // consumed together therefore cannot establish the hovered widget in
+        // time: the press may be claimed by the window itself. Mirror a real
+        // pointer by publishing motion, press, and release on successive GUI
+        // build boundaries. Apply this only to a complete click transaction;
+        // gameplay batches that intentionally combine motion and a held press
+        // must still reach InputManager in one simulation frame.
+        const bool waitingForPointerHoverFrame =
+            isValidMouseButton && synthetic.pressed && hasMatchingReleaseLater && pointerMotionProcessedInBatch;
+        const bool waitingForGuiFrame =
+            isValidMouseButton && !synthetic.pressed &&
+            (mouseButtonPressedInBatch[synthetic.keyOrButton] ||
+             ((m_syntheticMouseButtonsAwaitingGuiFrame & mouseButtonMask) != 0 &&
+              (m_syntheticMouseButtonsReadyForRelease & mouseButtonMask) == 0));
+        if (waitingForPointerHoverFrame || waitingForGuiFrame) {
+            for (size_t deferredIndex = eventIndex; deferredIndex < events.size(); ++deferredIndex)
+                deferredEvents.emplace_back(std::move(events[deferredIndex]));
+            break;
+        }
+
         InputManager::Instance().MarkSyntheticInputForFrame();
         SDL_Event event{};
         const Uint64 timestamp = SDL_GetTicksNS();
@@ -520,10 +593,24 @@ void InxView::DrainSyntheticInputEvents(bool &hadInputEvent)
             // cursor during its release-frame fallback query.
             InputManager::Instance().SetSyntheticMousePositionForFrame(synthetic.x, synthetic.y);
         }
+        if (synthetic.type == SyntheticInputType::MouseButton || synthetic.type == SyntheticInputType::MouseMotion) {
+            // SDL3's ImGui backend tracks the viewport under the pointer from
+            // WINDOW_MOUSE_ENTER, not from a synthetic motion event. Establish
+            // that ownership before every synthetic pointer transition;
+            // otherwise a remote click/drag can be routed using the user's
+            // physical mouse window.
+            SDL_Event enterEvent{};
+            enterEvent.window.type = SDL_EVENT_WINDOW_MOUSE_ENTER;
+            enterEvent.type = enterEvent.window.type;
+            enterEvent.window.timestamp = timestamp;
+            enterEvent.window.windowID = windowId;
+            hadInputEvent = ProcessOneEvent(enterEvent) || hadInputEvent;
+        }
         if (synthetic.type == SyntheticInputType::MouseButton) {
+
             // ImGui consumes SDL events in order. Put the synthetic pointer at
-            // the requested position before its button transition so event
-            // trickling cannot apply the click at the physical OS cursor.
+            // the requested position before its button transition so both
+            // press and release use the same local viewport coordinates.
             SDL_Event positionEvent{};
             positionEvent.motion.type = SDL_EVENT_MOUSE_MOTION;
             positionEvent.type = positionEvent.motion.type;
@@ -535,13 +622,45 @@ void InxView::DrainSyntheticInputEvents(bool &hadInputEvent)
             positionEvent.motion.y = synthetic.y;
             positionEvent.motion.xrel = 0.0f;
             positionEvent.motion.yrel = 0.0f;
-            hadInputEvent = ProcessOneEvent(positionEvent) || hadInputEvent;
+            hadInputEvent = ProcessOneEvent(positionEvent, true) || hadInputEvent;
         }
-        hadInputEvent = ProcessOneEvent(event) || hadInputEvent;
+        hadInputEvent = ProcessOneEvent(event, synthetic.type == SyntheticInputType::MouseMotion) || hadInputEvent;
+        if (synthetic.type == SyntheticInputType::MouseMotion)
+            pointerMotionProcessedInBatch = true;
+        if (isValidMouseButton && synthetic.pressed) {
+            mouseButtonPressedInBatch[synthetic.keyOrButton] = true;
+            m_syntheticMouseButtonsAwaitingGuiFrame |= mouseButtonMask;
+            m_syntheticMouseButtonsReadyForRelease &= static_cast<uint8_t>(~mouseButtonMask);
+        } else if (isValidMouseButton) {
+            m_syntheticMouseButtonsAwaitingGuiFrame &= static_cast<uint8_t>(~mouseButtonMask);
+            m_syntheticMouseButtonsReadyForRelease &= static_cast<uint8_t>(~mouseButtonMask);
+        }
         m_lastProcessedSyntheticInputSequence.store(synthetic.sequence, std::memory_order_release);
         if (m_closeRequested)
             break;
     }
+
+    if (!deferredEvents.empty()) {
+        std::lock_guard<std::mutex> lock(m_syntheticInputMutex);
+        std::deque<SyntheticInputEvent> queuedAfterDrain;
+        queuedAfterDrain.swap(m_syntheticInputEvents);
+        while (!deferredEvents.empty()) {
+            m_syntheticInputEvents.emplace_back(std::move(deferredEvents.front()));
+            deferredEvents.pop_front();
+        }
+        while (!queuedAfterDrain.empty()) {
+            m_syntheticInputEvents.emplace_back(std::move(queuedAfterDrain.front()));
+            queuedAfterDrain.pop_front();
+        }
+    }
+}
+
+void InxView::NotifyGuiFrameBuilt() noexcept
+{
+    // This is called only after InxGUI::BuildFrameIfDue() returned true. It
+    // therefore marks the exact boundary at which ImGui::NewFrame() and the
+    // Python renderables have consumed the synthetic press state.
+    m_syntheticMouseButtonsReadyForRelease |= m_syntheticMouseButtonsAwaitingGuiFrame;
 }
 
 void InxView::Quit()

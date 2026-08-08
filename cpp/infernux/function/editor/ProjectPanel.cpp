@@ -520,25 +520,37 @@ void ProjectPanel::ClampNavigationPath()
         return;
     }
 
-    if (m_navHasSubfolders) {
-        const std::string cur = FilesystemPathKey(m_currentPath);
-        if (cur == FilesystemPathKey(m_rootPath) || GetPathDepthFromRoot(m_currentPath) < 1)
-            m_currentPath = m_preferredNavPath.empty() ? m_rootPath : m_preferredNavPath;
-    }
     UpdateNavigationCache();
 }
 
 void ProjectPanel::UpdateNavigationCache()
 {
     if (m_rootPath.empty() || m_currentPath.empty()) {
+        m_currentPathKey.clear();
         m_canNavigateUp = false;
         return;
     }
     const std::string current = FilesystemPathKey(m_currentPath);
-    const std::string root = FilesystemPathKey(m_rootPath);
-    const std::string floor = GetMinimumBrowsePath();
-    const bool withinRoot = IsFilesystemPathWithin(current, root);
-    m_canNavigateUp = withinRoot && current != floor;
+    m_currentPathKey = current;
+    std::string floor = GetMinimumBrowsePath();
+    // Navigation covers the whole worktree, while Up stops at the current
+    // top-level branch. Assets therefore remains its own floor; a generated
+    // resource under Library can still climb back to Library without exposing
+    // paths above the project or unexpectedly jumping into Assets.
+    if (floor.empty() || !IsFilesystemPathWithin(current, floor)) {
+        floor = FilesystemPathKey(m_rootPath);
+        std::string relative;
+        if (infernux::TryMakeRelativeFilesystemPath(m_currentPath, m_rootPath, relative, true) && relative != ".") {
+            for (const auto &part : infernux::ToFsPath(relative)) {
+                const std::string name = infernux::FromFsPath(part);
+                if (name.empty() || name == ".")
+                    continue;
+                floor = FilesystemPathKey(infernux::FromFsPath(infernux::ToFsPath(m_rootPath) / part));
+                break;
+            }
+        }
+    }
+    m_canNavigateUp = IsFilesystemPathWithin(current, floor) && current != floor;
 }
 
 void ProjectPanel::AssignCurrentPath(const std::string &path)
@@ -573,14 +585,37 @@ ProjectPanel::ProjectPanel() : EditorPanel("Project", "project")
 std::unordered_map<std::string, double> ProjectPanel::ConsumeSubTimings()
 {
     std::unordered_map<std::string, double> result{
-        {"breadcrumb", m_subBreadcrumb},   {"fileGrid", m_subFileGrid}, {"folderTree", m_subFolderTree},
-        {"gridContext", m_subGridContext}, {"gridData", m_subGridData}, {"gridItems", m_subGridItems},
-        {"gridTail", m_subGridTail},       {"preIcons", m_subPreIcons}, {"preOther", m_subPreOther},
-        {"prePreview", m_subPrePreview},   {"tail", m_subTail},
+        {"breadcrumb", m_subBreadcrumb},
+        {"fileGrid", m_subFileGrid},
+        {"folderTree", m_subFolderTree},
+        {"gridContext", m_subGridContext},
+        {"gridData", m_subGridData},
+        {"gridItems", m_subGridItems},
+        {"gridTail", m_subGridTail},
+        {"preIcons", m_subPreIcons},
+        {"preOther", m_subPreOther},
+        {"prePreview", m_subPrePreview},
+        {"tail", m_subTail},
+        {"dirSnapshotBuilds", static_cast<double>(m_dirSnapshotBuilds)},
+        {"folderTreeRebuilds", static_cast<double>(m_folderTreeRebuilds)},
+        {"projectItemsRebuilds", static_cast<double>(m_projectItemsRebuilds)},
+        {"previewScheduleAttempts", static_cast<double>(m_previewScheduleAttempts)},
+        {"folderRowsSubmitted", static_cast<double>(m_folderRowsSubmitted)},
+        {"folderRowsVisible", static_cast<double>(m_folderRowsVisible)},
+        {"gridItemsSubmitted", static_cast<double>(m_gridItemsSubmitted)},
+        {"gridItemsVisible", static_cast<double>(m_gridItemsVisible)},
     };
     m_subPreIcons = m_subPrePreview = m_subPreOther = 0.0;
     m_subBreadcrumb = m_subFolderTree = m_subFileGrid = m_subTail = 0.0;
     m_subGridContext = m_subGridData = m_subGridItems = m_subGridTail = 0.0;
+    m_dirSnapshotBuilds = 0;
+    m_folderTreeRebuilds = 0;
+    m_projectItemsRebuilds = 0;
+    m_previewScheduleAttempts = 0;
+    m_folderRowsSubmitted = 0;
+    m_folderRowsVisible = 0;
+    m_gridItemsSubmitted = 0;
+    m_gridItemsVisible = 0;
     return result;
 }
 
@@ -697,12 +732,6 @@ bool ProjectPanel::CanNavigateToPath(const std::string &path) const
         return false;
     if (!m_rootPath.empty() && !IsFilesystemPathWithin(path, m_rootPath))
         return false;
-    if (m_navHasSubfolders) {
-        if (GetPathDepthFromRoot(path) < 1)
-            return false;
-        if (FilesystemPathKey(path) == FilesystemPathKey(m_rootPath))
-            return false;
-    }
     return true;
 }
 
@@ -758,13 +787,7 @@ void ProjectPanel::SetSelectedFile(const std::string &path, bool notify)
         ClearSelection(notify);
         return;
     }
-
-    m_selectedFile = path;
-    m_selectedFiles = {path};
-    m_selectedSet.clear();
-    m_selectedSet.insert(AssetSelectionPathKey(path));
-    if (notify)
-        NotifySelectionChanged();
+    SetSelectedFiles({path}, path, notify);
 }
 
 void ProjectPanel::SetSelectedFiles(const std::vector<std::string> &paths, const std::string &primary, bool notify)
@@ -777,6 +800,12 @@ void ProjectPanel::SetSelectedFiles(const std::vector<std::string> &paths, const
         const std::string backingPath = ResolveRealAssetPath(path);
         std::error_code ec;
         if (path.empty() || key.empty() || keys.find(key) != keys.end() || !fs::exists(fs::u8path(backingPath), ec))
+            continue;
+        // FileManager can reveal generated project resources such as imported
+        // built-in shaders under Library.  Keep selection inside the project
+        // worktree, but do not confuse that boundary with the Assets-only
+        // authoring picker policy.
+        if (!m_rootPath.empty() && !IsFilesystemPathWithin(backingPath, m_rootPath))
             continue;
         keys.insert(key);
         selected.push_back(path);
@@ -810,6 +839,17 @@ void ProjectPanel::InvalidateMaterialThumbnail(const std::string &filePath)
     }
     for (auto &path : mtimeToRemove)
         m_materialMtimeCache.erase(path);
+
+    // A material can be edited in memory before its file timestamp advances.
+    // Drop the passive Project result so the next visible frame adopts the
+    // current published texture from the shared preview state.
+    for (auto it = m_materialPreviewResults.begin(); it != m_materialPreviewResults.end();) {
+        const std::string resourcePath = it->first.rfind("mat|", 0) == 0 ? it->first.substr(4) : it->first;
+        if (FilesystemPathKey(ResolveRealAssetPath(resourcePath)) == normTarget)
+            it = m_materialPreviewResults.erase(it);
+        else
+            ++it;
+    }
 }
 
 void ProjectPanel::InvalidateTextureThumbnail(const std::string &filePath)
@@ -817,6 +857,11 @@ void ProjectPanel::InvalidateTextureThumbnail(const std::string &filePath)
     if (filePath.empty())
         return;
     auto normTarget = FilesystemPathKey(filePath);
+
+    // The live ImGui texture may keep its resource key while its dimensions
+    // change after a reimport. Drop the dimension cache before the next draw;
+    // preview request scheduling remains owned by the existing generation path.
+    m_texturePreviewSizes.clear();
 
     std::vector<std::string> mtimeToRemove;
     for (auto &[path, _] : m_textureMtimeCache) {
@@ -890,6 +935,16 @@ void ProjectPanel::ClearDirCachesNow()
     m_augmentedCache.clear();
     m_labelCache.clear();
     m_prefabTypeCache.clear();
+    m_texturePreviewContracts.clear();
+    m_texturePreviewRequests.clear();
+    m_materialPreviewResults.clear();
+    m_modelPreviewRequests.clear();
+    m_texturePreviewSizes.clear();
+    m_projectItemsCachePath.clear();
+    m_projectItemsCacheSource = ProjectItemsCacheSource::None;
+    m_projectItemsCacheDirectoryRevision = 0;
+    m_projectItemsCacheProjectionRevision = UINT64_MAX;
+    m_projectItemsCacheSnapshotMtime = 0;
     ++m_directoryRevision;
 }
 
@@ -1004,11 +1059,18 @@ ProjectPanel::DirSnapshot *ProjectPanel::GetDirSnapshot(const std::string &path)
     snap.items.reserve(snap.dirs.size() + snap.files.size());
     snap.items.insert(snap.items.end(), snap.dirs.begin(), snap.dirs.end());
     snap.items.insert(snap.items.end(), snap.files.begin(), snap.files.end());
+    for (auto &item : snap.items)
+        item.selectionKey = AssetSelectionPathKey(item.path);
+    for (const auto &file : snap.files) {
+        if (IsModelExt(file.ext))
+            snap.modelPaths.push_back(file.path);
+    }
 
     // Update tree meta
     m_dirTreeMetaCache[path] = {!snap.dirs.empty()};
 
     auto &stored = m_dirCache[path] = std::move(snap);
+    ++m_dirSnapshotBuilds;
     return &stored;
 }
 
@@ -1179,22 +1241,44 @@ std::vector<ProjectPanel::FileItem> *ProjectPanel::GetProjectItems(const std::st
     if (!snapshot)
         return nullptr;
 
-    if (m_modelTreeProjection.Empty())
+    const uint64_t projectionRevision = m_modelTreeProjection.Revision();
+    if (m_projectItemsCacheSource != ProjectItemsCacheSource::None && m_projectItemsCachePath == path &&
+        m_projectItemsCacheDirectoryRevision == m_directoryRevision &&
+        m_projectItemsCacheProjectionRevision == projectionRevision &&
+        m_projectItemsCacheSnapshotMtime == snapshot->mtimeNs) {
+        if (m_projectItemsCacheSource == ProjectItemsCacheSource::Snapshot)
+            return &snapshot->items;
+        if (auto cached = m_augmentedCache.find(path); cached != m_augmentedCache.end())
+            return &cached->second.items;
+    }
+
+    ++m_projectItemsRebuilds;
+    m_projectItemsCachePath = path;
+    m_projectItemsCacheDirectoryRevision = m_directoryRevision;
+    m_projectItemsCacheProjectionRevision = projectionRevision;
+    m_projectItemsCacheSnapshotMtime = snapshot->mtimeNs;
+
+    if (m_modelTreeProjection.Empty()) {
+        m_projectItemsCacheSource = ProjectItemsCacheSource::Snapshot;
         return &snapshot->items;
+    }
 
     // Check if any expanded models in current items
     std::vector<std::string> expandedPaths;
-    for (auto &item : snapshot->items) {
-        if (item.type == FileItem::File && IsModelExt(item.ext) && m_modelTreeProjection.IsExpanded(item.path)) {
-            expandedPaths.push_back(item.path);
-        }
+    expandedPaths.reserve(snapshot->modelPaths.size());
+    for (const auto &modelPath : snapshot->modelPaths) {
+        if (m_modelTreeProjection.IsExpanded(modelPath))
+            expandedPaths.push_back(modelPath);
     }
-    if (expandedPaths.empty())
+    if (expandedPaths.empty()) {
+        m_projectItemsCacheSource = ProjectItemsCacheSource::Snapshot;
         return &snapshot->items;
+    }
 
     auto cacheIt = m_augmentedCache.find(path);
     if (cacheIt != m_augmentedCache.end() && cacheIt->second.mtimeNs == snapshot->mtimeNs &&
         cacheIt->second.expandedPaths == expandedPaths) {
+        m_projectItemsCacheSource = ProjectItemsCacheSource::Augmented;
         return &cacheIt->second.items;
     }
 
@@ -1210,6 +1294,11 @@ std::vector<ProjectPanel::FileItem> *ProjectPanel::GetProjectItems(const std::st
         if (item.type == FileItem::File && IsModelExt(item.ext) && expandedSet.count(item.path) > 0)
             AppendModelSubAssets(cached.items, m_assetDatabase, item);
     }
+    for (auto &item : cached.items) {
+        if (item.selectionKey.empty())
+            item.selectionKey = AssetSelectionPathKey(item.path);
+    }
+    m_projectItemsCacheSource = ProjectItemsCacheSource::Augmented;
     return &cached.items;
 }
 
@@ -1277,35 +1366,50 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
     if (filePath.empty() || !m_engine)
         return 0;
 
-    // Read the complete preview-affecting import contract from .meta.
-    bool nearest = false;
-    bool srgb = false;
-    int maxSize = 2048;
-    std::string textureFormat = "auto";
-    std::string textureType = "default";
-    if (m_assetDatabase) {
-        const auto meta = m_assetDatabase->GetMetaByPath(filePath);
-        if (meta) {
-            if (meta->HasKey("filter_mode")) {
-                std::string fm = meta->GetDataAs<std::string>("filter_mode");
-                nearest = (fm == "point" || fm == "nearest");
+    uint64_t texMtime = cachedMtimeNs;
+    // The directory catalog carries the source fingerprint, while the
+    // throttled mtime cache also includes the sidecar.  Use the latter as the
+    // contract key so an external import-setting edit invalidates immediately
+    // after the existing one-second filesystem validation window.
+    const uint64_t observedStamp = GetTextureMtimeNs(filePath);
+    if (observedStamp != 0)
+        texMtime = observedStamp;
+    if (texMtime == 0)
+        return 0;
+
+    const uint64_t catalogGeneration = m_assetDatabase ? m_assetDatabase->GetQueryGeneration() : 0;
+    auto &contract = m_texturePreviewContracts[filePath];
+    if (contract.catalogGeneration != catalogGeneration || contract.contentStamp != texMtime) {
+        contract = TexturePreviewContract{};
+        contract.catalogGeneration = catalogGeneration;
+        contract.contentStamp = texMtime;
+
+        // Read the complete preview-affecting import contract from .meta only
+        // when its directory/asset revision or content fingerprint changed.
+        if (m_assetDatabase) {
+            const auto meta = m_assetDatabase->GetMetaByPath(filePath);
+            if (meta) {
+                if (meta->HasKey("filter_mode")) {
+                    std::string fm = meta->GetDataAs<std::string>("filter_mode");
+                    contract.nearest = (fm == "point" || fm == "nearest");
+                }
+                if (meta->HasKey("srgb"))
+                    contract.srgb = meta->GetDataAs<bool>("srgb");
+                if (meta->HasKey("max_size"))
+                    contract.maxSize = meta->GetDataAs<int>("max_size");
+                if (meta->HasKey("texture_format"))
+                    contract.textureFormat = meta->GetDataAs<std::string>("texture_format");
+                if (meta->HasKey("texture_type"))
+                    contract.textureType = meta->GetDataAs<std::string>("texture_type");
             }
-            if (meta->HasKey("srgb"))
-                srgb = meta->GetDataAs<bool>("srgb");
-            if (meta->HasKey("max_size"))
-                maxSize = meta->GetDataAs<int>("max_size");
-            if (meta->HasKey("texture_format"))
-                textureFormat = meta->GetDataAs<std::string>("texture_format");
-            if (meta->HasKey("texture_type"))
-                textureType = meta->GetDataAs<std::string>("texture_type");
         }
     }
 
-    uint64_t texMtime = cachedMtimeNs;
-    if (texMtime == 0)
-        texMtime = GetTextureMtimeNs(filePath);
-    if (texMtime == 0)
-        return 0;
+    const bool nearest = contract.nearest;
+    const bool srgb = contract.srgb;
+    const int maxSize = contract.maxSize;
+    const std::string &textureFormat = contract.textureFormat;
+    const std::string &textureType = contract.textureType;
     // Import settings affect the generated pixels even when the source file
     // itself is unchanged. Fold only the settings used by this preview path
     // into the generation fingerprint.
@@ -1318,6 +1422,18 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
         return readyTexture;
     if (m_texturePreviewRequestsThisFrame >= kTexturePreviewRequestBudget)
         return 0;
+
+    uint64_t fingerprint = texMtime;
+    fingerprint ^= nearest ? UINT64_C(0x9e3779b97f4a7c15) : 0;
+    fingerprint ^= srgb ? UINT64_C(0xc2b2ae3d27d4eb4f) : 0;
+    fingerprint ^= std::hash<std::string>{}(textureFormat) + UINT64_C(0x517cc1b727220a95);
+    fingerprint ^= std::hash<std::string>{}(textureType) + UINT64_C(0x6eed0e9da4d94a4f);
+    auto &request = m_texturePreviewRequests[resourceKey];
+    if (request.fingerprint == fingerprint && m_previewFrameSerial - request.lastRequestFrame < 30)
+        return 0;
+    request.fingerprint = fingerprint;
+    request.lastRequestFrame = m_previewFrameSerial;
+    ++m_previewScheduleAttempts;
     ++m_texturePreviewRequestsThisFrame;
     // pump=false: PreRender already pumped once this frame.
     auto [texId, w, h] = m_engine->QueryOrScheduleTexturePreview(resourceKey, filePath, texMtime, nearest, srgb,
@@ -1340,7 +1456,36 @@ uint64_t ProjectPanel::GetMaterialThumbnail(const std::string &filePath, uint64_
         return m_engine->GetMaterialPreviewTextureId(resourceKey);
     }
 
-    return m_engine->QueryOrScheduleMaterialPreview(resourceKey, filePath, "", mtimeNs);
+    auto &result = m_materialPreviewResults[resourceKey];
+    const uint64_t publishedTexture = m_engine->GetMaterialPreviewTextureId(resourceKey);
+    const bool previewReady = publishedTexture != 0 && m_engine->IsMaterialPreviewReady(resourceKey);
+    if (result.fingerprint == mtimeNs && publishedTexture == result.textureId) {
+        // Stable ready state: stay on the read-only lookup path and avoid
+        // re-entering QueryOrScheduleMaterialPreview on every UI build.
+        if (previewReady)
+            return publishedTexture;
+        if (m_previewFrameSerial - result.lastRequestFrame < 30)
+            return publishedTexture;
+    }
+    if (result.fingerprint == mtimeNs && previewReady && publishedTexture != 0 &&
+        publishedTexture != result.textureId) {
+        // Inspector authoring may publish a new live texture without changing
+        // the disk mtime. Adopt it immediately without scheduling a duplicate.
+        result.textureId = publishedTexture;
+        result.lastRequestFrame = m_previewFrameSerial;
+        return publishedTexture;
+    }
+
+    // Material authoring can publish an in-memory JSON generation before the
+    // asynchronous file mtime changes. Always enter the engine's existing
+    // generation/in-flight deduplication path so Project and Prefab previews
+    // observe that revision immediately.
+    const uint64_t textureId = m_engine->QueryOrScheduleMaterialPreview(resourceKey, filePath, "", mtimeNs);
+    result.fingerprint = mtimeNs;
+    result.textureId = textureId;
+    result.lastRequestFrame = m_previewFrameSerial;
+    ++m_previewScheduleAttempts;
+    return textureId;
 }
 
 uint64_t ProjectPanel::GetEmbeddedMaterialThumbnail(const FileItem &item)
@@ -1359,7 +1504,29 @@ uint64_t ProjectPanel::GetEmbeddedMaterialThumbnail(const FileItem &item)
         return 0; // parent model file missing/unreadable
 
     const std::string resourceKey = std::string("mat|") + item.path;
-    return m_engine->QueryOrScheduleMaterialPreview(resourceKey, item.path, "", stamp);
+    auto &result = m_materialPreviewResults[resourceKey];
+    const uint64_t publishedTexture = m_engine->GetMaterialPreviewTextureId(resourceKey);
+    const bool previewReady = publishedTexture != 0 && m_engine->IsMaterialPreviewReady(resourceKey);
+    if (result.fingerprint == stamp && publishedTexture == result.textureId) {
+        if (previewReady)
+            return publishedTexture;
+        if (m_previewFrameSerial - result.lastRequestFrame < 30)
+            return publishedTexture;
+    }
+    if (result.fingerprint == stamp && previewReady && publishedTexture != 0 && publishedTexture != result.textureId) {
+        result.textureId = publishedTexture;
+        result.lastRequestFrame = m_previewFrameSerial;
+        return publishedTexture;
+    }
+    // The shared preview state owns generation and pending-request coalescing.
+    // Do not add a UI-frame throttle here: embedded/material authoring may
+    // advance independently of the backing file timestamp.
+    const uint64_t textureId = m_engine->QueryOrScheduleMaterialPreview(resourceKey, item.path, "", stamp);
+    result.fingerprint = stamp;
+    result.textureId = textureId;
+    result.lastRequestFrame = m_previewFrameSerial;
+    ++m_previewScheduleAttempts;
+    return textureId;
 }
 
 uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath, uint64_t cachedMtimeNs)
@@ -1391,6 +1558,13 @@ uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath, uint64_t c
         return readyTexture;
     if (m_modelPreviewRequestsThisFrame >= kModelPreviewRequestBudget)
         return 0;
+
+    auto &request = m_modelPreviewRequests[resourceKey];
+    if (request.fingerprint == mtimeNs && m_previewFrameSerial - request.lastRequestFrame < 30)
+        return 0;
+    request.fingerprint = mtimeNs;
+    request.lastRequestFrame = m_previewFrameSerial;
+    ++m_previewScheduleAttempts;
     ++m_modelPreviewRequestsThisFrame;
     return m_engine->QueryOrScheduleMeshPreview(resourceKey, filePath, mtimeNs);
 }
@@ -1687,8 +1861,11 @@ bool ProjectPanel::IsShift(InxGUIContext *ctx) const
 void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
 {
     double now = m_frameTimeNow;
-    bool doubleClicked =
-        (AssetSelectionPathKey(m_lastClickedFile) == AssetSelectionPathKey(item.path) && (now - m_lastClickTime) < 0.4);
+    const bool nativeDoubleClick = ctx->IsMouseDoubleClicked(0);
+    const bool repeatedClick =
+        AssetSelectionPathKey(m_lastClickedFile) == AssetSelectionPathKey(item.path) &&
+        (now - m_lastClickTime) < 0.4;
+    const bool doubleClicked = nativeDoubleClick || repeatedClick;
     m_lastClickedFile = item.path;
     m_lastClickTime = now;
 
@@ -2058,6 +2235,7 @@ void ProjectPanel::PreRender(InxGUIContext *ctx)
 void ProjectPanel::VisiblePreRender(InxGUIContext *ctx)
 {
     const auto preStart = std::chrono::steady_clock::now();
+    ++m_previewFrameSerial;
     const auto iconsStart = std::chrono::steady_clock::now();
     EnsureTypeIconsLoaded();
     const auto previewStart = std::chrono::steady_clock::now();
@@ -2090,6 +2268,8 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
     if (m_pendingAugmentedCacheInvalidation) {
         m_pendingAugmentedCacheInvalidation = false;
         m_augmentedCache.clear();
+        m_projectItemsCacheSource = ProjectItemsCacheSource::None;
+        m_projectItemsCachePath.clear();
     }
 
     const auto breadcrumbStart = std::chrono::steady_clock::now();
@@ -2357,9 +2537,11 @@ void ProjectPanel::RenderSearchResults(InxGUIContext *ctx)
 
 void ProjectPanel::RebuildFolderTreeRows()
 {
+    ++m_folderTreeRebuilds;
     m_folderTreeRows.clear();
     m_folderTreeRowsDirectoryRevision = m_directoryRevision;
     m_folderTreeRowsProjectionRevision = m_folderTreeProjection.Revision();
+    m_folderTreeAppliedProjectionRevision = UINT64_MAX;
 
     if (m_rootPath.empty())
         return;
@@ -2369,7 +2551,9 @@ void ProjectPanel::RebuildFolderTreeRows()
         return;
 
     const auto rootName = infernux::FromFsPath(fs::u8path(m_rootPath).filename());
-    m_folderTreeRows.push_back({m_rootPath, rootName, 0, !rootSnapshot->dirs.empty(), true});
+    m_folderTreeRows.push_back({m_rootPath, rootName, rootName + "###" + m_rootPath, FilesystemPathKey(m_rootPath),
+                                "project.folder.root", 0, !rootSnapshot->dirs.empty(), true,
+                                m_folderTreeProjection.IsExpanded(m_rootPath)});
 
     std::function<void(const std::string &, DirSnapshot *, int)> appendChildren;
     appendChildren = [&](const std::string &parentPath, DirSnapshot *parentSnapshot, int depth) {
@@ -2379,7 +2563,9 @@ void ProjectPanel::RebuildFolderTreeRows()
         for (const auto &directory : parentSnapshot->dirs) {
             auto *meta = GetDirTreeMeta(directory.path);
             const bool hasSubdirs = meta != nullptr && meta->hasSubdirs;
-            m_folderTreeRows.push_back({directory.path, directory.name, depth, hasSubdirs, false});
+            m_folderTreeRows.push_back({directory.path, directory.name, directory.name + "###" + directory.path,
+                                        FilesystemPathKey(directory.path), MakeProjectFolderSemanticId(directory.path),
+                                        depth, hasSubdirs, false, m_folderTreeProjection.IsExpanded(directory.path)});
             if (hasSubdirs && m_folderTreeProjection.IsExpanded(directory.path))
                 appendChildren(directory.path, GetDirSnapshot(directory.path), depth + 1);
         }
@@ -2399,40 +2585,62 @@ void ProjectPanel::RenderFolderTree(InxGUIContext *ctx)
         const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
         const float baseX = ctx->GetCursorPosX();
         const float indent = ImGui::GetStyle().IndentSpacing;
-        ImGuiListClipper clipper;
-        clipper.Begin(static_cast<int>(m_folderTreeRows.size()));
-        while (clipper.Step()) {
-            for (int index = clipper.DisplayStart; index < clipper.DisplayEnd; ++index) {
-                const auto &row = m_folderTreeRows[static_cast<size_t>(index)];
-                int flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth |
-                            ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-                const bool selected = FilesystemPathKey(m_currentPath) == FilesystemPathKey(row.path);
-                if (selected)
-                    flags |= ImGuiTreeNodeFlags_Selected;
-                if (!row.hasSubdirs)
-                    flags |= ImGuiTreeNodeFlags_Leaf;
+        const std::string &currentPathKey = m_currentPathKey;
+        const uint64_t projectionRevision = m_folderTreeRowsProjectionRevision;
+        const bool syncExpandedState = m_folderTreeAppliedProjectionRevision != projectionRevision;
+        auto renderRow = [&](int index) {
+            const auto &row = m_folderTreeRows[static_cast<size_t>(index)];
+            ++m_folderRowsSubmitted;
+            int flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth |
+                        ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+            const bool selected = currentPathKey == row.pathKey;
+            if (selected)
+                flags |= ImGuiTreeNodeFlags_Selected;
+            if (!row.hasSubdirs)
+                flags |= ImGuiTreeNodeFlags_Leaf;
 
-                if (row.hasSubdirs)
-                    ctx->SetNextItemOpen(m_folderTreeProjection.IsExpanded(row.path), ImGuiCond_Always);
-                ctx->SetCursorPosX(baseX + static_cast<float>(row.depth) * indent);
-                const bool open = ctx->TreeNodeEx((row.name + "###" + row.path).c_str(), flags);
-                const bool toggledOpen = row.hasSubdirs && ImGui::IsItemToggledOpen();
-                if (captureSemantics) {
-                    const std::string semanticId = row.isRoot ? "project.folder.root" : MakeProjectFolderSemanticId(row.path);
-                    ctx->RecordSemanticItem("project_folder", row.name, true, semanticId, selected);
-                }
-                if (toggledOpen) {
-                    ExecuteEditorCommand("project.set_folder_expanded",
-                                         MakeTreeExpandedCommandArgument(row.path, open), "pointer");
-                } else if (ctx->IsItemClicked()) {
-                    if (row.isRoot && m_navHasSubfolders)
-                        RequestDirectoryNavigation(m_preferredNavPath);
-                    else
-                        RequestDirectoryNavigation(row.path);
-                }
+            if (row.hasSubdirs && syncExpandedState)
+                ctx->SetNextItemOpen(row.expanded, ImGuiCond_Always);
+            ctx->SetCursorPosX(baseX + static_cast<float>(row.depth) * indent);
+
+            // TreeNodeEx on the context wrapper performs a second semantic
+            // capture check for every row. The Project panel already knows
+            // whether capture is active, so use the native call on the hot
+            // path and explicitly preserve the wrapper's generic semantic
+            // record when capture is requested.
+            const bool open = ImGui::TreeNodeEx(row.imguiId.c_str(), static_cast<ImGuiTreeNodeFlags>(flags));
+            const bool toggledOpen = row.hasSubdirs && ImGui::IsItemToggledOpen();
+            if (captureSemantics) {
+                ctx->RecordSemanticItem("tree_node", row.imguiId);
+                ctx->RecordSemanticItem("project_folder", row.name, true, row.semanticId, selected);
             }
+            if (toggledOpen) {
+                ExecuteEditorCommand("project.set_folder_expanded", MakeTreeExpandedCommandArgument(row.path, open),
+                                     "pointer");
+            } else if (ctx->IsItemClicked()) {
+                RequestDirectoryNavigation(row.path);
+            }
+        };
+
+        // ImGuiListClipper has a fixed setup cost. A small tree is already
+        // fully visible in normal panel sizes, so submit it directly; larger
+        // projects retain the clipped path and its scrolling behavior.
+        constexpr size_t kFolderTreeClipperThreshold = 32;
+        if (m_folderTreeRows.size() <= kFolderTreeClipperThreshold) {
+            m_folderRowsVisible += static_cast<uint64_t>(m_folderTreeRows.size());
+            for (int index = 0; index < static_cast<int>(m_folderTreeRows.size()); ++index)
+                renderRow(index);
+        } else {
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(m_folderTreeRows.size()));
+            while (clipper.Step()) {
+                m_folderRowsVisible += static_cast<uint64_t>(std::max(clipper.DisplayEnd - clipper.DisplayStart, 0));
+                for (int index = clipper.DisplayStart; index < clipper.DisplayEnd; ++index)
+                    renderRow(index);
+            }
+            clipper.End();
         }
-        clipper.End();
+        m_folderTreeAppliedProjectionRevision = projectionRevision;
     }
 
     float remainH = ctx->GetContentRegionAvailHeight();
@@ -2517,6 +2725,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
     float gridStartY = ctx->GetCursorPosY();
     int itemCount = static_cast<int>(items->size());
     auto range = GetVisibleGridRange(ctx, itemCount, cols, rowHeight, gridStartY);
+    m_gridItemsVisible += static_cast<uint64_t>(std::max(range.endIndex - range.startIndex, 0));
     const ImGuiPayload *dragPayload = ImGui::GetDragDropPayload();
     bool hasDragPayload = (dragPayload != nullptr);
     bool hasHierarchyDragPayload = hasDragPayload && dragPayload->IsDataType(DRAG_TYPE_HIERARCHY_GO);
@@ -2588,8 +2797,16 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
 
         for (int i = range.startIndex; i < range.endIndex; ++i) {
             auto &item = (*items)[i];
+            ++m_gridItemsSubmitted;
             ctx->TableNextColumn();
             ImGui::PushID(i);
+
+            std::string fallbackSelectionKey;
+            const std::string *selectionKey = &item.selectionKey;
+            if (selectionKey->empty()) {
+                fallbackSelectionKey = AssetSelectionPathKey(item.path);
+                selectionKey = &fallbackSelectionKey;
+            }
 
             const bool isSubAsset = (item.type == FileItem::SubMaterial || item.type == FileItem::SubMesh);
             const std::string itemSemanticId = captureSemantics ? MakeProjectItemSemanticId(item) : std::string{};
@@ -2656,7 +2873,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 ImGui::TablePopBackgroundChannel();
             }
 
-            bool isSelected = m_selectedSet.count(AssetSelectionPathKey(item.path)) > 0;
+            const bool isSelected = m_selectedSet.find(*selectionKey) != m_selectedSet.end();
             // Record cell start position for full-cell drop overlay later
             // ── Resolve display texture (inline for speed) ──
             uint64_t displayTexId = 0;
@@ -2705,7 +2922,19 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 } else if (item.type == FileItem::File) {
                     if (IsImageExt(item.ext) && m_engine) {
                         const std::string resourceKey = std::string("tex|") + item.path;
-                        auto [readyW, readyH] = m_engine->GetTexturePreviewSize(resourceKey);
+                        int readyW = 0;
+                        int readyH = 0;
+                        const auto sizeIt = m_texturePreviewSizes.find(resourceKey);
+                        if (sizeIt != m_texturePreviewSizes.end() && sizeIt->second.textureId == displayTexId) {
+                            readyW = sizeIt->second.width;
+                            readyH = sizeIt->second.height;
+                        } else {
+                            const auto readySize = m_engine->GetTexturePreviewSize(resourceKey);
+                            readyW = readySize.first;
+                            readyH = readySize.second;
+                            m_texturePreviewSizes.insert_or_assign(
+                                resourceKey, TexturePreviewSizeCacheEntry{displayTexId, readyW, readyH});
+                        }
                         srcW = readyW;
                         srcH = readyH;
                     } else if (IsMaterialExt(item.ext)) {
@@ -2797,7 +3026,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 if (thumbClicked && !hasDragPayload)
                     HandleItemClick(item, ctx);
                 if (thumbRmb) {
-                    const bool alreadySelected = m_selectedSet.count(AssetSelectionPathKey(item.path)) > 0;
+                    const bool alreadySelected = m_selectedSet.find(*selectionKey) != m_selectedSet.end();
                     PublishSelectionIntent(alreadySelected ? m_selectedFiles : std::vector<std::string>{item.path},
                                            item.path);
                     requestedContextTarget = item.path;
@@ -2822,7 +3051,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 if (thumbClicked && !hasDragPayload)
                     HandleItemClick(item, ctx);
                 if (thumbRmb) {
-                    const bool alreadySelected = m_selectedSet.count(AssetSelectionPathKey(item.path)) > 0;
+                    const bool alreadySelected = m_selectedSet.find(*selectionKey) != m_selectedSet.end();
                     PublishSelectionIntent(alreadySelected ? m_selectedFiles : std::vector<std::string>{item.path},
                                            item.path);
                     requestedContextTarget = item.path;

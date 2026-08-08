@@ -135,6 +135,11 @@ class ParticleGpuBounds
     rhi::ComputePipelineHandle m_preparePipeline;
     rhi::ComputePipelineHandle m_resetPipeline;
     rhi::ComputePipelineHandle m_reducePipeline;
+    // AlwaysSimulate does not consume the visibility feedback word, so its
+    // control state can stay resident until a control input changes.
+    mutable bool m_controlPrepared = false;
+    mutable GpuParticleOffscreenPolicy m_preparedPolicy = GpuParticleOffscreenPolicy::AlwaysSimulate;
+    mutable bool m_preparedForceSimulation = false;
 };
 
 static_assert(sizeof(GpuParticleBoundsConstants) == 48);
