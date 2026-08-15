@@ -630,12 +630,14 @@ class PythonRuntimeManager:
             raise PythonRuntimeError("Infernux Hub currently supports managed Python installation on Windows and macOS only.")
 
         installer_path = self._ensure_runtime_installer(on_status=on_status)
+        install_log_path = os.path.join(os.path.dirname(installer_path), "python-install.log")
         os.makedirs(os.path.dirname(runtime_root), exist_ok=True)
         _emit_status(on_status, "Installing managed Python 3.12 runtime...")
         completed = _run_command(
             [
                 installer_path,
                 "/quiet",
+                "/log", install_log_path,
                 "InstallAllUsers=0",
                 f"TargetDir={runtime_root}",
                 "AssociateFiles=0",
@@ -654,6 +656,7 @@ class PythonRuntimeManager:
         if completed.returncode != 0:
             raise PythonRuntimeError(
                 "Failed to install the managed Python 3.12 runtime.\n"
+                f"Check {install_log_path}.\n"
                 f"{(completed.stderr or completed.stdout or '').strip()}"
             )
 

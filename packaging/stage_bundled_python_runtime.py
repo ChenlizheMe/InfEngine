@@ -458,9 +458,11 @@ def _install_full_runtime(dest_root: str, *, installer_cache_root: str | None = 
     if sys.platform != "win32":
         raise SystemExit("Bundled full Python staging is only supported on Windows, macOS, and Linux.")
 
+    install_log_path = os.path.join(os.path.dirname(installer_path), "python-install.log")
     completed = _run([
         installer_path,
         "/quiet",
+        "/log", install_log_path,
         "InstallAllUsers=0",
         f"TargetDir={dest_root}",
         "AssociateFiles=0",
@@ -476,6 +478,7 @@ def _install_full_runtime(dest_root: str, *, installer_cache_root: str | None = 
     if completed.returncode != 0:
         raise SystemExit(
             "Failed to install official Python 3.12 into the bundled runtime directory.\n"
+            f"Check {install_log_path}.\n"
             f"{(completed.stderr or completed.stdout or '').strip()}"
         )
 
