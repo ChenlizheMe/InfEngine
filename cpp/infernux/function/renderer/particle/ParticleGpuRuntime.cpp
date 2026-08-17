@@ -1064,7 +1064,12 @@ bool ParticleGpuRuntime::RecordBootstrap(const rhi::ComputeCommandEncoder &encod
     if (!Record(encoder, GpuKernelStage::Bootstrap, constants, constants.invocationCount, graphSpawnGroup))
         return false;
     m_residentState->aliveReadSlot = 0;
-    m_residentState->aliveListReady = true;
+    // Recording bootstrap does not make its indirect dispatch arguments
+    // available to later CPU-side recording decisions. Force the first update
+    // after bootstrap through the bounded direct path; PublishAliveWrite marks
+    // the rebuilt list ready only after that update has been recorded behind
+    // bootstrap in the same ordered graph execution.
+    m_residentState->aliveListReady = false;
     m_residentState->bootstrapRecorded = true;
     return true;
 }

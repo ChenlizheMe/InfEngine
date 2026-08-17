@@ -549,7 +549,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     vk::ResourceHandle ribbonBlockOffsets;
     vk::ResourceHandle ribbonGlobalOffsets;
 
-    graph.AddComputePass(StageName(namePrefix, "Bootstrap"), [&](vk::PassBuilder &builder) {
+    m_firstPass = graph.AddComputePass(StageName(namePrefix, "Bootstrap"), [&](vk::PassBuilder &builder) {
         const uint64_t capacity = runtime.Capacity();
         states = builder.ImportBuffer(StageName(namePrefix, "States"), runtime.StateBuffer(),
                                       capacity * runtime.StateStride());
@@ -920,7 +920,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         };
     });
 
-    graph.AddComputePass(StageName(namePrefix, "Update"), [&](vk::PassBuilder &builder) {
+    vk::PassHandle simulationTail = graph.AddComputePass(StageName(namePrefix, "Update"), [&](vk::PassBuilder &builder) {
         m_spawnDomain->DeclareKernelWrite(builder);
         states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
         freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
@@ -982,7 +982,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             };
         });
 
-        graph.AddComputePass(StageName(namePrefix, "ContactDispatch"), [&](vk::PassBuilder &builder) {
+        simulationTail = graph.AddComputePass(StageName(namePrefix, "ContactDispatch"), [&](vk::PassBuilder &builder) {
             m_spawnDomain->DeclareKernelWrite(builder);
             states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
             freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
@@ -1036,7 +1036,8 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
                 (void)ConsumeRenderResetPending();
             };
         });
-    m_renderExportPassId = renderExportBoundary.id;
+    m_simulationTailPass = simulationTail;
+    m_renderExportPass = renderExportBoundary;
     graph.SetSubmissionBoundaryBefore(renderExportBoundary);
 
     if (runtime.SupportsFusedUpdateRendering()) {
@@ -1301,10 +1302,9 @@ bool ParticleRenderGraph::BeginFrame(const GpuParticleFrameRequest &request) noe
     m_renderResetPending = request.render || (m_lastRenderStateActive && !request.render);
     m_lastRenderStateActive = request.render;
     m_framePending = true;
-    // Reset owns the next graph execution even if the control plane resumes
-    // simulation before that execution is recorded.  SpawnPrepare must see
-    // the reset flag once so bootstrap clears resident state and stale queued
-    // requests cannot share a frame with the restarted emitter.
+    // A pending reset remains armed while this request replaces the reset-only
+    // control state. The next graph execution performs bootstrap and this real
+    // frame as one ordered pass chain.
     return true;
 }
 

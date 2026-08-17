@@ -1449,7 +1449,7 @@ int main()
     const rhi::BufferHandle spawnMetadata{0xffe4u, 1};
     assert(!runtime.RecordBootstrap(encoder, 7, {}) && runtime.NeedsBootstrap() && !runtime.IsAliveListReady());
     assert(runtime.RecordBootstrap(encoder, 7, graphSpawnGroup));
-    assert(runtime.IsAliveListReady() && runtime.AliveReadSlot() == 0 && runtime.AliveWriteSlot() == 1);
+    assert(!runtime.IsAliveListReady() && runtime.AliveReadSlot() == 0 && runtime.AliveWriteSlot() == 1);
     runtime.RecordInitIndirect(encoder, 300, 100, 2, 7, 9, 1.0f / 60.0f, graphSpawnGroup, spawnMetadata,
                                sizeof(uint32_t) * 4u);
     assert(runtime.RecordUpdate(encoder, 7, 9, 1.0f / 60.0f, graphSpawnGroup, true));

@@ -210,6 +210,7 @@ struct ParticleGpuSystemManager::Impl
         uint64_t generation = 0;
         uint32_t renderExportBatch = rhi::InvalidSubmissionBatchIndex;
         bool asyncRecordingActive = false;
+        bool asyncPhasePartitioned = false;
     };
 
     using EmitterMap = std::map<uint64_t, std::shared_ptr<Emitter>>;
@@ -1391,6 +1392,15 @@ struct ParticleGpuSystemManager::Impl
                 return {};
             }
             emitter->migrationSource = previous;
+        } else if (program.preserveState && previous && previous->migration &&
+                   emitter->runtime->SharesStateWith(*previous->runtime)) {
+            // A compatible publication can arrive before a previously recorded
+            // layout migration reaches the next frame boundary (Save followed
+            // immediately by Play is the common case). The resident buffers are
+            // shared, so the pending migration transaction must follow them;
+            // dropping it would bootstrap the uninitialized destination state.
+            emitter->migration = previous->migration;
+            emitter->migrationSource = previous->migrationSource;
         }
         if (!boundsProgram || !boundsProgram->IsValid()) {
             SetError(error, "GPU particle bounds kernels are unavailable");
@@ -1670,6 +1680,18 @@ struct ParticleGpuSystemManager::Impl
                     batch.workItems.end()) {
                     state->renderExportBatch = batch.index;
                     break;
+                }
+            }
+            state->asyncPhasePartitioned = state->renderExportBatch != rhi::InvalidSubmissionBatchIndex;
+            for (uint32_t batchIndex = state->renderExportBatch;
+                 state->asyncPhasePartitioned && batchIndex < plan.batches.size(); ++batchIndex) {
+                for (const uint32_t passId : plan.batches[batchIndex].workItems) {
+                    if (std::any_of(state->schedulers.begin(), state->schedulers.end(), [&](const auto &scheduler) {
+                            return scheduler->IsSimulationPass(passId);
+                        })) {
+                        state->asyncPhasePartitioned = false;
+                        break;
+                    }
                 }
             }
         }
@@ -2208,6 +2230,16 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
     if (!m_impl || !m_impl->graphState || graphInstanceId == 0 || items.empty())
         return false;
 
+    // Migration callbacks mark completion while recording the command buffer,
+    // before that command buffer has a submission ticket. Rebuilding the graph
+    // from RecordAsyncExport/Execute therefore allowed the migration source,
+    // descriptors, and pipelines to enter the retirement queue against the
+    // previous GPU epoch. A rapid ParticleGraph save could destroy those
+    // resources before the freshly recorded prime submission executed. The
+    // next frame boundary runs after the prior submission has been published,
+    // so retirement can safely inherit its completion epoch here.
+    m_impl->RetireCompletedMigrations();
+
     struct PreparedItem
     {
         const GpuParticleBatchFrameItem *item = nullptr;
@@ -2252,18 +2284,14 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
                 !ParticleRenderGraph::IsFrameRequestValid(request))
                 return false;
         }
-        if (scheduler->second->HasResetPending()) {
-            for (auto &request : decoded.sequence)
-                ++request.substepIndex;
-            auto resetRequest = item.request;
-            resetRequest.substepIndex = 0;
-            resetRequest.spawnCount = 0;
-            resetRequest.deltaTime = 0.0f;
-            resetRequest.simulate = false;
-            resetRequest.render = false;
-            resetRequest.forceSimulation = true;
-            decoded.sequence.insert(decoded.sequence.begin(), resetRequest);
-        }
+        // A pending reset is part of the next real frame, not a synthetic
+        // frame of its own. Keeping bootstrap, reset-aware spawn preparation,
+        // and the resumed simulation in one RenderGraph execution guarantees
+        // that their resource transitions are described by one compiled pass
+        // chain. Splitting reset into an execution followed by ContinueExecution
+        // let CPU-side recording state advance before the bootstrap dispatch
+        // had run, which could feed stale indirect arguments to the resumed
+        // update after Play -> Stop -> Play.
         prepared.push_back(std::move(decoded));
     }
 
@@ -2396,7 +2424,6 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
         else
             m_impl->graphState->graph->ContinueExecution(commandBuffer, rhi::QueueRole::Compute);
         ++recordedSteps;
-        m_impl->RetireCompletedMigrations();
         if (!m_impl->HasQueuedFrameRequests())
             break;
         if (!m_impl->ArmNextQueuedFrameRequests()) {
@@ -2412,7 +2439,7 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
 bool ParticleGpuSystemManager::CanExecuteAsync() const noexcept
 {
     if (!m_impl || !m_impl->context || !m_impl->context->HasIndependentComputeQueue() || !m_impl->graphState ||
-        !m_impl->graphState->graph || m_impl->emitters.empty())
+        !m_impl->graphState->graph || !m_impl->graphState->asyncPhasePartitioned || m_impl->emitters.empty())
         return false;
     const auto &plan = m_impl->graphState->graph->GetSubmissionPlan();
     const uint32_t boundary = m_impl->graphState->renderExportBatch;
@@ -2486,7 +2513,6 @@ bool ParticleGpuSystemManager::RecordAsyncExport(VkCommandBuffer commandBuffer)
     state.asyncRecordingActive = false;
     if (!recorded)
         return false;
-    m_impl->RetireCompletedMigrations();
     m_impl->RecordDiagnostics(commandBuffer);
     return true;
 }

@@ -136,14 +136,26 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         const rhi::DeviceId device = m_backend.Device().GetDeviceId();
         std::vector<uint32_t> setupDependencies;
         if (primeAsyncCompute) {
-            const uint32_t prime = m_frameSubmission.AddWork(
+            const uint32_t primeSimulation = m_frameSubmission.AddWork(
                 device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
                 rhi::PipelineStage::ComputeShader, {},
                 [this](VkCommandBuffer commandBuffer) {
-                    return m_frameAsyncSimulationExecutor(commandBuffer) && m_frameAsyncExportExecutor(commandBuffer);
+                    return m_frameAsyncSimulationExecutor(commandBuffer);
                 },
-                "GpuParticle/PrimeSimulationAndExport");
-            setupDependencies.push_back(prime);
+                "GpuParticle/PrimeSimulation");
+            const uint32_t primeExport = m_frameSubmission.AddWork(
+                device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
+                rhi::PipelineStage::ComputeShader, {primeSimulation},
+                [this](VkCommandBuffer commandBuffer) { return m_frameAsyncExportExecutor(commandBuffer); },
+                "GpuParticle/PrimeExport");
+            // A generation boundary must establish the same simulation/export
+            // submission boundary as steady state. Recording the entire
+            // particle RenderGraph into one command buffer erased the compiled
+            // boundary and made Play -> Stop -> Play capable of presenting a
+            // single watchdog-sized compute submission. The explicit
+            // dependency also gives the export phase an actual GPU completion
+            // point instead of relying on CPU recording order.
+            setupDependencies.push_back(primeExport);
         } else if (separateComputeBatch) {
             const uint32_t compute = m_frameSubmission.AddWork(
                 device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
@@ -237,6 +249,28 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
                                  rhi::InvalidRenderViewId,
                                  rhi::PipelineStage::ComputeShader,
                                  {0, 1}});
+        } else if (primeAsyncCompute) {
+            frameWork.push_back({0,
+                                 m_backend.Device().GetDeviceId(),
+                                 rhi::QueueRole::Compute,
+                                 rhi::SubmissionDomain::Frame,
+                                 rhi::InvalidRenderViewId,
+                                 rhi::PipelineStage::ComputeShader,
+                                 {}});
+            frameWork.push_back({1,
+                                 m_backend.Device().GetDeviceId(),
+                                 rhi::QueueRole::Compute,
+                                 rhi::SubmissionDomain::Frame,
+                                 rhi::InvalidRenderViewId,
+                                 rhi::PipelineStage::ComputeShader,
+                                 {0}});
+            frameWork.push_back({2,
+                                 m_backend.Device().GetDeviceId(),
+                                 rhi::QueueRole::Graphics,
+                                 rhi::SubmissionDomain::Frame,
+                                 rhi::InvalidRenderViewId,
+                                 rhi::PipelineStage::AllGraphics,
+                                 {1}});
         } else if (asyncCompute || separateComputeBatch) {
             frameWork.push_back({0,
                                  m_backend.Device().GetDeviceId(),
@@ -323,10 +357,12 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
                 const auto queue = submissionPlan.batches[batchIndex].queue;
                 if (asyncCompute) {
                     if (primeAsyncCompute) {
-                        if (batchIndex == 0)
-                            return m_frameAsyncSimulationExecutor(commandBuffer) &&
-                                   m_frameAsyncExportExecutor(commandBuffer);
-                        return batchIndex == 1 && RecordFrameCommands(commandBuffer, imageIndex);
+                        if (batchIndex == 0) {
+                            return m_frameAsyncSimulationExecutor(commandBuffer);
+                        }
+                        if (batchIndex == 1)
+                            return m_frameAsyncExportExecutor(commandBuffer);
+                        return batchIndex == 2 && RecordFrameCommands(commandBuffer, imageIndex);
                     }
                     if (batchIndex == 0)
                         return m_frameAsyncSimulationExecutor(commandBuffer);

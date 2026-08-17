@@ -2160,6 +2160,17 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "GPU particle manager reused incompatible resident buffers during layout migration"))
         return false;
 
+    auto compatibleDuringMigration = managedProgram;
+    compatibleDuringMigration.artifactRevision = 5;
+    compatibleDuringMigration.migration.reset();
+    if (!Require(publishManagedGraph({compatibleDuringMigration}) &&
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 5 &&
+                     particleSystems.ActiveStateWasPreserved(managedProgram.id) &&
+                     particleDeletionQueue.PendingCount() == 5,
+                 "Compatible GPU particle publication dropped an unsubmitted migration transaction"))
+        return false;
+    managedProgram = std::move(compatibleDuringMigration);
+
     auto migrationFrame = managedFrame;
     migrationFrame.frameIndex = 44;
     migrationFrame.spawnCount = 0;
@@ -2169,15 +2180,19 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "GPU particle manager rejected the migration boundary frame") ||
         !executeManagedFrame("GPU particle manager migration frame failed") ||
         !Require(particleDeletionQueue.PendingCount() == 5,
-                 "GPU particle manager did not retire the migration graph and source at the frame boundary"))
+                 "GPU particle manager retired migration resources while their command buffer was only recorded"))
         return false;
 
-    particleDeletionQueue.FlushAll();
     auto postMigrationFrame = migrationFrame;
     postMigrationFrame.frameIndex = 45;
     if (!Require(particleSystems.BeginFrame(managedProgram.id, postMigrationFrame, managedTransforms),
                  "GPU particle manager rejected the post-migration frame") ||
-        !executeManagedFrame("GPU particle manager post-migration graph failed") ||
+        !Require(particleDeletionQueue.PendingCount() == 6,
+                 "GPU particle manager did not defer migration retirement to the next frame boundary"))
+        return false;
+
+    particleDeletionQueue.FlushAll();
+    if (!executeManagedFrame("GPU particle manager post-migration graph failed") ||
         !Require(particleDeletionQueue.PendingCount() == 0,
                  "GPU particle manager retained migration resources after graph replacement"))
         return false;

@@ -310,7 +310,20 @@ class ParticleRenderGraph
     }
     [[nodiscard]] uint32_t RenderExportPassId() const noexcept
     {
-        return m_renderExportPassId;
+        return m_renderExportPass.id;
+    }
+    [[nodiscard]] vk::PassHandle RenderExportPass() const noexcept
+    {
+        return m_renderExportPass;
+    }
+    [[nodiscard]] vk::PassHandle SimulationTailPass() const noexcept
+    {
+        return m_simulationTailPass;
+    }
+    [[nodiscard]] bool IsSimulationPass(uint32_t passId) const noexcept
+    {
+        return m_firstPass.IsValid() && m_simulationTailPass.IsValid() && passId >= m_firstPass.id &&
+               passId <= m_simulationTailPass.id;
     }
 
   private:
@@ -331,7 +344,9 @@ class ParticleRenderGraph
     bool m_hasConsumedFrame = false;
     uint64_t m_lastConsumedFrame = 0;
     uint32_t m_lastConsumedSubstep = 0;
-    uint32_t m_renderExportPassId = UINT32_MAX;
+    vk::PassHandle m_firstPass{};
+    vk::PassHandle m_simulationTailPass{};
+    vk::PassHandle m_renderExportPass{};
     // RenderReset is needed every rendering frame and once when rendering is
     // disabled, but not for an already-idle non-rendering frame.
     bool m_lastRenderStateActive = false;
