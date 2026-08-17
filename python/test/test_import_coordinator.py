@@ -187,3 +187,29 @@ def test_concurrent_submit_is_thread_safe(tmp_path):
 
     assert coordinator.pending_count == 1
     assert len(coordinator.drain(force=True)) == 1
+
+
+def test_bounded_drain_preserves_ready_fifo_and_force_drains_remainder(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    paths = [tmp_path / f"asset-{index}.txt" for index in range(4)]
+    for index, path in enumerate(paths):
+        coordinator.submit(
+            AssetFsEventKind.MODIFIED,
+            str(path),
+            observed_at=clock.value + index * 0.01,
+        )
+    clock.advance(0.2)
+
+    first = coordinator.drain(max_events=1)
+    second = coordinator.drain(max_events=2)
+
+    assert [event.path for event in first] == [str(paths[0].resolve())]
+    assert [event.path for event in second] == [
+        str(paths[1].resolve()),
+        str(paths[2].resolve()),
+    ]
+    assert coordinator.pending_count == 1
+    assert [event.path for event in coordinator.drain(force=True, max_events=1)] == [
+        str(paths[3].resolve())
+    ]

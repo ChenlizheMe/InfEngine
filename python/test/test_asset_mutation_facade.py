@@ -128,6 +128,56 @@ def test_reimport_rebuilds_database_before_registry_reload(monkeypatch):
     assert order == ["db-reimport", "registry-reload", "py-evict", "editor-modified"]
 
 
+def test_texture_reimport_uses_single_native_publication_path(monkeypatch):
+    order = []
+    database = _Database(order)
+    database.paths = {"image.png": "guid"}
+    _isolate_side_effects(monkeypatch, order)
+    monkeypatch.setattr(
+        AssetManager,
+        "_invalidate_texture_ui_cache",
+        classmethod(lambda _cls, _path: order.append("texture-ui-evict")),
+    )
+    monkeypatch.setattr(
+        AssetManager,
+        "_schedule_gpu_texture_reload",
+        classmethod(lambda _cls, _path: order.append("gpu-reload-queued")),
+    )
+
+    result = AssetManager.reimport_asset("image.png", database=database)
+
+    assert result and result.guid == "guid"
+    assert "registry-reload" not in order
+    assert order == [
+        "db-reimport",
+        "py-evict",
+        "texture-ui-evict",
+        "gpu-reload-queued",
+        "editor-modified",
+    ]
+
+
+def test_gpu_texture_flush_is_bounded_and_can_target_one_asset(monkeypatch):
+    AssetManager._pending_gpu_texture_reloads.clear()
+    calls = []
+    monkeypatch.setattr(
+        AssetManager,
+        "_reload_gpu_texture_now",
+        classmethod(lambda _cls, path: calls.append(path)),
+    )
+    for path in ("A.png", "B.png", "C.png"):
+        AssetManager._schedule_gpu_texture_reload(path)
+
+    assert AssetManager.flush_pending_gpu_texture_reloads() == 1
+    assert calls == ["A.png"]
+    assert AssetManager.flush_pending_gpu_texture_reloads(
+        paths=["C.png"], max_items=None
+    ) == 1
+    assert calls == ["A.png", "C.png"]
+    assert AssetManager.flush_pending_gpu_texture_reloads(max_items=None) == 1
+    assert calls == ["A.png", "C.png", "B.png"]
+
+
 def test_delete_commits_database_before_evicting_live_registry(monkeypatch):
     order = []
     database = _Database(order)

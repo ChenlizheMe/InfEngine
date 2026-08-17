@@ -23,6 +23,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import os
+import threading
 import time
 import weakref
 import uuid
@@ -51,6 +52,7 @@ from Infernux.engine.path_utils import path_key, portable_path, resolved_path
 # ── Constants ──
 _META_SUPPRESSION_TIMEOUT: float = 2.0  # seconds
 _DEFAULT_DEBOUNCE_SEC: float = 0.35  # seconds
+_RUNTIME_VOLUME_TEXTURE_EXTENSIONS = frozenset({".inxvfield", ".inxsdf"})
 
 
 @dataclass(slots=True)
@@ -111,6 +113,7 @@ class AssetManager:
     # current scene still has pending destroy/update work; doing Vulkan cache
     # eviction there is fragile in large live scenes.
     _pending_gpu_texture_reloads: Dict[str, str] = {}
+    _pending_gpu_texture_reloads_lock = threading.Lock()
 
     # Reference to the C++ AssetDatabase (set during engine init)
     _asset_database = None
@@ -552,7 +555,13 @@ class AssetManager:
             # but must never execute a script or reload the registry before
             # the collector has produced a validated revision.
             pass
-        elif not cls._is_compiled_authoring_source(path):
+        elif (
+            ext not in IMAGE_EXTENSIONS or ext in _RUNTIME_VOLUME_TEXTURE_EXTENSIONS
+        ) and not cls._is_compiled_authoring_source(path):
+            # Textures have one authoritative runtime publication path below:
+            # native reload_texture(). Runtime vector fields/SDFs are the
+            # exception: their immutable volume generation is owned by the
+            # loaded registry object and must advance in place on reimport.
             registry = cls._get_registry()
             if registry and registry.is_loaded(guid) and not registry.reload_asset(guid):
                 from Infernux.lib import AssetMutationErrorCode
@@ -1864,7 +1873,8 @@ class AssetManager:
     def _schedule_gpu_texture_reload(cls, path: str) -> None:
         """Queue native GPU texture invalidation for the next post-draw tick."""
         key = cls._normalize_asset_path(path) or path_key(path)
-        cls._pending_gpu_texture_reloads[key] = path
+        with cls._pending_gpu_texture_reloads_lock:
+            cls._pending_gpu_texture_reloads[key] = path
 
         guid = cls._get_guid_from_path(path)
         if guid:
@@ -1872,14 +1882,37 @@ class AssetManager:
             cls._cache.pop(guid, None)
 
     @classmethod
-    def flush_pending_gpu_texture_reloads(cls) -> None:
-        """Run queued native GPU texture reloads between frames."""
-        if not cls._pending_gpu_texture_reloads:
-            return
-        pending = list(cls._pending_gpu_texture_reloads.values())
-        cls._pending_gpu_texture_reloads.clear()
+    def flush_pending_gpu_texture_reloads(
+        cls,
+        *,
+        paths: Optional[List[str]] = None,
+        max_items: Optional[int] = 1,
+    ) -> int:
+        """Publish queued GPU textures at a safe point without an unbounded frame.
+
+        Normal post-draw ticks publish one texture. Explicit import UI may pass
+        ``paths`` to synchronously publish only the asset the user applied.
+        """
+        if max_items is not None and max_items < 1:
+            raise ValueError("max_items must be positive or None")
+        with cls._pending_gpu_texture_reloads_lock:
+            if paths is None:
+                keys = list(cls._pending_gpu_texture_reloads)
+            else:
+                keys = []
+                for path in paths:
+                    key = cls._normalize_asset_path(path) or path_key(path)
+                    if key in cls._pending_gpu_texture_reloads and key not in keys:
+                        keys.append(key)
+            if max_items is not None:
+                keys = keys[:max_items]
+            pending = [
+                cls._pending_gpu_texture_reloads.pop(key)
+                for key in keys
+            ]
         for path in pending:
             cls._reload_gpu_texture_now(path)
+        return len(pending)
 
     @classmethod
     def _reload_gpu_texture_now(cls, path: str) -> None:

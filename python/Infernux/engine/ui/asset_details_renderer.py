@@ -273,7 +273,10 @@ class _ImportSettingsController:
                     return False
                 from Infernux.core.assets import AssetManager
 
-                AssetManager.flush_pending_gpu_texture_reloads()
+                AssetManager.flush_pending_gpu_texture_reloads(
+                    paths=[self.file_path],
+                    max_items=None,
+                )
                 return True
 
             def _is_published() -> bool:

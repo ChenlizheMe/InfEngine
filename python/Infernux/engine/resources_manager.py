@@ -381,12 +381,19 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if force or not self._frontend_worker_running:
             self.process_script_worker()
 
-        events = self._coordinator.drain(force=force)
+        # Asset import and live GPU publication are owner-thread operations.
+        # A watcher burst must not turn one editor frame into an unbounded
+        # import transaction; preserve FIFO order and advance it frame by frame.
+        events = self._coordinator.drain(
+            force=force,
+            max_events=None if force else 1,
+        )
         if events:
             request_full_speed = getattr(self._engine, "request_full_speed_frame", None)
             if callable(request_full_speed):
                 request_full_speed()
         for event in events:
+            event_started = time.perf_counter()
             try:
                 self._dispatch_event(event)
             except _AssetLocalWritePending:
@@ -396,6 +403,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     Debug.log_error(f"Asset event exhausted retries: {event}: {exc}")
             except Exception as exc:
                 Debug.log_error(f"Asset event failed: {event}: {exc}")
+            finally:
+                elapsed_ms = (time.perf_counter() - event_started) * 1000.0
+                if elapsed_ms >= 25.0:
+                    Debug.log_internal(
+                        f"[AssetReloadProfile] event={event.kind.value} "
+                        f"elapsed={elapsed_ms:.2f}ms pending={self._coordinator.pending_count} "
+                        f"path={event.path}"
+                    )
 
         # Dispatch first: a script event can submit its immutable snapshot to
         # the frontend worker, whose result may already be ready by the time

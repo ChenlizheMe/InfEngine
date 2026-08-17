@@ -272,7 +272,15 @@ class ImportCoordinator:
             now + self._delay_for(event.kind, debounce_seconds),
         )
 
-    def drain(self, *, force: bool = False, now: float | None = None) -> list[AssetFsEvent]:
+    def drain(
+        self,
+        *,
+        force: bool = False,
+        now: float | None = None,
+        max_events: int | None = None,
+    ) -> list[AssetFsEvent]:
+        if max_events is not None and max_events < 1:
+            raise ValueError("max_events must be positive or None")
         current = self._clock() if now is None else now
         with self._lock:
             ready = [
@@ -280,9 +288,11 @@ class ImportCoordinator:
                 for key, pending in self._pending.items()
                 if force or pending.ready_at <= current
             ]
+            ready.sort(key=lambda item: item[1].event.observed_at)
+            if not force and max_events is not None:
+                ready = ready[:max_events]
             for key, _pending in ready:
                 del self._pending[key]
-        ready.sort(key=lambda item: item[1].event.observed_at)
         return [pending.event for _key, pending in ready]
 
     def retry(self, event: AssetFsEvent, *, now: float | None = None) -> bool:

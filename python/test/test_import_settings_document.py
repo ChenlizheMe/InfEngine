@@ -35,7 +35,7 @@ def test_import_settings_are_document_backed_and_undoable(monkeypatch):
     AssetImportProgressService._instance = None
     monkeypatch.setattr(
         "Infernux.core.assets.AssetManager.flush_pending_gpu_texture_reloads",
-        lambda: None,
+        lambda **_kwargs: 0,
     )
     monkeypatch.setattr(
         "Infernux.engine.ui.asset_resource_preview.ensure_imported_texture_preview",
