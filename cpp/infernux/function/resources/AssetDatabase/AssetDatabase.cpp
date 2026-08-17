@@ -108,7 +108,7 @@ std::string
 RuntimeArtifactRelativePath(const std::string &guid, ResourceType type,
                             ImportArtifact::RuntimeArtifactKind kind = ImportArtifact::RuntimeArtifactKind::Primary)
 {
-    if (type != ResourceType::Mesh && type != ResourceType::Texture)
+    if (type != ResourceType::Mesh && type != ResourceType::Texture && type != ResourceType::ParticleGraph)
         return {};
     if (guid.empty() || !std::all_of(guid.begin(), guid.end(), [](unsigned char character) {
             return std::isalnum(character) != 0 || character == '-' || character == '_';
@@ -125,6 +125,8 @@ RuntimeArtifactRelativePath(const std::string &guid, ResourceType type,
         throw std::invalid_argument("non-Mesh assets only support a primary runtime artifact");
     if (type == ResourceType::Texture)
         return "Library/Artifacts/Texture/" + guid + ".inxtex";
+    if (type == ResourceType::ParticleGraph)
+        return "Library/Artifacts/Particle/" + guid + ".inxparticle";
     return {};
 }
 
@@ -158,6 +160,18 @@ bool HasReusableRuntimeArtifact(const AssetIndexEntry &entry, ResourceType type,
     const std::string expected = RuntimeArtifactRelativePath(entry.guid, type);
     if (expected.empty())
         return entry.artifactPath.empty();
+    if (type == ResourceType::ParticleGraph) {
+        // Python publishes the GUID-addressed AOT after import. Native refresh
+        // stays reusable before that file exists, then requires the current
+        // path once AssetIndex records it.
+        if (entry.artifactPath.empty())
+            return true;
+        if (entry.artifactPath != expected)
+            return false;
+        std::error_code error;
+        const auto primaryPath = projectRoot / std::filesystem::u8path(expected);
+        return std::filesystem::is_regular_file(primaryPath, error) && !error;
+    }
     if (entry.artifactPath != expected)
         return false;
     std::error_code error;

@@ -284,10 +284,62 @@ class BuildSettingsPanel(FloatingEditorPanel):
 
     # ------------------------------------------------------------------
 
+    def _is_preflight_active(self) -> bool:
+        from Infernux.engine.ui.build_preflight_progress import (
+            BuildPreflightProgressService,
+        )
+        return bool(BuildPreflightProgressService.instance().is_active)
+
+    def _footer_reserve_height(self) -> float:
+        if self._building:
+            return 56.0 if self._is_preflight_active() else 96.0
+        if self._build_error:
+            return 176.0
+        if self._build_cancelled or self._build_output_dir:
+            return 72.0
+        return 52.0
+
+    def _render_wrapped_message(self, ctx, message: str, *, color=None, height: Optional[float] = None) -> None:
+        if color is not None:
+            ctx.push_style_color(ImGuiCol.Text, *color)
+        writer = getattr(ctx, "text_wrapped", None)
+        if height is not None:
+            if ctx.begin_child("##build_status_message", 0, float(height), True):
+                if callable(writer):
+                    writer(str(message))
+                else:
+                    ctx.label(str(message))
+            ctx.end_child()
+        elif callable(writer):
+            writer(str(message))
+        else:
+            ctx.label(str(message))
+        if color is not None:
+            ctx.pop_style_color(1)
+
+    def _render_action_row(self, ctx, buttons) -> None:
+        gap = 8.0
+        widths = [float(width) for _label, _callback, width, _semantic_id, _enabled in buttons]
+        total = sum(widths) + gap * max(0, len(buttons) - 1)
+        avail = float(ctx.get_content_region_avail_width())
+        get_x = getattr(ctx, "get_cursor_pos_x", None)
+        set_x = getattr(ctx, "set_cursor_pos_x", None)
+        if callable(get_x) and callable(set_x) and avail > total:
+            set_x(float(get_x()) + avail - total)
+        for index, (label, callback, width, semantic_id, enabled) in enumerate(buttons):
+            if index:
+                ctx.same_line(0, gap)
+            ctx.button(label, callback, width=float(width), height=30)
+            ctx.record_semantic_item(
+                "button",
+                str(label).split("##", 1)[0].strip(),
+                enabled,
+                semantic_id,
+            )
+
     def _render_body(self, ctx):
         ctx.dummy(0.0, 4.0)
-        # Reserve ~80px at the bottom for build controls
-        child_h = max(0, ctx.get_content_region_avail_height() - 80)
+        child_h = max(0, ctx.get_content_region_avail_height() - self._footer_reserve_height())
         # The worker can complete between BeginDisabled and EndDisabled.
         # Keep the pair governed by one immutable decision for this frame.
         building_this_frame = self._building
@@ -811,13 +863,6 @@ class BuildSettingsPanel(FloatingEditorPanel):
                 "build_settings.status",
                 string_value="building",
             )
-            ctx.record_semantic_item(
-                "status",
-                "Build progress",
-                False,
-                "build_settings.progress",
-                numeric_value=float(self._build_progress),
-            )
             progress_message = self._build_message or t("build.building")
             ctx.record_semantic_item(
                 "status",
@@ -826,27 +871,51 @@ class BuildSettingsPanel(FloatingEditorPanel):
                 "build_settings.progress_message",
                 string_value=progress_message,
             )
-            ctx.label(progress_message)
-            ctx.progress_bar(self._build_progress, -1.0, 20.0, "")
+            # Preflight already owns the only visible slider. Drawing another
+            # bar in this window stacks an outer track on the inner modal.
+            if not self._is_preflight_active():
+                ctx.record_semantic_item(
+                    "status",
+                    "Build progress",
+                    False,
+                    "build_settings.progress",
+                    numeric_value=float(self._build_progress),
+                )
+                self._render_wrapped_message(ctx, progress_message)
+                ctx.progress_bar(self._build_progress, -1.0, 20.0, "")
+            else:
+                self._render_wrapped_message(ctx, progress_message)
             cancel_label = t("build.cancel")
             can_cancel = self.can_cancel_build()
-            ctx.button(
-                "  " + cancel_label + "  ##cancel_build",
-                lambda: self._execute_build_command("build.cancel"),
-                width=120,
-                height=30,
-            )
-            ctx.record_semantic_item(
-                "button", cancel_label, can_cancel, "build_settings.cancel"
+            self._render_action_row(
+                ctx,
+                (
+                    (
+                        "  " + cancel_label + "  ##cancel_build",
+                        lambda: self._execute_build_command("build.cancel"),
+                        120.0,
+                        "build_settings.cancel",
+                        can_cancel,
+                    ),
+                ),
             )
         elif self._build_cancelled:
             ctx.record_semantic_item(
                 "status", "Cancelled", False, "build_settings.status", string_value="cancelled"
             )
-            ctx.label(t("build.cancelled"))
-            ctx.same_line()
-            ctx.button("OK##dismiss_cancelled", self._dismiss_build_cancelled)
-            ctx.record_semantic_item("button", "OK", True, "build_settings.cancelled.dismiss")
+            self._render_wrapped_message(ctx, t("build.cancelled"))
+            self._render_action_row(
+                ctx,
+                (
+                    (
+                        "OK##dismiss_cancelled",
+                        self._dismiss_build_cancelled,
+                        80.0,
+                        "build_settings.cancelled.dismiss",
+                        True,
+                    ),
+                ),
+            )
         elif self._build_error:
             ctx.record_semantic_item(
                 "status", "Failed", False, "build_settings.status", string_value="failed"
@@ -858,12 +927,24 @@ class BuildSettingsPanel(FloatingEditorPanel):
                 "build_settings.error",
                 string_value=str(self._build_error),
             )
-            ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
-            ctx.label(t("build.failed").format(err=self._build_error))
-            ctx.pop_style_color(1)
-            ctx.same_line()
-            ctx.button("OK##dismiss_err", self._dismiss_build_error)
-            ctx.record_semantic_item("button", "OK", True, "build_settings.error.dismiss")
+            self._render_wrapped_message(
+                ctx,
+                t("build.failed").format(err=self._build_error),
+                color=Theme.ERROR_TEXT,
+                height=110.0,
+            )
+            self._render_action_row(
+                ctx,
+                (
+                    (
+                        "OK##dismiss_err",
+                        self._dismiss_build_error,
+                        80.0,
+                        "build_settings.error.dismiss",
+                        True,
+                    ),
+                ),
+            )
         elif self._build_output_dir:
             ctx.record_semantic_item(
                 "status", "Succeeded", False, "build_settings.status", string_value="succeeded"
@@ -875,10 +956,11 @@ class BuildSettingsPanel(FloatingEditorPanel):
                 "build_settings.result.output_dir",
                 string_value=str(self._build_output_dir),
             )
-            ctx.push_style_color(ImGuiCol.Text, *Theme.SUCCESS_TEXT)
-            ctx.label(t("build.succeeded").format(path=os.path.basename(self._build_output_dir) + "/"))
-            ctx.pop_style_color(1)
-            ctx.same_line()
+            self._render_wrapped_message(
+                ctx,
+                t("build.succeeded").format(path=os.path.basename(self._build_output_dir) + "/"),
+                color=Theme.SUCCESS_TEXT,
+            )
 
             def _open_folder():
                 import subprocess as _sp
@@ -891,13 +973,25 @@ class BuildSettingsPanel(FloatingEditorPanel):
                     _sp.Popen(["xdg-open", self._build_output_dir])
 
             open_folder_label = t("build.open_folder")
-            ctx.button(open_folder_label, _open_folder)
-            ctx.record_semantic_item(
-                "button", open_folder_label, True, "build_settings.result.open_folder"
+            self._render_action_row(
+                ctx,
+                (
+                    (
+                        open_folder_label,
+                        _open_folder,
+                        140.0,
+                        "build_settings.result.open_folder",
+                        True,
+                    ),
+                    (
+                        "OK##dismiss_ok",
+                        self._dismiss_build_result,
+                        80.0,
+                        "build_settings.result.dismiss",
+                        True,
+                    ),
+                ),
             )
-            ctx.same_line()
-            ctx.button("OK##dismiss_ok", self._dismiss_build_result)
-            ctx.record_semantic_item("button", "OK", True, "build_settings.result.dismiss")
         else:
             ctx.record_semantic_item(
                 "status", "Ready", False, "build_settings.status", string_value="ready"
@@ -1023,9 +1117,13 @@ class BuildSettingsPanel(FloatingEditorPanel):
         self._build_message = message
         self._build_progress = fraction
         from Infernux.engine.ui.engine_status import EngineStatus
+        # The Build Settings window owns the only determinate slider.
+        # The status bar keeps a text pulse so the editor is not frozen-looking
+        # when the utility window is behind another panel.
         EngineStatus.set(
             message or "Building player...",
-            fraction,
+            -1.0,
+            kind="activity",
             source="build",
             priority=20,
         )
@@ -1058,6 +1156,40 @@ class BuildSettingsPanel(FloatingEditorPanel):
             )
         return index_path
 
+    def _bind_published_player_catalog(self, catalog):
+        """Freeze the preflight AssetIndex even if the live file vanished.
+
+        Document transactions treat ``Library/AssetIndex.json`` as a derived
+        artifact and delete it after source writes. Preflight can therefore
+        publish a valid catalog that is gone by the time the worker starts.
+        """
+        builder = self._make_builder()
+        entries = None
+        index_path = ""
+        if isinstance(catalog, dict):
+            index_path = str(catalog.get("path") or "")
+            raw_entries = catalog.get("entries")
+            if isinstance(raw_entries, list):
+                entries = raw_entries
+        else:
+            index_path = str(catalog or "")
+        if entries is None:
+            if not index_path or not os.path.isfile(index_path):
+                database = getattr(self.services, "asset_database", None)
+                if database is not None:
+                    database.flush_derived_index()
+                    index_path = str(getattr(database, "asset_index_path", "") or "")
+            if not index_path or not os.path.isfile(index_path):
+                raise RuntimeError(
+                    "Library/AssetIndex.json is missing after Player catalog "
+                    "preflight. Save pending assets and try again."
+                )
+            from Infernux.engine.runtime_artifact_catalog import load_asset_index
+
+            entries = load_asset_index(builder.project_path)
+        builder.freeze_asset_index_entries(entries)
+        return builder
+
     def _begin_asset_catalog_for_build(self):
         """Begin durable writes without blocking the build button callback."""
         from Infernux.core.assets import AssetManager
@@ -1065,7 +1197,7 @@ class BuildSettingsPanel(FloatingEditorPanel):
         AssetManager.begin_asset_write_flush()
         return {"database": None, "catalog_started": False, "stage": "writes"}
 
-    def _poll_asset_catalog_for_build(self, state) -> Optional[str]:
+    def _poll_asset_catalog_for_build(self, state):
         """Advance durability and the worker-backed scan between frames."""
         from Infernux.core.assets import AssetManager
         from Infernux.renderstack.discovery import discover_effect_features
@@ -1097,7 +1229,18 @@ class BuildSettingsPanel(FloatingEditorPanel):
             raise RuntimeError(
                 "The editor could not publish the current Library/AssetIndex.json"
             )
-        return index_path
+        from Infernux.engine.runtime_artifact_catalog import load_asset_index
+
+        project_root = get_project_root()
+        if not project_root:
+            raise RuntimeError("No project root found")
+        # Snapshot now. A later document transaction can invalidate
+        # AssetIndex.json before the worker starts; the frozen entries are
+        # the published catalog, not the live file.
+        return {
+            "path": index_path,
+            "entries": load_asset_index(project_root),
+        }
 
     def _do_build(self, *, run_after: bool) -> bool:
         if self._building:
@@ -1112,7 +1255,8 @@ class BuildSettingsPanel(FloatingEditorPanel):
         from Infernux.engine.ui.engine_status import EngineStatus
         EngineStatus.set(
             self._build_message,
-            self._build_progress,
+            -1.0,
+            kind="activity",
             source="build",
             priority=20,
         )
@@ -1200,15 +1344,9 @@ class BuildSettingsPanel(FloatingEditorPanel):
 
             threading.Thread(target=_run, daemon=True).start()
 
-        def _prepare_and_start(index_path: str):
+        def _prepare_and_start(catalog):
             try:
-                if not os.path.isfile(index_path):
-                    raise RuntimeError("The published Player asset catalog is unavailable")
-                builder = self._make_builder()
-                from Infernux.engine.runtime_artifact_catalog import load_asset_index
-
-                entries = load_asset_index(builder.project_path)
-                builder.freeze_asset_index_entries(entries)
+                builder = self._bind_published_player_catalog(catalog)
                 builder._validate_output_directory()
             except Exception as exc:
                 return _fail_preflight(exc)
@@ -1229,11 +1367,10 @@ class BuildSettingsPanel(FloatingEditorPanel):
                 if not self._build_cancelled:
                     self._build_error = message or "Build preparation failed"
                 return
-            index_path = str(result or "")
-            if not index_path:
+            if result in (None, "", {}):
                 _fail_preflight(RuntimeError("The asset catalog was not published"))
                 return
-            _prepare_and_start(index_path)
+            _prepare_and_start(result)
 
         if not BuildPreflightProgressService.instance().begin(
             begin_scan=self._begin_asset_catalog_for_build,

@@ -108,6 +108,11 @@ def _ensure_video_splash_packages() -> None:
 _BuildCancelled = BuildCancelled
 
 
+def _yield_editor_thread() -> None:
+    """Release the GIL so the editor can keep rendering during a Player build."""
+    time.sleep(0)
+
+
 class BuildOutputDirectoryError(ValueError):
     """Raised when the chosen build output directory is unsafe to reuse."""
 
@@ -677,7 +682,11 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self._pack_parallel_runtime_archive(final_dir)
 
         _p("Packing project content", 0.981)
-        self._pack_content_archive(final_dir)
+        self._pack_content_archive(
+            final_dir,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
+        )
 
         _p("Writing Player runtime catalog", 0.984)
         self._write_payload_manifest(final_dir)
@@ -2029,7 +2038,9 @@ finally:
                     if particle is not None
                     else self._particle_source_stable_id(source_path)
                 )
-                artifact_paths.append(f"Library/Artifacts/Particle/{stable_id}.inxparticle")
+                artifact_paths.append(
+                    self._particle_artifact_relative(guid, stable_id)
+                )
             if not artifact_paths:
                 if asset_type in {"texture", "mesh", "particlegraph"}:
                     raise RuntimeError(
@@ -2176,9 +2187,8 @@ finally:
         # This method only preserves the runtime lookup index; it must never
         # copy a stale file around that validation path.
         for item in references:
-            destination = os.path.join(
-                destination_root, item["stable_id"] + ".inxparticle"
-            )
+            relative = self._particle_artifact_relative(item["guid"], item["stable_id"])
+            destination = os.path.join(destination_root, os.path.basename(relative))
             if not os.path.isfile(destination):
                 raise RuntimeError(
                     "Reachable ParticleGraph was not staged from its current "
@@ -2273,6 +2283,23 @@ finally:
                 }
             )
         return entries
+
+    def _particle_artifact_relative(self, guid: str, stable_id: str = "") -> str:
+        from Infernux.particle.artifact import particle_artifact_filename
+
+        candidates = []
+        if guid:
+            candidates.append(
+                f"Library/Artifacts/Particle/{particle_artifact_filename(guid)}"
+            )
+        if stable_id:
+            legacy = f"Library/Artifacts/Particle/{particle_artifact_filename(stable_id)}"
+            if legacy not in candidates:
+                candidates.append(legacy)
+        for relative in candidates:
+            if os.path.isfile(os.path.join(self.project_path, relative)):
+                return relative
+        return candidates[0] if candidates else ""
 
     @classmethod
     def _collect_particle_asset_references(
@@ -3188,7 +3215,26 @@ finally:
             os.remove(destination)
         os.replace(source, destination)
 
-    def _pack_content_archive(self, final_dir: str) -> None:
+    def _report_content_pack_progress(
+        self,
+        on_progress: Optional[Callable[[str, float], None]],
+        cancel_event: Optional[threading.Event],
+        message: str,
+        fraction: float,
+    ) -> None:
+        _yield_editor_thread()
+        if cancel_event is not None and cancel_event.is_set():
+            raise _BuildCancelled()
+        if on_progress:
+            on_progress(message, fraction)
+
+    def _pack_content_archive(
+        self,
+        final_dir: str,
+        *,
+        on_progress: Optional[Callable[[str, float], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> None:
         """Write project data as the native Content.inxpkg container."""
 
         data_root = os.path.join(final_dir, f"{self.project_name}_Data")
@@ -3201,6 +3247,8 @@ finally:
         source_bytes = 0
         forbidden_plaintext: list[str] = []
         forbidden_direct_payloads: list[str] = []
+        processed = 0
+        last_report = 0.0
 
         for root, dirs, filenames in os.walk(data_root):
             dirs[:] = [directory for directory in dirs if directory != "Logs"]
@@ -3241,6 +3289,17 @@ finally:
                 self._rewrite_player_document_paths(path, suffix)
                 files.append((relative, path))
                 source_bytes += os.path.getsize(path)
+                processed += 1
+                _yield_editor_thread()
+                now = time.perf_counter()
+                if processed == 1 or now - last_report >= 0.05:
+                    last_report = now
+                    self._report_content_pack_progress(
+                        on_progress,
+                        cancel_event,
+                        f"Packing project content ({processed} files)",
+                        min(0.9828, 0.981 + processed * 1e-6),
+                    )
 
         if forbidden_plaintext:
             raise RuntimeError(
@@ -3257,13 +3316,27 @@ finally:
         if not files:
             raise RuntimeError("Player Content.inxpkg would be empty")
 
+        self._report_content_pack_progress(
+            on_progress,
+            cancel_event,
+            "Compressing project content",
+            0.9829,
+        )
         native_manifest = write_pack(
             files,
             archive_path,
             profile=self._player_inxpack_profile(),
         )
-        for _relative, source_path in files:
+        self._report_content_pack_progress(
+            on_progress,
+            cancel_event,
+            "Finalizing packed project content",
+            0.9834,
+        )
+        for index, (_relative, source_path) in enumerate(files, start=1):
             os.remove(source_path)
+            if index % 32 == 0:
+                _yield_editor_thread()
         for excluded_path in excluded_files:
             try:
                 os.remove(excluded_path)
@@ -3278,6 +3351,7 @@ finally:
                     os.rmdir(path)
                 except OSError:
                     pass
+            _yield_editor_thread()
 
         ratio = native_manifest["archive_bytes"] / max(1, source_bytes)
         Debug.log_internal(
@@ -3322,6 +3396,7 @@ finally:
             return rewritten_path
 
         rewritten = rewrite(document)
+        _yield_editor_thread()
         if not changed:
             return
         _write_json_atomic(path, rewritten, indent=None)

@@ -223,6 +223,17 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
     return current
 
 
+def _particle_artifact_source_key(path: str | os.PathLike[str]) -> str:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    owner = payload.get("source_key")
+    return owner if isinstance(owner, str) else ""
+
+
 def artifact_source_hash(path: str | os.PathLike[str]) -> str:
     """Read the source hash embedded by the current Library artifact writers."""
 
@@ -318,6 +329,19 @@ def validate_artifact(
         ) from exc
     if not os.path.isfile(artifact):
         raise RuntimeArtifactError(f"Library artifact is missing: {artifact}")
+    if Path(artifact).suffix.casefold() == ".inxparticle":
+        owner = _particle_artifact_source_key(artifact)
+        guid = str(entry.get("guid", ""))
+        if (
+            owner
+            and guid
+            and re.fullmatch(r"[0-9a-fA-F]{32}", owner)
+            and owner.casefold() != guid.casefold()
+        ):
+            raise RuntimeArtifactError(
+                f"Library particle artifact belongs to {owner}, not {guid}: "
+                f"{artifact}"
+            )
     expected_hash = expected_artifact_source_hash(project_root, entry, artifact)
     embedded_hash = artifact_source_hash(artifact)
     if embedded_hash.casefold() != expected_hash.casefold():

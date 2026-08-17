@@ -14,6 +14,12 @@ class _Context:
         self._button_results = iter(button_results or [])
         self.disabled_depth = 0
         self.disabled_transitions: list[str] = []
+        self.progress_bars: list[tuple] = []
+        self.labels: list[str] = []
+        self.wrapped_texts: list[str] = []
+        self.child_ids: list[str] = []
+        self.same_line_count = 0
+        self.cursor_x = 0.0
 
     def begin_disabled(self, _disabled: bool) -> None:
         self.disabled_depth += 1
@@ -67,8 +73,9 @@ class _Context:
     def push_style_var_float(*_args) -> None:
         pass
 
-    @staticmethod
-    def begin_child(*_args) -> bool:
+    def begin_child(self, *args) -> bool:
+        if args:
+            self.child_ids.append(str(args[0]))
         return True
 
     @staticmethod
@@ -79,9 +86,8 @@ class _Context:
     def separator() -> None:
         pass
 
-    @staticmethod
-    def progress_bar(*_args) -> None:
-        pass
+    def progress_bar(self, *args) -> None:
+        self.progress_bars.append(args)
 
     @staticmethod
     def is_item_hovered() -> bool:
@@ -115,17 +121,24 @@ class _Context:
     def begin_drag_drop_source(_flags: int) -> bool:
         return False
 
-    @staticmethod
-    def same_line(*_args) -> None:
-        pass
+    def same_line(self, *_args) -> None:
+        self.same_line_count += 1
 
     @staticmethod
     def get_window_width() -> float:
         return 600.0
 
-    @staticmethod
-    def label(_text: str) -> None:
-        pass
+    def label(self, text: str) -> None:
+        self.labels.append(text)
+
+    def text_wrapped(self, text: str) -> None:
+        self.wrapped_texts.append(text)
+
+    def get_cursor_pos_x(self) -> float:
+        return self.cursor_x
+
+    def set_cursor_pos_x(self, x: float) -> None:
+        self.cursor_x = float(x)
 
     def record_semantic_item(
         self,
@@ -401,6 +414,76 @@ def test_build_status_actions_expose_stable_semantic_ids():
     }
     assert succeeded.semantic_values["build_settings.status"] == "succeeded"
     assert succeeded.semantic_values["build_settings.result.output_dir"] == "C:/Builds/RacingPilot"
+    assert len(building.progress_bars) == 1
+    assert "##build_status_message" in failed.child_ids
+    assert failed.wrapped_texts
+    assert failed.same_line_count == 0
+
+
+def test_build_window_hides_its_slider_while_preflight_owns_progress(monkeypatch):
+    import Infernux.engine.ui.build_preflight_progress as preflight
+
+    monkeypatch.setattr(
+        preflight.BuildPreflightProgressService,
+        "instance",
+        staticmethod(lambda: SimpleNamespace(is_active=True)),
+    )
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._building = True
+    panel._build_message = "Scanning project resources..."
+    panel._build_progress = 0.0
+    panel._cancel_event = threading.Event()
+    panel._execute_build_command = lambda _command_id: True
+    ctx = _Context()
+
+    panel._render_build_controls(ctx)
+
+    assert ctx.progress_bars == []
+    assert "build_settings.progress" not in ctx.semantic_values
+    assert ctx.semantic_values["build_settings.status"] == "building"
+    assert "build_settings.cancel" in {item[3] for item in ctx.semantic_items}
+
+
+def test_build_error_log_does_not_push_the_dismiss_button_offscreen():
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._building = False
+    panel._build_cancelled = False
+    panel._build_error = (
+        "Library artifact is stale for 432e6ee7b2e0d6dbbb11ca04725e8100:\n"
+        + ("D:/Temp/惊梦/Library/Artifacts/Particle/" + "a" * 80 + ".inxparticle\n") * 12
+        + "See: D:/very/long/path/to/infernux-player-build/build.log"
+    )
+    panel._build_output_dir = None
+    ctx = _Context()
+
+    panel._render_build_controls(ctx)
+
+    assert ctx.progress_bars == []
+    assert ctx.same_line_count == 0
+    assert "##build_status_message" in ctx.child_ids
+    assert any(panel._build_error in text for text in ctx.wrapped_texts)
+    assert "build_settings.error.dismiss" in {item[3] for item in ctx.semantic_items}
+
+
+def test_build_progress_does_not_drive_a_second_status_bar_slider(monkeypatch):
+    import Infernux.engine.ui.engine_status as engine_status
+
+    recorded: list[tuple] = []
+
+    @classmethod
+    def _capture(cls, text, progress=-1.0, kind=None, **kwargs):
+        recorded.append((text, progress, kind, kwargs))
+
+    monkeypatch.setattr(engine_status.EngineStatus, "set", _capture)
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._cancel_event = threading.Event()
+
+    panel._on_build_progress("Packing project content", 0.981)
+
+    assert panel._build_progress == 0.981
+    assert recorded == [
+        ("Packing project content", -1.0, "activity", {"source": "build", "priority": 20})
+    ]
 
 
 def test_build_commands_gate_start_and_cancel_without_entering_undo():
@@ -459,3 +542,32 @@ def test_build_preparation_flushes_writes_before_publishing_asset_index(
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
     assert panel._prepare_asset_catalog_for_build() == str(index_path)
     assert events == ["flush_writes", "refresh", "flush_index"]
+
+
+def test_bind_published_catalog_keeps_snapshot_when_index_file_vanishes(tmp_path):
+    index_path = tmp_path / "Library" / "AssetIndex.json"
+    entries = [
+        {
+            "guid": "a" * 32,
+            "normalized_path": "assets/main.scene",
+            "source": {"size": 1, "modified_ns": 1},
+            "content_hash": "a" * 16,
+            "dependencies": [],
+        }
+    ]
+    captured: dict[str, object] = {}
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._make_builder = lambda: SimpleNamespace(
+        project_path=str(tmp_path),
+        freeze_asset_index_entries=lambda value: captured.setdefault(
+            "entries", list(value)
+        ),
+    )
+
+    builder = panel._bind_published_player_catalog(
+        {"path": str(index_path), "entries": entries}
+    )
+
+    assert not index_path.exists()
+    assert captured["entries"] == entries
+    assert builder.project_path == str(tmp_path)

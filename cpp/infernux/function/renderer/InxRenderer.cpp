@@ -4130,15 +4130,9 @@ void InxRenderer::ConsumeSceneTemporalDiscontinuity()
     if (revision == m_observedSceneTemporalDiscontinuityRevision)
         return;
     m_observedSceneTemporalDiscontinuityRevision = revision;
-    if (m_sceneRenderGraph) {
-        m_sceneRenderGraph->InvalidateParticleViews();
-        m_sceneRenderGraph->ClearCachedViewSubmission();
-    }
-    for (auto &[cameraId, graph] : m_gameRenderGraphs) {
-        (void)cameraId;
-        graph->InvalidateParticleViews();
-        graph->ClearCachedViewSubmission();
-    }
+    // Play/Stop keeps the same world id. Treat that edge like opening Scene:
+    // drop compiled Scene/Game graphs and rebuild from the current generation.
+    InvalidateGpuViewStateForSceneBoundary();
     InvalidateTemporalHistory();
 }
 
@@ -4161,8 +4155,31 @@ void InxRenderer::InvalidateGpuViewStateForSceneBoundary()
     // particle generation instead of recycled handles from two Play cycles ago.
     m_gameRenderGraph = nullptr;
     m_gameRenderGraphs.clear();
+    RecreateSceneRenderGraph();
     if (m_vkCore)
         m_vkCore->FlushRetiredGpuResources();
+}
+
+void InxRenderer::RecreateSceneRenderGraph()
+{
+    if (!m_sceneRenderGraph)
+        return;
+    const int samples = GetMsaaSamples();
+    m_sceneRenderGraph.reset();
+    if (!m_vkCore || !m_sceneRenderTarget)
+        return;
+    m_sceneRenderGraph = std::make_unique<SceneRenderGraph>();
+    if (!m_sceneRenderGraph->Initialize(m_vkCore.get(), m_sceneRenderTarget.get(), rhi::RenderViewKind::Scene)) {
+        INXLOG_ERROR("Failed to reinitialize the Scene View render graph after a scene boundary");
+        m_sceneRenderGraph.reset();
+        return;
+    }
+    if (m_particleGpuDrawRegistry)
+        m_sceneRenderGraph->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
+    if (samples > 0)
+        m_sceneRenderGraph->SetEffectiveMsaaSamples(samples);
+    if (m_sceneViewVisible && m_outlineRenderer)
+        m_sceneRenderGraph->SetOutlineRenderer(m_outlineRenderer.get());
 }
 
 void InxRenderer::SetSceneViewVisible(bool visible)

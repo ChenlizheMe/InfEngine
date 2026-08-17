@@ -30,6 +30,7 @@ from Infernux.engine.runtime_artifact_catalog import (
     payload_kind_for,
     runtime_artifact_reason_for,
     unix_ns_to_filetime_ticks,
+    validate_artifact,
 )
 from Infernux.engine import nuitka_builder as nuitka_builder_module
 from Infernux.engine import player_package_audit as player_package_audit_module
@@ -2462,6 +2463,86 @@ def test_game_data_requires_reachable_particle_artifact(tmp_path):
         builder._copy_game_data(str(tmp_path / "dist"))
 
 
+def test_game_data_keeps_particle_artifacts_that_share_graph_stable_id(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    first = _reference_particle_graph(project, "shared")
+    second = project / "Assets" / "VFX" / "copy.particlegraph"
+    second.write_text(
+        ParticleGraphAsset(stable_id="shared", name="copy").canonical_json(),
+        encoding="utf-8",
+    )
+    guid1 = hashlib.md5(b"shared").hexdigest()
+    guid2 = hashlib.md5(b"copy").hexdigest()
+    scene_path = project / "Assets" / "Main.scene"
+    _write_asset_index(
+        project,
+        [
+            _asset_index_entry(project, scene_path, "scene-guid", "", "Scene"),
+            _asset_index_entry(project, first, guid1, "", "ParticleGraph"),
+            _asset_index_entry(project, second, guid2, "", "ParticleGraph"),
+        ],
+    )
+    artifact_root = project / "Library" / "Artifacts" / "Particle"
+    _write_particle_artifact(artifact_root / f"{guid1}.inxparticle", first)
+    _write_particle_artifact(artifact_root / f"{guid2}.inxparticle", second)
+    (artifact_root / "RuntimeIndex.json").write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.particle_runtime_index",
+                "entries": [
+                    {
+                        "guid": guid1,
+                        "path_hint": "Assets/VFX/shared.particlegraph",
+                        "stable_id": "shared",
+                    },
+                    {
+                        "guid": guid2,
+                        "path_hint": "Assets/VFX/copy.particlegraph",
+                        "stable_id": "shared",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    builder._copy_game_data(str(tmp_path / "dist"))
+    shipped = tmp_path / "dist" / "Data" / "Library" / "Artifacts" / "Particle"
+    assert (shipped / f"{guid1}.inxparticle").is_file()
+    assert (shipped / f"{guid2}.inxparticle").is_file()
+
+
+def test_validate_artifact_rejects_particle_owned_by_another_guid(tmp_path):
+    project = _make_project(tmp_path)
+    source = project / "Assets" / "VFX" / "owned.particlegraph"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        ParticleGraphAsset(stable_id="owned", name="owned").canonical_json(),
+        encoding="utf-8",
+    )
+    guid = hashlib.md5(b"owned").hexdigest()
+    artifact = project / "Library" / "Artifacts" / "Particle" / "owned.inxparticle"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.particle_artifact",
+                "source_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "source_hash": _particle_source_hash(source),
+                "kernel_ir": {"emitters": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeArtifactError, match="belongs to"):
+        validate_artifact(
+            project,
+            _asset_index_entry(project, source, guid, "", "ParticleGraph"),
+            artifact,
+        )
+
+
 def test_particle_runtime_index_is_not_required_without_particle_references(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
@@ -2945,6 +3026,32 @@ def test_player_runtime_and_content_archives_share_build_profile(
         "Runtime.inxrt": expected_profile,
         "Content.inxpkg": expected_profile,
     }
+
+
+def test_pack_content_archive_yields_the_editor_thread(tmp_path, monkeypatch):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    final_dir = tmp_path / "dist"
+    data_root = final_dir / "TestGame_Data" / "RuntimeAssets"
+    data_root.mkdir(parents=True)
+    for index in range(12):
+        (data_root / f"Item{index}.bin").write_bytes(b"payload")
+    yields: list[int] = []
+    reports: list[tuple[str, float]] = []
+    monkeypatch.setattr(
+        game_builder_module,
+        "_yield_editor_thread",
+        lambda: yields.append(1),
+    )
+
+    builder._pack_content_archive(
+        str(final_dir),
+        on_progress=lambda message, fraction: reports.append((message, fraction)),
+    )
+
+    assert len(yields) >= 12
+    assert any("Packing project content" in message for message, _fraction in reports)
+    assert any(message == "Compressing project content" for message, _fraction in reports)
+    assert (final_dir / "TestGame_Data" / "Content.inxpkg").is_file()
 
 
 def _write_scene_material_audio_reachability_fixture(

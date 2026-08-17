@@ -220,6 +220,10 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
         assert artifact is not None
         assert ParticleArtifactRegistry.get(str(source)) is artifact
         assert artifact.hir["stable_id"] == "integration-smoke"
+        assert Path(artifact.artifact_path).name == f"{result.guid}.inxparticle"
+        assert Path(
+            asset_db.get_runtime_artifact_path(result.guid, ResourceType.ParticleGraph)
+        ) == Path(artifact.artifact_path)
         assert AssetDependencyGraph.instance().get_dependencies(result.guid) == {
             collision_guid,
             mesh_guid,

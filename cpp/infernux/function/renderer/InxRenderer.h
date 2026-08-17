@@ -626,6 +626,7 @@ class InxRenderer
     void UpdateParticleCollisionScene();
     void ConsumeSceneTemporalDiscontinuity();
     void InvalidateGpuViewStateForSceneBoundary();
+    void RecreateSceneRenderGraph();
 
     InxAppMetadata m_appMetadata;
     InxAppMetadata m_rendererMetadata;

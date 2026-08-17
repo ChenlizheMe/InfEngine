@@ -3168,7 +3168,11 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         document = copy.deepcopy(self._asset.to_dict())
         document["name"] = title
         asset = ParticleGraphAsset.from_dict(document)
-        prepared = ParticleArtifactRegistry.prepare_graph_asset(asset, normalized)
+        from Infernux.core.asset_types import read_meta_guid
+
+        prepared = ParticleArtifactRegistry.prepare_graph_asset(
+            asset, normalized, guid=read_meta_guid(normalized)
+        )
         return AuthoringAssetSnapshot(
             normalized,
             prepared.source_text,

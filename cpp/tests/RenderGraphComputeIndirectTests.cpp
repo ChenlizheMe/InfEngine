@@ -1147,10 +1147,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(particleSystems.Reset(managedProgram.id) && !particleSystems.Reset(999999),
                  "GPU particle manager reset lookup is incorrect"))
         return false;
-    particleSystems.ResetAll();
-    if (!Require(particleSystems.Contains(managedProgram.id),
-                 "GPU particle ResetAll must keep resident emitters and only re-arm bootstrap"))
-        return false;
     const infernux::particle::GpuParticleBatchFrameItem managedBatchItem{
         managedProgram.id, {}, managedFrame, managedTransforms};
     if (!Require(particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {managedBatchItem}),

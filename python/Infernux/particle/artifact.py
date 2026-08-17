@@ -33,6 +33,19 @@ PARTICLE_RUNTIME_INDEX_SCHEMA = "infernux.particle_runtime_index"
 PARTICLE_RUNTIME_INDEX_FILENAME = "RuntimeIndex.json"
 
 
+def particle_artifact_filename(identity: str) -> str:
+    """Return ``{guid}.inxparticle``, matching AssetDatabase runtime paths.
+
+    The identity is the AssetDatabase / ``.meta`` GUID. Graph ``stable_id`` is
+    only used when a compile has no asset identity yet (tests or first save).
+    """
+
+    token = str(identity or "").strip()
+    if not token or not all(character.isalnum() or character in "-_" for character in token):
+        token = hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
+    return f"{token}.inxparticle"
+
+
 class ParticleArtifactError(ValueError):
     pass
 
@@ -76,6 +89,7 @@ class PreparedParticleGraphArtifact:
     request_generation: int
     artifact_path: str
     source_text: str
+    guid: str = ""
 
 
 class ParticleArtifactRegistry:
@@ -287,7 +301,19 @@ class ParticleArtifactRegistry:
             raise ParticleArtifactError(
                 f"particle runtime index has an invalid stable_id: {stable_id!r}"
             )
-        artifact_path = os.path.join(artifact_root, stable_id + ".inxparticle")
+        artifact_path = ""
+        for identity in (selected["guid"].strip(), stable_id):
+            if not identity:
+                continue
+            candidate = os.path.join(artifact_root, particle_artifact_filename(identity))
+            if os.path.isfile(candidate):
+                artifact_path = candidate
+                break
+        if not artifact_path:
+            artifact_path = os.path.join(
+                artifact_root,
+                particle_artifact_filename(selected["guid"].strip() or stable_id),
+            )
         try:
             payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
             source_hash = payload["source_hash"]
@@ -359,7 +385,8 @@ class ParticleArtifactRegistry:
                     f"particle graph AOT compile failed: {exc}"
                 ) from exc
 
-        artifact_path = cls._artifact_path(asset.stable_id)
+        owner = cls._resolve_source_guid(source_path, guid)
+        artifact_path = cls._artifact_path(owner or asset.stable_id)
         source_text = (
             json.dumps(asset.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
             + "\n"
@@ -372,6 +399,7 @@ class ParticleArtifactRegistry:
             ticket,
             artifact_path,
             source_text,
+            owner,
         )
 
     @classmethod
@@ -389,6 +417,7 @@ class ParticleArtifactRegistry:
             path_identity=prepared.path_identity,
             ticket=prepared.request_generation,
             artifact_path=prepared.artifact_path,
+            guid=prepared.guid,
         )
 
     @classmethod
@@ -441,7 +470,14 @@ class ParticleArtifactRegistry:
                 cls._register_unlocked(alias, key, path_identity)
                 return alias
 
-        artifact_path = cls._artifact_path(stable_id)
+        owner = cls._resolve_source_guid(source_path, guid)
+        publish_path = cls._artifact_path(owner or stable_id)
+        artifact_path = (
+            cls._existing_artifact_path(
+                guid=owner, source_path=source_path, stable_id=stable_id
+            )
+            or publish_path
+        )
         if not force_recompile and existing is None and artifact_path:
             persisted = cls._load_persisted(
                 artifact_path,
@@ -474,7 +510,8 @@ class ParticleArtifactRegistry:
             key=key,
             path_identity=path_identity,
             ticket=ticket,
-            artifact_path=artifact_path,
+            artifact_path=publish_path,
+            guid=owner,
         )
 
     @classmethod
@@ -554,6 +591,7 @@ class ParticleArtifactRegistry:
         ticket: int,
         artifact_path: str,
         source_text: str | None = None,
+        guid: str = "",
     ) -> ParticleArtifact:
         with cls._lock:
             if cls._request_generation.get(path_identity) != ticket:
@@ -600,6 +638,7 @@ class ParticleArtifactRegistry:
                 cls._publish_runtime_index_entry(
                     source_path,
                     stable_id=compiled.stable_id,
+                    guid=guid,
                 )
 
             cls._revision = max(cls._revision, revision)
@@ -607,7 +646,9 @@ class ParticleArtifactRegistry:
             return artifact
 
     @staticmethod
-    def _publish_runtime_index_entry(source_path: str, *, stable_id: str) -> None:
+    def _publish_runtime_index_entry(
+        source_path: str, *, stable_id: str, guid: str = ""
+    ) -> None:
         from Infernux.core.document_store import write_document_text
         from Infernux.engine.project_context import get_project_root
 
@@ -621,14 +662,7 @@ class ParticleArtifactRegistry:
         except ValueError:
             return
 
-        guid = ""
-        try:
-            meta = json.loads(Path(source_path + ".meta").read_text(encoding="utf-8"))
-            value = meta["metadata"]["guid"]["value"]
-            if type(value) is str:
-                guid = value.strip()
-        except (OSError, KeyError, TypeError, json.JSONDecodeError):
-            pass
+        guid = ParticleArtifactRegistry._resolve_source_guid(source_path, guid)
 
         artifact_root = os.path.join(
             project_root, "Library", "Artifacts", "Particle"
@@ -657,7 +691,6 @@ class ParticleArtifactRegistry:
             entry
             for entry in entries
             if portable_path(entry["path_hint"]).casefold() != path_identity
-            and entry["stable_id"] != stable_id
             and (not guid or entry["guid"] != guid)
         ]
         entries.append(
@@ -738,22 +771,78 @@ class ParticleArtifactRegistry:
         identity = str(guid or "").strip()
         return identity or path_key(path)
 
+    @classmethod
+    def _resolve_source_guid(cls, source_path: str, guid: str = "") -> str:
+        """Resolve the stable asset GUID; never invent a new one.
+
+        Texture/Mesh identity comes from ``InxResourceMeta::GenerateGuid()``
+        and is preserved in the ``.meta`` sidecar. Particle artifacts use
+        that same GUID so copies of a graph cannot share one Library file.
+        """
+        owner = str(guid or "").strip()
+        if owner:
+            return owner
+        from Infernux.core.asset_types import read_meta_guid
+
+        owner = read_meta_guid(source_path)
+        if owner:
+            return owner
+        try:
+            from Infernux.core.assets import AssetManager
+
+            owner = str(AssetManager._get_guid_from_path(source_path) or "").strip()
+        except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+            return ""
+        return owner
+
+    @classmethod
+    def _existing_artifact_path(
+        cls,
+        *,
+        guid: str = "",
+        source_path: str = "",
+        stable_id: str = "",
+    ) -> str:
+        owner = cls._resolve_source_guid(source_path, guid)
+        candidates = []
+        if owner:
+            candidates.append(cls._artifact_path(owner))
+        if stable_id and (not owner or particle_artifact_filename(stable_id) != particle_artifact_filename(owner)):
+            candidates.append(cls._artifact_path(stable_id))
+        for candidate in candidates:
+            if candidate and os.path.isfile(candidate):
+                return candidate
+        return ""
+
     @staticmethod
-    def _artifact_path(stable_id: str) -> str:
+    def _artifact_path(identity: str) -> str:
         from Infernux.engine.project_context import get_project_root
 
+        token = str(identity or "").strip()
+        if not token:
+            return ""
+        try:
+            from Infernux.core.assets import AssetManager
+            from Infernux.lib import ResourceType
+
+            database = getattr(AssetManager, "_asset_database", None)
+            if database is not None:
+                path = str(
+                    database.get_runtime_artifact_path(token, ResourceType.ParticleGraph) or ""
+                )
+                if path:
+                    return path
+        except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+            pass
         project_root = get_project_root()
         if not project_root:
             return ""
-        identity = stable_id
-        if not identity or not all(character.isalnum() or character in "-_" for character in identity):
-            identity = hashlib.sha256(stable_id.encode("utf-8")).hexdigest()[:32]
         return os.path.join(
             project_root,
             "Library",
             "Artifacts",
             "Particle",
-            f"{identity}.inxparticle",
+            particle_artifact_filename(token),
         )
 
     @staticmethod
@@ -1030,4 +1119,5 @@ __all__ = [
     "ParticleArtifactError",
     "ParticleArtifactRegistry",
     "PreparedParticleGraphArtifact",
+    "particle_artifact_filename",
 ]
