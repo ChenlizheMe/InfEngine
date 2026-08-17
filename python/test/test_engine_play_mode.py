@@ -389,6 +389,45 @@ class TestPlayModeManager:
         manager._invalidate_native_gpu_view_state()
         assert waits == [True]
 
+    def test_mark_native_scene_temporal_discontinuity_does_not_drain(self):
+        waits = []
+        manager = PlayModeManager()
+        manager._native_engine = SimpleNamespace(wait_for_gpu_idle=lambda: waits.append(True))
+        manager._mark_native_scene_temporal_discontinuity()
+        assert waits == []
+
+    def test_enter_play_mode_drains_before_native_start(self, monkeypatch):
+        from Infernux.engine.deferred_task import DeferredTaskRunner
+
+        order = []
+
+        class _SceneManager:
+            def play(self):
+                order.append("play")
+
+        class _Runner:
+            is_busy = False
+
+            def submit(self, _name, steps, on_done=None):
+                self.steps = list(steps)
+                return True
+
+        runner = _Runner()
+        monkeypatch.setattr(DeferredTaskRunner, "_instance", runner)
+        manager = PlayModeManager()
+        manager._scene_backup = object()
+        manager._save_scene_state = lambda: None
+        manager._prepare_active_scene_for_play = lambda *_args, **_kwargs: True
+        manager._get_scene_manager = lambda: _SceneManager()
+        manager._notify_state_change = lambda *_args: None
+        manager._invalidate_native_gpu_view_state = lambda: order.append("invalidate")
+        manager._mark_native_scene_temporal_discontinuity = lambda: order.append("mark")
+
+        assert manager.enter_play_mode() is True
+        _, _, step_enter = runner.steps[0]
+        assert step_enter() is None
+        assert order == ["invalidate", "play", "mark"]
+
     def test_exit_play_mode_invalidates_gpu_view_state_after_restore(self, monkeypatch):
         from Infernux.engine.deferred_task import DeferredTaskRunner
 

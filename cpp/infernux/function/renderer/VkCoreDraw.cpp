@@ -108,8 +108,11 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     const bool independentCompute = graphicsQueue.queue != VK_NULL_HANDLE && computeQueue.queue != VK_NULL_HANDLE &&
                                     graphicsQueue.nativeLane != UINT32_MAX && computeQueue.nativeLane != UINT32_MAX &&
                                     graphicsQueue.nativeLane != computeQueue.nativeLane;
-    const bool asyncCompute = independentCompute && m_frameAsyncSimulationExecutor && m_frameAsyncExportExecutor &&
-                              m_frameAsyncComputeReady && m_frameAsyncComputeGeneration && m_frameAsyncComputeReady();
+    const bool partitionedCompute = independentCompute && m_frameAsyncSimulationExecutor &&
+                                    m_frameAsyncExportExecutor && m_framePartitionedComputeReady &&
+                                    m_framePartitionedComputeReady();
+    const bool asyncCompute =
+        partitionedCompute && m_frameAsyncComputeReady && m_frameAsyncComputeGeneration && m_frameAsyncComputeReady();
     if (!asyncCompute) {
         // Losing async readiness is a lifecycle boundary (Play/Stop, reset,
         // graph removal, or a temporarily empty scheduler). The next async
@@ -135,26 +138,23 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         m_frameSubmission.Reset();
         const rhi::DeviceId device = m_backend.Device().GetDeviceId();
         std::vector<uint32_t> setupDependencies;
-        if (primeAsyncCompute) {
+        const bool splitParticleCompute = primeAsyncCompute || (separateComputeBatch && partitionedCompute);
+        if (splitParticleCompute) {
             const uint32_t primeSimulation = m_frameSubmission.AddWork(
                 device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
                 rhi::PipelineStage::ComputeShader, {},
-                [this](VkCommandBuffer commandBuffer) {
-                    return m_frameAsyncSimulationExecutor(commandBuffer);
-                },
+                [this](VkCommandBuffer commandBuffer) { return m_frameAsyncSimulationExecutor(commandBuffer); },
                 "GpuParticle/PrimeSimulation");
             const uint32_t primeExport = m_frameSubmission.AddWork(
                 device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
                 rhi::PipelineStage::ComputeShader, {primeSimulation},
                 [this](VkCommandBuffer commandBuffer) { return m_frameAsyncExportExecutor(commandBuffer); },
                 "GpuParticle/PrimeExport");
-            // A generation boundary must establish the same simulation/export
-            // submission boundary as steady state. Recording the entire
-            // particle RenderGraph into one command buffer erased the compiled
-            // boundary and made Play -> Stop -> Play capable of presenting a
-            // single watchdog-sized compute submission. The explicit
-            // dependency also gives the export phase an actual GPU completion
-            // point instead of relying on CPU recording order.
+            // Play -> Stop -> Play often has preroll, so CanExecuteAsync is
+            // false and the old path recorded the entire particle graph into
+            // one GpuParticle/Simulation buffer. That erased the compiled
+            // sim/export boundary and tripped the 1000 ms frame watchdog.
+            // Keep the same two-submission split as async prime.
             setupDependencies.push_back(primeExport);
         } else if (separateComputeBatch) {
             const uint32_t compute = m_frameSubmission.AddWork(
@@ -337,11 +337,16 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     externalSync.renderFinished = m_backend.Presentation().GetRenderFinishedSemaphore(imageIndex);
     externalSync.completionFence = m_backend.Queues().GetGraphicsFrameFence(frameSlot);
     externalSync.completionEpoch = m_backend.Queues().GetFrameCompletionEpoch(frameSlot);
-    if (asyncCompute) {
+    if (asyncCompute || separateComputeBatch) {
+        // Game-only Play -> Stop -> Play submits GpuParticle/Simulation on
+        // Compute while the previous Game view still owns exported particle
+        // buffers on Graphics. Async prime already waits the previous
+        // timeline; the sync fallback must do the same or the compute lane
+        // hangs inside exclusive queue-family ownership.
         externalSync.previousFrameTimeline = m_previousFrameCompletionTimeline;
         externalSync.previousFrameTimelineValue = m_previousFrameCompletionTimelineValue;
         externalSync.previousFrameStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-        externalSync.previousFrameWaitAtFirstBatch = primeAsyncCompute;
+        externalSync.previousFrameWaitAtFirstBatch = primeAsyncCompute || separateComputeBatch;
     }
 
     vk::VulkanSubmissionExecutor::ExecuteResult executeResult{};

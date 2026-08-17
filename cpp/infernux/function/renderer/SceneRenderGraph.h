@@ -432,7 +432,8 @@ class SceneRenderGraph
     [[nodiscard]] bool CanReuseCachedSubmission(uint64_t signature, uint64_t objectBufferRevision) const noexcept
     {
         return m_hasCachedDrawCalls && signature != 0 && objectBufferRevision != 0 &&
-               m_cachedSubmissionSignature == signature && m_cachedObjectBufferRevision == objectBufferRevision;
+               m_cachedSubmissionSignature == signature && m_cachedObjectBufferRevision == objectBufferRevision &&
+               m_cachedParticleDrawRegistryRevision == CurrentParticleDrawRegistryRevision();
     }
 
     void SetCachedSubmissionSignature(uint64_t signature, std::shared_ptr<const void> owner = {},
@@ -441,6 +442,7 @@ class SceneRenderGraph
         m_cachedSubmissionSignature = signature;
         m_cachedRenderWorldOwner = std::move(owner);
         m_cachedObjectBufferRevision = objectBufferRevision;
+        m_cachedParticleDrawRegistryRevision = CurrentParticleDrawRegistryRevision();
     }
 
     /// @brief Cache owned or borrowed shadow-caster candidates for this graph.
@@ -457,6 +459,7 @@ class SceneRenderGraph
         m_hasCachedShadowDrawCalls = false;
         m_cachedSubmissionSignature = 0;
         m_cachedObjectBufferRevision = 0;
+        m_cachedParticleDrawRegistryRevision = 0;
         m_cachedRenderWorldOwner.reset();
     }
 
@@ -538,6 +541,7 @@ class SceneRenderGraph
         m_hasCachedShadowDrawCalls = false;
         m_cachedSubmissionSignature = 0;
         m_cachedObjectBufferRevision = 0;
+        m_cachedParticleDrawRegistryRevision = 0;
         m_cachedRenderWorldOwner.reset();
         m_cachedView = glm::mat4(1.0f);
         m_cachedProj = glm::mat4(1.0f);
@@ -705,6 +709,7 @@ class SceneRenderGraph
     [[nodiscard]] bool PrepareForwardPlusFrame();
     void RetireForwardPlusResources();
     void RecordParticleViewDiagnostics(VkCommandBuffer commandBuffer);
+    [[nodiscard]] uint64_t CurrentParticleDrawRegistryRevision() const noexcept;
 
     InxVkCoreModular *m_vkCore = nullptr;
     SceneRenderTarget *m_sceneTarget = nullptr;
@@ -813,6 +818,7 @@ class SceneRenderGraph
     bool m_hasCachedShadowDrawCalls = false;
     uint64_t m_cachedSubmissionSignature = 0;
     uint64_t m_cachedObjectBufferRevision = 0;
+    uint64_t m_cachedParticleDrawRegistryRevision = 0;
     std::shared_ptr<const void> m_cachedRenderWorldOwner;
     bool m_hasShadowCasterPass = false;
 

@@ -364,12 +364,22 @@ class ParticleGpuSystemManager
     /// Update one emitter's graph-owned runtime playing state without rebuilding resources.
     [[nodiscard]] bool SetEmitterPlaying(uint64_t id, bool playing);
     [[nodiscard]] bool Reset(uint64_t id);
+    /// Arm bootstrap on every resident emitter. Play/Stop must not resume
+    /// indirect dispatches from a previous generation's alive list.
+    void ResetAll();
     void Execute(VkCommandBuffer commandBuffer);
+    /// Drop a half-open async simulation/export recording after Play/Stop.
+    /// The next submission must begin a new compiled batch session.
+    void AbortAsyncRecording() noexcept;
     /// Record the pre-export simulation phase on an independent Compute queue.
     [[nodiscard]] bool RecordAsyncSimulation(VkCommandBuffer commandBuffer);
     /// Record Rendering/Bounds after the current Graphics frame has consumed
     /// the previous exported particle output.
     [[nodiscard]] bool RecordAsyncExport(VkCommandBuffer commandBuffer);
+    /// True when the compiled graph can record simulation and export as two
+    /// Compute submissions. Preroll and offscreen policy still allow this;
+    /// they only forbid overlapping simulation with the current Graphics frame.
+    [[nodiscard]] bool CanRecordPartitioned() const noexcept;
     [[nodiscard]] bool CanExecuteAsync() const noexcept;
     /// Returns true only when the frame compute callback would record useful
     /// particle work (simulation, collision upload, or diagnostics).

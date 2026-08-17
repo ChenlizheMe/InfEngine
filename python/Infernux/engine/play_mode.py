@@ -775,12 +775,15 @@ class PlayModeManager(PlayModeSerializationMixin):
                 return False
             rebuild_ms = (time.perf_counter() - rebuild_started) * 1000.0
 
-            # 4. Enter C++ play mode (Scene::Start drives remaining lifecycle)
+            # 4. Drain retired edit-domain particle graphs, then enter C++
+            #    play. Waiting after Start would FlushRetired while the new
+            #    graphs already exist and can recycle the same Vulkan handles.
             scene_manager = self._get_scene_manager()
             native_start_started = time.perf_counter()
+            self._invalidate_native_gpu_view_state()
             if scene_manager:
                 scene_manager.play()
-            self._invalidate_native_gpu_view_state()
+            self._mark_native_scene_temporal_discontinuity()
             native_start_ms = (time.perf_counter() - native_start_started) * 1000.0
             total_ms = (time.perf_counter() - transition_started) * 1000.0
             self._last_transition_timings_ms = {
@@ -1922,13 +1925,8 @@ class PlayModeManager(PlayModeSerializationMixin):
         if callback in self._state_change_listeners:
             self._state_change_listeners.remove(callback)
     
-    def _invalidate_native_gpu_view_state(self) -> None:
-        """Drain GPU work after Play/Stop replaces native particle graphs.
-
-        Game RenderGraphs keep camera IDs across a same-scene rebuild. The
-        next frame must not reuse compiled particle cullers or cached Game
-        submissions that still import the retired buffers.
-        """
+    def _mark_native_scene_temporal_discontinuity(self) -> None:
+        """Ask the renderer to drop Game/Scene caches on the next frame."""
         try:
             from Infernux.lib import SceneManager as NativeSceneManager
 
@@ -1936,7 +1934,17 @@ class PlayModeManager(PlayModeSerializationMixin):
             if native is not None:
                 native.mark_temporal_discontinuity()
         except Exception as exc:
-            Debug.log_suppressed("PlayModeManager.invalidate_native_gpu_view_state.mark", exc)
+            Debug.log_suppressed("PlayModeManager.mark_native_scene_temporal_discontinuity", exc)
+
+    def _invalidate_native_gpu_view_state(self) -> None:
+        """Drain GPU work after Play/Stop retires native particle graphs.
+
+        Game RenderGraphs keep camera IDs across a same-scene rebuild. The
+        next frame must not reuse compiled particle cullers or cached Game
+        submissions that still import the retired buffers. Call this after
+        the old graphs are retired and before new ones are created.
+        """
+        self._mark_native_scene_temporal_discontinuity()
         engine = self._native_engine
         if engine is None:
             return

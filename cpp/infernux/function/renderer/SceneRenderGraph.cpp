@@ -861,6 +861,11 @@ void SceneRenderGraph::InvalidateTemporalHistory()
     m_renderView.history = {};
 }
 
+uint64_t SceneRenderGraph::CurrentParticleDrawRegistryRevision() const noexcept
+{
+    return m_particleDrawRegistry ? m_particleDrawRegistry->Revision() : 0;
+}
+
 void SceneRenderGraph::InvalidateParticleViews()
 {
     const auto retireCuller = [this](std::shared_ptr<particle::ParticleGpuCuller> culler) {

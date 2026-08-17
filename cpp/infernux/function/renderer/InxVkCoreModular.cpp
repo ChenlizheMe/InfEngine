@@ -662,11 +662,13 @@ void InxVkCoreModular::SetFrameComputeWorkPredicate(std::function<bool()> predic
 
 void InxVkCoreModular::SetFrameAsyncComputeExecutors(std::function<bool(VkCommandBuffer)> simulation,
                                                      std::function<bool(VkCommandBuffer)> exportPhase,
-                                                     std::function<bool()> ready, std::function<uint64_t()> generation)
+                                                     std::function<bool()> ready, std::function<uint64_t()> generation,
+                                                     std::function<bool()> partitionedReady)
 {
     m_frameAsyncSimulationExecutor = std::move(simulation);
     m_frameAsyncExportExecutor = std::move(exportPhase);
     m_frameAsyncComputeReady = std::move(ready);
+    m_framePartitionedComputeReady = partitionedReady ? std::move(partitionedReady) : m_frameAsyncComputeReady;
     m_frameAsyncComputeGeneration = std::move(generation);
     m_frameAsyncComputePrimed = false;
     m_frameAsyncComputePrimedGeneration = 0;
@@ -984,6 +986,14 @@ void InxVkCoreModular::CollectRetiredGpuResources()
 void InxVkCoreModular::FlushRetiredGpuResources()
 {
     m_deletionQueue.FlushAll();
+    // Graph/runtime destructors Release() buffers and descriptor sets onto
+    // serial-gated RHI queues. After vkDeviceWaitIdle those serials are
+    // complete; collect them now so the next Play generation cannot reuse
+    // handle slots or descriptor sets that still own the previous objects.
+    const auto completed = (std::numeric_limits<rhi::SubmissionSerial>::max)();
+    (void)m_bindlessTextureTable.Collect(completed);
+    (void)m_backend.Device().GetRhiDevice().CollectDescriptorRetirements(completed);
+    (void)m_backend.Device().GetRhiDevice().CollectResourceRetirements(completed);
 }
 
 void InxVkCoreModular::RetireGpuResource(std::function<void()> deleter)

@@ -711,7 +711,8 @@ void InxRenderer::PreparePipeline()
                 return m_particleGpuSystemManager && m_particleGpuSystemManager->RecordAsyncExport(cmdBuf);
             },
             [this] { return m_particleGpuSystemManager && m_particleGpuSystemManager->CanExecuteAsync(); },
-            [this] { return m_particleGpuSystemManager ? m_particleGpuSystemManager->AsyncExecutionGeneration() : 0; });
+            [this] { return m_particleGpuSystemManager ? m_particleGpuSystemManager->AsyncExecutionGeneration() : 0; },
+            [this] { return m_particleGpuSystemManager && m_particleGpuSystemManager->CanRecordPartitioned(); });
 
         // Hook RenderGraph execution into the pre-render callback
         m_vkCore->SetRenderGraphExecutor([this](VkCommandBuffer cmdBuf) {
@@ -4143,6 +4144,10 @@ void InxRenderer::ConsumeSceneTemporalDiscontinuity()
 
 void InxRenderer::InvalidateGpuViewStateForSceneBoundary()
 {
+    if (m_particleGpuSystemManager) {
+        m_particleGpuSystemManager->AbortAsyncRecording();
+        m_particleGpuSystemManager->ResetAll();
+    }
     if (m_sceneRenderGraph)
         m_sceneRenderGraph->InvalidateParticleViews();
     for (auto &[cameraId, graph] : m_gameRenderGraphs) {
@@ -4150,6 +4155,14 @@ void InxRenderer::InvalidateGpuViewStateForSceneBoundary()
         graph->InvalidateParticleViews();
     }
     WaitForGpuIdle();
+    // Game cameras keep the same IDs across Play/Stop. Destroy the compiled
+    // graphs only after the device is idle: SceneRenderGraph::Destroy releases
+    // RHI objects immediately. The next Game frame must import the current
+    // particle generation instead of recycled handles from two Play cycles ago.
+    m_gameRenderGraph = nullptr;
+    m_gameRenderGraphs.clear();
+    if (m_vkCore)
+        m_vkCore->FlushRetiredGpuResources();
 }
 
 void InxRenderer::SetSceneViewVisible(bool visible)

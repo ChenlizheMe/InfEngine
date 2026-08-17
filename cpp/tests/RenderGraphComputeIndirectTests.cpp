@@ -872,7 +872,10 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(!particleSystems.HasPendingGpuWork(),
                  "An initialized GPU particle manager without emitters must not publish frame compute work"))
         return false;
-    if (!Require(!particleSystems.CanExecuteAsync(),
+    particleSystems.AbortAsyncRecording();
+    if (!Require(!particleSystems.CanRecordPartitioned(),
+                 "An initialized GPU particle manager without emitters must not record partitioned compute") ||
+        !Require(!particleSystems.CanExecuteAsync(),
                  "An initialized GPU particle manager without emitters must not enable async compute"))
         return false;
     if (!Require(!particleSystems.RequiresCollisionScene(),
@@ -1143,6 +1146,10 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     managedTransforms.worldToSimulation = managedTransforms.emitterToWorld;
     if (!Require(particleSystems.Reset(managedProgram.id) && !particleSystems.Reset(999999),
                  "GPU particle manager reset lookup is incorrect"))
+        return false;
+    particleSystems.ResetAll();
+    if (!Require(particleSystems.Contains(managedProgram.id),
+                 "GPU particle ResetAll must keep resident emitters and only re-arm bootstrap"))
         return false;
     const infernux::particle::GpuParticleBatchFrameItem managedBatchItem{
         managedProgram.id, {}, managedFrame, managedTransforms};
@@ -2253,9 +2260,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     prewarmStep0.render = false;
     prewarmStep0.forceSimulation = true;
     std::vector<infernux::particle::GpuParticleFrameRequest> prewarmSteps;
-    // More than two full submission budgets forces repeated graph recording
-    // in two command buffers. Each repeated execution consumes the alive list
-    // and indirect arguments produced by the preceding fixed step.
+    // More than one compiled execution must spill across later submissions.
+    // Each submission consumes the alive list and indirect arguments produced
+    // by the preceding fixed step.
     for (uint32_t step = 0; step < 17; ++step) {
         auto request = prewarmStep0;
         request.substepIndex = step;
@@ -2270,14 +2277,20 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     const infernux::particle::GpuParticleBatchFrameItem prewarmBatchItem{managedProgram.id, prewarmSteps,
                                                                          postPrewarmFrame, managedTransforms};
     if (!Require(particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {prewarmBatchItem}) &&
-                     !particleSystems.CanExecuteAsync(),
-                 "GPU particle manager rejected or asynchronously split a fixed-step preroll sequence") ||
-        !executeManagedFrame("GPU particle preroll first bounded submission failed") ||
-        !Require(particleSystems.HasPendingGpuWork(),
-                 "GPU particle preroll exhausted an unbounded fixed-step sequence in one submission") ||
-        !executeManagedFrame("GPU particle preroll second bounded submission failed") ||
-        !Require(particleSystems.HasPendingGpuWork(), "GPU particle preroll lost its final continued-execution step") ||
-        !executeManagedFrame("GPU particle preroll final bounded submission failed") ||
+                     particleSystems.CanRecordPartitioned() && !particleSystems.CanExecuteAsync(),
+                 "GPU particle manager rejected or asynchronously overlapped a fixed-step preroll sequence"))
+        return false;
+    uint32_t prerollSubmissions = 0;
+    while (particleSystems.HasPendingGpuWork()) {
+        if (prerollSubmissions >= 18) {
+            (void)Require(false, "GPU particle preroll exceeded one compiled execution per submission");
+            return false;
+        }
+        if (!executeManagedFrame("GPU particle preroll bounded submission failed"))
+            return false;
+        ++prerollSubmissions;
+    }
+    if (!Require(prerollSubmissions > 1, "GPU particle preroll packed every fixed step into one submission") ||
         !Require(!particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {prewarmBatchItem}),
                  "GPU particle manager accepted an already consumed preroll sequence"))
         return false;

@@ -630,7 +630,8 @@ class InxVkCoreModular
     /// the next frame.
     void SetFrameAsyncComputeExecutors(std::function<bool(VkCommandBuffer)> simulation,
                                        std::function<bool(VkCommandBuffer)> exportPhase, std::function<bool()> ready,
-                                       std::function<uint64_t()> generation);
+                                       std::function<uint64_t()> generation,
+                                       std::function<bool()> partitionedReady = {});
 
     /// @brief Set the GUI render callback using RenderGraph context
     /// @param callback Callback that receives RenderContext for drawing
@@ -984,9 +985,12 @@ class InxVkCoreModular
     /// Call once per frame AFTER WaitForCurrentFrame().
     void CollectRetiredGpuResources();
 
-    /// @brief Immediately flush all deferred deletions.
+    /// @brief Immediately flush all deferred deletions and RHI retirements.
     ///
-    /// Caller must ensure the device is idle before invoking this.
+    /// Caller must ensure the device is idle before invoking this. Graph
+    /// destructors enqueue buffers and descriptor sets onto serial-gated
+    /// queues; those must be collected here so the next Play generation
+    /// cannot reuse slots that still own the previous objects.
     void FlushRetiredGpuResources();
 
     /// @brief Enqueue a GPU resource for deferred deletion.
@@ -1405,6 +1409,7 @@ class InxVkCoreModular
     std::function<bool(VkCommandBuffer cmdBuf)> m_frameAsyncSimulationExecutor;
     std::function<bool(VkCommandBuffer cmdBuf)> m_frameAsyncExportExecutor;
     std::function<bool()> m_frameAsyncComputeReady;
+    std::function<bool()> m_framePartitionedComputeReady;
     std::function<uint64_t()> m_frameAsyncComputeGeneration;
     bool m_frameAsyncComputePrimed = false;
     uint64_t m_frameAsyncComputePrimedGeneration = 0;

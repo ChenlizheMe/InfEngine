@@ -102,10 +102,12 @@ uint64_t HashBytes(uint64_t hash, const void *data, size_t byteSize) noexcept
 struct ParticleGpuSystemManager::Impl
 {
     // Prewarm and seek may enqueue thousands of fixed simulation steps. Recording
-    // all of them into one command buffer makes the following frame-slot fence
-    // indistinguishable from a GPU hang. Keep submissions bounded and drain the
-    // remaining exact steps over subsequent frames.
-    static constexpr uint32_t MaxQueuedSimulationStepsPerSubmission = 8;
+    // several compiled graph executions into one command buffer erases the
+    // sim/export ownership boundary and makes the following frame-slot fence
+    // indistinguishable from a GPU hang after Play -> Stop -> Play. Record one
+    // compiled execution per submission and drain the remaining exact steps
+    // over subsequent frames.
+    static constexpr uint32_t MaxQueuedSimulationStepsPerSubmission = 1;
 
     struct DiagnosticState
     {
@@ -328,6 +330,34 @@ struct ParticleGpuSystemManager::Impl
             if (emitter)
                 emitter->queuedFrameRequests.clear();
         }
+    }
+
+    void AbortAsyncRecording() noexcept
+    {
+        if (graphState)
+            graphState->asyncRecordingActive = false;
+    }
+
+    [[nodiscard]] bool RecordPendingGraphExecution(VkCommandBuffer commandBuffer)
+    {
+        if (!graphState || !graphState->graph || commandBuffer == VK_NULL_HANDLE)
+            return false;
+        AbortAsyncRecording();
+        auto &state = *graphState;
+        if (!state.asyncPhasePartitioned) {
+            state.graph->Execute(commandBuffer, rhi::QueueRole::Compute);
+            return true;
+        }
+        const auto &plan = state.graph->GetSubmissionPlan();
+        state.graph->BeginExecution();
+        for (uint32_t batch = 0; batch < plan.batches.size(); ++batch) {
+            if (plan.batches[batch].queue != rhi::QueueRole::Compute ||
+                !state.graph->RecordSubmissionBatch(batch, commandBuffer)) {
+                INXLOG_ERROR("GPU particle sync simulation rejected compiled batch ", batch);
+                return false;
+            }
+        }
+        return true;
     }
 
     [[nodiscard]] bool RecordCollisionUpload(VkCommandBuffer commandBuffer)
@@ -1686,9 +1716,8 @@ struct ParticleGpuSystemManager::Impl
             for (uint32_t batchIndex = state->renderExportBatch;
                  state->asyncPhasePartitioned && batchIndex < plan.batches.size(); ++batchIndex) {
                 for (const uint32_t passId : plan.batches[batchIndex].workItems) {
-                    if (std::any_of(state->schedulers.begin(), state->schedulers.end(), [&](const auto &scheduler) {
-                            return scheduler->IsSimulationPass(passId);
-                        })) {
+                    if (std::any_of(state->schedulers.begin(), state->schedulers.end(),
+                                    [&](const auto &scheduler) { return scheduler->IsSimulationPass(passId); })) {
                         state->asyncPhasePartitioned = false;
                         break;
                     }
@@ -2409,6 +2438,16 @@ bool ParticleGpuSystemManager::Reset(uint64_t id)
     return true;
 }
 
+void ParticleGpuSystemManager::ResetAll()
+{
+    if (!m_impl || !m_impl->graphState)
+        return;
+    for (const auto &[id, emitter] : m_impl->emitters) {
+        (void)emitter;
+        (void)Reset(id);
+    }
+}
+
 void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
 {
     if (!m_impl || !m_impl->graphState || !m_impl->graphState->graph || commandBuffer == VK_NULL_HANDLE)
@@ -2419,10 +2458,8 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
                                          [](const auto &scheduler) { return scheduler->HasPendingFrame(); });
     uint32_t recordedSteps = 0;
     while (hasPendingEmitter && recordedSteps < Impl::MaxQueuedSimulationStepsPerSubmission) {
-        if (recordedSteps == 0)
-            m_impl->graphState->graph->Execute(commandBuffer, rhi::QueueRole::Compute);
-        else
-            m_impl->graphState->graph->ContinueExecution(commandBuffer, rhi::QueueRole::Compute);
+        if (!m_impl->RecordPendingGraphExecution(commandBuffer))
+            break;
         ++recordedSteps;
         if (!m_impl->HasQueuedFrameRequests())
             break;
@@ -2436,7 +2473,13 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
     m_impl->RecordDiagnostics(commandBuffer);
 }
 
-bool ParticleGpuSystemManager::CanExecuteAsync() const noexcept
+void ParticleGpuSystemManager::AbortAsyncRecording() noexcept
+{
+    if (m_impl)
+        m_impl->AbortAsyncRecording();
+}
+
+bool ParticleGpuSystemManager::CanRecordPartitioned() const noexcept
 {
     if (!m_impl || !m_impl->context || !m_impl->context->HasIndependentComputeQueue() || !m_impl->graphState ||
         !m_impl->graphState->graph || !m_impl->graphState->asyncPhasePartitioned || m_impl->emitters.empty())
@@ -2445,9 +2488,13 @@ bool ParticleGpuSystemManager::CanExecuteAsync() const noexcept
     const uint32_t boundary = m_impl->graphState->renderExportBatch;
     if (boundary == rhi::InvalidSubmissionBatchIndex || boundary == 0 || boundary >= plan.batches.size())
         return false;
-    return !m_impl->HasQueuedFrameRequests() &&
-           std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
-                       [](const auto &scheduler) { return scheduler && scheduler->HasPendingFrame(); }) &&
+    return std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
+                       [](const auto &scheduler) { return scheduler && scheduler->HasPendingFrame(); });
+}
+
+bool ParticleGpuSystemManager::CanExecuteAsync() const noexcept
+{
+    return CanRecordPartitioned() && !m_impl->HasQueuedFrameRequests() &&
            std::all_of(m_impl->emitters.begin(), m_impl->emitters.end(), [](const auto &entry) {
                return !entry.second->hasFrameRequest ||
                       entry.second->lastOffscreenPolicy == GpuParticleOffscreenPolicy::AlwaysSimulate;
@@ -2475,8 +2522,10 @@ uint64_t ParticleGpuSystemManager::AsyncExecutionGeneration() const noexcept
 
 bool ParticleGpuSystemManager::RecordAsyncSimulation(VkCommandBuffer commandBuffer)
 {
-    if (!CanExecuteAsync() || commandBuffer == VK_NULL_HANDLE || m_impl->graphState->asyncRecordingActive)
+    if (!CanRecordPartitioned() || commandBuffer == VK_NULL_HANDLE)
         return false;
+    if (m_impl->graphState->asyncRecordingActive)
+        m_impl->AbortAsyncRecording();
     if (!m_impl->RecordCollisionUpload(commandBuffer)) {
         INXLOG_ERROR("GPU particle collision scene upload failed during async simulation");
         return false;
@@ -2514,6 +2563,10 @@ bool ParticleGpuSystemManager::RecordAsyncExport(VkCommandBuffer commandBuffer)
     if (!recorded)
         return false;
     m_impl->RecordDiagnostics(commandBuffer);
+    if (m_impl->HasQueuedFrameRequests() && !m_impl->ArmNextQueuedFrameRequests()) {
+        INXLOG_ERROR("GPU particle preroll sequence could not arm its next fixed step");
+        m_impl->ClearQueuedFrameRequests();
+    }
     return true;
 }
 
