@@ -5,7 +5,12 @@ from __future__ import annotations
 import os
 import json
 
-from Infernux.engine.path_utils import is_path_within, relative_path, same_path
+from Infernux.engine.path_utils import (
+    is_path_within,
+    relative_path,
+    resolved_path,
+    same_path,
+)
 from Infernux.mcp.tools.common import (
     find_game_object,
     get_asset_database,
@@ -767,7 +772,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
             if not requested.lower().endswith(suffix):
                 requested += suffix
             target = resolve_project_path(project_path, requested)
-            assets_root = os.path.join(os.path.abspath(project_path), "Assets")
+            assets_root = resolved_path(os.path.join(project_path, "Assets"))
             if not is_path_within(target, assets_root):
                 raise ValueError("Prefab path must stay inside Assets/.")
             if os.path.exists(target) and not overwrite:

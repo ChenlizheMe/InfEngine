@@ -182,26 +182,6 @@ def test_build_settings_scene_controls_expose_stable_semantic_ids(monkeypatch):
     assert ctx.semantic_values["build_settings.scene.1.row"] == "Assets/results.scene"
 
 
-def test_build_settings_runtime_resource_roots_expose_stable_semantic_ids():
-    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
-    panel._additional_cook_roots = ["Assets/Runtime/Addressable"]
-    panel._save = lambda: None
-    ctx = _Context()
-
-    panel._render_runtime_resource_section(ctx)
-
-    semantic_ids = {item[3] for item in ctx.semantic_items}
-    assert {
-        "build_settings.cook_root.add",
-        "build_settings.cook_root.0",
-        "build_settings.cook_root.0.remove",
-    } <= semantic_ids
-    assert (
-        ctx.semantic_values["build_settings.cook_root.0"]
-        == "Assets/Runtime/Addressable"
-    )
-
-
 def test_build_settings_does_not_turn_external_splash_deletion_into_user_edit():
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
     panel._splash_items = [

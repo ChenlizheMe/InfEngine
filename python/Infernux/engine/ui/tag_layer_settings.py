@@ -47,6 +47,17 @@ class TagLayerSettingsPanel(EditorPanel):
     def on_enable(self) -> None:
         self._bind_project_settings_document()
 
+    def _document_controller_for_registry(self):
+        if not self._project_path:
+            return self
+        controller = ensure_project_settings_document(
+            self._project_path,
+            tag_layer_manager=self._get_mgr(),
+            physics_module=_phys_settings,
+        )
+        self._settings_controller = controller
+        return controller
+
     def _bind_project_settings_document(self) -> None:
         if not self._project_path:
             raise RuntimeError("Tags & Layers requires an active project")
@@ -273,6 +284,17 @@ class PhysicsLayerMatrixPanel(FloatingEditorPanel):
 
     def on_enable(self) -> None:
         self._bind_project_settings_document()
+
+    def _document_controller_for_registry(self):
+        if not self._project_path:
+            return self
+        controller = ensure_project_settings_document(
+            self._project_path,
+            tag_layer_manager=self._get_mgr(),
+            physics_module=_phys_settings,
+        )
+        self._settings_controller = controller
+        return controller
 
     def on_disable(self) -> None:
         if self._settings_controller is not None:

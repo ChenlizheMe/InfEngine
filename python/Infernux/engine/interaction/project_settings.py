@@ -25,7 +25,6 @@ from .documents import (
 BUILD_SETTINGS_DEFAULTS: dict[str, Any] = {
     "game_name": "",
     "scenes": [],
-    "additional_cook_roots": [],
     "output_dir": "",
     "icon_path": "",
     "display_mode": "fullscreen_borderless",
@@ -52,6 +51,10 @@ def _json_copy(value: Any) -> Any:
 def normalize_build_settings(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise TypeError("build settings must be a JSON object")
+    value = copy.deepcopy(value)
+    # Assets is the only Player content boundary.  Drop the former authoring
+    # option when an existing project is next loaded and saved.
+    value.pop("additional_cook_roots", None)
     unknown = set(value) - set(BUILD_SETTINGS_DEFAULTS)
     if unknown:
         raise ValueError(
@@ -63,22 +66,6 @@ def normalize_build_settings(value: Any) -> dict[str, Any]:
         isinstance(item, str) and item for item in result["scenes"]
     ):
         raise TypeError("build settings scenes must contain non-empty strings")
-    if not isinstance(result["additional_cook_roots"], list) or not all(
-        isinstance(item, str) and item.strip()
-        for item in result["additional_cook_roots"]
-    ):
-        raise TypeError(
-            "build settings additional_cook_roots must contain non-empty strings"
-        )
-    normalized_roots: list[str] = []
-    seen_roots: set[str] = set()
-    for item in result["additional_cook_roots"]:
-        normalized = item.strip().replace("\\", "/")
-        key = normalized.casefold()
-        if key not in seen_roots:
-            normalized_roots.append(normalized)
-            seen_roots.add(key)
-    result["additional_cook_roots"] = normalized_roots
     if not isinstance(result["splash_items"], list) or not all(
         isinstance(item, dict) for item in result["splash_items"]
     ):
@@ -474,7 +461,24 @@ def ensure_project_settings_document(
     if controller is not None and not isinstance(
         controller, ProjectSettingsDocumentController
     ):
-        raise RuntimeError("project settings document has an incompatible controller")
+        # Older workspace snapshots could claim this shared document through a
+        # generic Panel before that Panel had a chance to bind the real
+        # ProjectSettings controller.  The document identity is authoritative;
+        # the generic controller owns no durable Project Settings state, so
+        # replace it instead of making editor startup depend on stale UI state.
+        controller = ProjectSettingsDocumentController(
+            root,
+            tag_layer_manager=tag_layer_manager,
+            physics_module=physics_module,
+        )
+        registry.update_metadata(
+            document.document_id,
+            title="Project Settings",
+            resource_path=settings_path,
+            capabilities=DocumentCapability.SAVE | DocumentCapability.DISCARD,
+            controller=controller,
+        )
+        controller.document_id = document.document_id
     if controller is None:
         controller = ProjectSettingsDocumentController(
             root,

@@ -363,6 +363,19 @@ class UndoManager:
                 )
                 if status is ContextRestoreStatus.PENDING:
                     return status
+                if status is ContextRestoreStatus.DISCARD:
+                    self._journal.discard_replay_entry(pending.direction, pending.entry)
+                    self._pending_replay = None
+                    self._fire_state_changed()
+                    next_entry = (
+                        self._journal.peek_undo()
+                        if pending.direction == "undo"
+                        else self._journal.peek_redo()
+                    )
+                    if next_entry is None:
+                        return ContextRestoreStatus.READY
+                    self._pending_replay = _PendingReplay(pending.direction, next_entry)
+                    return self.process_pending_replay()
                 if status is ContextRestoreStatus.FAILED:
                     self._pending_replay = None
                     self._debug_dump_stack(f"{pending.direction}-restore-failed")

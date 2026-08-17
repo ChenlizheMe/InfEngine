@@ -614,7 +614,13 @@ void InxGUISemantics::RecordCurrentWindowCloseButton(const std::string &semantic
                 }
             }
         }
-        if (tab == nullptr || tabBar->VisibleTabId != tab->ID || !window->HasCloseButton)
+        // Keep every closable dock tab in the semantic inventory. An
+        // unselected tab is not currently reachable, but it may become
+        // reachable as soon as its dock peer is selected; dropping it here
+        // makes the target identity depend on stale tab-selection state from
+        // the previous frame/run. FinalizeTargetReachability() remains the
+        // single authority that marks hidden or occluded tabs unavailable.
+        if (tab == nullptr || !window->HasCloseButton)
             return;
 
         const bool centralSection = (tab->Flags & ImGuiTabItemFlags_SectionMask_) == 0;

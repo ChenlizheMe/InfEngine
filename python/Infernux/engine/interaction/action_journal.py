@@ -46,6 +46,7 @@ class ContextRestoreStatus(str, Enum):
 
     READY = "ready"
     PENDING = "pending"
+    DISCARD = "discard"
     FAILED = "failed"
 
 
@@ -227,6 +228,19 @@ class EditorActionJournal:
             raise RuntimeError("redo journal cursor changed during replay")
         self._cursor += 1
         self._revision += 1
+
+    def discard_replay_entry(self, direction: str, entry: JournalEntry) -> None:
+        """Remove an unrestorable entry at the active Undo/Redo cursor."""
+        direction = str(direction or "").strip().lower()
+        current = self.peek_undo() if direction == "undo" else self.peek_redo()
+        if direction not in {"undo", "redo"} or current is not entry:
+            raise RuntimeError("journal cursor changed while discarding replay entry")
+        index = self._cursor - 1 if direction == "undo" else self._cursor
+        del self._entries[index]
+        if direction == "undo":
+            self._cursor -= 1
+        self._revision += 1
+        self._dispose_action(entry.action)
 
     def operation_entries(self, operation_id: str) -> tuple[JournalEntry, ...]:
         """Return the contiguous applied tail owned by one user operation."""

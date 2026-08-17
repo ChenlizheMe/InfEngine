@@ -1697,6 +1697,27 @@ class AssetManager:
         DocumentStore.flush()
         cls.poll_pending_asset_writes()
 
+    @classmethod
+    def begin_asset_write_flush(cls) -> None:
+        """Submit all pending asset snapshots without blocking the UI thread.
+
+        Call :meth:`asset_writes_idle` from a frame-driven transaction until
+        it returns ``True``.  This preserves the same durable boundary as
+        ``flush_all_asset_writes`` without turning a Player-build click into a
+        synchronous filesystem stall.
+        """
+        cls.flush_scheduled_saves(force=True)
+
+    @classmethod
+    def asset_writes_idle(cls) -> bool:
+        """Poll submitted writes and report whether the durable queue drained."""
+        cls.poll_pending_asset_writes()
+        if cls._pending_document_write_records:
+            return False
+        from Infernux.core.document_store import DocumentStore
+
+        return DocumentStore.is_idle()
+
     # ==========================================================================
     # Internal helpers
     # ==========================================================================

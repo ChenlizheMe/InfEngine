@@ -70,6 +70,26 @@ def test_player_audit_still_rejects_absolute_author_paths(text):
     assert player_package_audit_module._contains_absolute_author_path(text)
 
 
+def test_player_audit_allows_equal_compiled_assets_with_distinct_runtime_paths():
+    data_root = "Game_Data"
+    distinct_assets = [
+        "Game_Data/Content.inxpkg::Library/Artifacts/SkinnedMesh/first.inxskin",
+        "Game_Data/Content.inxpkg::Library/Artifacts/SkinnedMesh/second.inxskin",
+    ]
+
+    assert player_package_audit_module._is_logically_distinct_asset_payload(
+        distinct_assets,
+        data_root,
+    )
+    assert not player_package_audit_module._is_logically_distinct_asset_payload(
+        [
+            *distinct_assets,
+            "Game_Data/Runtime.inxrt::Infernux/lib/InfernuxRuntime.dll",
+        ],
+        data_root,
+    )
+
+
 class _FakeNativeInxPack:
     """Contract-only backend; production packing remains native C++."""
 
@@ -2476,7 +2496,7 @@ def test_particle_script_is_not_a_player_build_source(tmp_path):
         GameBuilder._particle_source_stable_id(str(source))
 
 
-def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
+def test_game_data_collects_all_imported_particle_interface_artifacts(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
     _reference_particle_graph(project, "interfaces")
@@ -2558,7 +2578,7 @@ def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
     shipped = final_dir / "Data" / "Library" / "Artifacts"
     assert (shipped / "Texture" / texture_artifact.name).read_bytes() == texture_artifact.read_bytes()
     assert (shipped / "Texture" / sdf_artifact.name).read_bytes() == sdf_artifact.read_bytes()
-    assert not (shipped / "Texture" / unused_artifact.name).exists()
+    assert (shipped / "Texture" / unused_artifact.name).read_bytes() == unused_artifact.read_bytes()
 
 
 def test_payload_manifest_rejects_missing_native_packages(tmp_path):
@@ -3035,7 +3055,7 @@ def test_payload_manifest_rejects_reachable_direct_scene_material_and_audio(tmp_
         builder._write_payload_manifest(str(final_dir))
 
 
-def test_native_guid_scalar_references_enter_the_build_scene_closure(tmp_path):
+def test_all_imported_assets_enter_the_player_product_closure(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
     scene = project / "Assets" / "Main.scene"
@@ -3093,6 +3113,7 @@ def test_native_guid_scalar_references_enter_the_build_scene_closure(tmp_path):
         "assets/main.scene",
         "assets/materials/bird.mat",
         "assets/audio/wing.wav",
+        "assets/unused.mat",
     }
 
 
@@ -3172,6 +3193,7 @@ def test_project_render_scripts_make_declared_shader_ids_reachable(tmp_path):
         "script-guid",
         "declared-shader-guid",
         "fullscreen-shader-guid",
+        "unused-shader-guid",
     }
 
 
@@ -3395,7 +3417,12 @@ def test_cooked_python_component_includes_imported_project_helper(tmp_path):
 
     selected = builder._collect_library_asset_entries(builder._asset_index_entries())
 
-    assert set(selected) == {"scene-guid", component_guid, helper_guid}
+    assert set(selected) == {
+        "scene-guid",
+        component_guid,
+        helper_guid,
+        "unused-script-guid",
+    }
 
 
 def test_cooked_python_component_resolves_relative_helper_import(tmp_path):
@@ -3490,10 +3517,11 @@ def test_cooked_python_component_includes_literal_project_assets(tmp_path):
         script_guid,
         "material-guid",
         "cache-guid",
+        "unused-guid",
     }
 
 
-def test_cooked_python_component_rejects_missing_literal_project_asset(tmp_path):
+def test_complete_assets_cook_does_not_use_script_literals_as_content_roots(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
     scene = project / "Assets" / "Main.scene"
@@ -3523,8 +3551,9 @@ def test_cooked_python_component_rejects_missing_literal_project_asset(tmp_path)
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match="Missing.npy"):
-        builder._collect_library_asset_entries(builder._asset_index_entries())
+    selected = builder._collect_library_asset_entries(builder._asset_index_entries())
+
+    assert set(selected) == {"scene-guid", script_guid}
 
 
 def test_player_type_registry_is_derived_from_script_ast_without_execution(tmp_path):
@@ -3591,7 +3620,7 @@ def test_payload_manifest_rejects_indexed_asset_outside_build_scene_closure(tmp_
         builder._write_payload_manifest(str(final_dir))
 
 
-def test_copy_stage_uses_only_reachable_indexed_assets_before_content_pack(tmp_path):
+def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     sources = _write_scene_material_audio_reachability_fixture(
         builder,
@@ -3616,7 +3645,7 @@ def test_copy_stage_uses_only_reachable_indexed_assets_before_content_pack(tmp_p
     assert (staged / "Library" / "Artifacts" / "Document" / "scene-guid.scene").is_file()
     assert (staged / "Library" / "Artifacts" / "Document" / "material-guid.mat").is_file()
     assert (staged / "Library" / "Artifacts" / "Audio" / "audio-guid.wav").is_file()
-    assert not (staged / "Assets" / "Unused.mat").exists()
+    assert (staged / "Assets" / "Unused.mat").exists()
     assert not (staged / "Assets" / "Unused.mat.meta").exists()
     assert not (staged / "Assets" / "Dynamic" / "Runtime.bin").exists()
 
@@ -3722,6 +3751,69 @@ def test_cooked_document_catalog_resolves_author_path_dependency_alias():
     scene = by_path["Library/Artifacts/Document/scene-guid.scene"]
     assert scene["dependencies"] == [material_id]
     assert scene["unresolved_dependencies"] == []
+
+
+def test_cooked_catalog_discovers_native_and_effect_group_asset_references():
+    scene_guid = "11111111111111111111111111111111"
+    material_guid = "22222222222222222222222222222222"
+    group_guid = "33333333333333333333333333333333"
+    effect_guid = "44444444444444444444444444444444"
+    payloads = {
+        f"Library/Artifacts/Document/{scene_guid}.scene": json.dumps(
+            {"materials": [material_guid]}
+        ).encode("utf-8"),
+        f"Library/Artifacts/Document/{material_guid}.mat": b"{}",
+        f"Library/Artifacts/Document/{group_guid}.effectgroup": json.dumps(
+            {
+                "entries": [
+                    {
+                        "asset": {
+                            "guid": effect_guid,
+                            "path_hint": "Assets/Effects/Ink.effect",
+                        }
+                    }
+                ]
+            }
+        ).encode("utf-8"),
+        f"Library/Artifacts/Document/{effect_guid}.effect": b"{}",
+    }
+    bindings = {
+        scene_guid: "Assets/Main.scene",
+        material_guid: "Assets/Materials/Main.mat",
+        group_guid: "Assets/Effects/Ink.effectgroup",
+        effect_guid: "Assets/Effects/Ink.effect",
+    }
+    entries = []
+    for runtime_path, payload in payloads.items():
+        guid = Path(runtime_path).stem
+        entries.append(
+            {
+                "package": "Content.inxpkg",
+                "runtime_path": runtime_path,
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "payload": payload,
+                "asset_binding": {
+                    "source_guid": guid,
+                    "source_path": bindings[guid],
+                    "dependencies": [],
+                },
+            }
+        )
+
+    catalog = build_catalog(
+        entries,
+        player_host={"executable": "Game.exe", "sha256": "a" * 64},
+        package_records=[],
+    )
+
+    by_path = {artifact["runtime_path"]: artifact for artifact in catalog["artifacts"]}
+    scene = by_path[f"Library/Artifacts/Document/{scene_guid}.scene"]
+    material = by_path[f"Library/Artifacts/Document/{material_guid}.mat"]
+    group = by_path[f"Library/Artifacts/Document/{group_guid}.effectgroup"]
+    effect = by_path[f"Library/Artifacts/Document/{effect_guid}.effect"]
+    assert scene["dependencies"] == [material["runtime_artifact_id"]]
+    assert group["dependencies"] == [effect["runtime_artifact_id"]]
 
 
 def test_payload_manifest_rejects_source_replaced_by_current_library_artifact(tmp_path):
@@ -4284,6 +4376,38 @@ def test_player_cache_does_not_reclaim_live_lock(tmp_path, native_player_process
 
 
 class TestGameBuilderDependencyCollection:
+    def test_collect_renderstack_provider_without_scene_component_reference(self, tmp_path):
+        builder = _make_builder(tmp_path, tmp_path / "build_output")
+        project = Path(builder.project_path)
+        scene = project / "Assets" / "Main.scene"
+        provider = project / "Assets" / "Rendering" / "StylizedPipeline.py"
+        ordinary = project / "Assets" / "Scripts" / "Unused.py"
+        provider.parent.mkdir(parents=True, exist_ok=True)
+        ordinary.parent.mkdir(parents=True, exist_ok=True)
+        scene.write_text("{}", encoding="utf-8")
+        provider.write_text(
+            "from Infernux.renderstack import DefaultForwardPipeline\n"
+            "class StylizedPipeline(DefaultForwardPipeline):\n"
+            "    name = 'Stylized'\n",
+            encoding="utf-8",
+        )
+        ordinary.write_text("class Unused:\n    pass\n", encoding="utf-8")
+        _write_asset_index(
+            project,
+            [
+                _asset_index_entry(project, scene, "scene-guid", "", "Scene"),
+                _asset_index_entry(project, provider, "provider-guid", "", "Script"),
+                _asset_index_entry(project, ordinary, "ordinary-guid", "", "Script"),
+            ],
+        )
+        (project / "ProjectSettings" / "BuildSettings.json").write_text(
+            json.dumps({"scenes": ["Assets/Main.scene"]}), encoding="utf-8"
+        )
+
+        selected = builder._collect_library_asset_entries(builder._asset_index_entries())
+
+        assert set(selected) == {"scene-guid", "provider-guid", "ordinary-guid"}
+
     def test_collect_user_dependencies_excludes_mcp_packages_from_requirements(self, tmp_path, monkeypatch):
         project_root = _make_project(tmp_path)
         (project_root / "requirements.txt").write_text(

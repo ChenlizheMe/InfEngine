@@ -369,11 +369,8 @@ class InxRenderer
     // Get the material from the first MeshRenderer in the scene
     std::shared_ptr<InxMaterial> GetFirstMeshRendererMaterial();
 
-    // Scene render target for offscreen rendering
-    // Replaced targets remain whole until current ImDrawData no longer
-    // references their descriptor. They are then transferred to the exact
-    // GPU completion-epoch retirement queue.
-    std::vector<std::unique_ptr<SceneRenderTarget>> m_pendingRenderTargetRetirements;
+    // Scene render target for offscreen rendering. Replacements publish all
+    // resources at one device completion epoch shared with their framebuffers.
     uint64_t GetSceneTextureId() const;
     void ResizeSceneRenderTarget(uint32_t width, uint32_t height);
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket> RequestRenderTargetReadback(bool gameView);
@@ -810,9 +807,6 @@ class InxRenderer
     /// @brief Check scene & game render graph MSAA requests; apply if changed.
     /// @return true if MSAA change was triggered and DrawFrame should return early.
     bool CheckAndApplyMsaaRequest(bool finalFrameCheck, bool sceneViewActive, bool gameViewActive);
-
-    void QueueRenderTargetRetirement(std::unique_ptr<SceneRenderTarget> target);
-    void DrainPendingRenderTargetRetirements();
 
     [[nodiscard]] uint32_t GetSupportedMsaaSampleMask() const;
     [[nodiscard]] bool ApplyMsaaSamples(int samples, const char *source);

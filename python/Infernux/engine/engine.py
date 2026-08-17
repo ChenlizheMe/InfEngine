@@ -435,13 +435,26 @@ class Engine():
             2: time.monotonic() + 180.0,
         }
         _asset_import_progress = None
+        _build_preflight_progress = None
         if not _PLAYER_MODE:
             from Infernux.engine.ui.asset_import_progress import (
                 AssetImportProgressService,
             )
+            from Infernux.engine.ui.build_preflight_progress import (
+                BuildPreflightProgressService,
+            )
             _asset_import_progress = AssetImportProgressService.instance()
+            _build_preflight_progress = BuildPreflightProgressService.instance()
 
         def _post_draw_tick():
+            if _build_preflight_progress is not None:
+                try:
+                    _build_preflight_progress.post_present_tick()
+                except Exception as exc:
+                    Debug.log_suppressed(
+                        "Engine.post_draw_tick.build_preflight_progress",
+                        exc,
+                    )
             if _asset_import_progress is not None:
                 try:
                     _asset_import_progress.post_present_tick()

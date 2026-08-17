@@ -134,16 +134,25 @@ void RegisterResourceBindings(py::module_ &m)
         "_inxpack_write",
         [](py::handle sources, const std::string &destination, py::handle compressionLevel,
            const std::string &profile) {
-            return InxPackManifestToPython(inxpack::Write(ToFsPath(destination), InxPackSourcesFromPython(sources),
-                                                          InxPackWriteOptionsFromPython(compressionLevel, profile)));
+            auto sourceFiles = InxPackSourcesFromPython(sources);
+            const auto destinationPath = ToFsPath(destination);
+            const auto options = InxPackWriteOptionsFromPython(compressionLevel, profile);
+            inxpack::Manifest manifest;
+            {
+                // Content packaging runs on the editor build worker. Holding
+                // the GIL here would still starve the render/UI thread for the
+                // entire read, hash, compression and durable-write operation.
+                py::gil_scoped_release release;
+                manifest = inxpack::Write(destinationPath, std::move(sourceFiles), options);
+            }
+            return InxPackManifestToPython(manifest);
         },
         py::arg("sources"), py::arg("destination"), py::arg("compression_level") = py::none(),
         py::arg("profile") = "development", "Write the single native InxPack format using Store/Zstandard codecs.");
     m.def(
         "_inxpack_read_manifest",
         [](const std::string &path) { return InxPackManifestToPython(inxpack::ReadManifest(ToFsPath(path))); },
-        py::arg("path"),
-        "Read and fully validate a native InxPack manifest.");
+        py::arg("path"), "Read and fully validate a native InxPack manifest.");
     m.def(
         "_inxpack_extract",
         [](const std::string &path, const std::string &destination, py::handle allowedRoots) {
@@ -204,6 +213,7 @@ void RegisterResourceBindings(py::module_ &m)
         .def("cancel", &DocumentStore::Cancel, py::arg("ticket"))
         .def("get_metrics", &DocumentStore::GetMetrics, py::arg("path"))
         .def("capture_file_state", &DocumentStore::CaptureFileState, py::arg("path"))
+        .def_property_readonly("is_idle", &DocumentStore::IsIdle, "Whether all queued document writes have completed")
         .def("flush_all", py::overload_cast<>(&DocumentStore::Flush), py::call_guard<py::gil_scoped_release>())
         .def("flush_path", py::overload_cast<const std::string &>(&DocumentStore::Flush), py::arg("path"),
              py::call_guard<py::gil_scoped_release>())

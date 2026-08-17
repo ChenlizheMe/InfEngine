@@ -34,6 +34,5 @@ def load_build_settings(project_path: Optional[str] = None) -> dict:
     scenes = data.get("scenes")
     if not isinstance(scenes, list):
         data["scenes"] = []
-    if "additional_cook_roots" not in data:
-        data["additional_cook_roots"] = []
+    data.pop("additional_cook_roots", None)
     return data

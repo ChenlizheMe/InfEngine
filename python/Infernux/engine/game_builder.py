@@ -48,11 +48,6 @@ from Infernux.debug import Debug
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.i18n import t
 from Infernux.engine.nuitka_builder import NuitkaBuilder
-from Infernux.engine.player_package_audit import (
-    BOOTSTRAP_NATIVE_ROOT_ALLOWLIST,
-    NATIVE_ARCHIVE_SUFFIXES,
-    audit_player_package,
-)
 from Infernux.engine.player_package_native import read_entry, read_manifest, write_pack
 from Infernux.engine.path_utils import (
     is_path_within,
@@ -78,6 +73,8 @@ from Infernux.engine.runtime_artifact_catalog import (
     validate_artifact,
 )
 from Infernux.engine.player_service_graph import (
+    PLAYER_MANIFEST_SCHEMA,
+    PLAYER_MANIFEST_VERSION,
     RuntimeFeatureSet,
     RuntimeFlavor,
     player_runtime_contract_sections,
@@ -86,6 +83,9 @@ from Infernux.engine.runtime_type_registry import (
     RUNTIME_TYPE_REGISTRY_SCHEMA,
     RUNTIME_TYPE_REGISTRY_VERSION,
 )
+
+
+_NATIVE_PLAYER_ARCHIVE_SUFFIXES = frozenset({".inxrt", ".inxpkg", ".inxmod"})
 
 
 def _ensure_video_splash_packages() -> None:
@@ -511,7 +511,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         debug_mode: bool = False,
         lto: bool = True,
         enable_jit: bool = False,
-        additional_cook_roots: Optional[List[str]] = None,
     ):
         self.project_path = resolved_path(project_path)
         self.project_name = game_name.strip() if game_name.strip() else os.path.basename(self.project_path)
@@ -526,12 +525,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self.debug_mode = debug_mode
         self.lto = lto
         self.enable_jit = enable_jit
-        self.additional_cook_roots = (
-            list(additional_cook_roots)
-            if additional_cook_roots is not None
-            else None
-        )
-        self._validated_additional_cook_roots: list[str] = []
         self._full_build_validated = False
         self._runtime_type_records: list[dict[str, object]] = []
         self._build_output_transaction: dict[str, str] | None = None
@@ -555,10 +548,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
 
         build_start = time.perf_counter()
         _stage_t0 = build_start
-        # A build is an immutable transaction.  The live Editor may continue
-        # invalidating its derived AssetIndex while Nuitka runs, so every
-        # stage below must share the catalog captured during validation.
-        self._asset_index_entries_snapshot = None
+        # A build is an immutable transaction.  The editor preflight may have
+        # frozen a catalog before this worker starts; retain that snapshot so
+        # file watching cannot change the cooked closure mid-build.
 
         # Keep build diagnostics outside the project. A Player build must not
         # mutate the author's project by creating Logs/build.log, and a
@@ -687,7 +679,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         _p("Packing project content", 0.981)
         self._pack_content_archive(final_dir)
 
-        _p("Auditing packaged payload", 0.984)
+        _p("Writing Player runtime catalog", 0.984)
         self._write_payload_manifest(final_dir)
 
         # The in-progress marker protects cleanup while the build is mutable.
@@ -697,9 +689,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             os.remove(self._output_marker_path(final_dir))
         except FileNotFoundError:
             pass
-
-        _p("Auditing Player service and package manifest", 0.9847)
-        audit_player_package(final_dir, write_manifest=True)
 
         # Log per-directory size breakdown so the user sees where size goes
         self._report_build_size(final_dir, _blog)
@@ -821,7 +810,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self.output_dir = resolved_path(staging)
 
     def _commit_output_transaction(self, staged_dir: str) -> str:
-        """Publish an audited staging product while preserving the old one."""
+        """Publish a complete staging product while preserving the old one."""
 
         state = self._build_output_transaction
         if state is None or not same_path(staged_dir, state["staging"]):
@@ -912,8 +901,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             names = ", ".join(os.path.basename(m) for m in missing)
             raise FileNotFoundError(f"Scene file(s) not found: {names}")
 
-        self._validated_additional_cook_roots = self._resolve_additional_cook_roots()
-
         self._asset_index_entries()
         self._validate_animation_clip_assets()
 
@@ -940,48 +927,15 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         # snapshot isolated in case a future cook stage mutates an entry.
         return copy.deepcopy(self._asset_index_entries_snapshot)
 
-    def _configured_additional_cook_roots(self) -> list[str]:
-        """Return the one current Build Settings resource-root field."""
+    def freeze_asset_index_entries(self, entries: list[dict]) -> None:
+        """Bind this one Player build to an editor-published AssetIndex.
 
-        if self.additional_cook_roots is not None:
-            return list(self.additional_cook_roots)
-        data = load_build_settings(self.project_path)
-        roots = data.get("additional_cook_roots", [])
-        if not isinstance(roots, list):
-            raise ValueError(
-                "BuildSettings additional_cook_roots must be an array of paths"
-            )
-        return list(roots)
+        This is intentionally a copy rather than a path: the editor's file
+        watcher may regenerate ``Library/AssetIndex.json`` while the Player
+        cook is compiling scripts and packaging resources.
+        """
 
-    def _resolve_additional_cook_root(self, configured: str) -> str:
-        if type(configured) is not str or not configured.strip():
-            raise ValueError(
-                "Additional Cook Root must be a non-empty path inside Assets"
-            )
-        raw = configured.strip()
-        candidate = raw if os.path.isabs(raw) else os.path.join(self.project_path, raw)
-        absolute = resolved_path(candidate)
-        assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
-        if not is_path_within(absolute, assets_root, allow_root=False):
-            raise ValueError(
-                f"Additional Cook Root must be inside the project Assets folder: {configured}"
-            )
-        if not os.path.exists(absolute):
-            raise FileNotFoundError(
-                f"Additional Cook Root does not exist: {configured}"
-            )
-        return absolute
-
-    def _resolve_additional_cook_roots(self) -> list[str]:
-        roots: list[str] = []
-        seen: set[str] = set()
-        for configured in self._configured_additional_cook_roots():
-            resolved = self._resolve_additional_cook_root(configured)
-            key = resolved.casefold()
-            if key not in seen:
-                roots.append(resolved)
-                seen.add(key)
-        return roots
+        self._asset_index_entries_snapshot = copy.deepcopy(entries)
 
     def _validate_animation_clip_assets(self) -> None:
         """Reject dangling SpriteFrame references before packaging content."""
@@ -1806,7 +1760,7 @@ finally:
         self._filter_shipped_requirements(data_dir)
 
     def _copy_cooked_assets(self, data_dir: str) -> None:
-        """Stage only the declared AssetIndex closure and explicit roots."""
+        """Stage every current project asset selected from the AssetIndex."""
 
         try:
             entries = self._asset_index_entries()
@@ -1875,8 +1829,8 @@ finally:
 
         if not copied and self._full_build_validated:
             raise RuntimeError(
-                "Player asset cook selected no runtime assets; add a valid scene "
-                "or an Additional Cook Root in Build Settings"
+                "Player asset cook selected no runtime assets; refresh Assets "
+                "and add at least one valid build scene"
             )
 
     @classmethod
@@ -1948,227 +1902,32 @@ finally:
         return resolved_path(candidate)
 
     def _collect_library_asset_entries(self, entries: list[dict]) -> dict[str, dict]:
-        """Return the current AssetIndex closure for scenes and cook roots."""
+        """Select every current imported product beneath ``Assets``.
+
+        Player builds deliberately use a conservative content policy while
+        the engine is still evolving: authoring sources are converted to
+        Library products, but no scene-reachability analysis is allowed to
+        remove a project asset.  Runtime script choices, RenderStack pipeline
+        providers and effect groups are dynamic and cannot be proven from a
+        static scene closure without changing Editor behavior.
+
+        Direct AssetIndex dependencies are still followed so a selected
+        project product can retain read-only engine artifacts it explicitly
+        references.  This is validation and identity propagation, not content
+        pruning.
+        """
 
         by_guid = {str(item["guid"]): item for item in entries}
-        known_guids = frozenset(by_guid)
-        by_path = {
-            str(item["normalized_path"]).replace("\\", "/").casefold(): item
-            for item in entries
-        }
-        by_project_path = {
-            relative_path(self._library_source_entry_path(item), self.project_path)
-            .replace("\\", "/")
-            .casefold(): item
-            for item in entries
-        }
-        indexed_sources = {
-            self._library_source_entry_path(item).casefold() for item in entries
-        }
-        shader_guids_by_id: dict[str, set[str]] = {}
-        for guid, entry in by_guid.items():
-            metadata = entry.get("metadata", {})
-            if isinstance(metadata, dict):
-                metadata = metadata.get("metadata", metadata)
-            shader_id_value = metadata.get("shader_id") if isinstance(metadata, dict) else None
-            if isinstance(shader_id_value, dict):
-                shader_id_value = shader_id_value.get("value")
-            shader_id = str(shader_id_value or "").strip()
-            if shader_id:
-                shader_guids_by_id.setdefault(shader_id.casefold(), set()).add(guid)
-        project_assets = resolved_path(os.path.join(self.project_path, "Assets"))
-        script_guid_by_module: dict[str, str] = {}
-        script_module_by_guid: dict[str, str] = {}
-        for guid, entry in by_guid.items():
-            source_path = self._library_source_entry_path(entry)
-            if not source_path.casefold().endswith(".py") or not is_path_within(
-                source_path,
-                project_assets,
+        assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
+        roots = {
+            str(entry["guid"])
+            for entry in entries
+            if is_path_within(
+                self._library_source_entry_path(entry),
+                assets_root,
                 allow_root=False,
-            ):
-                continue
-            relative_script = relative_path(source_path, project_assets).replace("\\", "/")
-            module_parts = relative_script[:-3].split("/")
-            if module_parts[-1] == "__init__":
-                module_parts.pop()
-            if not module_parts or any(not part.isidentifier() for part in module_parts):
-                raise RuntimeError(
-                    "Player project script has no stable import identity: "
-                    f"Assets/{relative_script}"
-                )
-            module_name = ".".join(module_parts)
-            script_guid_by_module[module_name.casefold()] = guid
-            script_module_by_guid[guid] = module_name
-
-        def project_script_dependencies(
-            guid: str, source_path: str
-        ) -> tuple[set[str], set[str]]:
-            module_name = script_module_by_guid.get(guid)
-            if module_name is None:
-                return set(), set()
-            try:
-                with open(source_path, "r", encoding="utf-8") as stream:
-                    tree = ast.parse(stream.read(), filename=source_path)
-            except (OSError, UnicodeDecodeError, SyntaxError) as exc:
-                raise RuntimeError(
-                    f"Player cook cannot inspect project script imports: {source_path}"
-                ) from exc
-
-            package_parts = module_name.split(".")[:-1]
-            imported: set[str] = set()
-            referenced_assets: set[str] = set()
-
-            def add_module(candidate: str) -> None:
-                candidate = candidate.strip(".")
-                if not candidate:
-                    return
-                dependency_guid = script_guid_by_module.get(candidate.casefold())
-                if dependency_guid is not None:
-                    imported.add(dependency_guid)
-
-            def add_shader(shader_id: str) -> None:
-                referenced_assets.update(
-                    shader_guids_by_id.get(shader_id.strip().casefold(), ())
-                )
-
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "get_shader_list":
-                    for nested in ast.walk(node):
-                        if isinstance(nested, ast.Constant) and isinstance(nested.value, str):
-                            add_shader(nested.value)
-                if isinstance(node, ast.Call):
-                    function_name = ""
-                    if isinstance(node.func, ast.Attribute):
-                        function_name = node.func.attr
-                    elif isinstance(node.func, ast.Name):
-                        function_name = node.func.id
-                    if (
-                        function_name == "fullscreen_quad"
-                        and node.args
-                        and isinstance(node.args[0], ast.Constant)
-                        and isinstance(node.args[0].value, str)
-                    ):
-                        add_shader(node.args[0].value)
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    literal = node.value.strip().replace("\\", "/")
-                    if literal.casefold().startswith("assets/"):
-                        entry = by_project_path.get(literal.casefold())
-                        if entry is None:
-                            raise RuntimeError(
-                                "Player project script references an asset absent from "
-                                f"Library/AssetIndex.json: {literal} ({source_path})"
-                            )
-                        referenced_assets.add(str(entry["guid"]))
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        add_module(alias.name)
-                    continue
-                if not isinstance(node, ast.ImportFrom):
-                    continue
-                if node.level:
-                    keep = len(package_parts) - (node.level - 1)
-                    if keep < 0:
-                        continue
-                    base_parts = package_parts[:keep]
-                    if node.module:
-                        base_parts.extend(node.module.split("."))
-                    base_module = ".".join(base_parts)
-                else:
-                    base_module = node.module or ""
-                add_module(base_module)
-                for alias in node.names:
-                    if alias.name != "*":
-                        add_module(
-                            f"{base_module}.{alias.name}" if base_module else alias.name
-                        )
-            return imported, referenced_assets
-
-        roots: set[str] = set()
-        settings_path = os.path.join(self.project_path, "ProjectSettings", "BuildSettings.json")
-        try:
-            with open(settings_path, "r", encoding="utf-8") as stream:
-                scenes = json.load(stream).get("scenes", [])
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
-            scenes = []
-        for configured in scenes:
-            scene_path = self._resolve_build_scene_path(str(configured))
-            scene_key = resolved_path(scene_path).replace("\\", "/").casefold()
-            scene_entry = by_path.get(scene_key)
-            if scene_entry is None:
-                scene_entry = by_path.get(
-                    relative_path(scene_path, self.project_path).casefold()
-                )
-            if scene_entry is None:
-                raise RuntimeError(
-                    "BuildSettings scene is absent from the current "
-                    f"Library/AssetIndex.json: {configured}"
-                )
-            roots.add(str(scene_entry["guid"]))
-            self._add_asset_reference_roots(
-                roots,
-                scene_path,
-                by_guid=by_guid,
-                by_path=by_path,
-                known_guids=known_guids,
             )
-
-        for root in self._additional_cook_root_paths():
-            candidates: list[str] = []
-            if os.path.isfile(root):
-                candidates.append(root)
-            elif os.path.isdir(root):
-                for current, directories, filenames in os.walk(root):
-                    directories[:] = sorted(
-                        directory
-                        for directory in directories
-                        if directory not in self._EXCLUDE_PATTERNS
-                    )
-                    candidates.extend(
-                        os.path.join(current, filename)
-                        for filename in sorted(filenames)
-                        if filename not in self._EXCLUDE_PATTERNS
-                        and not filename.casefold().endswith(".meta")
-                    )
-            missing_from_index = [
-                candidate
-                for candidate in candidates
-                if resolved_path(candidate).casefold() not in indexed_sources
-            ]
-            if missing_from_index:
-                raise RuntimeError(
-                    "Additional Cook Root contains files absent from the current "
-                    "Library/AssetIndex.json: "
-                    + ", ".join(
-                        relative_path(path, self.project_path).replace("\\", "/")
-                        for path in missing_from_index[:12]
-                    )
-                )
-            for entry in entries:
-                source_path = self._library_source_entry_path(entry)
-                if not is_path_within(source_path, root, allow_root=True):
-                    continue
-                roots.add(str(entry["guid"]))
-                if (
-                    os.path.isfile(source_path)
-                    and Path(source_path).suffix.casefold()
-                    in self._PLAYER_PORTABLE_DOCUMENT_SUFFIXES
-                ):
-                    self._add_asset_reference_roots(
-                        roots,
-                        source_path,
-                        by_guid=by_guid,
-                        by_path=by_path,
-                        known_guids=known_guids,
-                    )
-
-            if os.path.isfile(root) and Path(root).suffix.casefold() in self._PLAYER_PORTABLE_DOCUMENT_SUFFIXES:
-                self._add_asset_reference_roots(
-                    roots,
-                    root,
-                    by_guid=by_guid,
-                    by_path=by_path,
-                    known_guids=known_guids,
-                )
+        }
 
         selected: dict[str, dict] = {}
         pending = sorted(roots)
@@ -2186,39 +1945,7 @@ finally:
             for dependency in sorted(entry.get("dependencies", [])):
                 if dependency not in selected:
                     pending.append(str(dependency))
-            source_path = self._library_source_entry_path(entry)
-            script_dependencies, literal_asset_dependencies = (
-                project_script_dependencies(guid, source_path)
-            )
-            for dependency_guid in sorted(
-                script_dependencies.union(literal_asset_dependencies)
-            ):
-                if dependency_guid not in selected:
-                    pending.append(dependency_guid)
-            if os.path.isfile(source_path) and Path(source_path).suffix.casefold() in self._PLAYER_PORTABLE_DOCUMENT_SUFFIXES:
-                for dependency_guid, dependency_path in self._load_json_asset_references(
-                    source_path,
-                    known_guids=known_guids,
-                ):
-                    if dependency_guid in by_guid:
-                        pending.append(dependency_guid)
-                    elif dependency_path:
-                        suffix = dependency_path.replace("\\", "/").casefold()
-                        pending.extend(
-                            str(item["guid"])
-                            for key, item in by_path.items()
-                            if key.endswith(suffix)
-                        )
         return selected
-
-    def _additional_cook_root_paths(self) -> list[str]:
-        """Resolve configured roots even when called by a staging helper."""
-
-        if self._validated_additional_cook_roots:
-            return list(self._validated_additional_cook_roots)
-        roots = self._resolve_additional_cook_roots()
-        self._validated_additional_cook_roots = list(roots)
-        return roots
 
     def _add_asset_reference_roots(
         self,
@@ -2429,7 +2156,13 @@ finally:
             self._runtime_artifact_source_paths.add(source_relative.casefold())
 
     def _copy_reachable_particle_artifacts(self, data_dir: str) -> None:
-        """Copy only Particle artifacts referenced by scenes in BuildSettings."""
+        """Publish the runtime index for every imported ParticleGraph.
+
+        The historical method name is retained for internal compatibility,
+        but selection follows the same complete-Assets policy as the rest of
+        the Player cook.  A graph selected dynamically by a script must not
+        disappear merely because no serialized scene referenced it.
+        """
         references = self._collect_reachable_particle_artifacts()
         if not references:
             return
@@ -3481,7 +3214,10 @@ finally:
                 if portable_relative.casefold() in source_paths:
                     excluded_files.append(path)
                     continue
-                if os.path.splitext(portable_relative)[1].casefold() in NATIVE_ARCHIVE_SUFFIXES:
+                if (
+                    os.path.splitext(portable_relative)[1].casefold()
+                    in _NATIVE_PLAYER_ARCHIVE_SUFFIXES
+                ):
                     continue
                 if self._is_player_editor_path(portable_relative):
                     excluded_files.append(path)
@@ -3591,11 +3327,13 @@ finally:
         _write_json_atomic(path, rewritten, indent=None)
 
     def _write_payload_manifest(self, final_dir: str) -> None:
-        """Write the deterministic runtime artifact catalog.
+        """Write the deterministic runtime catalog and bootstrap manifest.
 
         The package TOCs are the source of truth after authoring files have
         been packed.  The catalog therefore never depends on an editor path
-        or on filesystem traversal order.
+        or on filesystem traversal order.  This is deliberately not a Player
+        finished package scan: it only records the package table of contents
+        already produced by the packer.
         """
 
         data_root = os.path.join(final_dir, f"{self.project_name}_Data")
@@ -3647,13 +3385,25 @@ finally:
                         "bytes": entry["raw_bytes"],
                         "sha256": entry["sha256"],
                     }
-                    if payload_kind == "serialized_runtime_document" or (
-                        logical_type == "runtime_metadata"
-                        and entry_path.casefold().endswith(".json")
+                    cooked_json_document = (
+                        entry_path.casefold().startswith(
+                            "library/artifacts/document/"
+                        )
+                        and Path(entry_path).suffix.casefold()
+                        in RUNTIME_JSON_DOCUMENT_SUFFIXES
+                    )
+                    if (
+                        payload_kind == "serialized_runtime_document"
+                        or cooked_json_document
+                        or (
+                            logical_type == "runtime_metadata"
+                            and entry_path.casefold().endswith(".json")
+                        )
                     ):
                         # Payload is optional catalog input used only for
-                        # asset_ref dependency discovery. Never inflate native,
-                        # bytecode, shader, NumPy or compiled artifact entries.
+                        # dependency discovery. Cooked document artifacts are
+                        # JSON too; binary artifacts, bytecode, shaders and
+                        # NumPy payloads remain unopened.
                         package_entry["payload"] = read_entry(
                             package_path,
                             entry_path,
@@ -3695,6 +3445,35 @@ finally:
         )
         catalog_path = os.path.join(library_root, "RuntimeAssetCatalog.json")
         _write_json_atomic(catalog_path, catalog)
+
+        flavor = (
+            RuntimeFlavor.PLAYER_DEBUG
+            if self.debug_mode
+            else RuntimeFlavor.PLAYER_RELEASE
+        )
+        features = RuntimeFeatureSet(
+            jit=bool(self.enable_jit),
+            parallel=bool(self.enable_jit),
+            optional_subsystems=("splash",) if self.splash_items else (),
+        )
+        runtime_contract = player_runtime_contract_sections(flavor, features)
+        player_manifest = {
+            "$schema": PLAYER_MANIFEST_SCHEMA,
+            "manifest_version": PLAYER_MANIFEST_VERSION,
+            "product": {
+                "layout": "single_executable_native_packages",
+                **runtime_contract["product"],
+                "entry_points": [os.path.basename(executable)],
+                "single_entry_point": True,
+            },
+            "features": runtime_contract["features"],
+            "services": runtime_contract["services"],
+            "runtime_policy": runtime_contract["runtime_policy"],
+        }
+        _write_json_atomic(
+            os.path.join(data_root, self._PLAYER_MANIFEST_FILENAME),
+            player_manifest,
+        )
 
     def _residual_direct_runtime_assets(
         self,

@@ -192,6 +192,35 @@ def test_failed_prepare_restore_does_not_replay_or_move_cursor():
     assert manager.can_undo
 
 
+def test_unrestorable_entry_is_discarded_and_undo_continues_to_previous_action():
+    manager = UndoManager()
+    state = {"value": 0}
+    valid_context = EditorContextSnapshot()
+    discarded_context = EditorContextSnapshot()
+    restore_calls = []
+
+    def restore(snapshot, phase):
+        restore_calls.append((snapshot, phase))
+        if snapshot is discarded_context and phase == "prepare_undo":
+            return ContextRestoreStatus.DISCARD
+        return ContextRestoreStatus.READY
+
+    manager.set_context_hooks(lambda: valid_context, restore)
+    manager.execute(ValueAction(state, 0, 4), transaction_id="valid")
+    manager.set_context_hooks(lambda: discarded_context, restore)
+    manager.execute(ValueAction(state, 4, 9), transaction_id="discarded")
+    manager.set_context_hooks(lambda: valid_context, restore)
+
+    manager.undo()
+
+    assert state["value"] == 0
+    assert manager.action_journal.cursor == 0
+    assert len(manager.action_journal.entries) == 1
+    assert not manager.can_undo
+    assert manager.can_redo
+    assert restore_calls[0] == (discarded_context, "prepare_undo")
+
+
 def test_pending_prepare_waits_without_replaying_or_moving_cursor():
     manager = UndoManager()
     state = {"value": 0}

@@ -168,6 +168,76 @@ def test_stale_runtime_scene_generation_never_publishes(monkeypatch):
     assert SceneManager._active_scene_transaction is None
 
 
+def test_stale_minimal_runtime_transaction_without_is_complete_is_cancelled(monkeypatch):
+    from Infernux.scene import SceneManager
+
+    calls = []
+
+    class Transaction:
+        status = "reading"
+
+        def cancel(self):
+            calls.append("cancel-stale")
+            self.status = "cancelled"
+            return True
+
+        def poll(self):
+            calls.append("publish-stale")
+            return True
+
+    monkeypatch.setattr(SceneManager, "_runtime_scene_service", None)
+    monkeypatch.setattr(SceneManager, "_active_scene_transaction", Transaction())
+    monkeypatch.setattr(SceneManager, "_scene_load_generation", 4)
+    monkeypatch.setattr(SceneManager, "_active_scene_load_generation", 3)
+
+    SceneManager.process_pending_load()
+
+    assert calls == ["cancel-stale"]
+    assert SceneManager._active_scene_transaction is None
+
+
+def test_untracked_minimal_runtime_transaction_is_not_treated_as_stale(monkeypatch):
+    import Infernux.scene as scene_api
+    from Infernux.scene import SceneManager
+
+    calls = []
+
+    class Transaction:
+        succeeded = True
+        error = ""
+
+        def poll(self):
+            calls.append("poll")
+            return True
+
+    class Native:
+        @staticmethod
+        def instance():
+            return Native
+
+        @staticmethod
+        def get_active_scene():
+            return object()
+
+        @staticmethod
+        def _start_active_scene_for_play():
+            calls.append("start")
+
+    monkeypatch.setattr(scene_api, "_NativeSceneManager", Native)
+    monkeypatch.setattr(SceneManager, "_runtime_scene_service", None)
+    monkeypatch.setattr(SceneManager, "_pending_scene_load", None)
+    monkeypatch.setattr(SceneManager, "_active_scene_transaction", Transaction())
+    monkeypatch.setattr(SceneManager, "_active_scene_load_path", "/project/Main.scene")
+    monkeypatch.setattr(SceneManager, "_active_scene_file_manager", None)
+    monkeypatch.setattr(SceneManager, "_scene_load_generation", 12)
+    monkeypatch.setattr(SceneManager, "_active_scene_load_generation", 0)
+
+    SceneManager.process_pending_load()
+
+    assert calls == ["poll", "start"]
+    assert SceneManager._active_scene_transaction is None
+
+
 def test_wait_for_load_scene_delegates_to_player_preparation_service(monkeypatch):
     from Infernux.scene import SceneManager
 

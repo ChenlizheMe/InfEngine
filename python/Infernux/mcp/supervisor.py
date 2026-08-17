@@ -212,10 +212,11 @@ class SupervisorSession:
         else:
             resumed._mcp_ready = False
             if _mcp_health_is_alive(resumed.mcp_health_endpoint):
-                raise RuntimeError(
-                    "A live Infernux MCP endpoint exists for this session artifact, but its persisted Editor PID is stale. "
-                    "Refusing to rewrite the project policy without a verified attachment."
-                )
+                if not resumed._try_attach_matching_unmanaged_editor(timeout_seconds=timeout_seconds):
+                    raise RuntimeError(
+                        "A live Infernux MCP endpoint exists for this session artifact, but its persisted Editor PID is stale. "
+                        "Refusing to rewrite the project policy without a verified attachment."
+                    )
         persisted_player_pid = int(state.get("player_pid", 0) or 0)
         if persisted_player_pid > 0 and _pid_is_running(persisted_player_pid):
             if len(resumed._player_control_token) < 16 or not resumed._player_executable:
@@ -1326,6 +1327,35 @@ class SupervisorSession:
         self._persist_state()
         return observed
 
+    def _try_attach_matching_unmanaged_editor(self, *, timeout_seconds: float) -> bool:
+        """Observe a manually launched Editor without taking ownership of it.
+
+        Player validation can survive the original Supervisor host exiting while
+        a user continues the exact same validation Editor manually.  This path
+        intentionally accepts only a live endpoint and project lock which both
+        agree with the persisted session's public identity.  It does not grant
+        shutdown ownership because the original private lease is unavailable.
+        """
+        try:
+            observed = self._read_mcp_session_status(timeout_seconds=timeout_seconds)
+        except Exception:
+            return False
+        observed_root = resolved_path(str(observed.get("project_root", "") or ""))
+        if not same_path(observed_root, self.project_root):
+            return False
+        if str(observed.get("session_id", "") or "") != self.session_id:
+            return False
+        if observed.get("mode") != self.mode or observed.get("build_profile") != self.build_profile:
+            return False
+        lock = _read_json_object(self.project_lock_path)
+        lock_pid = int(lock.get("pid", 0) or 0) if lock else 0
+        lock_project = resolved_path(str(lock.get("project_path", "") or "")) if lock else ""
+        if lock_pid <= 0 or not _pid_is_running(lock_pid) or not same_path(lock_project, self.project_root):
+            return False
+        self._attached_editor_pid = lock_pid
+        self._mcp_ready = True
+        return True
+
     def _editor_state(self) -> dict[str, Any]:
         process = self._process
         if process is not None:
@@ -1592,8 +1622,6 @@ def _validate_player_executable(executable_path: str, project_root: str) -> tupl
         entry_points = [str(value or "") for value in product.get("entry_points", []) or []]
         if not bool(product.get("single_entry_point", False)) or entry_points != [os.path.basename(launcher)]:
             raise ValueError("Player single-entry manifest does not match the selected executable.")
-        if not bool((player_manifest.get("audit") or {}).get("passed", False)):
-            raise ValueError("Player package audit did not pass for the selected executable.")
         build_output = manifest.get("build_output") or {}
         if str(build_output.get("project_identity", "") or "") != path_fingerprint(project_root):
             raise ValueError("Player build output belongs to a different project.")

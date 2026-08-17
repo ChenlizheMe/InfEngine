@@ -146,15 +146,6 @@ class PlayerBootstrap:
             CATALOG_VERSION,
             runtime_artifact_id,
         )
-        audit = manifest.get("audit", {})
-        if not isinstance(audit, dict):
-            raise RuntimeError("Player runtime package audit is missing")
-        if audit.get("passed") is not True:
-            raise RuntimeError("Player runtime package audit did not pass")
-        if audit.get("legacy_zip_files") or audit.get("legacy_inxpack_files"):
-            raise RuntimeError("Legacy Player containers are not supported")
-        if audit.get("player_host_gap") or audit.get("library_artifact_gap"):
-            raise RuntimeError("Player host/library artifact verification is incomplete")
         product = manifest.get("product", {})
         if product.get("single_entry_point") is not True:
             raise RuntimeError("Player package must have exactly one executable entry point")
@@ -173,13 +164,6 @@ class PlayerBootstrap:
             raise RuntimeError("Unsupported runtime asset catalog schema")
         if catalog.get("catalog_version") != CATALOG_VERSION:
             raise RuntimeError("Unsupported runtime asset catalog version")
-
-        expected_catalog_hash = str(
-            audit.get("runtime_asset_catalog_sha256", "")
-        ).casefold()
-        actual_catalog_hash = self._sha256_file(catalog_path)
-        if expected_catalog_hash and expected_catalog_hash != actual_catalog_hash:
-            raise RuntimeError("Runtime asset catalog checksum does not match Player manifest")
 
         packages = catalog.get("packages")
         artifacts = catalog.get("artifacts")

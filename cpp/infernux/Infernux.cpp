@@ -3325,7 +3325,14 @@ void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
         // physically present. The key set above keeps Editor scans cheap and
         // prevents duplicate publication of built-in stages.
         for (const auto &assetPath : adb->GetAllAssetPaths()) {
-            if (adb->GetResourceTypeForPath(assetPath) == ResourceType::Shader)
+            // Cooked project shaders use opaque *.inxshader artifact paths.
+            // Their catalog metadata retains the logical Shader type, while
+            // extension inference classifies the physical artifact as text.
+            const auto metadata = adb->GetMetaByPath(assetPath);
+            const ResourceType resourceType =
+                metadata ? metadata->GetResourceType()
+                         : adb->GetResourceTypeForPath(assetPath);
+            if (resourceType == ResourceType::Shader)
                 processPath(ToFsPath(assetPath));
         }
     } else {

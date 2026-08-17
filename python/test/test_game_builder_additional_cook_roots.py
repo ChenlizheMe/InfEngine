@@ -41,7 +41,7 @@ def _entry(guid, path, dependencies=()):
     }
 
 
-def test_build_settings_normalizes_additional_cook_roots_without_legacy_aliases():
+def test_build_settings_discards_obsolete_additional_cook_roots():
     settings = normalize_build_settings(
         {
             "scenes": ["Assets/Main.scene"],
@@ -52,7 +52,7 @@ def test_build_settings_normalizes_additional_cook_roots_without_legacy_aliases(
         }
     )
 
-    assert settings["additional_cook_roots"] == ["Assets/Runtime/Configs"]
+    assert "additional_cook_roots" not in settings
     assert "runtime_resource_groups" not in settings
     assert "additional_cook_roots_v1" not in settings
 
@@ -75,26 +75,7 @@ def test_build_settings_rejects_legacy_runtime_root_fields(legacy_field):
         )
 
 
-def test_additional_cook_root_must_exist_inside_assets(tmp_path):
-    project = tmp_path / "Project"
-    (project / "Assets" / "Runtime").mkdir(parents=True)
-    builder = GameBuilder(
-        str(project),
-        str(tmp_path / "Build"),
-        additional_cook_roots=["Assets/Runtime"],
-    )
-
-    assert builder._resolve_additional_cook_roots() == [
-        str((project / "Assets" / "Runtime").resolve())
-    ]
-
-    with pytest.raises(ValueError, match="inside the project Assets folder"):
-        builder._resolve_additional_cook_root("ProjectSettings")
-    with pytest.raises(FileNotFoundError, match="does not exist"):
-        builder._resolve_additional_cook_root("Assets/Missing")
-
-
-def test_additional_cook_root_joins_assetindex_dependency_closure(tmp_path):
+def test_all_imported_assets_join_runtime_product_closure(tmp_path):
     project = tmp_path / "Project"
     assets = project / "Assets"
     (assets / "Runtime").mkdir(parents=True)
@@ -126,10 +107,10 @@ def test_additional_cook_root_joins_assetindex_dependency_closure(tmp_path):
     builder = GameBuilder(str(project), str(tmp_path / "Build"))
     selected = builder._collect_library_asset_entries(load_asset_index(str(project)))
 
-    assert set(selected) == {"scene", "config", "material"}
+    assert set(selected) == {"scene", "config", "material", "unused"}
 
 
-def test_cook_stages_only_assetindex_entries_from_declared_root(tmp_path):
+def test_cook_stages_all_imported_assets_but_not_unindexed_sources(tmp_path):
     project = tmp_path / "Project"
     assets = project / "Assets"
     (assets / "Runtime").mkdir(parents=True)
@@ -164,7 +145,7 @@ def test_cook_stages_only_assetindex_entries_from_declared_root(tmp_path):
     assert not (data_dir / "Assets" / "Unused.mat").exists()
 
 
-def test_cook_rejects_unindexed_additional_root_files(tmp_path):
+def test_cook_uses_current_assetindex_as_the_imported_assets_snapshot(tmp_path):
     project = tmp_path / "Project"
     assets = project / "Assets"
     runtime = assets / "Runtime"
@@ -192,8 +173,10 @@ def test_cook_rejects_unindexed_additional_root_files(tmp_path):
     builder = GameBuilder(str(project), str(tmp_path / "Build"))
     data_dir = tmp_path / "Staged" / "Data"
 
-    with pytest.raises(RuntimeError, match="absent from the current"):
-        builder._copy_cooked_assets(str(data_dir))
+    builder._copy_cooked_assets(str(data_dir))
+
+    assert (data_dir / "Assets" / "Runtime" / "indexed.bin").is_file()
+    assert not (data_dir / "Assets" / "Runtime" / "unindexed.bin").exists()
 
 
 def test_cook_rejects_build_scene_absent_from_current_assetindex(tmp_path):

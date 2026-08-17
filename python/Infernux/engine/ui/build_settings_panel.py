@@ -128,7 +128,6 @@ class BuildSettingsPanel(FloatingEditorPanel):
         )
         self._game_name: str = ""
         self._scenes: List[str] = []
-        self._additional_cook_roots: List[str] = []
         self._output_dir: str = ""
         self._icon_path: str = ""
         self._display_mode_idx: int = 0  # 0=fullscreen, 1=windowed
@@ -152,6 +151,21 @@ class BuildSettingsPanel(FloatingEditorPanel):
 
     def on_enable(self) -> None:
         self._bind_project_settings_document()
+
+    def _document_controller_for_registry(self):
+        """Claim a persisted settings document with its real shared controller.
+
+        Generic panel restoration runs before ``on_enable``.  Returning the
+        panel there used to register a Project Settings document with a panel
+        controller, after which the real controller quite correctly rejected
+        the incompatible binding and the editor failed during startup.
+        """
+        root = get_project_root()
+        if not root:
+            return self
+        controller = ensure_project_settings_document(root)
+        self._settings_controller = controller
+        return controller
 
     def on_disable(self) -> None:
         if self._settings_controller is not None:
@@ -197,7 +211,6 @@ class BuildSettingsPanel(FloatingEditorPanel):
     def _apply_build_settings(self, data: dict) -> None:
         self._game_name = data.get("game_name", "")
         self._scenes = list(data.get("scenes", []))
-        self._additional_cook_roots = list(data.get("additional_cook_roots", []))
         self._output_dir = data.get("output_dir", "")
         self._icon_path = data.get("icon_path", "")
         mode_key = data.get("display_mode", "fullscreen_borderless")
@@ -217,7 +230,6 @@ class BuildSettingsPanel(FloatingEditorPanel):
         return normalize_build_settings({
             "game_name": self._game_name,
             "scenes": self._scenes,
-            "additional_cook_roots": self._additional_cook_roots,
             "output_dir": self._output_dir,
             "icon_path": self._icon_path,
             "display_mode": _DISPLAY_MODE_KEYS[self._display_mode_idx],
@@ -292,8 +304,6 @@ class BuildSettingsPanel(FloatingEditorPanel):
             self._render_splash_section(ctx)
             ctx.separator()
             self._render_scene_section(ctx)
-            ctx.separator()
-            self._render_runtime_resource_section(ctx)
         ctx.end_child()
         if building_this_frame:
             ctx.end_disabled()
@@ -789,66 +799,6 @@ class BuildSettingsPanel(FloatingEditorPanel):
             ctx.label("  " + t("build.drag_scenes_hint"))
 
     # ------------------------------------------------------------------
-    # RUNTIME RESOURCE ROOTS
-    # ------------------------------------------------------------------
-
-    def _render_runtime_resource_section(self, ctx):
-        """Declare explicit Assets roots for runtime-only dynamic loading."""
-
-        ctx.label(t("build.additional_cook_roots"))
-        ctx.push_style_color(ImGuiCol.Text, 0.5, 0.5, 0.5, 1.0)
-        ctx.label("  " + t("build.additional_cook_roots_hint"))
-        ctx.pop_style_color(1)
-
-        roots = getattr(self, "_additional_cook_roots", [])
-        remove_idx: Optional[int] = None
-        add_label = t("build.add_cook_root")
-        if ctx.button(add_label + "##add_cook_root", self._add_empty_cook_root, width=180):
-            pass
-        ctx.record_semantic_item(
-            "button", add_label, True, "build_settings.cook_root.add"
-        )
-
-        for index, root in enumerate(roots):
-            ctx.push_id(20000 + index)
-            ctx.set_next_item_width(max(240, ctx.get_content_region_avail_width() - 88))
-            new_root = ctx.text_input(
-                f"##cook_root_{index}", root, 512
-            )
-            ctx.record_semantic_item(
-                "text_input",
-                t("build.additional_cook_root").format(index=index + 1),
-                True,
-                f"build_settings.cook_root.{index}",
-                string_value=new_root,
-            )
-            if new_root != root:
-                roots[index] = new_root
-                if new_root.strip() and all(str(item).strip() for item in roots):
-                    self._save()
-            ctx.same_line()
-
-            def _remove(idx=index):
-                nonlocal remove_idx
-                remove_idx = idx
-
-            remove_label = t("build.remove")
-            ctx.button(remove_label + f"##cook_root_remove_{index}", _remove, width=72)
-            ctx.record_semantic_item(
-                "button", remove_label, True, f"build_settings.cook_root.{index}.remove"
-            )
-            ctx.pop_id()
-
-        if remove_idx is not None:
-            del roots[remove_idx]
-            self._save()
-
-    def _add_empty_cook_root(self):
-        # Keep a new row editable without persisting an invalid placeholder.
-        # The first non-empty edit persists the complete normalized list.
-        self._additional_cook_roots.append("")
-
-    # ------------------------------------------------------------------
     # Build controls
     # ------------------------------------------------------------------
 
@@ -1007,7 +957,6 @@ class BuildSettingsPanel(FloatingEditorPanel):
             debug_mode=self._debug_mode,
             lto=self._lto,
             enable_jit=self._enable_jit,
-            additional_cook_roots=self._additional_cook_roots,
         )
 
     def _execute_build_command(self, command_id: str) -> bool:
@@ -1016,11 +965,26 @@ class BuildSettingsPanel(FloatingEditorPanel):
         return self.execute_owned_command(command_id, source=CommandSource.TOOLBAR)
 
     def can_cancel_build(self) -> bool:
-        return bool(self._building and not self._cancel_event.is_set())
+        if not self._building:
+            return False
+        from Infernux.engine.ui.build_preflight_progress import (
+            BuildPreflightProgressService,
+        )
+        return bool(
+            BuildPreflightProgressService.instance().is_active
+            or not self._cancel_event.is_set()
+        )
 
     def command_cancel_build(self) -> bool:
         if not self.can_cancel_build():
             return False
+        from Infernux.engine.ui.build_preflight_progress import (
+            BuildPreflightProgressService,
+        )
+        preflight = BuildPreflightProgressService.instance()
+        if preflight.is_active:
+            preflight.cancel()
+            return True
         self._cancel_event.set()
         return True
 
@@ -1094,6 +1058,47 @@ class BuildSettingsPanel(FloatingEditorPanel):
             )
         return index_path
 
+    def _begin_asset_catalog_for_build(self):
+        """Begin durable writes without blocking the build button callback."""
+        from Infernux.core.assets import AssetManager
+
+        AssetManager.begin_asset_write_flush()
+        return {"database": None, "catalog_started": False, "stage": "writes"}
+
+    def _poll_asset_catalog_for_build(self, state) -> Optional[str]:
+        """Advance durability and the worker-backed scan between frames."""
+        from Infernux.core.assets import AssetManager
+        from Infernux.renderstack.discovery import discover_effect_features
+
+        if not AssetManager.asset_writes_idle():
+            state["stage"] = "writes"
+            return None
+        database = state.get("database")
+        if database is None:
+            # Feature discovery has to import Python provider modules on the
+            # editor thread, but it now occurs after the modal was presented
+            # and never competes with a synchronous filesystem flush.
+            discover_effect_features()
+            database = self.services.asset_database
+            if database is None:
+                raise RuntimeError("The editor asset database is unavailable")
+            database.begin_refresh()
+            state["database"] = database
+            state["catalog_started"] = True
+            state["stage"] = "scan"
+            return None
+        if database.refresh_pending and not database.try_commit_refresh():
+            state["stage"] = "scan"
+            return None
+        state["stage"] = "index"
+        database.flush_derived_index()
+        index_path = str(getattr(database, "asset_index_path", "") or "")
+        if not index_path or not os.path.isfile(index_path):
+            raise RuntimeError(
+                "The editor could not publish the current Library/AssetIndex.json"
+            )
+        return index_path
+
     def _do_build(self, *, run_after: bool) -> bool:
         if self._building:
             return False
@@ -1124,24 +1129,12 @@ class BuildSettingsPanel(FloatingEditorPanel):
             )
             return False
 
-        try:
-            self._prepare_asset_catalog_for_build()
-            builder = self._make_builder()
-            builder._validate_output_directory()
-        except BuildOutputDirectoryError as exc:
+        def _fail_preflight(exc: Exception) -> bool:
             self._building = False
-            self._show_output_directory_error(exc)
-            EngineStatus.flash(
-                self._build_error or "Build output directory is unavailable",
-                0.0,
-                duration=3.0,
-                source="build",
-                priority=20,
-            )
-            return False
-        except Exception as exc:
-            self._building = False
-            self._build_error = str(exc)
+            if isinstance(exc, BuildOutputDirectoryError):
+                self._show_output_directory_error(exc)
+            else:
+                self._build_error = str(exc)
             EngineStatus.flash(
                 self._build_error or "Build preparation failed",
                 0.0,
@@ -1152,59 +1145,105 @@ class BuildSettingsPanel(FloatingEditorPanel):
             )
             return False
 
-        def _run():
+        def _start_worker(builder):
+            def _run():
+                try:
+                    result = builder.build(
+                        on_progress=self._on_build_progress,
+                        cancel_event=self._cancel_event,
+                    )
+                    self._build_output_dir = result
+
+                    if run_after:
+                        import subprocess
+                        exe_name = f"{builder.project_name}.exe"
+                        launcher = os.path.join(result, exe_name)
+                        if os.path.isfile(launcher):
+                            subprocess.Popen([launcher], cwd=result)
+                except BuildCancelled:
+                    self._build_cancelled = True
+                except BuildOutputDirectoryError as exc:
+                    self._show_output_directory_error(exc)
+                except Exception as exc:
+                    log_path = os.path.join(builder.project_path, "Logs", "build.log")
+                    if os.path.isfile(log_path):
+                        self._build_error = f"{exc}\n\nSee: {log_path}"
+                    else:
+                        self._build_error = str(exc)
+                finally:
+                    self._building = False
+                    if self._build_cancelled:
+                        EngineStatus.flash(
+                            "Build cancelled",
+                            -1.0,
+                            duration=2.0,
+                            kind="warning",
+                            source="build",
+                            priority=20,
+                        )
+                    elif self._build_error:
+                        EngineStatus.flash(
+                            "Build failed",
+                            0.0,
+                            duration=3.0,
+                            source="build",
+                            priority=20,
+                        )
+                    else:
+                        EngineStatus.flash(
+                            "Build completed",
+                            1.0,
+                            duration=2.0,
+                            source="build",
+                            priority=20,
+                        )
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        def _prepare_and_start(index_path: str):
             try:
-                result = builder.build(
-                    on_progress=self._on_build_progress,
-                    cancel_event=self._cancel_event,
-                )
-                self._build_output_dir = result
+                if not os.path.isfile(index_path):
+                    raise RuntimeError("The published Player asset catalog is unavailable")
+                builder = self._make_builder()
+                from Infernux.engine.runtime_artifact_catalog import load_asset_index
 
-                if run_after:
-                    import subprocess
-                    exe_name = f"{builder.project_name}.exe"
-                    launcher = os.path.join(result, exe_name)
-                    if os.path.isfile(launcher):
-                        subprocess.Popen([launcher], cwd=result)
-            except BuildCancelled:
-                self._build_cancelled = True
-            except BuildOutputDirectoryError as exc:
-                self._show_output_directory_error(exc)
+                entries = load_asset_index(builder.project_path)
+                builder.freeze_asset_index_entries(entries)
+                builder._validate_output_directory()
             except Exception as exc:
-                log_path = os.path.join(builder.project_path, "Logs", "build.log")
-                if os.path.isfile(log_path):
-                    self._build_error = f"{exc}\n\nSee: {log_path}"
-                else:
-                    self._build_error = str(exc)
-            finally:
-                self._building = False
-                if self._build_cancelled:
-                    EngineStatus.flash(
-                        "Build cancelled",
-                        -1.0,
-                        duration=2.0,
-                        kind="warning",
-                        source="build",
-                        priority=20,
-                    )
-                elif self._build_error:
-                    EngineStatus.flash(
-                        "Build failed",
-                        0.0,
-                        duration=3.0,
-                        source="build",
-                        priority=20,
-                    )
-                else:
-                    EngineStatus.flash(
-                        "Build completed",
-                        1.0,
-                        duration=2.0,
-                        source="build",
-                        priority=20,
-                    )
+                return _fail_preflight(exc)
+            _start_worker(builder)
+            return True
 
-        threading.Thread(target=_run, daemon=True).start()
+        # A modal is deliberately presented before catalog work begins.  It
+        # makes the build boundary explicit and blocks unrelated authoring
+        # commands while the immutable Player catalog is being created.
+        from Infernux.engine.ui.build_preflight_progress import (
+            BuildPreflightProgressService,
+        )
+
+        def _complete_preflight(ok: bool, result: object, message: str) -> None:
+            if not ok:
+                self._building = False
+                self._build_cancelled = message == "Build preparation cancelled"
+                if not self._build_cancelled:
+                    self._build_error = message or "Build preparation failed"
+                return
+            index_path = str(result or "")
+            if not index_path:
+                _fail_preflight(RuntimeError("The asset catalog was not published"))
+                return
+            _prepare_and_start(index_path)
+
+        if not BuildPreflightProgressService.instance().begin(
+            begin_scan=self._begin_asset_catalog_for_build,
+            poll_scan=self._poll_asset_catalog_for_build,
+            complete=_complete_preflight,
+        ):
+            self._building = False
+            self._build_error = "Another editor transaction is already running"
+            EngineStatus.flash(self._build_error, 0.0, duration=2.5, kind="warning")
+            return False
         return True
 
     # ------------------------------------------------------------------

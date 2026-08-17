@@ -420,7 +420,11 @@ def move_paths_batch(
             mutations = None
         database = asset_database
     relocation_entries = tuple(
-        (old_file, new_file, database.get_guid_from_path(old_file))
+        (
+            old_file,
+            new_file,
+            database.get_guid_from_path(old_file) if database is not None else "",
+        )
         for old_file, new_file in move_pairs
     )
     plan = None

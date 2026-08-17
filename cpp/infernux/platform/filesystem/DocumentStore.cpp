@@ -243,6 +243,12 @@ DocumentFileState DocumentStore::CaptureFileState(const std::string &path) const
     return CaptureAtomicFileState(ResolvePath(path));
 }
 
+bool DocumentStore::IsIdle() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return IsIdleLocked(nullptr);
+}
+
 void DocumentStore::Flush()
 {
     std::unique_lock lock(m_mutex);

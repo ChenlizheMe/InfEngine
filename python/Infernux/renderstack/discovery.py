@@ -34,6 +34,7 @@ _pass_cache: Optional[Dict[str, type]] = None
 _effect_feature_scripts_loaded = False
 _pipeline_source_classification: dict[str, tuple[int, int, bool]] = {}
 _source_inheritance_cache: dict[str, tuple[int, int, "_SourceInheritance"]] = {}
+_script_import_failures: dict[str, str] = {}
 _catalog_class_names: set[str] = {
     "RenderPipeline",
     "RenderPass",
@@ -189,6 +190,18 @@ def invalidate_discovery_cache() -> None:
     _effect_feature_scripts_loaded = False
 
 
+def discovery_import_failures() -> dict[str, str]:
+    """Return current project script import failures keyed by source path.
+
+    Discovery remains tolerant in the Editor so one broken authoring script
+    does not hide every built-in pipeline.  Player pipeline resolution uses
+    this diagnostic map to reject a missing custom provider explicitly rather
+    than silently substituting another rendering contract.
+    """
+
+    return dict(_script_import_failures)
+
+
 def script_may_affect_pipeline_catalog(file_path: str, event_type: str = "modified") -> bool:
     """Return whether one script mutation can change the pipeline catalog.
 
@@ -302,9 +315,18 @@ def discover_effect_features() -> None:
             and name not in {"__pycache__", "build", "dist", ".venv", "venv", ".runtime"}
         ]
         for filename in filenames:
-            if filename.startswith("_") or not filename.endswith(".py"):
+            if filename.startswith("_"):
                 continue
             full = os.path.join(dirpath, filename)
+            if filename.endswith(".pyc"):
+                # A Player deliberately contains curated bytecode rather than
+                # authoring source.  Pipeline discovery already imports that
+                # bytecode; effect discovery must do the same so a standalone
+                # .effect feature never silently vanishes after cooking.
+                candidates.append(full)
+                continue
+            if not filename.endswith(".py"):
+                continue
             try:
                 with open(full, "r", encoding="utf-8", errors="ignore") as stream:
                     source = stream.read()
@@ -365,12 +387,14 @@ def _import_source_paths(paths) -> None:
             try:
                 with temporary_script_import_paths(full):
                     spec.loader.exec_module(mod)
-            except Exception:
+            except Exception as exc:
                 _loaded_scripts.discard(norm)
+                _script_import_failures[norm] = f"{type(exc).__name__}: {exc}"
                 continue
             sys.modules[mod_name] = mod
             _loaded_script_modules[norm] = mod_name
             _loaded_script_mtime[norm] = mtime
+            _script_import_failures.pop(norm, None)
 
 
 def _prune_deleted_loaded_scripts() -> None:
@@ -380,6 +404,7 @@ def _prune_deleted_loaded_scripts() -> None:
             continue
         _loaded_scripts.discard(norm)
         _loaded_script_mtime.pop(norm, None)
+        _script_import_failures.pop(norm, None)
         mod_name = _loaded_script_modules.pop(norm, "")
         if mod_name:
             sys.modules.pop(mod_name, None)

@@ -395,6 +395,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
         for event in events:
             event_started = time.perf_counter()
             try:
+                # A full AssetDatabase refresh owns the mutation transaction
+                # until its prepared commit is published on this thread.
+                # Watcher events observed during that interval are valid work,
+                # not failed imports.  Requeue them without consuming the
+                # bounded importer retry budget or emitting user-facing errors.
+                if bool(getattr(self._asset_database, "refresh_pending", False)):
+                    self._coordinator.defer(event)
+                    continue
                 self._dispatch_event(event)
             except _AssetLocalWritePending:
                 self._coordinator.defer(event)

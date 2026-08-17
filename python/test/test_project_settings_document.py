@@ -134,6 +134,25 @@ def test_project_settings_document_is_shared_by_all_settings_views(tmp_path):
         DocumentRegistry._instance = previous_registry
 
 
+def test_project_settings_recovers_a_stale_generic_panel_controller(tmp_path):
+    previous_registry = DocumentRegistry._instance
+    registry = DocumentRegistry()
+    settings_path = tmp_path / "ProjectSettings"
+    settings_path.mkdir()
+    try:
+        stale = registry.create(
+            DocumentKind.PROJECT_SETTINGS,
+            "Project Settings",
+            resource_path=str(settings_path),
+            controller=object(),
+        )
+        controller = ensure_project_settings_document(str(tmp_path))
+        assert controller.document_id == stale.document_id
+        assert registry.require(stale.document_id).controller is controller
+    finally:
+        DocumentRegistry._instance = previous_registry
+
+
 def test_project_settings_edit_undo_and_redo_restore_runtime_sections(tmp_path):
     previous_registry = DocumentRegistry._instance
     previous_manager = UndoManager._instance

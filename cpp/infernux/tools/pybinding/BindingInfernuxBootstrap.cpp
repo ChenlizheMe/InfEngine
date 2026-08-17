@@ -1,11 +1,11 @@
 #include <platform/filesystem/InxPack.h>
 #include <platform/filesystem/InxPath.h>
 
-#include <pybind11/pybind11.h>
 #include <cerrno>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
+#include <pybind11/pybind11.h>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -108,9 +108,14 @@ PYBIND11_MODULE(_InfernuxBootstrap, m)
                 sourceFiles.push_back(
                     {py::cast<std::string>(pair[0]), infernux::ToFsPath(py::cast<std::string>(pair[1]))});
             }
-            return InxPackManifestToPython(infernux::inxpack::Write(
-                infernux::ToFsPath(destination), std::move(sourceFiles),
-                InxPackWriteOptionsFromPython(compressionLevel, profile)));
+            const auto destinationPath = infernux::ToFsPath(destination);
+            const auto options = InxPackWriteOptionsFromPython(compressionLevel, profile);
+            infernux::inxpack::Manifest manifest;
+            {
+                py::gil_scoped_release release;
+                manifest = infernux::inxpack::Write(destinationPath, std::move(sourceFiles), options);
+            }
+            return InxPackManifestToPython(manifest);
         },
         py::arg("sources"), py::arg("destination"), py::arg("compression_level") = py::none(),
         py::arg("profile") = "development", "Write the single native InxPack format using Store/Zstandard codecs.");
@@ -123,9 +128,9 @@ PYBIND11_MODULE(_InfernuxBootstrap, m)
     m.def(
         "_inxpack_extract",
         [](const std::string &path, const std::string &destination, py::handle allowedRoots) {
-            return InxPackManifestToPython(
-                infernux::inxpack::Extract(infernux::ToFsPath(path), infernux::ToFsPath(destination),
-                                           InxPackAllowedRootsFromPython(allowedRoots)));
+            return InxPackManifestToPython(infernux::inxpack::Extract(infernux::ToFsPath(path),
+                                                                      infernux::ToFsPath(destination),
+                                                                      InxPackAllowedRootsFromPython(allowedRoots)));
         },
         py::arg("path"), py::arg("destination"), py::arg("allowed_roots") = py::none(),
         "Validate and extract a native InxPack with an optional allowed root filter.");
@@ -142,8 +147,7 @@ PYBIND11_MODULE(_InfernuxBootstrap, m)
 #if defined(_WIN32)
             const std::wstring wideTitle = title.cast<std::wstring>();
             const std::wstring wideMessage = message.cast<std::wstring>();
-            MessageBoxW(nullptr, wideMessage.c_str(), wideTitle.c_str(),
-                        MB_OK | MB_ICONERROR | MB_TASKMODAL);
+            MessageBoxW(nullptr, wideMessage.c_str(), wideTitle.c_str(), MB_OK | MB_ICONERROR | MB_TASKMODAL);
 #else
             const std::string titleText = title.cast<std::string>();
             const std::string messageText = message.cast<std::string>();
@@ -151,8 +155,7 @@ PYBIND11_MODULE(_InfernuxBootstrap, m)
             std::fflush(stderr);
 #endif
         },
-        py::arg("title"), py::arg("message"),
-        "Show a startup error without importing the Python ctypes stack.");
+        py::arg("title"), py::arg("message"), "Show a startup error without importing the Python ctypes stack.");
     m.def(
         "_inxplayer_process_is_alive",
         [](const int64_t pid) {
@@ -161,8 +164,7 @@ PYBIND11_MODULE(_InfernuxBootstrap, m)
 #if defined(_WIN32)
             if (static_cast<uint64_t>(pid) > std::numeric_limits<DWORD>::max())
                 return false;
-            const HANDLE process = OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+            const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
             if (process == nullptr)
                 return GetLastError() == ERROR_ACCESS_DENIED;
 

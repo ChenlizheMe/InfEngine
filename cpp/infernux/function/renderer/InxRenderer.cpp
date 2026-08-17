@@ -414,7 +414,6 @@ InxRenderer::~InxRenderer()
     m_captureService.reset();
     m_scenePickingService.reset();
 
-    m_pendingRenderTargetRetirements.clear();
     m_gameRenderTarget.reset();
     m_sceneRenderTarget.reset();
 
@@ -1186,7 +1185,6 @@ void InxRenderer::DrawFrame()
     m_guiBuildMs = guiBuilt ? std::chrono::duration<double, std::milli>(_guiBuildEnd - _guiBuildStart).count() : 0.0;
     if (guiBuilt)
         RecordUIPerformanceFrame();
-    DrainPendingRenderTargetRetirements();
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [4] after GUI::BuildFrame (ImGui → Python panels)
 #endif
@@ -2831,40 +2829,6 @@ uint64_t InxRenderer::GetSceneTextureId() const
     return 0;
 }
 
-void InxRenderer::QueueRenderTargetRetirement(std::unique_ptr<SceneRenderTarget> target)
-{
-    if (!target)
-        return;
-    m_pendingRenderTargetRetirements.push_back(std::move(target));
-    if (m_gui)
-        m_gui->RequestFrame();
-}
-
-void InxRenderer::DrainPendingRenderTargetRetirements()
-{
-    if (!m_vkCore || m_pendingRenderTargetRetirements.empty())
-        return;
-
-    auto &retirementQueue = m_vkCore->GetRetirementQueue();
-    const rhi::SubmissionSerial retirementEpoch =
-        m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
-    size_t writeIndex = 0;
-    bool needsAnotherGuiFrame = false;
-    for (auto &target : m_pendingRenderTargetRetirements) {
-        const uint64_t textureId = target ? target->GetImGuiTextureId() : 0;
-        if (m_gui && m_gui->IsTextureReferencedByCurrentDrawData(textureId)) {
-            m_pendingRenderTargetRetirements[writeIndex++] = std::move(target);
-            needsAnotherGuiFrame = true;
-            continue;
-        }
-        if (target)
-            target->RetireResourcesAfter(retirementQueue, retirementEpoch);
-    }
-    m_pendingRenderTargetRetirements.resize(writeIndex);
-    if (needsAnotherGuiFrame && m_gui)
-        m_gui->RequestFrame();
-}
-
 std::shared_ptr<vk::ImageReadbackTicket> InxRenderer::RequestRenderTargetReadback(bool gameView)
 {
     SceneRenderTarget *target = gameView ? m_gameRenderTarget.get() : m_sceneRenderTarget.get();
@@ -3394,7 +3358,8 @@ void InxRenderer::ResizeSceneRenderTarget(uint32_t width, uint32_t height)
             std::shared_ptr<OutlineRenderer> retired(retiredOutline.release());
             retirementQueue.RetireAfter(cutoverEpoch, [retired = std::move(retired)] { retired->Cleanup(false); });
         }
-        QueueRenderTargetRetirement(std::move(retiredTarget));
+        if (retiredTarget)
+            retiredTarget->RetireResourcesAfter(retirementQueue, cutoverEpoch);
 
         ++m_sceneRenderTargetGeneration;
         if (m_captureService)
@@ -4093,7 +4058,9 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
             (void)cameraId;
             graph->ReplaceSceneTarget(m_gameRenderTarget.get());
         }
-        QueueRenderTargetRetirement(std::move(retiredTarget));
+        auto &retirementQueue = m_vkCore->GetRetirementQueue();
+        if (retiredTarget)
+            retiredTarget->RetireResourcesAfter(retirementQueue, cutoverEpoch);
 
         ++m_gameRenderTargetGeneration;
         if (m_captureService)
@@ -4358,9 +4325,9 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
         retirementQueue.RetireAfter(cutoverEpoch, [retired = std::move(retired)] {});
     }
     if (retiredSceneTarget)
-        QueueRenderTargetRetirement(std::move(retiredSceneTarget));
+        retiredSceneTarget->RetireResourcesAfter(retirementQueue, cutoverEpoch);
     if (retiredGameTarget)
-        QueueRenderTargetRetirement(std::move(retiredGameTarget));
+        retiredGameTarget->RetireResourcesAfter(retirementQueue, cutoverEpoch);
 
     // BuildFrame() ran before the MSAA request was observed. Replacing render
     // targets and preview renderers invalidates texture descriptor sets already

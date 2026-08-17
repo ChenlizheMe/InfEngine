@@ -119,6 +119,9 @@ class DocumentStore final
     bool Cancel(const std::shared_ptr<DocumentWriteTicket> &ticket);
     [[nodiscard]] DocumentPathMetrics GetMetrics(const std::string &path) const;
     [[nodiscard]] DocumentFileState CaptureFileState(const std::string &path) const;
+    /// True when no document write is queued or executing.  Editor-facing
+    /// transactions use this to remain responsive while IO workers drain.
+    [[nodiscard]] bool IsIdle() const;
     void Flush();
     void Flush(const std::string &path);
     void Shutdown();

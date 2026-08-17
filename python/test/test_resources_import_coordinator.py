@@ -167,6 +167,31 @@ def test_script_watchdog_event_has_no_debounce_and_wakes_idle_editor(tmp_path):
     assert engine.editor_wakes == 1
 
 
+def test_watcher_event_waits_for_asset_database_refresh_commit(tmp_path, monkeypatch):
+    database = _AssetDatabaseProbe()
+    database.refresh_pending = True
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    asset = tmp_path / "DeferredDuringRefresh.png"
+    asset.write_bytes(b"asset")
+    dispatched = []
+    errors = []
+    monkeypatch.setattr(handler, "_dispatch_event", dispatched.append)
+    monkeypatch.setattr(Debug, "log_error", errors.append)
+
+    handler._coordinator.submit(AssetFsEventKind.MODIFIED, str(asset.resolve()))
+
+    assert handler.process_pending_reloads(force=True) == 1
+    assert dispatched == []
+    assert errors == []
+    assert handler.pending_count == 1
+
+    database.refresh_pending = False
+    assert handler.process_pending_reloads(force=True) == 1
+    assert len(dispatched) == 1
+    assert dispatched[0].attempt == 0
+    assert errors == []
+
+
 def test_script_frontend_completion_wakes_owner_for_publication(tmp_path):
     database = _AssetDatabaseProbe()
     engine = _EngineProbe(database)

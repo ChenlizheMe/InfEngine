@@ -370,6 +370,38 @@ def test_supervisor_resume_ignores_stale_persisted_pid(tmp_path, monkeypatch):
     assert resumed.status()["mcp_ready"] is False
 
 
+def test_supervisor_resume_observes_matching_manual_editor_after_stale_pid(tmp_path, monkeypatch):
+    project = tmp_path / "Desktop" / "ManualValidationPilot"
+    original = SupervisorSession(str(project), session_id="manual-validation-session")
+    original.prepare_project()
+    state_path = project / ".infernux" / "mcp_sessions" / "manual-validation-session" / "supervisor-session.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({"editor_pid": 9999, "editor_running": True, "mcp_ready": True})
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    lock_path = project / "ProjectSettings" / ".infernux-engine-lock.json"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(json.dumps({"pid": 4242, "project_path": str(project)}), encoding="utf-8")
+
+    monkeypatch.setattr(supervisor_module, "_pid_is_running", lambda pid: int(pid) == 4242)
+    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: True)
+    monkeypatch.setattr(
+        SupervisorSession,
+        "_read_mcp_session_status",
+        lambda self, **_: {
+            "project_root": str(project),
+            "session_id": "manual-validation-session",
+            "mode": self.mode,
+            "build_profile": self.build_profile,
+        },
+    )
+
+    resumed = SupervisorSession.resume(str(project), "manual-validation-session", verify_mcp=False)
+
+    assert resumed.status()["editor_running"] is True
+    assert resumed.status()["editor_pid"] == 4242
+    assert resumed.status()["mcp_ready"] is True
+
+
 def test_reattached_supervisor_handoff_stops_clean_editor_before_reconfiguring(tmp_path, monkeypatch):
     project = tmp_path / "Desktop" / "AttachedHandoffPilot"
     supervisor = SupervisorSession(str(project), mode="global_validation", session_id="attached-session")

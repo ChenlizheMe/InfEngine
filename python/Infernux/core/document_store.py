@@ -31,6 +31,11 @@ class DocumentStore:
         else:
             store.flush_path(path)
 
+    @classmethod
+    def is_idle(cls) -> bool:
+        """Return whether asynchronous document IO has fully drained."""
+        return bool(NativeDocumentStore.instance().is_idle)
+
 
 def capture_document_file_state(path: str):
     """Capture the durable target state used by conditional atomic writes."""

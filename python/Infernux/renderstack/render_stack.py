@@ -891,6 +891,21 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         """
         from Infernux.debug import Debug
         pipeline_name = getattr(self._pipeline, 'name', '?')
+
+        # A packaged Player must execute the pipeline serialized by the
+        # scene. Substituting Default Forward here makes missing scripts,
+        # effects or shader providers look like a mysterious visual change
+        # after export. Keep the failure visible and deterministic instead.
+        import os
+        if os.environ.get("_INFERNUX_PLAYER_MODE") == "1":
+            Debug.log_error(
+                f"[RenderStack] Player pipeline '{pipeline_name}' failed: "
+                f"{exc}. The Player refused to replace it with Default "
+                "Forward; verify the packaged custom pipeline, Effect and "
+                "shader products."
+            )
+            return None
+
         Debug.log_error(
             f"[RenderStack] Pipeline '{pipeline_name}' build failed: {exc}. "
             f"Falling back to DefaultForwardPipeline."
@@ -938,6 +953,22 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         pipelines = self.discover_pipelines()
         cls = pipelines.get(self.pipeline_class_name)
         if cls is None:
+            if os.environ.get("_INFERNUX_PLAYER_MODE") == "1":
+                from Infernux.renderstack.discovery import (
+                    discovery_import_failures,
+                )
+
+                failures = discovery_import_failures()
+                details = "; ".join(
+                    f"{path}: {message}"
+                    for path, message in sorted(failures.items())[:8]
+                )
+                suffix = f" Import failures: {details}" if details else ""
+                raise RuntimeError(
+                    f"Packaged RenderStack pipeline "
+                    f"'{self.pipeline_class_name}' is unavailable. Available: "
+                    f"{sorted(pipelines)}.{suffix}"
+                )
             warnings.warn(
                 f"[RenderStack] Pipeline '{self.pipeline_class_name}' "
                 f"not found. Available: {list(pipelines.keys())}. "

@@ -143,6 +143,20 @@ def test_pipeline_discovery_finds_project_subclass_of_builtin_pipeline(tmp_path)
         invalidate_discovery_cache()
 
 
+def test_player_missing_custom_pipeline_is_not_silently_replaced(monkeypatch):
+    from Infernux.renderstack.render_stack import RenderStack
+
+    stack = RenderStack()
+    stack.pipeline_class_name = "Missing Packaged Pipeline"
+    monkeypatch.setenv("_INFERNUX_PLAYER_MODE", "1")
+    monkeypatch.setattr(stack, "discover_pipelines", lambda: {})
+
+    with pytest.raises(RuntimeError, match="Missing Packaged Pipeline"):
+        stack._create_pipeline()
+
+    assert stack.pipeline_class_name == "Missing Packaged Pipeline"
+
+
 def test_effect_feature_lookup_discovers_project_registration_module(tmp_path):
     from Infernux.engine.project_context import get_project_root, set_project_root
     from Infernux.renderstack.discovery import invalidate_discovery_cache

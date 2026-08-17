@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Any, Iterable
@@ -462,9 +463,19 @@ def runtime_artifact_id(package: str, runtime_path: str) -> str:
     return f"ra_{digest[:32]}"
 
 
+_COMPACT_ASSET_GUID = re.compile(r"[0-9a-fA-F]{32}")
+
+
 def _asset_refs(value: Any) -> Iterable[tuple[str, str]]:
     if isinstance(value, dict):
-        if value.get("$type") == "asset_ref":
+        # Python serialized fields use the explicit asset_ref marker, while
+        # several native/current documents (materials, effect groups and
+        # renderer components) store the same GUID/path pair without it.
+        # Both are durable asset identities and must contribute to the Player
+        # catalog dependency graph.
+        if value.get("$type") == "asset_ref" or (
+            "guid" in value and ("path_hint" in value or "asset_type" in value)
+        ):
             guid = value.get("guid")
             path_hint = value.get("path_hint")
             if not isinstance(guid, str):
@@ -478,6 +489,10 @@ def _asset_refs(value: Any) -> Iterable[tuple[str, str]]:
     elif isinstance(value, list):
         for item in value:
             yield from _asset_refs(item)
+    elif isinstance(value, str) and _COMPACT_ASSET_GUID.fullmatch(value):
+        # Native scene serializers keep common references such as material,
+        # mesh and shader GUIDs as compact scalar strings.
+        yield value, ""
 
 
 def _dependencies(

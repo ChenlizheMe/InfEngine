@@ -82,7 +82,7 @@ class AssetRefBase:
             if database is not None:
                 try:
                     resolved = str(database.get_path_from_guid(self._guid) or "")
-                except (KeyError, RuntimeError, TypeError, ValueError):
+                except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
                     resolved = ""
                 if resolved:
                     return resolved

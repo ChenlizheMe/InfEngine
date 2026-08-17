@@ -958,7 +958,6 @@ class NuitkaBuilder:
             "engine/_build_splash.py",
             "engine/build_cancellation.py",
             "engine/game_builder.py",
-            "engine/player_package_audit.py",
             "engine/player_package_native.py",
             "engine/prebuilt_runtime.py",
         }

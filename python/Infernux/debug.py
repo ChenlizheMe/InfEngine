@@ -251,9 +251,12 @@ class DebugConsole:
     def _source_key(source_file: str) -> str:
         if not source_file:
             return ""
-        return os.path.normcase(
-            os.path.normpath(os.path.abspath(os.fspath(source_file)))
-        )
+        # Import lazily because Debug is available before the engine package
+        # finishes bootstrapping. Filesystem identity itself remains owned by
+        # the shared path service.
+        from Infernux.engine.path_utils import path_key
+
+        return path_key(source_file)
 
     def remove_source_entries(self, source_file: str) -> int:
         """Remove diagnostics emitted by one source file.

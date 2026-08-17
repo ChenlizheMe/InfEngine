@@ -1485,22 +1485,6 @@ if(TARGET InfernuxPlayerHost)
     add_dependencies(prebuild_player_runtime InfernuxPlayerHost)
 endif()
 
-# Audit an already-built Player directory without making game packaging part
-# of the normal engine/wheel build.  This target is intentionally explicit:
-# configure with -DINFERNUX_PLAYER_OUTPUT_DIR=<path> or pass it at build time.
-set(INFERNUX_PLAYER_OUTPUT_DIR "" CACHE PATH
-    "Existing Player output directory to audit")
-add_custom_target(player_package_audit
-    COMMAND ${CMAKE_COMMAND}
-        "-DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
-        "-DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
-        "-DINFERNUX_PLAYER_OUTPUT_DIR=${INFERNUX_PLAYER_OUTPUT_DIR}"
-        -P "${CMAKE_SOURCE_DIR}/cmake/verify_player_package.cmake"
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Auditing Player service manifest, source privacy and payload uniqueness"
-    VERBATIM
-)
-
 add_custom_command(TARGET _InfernuxBootstrap POST_BUILD
     COMMAND ${CMAKE_COMMAND}
         "-DSOURCE=$<TARGET_FILE:_InfernuxBootstrap>"

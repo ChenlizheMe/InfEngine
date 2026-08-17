@@ -4231,14 +4231,18 @@ void SceneRenderGraph::BuildRenderGraph()
         }
 
         // ====================================================================
-        // Component and editor gizmos participate in the scene before the
-        // selection outline. Manipulation tools are deliberately appended
-        // after the outline so their handles remain readable.
+        // Editor overlays are a Scene-view concern only.  A standalone Player
+        // must export the exact user pipeline result: adding editor-only
+        // queues to a Game graph creates extra color-target versions after
+        // post processing and can invalidate the MSAA/display output chain.
         // ====================================================================
-        m_importedColorTarget = AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
-        m_importedColorTarget = AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
-        m_importedColorTarget = AppendEditorOutline(m_importedColorTarget);
-        m_importedColorTarget = AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
+        if (m_renderView.kind == rhi::RenderViewKind::Scene) {
+            m_importedColorTarget =
+                AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
+            m_importedColorTarget = AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
+            m_importedColorTarget = AppendEditorOutline(m_importedColorTarget);
+            m_importedColorTarget = AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
+        }
     }
 
     // Set output for proper resource tracking and dead-pass culling.

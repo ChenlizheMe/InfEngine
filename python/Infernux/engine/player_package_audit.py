@@ -18,9 +18,10 @@ import struct
 import time
 from collections import defaultdict
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from .path_utils import resolved_path
-from .player_package_native import read_entry, read_manifest
+from .player_package_native import extract_pack, read_entry, read_manifest
 from .player_service_graph import (
     PLAYER_MANIFEST_SCHEMA,
     PLAYER_MANIFEST_VERSION,
@@ -332,10 +333,33 @@ def _archive_entry_records(
         forbidden.append(f"{relative_archive}: native InxPack manifest has no file list")
         return None
 
-    # ReadManifest validates the TOC, payload hash and package hash for the
-    # whole archive.  Calling ReadEntry for every binary entry would repeat
-    # that whole-archive validation for every entry.  Only text-like entries
-    # need decompressed bytes for source and absolute-path inspection.
+    # ReadEntry validates the complete archive before returning one entry.
+    # Repeating it for every shader/document turns a package audit into dozens
+    # of complete archive scans. Extract once into an isolated temporary tree;
+    # the native extractor performs the same integrity and path validation and
+    # lets the text audit read each payload without rescanning the container.
+    text_payloads: dict[str, bytes] = {}
+    text_entry_names = [
+        _portable(str(item.get("path", "")))
+        for item in records
+        if isinstance(item, dict)
+        and Path(str(item.get("path", ""))).suffix.casefold() in TEXT_SUFFIXES
+    ]
+    if text_entry_names:
+        try:
+            with TemporaryDirectory(prefix="infernux-player-audit-") as temporary:
+                extracted_root = Path(temporary)
+                extract_pack(archive_path, extracted_root)
+                for entry_name in text_entry_names:
+                    if not _is_safe_native_entry_path(entry_name):
+                        continue
+                    extracted_path = extracted_root.joinpath(*entry_name.split("/"))
+                    text_payloads[entry_name] = extracted_path.read_bytes()
+        except Exception as exc:
+            forbidden.append(
+                f"{relative_archive}: native text payload extraction failed ({exc})"
+            )
+
     seen_paths: set[str] = set()
     raw_bytes_total = 0
     stored_bytes_total = 0
@@ -376,10 +400,11 @@ def _archive_entry_records(
 
         payload = None
         if entry_suffix in TEXT_SUFFIXES:
-            try:
-                payload = read_entry(archive_path, entry_name)
-            except Exception as exc:
-                forbidden.append(f"{entry_relative}: native payload verification failed ({exc})")
+            payload = text_payloads.get(entry_name)
+            if payload is None:
+                forbidden.append(
+                    f"{entry_relative}: native text payload is unavailable after extraction"
+                )
             if payload is not None:
                 if len(payload) != entry_bytes:
                     forbidden.append(
@@ -451,6 +476,18 @@ def _payload_category_report(
         report[category]["count"] += 1
         report[category]["bytes"] += int(entry["bytes"])
     return dict(sorted(report.items()))
+
+
+def _is_logically_distinct_asset_payload(
+    paths: list[str],
+    data_relative: str,
+) -> bool:
+    """Return whether equal bytes belong to distinct compiled asset identities."""
+
+    content_prefix = f"{data_relative}/Content.inxpkg::Library/Artifacts/"
+    return bool(paths) and all(
+        path.replace("\\", "/").startswith(content_prefix) for path in paths
+    )
 
 
 def audit_player_package(
@@ -671,10 +708,19 @@ def audit_player_package(
             == expected_foundation_archive_paths
         )
 
+    duplicate_asset_payloads = sorted(
+        sorted(paths)
+        for paths in hashes.values()
+        if len(paths) > 1
+        and _is_logically_distinct_asset_payload(paths, data_relative)
+    )
+
     duplicate_payloads = sorted(
         sorted(paths)
         for paths in hashes.values()
-        if len(paths) > 1 and not _is_required_bootstrap_duplicate(paths)
+        if len(paths) > 1
+        and not _is_required_bootstrap_duplicate(paths)
+        and not _is_logically_distinct_asset_payload(paths, data_relative)
     )
     duplicate_native = sorted(
         group
@@ -1298,6 +1344,7 @@ def audit_player_package(
             "absolute_author_paths": sorted(set(absolute_paths)),
             "duplicate_native_payloads": duplicate_native,
             "duplicate_payload_groups": duplicate_payloads,
+            "duplicate_asset_payload_groups": duplicate_asset_payloads,
             "legacy_zip_files": sorted(set(legacy_zips)),
             "legacy_inxpack_files": sorted(set(legacy_inxpack)),
             "legacy_dual_entry_point": len(executables) != 1,

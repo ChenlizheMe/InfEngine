@@ -982,3 +982,37 @@ def test_camera_stack_uses_target_owned_color_and_depth_attachments() -> None:
     assert "vk::ResourceHandle sharedDepth = m_importedDepthTarget" in graph
     assert "builder.PrepareDepthStencilAttachment(m_importedDepthTarget)" in graph
     assert "PassBuilder::PrepareDepthStencilAttachment" in backend
+
+
+def test_player_shader_scan_uses_catalog_metadata_for_opaque_artifacts() -> None:
+    source = (ROOT / "cpp" / "infernux" / "Infernux.cpp").read_text(
+        encoding="utf-8"
+    )
+    body = _function_body(source, "void Infernux::LoadAndRegisterShaders")
+
+    assert "adb->GetMetaByPath(assetPath)" in body
+    assert "metadata->GetResourceType()" in body
+    assert body.index("metadata->GetResourceType()") < body.index(
+        "processPath(ToFsPath(assetPath))"
+    )
+
+
+def test_native_pack_writers_release_the_gil_during_compression() -> None:
+    """Background Player packing must not freeze editor Python/UI ticks."""
+
+    sources = (
+        ROOT / "cpp" / "infernux" / "tools" / "pybinding" / "BindingResources.cpp",
+        ROOT
+        / "cpp"
+        / "infernux"
+        / "tools"
+        / "pybinding"
+        / "BindingInfernuxBootstrap.cpp",
+    )
+    for path in sources:
+        source = path.read_text(encoding="utf-8")
+        binding = source[source.index('"_inxpack_write"') :]
+        release = binding.index("py::gil_scoped_release release")
+        write_call = binding.index("inxpack::Write(")
+        manifest_conversion = binding.index("InxPackManifestToPython(manifest)")
+        assert release < write_call < manifest_conversion

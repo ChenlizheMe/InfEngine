@@ -581,6 +581,8 @@ class BootstrapSelectionMixin:
             if result.status is DocumentOpenStatus.PENDING:
                 return ContextRestoreStatus.PENDING
             if result.status is DocumentOpenStatus.FAILED or result.document is None:
+                if result.message.startswith("document restore is not supported for "):
+                    return ContextRestoreStatus.DISCARD
                 from Infernux.debug import Debug
 
                 Debug.log_error(

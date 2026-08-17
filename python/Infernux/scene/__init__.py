@@ -541,10 +541,24 @@ class SceneManager:
         SceneManager._active_scene_load_generation = 0
 
     @staticmethod
+    def _is_runtime_load_transaction_complete(transaction) -> bool:
+        """Return terminal state without requiring the concrete transaction type."""
+        complete = getattr(transaction, "is_complete", None)
+        if complete is not None:
+            return bool(complete() if callable(complete) else complete)
+        return str(getattr(transaction, "status", "")).strip().lower() in {
+            "completed",
+            "failed",
+            "cancelled",
+        }
+
+    @staticmethod
     def _begin_scene_load_request() -> Optional[int]:
         """Supersede unfinished preparation and return the newest request token."""
         transaction = SceneManager._active_scene_transaction
-        if transaction is not None and not transaction.is_complete:
+        if transaction is not None and not SceneManager._is_runtime_load_transaction_complete(
+            transaction
+        ):
             try:
                 if not transaction.cancel():
                     Debug.log_warning(
@@ -616,11 +630,12 @@ class SceneManager:
             )
             return
 
+        active_generation = SceneManager._active_scene_load_generation
         if (
-            SceneManager._active_scene_load_generation
-            != SceneManager._scene_load_generation
+            active_generation > 0
+            and active_generation != SceneManager._scene_load_generation
         ):
-            if not transaction.is_complete:
+            if not SceneManager._is_runtime_load_transaction_complete(transaction):
                 transaction.cancel()
             SceneManager._clear_runtime_load_state()
             return
