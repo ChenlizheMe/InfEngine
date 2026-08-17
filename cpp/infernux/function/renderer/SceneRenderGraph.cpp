@@ -861,6 +861,42 @@ void SceneRenderGraph::InvalidateTemporalHistory()
     m_renderView.history = {};
 }
 
+void SceneRenderGraph::InvalidateParticleViews()
+{
+    const auto retireCuller = [this](std::shared_ptr<particle::ParticleGpuCuller> culler) {
+        if (!culler)
+            return;
+        if (m_vkCore) {
+            m_vkCore->GetRetirementQueue().Retire([culler = std::move(culler)]() mutable { culler.reset(); });
+            return;
+        }
+        culler.reset();
+    };
+    const auto retireSorter = [this](std::shared_ptr<particle::ParticleGpuSorter> sorter) {
+        if (!sorter)
+            return;
+        if (m_vkCore) {
+            m_vkCore->GetRetirementQueue().Retire([sorter = std::move(sorter)]() mutable { sorter.reset(); });
+            return;
+        }
+        sorter.reset();
+    };
+    for (auto &[id, culler] : m_particleCullers) {
+        (void)id;
+        retireCuller(std::move(culler));
+    }
+    m_particleCullers.clear();
+    for (auto &[id, sorter] : m_particleSorters) {
+        (void)id;
+        retireSorter(std::move(sorter));
+    }
+    m_particleSorters.clear();
+    m_pendingParticleViewDiagnostics.clear();
+    m_particleDrawRegistryRevision = 0;
+    m_needsRebuild = true;
+    m_graphBuilt = false;
+}
+
 bool SceneRenderGraph::UsesTemporalHistory() const
 {
     return std::any_of(m_pythonGraphDesc.textures.begin(), m_pythonGraphDesc.textures.end(),
@@ -2859,9 +2895,8 @@ void SceneRenderGraph::BuildRenderGraph()
                 };
             });
             if (resources.instances.IsValid() && resources.visibility.IsValid() && resources.bounds.IsValid() &&
-                resources.simulationControl.IsValid() &&
-                resources.renderIndices.IsValid() && resources.indirectArguments.IsValid() &&
-                resources.sortDispatchArguments.IsValid()) {
+                resources.simulationControl.IsValid() && resources.renderIndices.IsValid() &&
+                resources.indirectArguments.IsValid() && resources.sortDispatchArguments.IsValid()) {
                 particleGraphResources.emplace(entry.id, resources);
             }
         }
@@ -3814,14 +3849,12 @@ void SceneRenderGraph::BuildRenderGraph()
                             drawPushConstants.values[historyValidParameterIndex] =
                                 history != m_temporalHistories.end() && history->second.valid ? 1.0f : 0.0f;
                         }
-                        if (cameraDitheringParameterIndex >= 0 &&
-                            static_cast<uint32_t>(cameraDitheringParameterIndex) <
-                                drawPushConstantSize / sizeof(float)) {
+                        if (cameraDitheringParameterIndex >= 0 && static_cast<uint32_t>(cameraDitheringParameterIndex) <
+                                                                      drawPushConstantSize / sizeof(float)) {
                             drawPushConstants.values[cameraDitheringParameterIndex] = m_cameraDithering ? 1.0f : 0.0f;
                         }
-                        if (cameraStopNaNsParameterIndex >= 0 &&
-                            static_cast<uint32_t>(cameraStopNaNsParameterIndex) <
-                                drawPushConstantSize / sizeof(float)) {
+                        if (cameraStopNaNsParameterIndex >= 0 && static_cast<uint32_t>(cameraStopNaNsParameterIndex) <
+                                                                     drawPushConstantSize / sizeof(float)) {
                             drawPushConstants.values[cameraStopNaNsParameterIndex] = m_cameraStopNaNs ? 1.0f : 0.0f;
                         }
 

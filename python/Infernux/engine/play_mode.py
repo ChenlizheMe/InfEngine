@@ -771,6 +771,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 except Exception as exc:
                     Debug.log_error(f"Failed to restore scene after play-mode build failure: {exc}")
                 self._notify_state_change(PlayModeState.PLAYING, PlayModeState.EDIT)
+                self._invalidate_native_gpu_view_state()
                 return False
             rebuild_ms = (time.perf_counter() - rebuild_started) * 1000.0
 
@@ -779,6 +780,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             native_start_started = time.perf_counter()
             if scene_manager:
                 scene_manager.play()
+            self._invalidate_native_gpu_view_state()
             native_start_ms = (time.perf_counter() - native_start_started) * 1000.0
             total_ms = (time.perf_counter() - transition_started) * 1000.0
             self._last_transition_timings_ms = {
@@ -892,6 +894,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             restore_ok = self._rebuild_active_scene(
                 self._scene_backup, for_play=False, restore_scene_path=True
             )
+            self._invalidate_native_gpu_view_state()
             rebuild_ms = (time.perf_counter() - rebuild_started) * 1000.0
             if not restore_ok:
                 Debug.log_error(
@@ -1919,6 +1922,32 @@ class PlayModeManager(PlayModeSerializationMixin):
         if callback in self._state_change_listeners:
             self._state_change_listeners.remove(callback)
     
+    def _invalidate_native_gpu_view_state(self) -> None:
+        """Drain GPU work after Play/Stop replaces native particle graphs.
+
+        Game RenderGraphs keep camera IDs across a same-scene rebuild. The
+        next frame must not reuse compiled particle cullers or cached Game
+        submissions that still import the retired buffers.
+        """
+        try:
+            from Infernux.lib import SceneManager as NativeSceneManager
+
+            native = NativeSceneManager.instance()
+            if native is not None:
+                native.mark_temporal_discontinuity()
+        except Exception as exc:
+            Debug.log_suppressed("PlayModeManager.invalidate_native_gpu_view_state.mark", exc)
+        engine = self._native_engine
+        if engine is None:
+            return
+        wait = getattr(engine, "wait_for_gpu_idle", None)
+        if not callable(wait):
+            return
+        try:
+            wait()
+        except Exception as exc:
+            Debug.log_suppressed("PlayModeManager.invalidate_native_gpu_view_state.wait", exc)
+
     def _notify_state_change(self, old_state: PlayModeState, new_state: PlayModeState):
         """Notify all listeners of state change."""
         # Tell the C++ renderer whether we're in play mode so it can

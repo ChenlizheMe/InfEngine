@@ -608,6 +608,8 @@ class InxRenderer
 
     /// @brief Tell the renderer whether the engine is in play mode.
     /// In play mode, the frame-rate cap and idle sleep are both disabled.
+    /// A Play/Stop edge also drains GPU work and drops Game/Scene view caches
+    /// so particle graphs cannot keep retired buffer bindings.
     void SetPlayModeRendering(bool play);
 
     /// @brief Check if the renderer is in play-mode (uncapped FPS).
@@ -623,6 +625,7 @@ class InxRenderer
   private:
     void UpdateParticleCollisionScene();
     void ConsumeSceneTemporalDiscontinuity();
+    void InvalidateGpuViewStateForSceneBoundary();
 
     InxAppMetadata m_appMetadata;
     InxAppMetadata m_rendererMetadata;

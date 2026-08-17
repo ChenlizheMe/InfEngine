@@ -575,6 +575,10 @@ class InxVkCoreModular
     /// @brief Remove per-object buffers that were not ensured on the current frame.
     /// Returns the number of surviving object buffer entries after cleanup.
     [[nodiscard]] size_t CleanupUnusedBuffersByFrameStamp();
+    [[nodiscard]] uint64_t GetObjectBufferRevision() const noexcept
+    {
+        return m_objectBufferRevision;
+    }
 
     // ========================================================================
     // Command Buffer Utilities

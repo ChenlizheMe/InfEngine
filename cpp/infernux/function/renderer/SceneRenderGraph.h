@@ -429,15 +429,18 @@ class SceneRenderGraph
         m_hasCachedDrawCalls = true;
     }
 
-    [[nodiscard]] bool CanReuseCachedSubmission(uint64_t signature) const noexcept
+    [[nodiscard]] bool CanReuseCachedSubmission(uint64_t signature, uint64_t objectBufferRevision) const noexcept
     {
-        return m_hasCachedDrawCalls && signature != 0 && m_cachedSubmissionSignature == signature;
+        return m_hasCachedDrawCalls && signature != 0 && objectBufferRevision != 0 &&
+               m_cachedSubmissionSignature == signature && m_cachedObjectBufferRevision == objectBufferRevision;
     }
 
-    void SetCachedSubmissionSignature(uint64_t signature, std::shared_ptr<const void> owner = {})
+    void SetCachedSubmissionSignature(uint64_t signature, std::shared_ptr<const void> owner = {},
+                                      uint64_t objectBufferRevision = 0)
     {
         m_cachedSubmissionSignature = signature;
         m_cachedRenderWorldOwner = std::move(owner);
+        m_cachedObjectBufferRevision = objectBufferRevision;
     }
 
     /// @brief Cache owned or borrowed shadow-caster candidates for this graph.
@@ -453,6 +456,7 @@ class SceneRenderGraph
         m_cachedShadowRenderers.Clear();
         m_hasCachedShadowDrawCalls = false;
         m_cachedSubmissionSignature = 0;
+        m_cachedObjectBufferRevision = 0;
         m_cachedRenderWorldOwner.reset();
     }
 
@@ -532,6 +536,9 @@ class SceneRenderGraph
         m_hasCachedDrawCalls = false;
         m_cachedShadowRenderers.Clear();
         m_hasCachedShadowDrawCalls = false;
+        m_cachedSubmissionSignature = 0;
+        m_cachedObjectBufferRevision = 0;
+        m_cachedRenderWorldOwner.reset();
         m_cachedView = glm::mat4(1.0f);
         m_cachedProj = glm::mat4(1.0f);
         m_cachedUnjitteredProj = glm::mat4(1.0f);
@@ -541,6 +548,11 @@ class SceneRenderGraph
         m_cameraHistoryValid = false;
         InvalidateTemporalHistory();
     }
+
+    /// Retire per-view particle cullers/sorters and forbid executing a compiled
+    /// graph that still imports those retired buffers. Vulkan may recycle the
+    /// same raw handle values, so handle equality cannot keep these views.
+    void InvalidateParticleViews();
 
     /// @brief Clear cached draw calls and camera state.
     ///
@@ -552,6 +564,7 @@ class SceneRenderGraph
     void ClearCachedFrameState()
     {
         ClearCachedViewSubmission();
+        InvalidateParticleViews();
         InvalidatePerViewShadowBindings();
         m_needsRebuild = true;
         // Prevent Execute() from running the old compiled graph before
@@ -799,6 +812,7 @@ class SceneRenderGraph
     RendererList m_cachedShadowRenderers;
     bool m_hasCachedShadowDrawCalls = false;
     uint64_t m_cachedSubmissionSignature = 0;
+    uint64_t m_cachedObjectBufferRevision = 0;
     std::shared_ptr<const void> m_cachedRenderWorldOwner;
     bool m_hasShadowCasterPass = false;
 

@@ -240,10 +240,12 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
     const bool visibleListReusable = culling.visibleRenderers.IsBorrowed();
     const bool graphAvailable = m_graph != nullptr;
     const bool uploadsSettled = m_vkCore->GetPendingMeshUploadCount() == 0;
-    const bool signatureReusable = graphAvailable && m_graph->CanReuseCachedSubmission(submissionSignature);
+    const uint64_t objectBufferRevision = m_vkCore->GetObjectBufferRevision();
+    const bool signatureReusable =
+        graphAvailable && m_graph->CanReuseCachedSubmission(submissionSignature, objectBufferRevision);
     if (!hasEditorAppenders && visibleListReusable && shadowListReusable && graphAvailable && uploadsSettled &&
         signatureReusable) {
-        m_graph->SetCachedSubmissionSignature(submissionSignature, culling.renderWorldOwner);
+        m_graph->SetCachedSubmissionSignature(submissionSignature, culling.renderWorldOwner, objectBufferRevision);
         if (m_activeCamera)
             m_graph->SetCachedCameraVP(m_activeCamera, m_cachedView, m_cachedProj);
         m_vkCore->SetDrawCalls(&m_graph->GetCachedDrawCalls());
@@ -520,7 +522,8 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         } else {
             m_graph->ClearCachedShadowDrawCalls();
         }
-        m_graph->SetCachedSubmissionSignature(submissionSignature, culling.renderWorldOwner);
+        m_graph->SetCachedSubmissionSignature(submissionSignature, culling.renderWorldOwner,
+                                              m_vkCore->GetObjectBufferRevision());
         if (m_activeCamera) {
             m_graph->SetCachedCameraVP(m_activeCamera, m_cachedView, m_cachedProj);
         }

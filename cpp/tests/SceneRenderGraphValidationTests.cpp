@@ -165,5 +165,26 @@ int main()
     const glm::mat4 jitteredOrthographic = SceneRenderGraph::ApplyTemporalJitter(orthographic, offset);
     assert(std::abs(jitteredOrthographic[3][0] - 0.01f) < 1e-7f);
     assert(std::abs(jitteredOrthographic[3][1] + 0.02f) < 1e-7f);
+
+    SceneRenderGraph graph;
+    graph.SetCachedRendererList(RendererList{});
+    graph.SetCachedSubmissionSignature(42, {}, 7);
+    assert(graph.CanReuseCachedSubmission(42, 7));
+    assert(!graph.CanReuseCachedSubmission(42, 8));
+    assert(!graph.CanReuseCachedSubmission(42, 0));
+    assert(!graph.CanReuseCachedSubmission(0, 7));
+    graph.ClearCachedViewSubmission();
+    assert(!graph.HasCachedDrawCalls());
+    assert(!graph.CanReuseCachedSubmission(42, 7));
+
+    graph.SetCachedRendererList(RendererList{});
+    graph.SetCachedSubmissionSignature(42, {}, 7);
+    graph.InvalidateParticleViews();
+    assert(graph.NeedsRebuild());
+    assert(!graph.IsGraphBuilt());
+    graph.ClearCachedFrameState();
+    assert(!graph.HasCachedDrawCalls());
+    assert(graph.NeedsRebuild());
+    assert(!graph.IsGraphBuilt());
     return 0;
 }

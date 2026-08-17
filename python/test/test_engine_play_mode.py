@@ -3,6 +3,7 @@
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -380,6 +381,43 @@ class TestPlayModeManager:
             (manager._scene_backup, {"for_play": False, "restore_scene_path": True})
         ]
         assert notifications == [(PlayModeState.PLAYING, PlayModeState.EDIT)]
+
+    def test_invalidate_native_gpu_view_state_drains_when_engine_present(self):
+        waits = []
+        manager = PlayModeManager()
+        manager._native_engine = SimpleNamespace(wait_for_gpu_idle=lambda: waits.append(True))
+        manager._invalidate_native_gpu_view_state()
+        assert waits == [True]
+
+    def test_exit_play_mode_invalidates_gpu_view_state_after_restore(self, monkeypatch):
+        from Infernux.engine.deferred_task import DeferredTaskRunner
+
+        class _SceneManager:
+            def stop(self):
+                return None
+
+        class _Runner:
+            is_busy = False
+
+            def submit(self, _name, steps, on_done=None):
+                self.steps = list(steps)
+                return True
+
+        runner = _Runner()
+        monkeypatch.setattr(DeferredTaskRunner, "_instance", runner)
+        manager = PlayModeManager()
+        manager._state = PlayModeState.PLAYING
+        manager._scene_backup = object()
+        manager._get_scene_manager = lambda: _SceneManager()
+        manager._rebuild_active_scene = lambda *args, **kwargs: True
+        manager._notify_state_change = lambda *_args: None
+        invalidations = []
+        manager._invalidate_native_gpu_view_state = lambda: invalidations.append(True)
+
+        assert manager.exit_play_mode() is True
+        _, _, restore = runner.steps[0]
+        restore()
+        assert invalidations == [True]
 
     def test_listener_list_empty(self):
         mgr = PlayModeManager()

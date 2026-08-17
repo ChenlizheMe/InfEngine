@@ -1311,7 +1311,11 @@ void InxRenderer::DrawFrame()
     _fp.stamp(); // [6] after RenderPipeline::Render (Python SRP)
 #endif
 
-    CleanupDrawCallBuffers();
+    // Hidden views are allowed to go unused, but a frame with no cameras must
+    // not treat every mesh as dead. Game/Scene reopen rebuilds from cache miss
+    // instead of drawing an empty buffer table.
+    if (sceneViewActive || gameViewActive)
+        CleanupDrawCallBuffers();
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [7] after CleanupUnusedBuffers
 #endif
@@ -4110,7 +4114,7 @@ void InxRenderer::ConsumeSceneTemporalDiscontinuity()
     if (worldId != m_temporalHistoryWorldId) {
         m_temporalHistoryWorldId = worldId;
         m_observedSceneTemporalDiscontinuityRevision = scene ? scene->GetTemporalDiscontinuityRevision() : 0;
-        InvalidateTemporalHistory();
+        InvalidateGpuViewStateForSceneBoundary();
         m_gameRenderGraph = nullptr;
         m_gameRenderGraphs.clear();
         m_gameCameraCacheValid = false;
@@ -4125,7 +4129,27 @@ void InxRenderer::ConsumeSceneTemporalDiscontinuity()
     if (revision == m_observedSceneTemporalDiscontinuityRevision)
         return;
     m_observedSceneTemporalDiscontinuityRevision = revision;
+    if (m_sceneRenderGraph) {
+        m_sceneRenderGraph->InvalidateParticleViews();
+        m_sceneRenderGraph->ClearCachedViewSubmission();
+    }
+    for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+        (void)cameraId;
+        graph->InvalidateParticleViews();
+        graph->ClearCachedViewSubmission();
+    }
     InvalidateTemporalHistory();
+}
+
+void InxRenderer::InvalidateGpuViewStateForSceneBoundary()
+{
+    if (m_sceneRenderGraph)
+        m_sceneRenderGraph->InvalidateParticleViews();
+    for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+        (void)cameraId;
+        graph->InvalidateParticleViews();
+    }
+    WaitForGpuIdle();
 }
 
 void InxRenderer::SetSceneViewVisible(bool visible)
@@ -4144,12 +4168,27 @@ void InxRenderer::SetSceneViewVisible(bool visible)
 
 void InxRenderer::SetGameCameraEnabled(bool enabled)
 {
+    if (m_gameCameraEnabled == enabled)
+        return;
     m_gameCameraEnabled = enabled;
     if (enabled) {
+        // Match Scene-view show: drop any leftover Game cache and rebuild
+        // particle views on the next submit instead of reusing retired buffers.
+        for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+            (void)cameraId;
+            graph->ClearCachedViewSubmission();
+            graph->InvalidateParticleViews();
+            graph->MarkDirty();
+        }
         INXLOG_DEBUG("Game camera rendering enabled");
-    } else {
-        INXLOG_DEBUG("Game camera rendering disabled");
+        return;
     }
+
+    for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+        (void)cameraId;
+        graph->ClearCachedViewSubmission();
+    }
+    INXLOG_DEBUG("Game camera rendering disabled");
 }
 
 InxScreenUIRenderer *InxRenderer::GetScreenUIRenderer()
@@ -4462,7 +4501,7 @@ void InxRenderer::SetPlayModeRendering(bool play)
     if (m_view)
         m_view->SetPlayMode(play);
     if (changed)
-        InvalidateTemporalHistory();
+        InvalidateGpuViewStateForSceneBoundary();
 }
 
 bool InxRenderer::IsPlayModeRendering() const
