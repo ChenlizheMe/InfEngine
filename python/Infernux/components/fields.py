@@ -92,6 +92,17 @@ class RequiredComponent:
     type_name: str
 
 
+@dataclass(frozen=True)
+class FormerlySerializedAs:
+    """Declare the previous authored name used by a hot-reloaded field.
+
+    The marker is consumed only by the field-schema migration transaction. It
+    does not keep a compatibility alias on the component class after commit.
+    """
+
+    name: str
+
+
 class _MarkerSentinel:
     """Base for value-less markers usable as ``Marker`` or ``Marker()``."""
     def __init_subclass__(cls, **kw):
@@ -227,6 +238,7 @@ class FieldMetadata:
     hdr: bool = False                            # For COLOR: allow HDR mode toggle
     asset_type: Optional[str] = None             # For ASSET: registered asset type name (e.g. "AudioClip", "AnimStateMachine")
     hidden: bool = False                         # Unity HideInInspector: serialized but not rendered
+    former_names: tuple[str, ...] = ()            # Explicit schema-migration sources; never runtime aliases.
 
     # For internal use
     python_type: Optional[Type] = None
@@ -374,6 +386,7 @@ class SerializedFieldDescriptor:
             if slot is not None and getattr(instance, '_cds_class_id', None) == self._cds_class_id:
                 from ._cds_bridge import cds_set
                 cds_set(self._cds_class_id, self._cds_field_id, self._cds_type_code, slot, value)
+                self._notify_runtime_value_changed(instance)
                 return
 
         inst_id = id(instance)
@@ -386,11 +399,23 @@ class SerializedFieldDescriptor:
                 self._weak_refs[inst_id] = weakref.ref(instance, self._make_ref_callback(inst_id))
             self._values[inst_id] = value
 
+        self._notify_runtime_value_changed(instance)
+
         # Periodic batch cleanup as a safety net for ref-cycle GC edge cases.
         self._set_count += 1
         if self._set_count >= 128:
             self._set_count = 0
             self._cleanup_dead_refs()
+
+    def _notify_runtime_value_changed(self, instance: 'InxComponent') -> None:
+        """Publish one authoritative field write after storage accepted it."""
+        if getattr(instance, '_registered_go_id', None) is None:
+            # Defaults and candidate instances are initialized before they
+            # enter a scene and must not invalidate runtime consumers.
+            return
+        from ._component_lifecycle import notify_runtime_component_value_changed
+
+        notify_runtime_component_value_changed(instance, self.metadata.name)
     
     def __delete__(self, instance: 'InxComponent'):
         inst_id = id(instance)
@@ -555,6 +580,14 @@ def _ensure_game_object_ref(value):
         return value
     if value is None:
         return GameObjectRef(persistent_id=0)
+    if isinstance(value, str):
+        guid, path_hint = _extract_guid_and_path(
+            value,
+            ('path_hint', 'source_path', 'file_path'),
+        )
+        candidate = path_hint or (value if value.lower().endswith('.prefab') else '')
+        if candidate or value.lower().endswith('.prefab'):
+            return PrefabRef(guid=guid, path_hint=candidate)
     return GameObjectRef(value)
 
 
@@ -750,6 +783,34 @@ def coerce_serialized_field_input(
     metadata = field_meta_or_type if hasattr(field_meta_or_type, "field_type") else None
     field_type = metadata.field_type if metadata is not None else field_meta_or_type
 
+    if field_type == FieldType.ENUM:
+        enum_type = getattr(metadata, "enum_type", None)
+        members = getattr(enum_type, "__members__", None)
+        if not members:
+            raise TypeError(f"{path}: ENUM field has no concrete enum type")
+        if isinstance(value, str):
+            member = members.get(value)
+            if member is None:
+                folded = value.casefold()
+                matches = [
+                    candidate
+                    for name, candidate in members.items()
+                    if name.casefold() == folded
+                ]
+                member = matches[0] if len(matches) == 1 else None
+            if member is None:
+                raise ValueError(
+                    f"{path}: unknown {enum_type.__qualname__} member {value!r}"
+                )
+            return member
+        if type(value) is int:
+            try:
+                return enum_type(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{path}: unknown {enum_type.__qualname__} value {value}"
+                ) from exc
+
     if field_type == FieldType.LIST:
         if not isinstance(value, list):
             raise TypeError(f"{path}: LIST field requires an array")
@@ -897,6 +958,8 @@ _TYPE_NAME_TO_FIELD: dict = {
     'vec4f': FieldType.VEC4,   'Vec4': FieldType.VEC4,
     'Vector4': FieldType.VEC4, 'vector4': FieldType.VEC4,
     'GameObject': FieldType.GAME_OBJECT,
+    'GameObjectRef': FieldType.GAME_OBJECT,
+    'PrefabRef': FieldType.GAME_OBJECT,
     'Material': FieldType.MATERIAL,
     'Texture': FieldType.TEXTURE,    'TextureRef': FieldType.TEXTURE,
     'Shader': FieldType.SHADER,     'ShaderRef': FieldType.SHADER,
@@ -1165,6 +1228,8 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
     # ── Known reference / asset types ──
     _MAP = {
         'GameObject':   (FieldType.GAME_OBJECT, '_go_ref'),
+        'GameObjectRef':(FieldType.GAME_OBJECT, '_go_ref'),
+        'PrefabRef':    (FieldType.GAME_OBJECT, '_go_ref'),
         'Material':     (FieldType.MATERIAL,    '_mat_ref'),
         'Texture':      (FieldType.TEXTURE,     '_tex_ref'),
         'TextureRef':   (FieldType.TEXTURE,     '_tex_ref'),
@@ -1278,6 +1343,12 @@ def _apply_markers(meta: 'FieldMetadata', markers: list) -> Optional['FieldMetad
             meta.drag_speed = m.speed
         elif isinstance(m, RequiredComponent):
             meta.required_component = m.type_name
+        elif isinstance(m, FormerlySerializedAs):
+            previous = str(m.name).strip()
+            if not previous:
+                raise ValueError("FormerlySerializedAs requires a non-empty field name")
+            if previous not in meta.former_names:
+                meta.former_names = (*meta.former_names, previous)
         elif _is_marker(m, Multiline):
             meta.multiline = True
         elif _is_marker(m, ReadOnly):
@@ -1377,9 +1448,12 @@ def get_annotation_default(annotation) -> Any:
 
 def _make_ref_default(type_name: str):
     """Create an empty default instance for a known reference type name."""
-    if type_name == 'GameObject':
+    if type_name in ('GameObject', 'GameObjectRef'):
         from .ref_wrappers import GameObjectRef
         return GameObjectRef()
+    if type_name == 'PrefabRef':
+        from .ref_wrappers import PrefabRef
+        return PrefabRef()
     if type_name == 'Material':
         from .ref_wrappers import MaterialRef
         return MaterialRef()

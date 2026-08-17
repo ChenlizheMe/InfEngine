@@ -191,7 +191,7 @@ def render_inspector_model(ctx: InxGUIContext, component, model: InspectorModel)
 
 
 def _render_serialized_target(ctx: InxGUIContext, control: InspectorSerializedTarget) -> None:
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
 
     target = control.target()
     if target is None:

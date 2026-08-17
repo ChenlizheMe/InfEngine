@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import struct
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -1782,10 +1783,12 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
         str(vector_field_source), database=engine.get_asset_database()
     )
     assert reimported, reimported.error
-    for _ in range(4):
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
         component.update(0.0)
         if engine._gpu_particle_vector_field_generation(emitter_id, 0) > initial_generation:
             break
+        time.sleep(0.001)
 
     assert component._artifact_revision == initial_artifact_revision
     assert engine._gpu_particle_vector_field_generation(emitter_id, 0) == initial_generation + 1
@@ -2033,6 +2036,31 @@ def test_particle_system_play_consumes_saved_aot_without_source_compilation(
 
     assert component._gpu_runtime_resident()
     assert native.program_batches
+
+
+def test_single_emitter_restart_resets_authoritative_graph_clock(
+    scene, monkeypatch, tmp_path
+):
+    source = tmp_path / "SingleBurstRestart.particlegraph"
+    ParticleGraphAsset(stable_id="single-burst-restart").save(str(source))
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    scene.create_game_object("SingleBurstRestartProbe").add_py_component(component)
+
+    component.awake()
+    component.start()
+    component.update(2.0)
+    assert component._graph_simulation_time_ticks == 2_000_000_000
+
+    assert component.restart(0) is True
+    component.update(1.0 / 60.0)
+
+    assert component._graph_simulation_time_ticks == int(round(1_000_000_000.0 / 60.0))
+    assert native.frames[-1][1][0]["simulation_time_ticks"] == int(
+        round(1_000_000_000.0 / 60.0)
+    )
 
 
 def test_particle_preview_reuses_saved_aot_native_runtime_and_graph_clock(

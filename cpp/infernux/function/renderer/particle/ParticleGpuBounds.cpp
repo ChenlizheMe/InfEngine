@@ -12,16 +12,12 @@ namespace
 {
 
 constexpr std::string_view CommonBindings = R"glsl(
-struct ParticleInstance {
-    vec4 position_size;
-    vec4 color;
-    vec4 rotation_custom;
-    vec4 scale_custom;
-    uvec4 ribbon_data;
-    vec4 custom_data;
-    vec4 previous_position_history;
+struct ParticleVisibilityInstance {
+    vec4 position_radius;
 };
-layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleInstance instances[]; };
+layout(std430, set = 0, binding = 0) readonly buffer Visibility {
+    ParticleVisibilityInstance visibility[];
+};
 layout(std430, set = 0, binding = 1) readonly buffer SourceIndirectArguments {
     uint source_vertex_count;
     uint source_instance_count;
@@ -158,15 +154,12 @@ void main() {
     if (simulation_allowed != 0u && index < source_count) {
         uint particle_index = source_indices[index];
         if (particle_index < pc.capacity) {
-            ParticleInstance instance = instances[particle_index];
-            vec3 position = instance.position_size.xyz;
-            vec3 scale = abs(instance.scale_custom.xyz);
-            bool valid = inx_is_finite_vec3(position) && inx_is_finite(instance.position_size.w) &&
-                         inx_is_finite_vec3(instance.scale_custom.xyz);
+            ParticleVisibilityInstance instance = visibility[particle_index];
+            vec3 position = instance.position_radius.xyz;
+            float radius = instance.position_radius.w;
+            bool valid = inx_is_finite_vec3(position) && inx_is_finite(radius);
             if (valid) {
-                float radius = abs(instance.position_size.w) *
-                    max(max(scale.x, scale.y), scale.z) * 1.41421356237;
-                valid = inx_is_finite(radius) && radius >= 0.0;
+                valid = radius >= 0.0;
                 if (valid) {
                     vec3 bounds_lower = position - vec3(radius);
                     vec3 bounds_upper = position + vec3(radius);
@@ -245,14 +238,14 @@ ParticleGpuBounds::~ParticleGpuBounds()
 bool ParticleGpuBounds::Create(rhi::Device &device, const GpuParticleBoundsDesc &desc)
 {
     Destroy();
-    if (desc.capacity == 0 || !desc.instances.IsValid() || !desc.sourceIndices.IsValid() ||
+    if (desc.capacity == 0 || !desc.visibility.IsValid() || !desc.sourceIndices.IsValid() ||
         !desc.sourceIndirectArguments.IsValid() || !desc.simulationControl.IsValid() || !desc.program.IsValid()) {
         return false;
     }
 
     m_device = &device;
     m_capacity = desc.capacity;
-    m_instances = desc.instances;
+    m_visibility = desc.visibility;
     m_sourceIndices = desc.sourceIndices;
     m_sourceIndirectArguments = desc.sourceIndirectArguments;
     m_simulationControl = desc.simulationControl;
@@ -280,7 +273,7 @@ bool ParticleGpuBounds::Create(rhi::Device &device, const GpuParticleBoundsDesc 
 
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 6> buffers = {m_instances,         m_sourceIndirectArguments, m_bounds,
+    const std::array<rhi::BufferHandle, 6> buffers = {m_visibility,        m_sourceIndirectArguments, m_bounds,
                                                       m_dispatchArguments, m_simulationControl,       m_sourceIndices};
     for (uint32_t binding = 0; binding < buffers.size(); ++binding)
         groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
@@ -327,7 +320,7 @@ void ParticleGpuBounds::Destroy() noexcept
     }
     m_device = nullptr;
     m_capacity = 0;
-    m_instances = {};
+    m_visibility = {};
     m_sourceIndices = {};
     m_sourceIndirectArguments = {};
     m_simulationControl = {};
@@ -345,7 +338,7 @@ void ParticleGpuBounds::Destroy() noexcept
 
 bool ParticleGpuBounds::IsValid() const noexcept
 {
-    return m_device && m_capacity > 0 && m_instances.IsValid() && m_sourceIndices.IsValid() &&
+    return m_device && m_capacity > 0 && m_visibility.IsValid() && m_sourceIndices.IsValid() &&
            m_sourceIndirectArguments.IsValid() && m_simulationControl.IsValid() && m_bounds.IsValid() &&
            m_dispatchArguments.IsValid() && m_layout.IsValid() && m_group.IsValid() && m_preparePipeline.IsValid() &&
            m_resetPipeline.IsValid() && m_reducePipeline.IsValid();

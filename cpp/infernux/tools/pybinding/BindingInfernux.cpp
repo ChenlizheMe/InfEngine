@@ -32,6 +32,15 @@ namespace py = pybind11;
 namespace
 {
 
+void LogPythonFrameCallbackError(const char *callbackName, const py::error_already_set &error)
+{
+    // error_already_set has already fetched and cleared the Python error
+    // indicator. Never restore it here: these callbacks run every frame, and
+    // leaving PyErr set poisons every later callback while the native render
+    // loop continues, stranding deferred tasks and MCP main-thread commands.
+    INXLOG_ERROR("[PythonFrameCallback] {} failed: {}", callbackName, error.what());
+}
+
 std::vector<uint32_t> DecodeParticleSpirv(const py::handle &value, const std::string &label)
 {
     if (!py::isinstance<py::bytes>(value))
@@ -107,8 +116,8 @@ const char *ParticleSortModeName(particle::ParticleSortMode value)
 particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &value)
 {
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
-        "bootstrap",        "init",         "update",          "update_rendering_fused",
-        "contact_prepare",  "contact_solve", "contact_dispatch", "render_reset", "rendering"};
+        "bootstrap",        "init",         "update",   "update_rendering_fused", "contact_prepare", "contact_solve",
+        "contact_dispatch", "render_reset", "rendering"};
     for (const char *field :
          {"id", "graph_instance_id", "graph_emitter_index", "owner_object_id", "owner_layer_mask", "artifact_revision",
           "stable_id", "capacity", "state_stride", "event_type_count", "collision_enabled", "parameter_words",
@@ -366,14 +375,14 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     if (!py::isinstance<py::dict>(value["stages"]))
         throw std::invalid_argument("GPU particle stages must be a dictionary");
     const py::dict stages = py::cast<py::dict>(value["stages"]);
-    const size_t expectedStageCount = static_cast<size_t>(particle::GpuKernelStage::Count) -
-                                      (program.supportsFusedUpdateRendering ? 0u : 1u);
+    const size_t expectedStageCount =
+        static_cast<size_t>(particle::GpuKernelStage::Count) - (program.supportsFusedUpdateRendering ? 0u : 1u);
     if (py::len(stages) != expectedStageCount)
         throw std::invalid_argument("GPU particle stages do not match update_render_fusion eligibility");
     for (size_t index = 0; index < StageNames.size(); ++index) {
         const char *stage = StageNames[index];
-        const bool isFusedStage = static_cast<particle::GpuKernelStage>(index) ==
-                                  particle::GpuKernelStage::UpdateRenderingFused;
+        const bool isFusedStage =
+            static_cast<particle::GpuKernelStage>(index) == particle::GpuKernelStage::UpdateRenderingFused;
         if (isFusedStage && !program.supportsFusedUpdateRendering)
             continue;
         if (!stages.contains(stage))
@@ -1425,8 +1434,8 @@ PYBIND11_MODULE(_Infernux, m)
                         py::gil_scoped_acquire acquire;
                         try {
                             fn(deltaTime);
-                        } catch (py::error_already_set &e) {
-                            e.restore();
+                        } catch (const py::error_already_set &e) {
+                            LogPythonFrameCallbackError("pre-scene update", e);
                         }
                     });
                 }
@@ -1447,8 +1456,8 @@ PYBIND11_MODULE(_Infernux, m)
                         py::gil_scoped_acquire acquire;
                         try {
                             fn();
-                        } catch (py::error_already_set &e) {
-                            e.restore();
+                        } catch (const py::error_already_set &e) {
+                            LogPythonFrameCallbackError("pre-GUI", e);
                         }
                     });
                 }
@@ -1470,8 +1479,8 @@ PYBIND11_MODULE(_Infernux, m)
                         py::gil_scoped_acquire acquire;
                         try {
                             fn();
-                        } catch (py::error_already_set &e) {
-                            e.restore();
+                        } catch (const py::error_already_set &e) {
+                            LogPythonFrameCallbackError("post-draw", e);
                         }
                     });
                 }
@@ -1906,6 +1915,13 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("width"), py::arg("height"), "Resize the game render target (lazy-initializes on first call)")
         .def(
+            "get_game_render_target_generation",
+            [](Infernux &self) -> uint64_t {
+                auto *r = self.GetRenderer();
+                return r ? r->GetGameRenderTargetGeneration() : 0;
+            },
+            "Return the monotonic generation of the native Game render target")
+        .def(
             "set_game_camera_enabled",
             [](Infernux &self, bool enabled) {
                 auto *r = self.GetRenderer();
@@ -1971,6 +1987,13 @@ PYBIND11_MODULE(_Infernux, m)
                 return r ? r->GetPrepareFrameMs() : 0.0;
             },
             "Get PrepareFrame (collect/cull renderables) time in ms")
+        .def(
+            "get_shader_time_seconds",
+            [](Infernux &self) -> float {
+                auto *r = self.GetRenderer();
+                return r ? r->GetShaderTimeSeconds() : 0.0f;
+            },
+            "Get the exact time uploaded to the global shader _Time.x value")
         .def(
             "get_screen_ui_renderer",
             [](Infernux &self) -> InxScreenUIRenderer * {
@@ -2089,6 +2112,14 @@ PYBIND11_MODULE(_Infernux, m)
                     r->RequestFullSpeedFrame();
             },
             "Force full-speed rendering for the next few frames")
+        .def(
+            "request_editor_wake",
+            [](Infernux &self) {
+                auto *r = self.GetRenderer();
+                if (r)
+                    r->RequestExternalWake();
+            },
+            "Wake the editor event loop from a background service")
         .def(
             "set_editor_fps_cap",
             [](Infernux &self, float fps) {
@@ -2574,6 +2605,7 @@ PYBIND11_MODULE(_Infernux, m)
                     item["alive_count"] = emitter.aliveCount;
                     item["visible_count"] = emitter.visibleCount;
                     item["dropped_count"] = emitter.droppedCount;
+                    item["initialized_spawn_count"] = emitter.initializedSpawnCount;
                     item["collision_hit_count"] = emitter.collisionHitCount;
                     item["collision_response_count"] = emitter.collisionResponseCount;
                     item["collision_trigger_count"] = emitter.collisionTriggerCount;

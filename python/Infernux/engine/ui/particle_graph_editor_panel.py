@@ -101,7 +101,7 @@ from .floating_workspace_panel import (
     render_compact_tab_bar,
     render_workspace_add_header,
 )
-from .inspector_utils import preserve_ui_float_precision
+from .inspector_utils import preserve_ui_float_precision, render_color_value_bar
 from .inspector_shader_utils import get_shader_property_generation
 from .node_graph_editor_panel import (
     GraphParameterDetailConfig,
@@ -1428,6 +1428,25 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             ],
         }
 
+    def _on_node_asset_reference(
+        self, node_uid: str, field_id: str, asset_type: str, reference
+    ) -> None:
+        """View callback for asset-valued node inputs (tuned for the model)."""
+        del asset_type
+        try:
+            self.set_node_asset_reference(node_uid, field_id, reference)
+        except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+            Debug.log_error(f"Particle Graph asset input edit failed: {exc}")
+
+    @staticmethod
+    def _node_asset_reference_items(
+        _node_uid: str,
+        _field_id: str,
+        asset_type: str,
+        query: str,
+    ):
+        return _builtin_mesh_picker_items(query) if asset_type == "Mesh" else ()
+
     def set_node_asset_reference(
         self, node_uid: str, property_name: str, file_path
     ) -> dict:
@@ -1494,8 +1513,25 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             else "Material"
         )
         candidate = file_path
+        if candidate is None or (
+            isinstance(candidate, dict)
+            and not any(
+                str(candidate.get(name) or "").strip()
+                for name in ("guid", "path_hint", "path", "builtin", "built_in")
+            )
+        ):
+            reference = AssetReference().to_dict()
+            if node.data.get(key) == reference:
+                return copy.deepcopy(reference)
+            previous = copy.deepcopy(node.data.get(key))
+            self._on_node_data_changed(node.uid, key, previous, reference)
+            self._select_canvas_node(node.uid)
+            stage = self._model.stage_for_uid(node.uid)
+            if stage:
+                self._select_stage(stage)
+            return copy.deepcopy(reference)
         if asset_type == "Mesh":
-            token = str(file_path).strip()
+            token = str(file_path).strip() if isinstance(file_path, str) else ""
             if token.startswith("builtin-mesh:"):
                 candidate = {
                     "asset_type": "Mesh",
@@ -2990,23 +3026,21 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
     def _select_emitter(self, index: int) -> None:
         if not 0 <= index < len(self._asset.emitters):
             return
-        if index == self._emitter_index:
-            self._select_particle_element(
-                GraphElementKind.EMITTER,
-                self._selected_emitter().stable_id,
-                reason="particle_graph_emitter_selected",
-                record_history=True,
-            )
-            return
-        self._sync_model_to_asset()
-        self._emitter_index = index
-        self._bind_stage()
+        target_id = self._asset.emitters[index].stable_id
+        if index != self._emitter_index:
+            self._sync_model_to_asset()
         self._select_particle_element(
             GraphElementKind.EMITTER,
-            self._selected_emitter().stable_id,
+            target_id,
             reason="particle_graph_emitter_selected",
             record_history=True,
         )
+        # SelectionService is authoritative. Its projection normally performs
+        # the rebind synchronously; retain this fallback for an already-current
+        # global selection projected into a newly opened panel.
+        if index != self._emitter_index:
+            self._emitter_index = index
+            self._bind_stage()
 
     def _select_event_type(self, event_type_id: str, *, focus_name: bool = False) -> None:
         if not any(
@@ -3524,7 +3558,14 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         if value_type is ValueType.F32:
             return float(ctx.drag_float(f"{label}{suffix}", float(value), 0.05, -1.0e7, 1.0e7))
         if value_type is ValueType.COLOR:
-            return list(ctx.color_edit(f"{label}{suffix}", *value, hdr=True))
+            ctx.label(label)
+            return render_color_value_bar(
+                ctx,
+                suffix,
+                value,
+                allow_hdr=True,
+                default_hdr_enabled=True,
+            )
         return [
             float(
                 ctx.drag_float(
@@ -4721,25 +4762,39 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                             1.0e7,
                         )
                     )
-            elif value_type in {ValueType.VEC2, ValueType.VEC3, ValueType.VEC4, ValueType.COLOR}:
+            elif value_type is ValueType.COLOR:
+                ctx.label(label)
+                new_value = render_color_value_bar(
+                    ctx,
+                    f"##particle_node_{node.uid}_{key}",
+                    value,
+                    allow_hdr=True,
+                    default_hdr_enabled=True,
+                )
+            elif value_type in {ValueType.VEC2, ValueType.VEC3, ValueType.VEC4}:
                 new_value = [
                     float(ctx.drag_float(f"{label} {axis}##particle_node_{key}_{axis}", float(component), 0.05, -1.0e7, 1.0e7))
                     for axis, component in zip("XYZW", value)
                 ]
             elif value_type is ValueType.TEXTURE2D:
                 reference = AssetReference.from_dict(value)
-                selected_references: list[AssetReference] = []
                 descriptor = asset_type_registry.require("Texture")
+                reference_committed = False
 
                 def _select_texture(candidate):
+                    nonlocal reference_committed
                     try:
-                        selected_references.append(
-                            _particle_asset_reference("Texture", candidate)
-                        )
+                        self.set_node_asset_reference(node.uid, key, candidate)
+                        reference_committed = True
                     except (KeyError, TypeError, ValueError) as exc:
                         Debug.log_error(
                             f"Particle Output texture assignment rejected: {exc}"
                         )
+
+                def _clear_texture():
+                    nonlocal reference_committed
+                    self.set_node_asset_reference(node.uid, key, None)
+                    reference_committed = True
 
                 ping_path = str(reference.path_hint or "").strip()
                 if ping_path:
@@ -4757,14 +4812,14 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                     asset_type=descriptor.type_id,
                     accept_drag_type=descriptor.drag_types,
                     on_assign=_select_texture,
-                    on_clear=lambda: selected_references.append(AssetReference()),
+                    on_clear=_clear_texture,
                     ping_path=ping_path or None,
                     has_value=bool(reference.guid or reference.path_hint),
                     reference_value=_particle_reference_value("Texture", reference),
                     semantic_id=semantic_id,
                 )
-                if selected_references:
-                    new_value = selected_references[-1].to_dict()
+                if reference_committed:
+                    return
             elif value_type in {ValueType.ASSET_REF, ValueType.MESH}:
                 reference = dict(value)
                 mesh_reference = (
@@ -4773,7 +4828,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                     else None
                 )
                 path_hint = str(reference.get("path_hint", "") or "")
-                selected_reference = []
+                reference_committed = False
 
                 is_mesh = value_type is ValueType.MESH or key == "mesh"
                 display = (
@@ -4785,14 +4840,19 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 descriptor = asset_type_registry.require(asset_kind)
 
                 def _select_asset(candidate):
+                    nonlocal reference_committed
                     try:
-                        selected_reference.append(
-                            _particle_asset_reference(asset_kind, candidate).to_dict()
-                        )
+                        self.set_node_asset_reference(node.uid, key, candidate)
+                        reference_committed = True
                     except (KeyError, TypeError, ValueError) as exc:
                         Debug.log_error(
                             f"Particle node {asset_kind} assignment rejected: {exc}"
                         )
+
+                def _clear_asset():
+                    nonlocal reference_committed
+                    self.set_node_asset_reference(node.uid, key, None)
+                    reference_committed = True
 
                 _node_ping = str(path_hint or "").strip()
                 if _node_ping:
@@ -4811,7 +4871,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                     additional_asset_items=(
                         _builtin_mesh_picker_items if is_mesh else None
                     ),
-                    on_clear=lambda: selected_reference.append({"guid": "", "path_hint": ""}),
+                    on_clear=_clear_asset,
                     ping_path=_node_ping or None,
                     has_value=bool(reference.get("guid") or path_hint),
                     reference_value=(
@@ -4821,8 +4881,8 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                     ),
                     semantic_id=f"particle_graph.node.{node.uid}.property.{key}",
                 )
-                if selected_reference:
-                    new_value = selected_reference[-1]
+                if reference_committed:
+                    return
             elif value_type is ValueType.STRING and key == "interface":
                 expected = self._data_interface_type_for_node(node.type_id)
                 matching = [

@@ -65,6 +65,12 @@ class SceneRenderExtractor final
     Camera *m_activeCamera = nullptr;
     std::vector<SceneRenderSource> m_sceneSources;
     size_t m_visibleCount = 0;
+    uint64_t m_lastTransformRevision = 0;
+    glm::mat4 m_lastViewProjection{1.0f};
+    uint32_t m_lastCullingMask = 0xFFFFFFFFu;
+    bool m_hasLastFrameState = false;
+    bool m_allRenderersStatic = false;
+    bool m_lastUsedFrustum = false;
     bool m_frustumCulling = true;
     bool m_frustumVisibilityDirty = false;
 

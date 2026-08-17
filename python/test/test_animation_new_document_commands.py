@@ -89,6 +89,10 @@ def test_animation_new_command_uses_shared_save_discard_cancel_replacement(
     can_execute = getattr(panel, can_name)
     original_document_id = panel.document_id
     original_model = model_identity(panel)
+    documents.mark_changed(
+        original_document_id,
+        view_id=panel.window_id,
+    )
 
     assert can_execute()
     assert command()

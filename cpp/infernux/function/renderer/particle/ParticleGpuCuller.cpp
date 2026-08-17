@@ -10,7 +10,10 @@ namespace
 {
 
 constexpr std::string_view CommonBindings = R"glsl(
-struct ParticleInstance {
+struct ParticleVisibilityInstance {
+    vec4 position_radius;
+};
+struct ParticleRenderInstance {
     vec4 position_size;
     vec4 color;
     vec4 rotation_custom;
@@ -19,7 +22,9 @@ struct ParticleInstance {
     vec4 custom_data;
     vec4 previous_position_history;
 };
-layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleInstance instances[]; };
+layout(std430, set = 0, binding = 0) readonly buffer Visibility {
+    ParticleVisibilityInstance visibility[];
+};
 layout(std430, set = 0, binding = 1) readonly buffer SourceIndirectArguments {
     uint source_vertex_count;
     uint source_instance_count;
@@ -57,6 +62,9 @@ layout(std430, set = 0, binding = 6) buffer SimulationControl {
     uint simulation_control_reserved;
 };
 layout(std430, set = 0, binding = 7) readonly buffer SourceIndices { uint source_indices[]; };
+layout(std430, set = 0, binding = 8) readonly buffer RibbonInstances {
+    ParticleRenderInstance ribbon_instances[];
+};
 layout(push_constant) uniform CullConstants {
     vec4 frustum_planes[6];
     uint capacity;
@@ -174,13 +182,16 @@ void main() {
             uint first_index = source_indices[source_index];
             uint second_index = source_indices[source_index + 1u];
             if (first_index < pc.capacity && second_index < pc.capacity) {
-                ParticleInstance first = instances[first_index];
-                ParticleInstance second = instances[second_index];
-                if (first.ribbon_data.x == second.ribbon_data.x && (second.ribbon_data.z & 1u) == 0u) {
+                ParticleRenderInstance first_metadata = ribbon_instances[first_index];
+                ParticleRenderInstance second_metadata = ribbon_instances[second_index];
+                ParticleVisibilityInstance first = visibility[first_index];
+                ParticleVisibilityInstance second = visibility[second_index];
+                if (first_metadata.ribbon_data.x == second_metadata.ribbon_data.x &&
+                    (second_metadata.ribbon_data.z & 1u) == 0u) {
                     visible = bounds_fully_inside || inx_visible_sphere(
-                                                          (first.position_size.xyz + second.position_size.xyz) * 0.5,
-                                                          length(second.position_size.xyz - first.position_size.xyz) * 0.5 +
-                                                              max(abs(first.position_size.w), abs(second.position_size.w)) *
+                                                          (first.position_radius.xyz + second.position_radius.xyz) * 0.5,
+                                                          length(second.position_radius.xyz - first.position_radius.xyz) * 0.5 +
+                                                              max(abs(first.position_radius.w), abs(second.position_radius.w)) *
                                                                   0.5);
                     output_value = source_index;
                 }
@@ -190,13 +201,10 @@ void main() {
         if (source_index < source_count) {
             uint particle_index = source_indices[source_index];
             if (particle_index < pc.capacity) {
-                ParticleInstance instance = instances[particle_index];
+                ParticleVisibilityInstance instance = visibility[particle_index];
                 visible = bounds_fully_inside || inx_visible_sphere(
-                                                   instance.position_size.xyz,
-                                                   abs(instance.position_size.w) *
-                                                       max(max(abs(instance.scale_custom.x), abs(instance.scale_custom.y)),
-                                                           abs(instance.scale_custom.z)) *
-                                                       1.41421356237);
+                                                   instance.position_radius.xyz,
+                                                   abs(instance.position_radius.w));
                 output_value = particle_index;
             }
         }
@@ -272,7 +280,8 @@ ParticleGpuCuller::~ParticleGpuCuller()
 bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc &desc)
 {
     Destroy();
-    if (desc.capacity == 0 || desc.vertexCount == 0 || !desc.instances.IsValid() ||
+    if (desc.capacity == 0 || desc.vertexCount == 0 || !desc.visibility.IsValid() ||
+        !desc.ribbonInstances.IsValid() ||
         !desc.sourceIndirectArguments.IsValid() || !desc.sourceIndices.IsValid() || !desc.bounds.IsValid() ||
         !desc.simulationControl.IsValid() || !desc.program.IsValid()) {
         return false;
@@ -281,7 +290,8 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
     m_device = &device;
     m_capacity = desc.capacity;
     m_vertexCount = desc.vertexCount;
-    m_instances = desc.instances;
+    m_visibility = desc.visibility;
+    m_ribbonInstances = desc.ribbonInstances;
     m_sourceIndirectArguments = desc.sourceIndirectArguments;
     m_sourceIndices = desc.sourceIndices;
     m_bounds = desc.bounds;
@@ -300,9 +310,9 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
     }
 
     rhi::BindingLayoutDesc layoutDesc;
-    for (uint32_t binding = 0; binding < 8; ++binding)
+    for (uint32_t binding = 0; binding < 9; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 8;
+    layoutDesc.entryCount = 9;
     m_layout = device.CreateBindingLayout(layoutDesc);
     if (!m_layout.IsValid()) {
         Destroy();
@@ -311,9 +321,9 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
 
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 8> buffers = {
-        m_instances, m_sourceIndirectArguments, m_visibleIndices, m_drawIndirectArguments, m_sortDispatchArguments,
-        m_bounds,    m_simulationControl,       m_sourceIndices,
+    const std::array<rhi::BufferHandle, 9> buffers = {
+        m_visibility, m_sourceIndirectArguments, m_visibleIndices, m_drawIndirectArguments, m_sortDispatchArguments,
+        m_bounds, m_simulationControl, m_sourceIndices, m_ribbonInstances,
     };
     for (uint32_t binding = 0; binding < buffers.size(); ++binding)
         groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
@@ -362,7 +372,8 @@ void ParticleGpuCuller::Destroy() noexcept
     m_device = nullptr;
     m_capacity = 0;
     m_vertexCount = 0;
-    m_instances = {};
+    m_visibility = {};
+    m_ribbonInstances = {};
     m_sourceIndirectArguments = {};
     m_sourceIndices = {};
     m_bounds = {};
@@ -380,7 +391,8 @@ void ParticleGpuCuller::Destroy() noexcept
 
 bool ParticleGpuCuller::IsValid() const noexcept
 {
-    return m_device && m_capacity > 0 && m_vertexCount > 0 && m_instances.IsValid() &&
+    return m_device && m_capacity > 0 && m_vertexCount > 0 && m_visibility.IsValid() &&
+           m_ribbonInstances.IsValid() &&
            m_sourceIndirectArguments.IsValid() && m_sourceIndices.IsValid() && m_bounds.IsValid() &&
            m_simulationControl.IsValid() && m_visibleIndices.IsValid() && m_drawIndirectArguments.IsValid() &&
            m_sortDispatchArguments.IsValid() && m_layout.IsValid() && m_group.IsValid() && m_resetPipeline.IsValid() &&

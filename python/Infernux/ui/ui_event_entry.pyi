@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, List, Optional, Sequence
 
 from Infernux.components import SerializableObject, GameObjectRef
 from Infernux.components.ref_wrappers import ComponentRef
@@ -100,7 +100,12 @@ def normalize_event_arguments(
     ...
 
 
-def materialize_event_arguments(entry: UIEventEntry, component: Any) -> List[Any]:
+def materialize_event_arguments(
+    entry: UIEventEntry,
+    component: Any,
+    *,
+    specs: Optional[Sequence[UIEventMethodParameter]] = ...,
+) -> List[Any]:
     """Return the runtime argument list for a bound event entry.
 
     Resolves ``GameObjectRef`` and ``ComponentRef`` to live objects.

@@ -19,6 +19,25 @@ class _NativeMaterial:
         self.save_count += 1
         return self.save_result
 
+    def serialize_document(self) -> dict:
+        return {
+            "name": self.name,
+            "shaders": {"vertex": {}, "fragment": {}},
+            "renderState": {"renderQueue": 2000},
+            "properties": {},
+        }
+
+
+def test_material_to_dict_preserves_the_canonical_native_document():
+    material = Material(_NativeMaterial())
+
+    document = material.to_dict()
+
+    assert document == material.serialize_document()
+    assert "shaders" in document
+    assert "renderState" in document
+    assert "properties" in document
+
 
 def test_flush_drops_deleted_material_without_saving():
     native = _NativeMaterial(deleted=True)

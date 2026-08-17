@@ -55,6 +55,7 @@ int main()
 
     state.bindless.descriptorIndexing.supported = true;
     state.bindless.runtimeDescriptorArray.supported = true;
+    state.bindless.shaderSampledImageArrayNonUniformIndexing.supported = true;
     state.bindless.descriptorBindingPartiallyBound.supported = true;
     state.bindless.descriptorBindingVariableDescriptorCount.supported = true;
     state.bindless.descriptorBindingSampledImageUpdateAfterBind.supported = true;
@@ -62,6 +63,7 @@ int main()
 
     state.bindless.descriptorIndexing.enabled = true;
     state.bindless.runtimeDescriptorArray.enabled = true;
+    state.bindless.shaderSampledImageArrayNonUniformIndexing.enabled = true;
     state.bindless.descriptorBindingPartiallyBound.enabled = true;
     state.bindless.descriptorBindingVariableDescriptorCount.enabled = true;
     state.bindless.descriptorBindingSampledImageUpdateAfterBind.enabled = true;

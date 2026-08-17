@@ -212,13 +212,24 @@ def test_gizmo_transform_history_preserves_pointer_down_selection(scene):
 
 
 def test_gizmo_tool_switch_commits_live_transform_once(scene):
+    from Infernux.engine.ui.inspector_snapshot import (
+        InspectorSnapshotService,
+        InspectorTarget,
+    )
+
     previous, manager, _transients = _install_gizmo_interaction_services()
     try:
         owner = scene.create_game_object("Tool Switch Gizmo")
+        snapshots = InspectorSnapshotService.instance()
+        snapshots.reset_for_tests()
+        target = InspectorTarget.scene_object(int(owner.id))
+        before = snapshots.snapshot(target)
         panel = SceneViewPanel(engine=None)
         _begin_test_gizmo_drag(panel, owner)
         owner.transform.position = Vector3(5.0, 1.0, 0.0)
         panel._update_gizmo_drag_transaction()
+
+        assert snapshots.snapshot(target).value_revision > before.value_revision
 
         panel._set_tool_mode(TOOL_ROTATE)
 

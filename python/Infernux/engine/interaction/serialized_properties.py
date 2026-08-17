@@ -62,6 +62,29 @@ SnapshotCapture = Callable[[], Any]
 SnapshotRestore = Callable[[Any], None]
 
 
+def _publish_inspector_fields(targets: Sequence[Any], field_name: str) -> None:
+    """Publish precise Editor invalidation without making Runtime depend on UI."""
+    try:
+        from Infernux.engine.ui.inspector_snapshot import invalidate_component_field
+    except ImportError:
+        return
+    for target in targets:
+        invalidate_component_field(target, field_name)
+
+
+def _compose_field_publisher(
+    targets: Sequence[Any],
+    field_name: str,
+    publisher: Optional[Callable[[], None]],
+) -> Callable[[], None]:
+    def _publish() -> None:
+        if publisher is not None:
+            publisher()
+        _publish_inspector_fields(targets, field_name)
+
+    return _publish
+
+
 @dataclass(frozen=True, slots=True)
 class SerializedPropertyBinding:
     """One target-specific endpoint behind a serialized property handle."""
@@ -329,6 +352,7 @@ class _SnapshotPropertyCommand(UndoCommand):
         *,
         marks_dirty: bool,
         mergeable: bool,
+        gesture_id: str = "",
     ) -> None:
         super().__init__(description)
         self._target_key = str(target_key)
@@ -336,6 +360,7 @@ class _SnapshotPropertyCommand(UndoCommand):
         self._after = copy.deepcopy(after)
         self._restore = restore
         self._mergeable = bool(mergeable)
+        self._gesture_id = str(gesture_id or "")
         self.marks_dirty = bool(marks_dirty)
 
     def execute(self) -> None:
@@ -348,13 +373,21 @@ class _SnapshotPropertyCommand(UndoCommand):
         self.execute()
 
     def can_merge(self, other: UndoCommand) -> bool:
-        return (
+        if not (
             self._mergeable
             and isinstance(other, _SnapshotPropertyCommand)
             and other._mergeable
             and self._target_key == other._target_key
-            and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW
-        )
+        ):
+            return False
+
+        # Pointer gestures have an explicit press/release boundary. Once either
+        # command carries one, the legacy timing heuristic must not merge two
+        # separate drags merely because the user started the next one quickly.
+        if self._gesture_id or other._gesture_id:
+            return bool(self._gesture_id) and self._gesture_id == other._gesture_id
+
+        return (other.timestamp - self.timestamp) <= self.MERGE_WINDOW
 
     def merge(self, other: UndoCommand) -> None:
         if not isinstance(other, _SnapshotPropertyCommand):
@@ -383,11 +416,13 @@ class SnapshotPropertyTransaction:
     equivalent: PropertyComparator = lambda left, right: left == right
     marks_dirty: bool = True
     mergeable: bool = True
+    gesture_id: str = ""
     on_rejected: Optional[Callable[[str], None]] = None
 
     def __post_init__(self) -> None:
         self.target_key = str(self.target_key or "").strip()
         self.value_type = str(self.value_type or "").strip()
+        self.gesture_id = str(self.gesture_id or "").strip()
         if not self.target_key:
             raise ValueError("snapshot property transaction requires a target key")
         if not callable(self.capture) or not callable(self.restore):
@@ -432,8 +467,9 @@ class SnapshotPropertyTransaction:
             self.description or "Edit properties",
             marks_dirty=self.marks_dirty,
             mergeable=bool(mergeable and self.mergeable),
+            gesture_id=self.gesture_id,
         )
-        if not manager.execute(command):
+        if not manager.execute(command, transaction_id=self.gesture_id):
             return self._reject(
                 f"property edit was rejected: {self.description or self.target_key}"
             )
@@ -574,7 +610,7 @@ def make_attribute_property_transaction(
             FieldSchema(path, str(value_type or "Any"), read_only=read_only),
             SerializedObjectView(ids),
             bindings,
-            publish=publish,
+            publish=_compose_field_publisher(edited_targets, attr, publish),
             marks_dirty=marks_dirty,
         ),
         description=description or f"Set {attr}",
@@ -616,7 +652,7 @@ def make_python_component_property_transaction(
                 f"{type(component).__name__} does not expose a serialized document"
             )
         try:
-            from Infernux.components.serialized_field import get_serialized_fields
+            from Infernux.components.fields import get_serialized_fields
 
             field_metadata = get_serialized_fields(type(component)).get(field)
         except Exception:
@@ -671,6 +707,7 @@ def make_python_component_property_transaction(
             callback = getattr(component, "_call_on_validate", None)
             if callable(callback):
                 callback()
+        _publish_inspector_fields(edited_components, field)
 
     return PropertyTransaction(
         SerializedPropertyHandle(
@@ -747,6 +784,7 @@ def make_native_document_property_transaction(
             ),
             SerializedObjectView(ids),
             tuple(bindings),
+            publish=_compose_field_publisher(edited_components, field, None),
         ),
         description=description or f"Set {field}",
         on_rejected=on_rejected,

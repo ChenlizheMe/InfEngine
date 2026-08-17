@@ -25,8 +25,8 @@ from __future__ import annotations
 from typing import Any, Optional, Tuple
 
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.serialized_field import FieldType
-from Infernux.gizmos.gizmos import ICON_KIND_CAMERA
+from Infernux.components.fields import FieldType
+from Infernux.components._gizmo_ids import ICON_KIND_CAMERA
 from Infernux.debug import Debug
 
 
@@ -59,6 +59,7 @@ class Camera(BuiltinComponent):
 
     _cpp_type_name = "Camera"
     _component_category_ = "Rendering"
+    _display_name_key = "component.camera"
 
     # Gizmo visibility: only show frustum wireframe when camera is selected
     _always_show = False
@@ -73,8 +74,9 @@ class Camera(BuiltinComponent):
         FieldType.ENUM,
         default=None,
         enum_type="CameraProjection",
-        enum_labels=["Perspective", "Orthographic"],
-        tooltip="Camera projection mode (Perspective or Orthographic)",
+        enum_labels=["camera.projection.perspective", "camera.projection.orthographic"],
+        display_name_key="camera.projection_mode",
+        tooltip="camera.tooltip.projection_mode",
     )
     field_of_view = CppProperty(
         "field_of_view",
@@ -82,28 +84,32 @@ class Camera(BuiltinComponent):
         default=60.0,
         range=(1.0, 179.0),
         visible_when=lambda comp: int(comp.projection_mode) == 0,
-        tooltip="Field of view in degrees (Perspective mode)",
+        display_name_key="camera.field_of_view",
+        tooltip="camera.tooltip.field_of_view",
     )
     orthographic_size = CppProperty(
         "orthographic_size",
         FieldType.FLOAT,
         default=5.0,
         visible_when=lambda comp: int(comp.projection_mode) == 1,
-        tooltip="Orthographic half-height (Orthographic mode)",
+        display_name_key="camera.orthographic_size",
+        tooltip="camera.tooltip.orthographic_size",
     )
     # ---- Clipping ----
     near_clip = CppProperty(
         "near_clip",
         FieldType.FLOAT,
         default=0.01,
-        header="Clipping",
-        tooltip="Near clipping plane distance",
+        display_name_key="camera.near_clip",
+        header="camera.section.clipping",
+        tooltip="camera.tooltip.near_clip",
     )
     far_clip = CppProperty(
         "far_clip",
         FieldType.FLOAT,
         default=1000.0,
-        tooltip="Far clipping plane distance",
+        display_name_key="camera.far_clip",
+        tooltip="camera.tooltip.far_clip",
     )
 
     # ---- Multi-camera ----
@@ -111,7 +117,8 @@ class Camera(BuiltinComponent):
         "depth",
         FieldType.FLOAT,
         default=0.0,
-        tooltip="Camera priority; lower values are selected first when no main camera is assigned",
+        display_name_key="camera.depth",
+        tooltip="camera.tooltip.depth",
     )
 
     # ---- Clear flags & background ----
@@ -120,18 +127,42 @@ class Camera(BuiltinComponent):
         FieldType.ENUM,
         default=None,
         enum_type="CameraClearFlags",
-        enum_labels=["Skybox", "Solid Color", "Depth Only", "Don't Clear"],
-        header="Clear",
-        tooltip="Camera clear flags (Skybox, SolidColor, DepthOnly, DontClear)",
+        enum_labels=[
+            "camera.clear.skybox",
+            "camera.clear.solid_color",
+            "camera.clear.depth_only",
+            "camera.clear.dont_clear",
+        ],
+        display_name_key="camera.clear_flags",
+        header="camera.section.clear",
+        tooltip="camera.tooltip.clear_flags",
     )
     background_color = CppProperty(
         "background_color",
         FieldType.COLOR,
         default=None,
         visible_when=lambda comp: int(comp.clear_flags) == 1,
-        tooltip="Background color (r, g, b, a) — used when clear_flags == SolidColor",
+        display_name_key="camera.background_color",
+        tooltip="camera.tooltip.background_color",
         get_converter=_vec4_to_list,
         set_converter=_list_to_vec4,
+    )
+
+    # ---- Output safety & quantization ----
+    stop_nans = CppProperty(
+        "stop_nans",
+        FieldType.BOOL,
+        default=False,
+        header="camera.section.output",
+        display_name_key="camera.stop_nans",
+        tooltip="camera.tooltip.stop_nans",
+    )
+    dithering = CppProperty(
+        "dithering",
+        FieldType.BOOL,
+        default=False,
+        display_name_key="camera.dithering",
+        tooltip="camera.tooltip.dithering",
     )
 
     # ------------------------------------------------------------------

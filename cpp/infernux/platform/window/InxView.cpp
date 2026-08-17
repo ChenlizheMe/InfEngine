@@ -1,5 +1,7 @@
 #include "InxView.h"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -187,12 +189,27 @@ bool InxView::HasPendingSyntheticInput() const
     return !m_syntheticInputEvents.empty();
 }
 
+void InxView::RequestExternalWake() noexcept
+{
+    m_externalWakeRequested.store(true, std::memory_order_release);
+    SDL_Event event{};
+    event.type = SDL_EVENT_USER;
+    SDL_PushEvent(&event);
+}
+
 void InxView::ProcessEvent()
 {
-    // Begin a new input frame: swap current → previous, clear deltas
+    const auto inputFrameStart = std::chrono::steady_clock::now();
+    // Begin a new input frame: clear transition edges and per-frame deltas.
     InputManager::Instance().SetWindow(m_window);
     InputManager::Instance().BeginFrame();
+    const auto inputFrameReady = std::chrono::steady_clock::now();
     m_needsImmediateGuiRefresh = false;
+    m_currentImGuiEventDispatchMs = 0.0;
+    m_currentInputManagerDispatchMs = 0.0;
+
+    if (m_externalWakeRequested.exchange(false, std::memory_order_acq_rel))
+        m_activeUntil = std::chrono::steady_clock::now() + ACTIVE_COOLDOWN_DURATION;
 
     // ====================================================================
     // Frame-rate limiter
@@ -211,13 +228,15 @@ void InxView::ProcessEvent()
 
     FramePacingSample pacing{};
     pacing.playModeBypass = m_isPlayMode;
-    pacing.cooldownRemaining = m_activeFramesRemaining;
+    const auto pacingStart = std::chrono::steady_clock::now();
+    pacing.cooldownRemainingMs = static_cast<int>(std::max<int64_t>(
+        0, std::chrono::duration_cast<std::chrono::milliseconds>(m_activeUntil - pacingStart).count()));
 
     SDL_Event firstEvent{};
     bool gotFirstEvent = false;
 
     if (!m_isPlayMode) {
-        bool isIdle = m_idling.enableIdling && m_idling.fpsIdle > 0.0f && m_activeFramesRemaining <= 0 &&
+        bool isIdle = m_idling.enableIdling && m_idling.fpsIdle > 0.0f && pacingStart >= m_activeUntil &&
                       !HasPendingSyntheticInput();
         float targetFps = isIdle ? m_idling.fpsIdle : m_idling.editorFpsCap;
 
@@ -277,10 +296,13 @@ void InxView::ProcessEvent()
         if (!pendingMouseMotion)
             return;
         hadInputEvent = ProcessOneEvent(*pendingMouseMotion) || hadInputEvent;
+        ++pacing.dispatchedMouseMotionCount;
         pendingMouseMotion.reset();
     };
     auto processQueuedEvent = [&](SDL_Event &queuedEvent) {
+        ++pacing.queuedEventCount;
         if (queuedEvent.type == SDL_EVENT_MOUSE_MOTION) {
+            ++pacing.mouseMotionEventCount;
             if (pendingMouseMotion)
                 MergeMouseMotion(*pendingMouseMotion, queuedEvent);
             else
@@ -319,7 +341,9 @@ void InxView::ProcessEvent()
         processQueuedEvent(firstEvent);
     }
 
-    // Drain remaining queued events
+    // Preserve SDL's complete native event semantics. Only adjacent motion
+    // events are coalesced after SDL has translated them.
+    const auto pollStart = std::chrono::steady_clock::now();
     SDL_Event event{};
     while (SDL_PollEvent(&event)) {
         processQueuedEvent(event);
@@ -327,6 +351,7 @@ void InxView::ProcessEvent()
             break;
     }
     flushMouseMotion();
+    const auto pollEnd = std::chrono::steady_clock::now();
 
     // Automation events remain distinct from SDL's OS queue, but they are
     // translated into SDL_Event instances and sent through ProcessOneEvent.
@@ -334,20 +359,33 @@ void InxView::ProcessEvent()
     // A close request is only an intercepted state until Python confirms or
     // cancels it. Keep draining here so an Editor-owned Save/Discard/Cancel
     // modal remains operable by remote validation input.
+    const auto syntheticStart = std::chrono::steady_clock::now();
     DrainSyntheticInputEvents(hadInputEvent);
+    const auto syntheticEnd = std::chrono::steady_clock::now();
 
     // Reset idle cooldown when user interacted
     if (hadInputEvent) {
-        m_activeFramesRemaining = ACTIVE_COOLDOWN_FRAMES;
-    } else if (m_activeFramesRemaining > 0) {
-        --m_activeFramesRemaining;
+        m_activeUntil = std::chrono::steady_clock::now() + ACTIVE_COOLDOWN_DURATION;
     }
 
     pacing.hadInputEvent = hadInputEvent;
-    pacing.cooldownRemaining = m_activeFramesRemaining;
-    m_lastPacingSample = pacing;
-
+    pacing.cooldownRemainingMs = static_cast<int>(std::max<int64_t>(
+        0, std::chrono::duration_cast<std::chrono::milliseconds>(m_activeUntil - std::chrono::steady_clock::now())
+               .count()));
+    const auto windowQueryStart = std::chrono::steady_clock::now();
     SDL_GetWindowSize(m_window, &m_windowWidth, &m_windowHeight);
+    const auto windowQueryEnd = std::chrono::steady_clock::now();
+    const auto milliseconds = [](auto begin, auto end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    pacing.inputBeginFrameMs = milliseconds(inputFrameStart, inputFrameReady);
+    pacing.inputPumpEventsMs = 0.0;
+    pacing.inputPeepEventsMs = milliseconds(pollStart, pollEnd);
+    pacing.inputImGuiDispatchMs = m_currentImGuiEventDispatchMs;
+    pacing.inputManagerDispatchMs = m_currentInputManagerDispatchMs;
+    pacing.inputSyntheticDispatchMs = milliseconds(syntheticStart, syntheticEnd);
+    pacing.inputWindowQueryMs = milliseconds(windowQueryStart, windowQueryEnd);
+    m_lastPacingSample = pacing;
 }
 
 bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
@@ -386,14 +424,26 @@ bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
             imguiEvent.motion.x -= static_cast<float>(windowX);
             imguiEvent.motion.y -= static_cast<float>(windowY);
         }
+        const auto imguiStart = std::chrono::steady_clock::now();
         ImGui_ImplSDL3_ProcessEvent(&imguiEvent);
+        m_currentImGuiEventDispatchMs +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - imguiStart).count();
     }
 
+    const auto inputManagerStart = std::chrono::steady_clock::now();
     InputManager::Instance().ProcessSDLEvent(event);
+    m_currentInputManagerDispatchMs +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - inputManagerStart).count();
 
     switch (event.type) {
     case SDL_EVENT_MOUSE_MOTION:
         hadInputEvent = true;
+        // Pointer motion is sampled by InputManager every engine frame, while
+        // editor hover visuals already have a dedicated 60 Hz GUI cadence.
+        // Forcing an ImGui/Python rebuild for every high-polling or remote
+        // desktop motion packet made editor rendering scale with mouse event
+        // rate. Buttons, wheels, keys and drops still request an immediate
+        // GUI frame below because those transitions must never wait.
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -457,14 +507,13 @@ void InxView::DrainSyntheticInputEvents(bool &hadInputEvent)
         // sending both transitions through the normal SDL path.
         const bool isValidMouseButton = synthetic.type == SyntheticInputType::MouseButton &&
                                         synthetic.keyOrButton >= 0 && synthetic.keyOrButton < 5;
-        const uint8_t mouseButtonMask = isValidMouseButton ?
-            static_cast<uint8_t>(1u << synthetic.keyOrButton) : 0;
+        const uint8_t mouseButtonMask = isValidMouseButton ? static_cast<uint8_t>(1u << synthetic.keyOrButton) : 0;
         bool hasMatchingReleaseLater = false;
         if (isValidMouseButton && synthetic.pressed) {
             for (size_t laterIndex = eventIndex + 1; laterIndex < events.size(); ++laterIndex) {
                 const auto &later = events[laterIndex];
-                if (later.type == SyntheticInputType::MouseButton &&
-                    later.keyOrButton == synthetic.keyOrButton && !later.pressed) {
+                if (later.type == SyntheticInputType::MouseButton && later.keyOrButton == synthetic.keyOrButton &&
+                    !later.pressed) {
                     hasMatchingReleaseLater = true;
                     break;
                 }
@@ -480,11 +529,10 @@ void InxView::DrainSyntheticInputEvents(bool &hadInputEvent)
         // must still reach InputManager in one simulation frame.
         const bool waitingForPointerHoverFrame =
             isValidMouseButton && synthetic.pressed && hasMatchingReleaseLater && pointerMotionProcessedInBatch;
-        const bool waitingForGuiFrame =
-            isValidMouseButton && !synthetic.pressed &&
-            (mouseButtonPressedInBatch[synthetic.keyOrButton] ||
-             ((m_syntheticMouseButtonsAwaitingGuiFrame & mouseButtonMask) != 0 &&
-              (m_syntheticMouseButtonsReadyForRelease & mouseButtonMask) == 0));
+        const bool waitingForGuiFrame = isValidMouseButton && !synthetic.pressed &&
+                                        (mouseButtonPressedInBatch[synthetic.keyOrButton] ||
+                                         ((m_syntheticMouseButtonsAwaitingGuiFrame & mouseButtonMask) != 0 &&
+                                          (m_syntheticMouseButtonsReadyForRelease & mouseButtonMask) == 0));
         if (waitingForPointerHoverFrame || waitingForGuiFrame) {
             for (size_t deferredIndex = eventIndex; deferredIndex < events.size(); ++deferredIndex)
                 deferredEvents.emplace_back(std::move(events[deferredIndex]));

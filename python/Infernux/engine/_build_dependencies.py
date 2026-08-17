@@ -63,7 +63,14 @@ class BuildDependencyMixin:
 
     def _is_game_build_excluded_requirement(self, line: str) -> bool:
         name = self._normalized_requirement_name(line)
-        return bool(name and name in self._game_build_excluded_packages())
+        if not name:
+            return False
+        if name in self._game_build_excluded_packages():
+            return True
+        return not bool(getattr(self, "enable_jit", False)) and name in {
+            "numba",
+            "llvmlite",
+        }
 
     def _write_filtered_game_requirements(self, req_path: str) -> str:
         excluded = self._game_build_excluded_packages()
@@ -117,6 +124,7 @@ class BuildDependencyMixin:
 
         found: set[str] = set()
         uses_infernux_jit = False
+        direct_parallel_runtime_imports: set[str] = set()
         _t0 = time.perf_counter()
 
         # --- Source 1: project requirements.txt -------------------------
@@ -156,12 +164,18 @@ class BuildDependencyMixin:
                     for node in ast.walk(tree):
                         if isinstance(node, ast.Import):
                             for alias in node.names:
-                                found.add(alias.name.split(".")[0])
+                                root_name = alias.name.split(".")[0]
+                                found.add(root_name)
+                                if root_name in {"numba", "llvmlite"}:
+                                    direct_parallel_runtime_imports.add(root_name)
                                 if alias.name in {"Infernux.jit", "Infernux._jit_kernels"}:
                                     uses_infernux_jit = True
                         elif isinstance(node, ast.ImportFrom):
                             if node.module and node.level == 0:
-                                found.add(node.module.split(".")[0])
+                                root_name = node.module.split(".")[0]
+                                found.add(root_name)
+                                if root_name in {"numba", "llvmlite"}:
+                                    direct_parallel_runtime_imports.add(root_name)
                                 if node.module in {"Infernux.jit", "Infernux._jit_kernels"}:
                                     uses_infernux_jit = True
                                 elif node.module == "Infernux":
@@ -191,15 +205,27 @@ class BuildDependencyMixin:
             )
         found -= skipped
 
-        # Public JIT API ultimately depends on numba + llvmlite + numpy.
-        # Make that explicit so standalone player builds include the runtime
-        # pieces even when user scripts import the supported ``Infernux.jit``
-        # surface instead of importing ``numba`` directly.  numpy must also
-        # be raw-copied because numba introspects numpy bytecode at JIT time.
-        if uses_infernux_jit or "numba" in found:
+        enable_jit = bool(getattr(self, "enable_jit", False))
+        if direct_parallel_runtime_imports and not enable_jit:
+            names = ", ".join(sorted(direct_parallel_runtime_imports))
+            raise RuntimeError(
+                "Auto Parallel is disabled, but project scripts directly import "
+                f"{names}. Enable Auto Parallel or use the public Infernux.jit "
+                "API so the build can provide its serial fallback."
+            )
+
+        # The public JIT API only pulls in the native parallel runtime when the
+        # product explicitly enables it. With JIT disabled, Infernux.jit stays
+        # importable and its decorator resolves to the source-level serial
+        # fallback without shipping Numba/LLVM. NumPy remains independent: a
+        # project that imports it directly still receives its normal package.
+        if enable_jit and (uses_infernux_jit or "numba" in found or "llvmlite" in found):
             found.add("numba")
             found.add("llvmlite")
             found.add("numpy")
+        elif not enable_jit:
+            found.discard("numba")
+            found.discard("llvmlite")
 
         # Only keep packages that are actually importable in the current
         # environment so Nuitka doesn't error on stale or optional imports.

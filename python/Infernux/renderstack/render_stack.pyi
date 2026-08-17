@@ -19,7 +19,7 @@ class RenderStack(InxComponent):
     effect_slots: List[EffectSlot]
 
     @classmethod
-    def instance(cls) -> Optional[RenderStack]:
+    def instance(cls, scene: Any = ...) -> Optional[RenderStack]:
         """Return the current active RenderStack, or None."""
         ...
 

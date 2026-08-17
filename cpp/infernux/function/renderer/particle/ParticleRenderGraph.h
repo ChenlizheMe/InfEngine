@@ -150,7 +150,8 @@ class ParticleGpuGraphSpawnDomain
     void DeclareKernelWrite(vk::PassBuilder &builder);
     void DeclareInitRead(vk::PassBuilder &builder);
     void RecordPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t targetSlot, uint32_t capacity,
-                       const GpuParticleFrameRequest &request, bool discard) const;
+                       const GpuParticleFrameRequest &request, bool discardCpuSpawn,
+                       bool resetPreviousState) const;
 
     [[nodiscard]] bool IsValid() const noexcept;
     [[nodiscard]] uint64_t GraphInstanceId() const noexcept
@@ -226,13 +227,15 @@ class ParticleGpuGraphSpawnDomain
 struct GpuParticleGraphOutputs
 {
     vk::ResourceHandle instances;
+    vk::ResourceHandle visibility;
     vk::ResourceHandle renderIndices;
     vk::ResourceHandle indirectArguments;
     vk::ResourceHandle bounds;
 
     [[nodiscard]] bool IsValid() const noexcept
     {
-        return instances.IsValid() && renderIndices.IsValid() && indirectArguments.IsValid() && bounds.IsValid();
+        return instances.IsValid() && visibility.IsValid() && renderIndices.IsValid() && indirectArguments.IsValid() &&
+               bounds.IsValid();
     }
 };
 

@@ -12,6 +12,11 @@ from Infernux.engine.path_utils import resolved_path, same_path
 
 from .action_journal import ActionOrigin
 from .documents import DocumentRegistry
+from ..runtime_dispatch import (
+    ReloadableCallbackRef,
+    ReloadableCallbackRegistry,
+    current_runtime_epoch,
+)
 from .selection import SelectionService
 
 
@@ -181,7 +186,18 @@ class AssetMutationService:
     ) -> None:
         self._documents = documents
         self._selection = selection
+        # Editor observers are deliberately pinned.  They are not game
+        # callbacks and must keep their creation-time semantics.
         self._listeners: list[Callable[[AssetMutationNotification], None]] = []
+        # Component-owned callbacks use weak owners and resolve their method
+        # body through the current runtime epoch at notification time.
+        self._component_listeners = ReloadableCallbackRegistry()
+        # One-shot work is intentionally pinned until the next publication;
+        # it is a transaction callback, not a persistent runtime binding.
+        self._one_shot_listeners: list[
+            Callable[[AssetMutationNotification], None]
+        ] = []
+        self._reported_component_states: set[tuple[ReloadableCallbackRef, int, str]] = set()
         self._paths_by_guid: dict[str, str] = {}
         self._prepared: dict[str, AssetRelocationPlan] = {}
         self._revision = 0
@@ -195,15 +211,90 @@ class AssetMutationService:
     def revision(self) -> int:
         return self._revision
 
-    def add_listener(self, callback: Callable[[AssetMutationNotification], None]) -> None:
+    def add_observer(
+        self,
+        callback: Callable[[AssetMutationNotification], None],
+    ) -> None:
+        """Register a pinned editor observer.
+
+        This path is for panels, caches, and ordinary functions.  It never
+        enters the game runtime epoch and keeps the historical strong-callable
+        behavior used by editor code.
+        """
+        if not callable(callback):
+            raise TypeError("asset observer must be callable")
         if callback not in self._listeners:
             self._listeners.append(callback)
 
-    def remove_listener(self, callback: Callable[[AssetMutationNotification], None]) -> None:
+    def remove_observer(
+        self,
+        callback: Callable[[AssetMutationNotification], None],
+    ) -> None:
         try:
             self._listeners.remove(callback)
         except ValueError:
             pass
+
+    # Compatibility aliases for existing editor observers.
+    add_listener = add_observer
+    remove_listener = remove_observer
+
+    def add_component_listener(
+        self,
+        callback: Callable[[AssetMutationNotification], None],
+        *,
+        expected_signature: Optional[str] = None,
+    ) -> ReloadableCallbackRef:
+        """Register an ``InxComponent`` bound method as a persistent callback.
+
+        The explicit API prevents ordinary editor callbacks from accidentally
+        becoming runtime-reloadable.  The registry holds only a weak owner
+        reference, so destroy/GC naturally removes the subscription.
+        """
+        owner = getattr(callback, "__self__", None)
+        function = getattr(callback, "__func__", None)
+        try:
+            from Infernux.components.component import InxComponent
+        except ImportError as exc:
+            raise RuntimeError("InxComponent is unavailable") from exc
+        if not isinstance(owner, InxComponent) or function is None:
+            raise TypeError(
+                "persistent asset callbacks must be InxComponent bound methods"
+            )
+        return self._component_listeners.add_listener(
+            callback,
+            expected_signature=expected_signature,
+        )
+
+    def remove_component_listener(
+        self,
+        callback: Callable[[AssetMutationNotification], None] | ReloadableCallbackRef,
+    ) -> None:
+        self._component_listeners.remove_listener(callback)
+        if isinstance(callback, ReloadableCallbackRef):
+            self._reported_component_states = {
+                item
+                for item in self._reported_component_states
+                if item[0] != callback
+            }
+
+    def add_one_shot_listener(
+        self,
+        callback: Callable[[AssetMutationNotification], None],
+    ) -> None:
+        """Run a pinned transaction callback once on the next publication."""
+        if not callable(callback):
+            raise TypeError("one-shot asset callback must be callable")
+        self._one_shot_listeners.append(callback)
+
+    @property
+    def listener_diagnostics(self) -> dict[str, int]:
+        """Return subscription counts without exposing mutable registries."""
+        return {
+            "editor_observers": len(self._listeners),
+            "component_callbacks": self._component_listeners.listener_count,
+            "one_shot_callbacks": len(self._one_shot_listeners),
+        }
 
     def resolve_path_hint(self, guid: str, fallback: str = "") -> str:
         return self._paths_by_guid.get(str(guid or "").strip(), str(fallback or ""))
@@ -336,6 +427,10 @@ class AssetMutationService:
         return change
 
     def _notify(self, change: AssetMutationNotification) -> None:
+        # Capture once for the whole publication.  A callback cannot observe
+        # two different runtime bodies while the same asset event is being
+        # dispatched.
+        epoch = current_runtime_epoch()
         for callback in tuple(self._listeners):
             try:
                 callback(change)
@@ -343,6 +438,49 @@ class AssetMutationService:
                 from Infernux.debug import Debug
 
                 Debug.log_suppressed("AssetMutationService.listener", exc)
+
+        results = self._component_listeners.invoke(change, epoch=epoch)
+        for result in results:
+            reference = result.reference
+            if result.status in {"owner_unavailable", "owner_invalid"}:
+                self._reported_component_states = {
+                    item
+                    for item in self._reported_component_states
+                    if item[0] != reference
+                }
+                continue
+            if result.status == "exception":
+                from Infernux.debug import Debug
+
+                Debug.log_suppressed(
+                    "AssetMutationService.component_listener",
+                    RuntimeError(result.message),
+                )
+                continue
+            if result.status in {"method_missing", "signature_mismatch"}:
+                diagnostic = (reference, epoch.epoch_id, result.status)
+                if diagnostic not in self._reported_component_states:
+                    self._reported_component_states.add(diagnostic)
+                    from Infernux.debug import Debug
+
+                    Debug.log_warning(
+                        "AssetMutationService persistent component callback skipped: "
+                        f"{reference.method_name}: {result.message}"
+                    )
+
+        one_shot = tuple(self._one_shot_listeners)
+        for callback in one_shot:
+            try:
+                callback(change)
+            except Exception as exc:
+                from Infernux.debug import Debug
+
+                Debug.log_suppressed("AssetMutationService.one_shot", exc)
+            finally:
+                try:
+                    self._one_shot_listeners.remove(callback)
+                except ValueError:
+                    pass
 
     def publish_move(
         self,
@@ -362,6 +500,9 @@ class AssetMutationService:
 
     def shutdown(self) -> None:
         self._listeners.clear()
+        self._component_listeners.remove_all_listeners()
+        self._one_shot_listeners.clear()
+        self._reported_component_states.clear()
         self._prepared.clear()
         self._paths_by_guid.clear()
         if AssetMutationService._instance is self:

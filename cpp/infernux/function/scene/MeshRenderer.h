@@ -156,6 +156,21 @@ class MeshRenderer : public Component
         return m_useInlineMesh;
     }
 
+    /// Shared inline meshes are immutable engine-owned primitive streams.
+    /// Their pointer identity is stable for the process lifetime, so render
+    /// extraction can retain the stream directly instead of snapshotting the
+    /// same Cube/Quad data once per GameObject.
+    [[nodiscard]] bool HasSharedInlineMesh() const
+    {
+        return m_useInlineMesh && m_sharedVertices != nullptr && m_sharedIndices != nullptr;
+    }
+
+    /// Stable cache identity for an engine-owned inline primitive.
+    [[nodiscard]] std::string GetSharedInlineMeshGuid() const
+    {
+        return HasSharedInlineMesh() && !m_inlineMeshName.empty() ? "builtin-mesh:" + m_inlineMeshName : "";
+    }
+
     /// @brief Get inline vertex data
     [[nodiscard]] const std::vector<Vertex> &GetInlineVertices() const
     {

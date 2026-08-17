@@ -27,9 +27,10 @@ inline constexpr std::array<std::string_view, 35> kMeshExtensions = {
     ".md2", ".md3", ".md4",  ".md5mesh", ".mdc", ".mmd", ".ms3d", ".nff", ".off",     ".ogex", ".x3d",
 };
 
-// stb_vorbis is compiled into the runtime for OGG/Vorbis.  Other compressed
-// audio codecs are deliberately not listed until a decoder is shipped.
-inline constexpr std::array<std::string_view, 2> kAudioExtensions = {".wav", ".ogg"};
+// WAV uses SDL, OGG/Vorbis uses stb_vorbis, and MP3/FLAC use dr_libs.
+// Every consumer (database, editor icons and drag payloads) derives from this
+// list so a visible AudioClip is always a format the runtime can decode.
+inline constexpr std::array<std::string_view, 4> kAudioExtensions = {".wav", ".ogg", ".mp3", ".flac"};
 
 template <size_t N> inline bool Contains(const std::array<std::string_view, N> &extensions, std::string_view ext)
 {

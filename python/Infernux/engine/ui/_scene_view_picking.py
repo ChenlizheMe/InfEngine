@@ -118,7 +118,7 @@ class SceneViewPickingMixin:
             picked_id = self._pick_scene_object(ctx, vp)
             if self._on_object_picked:
                 self._on_object_picked(picked_id, ctrl)
-            self._request_particle_pick_refinement(ctx, vp, picked_id, ctrl)
+            self._request_scene_pick_refinement(ctx, vp, picked_id, ctrl)
 
         # Box-select
         if self._box_select_active:
@@ -149,17 +149,14 @@ class SceneViewPickingMixin:
                 thickness=Theme.BORDER_THICKNESS,
             )
 
-    def _request_particle_pick_refinement(self, ctx, vp, cpu_picked_id: int, ctrl: bool) -> None:
-        """Queue a GPU object-ID readback so live particles become clickable.
+    def _request_scene_pick_refinement(self, ctx, vp, cpu_picked_id: int, ctrl: bool) -> None:
+        """Queue an authoritative GPU object-ID readback for the clicked pixel.
 
-        Ray picking only knows physics colliders, mesh bounds and gizmo icons.
-        Particle output (billboards, mesh and ribbon particles) lives entirely in
-        GPU buffers, so a click on a particle resolves to whatever happens to sit
-        behind it. The GPU picking pass draws that output with its owning
-        GameObject id, and the result — available a frame later — merges the
-        ParticleSystem into the depth-cycle candidate list. Selection is only
-        corrected when the ray hit was empty or a mesh/collider behind the spray;
-        icon-only hits (lights, cameras, …) keep priority so they are not stolen.
+        The immediate CPU ray result keeps clicks responsive and supports scene
+        icons, colliders and depth cycling. Its mesh test is necessarily based on
+        AABBs, though, so imported characters can contain large empty regions.
+        The one-frame-late GPU result corrects those mesh false positives and also
+        makes GPU-only particle output clickable. Icon-only targets keep priority.
         """
         self._pending_scene_pick = None
         # Additive picking builds a multi-selection; a deferred correction would
@@ -186,6 +183,7 @@ class SceneViewPickingMixin:
             "height": vp.height,
             "cpu_id": int(cpu_picked_id),
             "cpu_candidates": list(self._pick_cycle_candidates),
+            "cpu_cycle_index": int(self._pick_cycle_index),
             "selection_revision": selection.revision,
             "document_id": str(getattr(self, "document_id", "") or ""),
         }
@@ -258,32 +256,6 @@ class SceneViewPickingMixin:
             Debug.log_internal(f"Scene GPU picking failed: {result.get('error', status)}")
             return
 
-        gpu_id = int(result.get("object_id", 0) or 0)
-        if gpu_id <= 0 or gpu_id in _GIZMO_IDS:
-            return
-        if not _owns_particle_system(gpu_id):
-            # Anything else the ray pass missed (a sprite behind a gizmo icon,
-            # say) is not worth overriding an already-made selection for.
-            return
-
-        cpu_candidates = list(pending.get("cpu_candidates") or self._pick_cycle_candidates)
-        if gpu_id in cpu_candidates:
-            # Ray picking already knew about this ParticleSystem (usually via its
-            # scene icon). Leave the depth-cycle list alone.
-            return
-
-        merged = self._insert_ids_by_depth(
-            cpu_candidates,
-            [gpu_id],
-            pending["x"],
-            pending["y"],
-            pending["width"],
-            pending["height"],
-        )
-        self._pick_cycle_candidates = merged
-        self._pick_cycle_last_mouse = (pending["x"], pending["y"])
-        self._pick_cycle_last_viewport = (int(pending["width"]), int(pending["height"]))
-
         from Infernux.engine.interaction import SelectionService
         selection = SelectionService.instance()
         pending_revision = pending.get("selection_revision")
@@ -300,13 +272,57 @@ class SceneViewPickingMixin:
         cpu_id = int(pending["cpu_id"])
         if selection.primary_scene_object_id() != cpu_id:
             # Selection moved on since the click; don't fight the user.
-            if gpu_id in merged:
-                self._pick_cycle_index = merged.index(cpu_id) if cpu_id in merged else 0
             return
 
-        # Icon billboards (lights, cameras, …) stay on top of particle sprays at
-        # the same pixel. Mesh/collider hits behind the spray are corrected.
+        gpu_id = int(result.get("object_id", 0) or 0)
+        if gpu_id in _GIZMO_IDS:
+            return
+
+        cpu_candidates = list(pending.get("cpu_candidates") or self._pick_cycle_candidates)
+
+        # A mesh AABB was hit but the clicked pixel contains no rendered mesh.
+        # Remove mesh-only ray candidates and clear the false selection. Scene
+        # icons and collider-only targets remain governed by the CPU path.
+        if gpu_id <= 0:
+            if cpu_id <= 0 or not _has_mesh_pick_geometry(cpu_id):
+                return
+            remaining = [
+                object_id for object_id in cpu_candidates
+                if not _has_mesh_pick_geometry(object_id)
+            ]
+            self._pick_cycle_candidates = remaining
+            self._pick_cycle_index = -1
+            if self._on_object_picked:
+                self._on_object_picked(0, False)
+            return
+
+        if gpu_id in cpu_candidates:
+            merged = cpu_candidates
+        else:
+            merged = self._insert_ids_by_depth(
+                cpu_candidates,
+                [gpu_id],
+                pending["x"],
+                pending["y"],
+                pending["width"],
+                pending["height"],
+            )
+        self._pick_cycle_candidates = merged
+        self._pick_cycle_last_mouse = (pending["x"], pending["y"])
+        self._pick_cycle_last_viewport = (int(pending["width"]), int(pending["height"]))
+
+        # Icon billboards (lights, cameras, …) stay on top of rendered geometry
+        # at the same pixel. Mesh AABB hits are corrected to the visible owner.
         if cpu_id > 0 and _is_icon_only_pick_target(cpu_id):
+            self._pick_cycle_index = merged.index(cpu_id) if cpu_id in merged else 0
+            return
+
+        # Repeated clicks intentionally cycle through overlapping CPU
+        # candidates. Once the visible front-most GPU owner is already part of
+        # that candidate set, do not collapse an intentional back-layer choice
+        # back onto it.
+        cpu_cycle_index = int(pending.get("cpu_cycle_index", -1))
+        if gpu_id in cpu_candidates and cpu_id != gpu_id and cpu_cycle_index > 0:
             self._pick_cycle_index = merged.index(cpu_id) if cpu_id in merged else 0
             return
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import PurePath
 from typing import Any, Iterable, Optional
 
@@ -53,6 +54,45 @@ def _resolve_guid_path(guid: str) -> str:
         return str(database.get_path_from_guid(token) or "").strip()
     except (KeyError, RuntimeError, TypeError, ValueError):
         return ""
+
+
+def canonical_asset_reference_identity(guid: str, path_hint: str) -> tuple[str, str]:
+    """Canonicalize a reference at the editor authoring boundary.
+
+    A picker/drop operation may initially arrive as a path, so the editor is
+    allowed to translate that path to a GUID before persistence. Import,
+    runtime loading, dependency tracking, and later resolution are GUID-only;
+    they must never use ``path_hint`` to recover asset identity.
+    """
+
+    identity = str(guid or "").strip()
+    hint = str(path_hint or "").strip()
+    database = _asset_database()
+    if database is None:
+        return identity, hint
+    if identity:
+        return identity, hint
+    if not hint:
+        return "", ""
+
+    candidates = [hint]
+    if not os.path.isabs(hint):
+        try:
+            from Infernux.engine.project_context import get_project_root
+
+            project_root = str(get_project_root() or "")
+        except (ImportError, RuntimeError):
+            project_root = ""
+        if project_root:
+            candidates.insert(0, os.path.join(project_root, hint))
+    for candidate in candidates:
+        try:
+            resolved_guid = str(database.get_guid_from_path(candidate) or "").strip()
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            continue
+        if resolved_guid:
+            return resolved_guid, hint
+    return "", hint
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +261,7 @@ class AssetReferenceCodec:
                 or getattr(value, "built_in", "")
                 or ""
             ).strip()
+        guid, path_hint = canonical_asset_reference_identity(guid, path_hint)
         return {
             "asset_type": str(asset_type or "").strip(),
             "builtin": builtin,

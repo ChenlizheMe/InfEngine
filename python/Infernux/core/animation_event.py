@@ -9,8 +9,11 @@ crossed event to every Python component on the animated GameObject.
 Dispatch contract (per fired event):
   * if a component defines ``on_animation_event(function, string_arg, number_arg)``
     it is called (generic sink), and
-  * if a component defines a method named ``function`` it is called with a
-    best-effort argument arity (``(string_arg, number_arg)`` → ``(string_arg,)`` → ``()``).
+  * if a component defines a method named ``function`` it is called with the
+    largest compatible positional arity from ``(string_arg, number_arg)``.
+
+The compatible arity is part of the immutable runtime dispatch epoch. The
+event path does not inspect signatures or retry after a user exception.
 """
 
 from __future__ import annotations
@@ -18,6 +21,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from typing import Any, List
+
+from Infernux.engine.runtime_dispatch import (
+    RuntimeMethodDescriptor,
+    build_type_dispatch_descriptor,
+    current_runtime_epoch,
+)
 
 
 @dataclass
@@ -90,19 +99,38 @@ def collect_crossed_events(
     return fired
 
 
-def _invoke_event_method(method, ev: AnimationEvent) -> bool:
-    """Call *method* with a best-effort argument arity.  Returns True if invoked."""
-    for args in ((ev.string_arg, ev.number_arg), (ev.string_arg,), ()):
-        try:
-            method(*args)
-            return True
-        except TypeError:
-            continue
-        except Exception:
-            from Infernux.debug import Debug
-            Debug.log_warning(f"[AnimationEvent] handler '{ev.function}' raised")
-            return True
-    return False
+def _invoke_event_descriptor(
+    descriptor: RuntimeMethodDescriptor,
+    component: Any,
+    args: tuple[Any, ...],
+    function_name: str,
+    *,
+    exact_arity: bool = False,
+) -> bool:
+    """Invoke one prevalidated descriptor exactly once."""
+    if exact_arity:
+        arity = len(args) if descriptor.accepts_arg_count(len(args)) else None
+    else:
+        arity = descriptor.preferred_arg_count(len(args))
+    if arity is None:
+        return False
+    try:
+        descriptor.invoke(component, *args[:arity])
+    except Exception as exc:
+        from Infernux.debug import Debug
+
+        Debug.log_warning(
+            f"[AnimationEvent] handler '{function_name}' raised "
+            f"({type(exc).__name__}: {exc})"
+        )
+    return True
+
+
+def _same_raw_method(left: RuntimeMethodDescriptor, right: RuntimeMethodDescriptor) -> bool:
+    """Compare descriptor targets without creating bound method objects."""
+    left_raw = getattr(left.raw, "__func__", left.raw)
+    right_raw = getattr(right.raw, "__func__", right.raw)
+    return left.kind == right.kind and left_raw is right_raw
 
 
 def dispatch_animation_events(
@@ -118,18 +146,51 @@ def dispatch_animation_events(
         return
     if not comps:
         return
-    from Infernux.debug import Debug
+    # Engine-owned component types are already published before playback.
+    # Lightweight tooling/test owners get a descriptor local to this dispatch
+    # batch; an event callback must never publish global state from inside an
+    # active runtime frame.
+    epoch = current_runtime_epoch()
+    local_descriptors = {}
+    for component_type in dict.fromkeys(type(comp) for comp in comps):
+        if epoch.descriptor_for(component_type) is None:
+            local_descriptors[component_type] = build_type_dispatch_descriptor(
+                component_type,
+                epoch_id=epoch.epoch_id,
+            )
     for ev in fired:
         for comp in comps:
-            sink = getattr(comp, "on_animation_event", None)
-            if callable(sink):
-                try:
-                    sink(ev.function, ev.string_arg, ev.number_arg)
-                except Exception:
-                    Debug.log_warning(
-                        f"[AnimationEvent] on_animation_event raised for '{ev.function}'"
-                    )
-            if ev.function:
-                method = getattr(comp, ev.function, None)
-                if callable(method) and method is not sink:
-                    _invoke_event_method(method, ev)
+            descriptor = epoch.descriptor_for(type(comp)) or local_descriptors.get(type(comp))
+            if descriptor is None:
+                continue
+
+            sink_descriptor = descriptor.methods.get("on_animation_event")
+            if sink_descriptor is not None:
+                _invoke_event_descriptor(
+                    sink_descriptor,
+                    comp,
+                    (ev.function, ev.string_arg, ev.number_arg),
+                    "on_animation_event",
+                    exact_arity=True,
+                )
+
+            if not ev.function:
+                continue
+            named_descriptor = descriptor.methods.get(ev.function)
+            if named_descriptor is None:
+                continue
+            # A deliberately named generic event must still execute once.
+            # Comparing immutable raw descriptors also handles aliases that
+            # point at the same function object without creating a bound method.
+            if (
+                sink_descriptor is named_descriptor
+                or sink_descriptor is not None
+                and _same_raw_method(sink_descriptor, named_descriptor)
+            ):
+                continue
+            _invoke_event_descriptor(
+                named_descriptor,
+                comp,
+                (ev.string_arg, ev.number_arg),
+                ev.function,
+            )

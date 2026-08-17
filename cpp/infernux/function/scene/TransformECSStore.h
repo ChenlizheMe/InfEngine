@@ -76,7 +76,8 @@ class TransformECSStore
     /// Pre-allocate capacity for all SoA arrays to avoid incremental growth.
     void Reserve(size_t capacity);
 
-    void InvalidateSubtree(Transform *root, bool clearWorldEulerExact = false) const;
+    void InvalidateSubtree(Transform *root, bool clearWorldEulerExact = false,
+                           const Transform *skipObserverFor = nullptr) const;
 
     void SetInvalidationObserver(InvalidationObserver observer)
     {
@@ -184,9 +185,11 @@ class TransformECSStore
     }
     void SetWorldMatrixDirty(Handle h, bool v)
     {
-        m_worldMatrixDirty[h.index] = v;
-        if (v)
-            m_anyWorldMatrixDirty = true;
+        if (v) {
+            MarkWorldMatrixDirty(h.index);
+        } else {
+            m_worldMatrixDirty[h.index] = 0;
+        }
     }
 
     /// True if any transform has been dirtied since the last SyncSceneWorldMatrices.
@@ -320,18 +323,22 @@ class TransformECSStore
 
     // Cached world-space read (O(1) array index).  Caller must check
     // IsFrameCacheActiveFor() before calling.
-    [[nodiscard]] glm::vec3 GetCachedWorldPosition(uint32_t slotIndex) const
+    [[nodiscard]] glm::vec3 GetCachedWorldPosition(uint32_t slotIndex)
     {
+        EnsureFrameCacheSlot(slotIndex);
         return m_fcWorldPositions[slotIndex];
     }
-    [[nodiscard]] glm::quat GetCachedWorldRotation(uint32_t slotIndex) const
+    [[nodiscard]] glm::quat GetCachedWorldRotation(uint32_t slotIndex)
     {
+        EnsureFrameCacheSlot(slotIndex);
         return m_fcWorldRotations[slotIndex];
     }
 
     // Cached world-space write — marks slot dirty, defers flush to EndFrameCache.
     void SetCachedWorldPosition(uint32_t slotIndex, const glm::vec3 &v);
     void SetCachedWorldRotation(uint32_t slotIndex, const glm::quat &q);
+    void SetCachedWorldPoseFromPhysics(uint32_t slotIndex, const glm::vec3 &position, const glm::quat &rotation,
+                                       bool applyRotation);
 
     // Cached local-space read (alias of live SoA, already O(1), but
     // included for API symmetry).  Local getters don't need a separate
@@ -347,8 +354,10 @@ class TransformECSStore
     TransformECSStore() = default;
 
     [[nodiscard]] bool IsSlotInScene(size_t index, const Scene *scene) const;
-    [[nodiscard]] bool HasAnyDirtyWorldMatrices() const;
     void SyncObjectWorldMatrices(GameObject *obj);
+    void EnsureFrameCacheSlot(uint32_t slotIndex);
+    void MarkFrameCacheDirty(uint32_t slotIndex, uint8_t bits);
+    void MarkWorldMatrixDirty(uint32_t slotIndex);
 
     // ── SoA arrays (all the same length == Capacity()) ───────────────
     std::vector<glm::vec3> m_localPositions;
@@ -361,6 +370,8 @@ class TransformECSStore
     std::vector<uint8_t> m_dirty;
     std::vector<glm::mat4> m_cachedWorldMatrices;
     std::vector<uint8_t> m_worldMatrixDirty;
+    std::vector<uint8_t> m_worldMatrixDirtyListed;
+    std::vector<uint32_t> m_worldMatrixDirtyIndices;
     std::vector<Transform *> m_owners;
 
     // ── Global dirty flag for fast SyncSceneWorldMatrices skip ───────
@@ -382,8 +393,12 @@ class TransformECSStore
     std::vector<uint8_t> m_fcRotationValid;
     // Dirty flags: bit 0 = world position dirty, bit 1 = world rotation dirty,
     // bit 2 = local position dirty, bit 3 = local scale dirty,
-    // bit 4 = local rotation dirty, bit 5 = local euler dirty.
+    // bit 4 = local rotation dirty, bit 5 = local euler dirty,
+    // bit 6 = at least one authored write requires observer publication.
     std::vector<uint8_t> m_fcDirty;
+    std::vector<uint64_t> m_fcStamp;
+    std::vector<uint32_t> m_fcDirtyIndices;
+    uint64_t m_frameCacheSerial = 0;
     bool m_frameCacheActive = false;
     Scene *m_fcScene = nullptr; // scene pointer for EndFrameCache sync
     InvalidationObserver m_invalidationObserver;

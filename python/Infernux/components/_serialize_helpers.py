@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .serialized_field import FieldMetadata
+    from .fields import FieldMetadata
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -117,7 +117,7 @@ def make_null_ref(field_type, field_meta=None) -> Any:
     Used when a serialized value is None but the field type implies a
     non-None wrapper (e.g. GameObjectRef(persistent_id=0)).
     """
-    from .serialized_field import FieldType
+    from .fields import FieldType
 
     if field_type == FieldType.GAME_OBJECT:
         from .ref_wrappers import GameObjectRef

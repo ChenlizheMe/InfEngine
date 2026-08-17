@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import time
 
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import (
@@ -418,18 +419,38 @@ def move_paths_batch(
         if mutations is not None:
             mutations = None
         database = asset_database
+    relocation_entries = tuple(
+        (old_file, new_file, database.get_guid_from_path(old_file))
+        for old_file, new_file in move_pairs
+    )
     plan = None
     if mutations is not None and move_pairs:
         plan = mutations.prepare_relocation(
-            (
-                (old_file, new_file, database.get_guid_from_path(old_file))
-                for old_file, new_file in move_pairs
-            ),
+            relocation_entries,
             origin=origin,
             operation_id=operation_id,
         )
+    try:
+        from Infernux.engine.interaction.asset_content import (
+            AssetReferenceRelocationPlanner,
+        )
+        from Infernux.engine.project_context import get_project_root
+
+        project_root = str(getattr(database, "project_root", "") or get_project_root() or "")
+        reference_patches = AssetReferenceRelocationPlanner.build_patches(
+            relocation_entries,
+            database=database,
+            project_root=project_root,
+            source_text_patches=source_text_patches,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        if plan is not None:
+            mutations.abort_relocation(plan)
+        Debug.log_error(f"Asset reference relocation preflight failed: {exc}")
+        return None
     workspace_moves: list[tuple[str, str]] = []
     patched_sources: list[tuple[str, tuple[str, str]]] = []
+    patched_references = []
     database_moves: list[tuple[str, str]] = []
     try:
         if source_text_patches:
@@ -478,6 +499,23 @@ def move_paths_batch(
                         publish_interaction=plan is None,
                     )
                 database_moves.append((old_file, new_file))
+        if reference_patches:
+            from Infernux.core.document_store import write_document_text
+
+            for patch in reference_patches:
+                AssetManager._suppress_watcher_echo("modified", patch.destination_path)
+                write_document_text(patch.destination_path, patch.updated)
+                patched_references.append(patch)
+            for patch in reference_patches:
+                result = AssetManager.reimport_asset(
+                    patch.destination_path,
+                    database=database,
+                )
+                if not result:
+                    message = str(getattr(result, "error", "") or "asset reimport failed")
+                    raise RuntimeError(
+                        f"asset reference migration failed for '{patch.destination_path}': {message}"
+                    )
         if plan is not None:
             mutations.commit_relocation(plan)
     except (OSError, RuntimeError, ValueError) as _exc:
@@ -487,6 +525,17 @@ def move_paths_batch(
             except OSError as rollback_exc:
                 Debug.log_error(
                     f"Asset workspace rollback failed for '{new_abs}' -> '{old_abs}': {rollback_exc}"
+                )
+        for patch in reversed(patched_references):
+            if not os.path.isfile(patch.source_path):
+                continue
+            try:
+                from Infernux.core.document_store import write_document_text
+
+                write_document_text(patch.source_path, patch.original)
+            except OSError as rollback_exc:
+                Debug.log_error(
+                    f"Asset reference rollback failed for '{patch.source_path}': {rollback_exc}"
                 )
         for old_abs, patch in reversed(patched_sources):
             if not os.path.isfile(old_abs):
@@ -705,17 +754,39 @@ def create_script(current_path: str, script_name: str, asset_database=None):
     if os.path.exists(file_path):
         return False, f"'{script_name}' already exists"
 
+    started = time.perf_counter()
+    marks: list[tuple[str, float]] = []
+
+    def mark(label: str) -> None:
+        marks.append((label, time.perf_counter()))
+
     content = SCRIPT_TEMPLATE.format(class_name=class_name)
     written, error = _write_new_text_asset(file_path, content)
+    mark("write")
     if not written:
         return False, error
 
     if asset_database:
         try:
             guid = _import_new_asset(file_path, asset_database)
-            print(f"[ProjectPanel] Registered script: {script_name} -> {guid}")
+            mark("import")
+            Debug.log_internal(
+                f"[ProjectPanel] Registered script: {script_name} -> {guid}"
+            )
         except Exception as exc:
             return False, str(exc)
+
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    if elapsed_ms >= 10.0:
+        previous = started
+        pieces = []
+        for label, current in marks:
+            pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
+            previous = current
+        Debug.log_internal(
+            f"[ScriptAssetProfile] create={elapsed_ms:.2f}ms "
+            f"file={script_name} " + " ".join(pieces)
+        )
 
     return True, ""
 
@@ -1173,6 +1244,12 @@ def delete_item(item_path: str, asset_database=None):
     if not item_path or not os.path.exists(item_path):
         return False
 
+    started = time.perf_counter()
+    marks: list[tuple[str, float]] = []
+
+    def mark(label: str) -> None:
+        marks.append((label, time.perf_counter()))
+
     is_dir = os.path.isdir(item_path)
     deleted_script_guid = ""
     if is_dir or item_path.lower().endswith('.py'):
@@ -1194,6 +1271,7 @@ def delete_item(item_path: str, asset_database=None):
             guid_hint=deleted_script_guid,
         ):
             raise RuntimeError(f"AssetDatabase failed to delete '{item_path}'")
+        mark("asset_database")
 
     try:
         if is_dir:
@@ -1203,7 +1281,6 @@ def delete_item(item_path: str, asset_database=None):
             # On Windows, transient locks (antivirus, indexer, font loader)
             # can prevent deletion.  Retry with increasing delays.
             import gc
-            import time
             last_exc = None
             for _attempt in range(5):
                 try:
@@ -1220,6 +1297,7 @@ def delete_item(item_path: str, asset_database=None):
                     f"file may be in use by another process. ({last_exc})"
                 )
                 return False
+        mark("filesystem")
     except OSError as _exc:
         Debug.log_warning(f"Delete failed: {type(_exc).__name__}: {_exc}")
         return False
@@ -1227,6 +1305,18 @@ def delete_item(item_path: str, asset_database=None):
     # Invalidate inspector cache so a recreated file won't reuse stale data
     from . import asset_details_renderer
     asset_details_renderer.invalidate_asset(item_path)
+    mark("ui_invalidate")
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    if elapsed_ms >= 10.0:
+        previous = started
+        pieces = []
+        for label, current in marks:
+            pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
+            previous = current
+        Debug.log_internal(
+            f"[AssetMutationProfile] delete={elapsed_ms:.2f}ms "
+            f"file={os.path.basename(item_path)} " + " ".join(pieces)
+        )
     return True
 
 

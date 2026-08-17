@@ -46,6 +46,41 @@ class _FakeClip:
         self.source_model_guid = ""
 
 
+class _RendererBinding:
+    def __init__(self, native):
+        self.native = native
+
+    def _get_bound_native_component(self):
+        return self.native
+
+
+class _RendererOwner:
+    def __init__(self, renderer):
+        self.renderer = renderer
+        self.lookups = 0
+
+    def get_component(self, _component_type):
+        self.lookups += 1
+        return self.renderer
+
+
+def test_skeletal_animator_reacquires_renderer_after_scene_replacement(monkeypatch):
+    animator = _make_animator()
+    stale = _RendererBinding(None)
+    live = _RendererBinding(object())
+    owner = _RendererOwner(live)
+    animator._skinned_renderer = stale
+    monkeypatch.setattr(
+        SkeletalAnimator,
+        "game_object",
+        property(lambda _self: owner),
+    )
+
+    assert animator._resolve_skinned_renderer() is live
+    assert animator._skinned_renderer is live
+    assert owner.lookups == 1
+
+
 def test_skeletal_mismatch_check_is_inconclusive_when_renderer_has_no_guid():
     from Infernux.components.skeletal_animator import _skinned_mismatch_message
 
@@ -150,6 +185,88 @@ class TestTransitionDuration:
                                     fade_duration=None)
         assert anim._blend_duration == pytest.approx(0.2)
         assert anim._blend_from_take_name == "Run"
+
+    def test_cross_fade_can_preserve_looping_phase(self):
+        anim = _make_animator()
+        walk = AnimState(name="Walk", loop=True)
+        run = AnimState(name="Run", loop=True)
+        anim._fsm = AnimStateMachine(states=[walk, run], default_state="Walk")
+        anim._clip_cache = {
+            "Walk": _FakeClip("Walk", duration_hint=2.0),
+            "Run": _FakeClip("Run", duration_hint=4.0),
+        }
+        anim._current_state_name = "Walk"
+        anim._current_clip = anim._clip_cache["Walk"]
+        anim._elapsed = 1.5
+        anim._playing = True
+        anim._apply_active_take = lambda: None
+        anim._sync_native_runtime_playback = lambda: None
+
+        assert anim.cross_fade("Run", 0.2, preserve_phase=True) is True
+        assert anim._elapsed == pytest.approx(3.0)
+        assert anim._prev_event_norm == pytest.approx(0.75)
+        assert anim._blend_from_elapsed == pytest.approx(1.5)
+
+    def test_cross_fade_restarts_by_default(self):
+        anim = _make_animator()
+        walk = AnimState(name="Walk", loop=True)
+        run = AnimState(name="Run", loop=True)
+        anim._fsm = AnimStateMachine(states=[walk, run], default_state="Walk")
+        anim._clip_cache = {
+            "Walk": _FakeClip("Walk", duration_hint=2.0),
+            "Run": _FakeClip("Run", duration_hint=4.0),
+        }
+        anim._current_state_name = "Walk"
+        anim._current_clip = anim._clip_cache["Walk"]
+        anim._elapsed = 1.5
+        anim._playing = True
+        anim._apply_active_take = lambda: None
+        anim._sync_native_runtime_playback = lambda: None
+
+        assert anim.cross_fade("Run", 0.2) is True
+        assert anim._elapsed == pytest.approx(0.0)
+        assert anim._prev_event_norm == pytest.approx(0.0)
+
+    def test_fsm_transition_can_preserve_looping_phase(self):
+        anim = _make_animator()
+        moving = AnimParameter(
+            name="moving",
+            value_type=TypeRef(ValueType.BOOL),
+            default=False,
+        )
+        walk = AnimState(name="Walk", loop=True, exit_time_normalized=0.0)
+        run = AnimState(name="Run", loop=True)
+        walk.transitions.append(
+            AnimTransition(
+                target_state="Run",
+                conditions=[_condition(moving)],
+                duration=0.2,
+                synchronize_normalized_time=True,
+            )
+        )
+        anim._fsm = AnimStateMachine(
+            states=[walk, run],
+            parameters=[moving],
+            default_state="Walk",
+        )
+        anim._parameters = {"moving": True}
+        anim._clip_cache = {
+            "Walk": _FakeClip("Walk", duration_hint=2.0),
+            "Run": _FakeClip("Run", duration_hint=4.0),
+        }
+        anim._current_state_name = "Walk"
+        anim._current_clip = anim._clip_cache["Walk"]
+        anim._elapsed = 1.5
+        anim._playing = True
+        anim._apply_active_take = lambda: None
+        anim._sync_native_runtime_playback = lambda: None
+
+        anim._try_auto_transition()
+
+        assert anim._current_state_name == "Run"
+        assert anim._elapsed == pytest.approx(3.0)
+        assert anim._prev_event_norm == pytest.approx(0.75)
+        assert anim._blend_duration == pytest.approx(0.2)
 
 
 class TestEmptyConditionTransition:
@@ -309,16 +426,159 @@ class TestAnimationEventWindowing:
         assert sink.footsteps == 1
         assert sink.calls == [("footstep", "L", 2.0)]
 
+    def test_dispatch_uses_precomputed_arity_without_signature_reflection(self, monkeypatch):
+        from Infernux.core import animation_event
+        from Infernux.core.animation_event import AnimationEvent
+        from Infernux.engine import runtime_dispatch
+        from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+
+        class AritySink:
+            def __init__(self):
+                self.calls = []
+
+            def one_arg(self, value):
+                self.calls.append(("one", value))
+
+            def broken(self, _value, _number):
+                self.calls.append("broken")
+                raise TypeError("handler body")
+
+        sink = AritySink()
+        publication = publish_runtime_dispatch_epoch((AritySink,))
+        publication.commit()
+        try:
+            descriptor = runtime_dispatch.current_runtime_epoch().descriptor_for(AritySink)
+            assert descriptor is not None
+            assert descriptor.methods["one_arg"].accepted_arg_counts == (1,)
+
+            def reject_signature(_callback):
+                raise AssertionError("event dispatch must not inspect signatures")
+
+            monkeypatch.setattr(runtime_dispatch.inspect, "signature", reject_signature)
+            go = _FakeGameObject([sink])
+            animation_event.dispatch_animation_events(
+                go,
+                [
+                    AnimationEvent(0.5, "one_arg", "L", 2.0),
+                    AnimationEvent(0.5, "broken", "R", 3.0),
+                ],
+                0.4,
+                0.6,
+                looped=False,
+            )
+            assert sink.calls == [("one", "L"), "broken"]
+        finally:
+            publication.rollback()
+
+    def test_generic_sink_and_named_alias_are_invoked_once(self):
+        from Infernux.core.animation_event import AnimationEvent, dispatch_animation_events
+        from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+
+        class AliasSink:
+            def __init__(self):
+                self.calls = 0
+
+            def on_animation_event(self, _name, _text, _number):
+                self.calls += 1
+
+            alias = on_animation_event
+
+        sink = AliasSink()
+        publication = publish_runtime_dispatch_epoch((AliasSink,))
+        publication.commit()
+        try:
+            dispatch_animation_events(
+                _FakeGameObject([sink]),
+                [AnimationEvent(0.5, "alias", "", 0.0)],
+                0.4,
+                0.6,
+                looped=False,
+            )
+            assert sink.calls == 1
+        finally:
+            publication.rollback()
+
+    def test_event_batch_keeps_one_epoch_after_handler_publishes_reload(self):
+        from Infernux.core.animation_event import AnimationEvent, dispatch_animation_events
+        from Infernux.engine.runtime_dispatch import (
+            current_runtime_epoch,
+            publish_runtime_dispatch_epoch,
+        )
+
+        class EpochSink:
+            def __init__(self):
+                self.calls = []
+
+            def first(self):
+                self.calls.append("first-old")
+
+            def second(self):
+                self.calls.append("second-old")
+
+        sink = EpochSink()
+        original_first = EpochSink.first
+        original_second = EpochSink.second
+        baseline = current_runtime_epoch()
+        old_publication = publish_runtime_dispatch_epoch((EpochSink,))
+        old_publication.commit()
+        replacement_publication = None
+
+        def second_new(self):
+            self.calls.append("second-new")
+
+        def first_reload(self):
+            nonlocal replacement_publication
+            self.calls.append("first-old")
+            EpochSink.second = second_new
+            replacement_publication = publish_runtime_dispatch_epoch((EpochSink,))
+            replacement_publication.commit()
+
+        EpochSink.first = first_reload
+        reload_publication = publish_runtime_dispatch_epoch((EpochSink,))
+        reload_publication.commit()
+        try:
+            dispatch_animation_events(
+                _FakeGameObject([sink]),
+                [AnimationEvent(0.5, "first"), AnimationEvent(0.5, "second")],
+                0.4,
+                0.6,
+                looped=False,
+            )
+            assert sink.calls == ["first-old", "second-old"]
+
+            dispatch_animation_events(
+                _FakeGameObject([sink]),
+                [AnimationEvent(0.5, "second")],
+                0.4,
+                0.6,
+                looped=False,
+            )
+            assert sink.calls[-1] == "second-new"
+        finally:
+            if replacement_publication is not None:
+                replacement_publication.rollback()
+            EpochSink.first = original_first
+            EpochSink.second = original_second
+            reload_publication.rollback()
+            old_publication.rollback()
+            assert current_runtime_epoch() is baseline
+
 
 # ── Serialization round-trips for new fields ────────────────────────────────
 
 class TestAnimationSerialization:
     def test_transition_duration_round_trip(self):
         condition = AnimCondition(parameter_id="speed-id", operator=">", threshold=1.0)
-        tr = AnimTransition(target_state="Run", conditions=[condition], duration=0.25)
+        tr = AnimTransition(
+            target_state="Run",
+            conditions=[condition],
+            duration=0.25,
+            synchronize_normalized_time=True,
+        )
         tr2 = AnimTransition.from_dict(tr.to_dict())
         assert tr2.duration == 0.25
         assert tr2.target_state == "Run"
+        assert tr2.synchronize_normalized_time is True
 
     def test_clip2d_events_round_trip(self):
         from Infernux.core.animation_clip import AnimationClip, AnimationFrame

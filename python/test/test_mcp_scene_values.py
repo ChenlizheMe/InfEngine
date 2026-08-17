@@ -160,7 +160,7 @@ def test_component_snapshot_uses_roundtrip_enum_document():
 
 def test_builtin_lazy_enum_metadata_resolves_to_public_enum():
     from Infernux.components import Light
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
     from Infernux.lib import LightShadows
 
     metadata = get_serialized_fields(Light)["shadows"]

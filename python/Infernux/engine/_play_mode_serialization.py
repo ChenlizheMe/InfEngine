@@ -34,7 +34,7 @@ class PlayModeSerializationMixin:
         (GameObjectRef, MaterialRef) are converted to JSON-safe dicts.
         """
         from Infernux.components.missing_script import MissingScript
-        from Infernux.components.serialized_field import get_raw_field_value, get_serialized_fields
+        from Infernux.components.fields import get_raw_field_value, get_serialized_fields
 
         if isinstance(component, MissingScript):
             preserved = component._serialize_fields_document()
@@ -89,7 +89,7 @@ class PlayModeSerializationMixin:
         fields = state.get("fields", {})
         
         # Get the new class's serialized fields - only restore fields that still exist
-        from Infernux.components.serialized_field import get_serialized_fields
+        from Infernux.components.fields import get_serialized_fields
         new_serialized_fields = get_serialized_fields(component.__class__)
 
         previous_deserializing = getattr(component, '_inf_deserializing', False)
@@ -146,7 +146,7 @@ class PlayModeSerializationMixin:
 
     def _materialize_prefab_refs_on_owner(self, owner) -> int:
         from Infernux.components.component import InxComponent
-        from Infernux.components.serialized_field import get_serialized_fields, get_raw_field_value
+        from Infernux.components.fields import get_serialized_fields, get_raw_field_value
 
         fields = get_serialized_fields(owner.__class__)
         if not fields:
@@ -173,7 +173,7 @@ class PlayModeSerializationMixin:
     def _materialize_prefab_refs_in_value(self, value, field_meta_or_type):
         from Infernux.components.ref_wrappers import PrefabRef
         from Infernux.components.serializable_object import SerializableObject
-        from Infernux.components.serialized_field import FieldType
+        from Infernux.components.fields import FieldType
 
         if hasattr(field_meta_or_type, "field_type"):
             field_type = field_meta_or_type.field_type

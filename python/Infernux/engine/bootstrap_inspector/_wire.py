@@ -60,8 +60,26 @@ def _wire_cache_init(ctx):
 
     ctx.invalidate_component_cache = _invalidate_component_cache
 
-    def _current_scene_and_versions():
-        scene = ctx.SceneManager.instance().get_active_scene()
+    def _resolve_scene_object(object_id):
+        manager = ctx.SceneManager.instance()
+        resolver = getattr(manager, "find_runtime_object_by_id", None)
+        if callable(resolver):
+            obj = resolver(int(object_id or 0))
+        else:
+            scene = manager.get_active_scene()
+            obj = scene.find_by_id(int(object_id or 0)) if scene else None
+        scene = getattr(obj, "scene", None) if obj is not None else None
+        if scene is None:
+            scene = manager.get_active_scene()
+        return scene, obj
+
+    ctx.resolve_scene_object = _resolve_scene_object
+
+    def _current_scene_and_versions(object_id=0):
+        scene, _obj = _resolve_scene_object(object_id) if object_id else (
+            ctx.SceneManager.instance().get_active_scene(),
+            None,
+        )
         scene_version = getattr(scene, 'structure_version', -1) if scene else -1
         structure_version = ctx._inspector_support.get_component_structure_version()
         return scene, scene_version, structure_version
@@ -79,6 +97,22 @@ def _wire_component_list(ctx):
     _component_cache = ctx.component_cache
     _invalidate = ctx.invalidate_component_cache
     _versions = ctx.current_scene_and_versions
+    snapshot_service = getattr(ctx, "inspector_snapshot_service", None)
+    inspector_target_type = getattr(ctx, "InspectorTarget", None)
+    if snapshot_service is None or inspector_target_type is None:
+        from Infernux.engine.ui.inspector_snapshot import (
+            InspectorSnapshotService,
+            InspectorTarget,
+        )
+
+        snapshot_service = snapshot_service or InspectorSnapshotService.instance()
+        inspector_target_type = inspector_target_type or InspectorTarget
+
+    def _register_target_components(obj_id, native_map, py_map):
+        snapshot_service.register_target_components(
+            inspector_target_type.scene_object(obj_id),
+            (*native_map.values(), *py_map.values()),
+        )
 
     def _script_error_revision():
         from Infernux.components.script_loader import get_script_error_revision
@@ -109,7 +143,7 @@ def _wire_component_list(ctx):
         return isinstance(component, InxComponent) or hasattr(component, 'get_py_component')
 
     def _get_component_payload(obj_id):
-        scene, scene_ver, struct_ver = _versions()
+        scene, scene_ver, struct_ver = _versions(obj_id)
         error_revision = _script_error_revision()
         if (
             _component_cache["object_id"] == obj_id
@@ -133,9 +167,10 @@ def _wire_component_list(ctx):
                     item.broken_error = error or ''
             if not stale:
                 _component_cache["script_error_revision"] = error_revision
+                _register_target_components(obj_id, native_map, py_map)
                 return scene, items, native_map, py_map
 
-        obj = scene.find_by_id(obj_id) if scene else None
+        scene, obj = ctx.resolve_scene_object(obj_id)
         if obj is None:
             _invalidate()
             return scene, [], {}, {}
@@ -196,10 +231,11 @@ def _wire_component_list(ctx):
             structure_version=struct_ver,
             script_error_revision=error_revision,
             items=items, native_map=native_map, py_map=py_map)
+        _register_target_components(obj_id, native_map, py_map)
         return scene, items, native_map, py_map
 
     def _get_cached_maps(obj_id):
-        scene, scene_ver, struct_ver = _versions()
+        scene, scene_ver, struct_ver = _versions(obj_id)
         error_revision = _script_error_revision()
         if (
             _component_cache["object_id"] == obj_id
@@ -234,8 +270,7 @@ def _wire_object_info(ctx):
 
     def _get_object_info(obj_id):
         info = InspectorObjectInfo()
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(obj_id) if scene else None
+        _scene, obj = ctx.resolve_scene_object(obj_id)
         if obj is None:
             return info
         info.name = obj.name
@@ -264,8 +299,7 @@ def _wire_transform(ctx):
 
     def _get_transform_data(obj_id):
         td = InspectorTransformData()
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(obj_id) if scene else None
+        _scene, obj = ctx.resolve_scene_object(obj_id)
         if obj is None:
             return td
         trans = obj.get_transform()
@@ -484,7 +518,14 @@ def _wire_icons_and_body(ctx):
         for item in _component_cache["items"]:
             if int(item.component_id) in changed_ids:
                 item.enabled = bool(new_enabled)
-        ctx._bump_inspector_values()
+        # The native component headers cache enabled state as structural UI
+        # metadata.  Refresh only the owning objects; a coarse value bump here
+        # used to invalidate every Inspector target and every sibling body.
+        for obj_id in obj_ids:
+            ctx.inspector_snapshot_service.invalidate_schema(
+                ctx.InspectorTarget.scene_object(int(obj_id)),
+                domain="component_enabled",
+            )
         return True
 
     # The command adapter is assembled by ``_wire_clipboard_and_context``.
@@ -767,8 +808,7 @@ def _wire_clipboard_and_context(ctx):
     def _component_entry(object_id, component_id, is_native):
         from Infernux.engine.interaction import SelectionTarget
 
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(int(object_id)) if scene is not None else None
+        _scene, obj = ctx.resolve_scene_object(int(object_id))
         if obj is None or int(component_id) <= 0:
             return None
         comp = _resolve(int(object_id), int(component_id), bool(is_native))
@@ -794,13 +834,10 @@ def _wire_clipboard_and_context(ctx):
         snapshot = SelectionService.instance().snapshot
         if snapshot.domain is not SelectionDomain.COMPONENT:
             return []
-        scene = SceneManager.instance().get_active_scene()
-        if scene is None:
-            return []
         entries = []
         for target in snapshot.targets:
             object_id, component_id = target.component_ids()
-            obj = scene.find_by_id(object_id) if object_id else None
+            _scene, obj = ctx.resolve_scene_object(object_id) if object_id else (None, None)
             if obj is None or component_id <= 0:
                 continue
             native_hint = target.sub_kind != "script"
@@ -976,9 +1013,6 @@ def _wire_clipboard_and_context(ctx):
         target_component_ids,
         insert_after: bool,
     ):
-        scene = SceneManager.instance().get_active_scene()
-        if scene is None:
-            return []
         try:
             object_ids = tuple(int(value) for value in object_ids)
             dragged_component_ids = tuple(int(value) for value in dragged_component_ids)
@@ -997,7 +1031,7 @@ def _wire_clipboard_and_context(ctx):
         for object_id, dragged_component_id, target_component_id in zip(
             object_ids, dragged_component_ids, target_component_ids
         ):
-            obj = scene.find_by_id(object_id)
+            _scene, obj = ctx.resolve_scene_object(object_id)
             if obj is None:
                 return []
             before = [int(value) for value in obj.get_component_order()]
@@ -1221,8 +1255,8 @@ def _wire_add_remove_and_drop(ctx):
         primary = SelectionService.instance().primary_scene_object_id()
         if not primary:
             return None
-        scene = SceneManager.instance().get_active_scene()
-        return scene.find_by_id(primary) if scene else None
+        _scene, obj = ctx.resolve_scene_object(primary)
+        return obj
 
     def _execute_add_transaction(
         obj,
@@ -1233,25 +1267,19 @@ def _wire_add_remove_and_drop(ctx):
         insert_after=False,
         insert_at_start=False,
     ):
-        if python_instance is not None:
-            from Infernux.components.registry import get_python_attachment_blockers
-
-            blockers = get_python_attachment_blockers(obj, type(python_instance))
-            if blockers:
-                Debug.log_warning(
-                    f"Cannot add '{type_name}': " + "; ".join(blockers)
-                )
-                return False
-
-        _component_commands().add(
-            obj,
-            type_name,
-            python_instance=python_instance,
-            target_component_id=int(target_component_id or 0),
-            insert_after=bool(insert_after),
-            insert_at_start=bool(insert_at_start),
-            description=f"Add {type_name}",
-        )
+        try:
+            _component_commands().add(
+                obj,
+                type_name,
+                python_instance=python_instance,
+                target_component_id=int(target_component_id or 0),
+                insert_after=bool(insert_after),
+                insert_at_start=bool(insert_at_start),
+                description=f"Add {type_name}",
+            )
+        except ValueError as exc:
+            Debug.log_warning(str(exc))
+            return False
         _invalidate()
         _bump()
         Debug.log_internal(f"Added component: {type_name}")
@@ -1269,12 +1297,6 @@ def _wire_add_remove_and_drop(ctx):
         if obj is None:
             return False
         if is_native:
-            blockers = tuple(obj.get_add_component_blockers(type_name_or_path))
-            if blockers:
-                Debug.log_warning(
-                    f"Cannot add '{type_name_or_path}': " + "; ".join(blockers)
-                )
-                return False
             return _execute_add_transaction(
                 obj,
                 type_name_or_path,
@@ -1283,25 +1305,9 @@ def _wire_add_remove_and_drop(ctx):
                 insert_at_start=insert_at_start,
             )
         elif not script_path:
-            _engine_py_map = {"RenderStack": None}
-            try:
-                from Infernux.renderstack.render_stack import RenderStack as _RS
-                _engine_py_map["RenderStack"] = _RS
-            except ImportError as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            comp_cls = _engine_py_map.get(type_name_or_path)
-            if comp_cls is None:
-                # Try engine Python-only components via registry
-                from Infernux.components.registry import get_type
-                comp_cls = get_type(type_name_or_path)
-            if comp_cls is None:
-                Debug.log_error(f"Unknown engine component: {type_name_or_path}")
-                return
-            instance = comp_cls()
             return _execute_add_transaction(
                 obj,
-                comp_cls.__name__,
-                python_instance=instance,
+                type_name_or_path,
                 target_component_id=target_component_id,
                 insert_after=insert_after,
                 insert_at_start=insert_at_start,
@@ -1393,8 +1399,7 @@ def _wire_prefab_and_misc(ctx):
 
     def _get_prefab_info(obj_id):
         pinfo = InspectorPrefabInfo()
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(obj_id) if scene else None
+        _scene, obj = ctx.resolve_scene_object(obj_id)
         if obj is None:
             return pinfo
         guid = getattr(obj, 'prefab_guid', '') or ''
@@ -1428,6 +1433,10 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
     from Infernux.engine.ui import inspector_support as _inspector_support
     from Infernux.engine.interaction import SelectionService
     from Infernux.lib import SceneManager, InspectorObjectInfo, InspectorComponentInfo
+    from Infernux.engine.ui.inspector_snapshot import (
+        InspectorSnapshotService,
+        InspectorTarget,
+    )
     from Infernux.components.component import InxComponent
 
     ctx = _Ctx()
@@ -1444,6 +1453,8 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
     ctx.InspectorComponentInfo = InspectorComponentInfo
     ctx.InxComponent = InxComponent
     ctx.SelectionService = SelectionService
+    ctx.InspectorTarget = InspectorTarget
+    ctx.inspector_snapshot_service = InspectorSnapshotService.instance()
     ctx.project_path = bs.project_path
 
     bs.interaction_core.scene_objects.set_change_publisher(
@@ -1537,6 +1548,60 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
     ip.get_selected_ids = lambda: list(selection.scene_object_ids())
     ip.get_value_generation = _inspector_support.get_inspector_value_generation
     ip.consume_component_body_profile = _inspector_support.consume_inspector_profile_metrics
+
+    # New native builds consume one immutable four-layer packet per visible
+    # Inspector frame. Keep the legacy generation callback above so source
+    # Python remains runnable against an older installed extension.
+    try:
+        from Infernux.lib import InspectorRevisionSnapshot as _NativeRevisionSnapshot
+    except ImportError:
+        _NativeRevisionSnapshot = None
+
+    if _NativeRevisionSnapshot is not None and hasattr(ip, "get_revision_snapshot"):
+        snapshot_service = ctx.inspector_snapshot_service
+        from Infernux.engine.runtime_change_journal import runtime_change_journal
+
+        inspector_journal = runtime_change_journal()
+        inspector_change_cursor = inspector_journal.create_cursor(
+            "editor-inspector-snapshot",
+            start_at_current=True,
+        )
+
+        def _get_revision_snapshot():
+            snapshot_service.consume_changes(
+                inspector_journal.consume(inspector_change_cursor, flush=False)
+            )
+            object_ids = tuple(int(value) for value in selection.scene_object_ids())
+            selected_file = str(ip.get_selected_file() or "")
+            if len(object_ids) == 1:
+                target = InspectorTarget.scene_object(object_ids[0])
+                snapshot_service.set_active_target(target)
+                packet = snapshot_service.snapshot(target)
+            elif object_ids:
+                targets = tuple(
+                    InspectorTarget.scene_object(object_id)
+                    for object_id in object_ids
+                )
+                packet = snapshot_service.aggregate(targets)
+                snapshot_service.set_active_target(packet.target)
+                packet = snapshot_service.aggregate(targets)
+            elif selected_file:
+                target = InspectorTarget.asset(selected_file)
+                snapshot_service.set_active_target(target)
+                packet = snapshot_service.snapshot(target)
+            else:
+                target = InspectorTarget.none()
+                snapshot_service.set_active_target(target)
+                packet = snapshot_service.snapshot(target)
+
+            native = _NativeRevisionSnapshot()
+            native.target = packet.target_revision
+            native.schema = packet.schema_revision
+            native.value = packet.value_revision
+            native.preview = packet.preview_revision
+            return native
+
+        ip.get_revision_snapshot = _get_revision_snapshot
 
     ip.on_panel_focused = bs.window_manager.native_panel_focus_callback(
         "inspector",

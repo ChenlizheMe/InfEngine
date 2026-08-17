@@ -3,18 +3,48 @@ import keyword
 import os
 import sys
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import is_path_within, portable_path, relative_path, resolved_path
 
 _project_root: Optional[str] = None
+_runtime_asset_resolver: Optional[Callable[[str], Optional[str]]] = None
 _guid_manifest: Optional[dict] = None
 _guid_manifest_loaded: bool = False
 
 def set_project_root(path: Optional[str]) -> None:
     """Set the current project root for path normalization."""
-    global _project_root
+    global _project_root, _runtime_asset_resolver
     _project_root = resolved_path(path) if path else None
+    _runtime_asset_resolver = None
+
+
+def set_runtime_asset_resolver(
+    resolver: Optional[Callable[[str], Optional[str]]],
+) -> None:
+    """Install the immutable packaged-asset resolver for the active Player."""
+    global _runtime_asset_resolver
+    if resolver is not None and not callable(resolver):
+        raise TypeError("runtime asset resolver must be callable")
+    _runtime_asset_resolver = resolver
+
+
+def resolve_asset_path(path: str) -> Optional[str]:
+    """Resolve one project asset in Editor or from the cooked Player catalog."""
+    raw = os.fspath(path)
+    if not raw:
+        return None
+    if _runtime_asset_resolver is not None:
+        return _runtime_asset_resolver(raw)
+    if not _project_root:
+        return None
+    candidate = resolved_path(
+        raw if os.path.isabs(raw) else os.path.join(_project_root, raw)
+    )
+    assets_root = resolved_path(os.path.join(_project_root, "Assets"))
+    if not is_path_within(candidate, assets_root, allow_root=False):
+        return None
+    return candidate if os.path.isfile(candidate) else None
 
 
 def get_project_root() -> Optional[str]:

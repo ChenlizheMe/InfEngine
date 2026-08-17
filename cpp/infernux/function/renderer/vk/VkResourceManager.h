@@ -86,6 +86,10 @@ class BufferUploadTicket final
     // until transfer completion.
     std::weak_ptr<rhi::BufferResource> m_rhiBuffer;
     AsyncSubmissionHandle m_upload;
+    // Polling may retire m_upload before the consumer publishes this ticket.
+    // Keep the semaphore value until publication so the graphics queue still
+    // receives the transfer-to-consumer memory dependency.
+    uint64_t m_uploadTimelineValue = 0;
     VkDeviceSize m_size = 0;
     bool m_complete = false;
     bool m_published = false;
@@ -119,6 +123,7 @@ class TextureUploadTicket final
     std::shared_ptr<VkBufferHandle> m_staging;
     std::shared_ptr<rhi::TextureResource> m_texture;
     AsyncSubmissionHandle m_upload;
+    uint64_t m_uploadTimelineValue = 0;
     VkDeviceSize m_residentBytes = 0;
     bool m_complete = false;
     bool m_published = false;

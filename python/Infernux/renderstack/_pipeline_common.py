@@ -20,17 +20,18 @@ DEPTH_TEXTURE = "depth"
 SHADOW_MAP_TEXTURE = "shadow_map"
 MOTION_TEXTURE = "motion"
 MOTION_MSAA_TEXTURE = "_motion_msaa"
+NORMAL_TEXTURE = "normal"
+NORMAL_MSAA_TEXTURE = "_normal_msaa"
 BEFORE_POST_PROCESS_POINT = "before_post_process"
 AFTER_POST_PROCESS_POINT = "after_post_process"
 
 GBUFFER_ALBEDO_TEXTURE = "gbuffer_albedo"
-GBUFFER_NORMAL_TEXTURE = "gbuffer_normal"
+GBUFFER_NORMAL_TEXTURE = NORMAL_TEXTURE
 GBUFFER_MATERIAL_TEXTURE = "gbuffer_material"
 GBUFFER_EMISSION_TEXTURE = "gbuffer_emission"
 GBUFFER_OBJECT_TEXTURE = "gbuffer_object"
 
-SCENE_RESOURCES = {COLOR_TEXTURE, DEPTH_TEXTURE, MOTION_TEXTURE}
-POST_PROCESS_RESOURCES = {COLOR_TEXTURE, DEPTH_TEXTURE, MOTION_TEXTURE}
+POST_PROCESS_RESOURCES = {COLOR_TEXTURE, DEPTH_TEXTURE, MOTION_TEXTURE, NORMAL_TEXTURE}
 GBUFFER_RESOURCES = {
     GBUFFER_ALBEDO_TEXTURE,
     GBUFFER_NORMAL_TEXTURE,
@@ -62,6 +63,17 @@ def transparent_queue_range() -> tuple[int, int]:
     return (config.transparent_queue_min, config.transparent_queue_max)
 
 
+def result_resources(result) -> set[str]:
+    """Return the named buffers exposed by one explicit pass result."""
+    return set(result.snapshot) if result is not None else set()
+
+
+def _result_texture_name(source: str, semantic: str, suffix: str = "") -> str:
+    safe_source = str(source or "geometry").strip().replace(" ", "_")
+    tail = f"_{suffix}" if suffix else ""
+    return f"_result/{safe_source}/{semantic}{tail}"
+
+
 def shadow_caster_queue_range() -> tuple[int, int]:
     config = _config()
     return (config.shadow_caster_queue_min, config.shadow_caster_queue_max)
@@ -83,13 +95,6 @@ def create_main_scene_targets(
 
     graph.create_texture(COLOR_TEXTURE, camera_target=True)
     graph.create_texture(DEPTH_TEXTURE, format=Format.D32_SFLOAT)
-    graph.create_texture(MOTION_TEXTURE, format=Format.RG16_SFLOAT, samples=1)
-    if int(msaa_samples) > 1:
-        graph.create_texture(
-            MOTION_MSAA_TEXTURE,
-            format=Format.RG16_SFLOAT,
-            samples=int(msaa_samples),
-        )
     graph.create_texture(
         SHADOW_MAP_TEXTURE,
         format=Format.D32_SFLOAT,
@@ -175,36 +180,121 @@ def add_transparent_pass(
 def add_motion_vector_pass(
     graph: "RenderGraph",
     *,
-    name: str,
+    source: str,
+    depth,
     queue_range: tuple[int, int],
     clear: bool = False,
     sort_mode: str = "front_to_back",
     msaa_samples: int = 1,
-) -> None:
-    """Rasterize camera-relative motion into the shared RG16F target.
+) -> object | None:
+    """Rasterize motion only when this graph revision demands it."""
+    from Infernux.rendergraph.graph import Format
 
-    The pass stays a normal graph dependency. When no mounted effect consumes
-    ``motion``, native dead-pass elimination removes every motion draw.
-    """
+    target = graph.create_texture(
+        _result_texture_name(source, MOTION_TEXTURE),
+        format=Format.RG16_SFLOAT,
+        samples=1,
+    )
     multisampled = int(msaa_samples) > 1
-    draw_target = MOTION_MSAA_TEXTURE if multisampled else MOTION_TEXTURE
-    with graph.add_pass(name) as p:
-        p.read(DEPTH_TEXTURE)
-        p.write_color(draw_target)
+    draw_target = target
+    if multisampled:
+        draw_target = graph.create_texture(
+            _result_texture_name(source, MOTION_TEXTURE, "msaa"),
+            format=Format.RG16_SFLOAT,
+            samples=int(msaa_samples),
+        )
+    with graph.add_pass(f"{source}/Motion") as render_pass:
+        render_pass.read(depth)
+        render_pass.write_color(draw_target)
         if multisampled:
-            p.write_resolve(MOTION_TEXTURE)
+            render_pass.write_resolve(target)
         if clear:
-            p.set_clear(color=(0.0, 0.0, 0.0, 0.0))
-        p.draw_renderers(
+            render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0))
+        render_pass.draw_renderers(
             queue_range=queue_range,
             sort_mode=sort_mode,
             material_pass="motion",
         )
+    return target
 
 
-def add_standard_post_process_section(
+def add_normal_buffer_pass(
     graph: "RenderGraph",
-) -> None:
+    *,
+    source: str,
+    depth,
+    queue_range: tuple[int, int] | None = None,
+    msaa_samples: int = 1,
+) -> object | None:
+    """Write nearest opaque normals against the existing scene depth."""
+    from Infernux.rendergraph.graph import Format
+
+    target = graph.create_texture(
+        _result_texture_name(source, NORMAL_TEXTURE),
+        format=Format.RGBA16_SFLOAT,
+        samples=1,
+    )
+    multisampled = int(msaa_samples) > 1
+    draw_target = target
+    if multisampled:
+        draw_target = graph.create_texture(
+            _result_texture_name(source, NORMAL_TEXTURE, "msaa"),
+            format=Format.RGBA16_SFLOAT,
+            samples=int(msaa_samples),
+        )
+    with graph.add_pass(f"{source}/Normal") as render_pass:
+        render_pass.read(depth)
+        render_pass.write_color(draw_target)
+        if multisampled:
+            render_pass.write_resolve(target)
+        render_pass.set_clear(color=(0.5, 0.5, 1.0, 0.0))
+        render_pass.draw_renderers(
+            queue_range=queue_range or opaque_queue_range(),
+            sort_mode="front_to_back",
+            material_pass="normal",
+        )
+    return target
+
+
+def add_base_color_buffer_pass(
+    graph: "RenderGraph",
+    *,
+    source: str,
+    depth,
+    queue_range: tuple[int, int],
+    msaa_samples: int = 1,
+) -> object:
+    """Rasterize material base color for a forward geometry result."""
+    from Infernux.rendergraph.graph import Format
+
+    target = graph.create_texture(
+        _result_texture_name(source, "base_color"),
+        format=Format.RGBA16_SFLOAT,
+        samples=1,
+    )
+    multisampled = int(msaa_samples) > 1
+    draw_target = target
+    if multisampled:
+        draw_target = graph.create_texture(
+            _result_texture_name(source, "base_color", "msaa"),
+            format=Format.RGBA16_SFLOAT,
+            samples=int(msaa_samples),
+        )
+    with graph.add_pass(f"{source}/BaseColor") as render_pass:
+        render_pass.read(depth)
+        render_pass.write_color(draw_target)
+        if multisampled:
+            render_pass.write_resolve(target)
+        render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0))
+        render_pass.draw_renderers(
+            queue_range=queue_range,
+            sort_mode="front_to_back",
+            material_pass="base_color",
+        )
+    return target
+
+
+def add_standard_post_process_section(graph: "RenderGraph", result=None) -> None:
     """Append the canonical camera-UI, post-process, and screen-UI tail.
 
     Screen UI is part of the standard camera output contract, not an optional
@@ -212,11 +302,12 @@ def add_standard_post_process_section(
     a scene without RenderStack and an empty default RenderStack compile the
     same visible pipeline.
     """
-    graph.screen_ui_section(resources=POST_PROCESS_RESOURCES)
+    graph.screen_ui_section(resources=result_resources(result))
 
 
 def ensure_standard_post_process_points(graph: "RenderGraph") -> None:
+    resources = result_resources(graph.current_pass_result)
     if not graph.has_injection_point(BEFORE_POST_PROCESS_POINT):
-        graph.injection_point(BEFORE_POST_PROCESS_POINT, resources=POST_PROCESS_RESOURCES)
+        graph.injection_point(BEFORE_POST_PROCESS_POINT, resources=resources)
     if not graph.has_injection_point(AFTER_POST_PROCESS_POINT):
-        graph.injection_point(AFTER_POST_PROCESS_POINT, resources=POST_PROCESS_RESOURCES)
+        graph.injection_point(AFTER_POST_PROCESS_POINT, resources=resources)

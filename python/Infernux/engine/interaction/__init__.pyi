@@ -27,7 +27,7 @@ from .preferences import PreferencesCommandService, SUPPORTED_IDES, SUPPORTED_LO
 from .graph_commands import GraphCommandService
 from .authoring_documents import AuthoringAssetSnapshot, AuthoringDocumentController
 from .transient_interactions import TransientInteraction, TransientInteractionService
-from .navigation import NavigationAdapter, NavigationRequest, NavigationService
+from .navigation import DirectoryNavigationHistory, DirectoryNavigationSnapshot, NavigationAdapter, NavigationRequest, NavigationService
 from .resource_documents import EditableResourceDocumentController, ensure_editable_resource_document
 from .project_settings import BUILD_SETTINGS_DEFAULTS, ProjectSettingsDocumentController, ensure_project_settings_document, normalize_build_settings
 from .transactions import EditorTransaction
@@ -35,7 +35,12 @@ from .panels import BoundPanelCommand, ExternalDropKind, PanelCommandAdapter, Pa
 from .external_drops import ExternalDropDecision, ExternalDropStatus, ExternalDropTargetService
 from .scene_objects import SceneObjectCommandService
 from .asset_mutations import AssetContentChange, AssetMutation, AssetMutationChange, AssetMutationKind, AssetMutationNotification, AssetMutationService, AssetRelocationChange, AssetRelocationPlan, iter_asset_mutations
-from .asset_content import AssetRenameContentRegistry, AssetRenameTransform
+from .asset_content import (
+    AssetReferenceContentPatch,
+    AssetReferenceRelocationPlanner,
+    AssetRenameContentRegistry,
+    AssetRenameTransform,
+)
 from .graph_authoring import GraphActionDiff, GraphDomainAdapter, GraphElementKind, GraphElementRef, GraphMutation, GraphMutationKind, GraphSelectionController
 from .modals import ActiveModal, ModalRegistration, ModalService
 from .search import SearchQueryModel, SearchToken, normalize_search_text

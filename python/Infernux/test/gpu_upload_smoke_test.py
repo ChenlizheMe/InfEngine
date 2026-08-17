@@ -13,6 +13,7 @@ from pathlib import Path
 from Infernux import Engine
 from Infernux.engine.path_utils import resolved_path
 from Infernux.lib import (
+    AssetRegistry,
     ImageReadbackStatus,
     InxMaterial,
     PrimitiveType,
@@ -197,6 +198,7 @@ def main() -> int:
             imgui_eviction_count_before_budget = 0
             imgui_uploads_complete = False
             preview_job_complete = False
+            texture_cpu_release_verified = False
             readback_ticket = None
             cancelled_readback_ticket = None
             readback_complete = False
@@ -223,6 +225,7 @@ def main() -> int:
                 nonlocal imgui_budget_applied_frame, imgui_eviction_count_before_budget
                 nonlocal imgui_uploads_complete
                 nonlocal preview_job_complete
+                nonlocal texture_cpu_release_verified
                 nonlocal readback_ticket, cancelled_readback_ticket, readback_complete
                 nonlocal observed_timeline_publication_in_flight
                 nonlocal texture_reload_requested, texture_reload_wait_idle_count
@@ -366,6 +369,16 @@ def main() -> int:
                     and engine.pending_texture_cpu_load_count == 0
                     and engine.pending_texture_gpu_upload_count == 0
                 )
+                if uploads_complete and preview_job_complete and not texture_cpu_release_verified:
+                    texture_asset = AssetRegistry.instance().get_texture_asset(texture_guid)
+                    assert texture_asset is not None
+                    assert not hasattr(texture_asset, "cpu_byte_size")
+                    assert texture_asset.pixel_width == 4
+                    assert texture_asset.pixel_height == 2
+                    assert texture_asset.pixel_depth == 1
+                    assert texture_asset.mip_count > 0
+                    assert texture_asset.pixel_format
+                    texture_cpu_release_verified = True
                 if uploads_complete and not switched_texture:
                     material.set_texture_guid("texSampler", second_texture_guid)
                     switched_texture = True
@@ -389,10 +402,6 @@ def main() -> int:
                         engine.gpu_residency_snapshot["device_wait_idle_count"]
                         == texture_reload_wait_idle_count
                     )
-                    texture_record = next(
-                        record for record in engine.asset_runtime_records if record.guid == second_texture_guid
-                    )
-                    assert texture_record.runtime_version > texture_runtime_version_before_reload
                     texture_reload_requested = True
                 elif (
                     uploads_complete
@@ -404,6 +413,10 @@ def main() -> int:
                     and mesh_preview_complete
                     and budget_applied_frame is None
                 ):
+                    texture_record = next(
+                        record for record in engine.asset_runtime_records if record.guid == second_texture_guid
+                    )
+                    assert texture_record.runtime_version > texture_runtime_version_before_reload
                     eviction_count_before_budget = engine.texture_gpu_eviction_count
                     cache_entries_before_budget = engine.texture_gpu_cache_entry_count
                     resident_bytes_before_budget = engine.texture_gpu_resident_bytes
@@ -426,6 +439,7 @@ def main() -> int:
                     and readback_complete
                     and material_preview_complete
                     and mesh_preview_complete
+                    and texture_cpu_release_verified
                 ):
                     engine.exit()
                 elif frames >= 240:

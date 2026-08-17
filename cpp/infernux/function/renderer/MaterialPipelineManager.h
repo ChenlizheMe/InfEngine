@@ -103,8 +103,8 @@ class MaterialPipelineManager
      */
     void Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice, VkFormat colorFormat,
                     VkFormat depthFormat, VkSampleCountFlagBits sampleCount, ShaderProgramCache &shaderProgramCache,
-                    GpuRetirementQueue *deletionQueue, bool descriptorIndexingEnabled,
-                    vk::VkDescriptorManager *descriptorManager);
+                    GpuRetirementQueue *deletionQueue, bool descriptorIndexingEnabled, bool dynamicRenderingEnabled,
+                    vk::VkDescriptorManager *descriptorManager, uint64_t shaderDeviceContractKey);
 
     /**
      * @brief Cleanup all resources
@@ -306,6 +306,7 @@ class MaterialPipelineManager
     VkFormat m_colorFormat = VK_FORMAT_UNDEFINED;
     VkFormat m_depthFormat = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits m_sampleCount = VK_SAMPLE_COUNT_1_BIT;
+    bool m_dynamicRenderingEnabled = false;
     uint64_t m_publicationGeneration = 1;
 
     std::unordered_map<MaterialPassPipelineDescriptor, VkRenderPass, MaterialPassPipelineDescriptorHash>
@@ -313,6 +314,7 @@ class MaterialPipelineManager
 
     // Injected dependency — owned externally by InxVkCoreModular
     ShaderProgramCache *m_shaderProgramCache = nullptr;
+    uint64_t m_shaderDeviceContractKey = 0;
 
     // Material name -> render data
     std::unordered_map<std::string, std::unique_ptr<MaterialRenderData>> m_renderDataMap;

@@ -94,6 +94,8 @@ class ExternalDocumentConflictService:
                     self._active.document_id
                 )
                 if result is None:
+                    if document is None or document.state is not DocumentState.CONFLICT:
+                        self._finish_active()
                     return
                 self._waiting_for_reload = False
                 if result.accepted:

@@ -268,19 +268,18 @@ def test_texture_cpu_artifact_prepares_on_worker_and_validates_cache(engine):
         assert texture.pixel_width == 4
         assert texture.pixel_height == 2
         assert texture.mip_count == 3
-        assert texture.cpu_byte_size == 24
+        assert not hasattr(texture, "cpu_byte_size")
         assert texture.pixel_storage == "block_compressed"
         assert texture.pixel_format == "bc1_rgba_srgb"
 
         registry.invalidate_asset(guid)
         source.write_bytes(source_bytes)
         artifact.write_bytes(b"corrupt texture artifact")
-        fallback = registry.begin_load_texture_by_guid(guid)
+        rejected = registry.begin_load_texture_by_guid(guid)
         deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not registry.try_commit_asset_load(fallback):
-            time.sleep(0.001)
-        assert fallback.committed is True
-        assert registry.get_texture_asset(guid).cpu_byte_size == 24
+        with pytest.raises((RuntimeError, ValueError), match="texture artifact"):
+            while time.monotonic() < deadline and not registry.try_commit_asset_load(rejected):
+                time.sleep(0.001)
     finally:
         registry.invalidate_asset(guid)
         if asset_database.contains_path(str(source)):
@@ -307,18 +306,17 @@ def test_asset_registry_cpu_residency_budget_respects_live_and_explicit_pins(eng
     assert first is not None and second is not None
     first_record = registry.get_asset_residency(guids[0])
     second_record = registry.get_asset_residency(guids[1])
-    assert first_record.cpu_bytes > first.cpu_byte_size
-    assert second_record.cpu_bytes > second.cpu_byte_size
+    assert first_record.cpu_bytes > 0
+    assert second_record.cpu_bytes > 0
 
     larger_payload = b"P6\n4 2\n255\n" + bytes(range(24))
     sources[0].write_bytes(larger_payload)
     assert asset_database.reimport_asset(str(sources[0]))
     assert registry.reload_asset(guids[0]) is True
     updated_first_record = registry.get_asset_residency(guids[0])
-    assert first.cpu_byte_size == 24
     assert first.pixel_format == "bc1_rgba_srgb"
     assert updated_first_record.runtime_version == first_record.runtime_version + 1
-    assert updated_first_record.cpu_bytes > first_record.cpu_bytes
+    assert updated_first_record.cpu_bytes == first_record.cpu_bytes
     first_record = updated_first_record
     assert registry.total_cpu_bytes == baseline_cpu_bytes + first_record.cpu_bytes + second_record.cpu_bytes
 
@@ -952,7 +950,7 @@ class TestComponentLifecycle:
         assert go.get_component("Transform") is not None
 
     @pytest.mark.parametrize("comp_type", [
-        "Rigidbody", "BoxCollider", "SphereCollider", "CapsuleCollider",
+        "Rigidbody", "BoxCollider", "SphereCollider", "CapsuleCollider", "CylinderCollider",
         "MeshCollider", "MeshRenderer", "Light", "Camera",
         "AudioSource", "AudioListener",
     ])
@@ -1233,6 +1231,35 @@ class TestComponentLifecycle:
         assert pipeline._find_render_stack(ctx) is stack
         assert RenderStack.instance() is stack
 
+    def test_renderstack_pipeline_rejects_live_stack_owned_by_previous_scene(self, scene):
+        previous_owner = scene.create_game_object("PreviousSceneRenderStack")
+        previous_stack = previous_owner.add_component(RenderStack)
+
+        manager = SceneManager.instance()
+        next_scene = manager.create_scene("renderstack_next_scene")
+        next_owner = next_scene.create_game_object("NextSceneRenderStack")
+        next_stack = next_owner.add_component(RenderStack)
+        manager.set_active_scene(next_scene)
+
+        class _Context:
+            pass
+
+        ctx = _Context()
+        ctx.scene = next_scene
+        pipeline = RenderStackPipeline()
+
+        # Retained scene transactions can leave the old component completely
+        # live for a short period.  Scene ownership, not liveness, decides
+        # which graph is allowed to render.
+        RenderStack._active_instance = previous_stack
+        assert previous_stack.is_valid
+        assert previous_owner.is_active_in_hierarchy()
+        assert pipeline._find_render_stack(ctx) is next_stack
+        assert RenderStack.instance(next_scene) is next_stack
+
+        manager.set_active_scene(scene)
+        manager.unload_scene(next_scene)
+
     def test_renderstack_active_instance_survives_play_mode_document_rebuild(self, scene):
         from Infernux.engine.play_mode import PlayModeManager
 
@@ -1316,6 +1343,24 @@ class TestColliders:
         cc.radius = 1.0
         assert cc.radius == pytest.approx(1.0)
         assert cc.height == pytest.approx(3.0)
+
+    def test_cylinder_collider_properties_and_round_trip(self, scene):
+        go = scene.create_game_object("YC")
+        cylinder = go.add_component("CylinderCollider")
+        cylinder.radius = 1.25
+        cylinder.height = 4.0
+        cylinder.direction = 2
+
+        assert cylinder.radius == pytest.approx(1.25)
+        assert cylinder.height == pytest.approx(4.0)
+        assert cylinder.direction == 2
+
+        document = cylinder.serialize_document()
+        assert document["type"] == "CylinderCollider"
+        assert document["radius"] == pytest.approx(1.25)
+        assert document["height"] == pytest.approx(4.0)
+        assert document["direction"] == 2
+        assert cylinder.deserialize_document(document) is True
 
     def test_collider_is_trigger(self, scene):
         go = scene.create_game_object("T")
@@ -1433,6 +1478,9 @@ class TestColliders:
             ("SphereCollider", "radius", 0.0),
             ("CapsuleCollider", "height", 0.5),
             ("CapsuleCollider", "direction", 3),
+            ("CylinderCollider", "radius", 0.0),
+            ("CylinderCollider", "height", 0.0),
+            ("CylinderCollider", "direction", 3),
         ],
     )
     def test_collider_setters_reject_invalid_values(self, scene, component_type, attribute, value):
@@ -1447,6 +1495,9 @@ class TestColliders:
             ("SphereCollider", "radius", -1.0),
             ("CapsuleCollider", "direction", 9),
             ("CapsuleCollider", "height", 0.5),
+            ("CylinderCollider", "radius", 0.0),
+            ("CylinderCollider", "height", 0.0),
+            ("CylinderCollider", "direction", 9),
             ("MeshCollider", "convex", "yes"),
             ("BoxCollider", "physic_material_guid", 7),
         ],
@@ -1561,6 +1612,8 @@ class TestCamera:
         assert cam.field_of_view == pytest.approx(60.0)
         assert cam.near_clip > 0
         assert cam.far_clip > cam.near_clip
+        assert cam.dithering is False
+        assert cam.stop_nans is False
 
     def test_camera_fov_round_trip(self, scene):
         go = scene.create_game_object("Cam")
@@ -1573,6 +1626,14 @@ class TestCamera:
         cam = go.add_component("Camera")
         cam.depth = 5
         assert cam.depth == pytest.approx(5)
+
+    def test_camera_output_controls_round_trip(self, scene):
+        go = scene.create_game_object("Cam")
+        cam = go.add_component("Camera")
+        cam.dithering = True
+        cam.stop_nans = True
+        assert cam.dithering is True
+        assert cam.stop_nans is True
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Light
@@ -1908,6 +1969,7 @@ class TestComponentSerialization:
             "BoxCollider",
             "SphereCollider",
             "CapsuleCollider",
+            "CylinderCollider",
             "MeshCollider",
             "MeshRenderer",
             "SkinnedMeshRenderer",

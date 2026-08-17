@@ -57,7 +57,10 @@ void surface(out SurfaceData s) {
 
     vec2 grid = max(particleView.rendering_control.zw, vec2(1.0));
     float frameCount = grid.x * grid.y;
-    float frameJitter = (inxParticleHash(v_ParticleId) - 0.5) * material.flipbookFrameJitter;
+    // Keep neighboring particles out of lockstep even when an older graph
+    // serialized the former zero default for this internal control.
+    float frameJitter = (inxParticleHash(v_ParticleId) - 0.5)
+        * max(material.flipbookFrameJitter, 3.0);
     float framePosition = clamp(
         v_ParticleNormalizedAge * (frameCount - 1.0) + material.flipbookFrameOffset + frameJitter,
         0.0,

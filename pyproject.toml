@@ -71,7 +71,9 @@ Infernux = [
     "resources/icons/components/*.png",
     "resources/fonts/*.otf",
     "resources/fonts/*.ttf",
+    "resources/fonts/*.txt",
     "resources/pictures/*.png",
+    "resources/schemas/*.json",
     "resources/supports/*.txt",
 ]
 

@@ -137,6 +137,11 @@ enum class TextureLayout : uint8_t
     return format == PixelFormat::D32SFloat || format == PixelFormat::D24UNormS8UInt;
 }
 
+[[nodiscard]] constexpr bool IsStencilFormat(PixelFormat format) noexcept
+{
+    return format == PixelFormat::D24UNormS8UInt;
+}
+
 [[nodiscard]] constexpr bool IsIntegerFormat(PixelFormat format) noexcept
 {
     return format == PixelFormat::RG32UInt;
@@ -145,6 +150,38 @@ enum class TextureLayout : uint8_t
 [[nodiscard]] constexpr bool IsValidPixelFormat(PixelFormat format) noexcept
 {
     return format > PixelFormat::Undefined && format < PixelFormat::Count;
+}
+
+[[nodiscard]] constexpr bool IsSrgbFormat(PixelFormat format) noexcept
+{
+    return format == PixelFormat::RGBA8Srgb || format == PixelFormat::BGRA8Srgb ||
+           format == PixelFormat::BC1RgbaSrgb || format == PixelFormat::BC3Srgb || format == PixelFormat::BC7Srgb;
+}
+
+[[nodiscard]] constexpr PixelFormat LinearColorFormat(PixelFormat format) noexcept
+{
+    switch (format) {
+    case PixelFormat::RGBA8Srgb:
+        return PixelFormat::RGBA8UNorm;
+    case PixelFormat::BGRA8Srgb:
+        return PixelFormat::BGRA8UNorm;
+    case PixelFormat::BC1RgbaSrgb:
+        return PixelFormat::BC1RgbaUNorm;
+    case PixelFormat::BC3Srgb:
+        return PixelFormat::BC3UNorm;
+    case PixelFormat::BC7Srgb:
+        return PixelFormat::BC7UNorm;
+    default:
+        return format;
+    }
+}
+
+[[nodiscard]] constexpr bool AreColorSpaceViewFormatsCompatible(PixelFormat imageFormat,
+                                                                 PixelFormat viewFormat) noexcept
+{
+    return imageFormat == viewFormat ||
+           (IsSrgbFormat(imageFormat) && LinearColorFormat(imageFormat) == viewFormat) ||
+           (IsSrgbFormat(viewFormat) && LinearColorFormat(viewFormat) == imageFormat);
 }
 
 } // namespace infernux::rhi

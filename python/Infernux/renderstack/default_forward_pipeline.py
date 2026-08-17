@@ -14,7 +14,7 @@ All injection points are exposed for user passes to hook into.
 
 Usage::
 
-    # Automatic — RenderStack uses this when pipeline_class_name is empty
+    # Automatic — RenderStack stores the explicit default pipeline name
     stack = game_object.add_component(RenderStack)
     # stack.pipeline is DefaultForwardPipeline by default
 
@@ -28,18 +28,17 @@ from enum import IntEnum
 from typing import TYPE_CHECKING
 
 from Infernux.renderstack.render_pipeline import RenderPipeline
-from Infernux.components.serialized_field import serialized_field
+from Infernux.components.fields import serialized_field
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
-    SCENE_RESOURCES,
     add_forward_opaque_pass,
-    add_motion_vector_pass,
     add_shadow_caster_pass,
     add_skybox_pass,
     add_standard_post_process_section,
     add_transparent_pass,
     create_main_scene_targets,
     opaque_queue_range,
+    result_resources,
     transparent_queue_range,
 )
 
@@ -128,56 +127,60 @@ class DefaultForwardPipeline(RenderPipeline):
 
         # Pass 1: Opaque objects (front-to-back for early-z)
         add_forward_opaque_pass(graph, material_pass=self.material_pass)
-        add_motion_vector_pass(
+        current = self.geometry_stage(
             graph,
-            name="OpaqueMotionPass",
+            "opaque",
+            buffers={
+                "color": graph.get_texture("color"),
+                "depth": graph.get_texture("depth"),
+            },
             queue_range=opaque_queue_range(),
-            clear=True,
             msaa_samples=msaa_samples,
+            clear=True,
         )
-        graph.injection_point("after_opaque", resources=SCENE_RESOURCES)
-        graph.effects(
-            "after_opaque",
-            scope="stage",
-            display_name="After Opaque",
-            inputs=SCENE_RESOURCES,
-            outputs={"color"},
-            capabilities={"fullscreen"},
-        )
+        with graph.pass_result(current):
+            resources = result_resources(current)
+            graph.injection_point("after_opaque", resources=resources)
+            graph.effects(
+                "after_opaque",
+                scope="stage",
+                display_name="After Opaque",
+                inputs=resources,
+                outputs={"color"},
+                capabilities={"fullscreen"},
+            )
+            current = graph.current_pass_result
 
         # Pass 2: Skybox (renders after opaque, depth-tested)
         add_skybox_pass(graph)
-        graph.injection_point("after_sky", resources=SCENE_RESOURCES)
-        graph.effects(
-            "after_sky",
-            scope="composite",
-            display_name="After Sky",
-            inputs=SCENE_RESOURCES,
-            outputs={"color"},
-            capabilities={"fullscreen"},
-        )
+        current = graph.derive_pass_result("sky", current, {"color": graph.get_texture("color")})
+        with graph.pass_result(current):
+            resources = result_resources(current)
+            graph.injection_point("after_sky", resources=resources)
+            graph.effects(
+                "after_sky", scope="composite", display_name="After Sky",
+                inputs=resources, outputs={"color"}, capabilities={"fullscreen"},
+            )
+            current = graph.current_pass_result
 
         # Pass 3: Transparent objects (back-to-front for blending)
         add_transparent_pass(graph, material_pass=self.material_pass)
-        add_motion_vector_pass(
-            graph,
-            name="TransparentMotionPass",
-            queue_range=transparent_queue_range(),
-            sort_mode="back_to_front",
-            msaa_samples=msaa_samples,
+        current = graph.derive_pass_result(
+            "transparent", current, {"color": graph.get_texture("color")}
         )
-        graph.injection_point("after_transparent", resources=SCENE_RESOURCES)
-        graph.effects(
-            "after_transparent",
-            scope="composite",
-            display_name="After Transparent",
-            inputs=SCENE_RESOURCES,
-            outputs={"color"},
-            capabilities={"fullscreen"},
-        )
+        with graph.pass_result(current):
+            resources = result_resources(current)
+            graph.injection_point("after_transparent", resources=resources)
+            graph.effects(
+                "after_transparent", scope="composite",
+                display_name="After Transparent", inputs=resources,
+                outputs={"color"}, capabilities={"fullscreen"},
+            )
+            current = graph.current_pass_result
 
         # Camera UI, final post-processing, display encoding and Screen UI use
         # one canonical tail in every built-in pipeline.
-        add_standard_post_process_section(graph)
+        with graph.pass_result(current):
+            add_standard_post_process_section(graph, current)
 
         graph.set_output(COLOR_TEXTURE)

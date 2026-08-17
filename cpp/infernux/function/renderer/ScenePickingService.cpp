@@ -27,29 +27,13 @@ constexpr VkDeviceSize kPickingPixelBytes = sizeof(uint32_t) * 2u;
 
 struct ScenePickingService::TargetGeneration
 {
-    InxVkCoreModular *core = nullptr;
     std::unique_ptr<vk::VkImageHandle> color;
     std::unique_ptr<vk::VkImageHandle> depth;
-    VkRenderPass renderPass = VK_NULL_HANDLE;
-    VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    VkImageLayout colorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     uint32_t width = 0;
     uint32_t height = 0;
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;
-    rhi::RenderTargetLayoutHandle renderTargetLayout;
-
-    ~TargetGeneration()
-    {
-        if (!core)
-            return;
-        if (renderTargetLayout.IsValid())
-            core->GetDeviceContext().GetRhiDevice().Release(renderTargetLayout);
-        if (core->GetDevice() != VK_NULL_HANDLE) {
-            if (framebuffer != VK_NULL_HANDLE)
-                vkDestroyFramebuffer(core->GetDevice(), framebuffer, nullptr);
-            if (renderPass != VK_NULL_HANDLE)
-                vkDestroyRenderPass(core->GetDevice(), renderPass, nullptr);
-        }
-    }
 };
 
 ScenePickingService::ScenePickingService() = default;
@@ -142,14 +126,18 @@ void ScenePickingService::PublishFailure(uint64_t requestId, const std::string &
 
 bool ScenePickingService::EnsureTarget(uint32_t width, uint32_t height)
 {
-    if (m_target && m_target->color && m_target->depth && m_target->renderPass != VK_NULL_HANDLE &&
-        m_target->framebuffer != VK_NULL_HANDLE && width == m_target->width && height == m_target->height)
+    const auto dynamicCommands =
+        m_core ? rhi::ResolveDynamicRenderingCommands(m_core->GetDevice()) : rhi::DynamicRenderingCommands{};
+    const bool dynamicRenderingAvailable =
+        m_core && m_core->GetDeviceContext().GetRhiDevice().GetCapabilityState().dynamicRendering.enabled &&
+        dynamicCommands.IsValid();
+    if (m_target && m_target->color && m_target->depth && width == m_target->width && height == m_target->height &&
+        dynamicRenderingAvailable)
         return true;
-    if (!m_core || width == 0 || height == 0)
+    if (!dynamicRenderingAvailable || width == 0 || height == 0)
         return false;
 
     auto candidate = std::make_unique<TargetGeneration>();
-    candidate->core = m_core;
     auto &resources = m_core->GetResourceManager();
     candidate->color = resources.CreateImage(width, height, kPickingFormat,
                                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
@@ -157,60 +145,6 @@ bool ScenePickingService::EnsureTarget(uint32_t width, uint32_t height)
     candidate->depth = resources.CreateDepthBuffer(width, height, candidate->depthFormat);
     if (!candidate->color || !candidate->color->CreateView(kPickingFormat, VK_IMAGE_ASPECT_COLOR_BIT) ||
         !candidate->depth)
-        return false;
-
-    VkAttachmentDescription attachments[2]{};
-    attachments[0].format = kPickingFormat;
-    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    attachments[1].format = candidate->depthFormat;
-    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorRef;
-    subpass.pDepthStencilAttachment = &depthRef;
-    const VkSubpassDependency dependency = vkrender::MakePipelineCompatibleSubpassDependency();
-
-    VkRenderPassCreateInfo renderPassInfo{};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 2;
-    renderPassInfo.pAttachments = attachments;
-    renderPassInfo.subpassCount = 1;
-    renderPassInfo.pSubpasses = &subpass;
-    renderPassInfo.dependencyCount = 1;
-    renderPassInfo.pDependencies = &dependency;
-    if (vkCreateRenderPass(m_core->GetDevice(), &renderPassInfo, nullptr, &candidate->renderPass) != VK_SUCCESS)
-        return false;
-    candidate->renderTargetLayout =
-        m_core->GetDeviceContext().GetRhiDevice().RegisterRenderTargetLayout(candidate->renderPass);
-    if (!candidate->renderTargetLayout.IsValid())
-        return false;
-
-    const VkImageView views[] = {candidate->color->GetView(), candidate->depth->GetView()};
-    VkFramebufferCreateInfo framebufferInfo{};
-    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    framebufferInfo.renderPass = candidate->renderPass;
-    framebufferInfo.attachmentCount = 2;
-    framebufferInfo.pAttachments = views;
-    framebufferInfo.width = width;
-    framebufferInfo.height = height;
-    framebufferInfo.layers = 1;
-    if (vkCreateFramebuffer(m_core->GetDevice(), &framebufferInfo, nullptr, &candidate->framebuffer) != VK_SUCCESS)
         return false;
 
     candidate->width = width;
@@ -278,18 +212,55 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
                              &particleBarrier, 0, nullptr, 0, nullptr);
     }
 
-    VkClearValue clears[2]{};
-    clears[0].color.uint32[0] = 0;
-    clears[0].color.uint32[1] = 0;
-    clears[1].depthStencil = {1.0f, 0};
-    VkRenderPassBeginInfo begin{};
-    begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    begin.renderPass = target.renderPass;
-    begin.framebuffer = target.framebuffer;
-    begin.renderArea.extent = {target.width, target.height};
-    begin.clearValueCount = 2;
-    begin.pClearValues = clears;
-    vkCmdBeginRenderPass(commandBuffer, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    const auto dynamicCommands = rhi::ResolveDynamicRenderingCommands(m_core->GetDevice());
+    if (!dynamicCommands.IsValid()) {
+        PublishFailure(request.id, "Dynamic Rendering commands are unavailable for scene picking");
+        return;
+    }
+    VkImageMemoryBarrier barriers[2]{};
+    barriers[0] = vkrender::MakeImageBarrier(
+        target.color->GetImage(), target.colorLayout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        target.colorLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ? VK_ACCESS_TRANSFER_READ_BIT : 0,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+    barriers[1] = vkrender::MakeImageBarrier(
+        target.depth->GetImage(), target.depthLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        rhi::ToVkImageAspectMask(target.depthFormat),
+        target.depthLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+    vkCmdPipelineBarrier(commandBuffer,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+                             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0,
+                         0, nullptr, 0, nullptr, 2, barriers);
+    target.colorLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    target.depthLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = target.color->GetView();
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue.color.uint32[0] = 0;
+    colorAttachment.clearValue.color.uint32[1] = 0;
+    VkRenderingAttachmentInfo depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = target.depth->GetView();
+    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAttachment.clearValue.depthStencil = {1.0f, 0};
+    VkRenderingInfo rendering{};
+    rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    rendering.renderArea.extent = {target.width, target.height};
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &colorAttachment;
+    rendering.pDepthAttachment = &depthAttachment;
+    rendering.pStencilAttachment =
+        rhi::IsStencilFormat(rhi::FromVkFormat(target.depthFormat)) ? &depthAttachment : nullptr;
+    dynamicCommands.begin(commandBuffer, &rendering);
 
     VkViewport viewport{};
     viewport.width = static_cast<float>(target.width);
@@ -307,9 +278,10 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     pickingPass.colorFormats = {rhi::PixelFormat::RG32UInt};
     pickingPass.depthFormat = rhi::FromVkFormat(target.depthFormat);
     pickingPass.samples = rhi::SampleCount::One;
+    pickingPass.renderingMode = MaterialPassRenderingMode::DynamicRendering;
     m_core->DrawSceneFiltered(commandBuffer, target.width, target.height, perViewGroup, viewMatrix, 0, 5000,
                               "front_to_back", {}, {}, &pickingPass);
-    if (!particleEntries.empty() && target.renderTargetLayout.IsValid()) {
+    if (!particleEntries.empty()) {
         Camera *camera = SceneManager::Instance().GetEditorCameraController().GetCamera();
         if (camera) {
             particle::GpuParticleViewConstants view;
@@ -327,19 +299,18 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
                 if (!entry.renderer || entry.ownerObjectId == 0)
                     continue;
                 [[maybe_unused]] const bool recorded = entry.renderer->RecordPickingDraw(
-                    encoder, target.renderTargetLayout, pickingPass, entry.indirectArguments, view, entry.ownerObjectId,
-                    entry.renderIndices);
+                    encoder, {}, pickingPass, entry.indirectArguments, view, entry.ownerObjectId, entry.renderIndices);
             }
         }
     }
-    vkCmdEndRenderPass(commandBuffer);
+    dynamicCommands.end(commandBuffer);
 
-    VkMemoryBarrier renderToTransfer{};
-    renderToTransfer.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    renderToTransfer.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    renderToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    const VkImageMemoryBarrier renderToTransfer = vkrender::MakeImageBarrier(
+        target.color->GetImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         0, 1, &renderToTransfer, 0, nullptr, 0, nullptr);
+                         0, 0, nullptr, 0, nullptr, 1, &renderToTransfer);
+    target.colorLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
     const float normalizedX = std::clamp(request.x / request.viewportWidth, 0.0f, 0.999999f);
     const float normalizedY = std::clamp(request.y / request.viewportHeight, 0.0f, 0.999999f);

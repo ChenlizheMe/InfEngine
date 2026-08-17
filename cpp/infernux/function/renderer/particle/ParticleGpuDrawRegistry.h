@@ -5,6 +5,7 @@
 #include "ParticleOutputSemantics.h"
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -27,6 +28,7 @@ struct GpuParticleDrawEntry
     uint32_t ownerLayerMask = 1u;
     uint32_t capacity = 0;
     rhi::BufferHandle instances;
+    rhi::BufferHandle visibility;
     rhi::BufferHandle renderIndices;
     rhi::BufferHandle indirectArguments;
     rhi::BufferHandle bounds;
@@ -41,19 +43,59 @@ struct GpuParticleDrawEntry
 class ParticleGpuDrawRegistry
 {
   public:
+    ParticleGpuDrawRegistry();
+
     [[nodiscard]] bool Set(GpuParticleDrawEntry entry);
     [[nodiscard]] bool Replace(std::vector<GpuParticleDrawEntry> entries);
     [[nodiscard]] bool Remove(uint64_t id);
     void Clear();
 
+    // SnapshotShared keeps the immutable result alive without copying the
+    // entry array. Snapshot remains as a compatibility wrapper for callers
+    // that need an owning vector value.
+    using SnapshotEntries = std::vector<GpuParticleDrawEntry>;
+    using SnapshotHandle = std::shared_ptr<const SnapshotEntries>;
+
+    [[nodiscard]] SnapshotHandle SnapshotShared(int32_t queueMin, int32_t queueMax) const;
     [[nodiscard]] std::vector<GpuParticleDrawEntry> Snapshot(int32_t queueMin, int32_t queueMax) const;
     [[nodiscard]] uint64_t Revision() const;
     [[nodiscard]] size_t Size() const;
 
   private:
+    struct RegistryState
+    {
+        uint64_t revision = 1;
+        std::vector<GpuParticleDrawEntry> entries;
+    };
+
+    struct SnapshotKey
+    {
+        int32_t queueMin = 0;
+        int32_t queueMax = 0;
+
+        [[nodiscard]] bool operator<(const SnapshotKey &other) const noexcept
+        {
+            return queueMin != other.queueMin ? queueMin < other.queueMin : queueMax < other.queueMax;
+        }
+    };
+
+    struct SnapshotCacheEntry
+    {
+        uint64_t revision = 0;
+        std::vector<int32_t> queueValues;
+        SnapshotHandle entries;
+    };
+
+    struct SnapshotCache
+    {
+        std::map<SnapshotKey, SnapshotCacheEntry> entries;
+    };
+
     mutable std::mutex m_mutex;
-    std::vector<GpuParticleDrawEntry> m_entries;
-    uint64_t m_revision = 1;
+    // Registry mutations publish a complete state. Readers can retain the
+    // old state while a writer prepares and publishes a replacement.
+    mutable std::shared_ptr<const RegistryState> m_state;
+    mutable std::shared_ptr<const SnapshotCache> m_snapshotCache;
 };
 
 } // namespace infernux::particle

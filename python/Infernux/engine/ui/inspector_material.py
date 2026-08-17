@@ -951,13 +951,6 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
     del exec_layer
     from Infernux.engine.interaction import AuthoringMutationService
 
-    if not AuthoringMutationService.require().can_record():
-        _restore_rejected_material_edit(
-            panel, state, native_mat, mat_data, old_document
-        )
-        raise RuntimeError(
-            "Material edit requires an available global Action Journal"
-        )
     try:
         embedded_path = getattr(state, "file_path", "") or ""
         is_embedded = "::submat:" in embedded_path
@@ -971,7 +964,35 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
             return
 
         controller = getattr(state, "resource_controller", None)
-        if controller is None or not getattr(state, "document_id", ""):
+        document_id = str(getattr(state, "document_id", "") or "")
+        if controller is None and not document_id and not embedded_path:
+            # Runtime material clones intentionally have no durable .mat
+            # document. They remain editable in Play Mode, but their changes
+            # are memory/GPU-local and must never be queued as asset writes.
+            if requires_deserialize:
+                if not native_mat.deserialize_document(copy.deepcopy(mat_data)):
+                    raise RuntimeError(
+                        "transient material live-preview document was rejected"
+                    )
+            if requires_pipeline_refresh:
+                _refresh_pipeline(panel, native_mat)
+            state.extra["cached_json"] = json.dumps(mat_data)
+            state.extra["cached_data"] = mat_data
+            state.extra["_inline_autosave_pending"] = False
+            try:
+                state.extra["_applied_version"] = native_mat.get_version()
+            except (AttributeError, RuntimeError):
+                pass
+            return
+
+        if not AuthoringMutationService.require().can_record():
+            _restore_rejected_material_edit(
+                panel, state, native_mat, mat_data, old_document
+            )
+            raise RuntimeError(
+                "Material edit requires an available global Action Journal"
+            )
+        if controller is None or not document_id:
             raise RuntimeError("Material edit requires a formal Material document")
 
         # ── Deferred undo ───────────────────────────────────────────
@@ -1771,6 +1792,11 @@ def _apply_native_prop(prop_name: str, value, ptype: int):
 class _InlineMaterialExecLayer:
     """Lightweight adapter so inline material editing uses the same autosave path."""
 
+    # The adapter exists for view-local rendering state and may disappear or
+    # temporarily fail to resolve the selected slot.  Durable asset writes
+    # must therefore use the controller's stable category/path directly.
+    view_scoped_persistence = True
+
     def __init__(self, panel):
         self._panel = panel
 
@@ -1851,6 +1877,7 @@ def _build_inline_state(panel, native_mat):
             autosave_debounce_sec=0.25,
         )
         state.resource_controller = controller
+        state.settings = getattr(controller, "resource", native_mat)
         state.document_id = controller.document_id
         extra["_inline_document_binding_key"] = binding_key
     return state

@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-import os
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from Infernux.debug import Debug
-from Infernux.engine.path_utils import resolved_path
-from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
+from Infernux.engine.player_scene import PlayerSceneService
 from Infernux.timing import Time
+
+if TYPE_CHECKING:
+    from Infernux.engine.player_service_graph import (
+        PlayerRuntimeAssetCatalog,
+        RuntimeProductManifest,
+    )
 
 
 class PlayerRuntimeSession:
@@ -21,6 +25,7 @@ class PlayerRuntimeSession:
         asset_database: Any = None,
         native_engine: Any = None,
         scheduler: Any = None,
+        scene_service: Any = None,
     ):
         self._asset_database = asset_database
         self._native_engine = native_engine
@@ -28,9 +33,14 @@ class PlayerRuntimeSession:
             from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
             scheduler = RuntimeExecutionScheduler(name="player")
         self._execution_scheduler = scheduler
+        self._scene_service = scene_service or PlayerSceneService(
+            asset_database=asset_database
+        )
+        self._scene_service_installed = False
+        self._runtime_manifest: Optional[RuntimeProductManifest] = None
+        self._runtime_catalog: Optional[PlayerRuntimeAssetCatalog] = None
         self._state = "stopped"
         self._last_frame_time = time.time()
-        self._active_scene_path: Optional[str] = None
 
     @property
     def is_playing(self) -> bool:
@@ -46,47 +56,94 @@ class PlayerRuntimeSession:
 
     @property
     def active_scene_path(self) -> Optional[str]:
-        return self._active_scene_path
+        return self._scene_service.active_scene_path
+
+    @property
+    def last_scene_error(self) -> str:
+        return str(getattr(self._scene_service, "last_error", ""))
 
     @property
     def execution_scheduler(self) -> Any:
         """Return the shared on-demand phase-plan service for diagnostics."""
         return self._execution_scheduler
 
+    @property
+    def runtime_manifest(self) -> Optional[RuntimeProductManifest]:
+        return self._runtime_manifest
+
+    def configure_runtime_contract(
+        self,
+        runtime_manifest: RuntimeProductManifest,
+        runtime_catalog: PlayerRuntimeAssetCatalog,
+    ) -> None:
+        """Bind the build-authored Player product before loading a scene."""
+        from Infernux.engine.player_service_graph import (
+            PlayerRuntimeAssetCatalog,
+            RuntimeProductManifest,
+        )
+
+        if not isinstance(runtime_manifest, RuntimeProductManifest):
+            raise TypeError("PlayerRuntimeSession requires a RuntimeProductManifest")
+        if not isinstance(runtime_catalog, PlayerRuntimeAssetCatalog):
+            raise TypeError("PlayerRuntimeSession requires a RuntimeAssetCatalog")
+        if not runtime_manifest.flavor.is_player:
+            raise RuntimeError("EditorDevelopment cannot configure PlayerRuntimeSession")
+        for service_id in (
+            "runtime_asset_catalog",
+            "runtime_type_registry",
+            "player_scene_service",
+            "player_runtime_session",
+        ):
+            runtime_manifest.require_service(service_id)
+        if self._runtime_manifest is not None:
+            if (
+                self._runtime_manifest is runtime_manifest
+                and self._runtime_catalog is runtime_catalog
+            ):
+                return
+            raise RuntimeError("PlayerRuntimeSession runtime contract is already configured")
+        if self._state != "stopped":
+            raise RuntimeError("PlayerRuntimeSession cannot be configured after activation")
+        bind_catalog = getattr(self._scene_service, "bind_runtime_catalog", None)
+        if not callable(bind_catalog):
+            raise RuntimeError("Player scene service cannot bind RuntimeAssetCatalog")
+        bind_catalog(runtime_catalog)
+        from Infernux.engine.project_context import set_runtime_asset_resolver
+
+        set_runtime_asset_resolver(runtime_catalog.resolve_asset)
+        self._runtime_manifest = runtime_manifest
+        self._runtime_catalog = runtime_catalog
+        self._validate_player_boundary()
+
+    def _validate_player_boundary(self) -> None:
+        forbidden = (
+            "_scene_backup",
+            "_scene_dirty_backup",
+            "_resources_manager",
+            "_script_compiler",
+            "_selection_manager",
+            "_undo_manager",
+            "_preview_service",
+            "_import_coordinator",
+        )
+        leaked = [name for name in forbidden if hasattr(self, name)]
+        if leaked:
+            raise RuntimeError(
+                "PlayerRuntimeSession contains Editor state: " + ", ".join(leaked)
+            )
+
     def load_scene(self, path: str) -> bool:
         """Load a scene through the runtime transaction path."""
-        from Infernux.lib import SceneManager
-
-        target = resolved_path(path)
-        if not target or not os.path.isfile(target):
-            Debug.log_warning(f"Player scene file not found: {path}")
+        if self._runtime_manifest is None or self._runtime_catalog is None:
+            Debug.log_error("Player scene load rejected: runtime contract is not configured")
             return False
-
-        scene_manager = SceneManager.instance()
-        scene = scene_manager.get_active_scene()
-        if scene is None:
-            scene = scene_manager.create_scene("PlayerScene")
-        transaction = SceneDocumentTransaction(
-            scene,
-            path=target,
-            asset_database=self._asset_database,
-            clear_registries=True,
-        )
-        if not transaction.run_to_completion(raise_on_failure=False):
-            Debug.log_error(
-                f"Player scene load failed for '{target}': {transaction.error}"
-            )
-            return False
-
-        self._active_scene_path = target
-        Debug.log_internal(
-            f"Player loaded scene: {os.path.basename(target)} "
-            f"(objects={len(scene.get_all_objects())}, camera={scene.main_camera is not None})"
-        )
-        return True
+        return bool(self._scene_service.load_initial(path))
 
     def activate(self) -> bool:
         """Start the loaded scene without creating an editor play snapshot."""
+        if self._runtime_manifest is None or self._runtime_catalog is None:
+            Debug.log_error("Player activation rejected: runtime contract is not configured")
+            return False
         from Infernux.lib import SceneManager
         from Infernux.renderstack.render_stack import RenderStack
 
@@ -97,9 +154,22 @@ class PlayerRuntimeSession:
         Time._reset()
         self._last_frame_time = time.time()
         RenderStack._active_instance = None
-        scene.set_playing(True)
-        self._refresh_loaded_scene(scene)
-        SceneManager.instance().play()
+        from Infernux.scene import SceneManager as RuntimeSceneManager
+
+        # Install the packaged scene owner before native ``play()`` dispatches
+        # Awake/Start.  Startup scripts are allowed to prepare or load another
+        # BuildSettings scene immediately; those logical authoring paths only
+        # become loadable through the RuntimeAssetCatalog-backed service.
+        RuntimeSceneManager.install_runtime_service(self._scene_service)
+        self._scene_service_installed = True
+        try:
+            scene.set_playing(True)
+            self._refresh_loaded_scene(scene)
+            SceneManager.instance().play()
+        except Exception:
+            RuntimeSceneManager.remove_runtime_service(self._scene_service)
+            self._scene_service_installed = False
+            raise
         self._state = "playing"
         Debug.log_internal("Player runtime session activated")
         return True
@@ -114,10 +184,7 @@ class PlayerRuntimeSession:
         """
         if not self.is_playing:
             return 0.0
-        from Infernux.scene import SceneManager as RuntimeSceneManager
-
-        if RuntimeSceneManager.is_scene_load_pending():
-            RuntimeSceneManager.process_pending_load()
+        self._scene_service.process_pending_load()
 
         current_time = time.time()
         delta_time = (
@@ -161,6 +228,18 @@ class PlayerRuntimeSession:
         except Exception as exc:
             Debug.log_suppressed("PlayerRuntimeSession.clear_components", exc)
         self._execution_scheduler.clear()
+        self._scene_service.cancel_pending_load()
+        if self._scene_service_installed:
+            try:
+                from Infernux.scene import SceneManager as RuntimeSceneManager
+
+                RuntimeSceneManager.remove_runtime_service(self._scene_service)
+            except Exception as exc:
+                Debug.log_suppressed("PlayerRuntimeSession.remove_scene_service", exc)
+            self._scene_service_installed = False
+        from Infernux.engine.project_context import set_runtime_asset_resolver
+
+        set_runtime_asset_resolver(None)
         self._state = "stopped"
 
     @staticmethod

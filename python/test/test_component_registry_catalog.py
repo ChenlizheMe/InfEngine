@@ -3,6 +3,7 @@ import os
 from Infernux.components.registry import (
     get_component_constraints,
     get_component_registrations,
+    get_python_attachment_blockers,
     get_type_by_identity,
     register_component_script,
     unregister_component_script,
@@ -148,3 +149,21 @@ def test_component_decorators_refresh_the_authoritative_constraint_record():
     constraints = get_component_constraints(RegistryConstrained)
     assert constraints.allow_multiple is False
     assert constraints.required_types == (RegistryDependency,)
+
+
+def test_disallow_multiple_uses_stable_type_identity_across_reload():
+    from types import SimpleNamespace
+
+    from Infernux.components import InxComponent
+    from Infernux.components.decorators import disallow_multiple
+
+    namespace = {"__module__": __name__, "__qualname__": "RegistryReloadedSingle"}
+    old_type = disallow_multiple(type("RegistryReloadedSingle", (InxComponent,), dict(namespace)))
+    new_type = disallow_multiple(type("RegistryReloadedSingle", (InxComponent,), dict(namespace)))
+    assert old_type._get_type_guid() == new_type._get_type_guid()
+
+    owner = SimpleNamespace(get_py_components=lambda: [old_type()])
+    assert "only one instance is allowed per GameObject" in get_python_attachment_blockers(
+        owner,
+        new_type,
+    )

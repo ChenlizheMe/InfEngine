@@ -46,6 +46,18 @@ class DeferredTaskRunner:
         """True while a task is in progress."""
         return len(self._steps) > 0
 
+    @property
+    def active_task_name(self) -> str:
+        """Stable name of the active task, or an empty string while idle."""
+        return self._task_name if self.is_busy else ""
+
+    @property
+    def active_step_label(self) -> str:
+        """Human-readable current step without exposing task internals."""
+        if not self.is_busy or self._index >= len(self._steps):
+            return ""
+        return self._steps[self._index][0]
+
     def submit(
         self,
         task_name: str,
@@ -95,11 +107,19 @@ class DeferredTaskRunner:
                 self._failed = True
 
         self._index += 1
+        # The final operation is already complete. Finalizing here avoids an
+        # empty extra editor frame before input and automation can observe the
+        # transition as idle again.
+        if self._index >= len(self._steps):
+            self._finish()
 
     def cancel(self) -> None:
         """Cancel outstanding steps."""
         self._steps.clear()
         self._index = 0
+        self._on_done = None
+        self._failed = False
+        self._task_name = ""
         from Infernux.engine.ui.engine_status import EngineStatus
         EngineStatus.clear(source="deferred")
 

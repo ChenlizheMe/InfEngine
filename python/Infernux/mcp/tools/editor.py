@@ -63,9 +63,14 @@ def register_editor_tools(mcp) -> None:
             return {
                 "play_state": getattr(getattr(pmm, "state", None), "name", "edit").lower() if pmm else "edit",
                 "deferred_task_busy": bool(getattr(runner, "is_busy", False)),
+                "deferred_task_name": str(getattr(runner, "active_task_name", "") or ""),
+                "deferred_step_label": str(getattr(runner, "active_step_label", "") or ""),
                 "selected_ids": list(selection.scene_object_ids()),
                 "scene_dirty": bool(sfm.is_dirty) if sfm else False,
                 "is_prefab_mode": bool(getattr(sfm, "is_prefab_mode", False)) if sfm else False,
+                "play_mode_transition_ms": (
+                    pmm.last_transition_timings_ms if pmm else {}
+                ),
                 "scene_status": scene_status(),
             }
 
@@ -154,6 +159,7 @@ def register_editor_tools(mcp) -> None:
             ContinuousEditService.instance().commit_document(document.document_id)
             result = registry.request_save(document.document_id)
             dirty_after = document.is_dirty
+            status = result.status.value
             return {
                 "target": "document",
                 "panel_id": target_id,
@@ -161,8 +167,13 @@ def register_editor_tools(mcp) -> None:
                 "handled": result.accepted,
                 "dirty_before": dirty_before,
                 "dirty_after": dirty_after,
-                "saved": result.accepted and not dirty_after,
-                "save_as_required": result.accepted and dirty_after,
+                "status": status,
+                "saved": status in {"applied", "no_op"}
+                or (result.accepted and not dirty_after),
+                "save_as_required": bool(
+                    result.accepted and dirty_after and not document.resource_path
+                ),
+                "message": result.message,
             }
 
         return main_thread(
@@ -265,7 +276,10 @@ def register_editor_tools(mcp) -> None:
             if pmm.state.name.lower() != "paused":
                 raise RuntimeError("editor_step requires paused Play Mode. Call editor_pause after editor_play before stepping.")
             pmm.step_frame()
-            return {"state": pmm.state.name.lower()}
+            return {
+                "state": pmm.state.name.lower(),
+                "step_sequence": int(pmm.step_sequence),
+            }
 
         return main_thread("editor_step", _step)
 

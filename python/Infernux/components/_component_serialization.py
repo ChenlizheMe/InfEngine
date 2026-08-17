@@ -9,7 +9,7 @@ class ComponentSerializationMixin:
 
     def _serialize_fields_document(self) -> dict[str, Any]:
         """Encode all serialized fields into the current typed document."""
-        from .serialized_field import get_raw_field_value, get_serialized_fields
+        from .fields import get_raw_field_value, get_serialized_fields
         from .value_codec import VALUE_CODECS
         
         # Call on_before_serialize hook
@@ -41,7 +41,7 @@ class ComponentSerializationMixin:
         _skip_on_after_deserialize: bool = False,
     ) -> None:
         """Restore fields from a typed document, transactionally per component."""
-        from .serialized_field import (
+        from .fields import (
             get_raw_field_value,
             get_serialized_fields,
         )
@@ -60,7 +60,7 @@ class ComponentSerializationMixin:
         metadata_keys = {"__type_name__"}
         if "__component_id__" in data:
             metadata_keys.add("__component_id__")
-        from .serialized_field import validate_serialized_field_document
+        from .fields import validate_serialized_field_document
         validate_serialized_field_document(
             data,
             fields,

@@ -420,6 +420,7 @@ class Infernux
         std::string matFilePath;
         uint64_t generation = 0;
         std::string materialJson; ///< If non-empty, render from this JSON instead of reading matFilePath from disk.
+        uint16_t transientGpuFailures = 0;
     };
 
     struct TexturePreviewRequest
@@ -485,6 +486,8 @@ class Infernux
         int readyWidth = 0;
         int readyHeight = 0;
         std::string textureName;
+        std::string importedTextureGuid;
+        bool importedGpuPending = false;
         uint64_t textureId = 0;
         bool nearest = false;
         bool srgb = false;

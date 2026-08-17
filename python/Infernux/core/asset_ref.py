@@ -47,9 +47,10 @@ class AssetRefBase:
     __slots__ = ("_guid", "_cached", "_path_hint")
 
     def __init__(self, guid: str = "", path_hint: str = ""):
-        self._guid = guid
+        from .asset_reference_types import canonical_asset_reference_identity
+
+        self._guid, self._path_hint = canonical_asset_reference_identity(guid, path_hint)
         self._cached = None
-        self._path_hint = path_hint  # optional human-readable path for display
 
     # ── GUID ───────────────────────────────────────────────────────────
 
@@ -72,9 +73,19 @@ class AssetRefBase:
 
                 mutations = AssetMutationService.instance()
                 if mutations is not None:
-                    return mutations.resolve_path_hint(self._guid, self._path_hint)
+                    resolved = mutations.resolve_path_hint(self._guid)
+                    if resolved:
+                        return resolved
             except ImportError:
                 pass
+            database = _get_asset_database()
+            if database is not None:
+                try:
+                    resolved = str(database.get_path_from_guid(self._guid) or "")
+                except (KeyError, RuntimeError, TypeError, ValueError):
+                    resolved = ""
+                if resolved:
+                    return resolved
         return self._path_hint
 
     @path_hint.setter

@@ -40,7 +40,9 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .value("SHADOW", ShaderCompileTarget::Shadow)
         .value("DEPTH", ShaderCompileTarget::Depth)
         .value("PICKING", ShaderCompileTarget::Picking)
-        .value("MOTION", ShaderCompileTarget::Motion);
+        .value("MOTION", ShaderCompileTarget::Motion)
+        .value("NORMAL", ShaderCompileTarget::Normal)
+        .value("BASE_COLOR", ShaderCompileTarget::BaseColor);
 
     py::enum_<GraphCommandType>(m, "GraphCommandType", "Backend-neutral command recorded by a graph pass")
         .value("DRAW_RENDERERS", GraphCommandType::DrawRenderers)

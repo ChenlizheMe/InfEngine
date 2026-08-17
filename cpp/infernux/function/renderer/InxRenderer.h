@@ -338,6 +338,7 @@ class InxRenderer
     // ImGui texture management
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
                                    int height, VkFilter filter = VK_FILTER_LINEAR, bool pinned = false);
+    uint64_t QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid);
     void SupersedePendingImGuiTextureUploads(const std::string &name);
     void RemoveImGuiTexture(const std::string &name);
     bool HasImGuiTexture(const std::string &name) const;
@@ -369,6 +370,10 @@ class InxRenderer
     std::shared_ptr<InxMaterial> GetFirstMeshRendererMaterial();
 
     // Scene render target for offscreen rendering
+    // Replaced targets remain whole until current ImDrawData no longer
+    // references their descriptor. They are then transferred to the exact
+    // GPU completion-epoch retirement queue.
+    std::vector<std::unique_ptr<SceneRenderTarget>> m_pendingRenderTargetRetirements;
     uint64_t GetSceneTextureId() const;
     void ResizeSceneRenderTarget(uint32_t width, uint32_t height);
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket> RequestRenderTargetReadback(bool gameView);
@@ -409,7 +414,7 @@ class InxRenderer
     bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material);
 
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket>
-    BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size);
+    BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size, bool *texturePending = nullptr);
     bool TryCompleteMaterialPreviewGPU(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
                                        std::vector<unsigned char> &outPixels);
 
@@ -456,6 +461,15 @@ class InxRenderer
 
     /// @brief Get Game View texture ID for ImGui display
     uint64_t GetGameTextureId();
+
+    /// @brief Monotonic generation of the native Game render target.
+    ///
+    /// The ImGui descriptor changes whenever resize or MSAA reconfiguration
+    /// replaces the target, even if the active Scene and Camera are unchanged.
+    [[nodiscard]] uint64_t GetGameRenderTargetGeneration() const
+    {
+        return m_gameRenderTargetGeneration;
+    }
 
     /// @brief Resize the game render target to match Game View panel size
     void ResizeGameRenderTarget(uint32_t width, uint32_t height);
@@ -509,6 +523,14 @@ class InxRenderer
     [[nodiscard]] double GetPrepareFrameMs() const
     {
         return m_prepareFrameMs;
+    }
+
+    /// @brief Get the exact time uploaded to EngineGlobalsUBO._Time.x.
+    /// CPU simulations that mirror vertex displacement use this to stay in
+    /// phase with the rendered surface across editor and play transitions.
+    [[nodiscard]] float GetShaderTimeSeconds() const
+    {
+        return m_totalTime;
     }
 
     /// @brief Get the screen UI renderer for GPU-based 2D screen-space UI
@@ -597,6 +619,9 @@ class InxRenderer
     /// @brief Force full-speed rendering for the next few frames (e.g. after
     /// a programmatic scene change that doesn't generate SDL events).
     void RequestFullSpeedFrame();
+
+    /// @brief Wake the editor event loop from a background service.
+    void RequestExternalWake();
 
   private:
     void UpdateParticleCollisionScene();
@@ -689,6 +714,7 @@ class InxRenderer
         double prepareMs = 0.0;
     };
     std::array<FramePerformanceSample, FRAME_PERFORMANCE_HISTORY_SIZE> m_framePerformanceHistory{};
+    bool m_framePerformanceWindowActive = false;
     size_t m_framePerformanceWriteIndex = 0;
     size_t m_framePerformanceSampleCount = 0;
     size_t m_framePerformanceDroppedSampleCount = 0;
@@ -784,6 +810,9 @@ class InxRenderer
     /// @brief Check scene & game render graph MSAA requests; apply if changed.
     /// @return true if MSAA change was triggered and DrawFrame should return early.
     bool CheckAndApplyMsaaRequest(bool finalFrameCheck, bool sceneViewActive, bool gameViewActive);
+
+    void QueueRenderTargetRetirement(std::unique_ptr<SceneRenderTarget> target);
+    void DrainPendingRenderTargetRetirements();
 
     [[nodiscard]] uint32_t GetSupportedMsaaSampleMask() const;
     [[nodiscard]] bool ApplyMsaaSamples(int samples, const char *source);

@@ -172,25 +172,23 @@ def test_scene_conflict_reload_stops_play_and_waits_for_edit_restore(
         or True,
     )
 
-    service = ExternalDocumentConflictService(registry)
-    service.poll()
-    conflict = service.active
-    assert conflict is not None
+    modals = ModalService()
+    coordinator = ExternalDocumentConflictCoordinator(registry, modals)
+    coordinator.poll()
 
-    result = service.reload(conflict.conflict_id)
-
-    assert result.status is DocumentActionStatus.PENDING
-    assert service.waiting_for_reload
+    assert coordinator.choose_reload()
+    assert coordinator.waiting_for_reload
+    assert modals.active_modal_id == ""
     assert stop_calls == [True]
     assert loaded == []
     assert manager.poll_pending_writes() == 0
 
     runner.is_busy = False
     assert manager.poll_pending_writes() == 1
-    service.poll()
+    coordinator.poll()
 
     assert loaded == ["disk-version"]
-    assert not service.is_active
+    assert not coordinator.is_active
     assert document.state is DocumentState.READY
     assert not document.is_dirty
 

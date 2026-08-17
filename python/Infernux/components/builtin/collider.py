@@ -2,7 +2,8 @@
 Collider — Abstract base class for all collider BuiltinComponent wrappers.
 
 Mirrors Unity's ``Collider`` base class. Concrete subclasses
-(``BoxCollider``, ``SphereCollider``, ``CapsuleCollider``) inherit
+(``BoxCollider``, ``SphereCollider``, ``CapsuleCollider``, ``CylinderCollider``)
+inherit
 the shared ``center``, ``is_trigger`` properties and category.
 
 Example::
@@ -21,7 +22,7 @@ from __future__ import annotations
 from enum import IntEnum
 
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.serialized_field import FieldType
+from Infernux.components.fields import FieldType
 from Infernux.core.asset_ref import PhysicMaterialRef
 
 

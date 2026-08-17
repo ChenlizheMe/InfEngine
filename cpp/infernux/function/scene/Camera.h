@@ -170,6 +170,24 @@ class Camera : public Component
         m_backgroundColor = color;
     }
 
+    [[nodiscard]] bool GetDithering() const
+    {
+        return m_dithering;
+    }
+    void SetDithering(bool enabled)
+    {
+        m_dithering = enabled;
+    }
+
+    [[nodiscard]] bool GetStopNaNs() const
+    {
+        return m_stopNaNs;
+    }
+    void SetStopNaNs(bool enabled)
+    {
+        m_stopNaNs = enabled;
+    }
+
     // ========================================================================
     // Screen dimensions used by ScreenToWorld / WorldToScreen
     // ========================================================================
@@ -248,6 +266,8 @@ class Camera : public Component
     // Clear flags
     CameraClearFlags m_clearFlags = CameraClearFlags::Skybox;
     glm::vec4 m_backgroundColor{0.1f, 0.1f, 0.1f, 1.0f};
+    bool m_dithering = false;
+    bool m_stopNaNs = false;
 
     // Screen dimensions updated by InxRenderer
     uint32_t m_screenWidth = 1920;

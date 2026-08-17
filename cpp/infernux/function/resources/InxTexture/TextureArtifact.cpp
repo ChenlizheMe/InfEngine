@@ -1,8 +1,11 @@
 #include "TextureArtifact.h"
 
+#include <platform/filesystem/InxPath.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
 
@@ -141,6 +144,50 @@ bool IsValidFormat(TextureFormat format)
     return format >= TextureFormat::Rgba8UNorm && format <= TextureFormat::Rgba16Float;
 }
 
+uint32_t ReadStreamU32(std::istream &stream)
+{
+    std::array<unsigned char, sizeof(uint32_t)> bytes{};
+    stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!stream)
+        throw std::invalid_argument("texture artifact is truncated");
+    uint32_t value = 0;
+    for (unsigned shift = 0; shift < 32; shift += 8)
+        value |= static_cast<uint32_t>(bytes[shift / 8]) << shift;
+    return value;
+}
+
+uint64_t ReadStreamU64(std::istream &stream)
+{
+    std::array<unsigned char, sizeof(uint64_t)> bytes{};
+    stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!stream)
+        throw std::invalid_argument("texture artifact is truncated");
+    uint64_t value = 0;
+    for (unsigned shift = 0; shift < 64; shift += 8)
+        value |= static_cast<uint64_t>(bytes[shift / 8]) << shift;
+    return value;
+}
+
+float ReadStreamFloat(std::istream &stream)
+{
+    const uint32_t bits = ReadStreamU32(stream);
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+std::string ReadStreamString(std::istream &stream)
+{
+    const uint32_t size = ReadStreamU32(stream);
+    if (size == 0 || size > MaximumHashBytes)
+        throw std::invalid_argument("texture artifact has an invalid source hash size");
+    std::string value(size, '\0');
+    stream.read(value.data(), static_cast<std::streamsize>(size));
+    if (!stream)
+        throw std::invalid_argument("texture artifact is truncated");
+    return value;
+}
+
 struct MipLayout
 {
     uint64_t rowPitch = 0;
@@ -216,6 +263,97 @@ void ValidateTexture(const TextureCpuData &texture)
         throw std::invalid_argument("texture artifact payload size does not match its mip chain");
 }
 } // namespace
+
+TextureArtifactDescription TextureArtifact::ReadDescription(const std::string &artifactPath,
+                                                            std::string_view expectedSourceContentHash)
+{
+    std::ifstream stream(ToFsPath(artifactPath), std::ios::binary | std::ios::ate);
+    if (!stream.is_open())
+        throw std::runtime_error("failed to open texture artifact");
+    const std::streamoff fileSize = stream.tellg();
+    if (fileSize <= 0)
+        throw std::invalid_argument("texture artifact is empty");
+    stream.seekg(0);
+
+    std::string magic(Magic.size(), '\0');
+    stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+    if (!stream || magic != Magic)
+        throw std::invalid_argument("texture artifact has an invalid header");
+    if (ReadStreamU32(stream) != EndianMarker)
+        throw std::invalid_argument("texture artifact has an invalid endian marker");
+    if (ReadStreamString(stream) != expectedSourceContentHash)
+        throw std::invalid_argument("texture artifact does not match the imported source content");
+
+    TextureArtifactDescription description;
+    description.dimension = static_cast<TextureDimension>(ReadStreamU32(stream));
+    description.semantic = static_cast<TextureSemantic>(ReadStreamU32(stream));
+    description.format = static_cast<TextureFormat>(ReadStreamU32(stream));
+    if (!IsValidDimension(description.dimension) || !IsValidSemantic(description.semantic) ||
+        !IsValidFormat(description.format))
+        throw std::invalid_argument("texture artifact description has invalid type metadata");
+    for (float &value : description.bakeBasis)
+        value = ReadStreamFloat(stream);
+    for (float &value : description.valueMin)
+        value = ReadStreamFloat(stream);
+    for (float &value : description.valueMax)
+        value = ReadStreamFloat(stream);
+    if (!std::all_of(description.bakeBasis.begin(), description.bakeBasis.end(),
+                     [](float value) { return std::isfinite(value); }) ||
+        !std::all_of(description.valueMin.begin(), description.valueMin.end(),
+                     [](float value) { return std::isfinite(value); }) ||
+        !std::all_of(description.valueMax.begin(), description.valueMax.end(),
+                     [](float value) { return std::isfinite(value); }))
+        throw std::invalid_argument("texture artifact metadata must contain finite values");
+    for (size_t channel = 0; channel < description.valueMin.size(); ++channel) {
+        if (description.valueMin[channel] > description.valueMax[channel])
+            throw std::invalid_argument("texture artifact value range is inverted");
+    }
+
+    const uint32_t mipCount = ReadStreamU32(stream);
+    if (mipCount == 0 || mipCount > MaximumMipLevels)
+        throw std::invalid_argument("texture artifact has an invalid mip count");
+    description.mipLevels.reserve(mipCount);
+    uint64_t offset = 0;
+    uint32_t previousWidth = 0;
+    uint32_t previousHeight = 0;
+    uint32_t previousDepth = 0;
+    for (uint32_t index = 0; index < mipCount; ++index) {
+        TextureMipLevel mip;
+        mip.width = ReadStreamU32(stream);
+        mip.height = ReadStreamU32(stream);
+        mip.depth = ReadStreamU32(stream);
+        mip.byteOffset = offset;
+        mip.byteSize = ReadStreamU64(stream);
+        mip.rowPitch = ReadStreamU64(stream);
+        mip.slicePitch = ReadStreamU64(stream);
+        if (mip.width == 0 || mip.height == 0 || mip.depth == 0 || mip.width > MaximumDimension ||
+            mip.height > MaximumDimension || mip.depth > MaximumDimension ||
+            (description.dimension == TextureDimension::Texture2D && mip.depth != 1))
+            throw std::invalid_argument("texture artifact has an invalid mip dimension");
+        if (index > 0 &&
+            (mip.width != (std::max)(1U, previousWidth / 2U) || mip.height != (std::max)(1U, previousHeight / 2U) ||
+             mip.depth !=
+                 (description.dimension == TextureDimension::Texture3D ? (std::max)(1U, previousDepth / 2U) : 1U)))
+            throw std::invalid_argument("texture artifact has a non-contiguous mip chain");
+        const MipLayout expected = ComputeMipLayout(mip.width, mip.height, mip.depth, description.format);
+        if (mip.byteSize != expected.byteSize || mip.rowPitch != expected.rowPitch ||
+            mip.slicePitch != expected.slicePitch || expected.byteSize > MaximumPayloadBytes - offset)
+            throw std::invalid_argument("texture artifact has an invalid mip byte range");
+        offset += expected.byteSize;
+        previousWidth = mip.width;
+        previousHeight = mip.height;
+        previousDepth = mip.depth;
+        description.mipLevels.push_back(mip);
+    }
+    description.payloadBytes = ReadStreamU64(stream);
+    if (description.payloadBytes != offset || description.payloadBytes > MaximumPayloadBytes)
+        throw std::invalid_argument("texture artifact has an invalid payload size");
+    const std::streamoff payloadOffset = stream.tellg();
+    if (payloadOffset < 0 || static_cast<uint64_t>(payloadOffset) + description.payloadBytes + sizeof(uint64_t) !=
+                                 static_cast<uint64_t>(fileSize))
+        throw std::invalid_argument("texture artifact file size does not match its description");
+    return description;
+}
 
 std::string TextureArtifact::Serialize(const TextureCpuData &texture, std::string_view sourceContentHash)
 {

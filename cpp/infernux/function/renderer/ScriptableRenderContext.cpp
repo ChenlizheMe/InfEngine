@@ -75,7 +75,8 @@ void ScriptableRenderContext::SetupCameraProperties(Camera *camera)
         // Propagate Camera clear flags / background color to the render graph
         // so the MainColor pass uses the correct clear behaviour this frame.
         if (m_graph) {
-            m_graph->UpdateMainPassClearSettings(camera->GetClearFlags(), camera->GetBackgroundColor());
+            m_graph->UpdateMainPassClearSettings(camera->GetClearFlags(), camera->GetBackgroundColor(),
+                                                 camera->GetDithering(), camera->GetStopNaNs());
         }
     }
 }
@@ -109,12 +110,18 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
     const std::vector<DrawCall> *drawCallsPtr = nullptr;
     const bool needsShadowDrawCalls = m_graph && m_graph->HasCameraShadows();
     CameraDrawCallResult ownedResult; // Only used for game camera path
+    CullingResults results;
 
     if (camera && camera != editorCam) {
         // Non-editor camera (e.g. Game View camera): reuse editor camera's
         // already-collected renderables, re-cull with this camera's frustum.
         ownedResult = bridge.CullAndBuildForCamera(camera, needsShadowDrawCalls);
-        drawCallsPtr = &ownedResult.visibleDrawCalls;
+        drawCallsPtr =
+            ownedResult.visibleDrawCallsRef ? ownedResult.visibleDrawCallsRef : &ownedResult.visibleDrawCalls;
+        results.visibleListIdentity = drawCallsPtr;
+        results.visibleListRevision = ownedResult.visibleListRevision;
+        results.shadowListRevision = ownedResult.shadowListRevision;
+        results.renderWorldOwner = ownedResult.worldOwner;
     } else {
         // Editor camera: reuse the already-prepared frame data from
         // SceneRenderBridge::PrepareFrame() (called earlier in DrawFrame).
@@ -125,11 +132,16 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
 
     m_hasCullData = true;
 
-    CullingResults results;
     if (camera && camera != editorCam) {
-        results.visibleRenderers =
-            RendererList::Own(std::move(ownedResult.visibleDrawCalls), RendererListPurpose::CameraVisible,
-                              RenderDomainBit(RenderDomain::SceneGeometry));
+        if (ownedResult.visibleDrawCallsRef) {
+            results.visibleRenderers =
+                RendererList::Borrow(*ownedResult.visibleDrawCallsRef, RendererListPurpose::CameraVisible,
+                                     RenderDomainBit(RenderDomain::SceneGeometry));
+        } else {
+            results.visibleRenderers =
+                RendererList::Own(std::move(ownedResult.visibleDrawCalls), RendererListPurpose::CameraVisible,
+                                  RenderDomainBit(RenderDomain::SceneGeometry));
+        }
         if (needsShadowDrawCalls) {
             if (ownedResult.shadowDrawCallsRef) {
                 // All-layers game camera: zero-copy reference to cached draw calls.
@@ -142,6 +154,7 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
                                       RenderDomainBit(RenderDomain::SceneGeometry));
             }
         }
+        results.shadowListIdentity = results.shadowCasters.Empty() ? nullptr : &results.shadowCasters.DrawCalls();
     } else {
         // Editor camera: store a non-owning pointer instead of copying
         // 14,400+ DrawCalls with shared_ptr atomic refcount bumps.
@@ -211,6 +224,56 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         INXLOG_WARN("ScriptableRenderContext::SubmitCulling() called after already submitted");
         return;
     }
+
+    // A game camera with an unchanged borrowed visible set can reuse the
+    // RenderGraph's complete submitted list (including its skybox) without
+    // copying and then destroying tens of thousands of DrawCalls every frame.
+    // Editor-only appenders deliberately stay on the normal path.
+    const bool hasEditorAppenders = m_gizmoCtx.gizmos || m_gizmoCtx.editorTools ||
+                                    (m_gizmoCtx.componentGizmos && (m_gizmoCtx.componentGizmos->HasData() ||
+                                                                    m_gizmoCtx.componentGizmos->HasIconData()));
+    uint64_t submissionSignature = 1469598103934665603ULL;
+    auto mixSubmission = [&](uint64_t value) {
+        submissionSignature ^= value;
+        submissionSignature *= 1099511628211ULL;
+    };
+    mixSubmission(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(culling.visibleListIdentity)));
+    mixSubmission(culling.visibleListRevision);
+    // RenderWorld publications rotate between recyclable frame objects. The
+    // shadow vector address therefore changes even when its contents do not.
+    // Use the camera cache revision as the durable identity instead of that
+    // transient address, otherwise a static scene can never reuse submission.
+    mixSubmission(culling.shadowListRevision);
+    const bool drawSkyboxForSignature = !m_activeCamera || m_activeCamera->GetClearFlags() == CameraClearFlags::Skybox;
+    mixSubmission(drawSkyboxForSignature ? 1ULL : 0ULL);
+    std::shared_ptr<InxMaterial> signatureSkyboxMaterial;
+    if (drawSkyboxForSignature) {
+        if (m_gizmoCtx.activeScene)
+            signatureSkyboxMaterial = m_gizmoCtx.activeScene->ResolveSkyboxMaterial();
+        if (!signatureSkyboxMaterial)
+            signatureSkyboxMaterial = AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
+        mixSubmission(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(signatureSkyboxMaterial.get())));
+    }
+    const bool shadowListReusable = culling.shadowCasters.Empty() || culling.shadowCasters.IsBorrowed();
+    if (!hasEditorAppenders && culling.visibleRenderers.IsBorrowed() && shadowListReusable && m_graph &&
+        m_vkCore->GetPendingMeshUploadCount() == 0 && m_graph->CanReuseCachedSubmission(submissionSignature)) {
+        m_graph->SetCachedSubmissionSignature(submissionSignature, culling.renderWorldOwner);
+        if (m_activeCamera)
+            m_graph->SetCachedCameraVP(m_activeCamera, m_cachedView, m_cachedProj);
+        m_vkCore->SetDrawCalls(&m_graph->GetCachedDrawCalls());
+        m_vkCore->SetShadowDrawCalls(m_graph->HasCachedShadowDrawCalls() ? &m_graph->GetCachedShadowDrawCalls()
+                                                                         : nullptr);
+        m_vkCore->ReuseObjectBufferBindingsThisFrame();
+        if (m_transientPool)
+            m_transientPool->EndFrame();
+        m_submitted = true;
+#if INFERNUX_FRAME_PROFILE
+        g_srcProfileSnapshot.submitMs += std::chrono::duration<double, std::milli>(Clock::now() - submitStart).count();
+        g_srcProfileSnapshot.submitCalls += 1.0;
+        g_srcProfileSnapshot.finalDrawCalls += static_cast<double>(m_graph->GetCachedDrawCalls().size());
+#endif
+        return;
+    }
 #if INFERNUX_FRAME_PROFILE
     if (baseRendererListBorrowed) {
         g_srcProfileSnapshot.borrowedRendererListSubmits += 1.0;
@@ -259,6 +322,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
             dc.material = skyboxMat;
             dc.objectId = SKYBOX_OBJECT_ID;
             dc.identity = RenderProxyHandle::Synthetic(RenderDomain::Skybox, dc.objectId).MakeDrawIdentity();
+            dc.isStatic = true;
             dc.meshVertices = &PrimitiveMeshes::GetSkyboxCubeVertices();
             dc.meshIndices = &PrimitiveMeshes::GetSkyboxCubeIndices();
             m_orderedDrawCalls.push_back(dc);
@@ -463,11 +527,14 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         } else {
             m_graph->ClearCachedShadowDrawCalls();
         }
+        m_graph->SetCachedSubmissionSignature(submissionSignature, culling.renderWorldOwner);
         if (m_activeCamera) {
             m_graph->SetCachedCameraVP(m_activeCamera, m_cachedView, m_cachedProj);
         }
         // Point VkCore at the graph's cached copy (survives this scope).
-        m_vkCore->SetDrawCalls(&m_graph->GetCachedDrawCalls());
+        m_vkCore->SetDrawCalls(&m_graph->GetCachedDrawCalls(), true);
+        m_vkCore->SetShadowDrawCalls(
+            m_graph->HasCachedShadowDrawCalls() ? &m_graph->GetCachedShadowDrawCalls() : nullptr, true);
 #if INFERNUX_FRAME_PROFILE
         g_srcProfileSnapshot.cacheGraphMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif

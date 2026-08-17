@@ -13,6 +13,7 @@ from Infernux.engine.interaction import (
     ProjectAssetCommandService,
     ProjectAssetInteractionService,
     SelectionService,
+    SelectionTarget,
 )
 from Infernux.engine.undo import UndoManager
 
@@ -97,6 +98,31 @@ def test_project_asset_service_records_automation_rename_once(project_asset_comm
     manager.undo()
     assert source.read_text(encoding="utf-8") == "content"
     assert not (assets / "After.txt").exists()
+
+
+@pytest.mark.parametrize("is_directory", (False, True))
+def test_project_asset_service_selects_renamed_asset_or_folder(
+    project_asset_commands,
+    is_directory,
+):
+    service, _manager, _journal, assets = project_asset_commands
+    selection = SelectionService.instance()
+    source = assets / ("BeforeFolder" if is_directory else "Before.txt")
+    if is_directory:
+        source.mkdir()
+    else:
+        source.write_text("content", encoding="utf-8")
+
+    destination = service.rename(
+        str(source),
+        "AfterFolder" if is_directory else "After.txt",
+    )
+
+    snapshot = selection.snapshot
+    target = SelectionTarget.asset(destination)
+    assert snapshot.targets == (target,)
+    assert snapshot.primary == target
+    assert snapshot.owner_id == "project"
 
 
 def test_project_asset_interactions_own_clipboard_transfer_and_delete(

@@ -61,6 +61,7 @@ void AssetRegistry::Shutdown()
     m_assetRuntimeVersions.clear();
     m_assetRuntimeTypes.clear();
     m_pendingLoads.clear();
+    m_pendingTextureStagingLoads.clear();
     m_loaders.clear();
     m_builtinMaterials.clear();
     m_assetDb.reset();
@@ -328,6 +329,85 @@ bool AssetRegistry::TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &t
     return true;
 }
 
+std::shared_ptr<TextureUploadStagingTicket> AssetRegistry::BeginTextureUploadStaging(const std::string &guid)
+{
+    if (!m_initialized || std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("AssetRegistry::BeginTextureUploadStaging must run on the initialized owner thread");
+    if (guid.empty())
+        throw std::invalid_argument("texture upload staging requires a GUID");
+    const auto asset = m_loadedAssets.find(guid);
+    if (asset == m_loadedAssets.end() || asset->second.type != ResourceType::Texture)
+        throw std::invalid_argument("texture upload staging requires a loaded texture asset: " + guid);
+    const auto loader = m_loaders.find(ResourceType::Texture);
+    if (loader == m_loaders.end() || !loader->second->SupportsWorkerLoad())
+        throw std::logic_error("texture upload staging requires a worker-capable texture loader");
+    if (!JobSystem::IsAvailable())
+        throw std::logic_error("texture upload staging requires JobSystem");
+
+    auto ticket = std::make_shared<TextureUploadStagingTicket>();
+    ticket->m_registry = this;
+    ticket->m_guid = guid;
+    ticket->m_sourcePath = m_assetDb->GetPathFromGuid(guid);
+    ticket->m_ownerThread = m_ownerThread;
+    ticket->m_expectedMutationGeneration = m_assetMutationGenerations[guid];
+    ticket->m_runtimeVersion = asset->second.version;
+    if (ticket->m_sourcePath.empty())
+        throw std::invalid_argument("texture upload staging GUID has no path: " + guid);
+
+    IAssetLoader *loaderPtr = loader->second.get();
+    AssetDatabase *database = m_assetDb.get();
+    ticket->m_job = JobSystem::Get().Schedule([ticket, loaderPtr, database] {
+        ticket->m_producerThread = std::this_thread::get_id();
+        try {
+            ticket->m_stagingPayload = loaderPtr->LoadStaging(ticket->m_sourcePath, ticket->m_guid, database);
+            if (!ticket->m_stagingPayload)
+                throw std::runtime_error("texture loader returned empty upload staging data");
+        } catch (...) {
+            ticket->m_failure = std::current_exception();
+        }
+    });
+    m_pendingTextureStagingLoads.erase(std::remove_if(m_pendingTextureStagingLoads.begin(),
+                                                      m_pendingTextureStagingLoads.end(),
+                                                      [](const auto &pending) { return pending.expired(); }),
+                                       m_pendingTextureStagingLoads.end());
+    m_pendingTextureStagingLoads.emplace_back(ticket);
+    return ticket;
+}
+
+std::shared_ptr<const TextureCpuData>
+AssetRegistry::TryConsumeTextureUploadStaging(const std::shared_ptr<TextureUploadStagingTicket> &ticket)
+{
+    if (!ticket || ticket->m_registry != this)
+        throw std::invalid_argument("texture upload staging ticket belongs to another registry");
+    if (std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("AssetRegistry::TryConsumeTextureUploadStaging must run on the owner thread");
+    if (ticket->m_rejected)
+        throw std::logic_error("texture upload staging ticket was rejected");
+    if (ticket->m_consumed)
+        throw std::logic_error("texture upload staging ticket was already consumed");
+    if (!ticket->IsComplete())
+        return nullptr;
+    if (ticket->m_failure) {
+        ticket->m_rejected = true;
+        std::rethrow_exception(ticket->m_failure);
+    }
+    const auto asset = m_loadedAssets.find(ticket->m_guid);
+    if (asset == m_loadedAssets.end() || asset->second.type != ResourceType::Texture ||
+        asset->second.version != ticket->m_runtimeVersion ||
+        m_assetMutationGenerations[ticket->m_guid] != ticket->m_expectedMutationGeneration) {
+        ticket->m_rejected = true;
+        throw std::logic_error("texture upload staging is stale after a newer asset publication");
+    }
+    auto staging = ticket->m_stagingPayload.Get<TextureCpuData>();
+    if (!staging || !staging->IsValid()) {
+        ticket->m_rejected = true;
+        throw std::logic_error("texture upload staging contains invalid imported data");
+    }
+    ticket->m_stagingPayload = nullptr;
+    ticket->m_consumed = true;
+    return staging;
+}
+
 void AssetRegistry::DrainPendingLoads() noexcept
 {
     for (const auto &pending : m_pendingLoads) {
@@ -344,6 +424,20 @@ void AssetRegistry::DrainPendingLoads() noexcept
         }
     }
     m_pendingLoads.clear();
+    for (const auto &pending : m_pendingTextureStagingLoads) {
+        const auto ticket = pending.lock();
+        if (!ticket || !ticket->m_job.IsValid() || ticket->m_job.IsComplete())
+            continue;
+        if (!JobSystem::IsAvailable()) {
+            INXLOG_ERROR("Texture upload staging outlived JobSystem: ", ticket->m_guid);
+            continue;
+        }
+        try {
+            JobSystem::Get().WaitPassive(ticket->m_job);
+        } catch (...) {
+        }
+    }
+    m_pendingTextureStagingLoads.clear();
 }
 
 void AssetRegistry::UpdateLoadedAssetPath(const std::string &oldPath, const std::string &newPath)

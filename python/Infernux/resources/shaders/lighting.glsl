@@ -357,7 +357,7 @@ vec3 evaluateRectangleAreaLight(vec3 lightPosition, vec3 rayDirection, vec4 righ
                                 uint firstShadowView, uint shadowViewCount, vec4 shadowParams,
                                 vec3 worldPos, vec3 N, vec3 V, vec3 albedo, float metallic,
                                 float roughness, float perceptualRoughness, vec3 F0, float f90,
-                                vec3 energyCompensation) {
+                                vec3 energyCompensation, float specularHighlights) {
     vec3 fromLight = worldPos - lightPosition;
     float emitterFacing = dot(normalize(rayDirection), normalize(fromLight));
     emitterFacing = twoSided ? abs(emitterFacing) : max(emitterFacing, 0.0);
@@ -379,7 +379,8 @@ vec3 evaluateRectangleAreaLight(vec3 lightPosition, vec3 rayDirection, vec4 righ
         float attenuation = calculateAttenuation(vec3(range, 0.0, 0.0), distanceToLight);
         vec3 radiance = lightColor * intensity * attenuation * emitterFacing * shadow * 0.25;
         result += evaluatePBRLight(N, V, L, radiance, albedo, metallic, roughness,
-                                   perceptualRoughness, F0, f90, energyCompensation);
+                                   perceptualRoughness, F0, f90, energyCompensation,
+                                   specularHighlights);
     }
     return result;
 }
@@ -402,7 +403,7 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
                           vec3 albedo, float metallic,
                           float roughness, float perceptualRoughness,
                           vec3 F0, float f90, vec3 energyCompensation,
-                          float viewDepth, float shadow) {
+                          float specularHighlights, float viewDepth, float shadow) {
     vec3 Lo = vec3(0.0);
 #ifdef INX_PARTICLE_FORWARD_PLUS
     const uint currentLightDomain = 2u;
@@ -426,7 +427,8 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
                           vec4(light.shadowAndInnerCos.xyz, float(light.metadata.z)), worldPos, N, L, viewDepth);
         Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
                                roughness, perceptualRoughness,
-                               F0, f90, energyCompensation) * lightShadow;
+                               F0, f90, energyCompensation,
+                               specularHighlights) * lightShadow;
     }
 
     uvec4 tileHeader = inxForwardPlusTileHeader();
@@ -447,7 +449,7 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
                     light.positionRange.w, light.directionOuterCos.w > 0.5, light.identityAndShadow.z,
                     light.identityAndShadow.w, vec4(light.shadowAndInnerCos.xyz, float(light.metadata.z)),
                     worldPos, N, V, albedo, metallic, roughness, perceptualRoughness, F0, f90,
-                    energyCompensation);
+                    energyCompensation, specularHighlights);
                 continue;
             }
             vec3 lightVec = light.positionRange.xyz - worldPos;
@@ -470,7 +472,8 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
             vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.w * attenuation * localShadow;
             Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
                                    roughness, perceptualRoughness,
-                                   F0, f90, energyCompensation);
+                                   F0, f90, energyCompensation,
+                                   specularHighlights);
         }
     }
 #else
@@ -486,7 +489,8 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
                                             viewDepth);
         Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
                                roughness, perceptualRoughness,
-                               F0, f90, energyCompensation) * lightShadow;
+                               F0, f90, energyCompensation,
+                               specularHighlights) * lightShadow;
     }
 
     // Point lights
@@ -505,7 +509,8 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
                 vec3 radiance = light.color.rgb * light.color.w * attenuation * localShadow;
                 Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
                                        roughness, perceptualRoughness,
-                                       F0, f90, energyCompensation);
+                                       F0, f90, energyCompensation,
+                                       specularHighlights);
             }
         }
     }
@@ -529,7 +534,8 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
                     vec3 radiance = light.color.rgb * light.color.w * attenuation * spotFalloff * localShadow;
                     Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
                                            roughness, perceptualRoughness,
-                                           F0, f90, energyCompensation);
+                                           F0, f90, energyCompensation,
+                                           specularHighlights);
                 }
             }
         }
@@ -543,7 +549,8 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
             light.positionRange.xyz, light.direction.xyz, light.rightWidth, light.upHeight,
             light.color.rgb, light.color.w, light.positionRange.w, light.direction.w > 0.5,
             light.metadata.z, light.metadata.w, light.shadowParams, worldPos, N, V, albedo,
-            metallic, roughness, perceptualRoughness, F0, f90, energyCompensation);
+            metallic, roughness, perceptualRoughness, F0, f90, energyCompensation,
+            specularHighlights);
     }
 #endif
 

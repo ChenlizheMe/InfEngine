@@ -5,7 +5,7 @@ Hierarchy:
 """
 
 from Infernux.components import serialized_field, add_component_menu
-from Infernux.components.serialized_field import FieldType
+from Infernux.components.fields import FieldType
 from .inx_ui_screen_component import InxUIScreenComponent
 
 

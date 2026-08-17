@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.serialized_field import FieldType
+from Infernux.components.fields import FieldType
 
 
 def _to_native_material(value):

@@ -22,6 +22,12 @@ from typing import Optional, Dict, Any, Type, TYPE_CHECKING, List
 import threading
 import weakref
 
+
+def _default_lifecycle_method(function):
+    """Mark framework no-ops so runtime dispatch only schedules real overrides."""
+    function.__infernux_default_lifecycle__ = True
+    return function
+
 from Infernux.lib import GameObject
 
 if TYPE_CHECKING:
@@ -130,7 +136,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         # Always create a fresh dict for this class (don't inherit from parent)
         cls._serialized_fields_ = {}
 
-        from .serialized_field import (
+        from .fields import (
             FieldMetadata, HiddenField, SerializedFieldDescriptor,
             build_field_from_annotation, get_annotation_default,
             infer_field_type_from_value, _UNSET, _unwrap_annotation,
@@ -260,24 +266,41 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
                 setattr(cls, attr_name, descriptor)
                 cls._serialized_fields_[attr_name] = metadata
 
-        # ── Register numeric fields with C++ ComponentDataStore ──
-        from ._cds_bridge import register_class as _cds_register
-        _cds_register(cls)
+        from ._component_registration import record_candidate_component_definition
 
-        from .registry import register_component_type
-        register_component_type(cls)
+        is_reload_candidate = record_candidate_component_definition(cls)
+        if not is_reload_candidate:
+            # Ordinary engine imports and direct class definitions retain the
+            # immediate registration contract. Candidate execution publishes
+            # both registries only from its owner transaction commit.
+            from ._cds_bridge import register_class as _cds_register
+            _cds_register(cls)
+
+            from .registry import register_component_type
+            register_component_type(cls)
 
         # Publish one immutable phase table per runtime type.  The native
         # proxy may enter the Python phase wrappers thousands of times per
         # second; resolving update/fixed_update/late_update by name for every
         # instance is unnecessary once the class is known.  The helper keeps
         # descriptor semantics for the uncommon static/classmethod case.
-        from ._component_lifecycle import (
-            _build_runtime_phase_dispatch,
-            _build_runtime_phase_invokers,
-        )
-        cls._runtime_phase_dispatch = _build_runtime_phase_dispatch(cls)
-        cls._runtime_phase_invokers = _build_runtime_phase_invokers(cls)
+        if is_reload_candidate:
+            # Candidate classes are transaction-private scratch types. Live
+            # classes rebuild their dispatch table after the validated body
+            # patch is committed, while newly published classes build lazily
+            # on first use. Reflecting the entire InxComponent MRO here made
+            # even a one-line script reload take hundreds of milliseconds.
+            # Deliberately leave both attributes absent from this class'
+            # dictionary. The compatibility bridge treats absence as the
+            # signal to build them lazily if this is a new, no-live type that
+            # becomes the registry's published class.
+            pass
+        else:
+            from Infernux.engine.runtime_dispatch import build_type_dispatch_descriptor
+
+            descriptor = build_type_dispatch_descriptor(cls)
+            cls._runtime_phase_dispatch = descriptor.phase_dispatch
+            cls._runtime_phase_invokers = descriptor.phase_invokers
     
     def __init__(self):
         """Internal framework initialization — **do not override**.
@@ -340,7 +363,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
 
     def _init_serialized_fields(self):
         """Initialize all serialized fields with their default values."""
-        from .serialized_field import (
+        from .fields import (
             SerializedFieldDescriptor,
             copy_serialized_field_default,
             get_serialized_fields,
@@ -424,6 +447,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         if self._is_destroyed:
             return
         value = bool(value)
+        previous = bool(self._enabled)
         if self._enabled == value and getattr(self, '_cpp_component', None) is None:
             return
 
@@ -434,13 +458,15 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
             # made before the next native state synchronization.  The native
             # proxy remains authoritative for the actual scene traversal.
             self._enabled = value
-            from ._component_lifecycle import notify_runtime_component_changed
-            notify_runtime_component_changed(self)
+            if previous != value:
+                from ._component_lifecycle import notify_runtime_component_changed
+                notify_runtime_component_changed(self)
             return
 
         self._enabled = value
-        from ._component_lifecycle import notify_runtime_component_changed
-        notify_runtime_component_changed(self)
+        if previous != value:
+            from ._component_lifecycle import notify_runtime_component_changed
+            notify_runtime_component_changed(self)
     
     @property
     def type_name(self) -> str:
@@ -461,16 +487,20 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
 
     @execution_order.setter
     def execution_order(self, value: int):
+        value = int(value)
+        previous = int(getattr(self, '_execution_order', 0))
         cpp_component = getattr(self, '_cpp_component', None)
         if cpp_component is not None:
-            cpp_component.execution_order = int(value)
-            self._execution_order = int(value)
-            from ._component_lifecycle import notify_runtime_component_changed
-            notify_runtime_component_changed(self)
+            cpp_component.execution_order = value
+            self._execution_order = value
+            if previous != value:
+                from ._component_lifecycle import notify_runtime_component_structure_changed
+                notify_runtime_component_structure_changed(self)
             return
-        self._execution_order = int(value)
-        from ._component_lifecycle import notify_runtime_component_changed
-        notify_runtime_component_changed(self)
+        self._execution_order = value
+        if previous != value:
+            from ._component_lifecycle import notify_runtime_component_structure_changed
+            notify_runtime_component_structure_changed(self)
 
     @property
     def component_id(self) -> int:
@@ -508,6 +538,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         """
         pass
     
+    @_default_lifecycle_method
     def update(self, delta_time: float):
         """
         Called every frame.
@@ -517,6 +548,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         """
         pass
 
+    @_default_lifecycle_method
     def fixed_update(self, fixed_delta_time: float):
         """
         Called at a fixed time step (default 50 Hz).
@@ -527,6 +559,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         """
         pass
 
+    @_default_lifecycle_method
     def late_update(self, delta_time: float):
         """
         Called every frame after all update() calls.

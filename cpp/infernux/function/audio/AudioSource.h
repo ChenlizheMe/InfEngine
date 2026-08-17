@@ -87,6 +87,10 @@ class AudioSource : public Component
     void OnDisable() override;
     void OnDestroy() override;
     void Update(float deltaTime) override;
+    [[nodiscard]] bool WantsRuntimeUpdate() const override
+    {
+        return true;
+    }
 
     // ========================================================================
     // Serialization

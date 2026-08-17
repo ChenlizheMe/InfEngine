@@ -376,13 +376,59 @@ class AssetManager:
             cls._meta_write_suppression[normalized] = time.monotonic() + _META_SUPPRESSION_TIMEOUT
 
     @classmethod
+    def _submit_internal_script_change(
+        cls,
+        path: str,
+        *,
+        catalog_event: str | None,
+    ) -> None:
+        """Feed successful internal Python mutations into the shared collector.
+
+        Asset mutations suppress their matching watchdog echo, so ordinary
+        Python files need an explicit ingress here.  ParticleScript source is
+        owned by the particle compiler and is intentionally excluded.
+        """
+        lower = str(path or "").lower()
+        if not lower.endswith(".py") or lower.endswith(".particle.py"):
+            return
+        try:
+            from Infernux.engine.interaction import current_action_origin
+            from Infernux.engine.resources_manager import ResourcesManager
+
+            action_origin = current_action_origin()
+            origin_value = getattr(action_origin, "value", str(action_origin))
+            collector_origin = {
+                "automation": "mcp",
+                "external": "watchdog",
+            }.get(origin_value, "editor")
+            manager = ResourcesManager.instance()
+            if manager is not None:
+                manager.submit_script_change(
+                    path,
+                    origin=collector_origin,
+                    catalog_event=catalog_event,
+                    change_kind=catalog_event or "modified",
+                )
+        except Exception as exc:
+            Debug.log_suppressed("AssetManager._submit_internal_script_change", exc)
+
+    @classmethod
     def import_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True):
         """Import one new asset and publish its editor-visible creation."""
+        profile_script = str(path or "").lower().endswith(".py")
+        profile_started = time.perf_counter()
+        profile_marks: list[tuple[str, float]] = []
+
+        def mark(label: str) -> None:
+            if profile_script:
+                profile_marks.append((label, time.perf_counter()))
+
         asset_database = cls._mutation_database(database)
         # Meta sidecars are written through DocumentStore atomic replace, which
         # briefly deletes the previous .meta and must not trigger rebuild work.
         cls._suppress_meta_watcher(path)
         result = asset_database.import_asset(path)
+        mark("database")
         if not result:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
@@ -407,7 +453,24 @@ class AssetManager:
         cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._prime_material_preview(path)
+        mark("cache_invalidation")
         cls._publish_asset_content_change(path, "created", guid=result.guid)
+        mark("interaction_publish")
+        if suppress_watcher_echo:
+            cls._submit_internal_script_change(path, catalog_event="created")
+        mark("collector_submit")
+        if profile_script:
+            elapsed_ms = (time.perf_counter() - profile_started) * 1000.0
+            if elapsed_ms >= 10.0:
+                previous = profile_started
+                pieces = []
+                for label, current in profile_marks:
+                    pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
+                    previous = current
+                Debug.log_internal(
+                    f"[ScriptAssetProfile] import={elapsed_ms:.2f}ms "
+                    f"file={os.path.basename(path)} " + " ".join(pieces)
+                )
         return result
 
     @classmethod
@@ -441,6 +504,22 @@ class AssetManager:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
 
+        is_ordinary_script = ext == ".py" and not str(path).lower().endswith(".particle.py")
+        if is_ordinary_script:
+            # Ordinary scripts have their own validated collector and atomic
+            # class-publication transaction. Broadcasting the same edit to
+            # every generic asset/preview listener first made source saves pay
+            # for two independent invalidation graphs on the main thread.
+            # Their exact bytes and SHA-256 revision are already captured by
+            # ScriptChangeCollector; the asset revision ledger exists for
+            # persisted document/preview products and would hash the same
+            # Python source a second time.
+            cls.invalidate(guid)
+            if suppress_watcher_echo:
+                cls._suppress_watcher_echo("modified", path)
+                cls._submit_internal_script_change(path, catalog_event="modified")
+            return result
+
         effect_error = cls._compile_render_effect_runtime(path, guid)
         if effect_error:
             from Infernux.lib import AssetMutationErrorCode
@@ -467,6 +546,12 @@ class AssetManager:
                 result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
                 result.error = error
                 return result
+        elif ext == ".py" and not str(path).lower().endswith(".particle.py"):
+            # Ordinary project scripts are published by the unified script
+            # collector below.  AssetManager owns the catalog/cache mutation,
+            # but must never execute a script or reload the registry before
+            # the collector has produced a validated revision.
+            pass
         elif not cls._is_compiled_authoring_source(path):
             registry = cls._get_registry()
             if registry and registry.is_loaded(guid) and not registry.reload_asset(guid):
@@ -489,6 +574,8 @@ class AssetManager:
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("modified", path)
         cls._publish_asset_content_change(path, "modified", guid=guid)
+        if suppress_watcher_echo:
+            cls._submit_internal_script_change(path, catalog_event="modified")
         return result
 
     @classmethod
@@ -714,6 +801,14 @@ class AssetManager:
         """
         from Infernux.core.asset_types import MATERIAL_EXTENSIONS
 
+        profile_script = str(path or "").lower().endswith(".py")
+        profile_started = time.perf_counter()
+        profile_marks: list[tuple[str, float]] = []
+
+        def mark(label: str) -> None:
+            if profile_script:
+                profile_marks.append((label, time.perf_counter()))
+
         asset_database = cls._mutation_database(database)
         guid = asset_database.get_guid_from_path(path) or str(guid_hint or "").strip()
         ext = os.path.splitext(path)[1].lower()
@@ -722,6 +817,7 @@ class AssetManager:
         # live payloads before it commits: a failed metadata/database delete
         # must leave the running editor exactly as it was.
         result = asset_database.delete_asset(path)
+        mark("database")
         if not result:
             return result
 
@@ -746,11 +842,25 @@ class AssetManager:
             play_mode = PlayModeManager.instance()
             if play_mode is not None:
                 play_mode.mark_components_missing_for_script(guid, path)
+        mark("runtime_detach")
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("deleted", path)
         cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._publish_asset_content_change(path, "deleted", guid=guid)
+        mark("interaction_publish")
+        if profile_script:
+            elapsed_ms = (time.perf_counter() - profile_started) * 1000.0
+            if elapsed_ms >= 10.0:
+                previous = profile_started
+                pieces = []
+                for label, current in profile_marks:
+                    pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
+                    previous = current
+                Debug.log_internal(
+                    f"[ScriptAssetProfile] asset_delete={elapsed_ms:.2f}ms "
+                    f"file={os.path.basename(path)} " + " ".join(pieces)
+                )
         return result
 
     @classmethod
@@ -794,7 +904,21 @@ class AssetManager:
         if save_handler is None:
             return
 
-        cls.schedule_save(key, lambda: save_handler(resource_obj), debounce_sec=debounce_sec)
+        if asset_category == "material":
+            # The document controller owns the durable target.  Python
+            # Material wrappers intentionally expose data rather than relying
+            # on a view/native object's incidental file_path attribute.
+            cls.schedule_save(
+                key,
+                lambda: save_handler(resource_obj, key),
+                debounce_sec=debounce_sec,
+            )
+        else:
+            cls.schedule_save(
+                key,
+                lambda: save_handler(resource_obj),
+                debounce_sec=debounce_sec,
+            )
 
     @classmethod
     def cancel_scheduled_save(cls, key: str) -> bool:
@@ -1417,9 +1541,9 @@ class AssetManager:
             return False
 
     @classmethod
-    def _save_material_resource(cls, resource_obj):
+    def _save_material_resource(cls, resource_obj, target_path: str = ""):
         """Save a material resource without evicting its live in-memory value."""
-        file_path = getattr(resource_obj, "file_path", "") or ""
+        file_path = str(target_path or getattr(resource_obj, "file_path", "") or "")
         norm_path = path_key(file_path) if file_path else ""
         snapshot = cls._material_save_snapshots.pop(norm_path, "")
         if not snapshot:
@@ -1662,7 +1786,7 @@ class AssetManager:
             return AnimationClip3D
         if ext in ANIMFSM_EXTENSIONS:
             return AnimStateMachine
-        if ext == ".effect":
+        if ext in {".effect", ".effectgroup"}:
             from Infernux.renderstack.render_effect import RenderEffect
             return RenderEffect
         if ext in PARTICLE_GRAPH_EXTENSIONS:
@@ -1690,10 +1814,16 @@ class AssetManager:
             return AnimationClip3D.load(path)
         if asset_type is AnimStateMachine:
             return AnimStateMachine.load(path)
-        from Infernux.renderstack.render_effect import RenderEffect
-        if asset_type is RenderEffect or (asset_type is None and path.endswith(".effect")):
+        from Infernux.renderstack.render_effect import EditableRenderEffectGroup, RenderEffect
+        if asset_type is RenderEffect or (
+            asset_type is None
+            and path.lower().endswith((".effect", ".effectgroup"))
+        ):
             try:
-                from Infernux.renderstack.render_effect_asset import RenderEffectAsset
+                from Infernux.renderstack.render_effect_asset import (
+                    RenderEffectAsset,
+                    RenderEffectGroupAsset,
+                )
                 from Infernux.renderstack.render_effect_compiler import (
                     RenderEffectArtifactRegistry,
                 )
@@ -1707,6 +1837,12 @@ class AssetManager:
                     effect = RenderEffect(document, file_path=path, guid=guid)
                     effect._artifact_revision = artifact.revision
                     return effect
+                if isinstance(document, RenderEffectGroupAsset):
+                    return EditableRenderEffectGroup(
+                        document,
+                        file_path=path,
+                        guid=guid,
+                    )
                 return None
             except (OSError, RuntimeError, TypeError, ValueError):
                 return None

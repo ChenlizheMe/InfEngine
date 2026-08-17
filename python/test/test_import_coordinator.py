@@ -45,6 +45,23 @@ def test_repeated_modifications_coalesce_to_one_event(tmp_path):
     assert events[0].kind is AssetFsEventKind.MODIFIED
 
 
+def test_one_submission_can_use_a_shorter_debounce(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    path = tmp_path / "fast.py"
+
+    coordinator.submit(
+        AssetFsEventKind.MODIFIED,
+        str(path),
+        debounce_seconds=0.025,
+    )
+    clock.advance(0.024)
+    assert coordinator.drain() == []
+    clock.advance(0.002)
+    events = coordinator.drain()
+    assert [event.kind for event in events] == [AssetFsEventKind.MODIFIED]
+
+
 def test_create_modify_stays_created_and_ephemeral_create_delete_disappears(tmp_path):
     clock = _Clock()
     coordinator = _coordinator(clock)
@@ -106,6 +123,22 @@ def test_retry_is_non_blocking_and_bounded(tmp_path):
     event = coordinator.drain()[0]
     assert event.attempt == 2
     assert not coordinator.retry(event)
+
+
+def test_defer_preserves_import_retry_budget(tmp_path):
+    clock = _Clock()
+    coordinator = _coordinator(clock)
+    path = tmp_path / "asset.mat"
+    coordinator.submit(AssetFsEventKind.MODIFIED, str(path))
+    event = coordinator.drain(force=True)[0]
+
+    for _ in range(8):
+        coordinator.defer(event)
+        clock.advance(0.21)
+        event = coordinator.drain()[0]
+        assert event.attempt == 0
+
+    assert coordinator.retry(event)
 
 
 def test_document_store_temporary_events_are_filtered_and_atomic_move_becomes_modified(tmp_path):

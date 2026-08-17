@@ -7,7 +7,7 @@ from enum import IntEnum
 import pytest
 
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.serialized_field import FieldType, get_serialized_fields
+from Infernux.components.fields import FieldType, get_serialized_fields
 import Infernux.lib as lib
 
 
@@ -58,6 +58,22 @@ class TestCppPropertyBinding:
     def test_set_name_assigns_metadata_name(self):
         desc = DemoBuiltin.__dict__["raw"]
         assert desc.metadata.name == "raw"
+
+    def test_display_name_key_is_preserved_in_metadata(self):
+        class LocalizedBuiltin(BuiltinComponent):
+            _cpp_type_name = "LocalizedBuiltin"
+
+            value = CppProperty(
+                "value",
+                FieldType.FLOAT,
+                default=0.0,
+                display_name_key="component.localized.value",
+            )
+
+        assert (
+            LocalizedBuiltin.__dict__["value"].metadata.display_name_key
+            == "component.localized.value"
+        )
 
 
 class TestCppPropertyReadWrite:
@@ -202,7 +218,7 @@ class TestBuiltinComponent:
         if previous is not None:
             previous.shutdown()
         bus = AssetMutationService(DocumentRegistry(), SelectionService())
-        baseline = len(bus._listeners)
+        baseline = bus.listener_diagnostics["component_callbacks"]
         wrapper = SpriteRenderer()
         wrapper._sprite_material = object()
         wrapper._material_ready = True
@@ -211,10 +227,10 @@ class TestBuiltinComponent:
         wrapper._subscribe_asset_events()
         wrapper_ref = weakref.ref(wrapper)
 
-        assert len(bus._listeners) == baseline + 1
+        assert bus.listener_diagnostics["component_callbacks"] == baseline + 1
 
         wrapper._invalidate_native_binding()
-        assert len(bus._listeners) == baseline
+        assert bus.listener_diagnostics["component_callbacks"] == baseline
         assert wrapper._sprite_material is None
         assert wrapper._material_ready is False
         assert wrapper._sprite_frames == []
@@ -262,6 +278,81 @@ class TestBuiltinComponent:
 
         assert material.values["uvRect"] == (0.0, 0.0, 0.0, 0.0)
         assert material.values["displayScale"] == (0.0, 0.0, 0.0, 0.0)
+
+    def test_sprite_renderer_uses_published_metadata_without_meta_sidecar(
+        self,
+        monkeypatch,
+    ):
+        from types import SimpleNamespace
+
+        from Infernux.components.builtin import sprite_renderer as sprite_module
+        from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+
+        frame_id = "1" * 32
+        metadata_document = {
+            "metadata": {
+                "width": {"type": "int", "value": 128},
+                "height": {"type": "int", "value": 64},
+                "texture_type": {"type": "string", "value": "sprite"},
+                "sprite_frames": {
+                    "type": "json_array",
+                    "value": [{
+                        "stable_id": frame_id,
+                        "name": "runtime-frame",
+                        "x": 32,
+                        "y": 16,
+                        "w": 32,
+                        "h": 16,
+                        "pivot_x": 0.5,
+                        "pivot_y": 0.5,
+                    }],
+                },
+            }
+        }
+        native_meta = SimpleNamespace(
+            serialize_document=lambda: metadata_document,
+        )
+        database = SimpleNamespace(
+            get_path_from_guid=lambda guid: (
+                "Assets/runtime-sheet.png" if guid == "texture-guid" else ""
+            ),
+            get_meta_by_guid=lambda guid: (
+                native_meta if guid == "texture-guid" else None
+            ),
+        )
+        monkeypatch.setattr(sprite_module, "_get_asset_database", lambda: database)
+        from Infernux.core import asset_types
+        monkeypatch.setattr(asset_types, "_published_asset_database", lambda: database)
+
+        class _Material:
+            def __init__(self):
+                self.values = {}
+
+            def set_texture(self, name, value):
+                self.values[name] = value
+
+            def set_vector4(self, name, *value):
+                self.values[name] = value
+
+        wrapper = SpriteRenderer()
+        wrapper._cpp_component = SimpleNamespace(
+            sprite_guid="texture-guid",
+            frame_id=frame_id,
+            flip_x=False,
+            flip_y=True,
+        )
+        material = _Material()
+        wrapper._get_material = lambda: material
+
+        wrapper._load_sprite_data()
+        wrapper._apply_uv_rect()
+
+        assert wrapper._tex_w == 128
+        assert wrapper._tex_h == 64
+        assert [frame.stable_id for frame in wrapper._sprite_frames] == [frame_id]
+        assert material.values["texSampler"] == "texture-guid"
+        assert material.values["uvRect"] == (0.25, 0.25, 0.25, 0.25)
+        assert material.values["displayScale"] == (1.0, 0.5, 0.0, 0.0)
 
     def test_native_sprite_renderer_scene_document_uses_stable_frame_id(self):
         from Infernux.lib import SpriteRenderer as NativeSpriteRenderer

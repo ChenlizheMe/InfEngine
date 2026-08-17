@@ -635,9 +635,6 @@ float particle_eye_depth(float device_depth) {
 
 void main() {
     vec4 base = texture(texSampler, in_uv) * in_color * view.material_tint;
-    vec2 centered_uv = in_uv * 2.0 - 1.0;
-    float edge_width = max(view.lighting_control.z, 0.0001);
-    base.a *= 1.0 - smoothstep(1.0 - edge_width, 1.0, length(centered_uv));
     if (view.lighting_control.x > 0.5) {
         base.rgb = inx_particle_forward_plus(
             in_world_position, normalize(in_world_normal), in_view_depth, base.rgb, true
@@ -4231,7 +4228,6 @@ void main() {{
     if (!particle_alive)
         state.lifecycle_flags &= ~INX_PARTICLE_ALIVE;
     states[particle_index] = state;
-    if (!particle_alive) inx_push_free(particle_index);
 }}
 """
 
@@ -5508,7 +5504,6 @@ void main() {{
         states[particle_index].lifecycle_flags,
         ~INX_PARTICLE_CONTINUATION_LOCK
     );
-    if (!particle_alive) inx_push_free(particle_index);
     if (!inx_continuation_resuspended) {{
         inx_finish_continuation(
             inx_continuation_record_index, particle_index, lane_index
@@ -5628,16 +5623,26 @@ def _shader_prelude(
     uint simulation_step;
     float delta_time;
     uint diagnostic_flags;
+    uint alive_read_slot;
+    uint alive_write_slot;
+    uint use_alive_list;
+    uint reserved;
 } pc;"""
     )
     return f"""#version 450
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 shared uint inx_particle_render_local_count;
 shared uint inx_particle_render_group_base;
+shared uint inx_particle_render_subgroup_counts[64];
 shared uint inx_particle_init_old_free_count;
 shared uint inx_particle_init_accepted_count;
+shared uint inx_particle_alive_local_count;
+shared uint inx_particle_alive_group_base;
+shared uint inx_particle_alive_subgroup_counts[64];
 
 const uint INX_PARTICLE_ALIVE = 1u;
 const uint INX_PARTICLE_INIT_COMPLETE = 2u;
@@ -5659,6 +5664,10 @@ struct ParticleRenderInstance {{
     uvec4 ribbon_data;
     vec4 custom_data;
     vec4 previous_position_history;
+}};
+
+struct ParticleVisibilityInstance {{
+    vec4 position_radius;
 }};
 
 layout(std430, set = 0, binding = 0) buffer ParticleStates {{ ParticleState states[]; }};
@@ -5693,6 +5702,17 @@ layout(std140, set = 0, binding = 5) uniform ParticleTransforms {{
     mat4 world_to_simulation;
 }} transforms;
 layout(std430, set = 0, binding = 6) buffer ParticleRenderIndices {{ uint render_indices[]; }};
+layout(std430, set = 0, binding = 7) buffer ParticleAliveIndicesA {{ uint alive_indices_a[]; }};
+layout(std430, set = 0, binding = 8) buffer ParticleAliveIndicesB {{ uint alive_indices_b[]; }};
+layout(std430, set = 0, binding = 9) buffer ParticleAliveDispatch {{ uvec4 alive_dispatch_args[2]; }};
+layout(std430, set = 0, binding = 10) buffer ParticleAliveControl {{
+    uint alive_counts[2];
+    uint alive_control_reserved0;
+    uint alive_control_reserved1;
+}} alive_control;
+layout(std430, set = 0, binding = 11) buffer ParticleVisibility {{
+    ParticleVisibilityInstance visibility[];
+}};
 {parameter_glsl}
 struct InxParticleAffine {{
     vec4 row0;
@@ -5837,6 +5857,27 @@ void inx_push_free(uint particle_index) {{
     uint destination = atomicAdd(counters.free_count, 1u);
     if (destination < pc.capacity) free_slots[destination] = particle_index;
     else atomicAdd(counters.free_count, 0xffffffffu);
+}}
+
+uint inx_alive_count(uint slot) {{
+    return min(alive_control.alive_counts[min(slot, 1u)], pc.capacity);
+}}
+
+uint inx_alive_index(uint slot, uint index) {{
+    return slot == 0u ? alive_indices_a[index] : alive_indices_b[index];
+}}
+
+void inx_append_alive(uint slot, uint particle_index) {{
+    uint destination = atomicAdd(alive_control.alive_counts[min(slot, 1u)], 1u);
+    if (destination >= pc.capacity) return;
+    if (slot == 0u) alive_indices_a[destination] = particle_index;
+    else alive_indices_b[destination] = particle_index;
+}}
+
+void inx_store_alive(uint slot, uint index, uint particle_index) {{
+    if (index >= pc.capacity) return;
+    if (slot == 0u) alive_indices_a[index] = particle_index;
+    else alive_indices_b[index] = particle_index;
 }}
 
 uint inx_random_u32(uint node_seed, uint particle_id, uint generation, uint random_slot) {{
@@ -6739,6 +6780,10 @@ void main() {
         indirect_args.instance_count = 0u;
         indirect_args.first_vertex = 0u;
         indirect_args.first_instance = 0u;
+        alive_control.alive_counts[0] = 0u;
+        alive_control.alive_counts[1] = 0u;
+        alive_dispatch_args[0] = uvec4(0u, 1u, 1u, 0u);
+        alive_dispatch_args[1] = uvec4(0u, 1u, 1u, 0u);
     }
 }
 """.replace("INX_EVENT_COUNTER_COUNT", str(event_type_count * 3))
@@ -6757,15 +6802,17 @@ void main() {{
     uint group_first_invocation = invocation - gl_LocalInvocationIndex;
     if (gl_LocalInvocationIndex == 0u) {{
         uint requested_count = 0u;
-        if (simulation_control.simulation_allowed != 0u
-            && inx_current_emitter_playing()
-            && group_first_invocation < emitter_spawn.spawn_count) {{
+        // Spawn Prepare is the authority for this frame. Rechecking mutable
+        // play/simulation state here can discard a burst that was already
+        // accepted and encoded into the indirect dispatch.
+        if (group_first_invocation < emitter_spawn.spawn_count) {{
             requested_count = min(
                 gl_WorkGroupSize.x,
                 emitter_spawn.spawn_count - group_first_invocation);
         }}
         inx_particle_init_accepted_count = inx_reserve_free_block(
             requested_count, inx_particle_init_old_free_count);
+        atomicAdd(counters.reserved_count, inx_particle_init_accepted_count);
         uint dropped_count = requested_count - inx_particle_init_accepted_count;
         if (dropped_count > 0u)
             atomicAdd(counters.dropped_count, dropped_count);
@@ -6784,12 +6831,45 @@ void main() {{
     bool particle_alive = true;
     bool inx_stage_suspended = false;
 {body}
-    particle_alive = particle_alive && ({finite});
+    bool initialized_state_finite = ({finite});
+    particle_alive = particle_alive && initialized_state_finite;
+    if (!initialized_state_finite) atomicAdd(counters.dropped_count, 1u);
     if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE;
     state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
     states[particle_index] = state;
-    if (!particle_alive) inx_push_free(particle_index);
+    if (particle_alive) inx_append_alive(pc.alive_read_slot, particle_index);
+    else inx_push_free(particle_index);
 }}
+"""
+
+
+def _alive_compact_tail(candidate: str, particle_index: str) -> str:
+    return f"""
+    uvec4 inx_particle_alive_mask = subgroupBallot({candidate});
+    uint inx_particle_alive_local_index = subgroupBallotExclusiveBitCount(
+        inx_particle_alive_mask);
+    if (subgroupElect())
+        inx_particle_alive_subgroup_counts[gl_SubgroupID] =
+            subgroupBallotBitCount(inx_particle_alive_mask);
+    barrier();
+    uint inx_particle_alive_subgroup_count = min(
+        (gl_WorkGroupSize.x + gl_SubgroupSize - 1u) / gl_SubgroupSize, 64u);
+    for (uint inx_sg = 0u; inx_sg < gl_SubgroupID; ++inx_sg)
+        inx_particle_alive_local_index += inx_particle_alive_subgroup_counts[inx_sg];
+    if (gl_LocalInvocationIndex == 0u) {{
+        inx_particle_alive_local_count = 0u;
+        for (uint inx_sg = 0u; inx_sg < inx_particle_alive_subgroup_count; ++inx_sg)
+            inx_particle_alive_local_count += inx_particle_alive_subgroup_counts[inx_sg];
+        inx_particle_alive_group_base = atomicAdd(
+            alive_control.alive_counts[pc.alive_write_slot],
+            inx_particle_alive_local_count);
+    }}
+    barrier();
+    if ({candidate}) {{
+        uint inx_particle_alive_output =
+            inx_particle_alive_group_base + inx_particle_alive_local_index;
+        inx_store_alive(pc.alive_write_slot, inx_particle_alive_output, {particle_index});
+    }}
 """
 
 
@@ -6799,22 +6879,42 @@ def _update_main(
     fields: tuple[tuple[str, TypeRef, str], ...],
 ) -> str:
     finite = _finite_state_check(emitter.update, fields)
+    alive_compact = _alive_compact_tail("inx_particle_active_candidate", "particle_index")
     return f"""
 void main() {{
-    if (simulation_control.simulation_allowed == 0u
-        || !inx_current_emitter_playing()) return;
-    uint particle_index = gl_GlobalInvocationID.x;
-    if (particle_index >= pc.capacity
-        || (states[particle_index].lifecycle_flags & INX_PARTICLE_ALIVE) == 0u
-        || (states[particle_index].lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) == 0u) return;
-    ParticleState state = states[particle_index];
-    bool particle_alive = true;
+    uint invocation = gl_GlobalInvocationID.x;
+    uint input_count = pc.use_alive_list != 0u
+        ? inx_alive_count(pc.alive_read_slot)
+        : pc.capacity;
+    bool inx_particle_active_candidate = invocation < input_count;
+    uint particle_index = inx_particle_active_candidate
+        ? (pc.use_alive_list != 0u
+            ? inx_alive_index(pc.alive_read_slot, invocation)
+            : invocation)
+        : 0u;
+    ParticleState state;
+    bool particle_alive = false;
+    bool particle_was_alive = false;
     bool inx_stage_suspended = false;
+    if (inx_particle_active_candidate) {{
+        state = states[particle_index];
+        particle_alive = (state.lifecycle_flags & INX_PARTICLE_ALIVE) != 0u;
+        particle_was_alive = particle_alive;
+        bool run_update = particle_alive
+            && (state.lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) != 0u
+            && simulation_control.simulation_allowed != 0u
+            && inx_current_emitter_playing();
+        if (run_update) {{
 {body}
-    particle_alive = particle_alive && ({finite});
-    state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
-    states[particle_index] = state;
-    if (!particle_alive) inx_push_free(particle_index);
+            particle_alive = particle_alive && ({finite});
+        }}
+        state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
+        states[particle_index] = state;
+        if (!particle_alive && (particle_was_alive || pc.use_alive_list != 0u))
+            inx_push_free(particle_index);
+    }}
+    inx_particle_active_candidate = inx_particle_active_candidate && particle_alive;
+{alive_compact}
 }}
 """
 
@@ -6823,6 +6923,13 @@ def _render_reset_main() -> str:
     return """
 void main() {
     if (gl_GlobalInvocationID.x != 0u) return;
+    if ((pc.diagnostic_flags & 8u) != 0u)
+        alive_control.alive_counts[pc.alive_write_slot] = 0u;
+    uint alive_count = pc.use_alive_list != 0u
+        ? inx_alive_count(pc.alive_read_slot)
+        : pc.capacity;
+    alive_dispatch_args[pc.alive_read_slot] = uvec4(
+        (alive_count + 255u) / 256u, 1u, 1u, 0u);
     if ((pc.diagnostic_flags & 2u) != 0u) {
         counters.collision_hit_count = 0u;
         counters.collision_response_count = 0u;
@@ -6872,7 +6979,11 @@ def _render_instance_write(
             ParticleRenderInstance previous_instance = instances[{particle_index}];
             bool history_valid = previous_instance.ribbon_data.w == {particle_id} &&
                 floatBitsToUint(previous_instance.previous_position_history.w) == state.spawn_generation;
+            float visibility_radius = abs({size}) * max(
+                max(abs((({scale}) * {world_scale}).x), abs((({scale}) * {world_scale}).y)),
+                abs((({scale}) * {world_scale}).z)) * 1.41421356237;
             instances[{particle_index}].position_size = vec4({world_position}, {size});
+            visibility[{particle_index}].position_radius = vec4({world_position}, visibility_radius);
             instances[{particle_index}].color = {color};
             instances[{particle_index}].rotation_custom = vec4({rotation}, {orientation});
             float normalized_age = clamp(({age}) / max(({lifetime}), 0.000001), 0.0, 1.0);
@@ -6889,7 +7000,21 @@ def _render_instance_write(
 
 def _render_compact_tail(instance_write: str) -> str:
     return f"""
+    uvec4 inx_particle_render_mask = subgroupBallot(inx_particle_render_candidate);
+    uint inx_particle_render_local_index = subgroupBallotExclusiveBitCount(
+        inx_particle_render_mask);
+    if (subgroupElect())
+        inx_particle_render_subgroup_counts[gl_SubgroupID] =
+            subgroupBallotBitCount(inx_particle_render_mask);
+    barrier();
+    uint inx_particle_render_subgroup_count = min(
+        (gl_WorkGroupSize.x + gl_SubgroupSize - 1u) / gl_SubgroupSize, 64u);
+    for (uint inx_sg = 0u; inx_sg < gl_SubgroupID; ++inx_sg)
+        inx_particle_render_local_index += inx_particle_render_subgroup_counts[inx_sg];
     if (gl_LocalInvocationIndex == 0u) {{
+        inx_particle_render_local_count = 0u;
+        for (uint inx_sg = 0u; inx_sg < inx_particle_render_subgroup_count; ++inx_sg)
+            inx_particle_render_local_count += inx_particle_render_subgroup_counts[inx_sg];
         inx_particle_render_group_base = atomicAdd(counters.visible_count,
             inx_particle_render_local_count);
         uint available_count = inx_particle_render_group_base < pc.capacity
@@ -6899,6 +7024,59 @@ def _render_compact_tail(instance_write: str) -> str:
             atomicAdd(indirect_args.instance_count, committed_count);
     }}
     barrier();
+    if (inx_particle_render_candidate) {{
+        uint output_index = inx_particle_render_group_base + inx_particle_render_local_index;
+        if (output_index < pc.capacity) {{
+{instance_write}
+        }}
+    }}
+"""
+
+
+def _fused_compact_tail(instance_write: str) -> str:
+    return f"""
+    uvec4 inx_particle_alive_mask = subgroupBallot(inx_particle_active_candidate);
+    uvec4 inx_particle_render_mask = subgroupBallot(inx_particle_render_candidate);
+    uint inx_particle_alive_local_index = subgroupBallotExclusiveBitCount(
+        inx_particle_alive_mask);
+    uint inx_particle_render_local_index = subgroupBallotExclusiveBitCount(
+        inx_particle_render_mask);
+    if (subgroupElect()) {{
+        inx_particle_alive_subgroup_counts[gl_SubgroupID] =
+            subgroupBallotBitCount(inx_particle_alive_mask);
+        inx_particle_render_subgroup_counts[gl_SubgroupID] =
+            subgroupBallotBitCount(inx_particle_render_mask);
+    }}
+    barrier();
+    uint inx_particle_subgroup_count = min(
+        (gl_WorkGroupSize.x + gl_SubgroupSize - 1u) / gl_SubgroupSize, 64u);
+    for (uint inx_sg = 0u; inx_sg < gl_SubgroupID; ++inx_sg) {{
+        inx_particle_alive_local_index += inx_particle_alive_subgroup_counts[inx_sg];
+        inx_particle_render_local_index += inx_particle_render_subgroup_counts[inx_sg];
+    }}
+    if (gl_LocalInvocationIndex == 0u) {{
+        inx_particle_alive_local_count = 0u;
+        inx_particle_render_local_count = 0u;
+        for (uint inx_sg = 0u; inx_sg < inx_particle_subgroup_count; ++inx_sg) {{
+            inx_particle_alive_local_count += inx_particle_alive_subgroup_counts[inx_sg];
+            inx_particle_render_local_count += inx_particle_render_subgroup_counts[inx_sg];
+        }}
+        inx_particle_alive_group_base = atomicAdd(
+            alive_control.alive_counts[pc.alive_write_slot],
+            inx_particle_alive_local_count);
+        inx_particle_render_group_base = atomicAdd(
+            counters.visible_count, inx_particle_render_local_count);
+        uint available_count = inx_particle_render_group_base < pc.capacity
+            ? pc.capacity - inx_particle_render_group_base : 0u;
+        uint committed_count = min(inx_particle_render_local_count, available_count);
+        if (committed_count > 0u)
+            atomicAdd(indirect_args.instance_count, committed_count);
+    }}
+    barrier();
+    if (inx_particle_active_candidate) {{
+        uint alive_output = inx_particle_alive_group_base + inx_particle_alive_local_index;
+        inx_store_alive(pc.alive_write_slot, alive_output, particle_index);
+    }}
     if (inx_particle_render_candidate) {{
         uint output_index = inx_particle_render_group_base + inx_particle_render_local_index;
         if (output_index < pc.capacity) {{
@@ -6970,11 +7148,19 @@ def _rendering_main(body: str, exports: dict[str, str]) -> str:
     compact_tail = _render_compact_tail(instance_write)
     return f"""
 void main() {{
-    uint particle_index = gl_GlobalInvocationID.x;
+    uint invocation = gl_GlobalInvocationID.x;
+    uint input_count = pc.use_alive_list != 0u
+        ? inx_alive_count(pc.alive_read_slot)
+        : pc.capacity;
+    uint particle_index = invocation < input_count
+        ? (pc.use_alive_list != 0u
+            ? inx_alive_index(pc.alive_read_slot, invocation)
+            : invocation)
+        : 0u;
     bool inx_particle_render_candidate =
         simulation_control.simulation_allowed != 0u
         && inx_current_emitter_playing()
-        && particle_index < pc.capacity;
+        && invocation < input_count;
     ParticleState state;
 {snapshot_declarations}
     bool particle_alive = false;
@@ -6994,17 +7180,10 @@ void main() {{
             if (!particle_alive) {{
                 state.lifecycle_flags = 0u;
                 states[particle_index] = state;
-                inx_push_free(particle_index);
             }}
         }}
     }}
     inx_particle_render_candidate = inx_particle_render_candidate && particle_alive;
-    if (gl_LocalInvocationIndex == 0u) inx_particle_render_local_count = 0u;
-    barrier();
-    uint inx_particle_render_local_index = 0u;
-    if (inx_particle_render_candidate)
-        inx_particle_render_local_index = atomicAdd(inx_particle_render_local_count, 1u);
-    barrier();
 {compact_tail}
 }}
 """
@@ -7029,26 +7208,36 @@ def _update_rendering_fused_main(
         output_index="output_index",
         particle_index="particle_index",
     )
-    compact_tail = _render_compact_tail(instance_write)
+    compact_tail = _fused_compact_tail(instance_write)
     state_commit = "states[particle_index] = state;" if update_state_write else ""
     return f"""
 void main() {{
-    uint particle_index = gl_GlobalInvocationID.x;
-    bool inx_particle_render_candidate =
-        simulation_control.simulation_allowed != 0u
-        && inx_current_emitter_playing()
-        && particle_index < pc.capacity;
+    uint invocation = gl_GlobalInvocationID.x;
+    uint input_count = pc.use_alive_list != 0u
+        ? inx_alive_count(pc.alive_read_slot)
+        : pc.capacity;
+    bool inx_particle_active_candidate = invocation < input_count;
+    uint particle_index = inx_particle_active_candidate
+        ? (pc.use_alive_list != 0u
+            ? inx_alive_index(pc.alive_read_slot, invocation)
+            : invocation)
+        : 0u;
+    bool inx_particle_render_candidate = false;
     ParticleState state;
 {snapshot_declarations}
     bool particle_alive = false;
+    bool particle_was_alive = false;
     bool inx_stage_suspended = false;
-    if (inx_particle_render_candidate) {{
+    if (inx_particle_active_candidate) {{
         state = states[particle_index];
+        particle_was_alive = (state.lifecycle_flags & INX_PARTICLE_ALIVE) != 0u;
+        particle_alive = particle_was_alive;
         inx_particle_render_candidate =
-            (state.lifecycle_flags & INX_PARTICLE_ALIVE) != 0u
-            && (state.lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) != 0u;
+            particle_was_alive
+            && (state.lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) != 0u
+            && simulation_control.simulation_allowed != 0u
+            && inx_current_emitter_playing();
         if (inx_particle_render_candidate) {{
-            particle_alive = true;
 {update_body}
             particle_alive = particle_alive && ({update_finite});
             if (particle_alive) {{
@@ -7059,20 +7248,16 @@ void main() {{
 {snapshot_assignments}
                 }}
             }}
-            if (!particle_alive) {{
-                state.lifecycle_flags = 0u;
-                states[particle_index] = state;
+        }}
+        if (!particle_alive) {{
+            state.lifecycle_flags = 0u;
+            states[particle_index] = state;
+            if (particle_was_alive || pc.use_alive_list != 0u)
                 inx_push_free(particle_index);
-            }}
         }}
     }}
     inx_particle_render_candidate = inx_particle_render_candidate && particle_alive;
-    if (gl_LocalInvocationIndex == 0u) inx_particle_render_local_count = 0u;
-    barrier();
-    uint inx_particle_render_local_index = 0u;
-    if (inx_particle_render_candidate)
-        inx_particle_render_local_index = atomicAdd(inx_particle_render_local_count, 1u);
-    barrier();
+    inx_particle_active_candidate = inx_particle_active_candidate && particle_alive;
 {compact_tail}
 }}
 """

@@ -1304,6 +1304,28 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             )
         ctx.dummy(0, 4)
 
+        synchronize = bool(lk.data.get("synchronize_normalized_time", False))
+        synchronized = ctx.checkbox(
+            f"{t('animfsm_editor.synchronize_normalized_time')}##trsync",
+            synchronize,
+        )
+        if semantic_prefix:
+            ctx.record_semantic_item(
+                "checkbox",
+                t("animfsm_editor.synchronize_normalized_time"),
+                True,
+                f"{semantic_prefix}.synchronize_normalized_time",
+                bool(synchronized),
+            )
+        if synchronized != synchronize:
+            self._update_transition_fields(
+                lk.uid,
+                "Synchronize transition time",
+                merge_key=f"transition:{lk.uid}:synchronize_normalized_time",
+                synchronize_normalized_time=bool(synchronized),
+            )
+        ctx.dummy(0, 4)
+
     def _render_transition_condition_block(
         self,
         ctx: InxGUIContext,

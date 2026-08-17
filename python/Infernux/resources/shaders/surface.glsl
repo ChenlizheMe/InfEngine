@@ -61,7 +61,10 @@ ShadingContext GetShadingContext() {
 SurfaceData InitSurfaceData() {
     SurfaceData s;
     s.albedo = vec3(1.0);
-    s.normalWS = vec3(0.0, 1.0, 0.0);
+    // Zero means "use the geometric normal". Render-path adapters resolve
+    // this sentinel after surface() returns, so a shader that only authors
+    // color does not silently write a world-up normal into the GBuffer.
+    s.normalWS = vec3(0.0);
     s.metallic = 0.0;
     s.smoothness = 0.5;
     s.occlusion = 1.0;
@@ -71,6 +74,14 @@ SurfaceData InitSurfaceData() {
     s.shadingParam0 = 0.0;
     s.shadingParam1 = 0.0;
     return s;
+}
+
+vec3 ResolveSurfaceNormal(vec3 authoredNormalWS, vec3 geometricNormalWS) {
+    float authoredLengthSq = dot(authoredNormalWS, authoredNormalWS);
+    if (authoredLengthSq <= 1e-8) {
+        return normalize(geometricNormalWS);
+    }
+    return authoredNormalWS * inversesqrt(authoredLengthSq);
 }
 
 ShadingContext InitShadingContext() {

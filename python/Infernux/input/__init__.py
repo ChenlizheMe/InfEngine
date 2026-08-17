@@ -32,6 +32,7 @@ from __future__ import annotations
 from typing import Tuple, Union
 
 from Infernux.lib import InputManager as _NativeInputManager
+from .ime import ImeInputState
 
 
 # =============================================================================

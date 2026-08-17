@@ -663,19 +663,6 @@ class Material:
         """Get all properties as a dictionary."""
         return self._native.get_all_properties()
 
-    # ==========================================================================
-    # Serialization
-    # ==========================================================================
-
-    def to_dict(self) -> dict:
-        """Serialize material to a dictionary."""
-        return {
-            "name": self.name,
-            "guid": self.guid,
-            "render_queue": self.render_queue,
-            "shader_name": self.shader_name,
-        }
-
     def save(self, file_path: str) -> bool:
         """Save material to a .mat file."""
         try:

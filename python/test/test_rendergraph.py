@@ -233,6 +233,19 @@ class TestRenderPassBuilder:
         assert description.passes[0].commands[0].type == GraphCommandType.DRAW_RENDERERS
         assert description.passes[0].commands[0].material_pass == MaterialPassType.GBUFFER
 
+    def test_draw_renderers_selects_base_color_material_pass(self):
+        graph = RenderGraph("BaseColor")
+        graph.create_texture("base_color", format=Format.RGBA16_SFLOAT)
+        graph.create_texture("depth", format=Format.D32_SFLOAT)
+        with graph.add_pass("BaseColor") as p:
+            p.read("depth")
+            p.write_color("base_color")
+            p.draw_renderers(material_pass="base_color")
+        graph.set_output("base_color")
+
+        description = graph.build()
+        assert description.passes[0].commands[0].material_pass == MaterialPassType.BASE_COLOR
+
     def test_draw_renderers_rejects_unknown_material_pass(self):
         graph = _make_graph()
         with graph.add_pass("Bad") as p:
@@ -712,6 +725,23 @@ class TestBuild:
         pc_dict = dict(fx_pass.commands[0].push_constants)
         assert pc_dict["intensity"] == 0.5
         assert pc_dict["threshold"] == 1.0
+
+    def test_display_encode_declares_per_camera_output_controls(self):
+        graph = _make_graph()
+        graph.display_encode_section()
+        graph.set_output("color")
+
+        display_pass = next(
+            render_pass
+            for render_pass in graph.build().passes
+            if render_pass.name == "_DisplayEncode"
+        )
+        command = display_pass.commands[0]
+        assert command.shader_name == "Display Encode"
+        assert dict(command.push_constants) == {
+            "dithering": 0.0,
+            "stopNaNs": 0.0,
+        }
 
     def test_dynamic_parameter_block_is_emitted_in_command_ir(self):
         graph = _make_graph()

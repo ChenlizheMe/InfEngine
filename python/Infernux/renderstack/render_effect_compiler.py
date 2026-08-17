@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import inspect
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,12 +28,143 @@ class RenderEffectCompileError(ValueError):
 _ARTIFACT_SCHEMA = "infernux.render_effect_artifact"
 _EFFECT_GROUP_EXPANSIONS: dict[str, tuple[RenderEffect, ...]] = {}
 _EFFECT_GROUP_EXPANSION_GENERATION = 0
+_LIVE_EFFECT_GROUP_DOCUMENTS: dict[str, RenderEffectGroupAsset] = {}
+_RUNTIME_DEPENDENCY_STAMPS: dict[str, tuple[int, int]] = {}
 
 
 def _clear_effect_group_expansions() -> None:
     global _EFFECT_GROUP_EXPANSION_GENERATION
     _EFFECT_GROUP_EXPANSIONS.clear()
     _EFFECT_GROUP_EXPANSION_GENERATION += 1
+
+
+def _group_topology_document(document: RenderEffectGroupAsset) -> dict[str, Any]:
+    value = document.to_dict()
+    for entry in value["entries"]:
+        entry["overrides"] = {}
+    return value
+
+
+def publish_live_effect_group_document(path: str, document) -> None:
+    """Publish an edited group document before its asynchronous disk write.
+
+    RenderStack compilation must consume the editor's authoritative memory
+    document, not the older file that may still be waiting in the asset-save
+    queue.  Invalidating the active stack swaps parameter projections on the
+    next render without polling the source file every frame.
+    """
+    source_path = resolved_path(path)
+    source = (
+        document
+        if isinstance(document, RenderEffectGroupAsset)
+        else parse_render_effect_document(document)
+    )
+    if not isinstance(source, RenderEffectGroupAsset):
+        raise TypeError("live render effect group publication requires a group document")
+    source_key = path_key(source_path)
+    previous = _LIVE_EFFECT_GROUP_DOCUMENTS.get(source_key)
+    _LIVE_EFFECT_GROUP_DOCUMENTS[source_key] = source
+
+    # Parameter-only changes keep the compiled bindings and update their
+    # immutable group projections in place. Topology-affecting edits (order,
+    # assets, enabled state) still rebuild the graph through the normal path.
+    parameter_only = (
+        previous is not None
+        and _group_topology_document(previous) == _group_topology_document(source)
+    )
+    if parameter_only:
+        overrides_by_entry = {
+            entry.entry_id: entry.overrides for entry in source.entries
+        }
+        for expansion in tuple(_EFFECT_GROUP_EXPANSIONS.values()):
+            for effect in expansion:
+                if (
+                    isinstance(effect, _OverriddenRenderEffect)
+                    and effect.group_path_key == source_key
+                ):
+                    effect.publish_group_overrides(
+                        overrides_by_entry.get(effect.group_entry_id, {})
+                    )
+        return
+
+    _clear_effect_group_expansions()
+    try:
+        from Infernux.renderstack.render_stack import RenderStack
+
+        stack = RenderStack.instance()
+        if stack is not None:
+            stack.invalidate_graph()
+    except (ImportError, RuntimeError):
+        pass
+
+
+def _prepare_runtime_dependencies(source: RenderEffect) -> None:
+    """Publish declared shader dependencies before graph passes consume them.
+
+    Effect artifacts intentionally store source-level dependencies instead of
+    embedding shader modules.  Material shaders are normally pulled in by a
+    material pipeline, but a project fullscreen shader has no material owner;
+    its ``.effect`` declaration is therefore the authoritative preload edge.
+    """
+    source_asset = source.to_asset()
+    if not source_asset.dependencies:
+        return
+
+    from Infernux.core.asset_types import SHADER_EXTENSIONS
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.project_context import get_project_root
+
+    project_root = get_project_root()
+    database = AssetManager._asset_database
+    native = AssetManager._native_engine()
+    if database is None or native is None or not native.has_renderer:
+        return
+
+    for reference in source_asset.dependencies:
+        path = ""
+        if reference.guid:
+            path = AssetManager._get_path_from_guid(reference.guid) or ""
+        if not path:
+            path = reference.path_hint
+        if path and not os.path.isabs(path):
+            path = os.path.join(project_root, path) if project_root else path
+        path = resolved_path(path) if path else ""
+        if not path or os.path.splitext(path)[1].lower() not in SHADER_EXTENSIONS:
+            continue
+        try:
+            stat = os.stat(path)
+        except OSError as exc:
+            raise RenderEffectCompileError(
+                f"effect shader dependency is unavailable: {path!r}: {exc}"
+            ) from exc
+        stamp = (int(stat.st_mtime_ns), int(stat.st_size))
+        key = path_key(path)
+        if _RUNTIME_DEPENDENCY_STAMPS.get(key) == stamp:
+            continue
+
+        guid = database.get_guid_from_path(path)
+        result = (
+            AssetManager.reimport_asset(path)
+            if guid
+            else AssetManager.import_asset(path)
+        )
+        if not result:
+            detail = str(getattr(result, "error", "") or "shader import failed")
+            raise RenderEffectCompileError(
+                f"failed to prepare effect shader dependency {path!r}: {detail}"
+            )
+
+        # A first import creates metadata, while reimport owns the canonical
+        # runtime publication path. Complete that second half immediately so
+        # the graph cannot race its first fullscreen draw.
+        if not guid:
+            result = AssetManager.reimport_asset(path)
+            if not result:
+                detail = str(getattr(result, "error", "") or "shader reload failed")
+                raise RenderEffectCompileError(
+                    f"failed to publish effect shader dependency {path!r}: {detail}"
+                )
+        _RUNTIME_DEPENDENCY_STAMPS[key] = stamp
 
 
 @dataclass(frozen=True)
@@ -70,6 +202,7 @@ class RenderEffectArtifactRegistry:
         cls._compiling.clear()
         cls._revision = 0
         cls._topology_generation = 0
+        _LIVE_EFFECT_GROUP_DOCUMENTS.clear()
         _clear_effect_group_expansions()
 
     @classmethod
@@ -115,6 +248,7 @@ class RenderEffectArtifactRegistry:
             group_sources = _expand_render_effect_group_document(
                 document,
                 source_path,
+                _group_guid=guid,
                 _trail=(path_key(source_path),),
             )
 
@@ -174,6 +308,7 @@ class RenderEffectArtifactRegistry:
         if existing is None or existing.structural_hash != structural_hash:
             cls._topology_generation += 1
         if group_sources is not None:
+            _LIVE_EFFECT_GROUP_DOCUMENTS[path_key(source_path)] = document
             _EFFECT_GROUP_EXPANSIONS[path_key(source_path)] = tuple(group_sources)
         return artifact, document
 
@@ -226,6 +361,7 @@ class RenderEffectArtifactRegistry:
             sources = _expand_render_effect_group_document(
                 document,
                 source_path,
+                _group_guid=guid,
                 _trail=(path_key(source_path),),
             )
         return tuple(cls._compile_feature_record(source) for source in sources)
@@ -261,7 +397,7 @@ class RenderEffectArtifactRegistry:
         else:
             structural = {
                 "kind": "group",
-                "source": document.to_dict(),
+                "source": _group_topology_document(document),
                 "features": features,
             }
         encoded = json.dumps(structural, ensure_ascii=False, sort_keys=True, allow_nan=False)
@@ -329,7 +465,7 @@ class RenderEffectFeature:
     route_policy: RoutePolicy = RoutePolicy.ISOLATE_AND_COMPOSITE
 
     def instantiate(self, source: RenderEffect):
-        from Infernux.components.serialized_field import get_serialized_fields
+        from Infernux.components.fields import get_serialized_fields
 
         instance = self.effect_class()
         fields = get_serialized_fields(self.effect_class)
@@ -355,6 +491,19 @@ _FEATURES: dict[str, RenderEffectFeature] = {}
 _BUILTINS_REGISTERED = False
 
 
+def _effect_class_identity(effect_class: type) -> tuple[str, str]:
+    source_file = str(
+        getattr(effect_class, "__infernux_effect_source_file__", "") or ""
+    )
+    if not source_file:
+        try:
+            source_file = inspect.getsourcefile(effect_class) or ""
+        except (OSError, TypeError):
+            source_file = ""
+    source_identity = path_key(resolved_path(source_file)) if source_file else ""
+    return source_identity, str(getattr(effect_class, "__qualname__", ""))
+
+
 def register_render_effect_feature(
     type_id: str,
     effect_class: type,
@@ -374,14 +523,56 @@ def register_render_effect_feature(
         route_policy=RoutePolicy(route_policy or RoutePolicy.ISOLATE_AND_COMPOSITE),
     )
     if existing is not None and existing != feature:
-        raise ValueError(f"render effect feature {normalized!r} is already registered")
+        existing_identity = _effect_class_identity(existing.effect_class)
+        replacement_identity = _effect_class_identity(effect_class)
+        if existing_identity != replacement_identity:
+            raise ValueError(f"render effect feature {normalized!r} is already registered")
     _FEATURES[normalized] = feature
     return feature
+
+
+def render_effect_feature(
+    type_id: str,
+    *,
+    topology_parameters=(),
+    route_policy=None,
+):
+    """Declare a project ``.effect`` implementation without eager module code."""
+
+    frame = inspect.currentframe()
+    caller = frame.f_back if frame is not None else None
+    declaration_source = str(
+        caller.f_globals.get("__file__", "") if caller is not None else ""
+    )
+    del caller
+    del frame
+
+    def decorate(effect_class: type) -> type:
+        if declaration_source:
+            setattr(
+                effect_class,
+                "__infernux_effect_source_file__",
+                declaration_source,
+            )
+        register_render_effect_feature(
+            type_id,
+            effect_class,
+            topology_parameters=topology_parameters,
+            route_policy=route_policy,
+        )
+        return effect_class
+
+    return decorate
 
 
 def get_render_effect_feature(type_id: str) -> RenderEffectFeature:
     _register_builtin_features()
     feature = _FEATURES.get(str(type_id))
+    if feature is None:
+        from Infernux.renderstack.discovery import discover_effect_features
+
+        discover_effect_features()
+        feature = _FEATURES.get(str(type_id))
     if feature is None:
         raise RenderEffectCompileError(f"unknown render effect feature: {type_id!r}")
     return feature
@@ -490,6 +681,26 @@ def resolve_effect_stage_route_policy(stage_ids, slot_lookup):
         ) from exc
 
 
+def resolve_enabled_effect_requirements(slots) -> frozenset[str]:
+    """Collect semantic buffers requested by enabled Effect assets."""
+    requirements = {"color", "depth"}
+    for slot in slots or ():
+        if not slot.enabled or not slot.effect_ref:
+            continue
+        try:
+            for source in expand_render_effect_reference(slot.effect_ref):
+                feature = get_render_effect_feature(source.feature_type)
+                requirements.update(getattr(feature.effect_class, "requires", ()))
+                requirements.update(getattr(feature.effect_class, "modifies", ()))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return frozenset(
+        str(value).strip().lower()
+        for value in requirements
+        if str(value).strip()
+    )
+
+
 @dataclass(frozen=True)
 class _ParameterBlockSpec:
     block_id: str
@@ -561,6 +772,7 @@ def _compile_effect(
     *,
     binding_id: str,
 ) -> CompiledEffectBinding:
+    _prepare_runtime_dependencies(source)
     feature = get_render_effect_feature(source.feature_type)
     instance = feature.instantiate(source)
     first_pass = len(graph._passes)
@@ -607,8 +819,14 @@ def _record_feature_passes(source: RenderEffect, feature: RenderEffectFeature):
     graph = RenderGraph("RenderEffectParameterProbe")
     color = graph.create_texture("color", camera_target=True)
     depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
+    normal = graph.create_texture("normal", format=Format.RGBA16_SFLOAT, samples=1)
     motion = graph.create_texture("motion", format=Format.RG16_SFLOAT, samples=1)
-    bus = ResourceBus({"color": color, "depth": depth, "motion": motion})
+    bus = ResourceBus({
+        "color": color,
+        "depth": depth,
+        "normal": normal,
+        "motion": motion,
+    })
     feature.instantiate(source).setup_passes(graph, bus)
     return graph._passes
 
@@ -656,7 +874,9 @@ def expand_render_effect_reference(
         if isinstance(cached, RenderEffect):
             return [cached]
 
-    document = parse_render_effect_document(Path(path).read_text(encoding="utf-8"))
+    document = _LIVE_EFFECT_GROUP_DOCUMENTS.get(cycle_key)
+    if document is None:
+        document = parse_render_effect_document(Path(path).read_text(encoding="utf-8"))
     if isinstance(document, RenderEffectAsset):
         cached = reference.resolve()
         if isinstance(cached, RenderEffect):
@@ -668,8 +888,10 @@ def expand_render_effect_reference(
     flattened = _expand_render_effect_group_document(
         document,
         path,
+        _group_guid=reference.guid,
         _trail=(*_trail, cycle_key),
     )
+    _LIVE_EFFECT_GROUP_DOCUMENTS[cycle_key] = document
     _EFFECT_GROUP_EXPANSIONS[cycle_key] = tuple(flattened)
     reference._group_expansion_cache = (
         _EFFECT_GROUP_EXPANSION_GENERATION,
@@ -683,10 +905,18 @@ def _expand_render_effect_group_document(
     document: RenderEffectGroupAsset,
     path: str,
     *,
+    _group_guid: str = "",
     _trail: tuple[str, ...] = (),
 ) -> list[RenderEffect]:
     """Flatten a parsed group into live effect objects for memory publication."""
+    from Infernux.renderstack.render_effect import EditableRenderEffectGroup
+
     flattened: list[RenderEffect] = []
+    group_resource = EditableRenderEffectGroup(
+        document,
+        file_path=path,
+        guid=_group_guid,
+    )
     for entry in document.entries:
         if not entry.enabled:
             continue
@@ -699,13 +929,23 @@ def _expand_render_effect_group_document(
             _parent=os.path.dirname(path),
             _trail=_trail,
         )
-        if entry.overrides:
-            children = _apply_group_overrides(children, entry.overrides, entry.entry_id)
+        children = _apply_group_overrides(
+            children,
+            entry.overrides,
+            entry.entry_id,
+            group_resource=group_resource,
+        )
         flattened.extend(children)
     return flattened
 
 
-def _apply_group_overrides(sources, overrides: Mapping, entry_id: str):
+def _apply_group_overrides(
+    sources,
+    overrides: Mapping,
+    entry_id: str,
+    *,
+    group_resource=None,
+):
     sources = list(sources)
     for name, value in overrides.items():
         if not any(source.has_parameter(name) for source in sources):
@@ -716,6 +956,8 @@ def _apply_group_overrides(sources, overrides: Mapping, entry_id: str):
         _OverriddenRenderEffect(
             source,
             {name: value for name, value in overrides.items() if source.has_parameter(name)},
+            group_resource=group_resource,
+            entry_id=entry_id,
         )
         for source in sources
     ]
@@ -724,9 +966,20 @@ def _apply_group_overrides(sources, overrides: Mapping, entry_id: str):
 class _OverriddenRenderEffect(RenderEffect):
     """Live view that overlays group-local values on a shared source asset."""
 
-    def __init__(self, source: RenderEffect, overrides: Mapping[str, Any]) -> None:
+    def __init__(
+        self,
+        source: RenderEffect,
+        overrides: Mapping[str, Any],
+        *,
+        group_resource=None,
+        entry_id: str = "",
+    ) -> None:
         self._source = source
         self._overrides = dict(overrides)
+        self._group_resource = group_resource
+        self._group_entry_id = str(entry_id or "")
+        self._group_document_controller = None
+        self._group_revision = 0
         source_asset = source.to_asset()
         parameters = dict(source_asset.parameters)
         parameters.update(self._overrides)
@@ -744,7 +997,7 @@ class _OverriddenRenderEffect(RenderEffect):
 
     @property
     def revision(self) -> int:
-        return self._source.revision
+        return int(self._source.revision) + int(self._group_revision)
 
     @property
     def artifact_revision(self) -> int:
@@ -757,6 +1010,70 @@ class _OverriddenRenderEffect(RenderEffect):
     @property
     def guid(self) -> str:
         return self._source.guid
+
+    @property
+    def group_resource(self):
+        return self._group_resource
+
+    @property
+    def group_entry_id(self) -> str:
+        return self._group_entry_id
+
+    @property
+    def group_path_key(self) -> str:
+        return path_key(str(getattr(self._group_resource, "file_path", "") or ""))
+
+    def publish_group_overrides(self, overrides: Mapping[str, Any]) -> None:
+        applicable = {
+            str(name): self._finite_json_clone(value)
+            for name, value in overrides.items()
+            if self._source.has_parameter(name)
+        }
+        source_asset = self._source.to_asset()
+        parameters = dict(source_asset.parameters)
+        parameters.update(applicable)
+        if parameters == self._parameters and applicable == self._overrides:
+            return
+        self._overrides = applicable
+        self._parameters = parameters
+        self._group_revision += 1
+        self._inspector_parameter_cache = None
+
+    def bind_group_document_controller(self, controller) -> None:
+        self._group_document_controller = controller
+
+    def apply_group_parameter_edit(
+        self,
+        name: str,
+        value: Any,
+        *,
+        view_id: str = "inspector",
+        description: str = "",
+        origin=None,
+    ) -> bool:
+        """Persist one effective value as an override on the owning entry."""
+        controller = self._group_document_controller
+        if controller is None or not self._group_entry_id:
+            return False
+        document = controller.capture_document()
+        for index, entry in enumerate(document.get("entries", ())):
+            if str(entry.get("entry_id", "")) != self._group_entry_id:
+                continue
+            updated_entry = dict(entry)
+            updated_overrides = dict(updated_entry.get("overrides", {}))
+            updated_overrides[str(name)] = self._finite_json_clone(value)
+            updated_entry["overrides"] = updated_overrides
+            document["entries"][index] = updated_entry
+            return bool(
+                controller.apply_document(
+                    document,
+                    view_id=view_id,
+                    edit_key=f"entries.{self._group_entry_id}.overrides.{name}",
+                    description=description or f"Set RenderEffect {name}",
+                    origin=origin,
+                )
+            )
+        return False
 
     def to_asset(self) -> RenderEffectAsset:
         source = self._source.to_asset()

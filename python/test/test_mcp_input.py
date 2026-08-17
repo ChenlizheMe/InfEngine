@@ -158,6 +158,7 @@ def test_semantic_click_helper_delivers_move_press_release(tmp_path, monkeypatch
         "press_render_frame": 43,
             "release_render_frame": 44,
             "press_target_active": True,
+            "press_target_accepted": True,
             "press_frame": {"frame": 43, "target_active": True},
             "delivered": True,
     }

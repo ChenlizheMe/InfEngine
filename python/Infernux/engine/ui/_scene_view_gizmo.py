@@ -83,6 +83,27 @@ class SceneViewGizmoMixin:
             obj.transform.position = Vector3(*snapshot["pos"])
             obj.transform.euler_angles = Vector3(*snapshot["euler"])
             obj.transform.local_scale = Vector3(*snapshot["scale"])
+        self._publish_gizmo_transform_changes(state)
+
+    @staticmethod
+    def _publish_gizmo_transform_changes(state) -> None:
+        object_ids = tuple(int(value) for value in (state or ()))
+        if not object_ids:
+            return
+
+        # Runtime consumers receive the canonical typed mutation. Inspector
+        # also gets an immediate targeted revision because its panel may render
+        # later in this same GUI frame, before the next runtime barrier flush.
+        from Infernux.engine.runtime_change_journal import (
+            RuntimeChangeDomain,
+            runtime_change_journal,
+        )
+        from Infernux.engine.ui.inspector_snapshot import invalidate_scene_transforms
+
+        journal = runtime_change_journal()
+        journal.publish(RuntimeChangeDomain.TRANSFORM_LOCAL, stable_ids=object_ids)
+        journal.publish(RuntimeChangeDomain.TRANSFORM_WORLD, stable_ids=object_ids)
+        invalidate_scene_transforms(object_ids)
 
     def _commit_gizmo_continuous_edit(self, session) -> bool:
         mode = int(session.metadata.get("mode", self._gizmo_tool_mode))
@@ -123,10 +144,12 @@ class SceneViewGizmoMixin:
 
         key = str(getattr(self, "_gizmo_drag_edit_key", "") or "")
         if key:
+            state = self._capture_gizmo_drag_state()
             ContinuousEditService.instance().update(
                 key,
-                self._capture_gizmo_drag_state(),
+                state,
             )
+            self._publish_gizmo_transform_changes(state)
 
     def _commit_interrupted_gizmo_drag(self) -> bool:
         if not getattr(self, "_is_gizmo_dragging", False):

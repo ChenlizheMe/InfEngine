@@ -2,44 +2,160 @@
 
 from __future__ import annotations
 
-from Infernux.components._component_lifecycle import ComponentLifecycleMixin
+from Infernux.components import InxComponent
 from Infernux.components._component_coroutine import ComponentCoroutineMixin
+from Infernux.components._component_lifecycle import ComponentLifecycleMixin
+from Infernux.components._component_lifecycle import _runtime_phase_dispatch_for_type
 from Infernux.components._component_native import ComponentNativeMixin
+from Infernux.components._component_registration import (
+    candidate_component_registration_scope,
+)
+from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
 
 
-class _Probe(ComponentLifecycleMixin):
-    def __init__(self) -> None:
+class _Probe(InxComponent):
+    def awake(self) -> None:
         self.calls: list[str] = []
 
-    def update(self, value: float) -> None:
-        self.calls.append(f"update:{value}")
+    def on_validate(self) -> None:
+        self.calls.append("validate-old")
+
+    def helper(self) -> None:
+        self.calls.append("helper-old")
 
 
-def test_lifecycle_dispatch_reuses_bound_method_for_one_component():
+def test_reload_candidate_defers_dispatch_until_first_use():
+    with candidate_component_registration_scope():
+        class CandidateProbe(InxComponent):
+            def update(self, delta_time: float) -> None:
+                del delta_time
+
+    assert "_runtime_phase_dispatch" not in CandidateProbe.__dict__
+    assert "_runtime_phase_invokers" not in CandidateProbe.__dict__
+
+    dispatch = _runtime_phase_dispatch_for_type(CandidateProbe)
+
+    assert dispatch[0] == (CandidateProbe.update, True)
+    assert CandidateProbe.__dict__["_runtime_phase_dispatch"] is dispatch
+    assert CandidateProbe.__dict__["_runtime_phase_invokers"] is not None
+
+
+def test_lifecycle_dispatch_does_not_retain_a_bound_method():
     probe = _Probe()
+    probe.calls = []
+    publication = publish_runtime_dispatch_epoch((_Probe,))
+    publication.commit()
+    try:
+        assert probe._safe_lifecycle_call("on_validate") is True
+        assert "_lifecycle_dispatch_cache" not in probe.__dict__
 
-    assert probe._safe_lifecycle_call("update", 1.0) is True
-    cached = probe.__dict__["_lifecycle_dispatch_cache"]["update"]
-    assert cached[0] is _Probe
-    bound_method = cached[1]
-
-    assert probe._safe_lifecycle_call("update", 2.0) is True
-    assert probe.__dict__["_lifecycle_dispatch_cache"]["update"][1] is bound_method
-    assert probe.calls == ["update:1.0", "update:2.0"]
+        assert probe._safe_lifecycle_call("on_validate") is True
+        assert probe.calls == ["validate-old", "validate-old"]
+    finally:
+        publication.rollback()
 
 
-def test_lifecycle_dispatch_refreshes_after_class_replacement():
+def test_lifecycle_dispatch_uses_the_new_body_after_epoch_publication():
     probe = _Probe()
-    assert probe._safe_lifecycle_call("update", 1.0) is True
+    probe.calls = []
+    initial = publish_runtime_dispatch_epoch((_Probe,))
+    initial.commit()
 
-    class Replacement(_Probe):
-        def update(self, value: float) -> None:
-            self.calls.append(f"replacement:{value}")
+    old_method = _Probe.on_validate
+    try:
+        assert probe._safe_lifecycle_call("on_validate") is True
 
-    probe.__class__ = Replacement
-    assert probe._safe_lifecycle_call("update", 2.0) is True
-    assert probe.calls == ["update:1.0", "replacement:2.0"]
-    assert probe.__dict__["_lifecycle_dispatch_cache"]["update"][0] is Replacement
+        def replacement(self) -> None:
+            self.calls.append("validate-new")
+
+        _Probe.on_validate = replacement
+        publication = publish_runtime_dispatch_epoch((_Probe,))
+        publication.commit()
+        try:
+            assert probe._safe_lifecycle_call("on_validate") is True
+            assert probe.calls == ["validate-old", "validate-new"]
+        finally:
+            publication.rollback()
+            _Probe.on_validate = old_method
+    finally:
+        initial.rollback()
+
+
+def test_lifecycle_dispatch_observes_method_addition_and_deletion():
+    probe = _Probe()
+    probe.calls = []
+    old_method = _Probe.on_validate
+    initial = publish_runtime_dispatch_epoch((_Probe,))
+    initial.commit()
+    try:
+        def validate(self) -> None:
+            self.calls.append("validate")
+
+        _Probe.on_validate = validate
+        added = publish_runtime_dispatch_epoch((_Probe,))
+        added.commit()
+        try:
+            assert probe._safe_lifecycle_call("on_validate") is True
+            assert probe.calls == ["validate"]
+        finally:
+            added.rollback()
+
+        del _Probe.on_validate
+        removed = publish_runtime_dispatch_epoch((_Probe,))
+        removed.commit()
+        try:
+            assert probe._safe_lifecycle_call("on_validate") is True
+            assert probe.calls == ["validate"]
+        finally:
+            removed.rollback()
+            _Probe.on_validate = old_method
+    finally:
+        initial.rollback()
+
+
+def test_lifecycle_exception_isolated_without_retry():
+    probe = _Probe()
+    probe.calls = []
+    old_method = _Probe.on_validate
+    initial = publish_runtime_dispatch_epoch((_Probe,))
+    initial.commit()
+    try:
+        def fail_once(self) -> None:
+            self.calls.append("failed")
+            raise RuntimeError("expected lifecycle failure")
+
+        _Probe.on_validate = fail_once
+        publication = publish_runtime_dispatch_epoch((_Probe,))
+        publication.commit()
+        try:
+            assert probe._safe_lifecycle_call("on_validate") is False
+            assert probe.calls == ["failed"]
+        finally:
+            publication.rollback()
+            _Probe.on_validate = old_method
+    finally:
+        initial.rollback()
+
+
+def test_published_type_does_not_fall_back_to_a_deleted_method():
+    probe = _Probe()
+    probe.calls = []
+    old_helper = _Probe.helper
+    initial = publish_runtime_dispatch_epoch((_Probe,))
+    initial.commit()
+    try:
+        assert probe._safe_lifecycle_call("helper") is True
+        del _Probe.helper
+        publication = publish_runtime_dispatch_epoch((_Probe,))
+        publication.commit()
+        try:
+            assert probe._safe_lifecycle_call("helper") is False
+            assert probe.calls == ["helper-old"]
+        finally:
+            publication.rollback()
+            _Probe.helper = old_helper
+    finally:
+        initial.rollback()
 
 
 class _NativeCoroutineFlag:

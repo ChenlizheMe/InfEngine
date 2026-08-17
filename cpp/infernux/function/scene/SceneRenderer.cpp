@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace infernux
@@ -71,6 +72,32 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
     if (cachedResult.drawCalls.empty())
         return result;
 
+    const uint64_t cacheKey = camera.cameraId != 0 ? camera.cameraId : 1;
+    CameraCullCache &cameraCache = m_cameraCullCaches[cacheKey];
+    const bool cacheHit = cameraCache.worldId == result.worldOwner->WorldId() &&
+                          cameraCache.structuralRevision == result.worldOwner->StructuralRevision() &&
+                          cameraCache.transformRevision == result.worldOwner->TransformRevision() &&
+                          cameraCache.cullingMask == camera.cullingMask &&
+                          cameraCache.frustumCulling == m_frustumCulling &&
+                          std::memcmp(&cameraCache.viewProjection, &camera.viewProjection, sizeof(glm::mat4)) == 0;
+    if (cacheHit) {
+        cameraCache.worldOwner = result.worldOwner;
+        result.visibleDrawCallsRef = &cameraCache.visibleDrawCalls;
+        result.visibleListRevision = cameraCache.visibleListRevision;
+        if (camera.cullingMask == 0xFFFFFFFFu && includeShadowDrawCalls) {
+            result.shadowDrawCallsRef = &cachedResult.drawCalls;
+            result.shadowListRevision = cameraCache.visibleListRevision;
+        }
+        m_visibleCount.store(cameraCache.visibleCount, std::memory_order_relaxed);
+#if INFERNUX_FRAME_PROFILE
+        m_profileSnapshot.buildCameraMs += std::chrono::duration<double, std::milli>(Clock::now() - buildStart).count();
+        m_profileSnapshot.buildCameraCalls += 1.0;
+        m_profileSnapshot.drawCalls += static_cast<double>(cameraCache.visibleDrawCalls.size());
+#endif
+        return result;
+    }
+
+    cameraCache.visibleDrawCalls.clear();
     const uint32_t cullingMask = camera.cullingMask;
     Frustum frustum;
     if (m_frustumCulling)
@@ -82,8 +109,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
 
     constexpr size_t kRenderContextAppendSlack = 32;
     const size_t previousVisibleCount = m_visibleCount.load(std::memory_order_relaxed);
-    result.visibleDrawCalls.reserve((previousVisibleCount > 0 ? previousVisibleCount : cachedResult.drawCalls.size()) +
-                                    kRenderContextAppendSlack);
+    cameraCache.visibleDrawCalls.reserve(
+        (previousVisibleCount > 0 ? previousVisibleCount : cachedResult.drawCalls.size()) + kRenderContextAppendSlack);
 
     size_t visibleCount = 0;
     for (const auto &renderable : renderables) {
@@ -114,17 +141,32 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
             DrawCall drawCall = cachedResult.drawCalls[drawCallIndex];
             drawCall.frustumVisible = true;
-            result.visibleDrawCalls.push_back(drawCall);
+            cameraCache.visibleDrawCalls.push_back(drawCall);
             if (includeShadowDrawCalls && !allLayersVisible)
                 result.shadowDrawCalls.push_back(std::move(drawCall));
         }
     }
     m_visibleCount.store(visibleCount, std::memory_order_relaxed);
+    cameraCache.worldId = result.worldOwner->WorldId();
+    cameraCache.structuralRevision = result.worldOwner->StructuralRevision();
+    cameraCache.transformRevision = result.worldOwner->TransformRevision();
+    cameraCache.viewProjection = camera.viewProjection;
+    cameraCache.cullingMask = camera.cullingMask;
+    cameraCache.frustumCulling = m_frustumCulling;
+    cameraCache.visibleCount = visibleCount;
+    cameraCache.visibleListRevision = m_nextCameraCullRevision++;
+    if (m_nextCameraCullRevision == 0)
+        m_nextCameraCullRevision = 1;
+    cameraCache.worldOwner = result.worldOwner;
+    result.visibleDrawCallsRef = &cameraCache.visibleDrawCalls;
+    result.visibleListRevision = cameraCache.visibleListRevision;
+    if (result.shadowDrawCallsRef || !result.shadowDrawCalls.empty())
+        result.shadowListRevision = cameraCache.visibleListRevision;
 
 #if INFERNUX_FRAME_PROFILE
     m_profileSnapshot.buildCameraMs += std::chrono::duration<double, std::milli>(Clock::now() - buildStart).count();
     m_profileSnapshot.buildCameraCalls += 1.0;
-    m_profileSnapshot.drawCalls += static_cast<double>(result.visibleDrawCalls.size());
+    m_profileSnapshot.drawCalls += static_cast<double>(cameraCache.visibleDrawCalls.size());
 #endif
     return result;
 }

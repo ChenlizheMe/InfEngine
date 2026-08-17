@@ -11,7 +11,7 @@ from Infernux.engine.ui.inspector_declarative import (
     render_inspector_model,
 )
 from Infernux.engine.ui.inspector_renderstack import build_renderstack_inspector_model
-from Infernux.components.serialized_field import get_serialized_fields
+from Infernux.components.fields import get_serialized_fields
 from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
 from Infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
 from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
@@ -101,7 +101,7 @@ def test_default_forward_pipeline_uses_forward_for_opaque_and_transparent():
 
 
 def test_builtin_pipeline_route_selector_is_not_an_exposed_parameter():
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
 
     assert "material_pass" not in get_serialized_fields(DefaultForwardPipeline)
     assert "material_pass" not in get_serialized_fields(DefaultForwardPlusPipeline)
@@ -174,14 +174,23 @@ def test_default_pipelines_publish_depth_tested_motion_for_both_queue_domains():
         DefaultDeferredPipeline(),
     ):
         graph = RenderGraph(type(pipeline).__name__)
+        graph.set_geometry_buffer_requirements({"motion"})
         pipeline.define_topology(graph)
 
-        motion = graph.get_texture("motion")
+        result = graph.get_pass_result(
+            "gbuffer" if isinstance(pipeline, DefaultDeferredPipeline) else "opaque"
+        )
+        motion = result.sample("motion")
         assert motion is not None
         assert motion.format == Format.RG16_SFLOAT
         assert motion.samples == 1
         multisampled = isinstance(pipeline, DefaultForwardPipeline)
-        motion_target = "_motion_msaa" if multisampled else "motion"
+        source = "gbuffer" if isinstance(pipeline, DefaultDeferredPipeline) else "opaque"
+        motion_target = (
+            f"_result/{source}/motion_msaa"
+            if multisampled
+            else f"_result/{source}/motion"
+        )
         if multisampled:
             assert graph.get_texture(motion_target).samples == 4
 
@@ -190,21 +199,14 @@ def test_default_pipelines_publish_depth_tested_motion_for_both_queue_domains():
             for render_pass in graph._passes
             if render_pass._material_pass == "motion"
         }
-        assert list(passes) == ["OpaqueMotionPass", "TransparentMotionPass"]
-        assert passes["OpaqueMotionPass"]._reads == ["depth"]
-        assert passes["OpaqueMotionPass"]._write_colors == {0: motion_target}
-        assert passes["OpaqueMotionPass"]._resolve_color == (
-            "motion" if multisampled else None
+        assert list(passes) == [f"{source}/Motion"]
+        assert passes[f"{source}/Motion"]._reads == ["depth"]
+        assert passes[f"{source}/Motion"]._write_colors == {0: motion_target}
+        assert passes[f"{source}/Motion"]._resolve_color == (
+            f"_result/{source}/motion" if multisampled else None
         )
-        assert passes["OpaqueMotionPass"]._write_depth is None
-        assert passes["OpaqueMotionPass"]._clear_color == (0.0, 0.0, 0.0, 0.0)
-        assert passes["TransparentMotionPass"]._reads == ["depth"]
-        assert passes["TransparentMotionPass"]._write_colors == {0: motion_target}
-        assert passes["TransparentMotionPass"]._resolve_color == (
-            "motion" if multisampled else None
-        )
-        assert passes["TransparentMotionPass"]._write_depth is None
-        assert passes["TransparentMotionPass"]._clear_color is None
+        assert passes[f"{source}/Motion"]._write_depth is None
+        assert passes[f"{source}/Motion"]._clear_color == (0.0, 0.0, 0.0, 0.0)
 
         stages = {stage.stable_id: stage for stage in graph.effect_stages}
         assert "motion" in stages["after_transparent"].contract.inputs
@@ -221,6 +223,7 @@ def test_forward_motion_targets_follow_every_supported_msaa_value():
         pipeline = DefaultForwardPipeline()
         pipeline.msaa_samples = samples
         graph = RenderGraph(f"Forward Motion X{int(samples)}")
+        graph.set_geometry_buffer_requirements({"motion"})
         pipeline.define_topology(graph)
         description = graph.build()
         textures = {texture.name: texture for texture in description.textures}
@@ -232,18 +235,45 @@ def test_forward_motion_targets_follow_every_supported_msaa_value():
         ]
 
         assert description.msaa_samples == int(samples)
-        assert textures["motion"].samples == 1
+        assert textures["_result/opaque/motion"].samples == 1
         if int(samples) == 1:
-            assert "_motion_msaa" not in textures
-            assert all(p.write_colors == [(0, "motion")] for p in motion_passes)
+            assert "_result/opaque/motion_msaa" not in textures
+            assert all(
+                p.write_colors == [(0, "_result/opaque/motion")]
+                for p in motion_passes
+            )
             assert all(not p.resolve_color for p in motion_passes)
         else:
-            assert textures["_motion_msaa"].samples == int(samples)
-            assert all(p.write_colors == [(0, "_motion_msaa")] for p in motion_passes)
-            assert all(p.resolve_color == "motion" for p in motion_passes)
+            assert textures["_result/opaque/motion_msaa"].samples == int(samples)
+            assert all(
+                p.write_colors == [(0, "_result/opaque/motion_msaa")]
+                for p in motion_passes
+            )
+            assert all(
+                p.resolve_color == "_result/opaque/motion"
+                for p in motion_passes
+            )
         revisions.add(description.source_revision)
 
     assert len(revisions) == len(MSAASamples)
+
+
+def test_default_pipelines_omit_motion_without_a_consumer():
+    from Infernux.rendergraph.graph import RenderGraph
+
+    for pipeline in (
+        DefaultForwardPipeline(),
+        DefaultForwardPlusPipeline(),
+        DefaultDeferredPipeline(),
+    ):
+        graph = RenderGraph(type(pipeline).__name__)
+        pipeline.define_topology(graph)
+
+        assert graph.get_texture("motion") is None
+        assert all(
+            render_pass._material_pass != "motion"
+            for render_pass in graph._passes
+        )
 
 
 def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state(action_journal):
@@ -366,6 +396,7 @@ def test_default_pipeline_ui_and_effect_tail_has_canonical_order():
 
 def test_switching_pipeline_rebuilds_stage_model_without_stale_stage_access(action_journal):
     stack = RenderStack()
+    assert stack.pipeline_class_name == "Default Forward"
     forward_model = build_renderstack_inspector_model(stack)
     choice = forward_model.sections[0].controls[0]
     pipelines = tuple(choice.options())
@@ -385,6 +416,10 @@ def test_switching_pipeline_rebuilds_stage_model_without_stale_stage_access(acti
     assert "stage_after_gbuffer" not in {
         control.key for control in forward_controls if isinstance(control, InspectorList)
     }
+
+    forward_choice = build_renderstack_inspector_model(stack).sections[0].controls[0]
+    forward_choice.on_change(tuple(forward_choice.options()).index("Default Forward"))
+    assert stack.pipeline_class_name == "Default Forward"
 
 
 def test_broken_topology_probe_keeps_the_last_valid_inspector_model(monkeypatch):

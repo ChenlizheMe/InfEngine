@@ -139,14 +139,10 @@ GPUMaterialPreview::GPUMaterialPreview(InxVkCoreModular *vkCore) : m_vkCore(vkCo
 
 GPUMaterialPreview::~GPUMaterialPreview()
 {
-    VkDevice device = m_vkCore ? m_vkCore->GetDevice() : VK_NULL_HANDLE;
-    if (device == VK_NULL_HANDLE)
+    if (!m_vkCore)
         return;
 
-    DestroyFramebuffer();
-
-    if (m_renderPass != VK_NULL_HANDLE)
-        vkDestroyRenderPass(device, m_renderPass, nullptr);
+    DestroyAttachments();
 
     m_sphereVBO.reset();
     m_sphereIBO.reset();
@@ -157,8 +153,11 @@ GPUMaterialPreview::~GPUMaterialPreview()
 // RenderToPixels — main entry point
 // ============================================================================
 
-std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels(InxMaterial &material, int size)
+std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels(InxMaterial &material, int size,
+                                                                                 bool *texturePending)
 {
+    if (texturePending)
+        *texturePending = false;
     if (!m_vkCore || size <= 0)
         return nullptr;
     if (m_activeReadback && !m_activeReadback->IsDone())
@@ -260,13 +259,13 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
             return false;
         }
 
-        MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(passMat->GetMaterialKey());
+        MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(binding.material, true);
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE) {
             if (!m_vkCore->RefreshPreviewMaterialPipeline(binding.material, passMat->GetVertShaderName(),
                                                           passMat->GetFragShaderName(), false)) {
                 return false;
             }
-            rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(passMat->GetMaterialKey());
+            rd = m_vkCore->GetOrCreatePreviewMaterialPass(binding.material, true);
         }
 
         if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE) {
@@ -296,6 +295,11 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
         // immutable preview binding, otherwise this command buffer can retain
         // the descriptor generation that was just retired.
         m_vkCore->UpdateMaterialUBO(*binding.material);
+        if (m_vkCore->GetMaterialPipelineManager().HasPendingTextureProperties(binding.material->GetMaterialKey())) {
+            if (texturePending)
+                *texturePending = true;
+            return nullptr;
+        }
         if (!refreshPassBinding(binding)) {
             INXLOG_WARN("GPUMaterialPreview: preview pass pipeline not ready");
             return nullptr;
@@ -318,6 +322,8 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     sceneUBO.proj = proj;
     sceneUBO.previousViewProj = proj * view;
     sceneUBO.inverseViewProj = glm::inverse(proj * view);
+    sceneUBO.projectionParams = glm::vec4(0.1f, 100.0f, 0.01f, 0.001f);
+    sceneUBO.zBufferParams = glm::vec4(-999.0f, 1000.0f, -9.99f, 10.0f);
 
     // ------------------------------------------------------------------
     // Prepare preview lighting UBO.
@@ -413,22 +419,45 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
                          0, nullptr, 0, nullptr);
 
     // ------------------------------------------------------------------
-    // Begin render pass
+    // Begin the RHI-selected graphics attachment path.
     // ------------------------------------------------------------------
     VkClearValue clearValues[2];
     clearValues[0].color = {{kPreviewMatteR, kPreviewMatteG, kPreviewMatteB, kPreviewMatteA}};
     clearValues[1].depthStencil = {1.0f, 0};
 
-    VkRenderPassBeginInfo rpBegin{};
-    rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpBegin.renderPass = m_renderPass;
-    rpBegin.framebuffer = m_framebuffer;
-    rpBegin.renderArea.offset = {0, 0};
-    rpBegin.renderArea.extent = {static_cast<uint32_t>(renderSize), static_cast<uint32_t>(renderSize)};
-    rpBegin.clearValueCount = 2;
-    rpBegin.pClearValues = clearValues;
+    vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT, m_msaaColorLayout,
+                                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    if (m_depth.HasView()) {
+        vkrender::TransitionTrackedImageLayout(cmd, m_depth.GetImage(), rhi::ToVkImageAspectMask(m_depthFormat),
+                                               m_depthLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    }
 
-    vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = m_msaaColor.GetView();
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue = clearValues[0];
+
+    VkRenderingAttachmentInfo depthAttachment{};
+    if (m_depth.HasView()) {
+        depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depthAttachment.imageView = m_depth.GetView();
+        depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.clearValue = clearValues[1];
+    }
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.extent = {static_cast<uint32_t>(renderSize), static_cast<uint32_t>(renderSize)};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.pDepthAttachment = m_depth.HasView() ? &depthAttachment : nullptr;
+    m_dynamicRenderingCommands.begin(cmd, &renderingInfo);
 
     // Viewport & scissor
     VkViewport viewport{};
@@ -499,31 +528,50 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
                                                   &globalsDesc, 0, nullptr);
         }
 
+        if (binding.program->UsesBindlessTextureABI()) {
+            auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
+            const auto bindlessBinding = rhiDevice.GetBindlessTextureTableBinding();
+            const VkDescriptorSet bindlessSet = rhiDevice.Resolve(bindlessBinding.group);
+            if (bindlessSet == VK_NULL_HANDLE) {
+                static int missingBindlessSetErrorCount = 0;
+                if (missingBindlessSetErrorCount++ < 8)
+                    INXLOG_ERROR(
+                        "Material preview pass skipped because the device-global texture table is unavailable");
+                continue;
+            } else {
+                vkdebug::CmdBindDescriptorSetsTracked("GPUMaterialPreview.RenderToPixels.BindlessTextures", cmd,
+                                                      VK_PIPELINE_BIND_POINT_GRAPHICS, binding.pipelineLayout,
+                                                      ShaderProgram::BindlessTextureSet, 1, &bindlessSet, 0, nullptr);
+                if (const auto *indices =
+                        m_vkCore->GetMaterialPipelineManager().GetDescriptorManager().GetBindlessTextureIndices(
+                            binding.material->GetMaterialKey())) {
+                    rhiDevice.MarkBindlessTexturesUsed(indices->empty() ? nullptr : indices->data(), indices->size());
+                }
+            }
+        }
+
         vkCmdPushConstants(cmd, binding.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants),
                            &pushData);
         vkCmdDrawIndexed(cmd, m_sphereIndexCount, 1, 0, 0, 0);
         anyDrawn = true;
     }
 
-    vkCmdEndRenderPass(cmd);
+    m_dynamicRenderingCommands.end(cmd);
+    m_msaaColorLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    if (m_depth.HasView())
+        m_depthLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     // ------------------------------------------------------------------
     // Resolve MSAA → single-sample resolve image
     // ------------------------------------------------------------------
     if (m_sampleCount != VK_SAMPLE_COUNT_1_BIT) {
         // Transition MSAA color → TRANSFER_SRC
-        VkImageMemoryBarrier msaaBarrier = vkrender::MakeImageBarrier(
-            m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
-                             nullptr, 0, nullptr, 1, &msaaBarrier);
+        vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT,
+                                               m_msaaColorLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
         // Transition resolve → TRANSFER_DST
-        VkImageMemoryBarrier resolveBarrier = vkrender::MakeImageBarrier(
-            m_resolveColor.GetImage(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                             nullptr, 1, &resolveBarrier);
+        vkrender::TransitionTrackedImageLayout(cmd, m_resolveColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT,
+                                               m_resolveColorLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
         // Resolve
         VkImageResolve resolveRegion{};
@@ -534,18 +582,12 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolveRegion);
 
         // Transition resolve → TRANSFER_SRC for readback
-        VkImageMemoryBarrier readbackBarrier = vkrender::MakeImageBarrier(
-            m_resolveColor.GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                             nullptr, 1, &readbackBarrier);
+        vkrender::TransitionTrackedImageLayout(cmd, m_resolveColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT,
+                                               m_resolveColorLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     } else {
         // No MSAA — transition MSAA color (which is really 1x) → TRANSFER_SRC
-        VkImageMemoryBarrier barrier = vkrender::MakeImageBarrier(
-            m_msaaColor.GetImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
-                             nullptr, 0, nullptr, 1, &barrier);
+        vkrender::TransitionTrackedImageLayout(cmd, m_msaaColor.GetImage(), VK_IMAGE_ASPECT_COLOR_BIT,
+                                               m_msaaColorLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     }
 
     // ------------------------------------------------------------------
@@ -782,26 +824,25 @@ bool GPUMaterialPreview::EnsureResources(int size)
     VkFormat colorFormat = mpm.GetColorFormat();
     VkFormat depthFormat = mpm.GetDepthFormat();
     VkSampleCountFlagBits sampleCount = mpm.GetSampleCount();
+    const auto dynamicCommands = rhi::ResolveDynamicRenderingCommands(m_vkCore->GetDevice());
+    if (!m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilityState().dynamicRendering.enabled ||
+        !dynamicCommands.IsValid()) {
+        INXLOG_ERROR("GPUMaterialPreview: dynamic rendering is required for material previews");
+        return false;
+    }
 
     const bool renderConfigChanged =
-        (m_renderPass != VK_NULL_HANDLE) &&
+        (m_currentSize != 0) &&
         (colorFormat != m_colorFormat || depthFormat != m_depthFormat || sampleCount != m_sampleCount);
 
     if (renderConfigChanged) {
-        DestroyFramebuffer();
-        vkDestroyRenderPass(m_vkCore->GetDevice(), m_renderPass, nullptr);
-        m_renderPass = VK_NULL_HANDLE;
+        DestroyAttachments();
     }
 
     m_colorFormat = colorFormat;
     m_depthFormat = depthFormat;
     m_sampleCount = sampleCount;
-
-    if (m_renderPass == VK_NULL_HANDLE)
-        CreateRenderPass();
-
-    if (m_renderPass == VK_NULL_HANDLE)
-        return false;
+    m_dynamicRenderingCommands = dynamicCommands;
 
     if (!m_sphereVBO || !m_sphereIBO)
         CreateSphereBuffers();
@@ -810,87 +851,17 @@ bool GPUMaterialPreview::EnsureResources(int size)
         return false;
 
     if (m_currentSize != size) {
-        DestroyFramebuffer();
-        CreateFramebuffer(size);
+        DestroyAttachments();
+        CreateAttachments(size);
         m_currentSize = size;
-        if (m_framebuffer != VK_NULL_HANDLE)
+        if (m_msaaColor.IsValid())
             PublishRenderView();
     }
 
-    return m_framebuffer != VK_NULL_HANDLE && EnsureViewResources();
+    return m_msaaColor.IsValid() && EnsureViewResources();
 }
 
-void GPUMaterialPreview::CreateRenderPass()
-{
-    VkDevice device = m_vkCore->GetDevice();
-
-    // Must match MaterialPipelineManager::CreateInternalRenderPass exactly
-    // for pipeline compatibility.
-    std::vector<VkAttachmentDescription> attachments;
-    std::vector<VkAttachmentReference> colorRefs;
-    VkAttachmentReference depthRef{};
-
-    // Attachment 0: MSAA color
-    VkAttachmentDescription colorAtt{};
-    colorAtt.format = m_colorFormat;
-    colorAtt.samples = m_sampleCount;
-    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAtt.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    attachments.push_back(colorAtt);
-
-    VkAttachmentReference colorRef{};
-    colorRef.attachment = 0;
-    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorRefs.push_back(colorRef);
-
-    // Attachment 1: depth
-    bool hasDepth = (m_depthFormat != VK_FORMAT_UNDEFINED);
-    if (hasDepth) {
-        VkAttachmentDescription depthAtt{};
-        depthAtt.format = m_depthFormat;
-        depthAtt.samples = m_sampleCount;
-        depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        depthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depthAtt.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        attachments.push_back(depthAtt);
-
-        depthRef.attachment = 1;
-        depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    }
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = static_cast<uint32_t>(colorRefs.size());
-    subpass.pColorAttachments = colorRefs.data();
-    subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
-    subpass.pResolveAttachments = nullptr;
-
-    // Must match MaterialPipelineManager subpass dependency for compatibility.
-    const VkSubpassDependency dependency = vkrender::MakePipelineCompatibleSubpassDependency();
-
-    VkRenderPassCreateInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-    rpInfo.pAttachments = attachments.data();
-    rpInfo.subpassCount = 1;
-    rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = 1;
-    rpInfo.pDependencies = &dependency;
-
-    if (vkCreateRenderPass(device, &rpInfo, nullptr, &m_renderPass) != VK_SUCCESS) {
-        INXLOG_ERROR("GPUMaterialPreview: failed to create render pass");
-        m_renderPass = VK_NULL_HANDLE;
-    }
-}
-
-void GPUMaterialPreview::CreateFramebuffer(int size)
+void GPUMaterialPreview::CreateAttachments(int size)
 {
     VkDevice device = m_vkCore->GetDevice();
     VmaAllocator allocator = m_vkCore->GetDeviceContext().GetVmaAllocator();
@@ -914,48 +885,25 @@ void GPUMaterialPreview::CreateFramebuffer(int size)
     if (m_depthFormat != VK_FORMAT_UNDEFINED) {
         m_depth.Create(allocator, device, w, h, m_depthFormat, VK_IMAGE_TILING_OPTIMAL,
                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_sampleCount);
-        m_depth.CreateView(m_depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
-    }
-
-    // Framebuffer
-    std::vector<VkImageView> fbAttachments;
-    fbAttachments.push_back(m_msaaColor.GetView());
-    if (m_depth.IsValid())
-        fbAttachments.push_back(m_depth.GetView());
-
-    VkFramebufferCreateInfo fbInfo{};
-    fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fbInfo.renderPass = m_renderPass;
-    fbInfo.attachmentCount = static_cast<uint32_t>(fbAttachments.size());
-    fbInfo.pAttachments = fbAttachments.data();
-    fbInfo.width = w;
-    fbInfo.height = h;
-    fbInfo.layers = 1;
-
-    if (vkCreateFramebuffer(device, &fbInfo, nullptr, &m_framebuffer) != VK_SUCCESS) {
-        INXLOG_ERROR("GPUMaterialPreview: failed to create framebuffer");
-        m_framebuffer = VK_NULL_HANDLE;
-        return;
+        m_depth.CreateView(m_depthFormat, rhi::ToVkImageAspectMask(m_depthFormat));
     }
 }
 
-void GPUMaterialPreview::DestroyFramebuffer()
+void GPUMaterialPreview::DestroyAttachments()
 {
     UnpublishRenderView();
-    VkDevice device = m_vkCore->GetDevice();
-    if (m_framebuffer != VK_NULL_HANDLE) {
-        vkDestroyFramebuffer(device, m_framebuffer, nullptr);
-        m_framebuffer = VK_NULL_HANDLE;
-    }
     m_msaaColor.Destroy();
     m_resolveColor.Destroy();
     m_depth.Destroy();
+    m_msaaColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_resolveColorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_currentSize = 0;
 }
 
 void GPUMaterialPreview::PublishRenderView()
 {
-    if (!m_vkCore || m_framebuffer == VK_NULL_HANDLE)
+    if (!m_vkCore || !m_msaaColor.IsValid())
         return;
     auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
     if (m_renderView.color.IsValid())

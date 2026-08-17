@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 
-from Infernux.components.serialized_field import get_serialized_fields
+from Infernux.components.fields import get_serialized_fields
 from Infernux.engine.ui.inspector_utils import (
     has_field_changed,
     max_label_w,
@@ -31,6 +31,7 @@ def apply_render_effect_parameter_edit(
     value,
     *,
     resource_controller=None,
+    origin=None,
 ) -> bool:
     """Apply one typed parameter edit to the shared asset with Undo support."""
     from Infernux.renderstack.render_effect_compiler import get_render_effect_feature
@@ -51,6 +52,18 @@ def apply_render_effect_parameter_edit(
     new_document = copy.deepcopy(old_document)
     new_document["parameters"][field_name] = instance.get_params_dict()[field_name]
 
+    group_edit = getattr(effect, "apply_group_parameter_edit", None)
+    if callable(group_edit):
+        return bool(
+            group_edit(
+                field_name,
+                new_document["parameters"][field_name],
+                view_id="inspector",
+                description=f"Set RenderEffect {pretty_field_name(field_name)}",
+                origin=origin,
+            )
+        )
+
     if resource_controller is not None:
         return bool(
             resource_controller.apply_document(
@@ -58,6 +71,7 @@ def apply_render_effect_parameter_edit(
                 view_id="inspector",
                 edit_key=field_name,
                 description=f"Set RenderEffect {pretty_field_name(field_name)}",
+                origin=origin,
             )
         )
 

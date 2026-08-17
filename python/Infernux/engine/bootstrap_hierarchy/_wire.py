@@ -1,6 +1,7 @@
 """Main wiring function for the C++ HierarchyPanel."""
 from __future__ import annotations
 
+from dataclasses import replace
 import weakref
 from typing import TYPE_CHECKING
 
@@ -53,9 +54,15 @@ def _wire_canvas_queries(ctx):
             _clear_query_cache()
             return query_cache
 
-        from Infernux.ui.ui_canvas_utils import collect_canvases_with_go
+        from Infernux.engine.ui.runtime_canvas_snapshot import (
+            collect_runtime_canvas_snapshot_with_go,
+        )
+        from Infernux.lib import SceneManager as _SM
 
-        canvases_with_go = collect_canvases_with_go(scene)
+        canvases_with_go = collect_runtime_canvas_snapshot_with_go(
+            scene,
+            _SM.instance().get_runtime_persistent_scene(),
+        )
         canvas_list_token = id(canvases_with_go)
         scene_structure_version = int(getattr(scene, "structure_version", -1))
 
@@ -72,7 +79,7 @@ def _wire_canvas_queries(ctx):
         canvas_root_ids = set()
 
         for canvas_go, _canvas in canvases_with_go:
-            if canvas_go is None:
+            if canvas_go is None or getattr(canvas_go, "scene", None) is not scene:
                 continue
 
             canvas_go_id = int(getattr(canvas_go, "id", 0) or 0)
@@ -295,13 +302,30 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
         target_id = value.strip()
         return {"target_id": target_id} if target_id else {}
 
-    hp.execute_command = lambda command_id, source, argument: (
-        command_registry.execute(
+    def _execute_hierarchy_command(command_id, source, argument):
+        """Route native pointer gestures through their actual owner view.
+
+        Native widgets execute while ImGui is still publishing the new focus.
+        Using the previous global focus here can route a Hierarchy gesture to
+        Scene View (or another panel), which makes foldout clicks look inert.
+        """
+        command_context = command_registry.context(
+            CommandSource(source),
+            _command_payload(command_id, argument),
+        )
+        hierarchy_focus = replace(
+            command_context.focus,
+            active_panel_id="hierarchy",
+            active_view_id="hierarchy",
+            child_context_id="",
+            capture_owner_id="",
+        )
+        return command_registry.execute_context(
             command_id,
-            source=CommandSource(source),
-            payload=_command_payload(command_id, argument),
+            replace(command_context, focus=hierarchy_focus),
         ).accepted
-    )
+
+    hp.execute_command = _execute_hierarchy_command
     def _render_context_menu(
         ctx_arg,
         target_id,

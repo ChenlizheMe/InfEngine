@@ -154,6 +154,13 @@ struct UniformBufferObject
     alignas(16) glm::mat4 proj;
     alignas(16) glm::mat4 previousViewProj;
     alignas(16) glm::mat4 inverseViewProj;
+    // Per-view projection data. These values deliberately live beside the
+    // camera matrices instead of EngineGlobals: Scene and Game views can be
+    // rendered in the same frame with different clipping planes.
+    // x = near, y = far, z = 1 / far, w = near / far
+    alignas(16) glm::vec4 projectionParams{0.01f, 5000.0f, 0.0002f, 0.000002f};
+    // x = 1 - far / near, y = far / near, z = x / far, w = y / far
+    alignas(16) glm::vec4 zBufferParams{1.0f, 0.0f, 0.0f, 0.0f};
 };
 
 /**
@@ -180,6 +187,7 @@ struct DrawCall
     RenderDrawIdentity identity;           // Stable source identity across scene/component lifetimes
     bool frustumVisible = true;            // Whether object passed main-camera frustum culling
     bool castsShadows = true;              // Whether the source renderer participates in shadow passes
+    bool isStatic = false;                 // Standard GameObject static contract; skinned renderers remain dynamic
     AABB worldBounds;                      // World-space bounding box for shadow cascade culling
 
     // Per-object mesh data pointers

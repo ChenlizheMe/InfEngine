@@ -239,3 +239,69 @@ def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):
     assert result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED
     assert result.error == "shader compile failed"
     assert order == ["db-reimport", "shader-runtime"]
+
+
+def test_internal_python_reimport_only_submits_collector_after_catalog_mutation(
+    monkeypatch,
+):
+    order = []
+    database = _Database(order)
+    database.paths = {"old.py": "guid"}
+    _isolate_side_effects(monkeypatch, order)
+
+    class _Resources:
+        @staticmethod
+        def submit_script_change(path, **kwargs):
+            order.append(("collector", path, kwargs))
+
+    from Infernux.engine.resources_manager import ResourcesManager
+
+    monkeypatch.setattr(
+        ResourcesManager,
+        "instance",
+        classmethod(lambda _cls: _Resources()),
+    )
+
+    result = AssetManager.reimport_asset("old.py", database=database)
+
+    assert result and result.guid == "guid"
+    assert "registry-reload" not in order
+    assert order[:2] == ["db-reimport", "py-evict"]
+    assert order[-1][0] == "collector"
+    assert order[-1][1] == "old.py"
+    assert order[-1][2]["catalog_event"] == "modified"
+
+
+def test_external_python_reimport_leaves_collector_and_publication_to_watcher_path(monkeypatch):
+    order = []
+    database = _Database(order)
+    database.paths = {"old.py": "guid"}
+    _isolate_side_effects(monkeypatch, order)
+
+    def fail_if_submitted(*_args, **_kwargs):
+        raise AssertionError("external watcher reimport must not submit collector")
+
+    monkeypatch.setattr(
+        AssetManager,
+        "_submit_internal_script_change",
+        classmethod(fail_if_submitted),
+    )
+    monkeypatch.setattr(
+        AssetManager,
+        "note_imported_disk_change",
+        classmethod(
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("script collector owns the source revision")
+            )
+        ),
+    )
+
+    result = AssetManager.reimport_asset(
+        "old.py",
+        database=database,
+        suppress_watcher_echo=False,
+    )
+
+    assert result and result.guid == "guid"
+    assert "registry-reload" not in order
+    assert order == ["db-reimport", "py-evict"]

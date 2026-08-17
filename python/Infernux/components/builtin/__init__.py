@@ -2,14 +2,21 @@
 Built-in component wrappers — Python InxComponent facades for C++ components.
 
 Provides ``Light``, ``MeshRenderer``, ``Camera``, ``BoxCollider``,
-``SphereCollider``, ``CapsuleCollider``, and ``MeshCollider`` as first-class
+``SphereCollider``, ``CapsuleCollider``, ``CylinderCollider``, and
+``MeshCollider`` as first-class
 InxComponent subclasses.  All state lives in the C++ component; CppProperty
 descriptors delegate reads / writes transparently.
 
 Usage::
 
     from Infernux.components.builtin import Light, MeshRenderer, Camera
-    from Infernux.components.builtin import BoxCollider, SphereCollider, CapsuleCollider, MeshCollider
+    from Infernux.components.builtin import (
+        BoxCollider,
+        SphereCollider,
+        CapsuleCollider,
+        CylinderCollider,
+        MeshCollider,
+    )
     from Infernux.components import InxComponent
 
     class MyScript(InxComponent):
@@ -26,6 +33,7 @@ from .collider import Collider, PhysicsMaterialCombine
 from .box_collider import BoxCollider
 from .sphere_collider import SphereCollider
 from .capsule_collider import CapsuleCollider
+from .cylinder_collider import CylinderCollider
 from .mesh_collider import MeshCollider
 from .rigidbody import (
     Rigidbody,
@@ -47,6 +55,7 @@ __all__ = [
     "BoxCollider",
     "SphereCollider",
     "CapsuleCollider",
+    "CylinderCollider",
     "MeshCollider",
     "Rigidbody",
     "RigidbodyConstraints",

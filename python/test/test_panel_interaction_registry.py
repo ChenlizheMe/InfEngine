@@ -194,6 +194,16 @@ def test_panel_shortcut_metadata_projects_without_bootstrap_panel_branches():
     core.shutdown()
 
 
+def test_panel_registry_rejects_declared_commands_missing_from_global_registry():
+    registry = PanelInteractionRegistry()
+    registry.register_type("test_panel", _descriptor([]))
+
+    with pytest.raises(RuntimeError, match="test.run"):
+        registry.require_registered_commands(())
+
+    registry.require_registered_commands(("test.run",))
+
+
 def test_panel_shortcut_identity_does_not_depend_on_the_default_chord():
     first = PanelInteractionRegistry()
     second = PanelInteractionRegistry()

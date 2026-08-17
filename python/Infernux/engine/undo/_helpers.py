@@ -121,10 +121,25 @@ def _bump_inspector_structure():
         pass
 
 
-def _bump_inspector_values():
+def _inspector_snapshot_revision() -> int:
+    try:
+        from Infernux.engine.ui.inspector_snapshot import InspectorSnapshotService
+
+        return InspectorSnapshotService.instance().revision()
+    except ImportError:
+        return 0
+
+
+def _bump_inspector_values(snapshot_baseline: int | None = None):
     try:
         from Infernux.engine.ui.inspector_support import bump_inspector_value_generation
-        bump_inspector_value_generation()
+        from Infernux.engine.ui.inspector_snapshot import InspectorSnapshotService
+
+        publish_snapshot = (
+            snapshot_baseline is None
+            or InspectorSnapshotService.instance().revision() == snapshot_baseline
+        )
+        bump_inspector_value_generation(publish_snapshot=publish_snapshot)
     except ImportError:
         # Inspector module not available (e.g. headless / player mode) — no-op.
         pass

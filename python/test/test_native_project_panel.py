@@ -22,6 +22,14 @@ class TestProjectPanelCreation:
         assert "from Infernux import *" in SCRIPT_TEMPLATE
         assert "from Infernux.components import *" in SCRIPT_TEMPLATE
 
+        namespace = {}
+        exec(
+            "from Infernux import *\n"
+            "from Infernux.components import *\n",
+            namespace,
+        )
+        assert callable(namespace["serialized_field"])
+
     def test_creation(self):
         pp = ProjectPanel()
         assert pp is not None
@@ -42,6 +50,14 @@ class TestProjectPanelCreation:
     def test_explicit_global_rename_target_bridges_empty_native_selection(self):
         pp = ProjectPanel()
         target = "C:/Project/Assets/Smoke.mat"
+
+        assert pp.can_rename_selected_asset(target)
+        assert pp.begin_rename_selected_asset(target)
+
+    def test_explicit_create_target_replaces_stale_native_selection(self):
+        pp = ProjectPanel()
+        pp.set_selected_file("C:/Project/Assets/Previous.mat", False)
+        target = "C:/Project/Assets/NewMaterial.mat"
 
         assert pp.can_rename_selected_asset(target)
         assert pp.begin_rename_selected_asset(target)
@@ -734,17 +750,42 @@ class TestProjectPanelCallbacks:
         assert "m_engine->GetTexturePreviewSize(resourceKey)" in source
         assert "m_selectedSet.find(*selectionKey)" in source
 
-    def test_project_search_filters_a_generation_cached_memory_index(self):
+    def test_project_search_filters_an_immutable_catalog_off_the_render_thread(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
-        search = source[source.index("void ProjectPanel::RebuildSearchIndex"):
+        header = Path("cpp/infernux/function/editor/ProjectPanel.h").read_text(encoding="utf-8")
+        search = source[source.index("void ProjectPanel::ScheduleSearch"):
                         source.index("void ProjectPanel::RenderSearchResults")]
 
-        assert "m_searchIndexGeneration" in search
-        assert "m_searchIndex.push_back" in search
-        assert "m_search.MatchesNormalized(indexed.searchKey)" in search
-        assert "m_search.MakeToken(generation, folderRoot)" in search
+        assert "JobSystem::Get().Schedule" in search
+        assert "JobDomain::Asset, JobPriority::Low" in search
+        assert "GetCatalogSnapshot()" in search
+        assert "catalog->GetDirectories()" in search
+        assert "normalizedQuery" in search
+        assert "requestSerial" in search
+        assert "desiredSerial" in search
+        assert "completion->cancelled" in search
+        assert "completion->token != m_searchDesiredToken" in source
+        assert "std::shared_ptr<const std::vector<SearchIndexEntry>> m_searchIndex" in header
+        assert "std::mutex mutex" in header
         assert "CollectMatchingFolders" not in source
         assert "directory_iterator" not in search
+
+        breadcrumb = source[source.index("void ProjectPanel::RenderBreadcrumb"):
+                            source.index("void ProjectPanel::ResetAsyncSearch")]
+        assert "UpdateSearchResults();" in breadcrumb
+        assert "GetAllGuids" not in breadcrumb
+        assert "GetPathFromGuid" not in breadcrumb
+
+    def test_project_search_empty_query_is_an_immediate_projection_restore(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        update = source[source.index("void ProjectPanel::UpdateSearchResults"):
+                        source.index("void ProjectPanel::RenderSearchResults")]
+
+        inactive = update[update.index("if (!m_search.IsActive())"):
+                          update.index("ScheduleSearch(token, generation, folderRoot);")]
+        assert "m_searchResults" not in inactive
+        assert "ScheduleSearch" not in inactive
+        assert "m_searchBusy = false" in inactive
 
     def test_project_search_exposes_the_shared_semantic_target(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
@@ -756,17 +797,14 @@ class TestProjectPanelCallbacks:
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
         search = source[source.index("void ProjectPanel::RenderSearchResults"):
                         source.index("// Folder tree")]
-        iteration = search[search.index("for (const auto &item : m_searchResults)"):
+        iteration = search[search.index("ImGuiListClipper clipper"):
                            search.index("if (!hasActivatedItem)")]
 
         assert "activatedItem = item" in iteration
         assert "m_searchResults.clear()" not in iteration
-        assert search.index("RequestDirectoryNavigation(activatedItem.path)") < search.index(
-            "m_searchResults.clear()"
-        )
-        assert search.index("RequestAssetLocation(activatedItem.path)") < search.index(
-            "m_searchResults.clear()"
-        )
+        assert "clipper.Begin(static_cast<int>(m_searchResults.size()))" in iteration
+        assert search.index("RequestDirectoryNavigation(activatedItem.path)") < search.index("ResetAsyncSearch()")
+        assert search.index("RequestAssetLocation(activatedItem.path)") < search.index("ResetAsyncSearch()")
 
     def test_parent_navigation_stops_using_the_previous_grid_snapshot(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")

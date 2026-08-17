@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 from typing import Any
 
@@ -67,6 +68,7 @@ def register_material_tools(mcp, project_path: str) -> None:
                 raise FileNotFoundError(f"Material directory does not exist: {relative_path(parent, project_path)}")
             name = os.path.splitext(os.path.basename(file_path))[0]
             mat = Material.create_unlit(name) if str(template).lower() == "unlit" else Material.create_lit(name)
+            mat.native.is_builtin = False
             _set_properties(mat, properties or {})
 
             def _write_material():
@@ -325,9 +327,16 @@ def _apply_material_edit(
     from Infernux.engine.interaction import ActionOrigin
 
     material, controller = _editable_material(project_path, path)
+    original_document = material.serialize_document()
     candidate = material.clone()
     mutate(candidate)
     document = candidate.serialize_document()
+    # clone() deliberately creates a unique runtime identity.  The candidate
+    # only isolates mutations; its instance name/builtin flag must never leak
+    # back into the durable asset document.
+    for identity_field in ("name", "builtin"):
+        if identity_field in original_document:
+            document[identity_field] = copy.deepcopy(original_document[identity_field])
     if not controller.apply_document(
         document,
         view_id="automation",

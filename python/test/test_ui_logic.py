@@ -2493,10 +2493,11 @@ class TestUICanvasRaycast:
 class TestUICanvasCollectionCache:
     class _Root:
         def __init__(self, canvas):
-            self._canvas = canvas
+            self.id = id(self)
+            self._components = [] if canvas is None else [canvas]
 
         def get_py_components(self):
-            return [self._canvas]
+            return list(self._components)
 
         @staticmethod
         def get_children():
@@ -2508,8 +2509,12 @@ class TestUICanvasCollectionCache:
 
         def __init__(self, canvas):
             self._root = TestUICanvasCollectionCache._Root(canvas)
+            self.world_id = id(self)
+            self.temporal_discontinuity_revision = 0
+            self.root_queries = 0
 
         def get_root_objects(self):
+            self.root_queries += 1
             return [self._root]
 
     def test_same_name_and_version_do_not_alias_distinct_scenes(self):
@@ -2524,6 +2529,114 @@ class TestUICanvasCollectionCache:
         invalidate_canvas_cache()
         assert collect_canvases(first_scene) == [first_canvas]
         assert collect_canvases(second_scene) == [second_canvas]
+
+    def test_temporal_discontinuity_rebuilds_same_scene_canvas_cache(self):
+        from Infernux.ui import UICanvas
+        from Infernux.ui.ui_canvas_utils import collect_canvases, invalidate_canvas_cache
+
+        first_canvas = UICanvas()
+        second_canvas = UICanvas()
+        scene = self._Scene(first_canvas)
+
+        invalidate_canvas_cache()
+        assert collect_canvases(scene) == [first_canvas]
+
+        scene._root = self._Root(second_canvas)
+        scene.temporal_discontinuity_revision += 1
+        assert collect_canvases(scene) == [second_canvas]
+
+    def test_runtime_collection_includes_persistent_scene_canvases(self):
+        from Infernux.ui import UICanvas
+        from Infernux.ui.ui_canvas_utils import (
+            collect_sorted_runtime_canvases,
+            invalidate_canvas_cache,
+        )
+
+        active_canvas = UICanvas()
+        active_canvas.sort_order = 10
+        persistent_canvas = UICanvas()
+        persistent_canvas.sort_order = 5
+
+        invalidate_canvas_cache()
+        canvases = collect_sorted_runtime_canvases(
+            self._Scene(active_canvas),
+            self._Scene(persistent_canvas),
+        )
+
+        assert canvases == [persistent_canvas, active_canvas]
+
+    def test_runtime_collection_with_owners_includes_persistent_scene(self):
+        from Infernux.ui import UICanvas
+        from Infernux.ui.ui_canvas_utils import (
+            collect_runtime_canvases_with_go,
+            invalidate_canvas_cache,
+        )
+
+        active_canvas = UICanvas()
+        persistent_canvas = UICanvas()
+        active_scene = self._Scene(active_canvas)
+        persistent_scene = self._Scene(persistent_canvas)
+
+        invalidate_canvas_cache()
+        pairs = collect_runtime_canvases_with_go(active_scene, persistent_scene)
+
+        assert [canvas for _, canvas in pairs] == [active_canvas, persistent_canvas]
+        assert [owner for owner, _ in pairs] == [
+            active_scene._root,
+            persistent_scene._root,
+        ]
+
+    def test_runtime_collection_does_not_duplicate_same_scene(self):
+        from Infernux.ui import UICanvas
+        from Infernux.ui.ui_canvas_utils import (
+            collect_runtime_canvases_with_go,
+            invalidate_canvas_cache,
+        )
+
+        canvas = UICanvas()
+        scene = self._Scene(canvas)
+
+        invalidate_canvas_cache()
+        assert collect_runtime_canvases_with_go(scene, scene) == [
+            (scene._root, canvas),
+        ]
+
+    def test_runtime_collection_tracks_dynamic_canvas_attach_and_detach(self):
+        from Infernux.ui import UICanvas
+        import Infernux.ui.ui_canvas_utils as canvas_utils
+
+        scene = self._Scene(None)
+        canvas_utils.invalidate_canvas_cache()
+        assert canvas_utils.collect_runtime_canvases_with_go(scene) == []
+
+        canvas = UICanvas()
+        scene._root._components.append(canvas)
+        canvas._set_game_object(scene._root)
+        assert canvas_utils.collect_runtime_canvases_with_go(scene) == [
+            (scene._root, canvas),
+        ]
+
+        scene._root._components.remove(canvas)
+        canvas._set_game_object(None)
+        assert canvas_utils.collect_runtime_canvases_with_go(scene) == []
+
+    def test_runtime_collection_ignores_unrelated_scene_structure_changes(self):
+        from Infernux.ui import UICanvas
+        from Infernux.ui.ui_canvas_utils import (
+            collect_sorted_runtime_canvases,
+            invalidate_canvas_cache,
+        )
+
+        canvas = UICanvas()
+        scene = self._Scene(canvas)
+        invalidate_canvas_cache()
+
+        assert collect_sorted_runtime_canvases(scene) == [canvas]
+        assert scene.root_queries == 1
+
+        scene.structure_version += 100_000
+        assert collect_sorted_runtime_canvases(scene) == [canvas]
+        assert scene.root_queries == 1
 
 
 def test_screen_ui_rect_cache_survives_frames_and_invalidates_on_geometry_change(monkeypatch):
@@ -3434,6 +3547,137 @@ class TestSceneViewPicking:
             assert probe._pick_cycle_index == 0
         finally:
             sel.apply_snapshot(previous, record_history=False)
+
+    def test_gpu_refinement_clears_mesh_aabb_false_positive(self, monkeypatch):
+        from Infernux.engine.ui import _scene_view_picking as picking
+        from Infernux.engine.interaction import SelectionService
+
+        class Engine:
+            @staticmethod
+            def query_scene_object_pick(_request_id):
+                return {"status": "completed", "object_id": 0}
+
+        class PickingProbe(picking.SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._pending_scene_pick = {
+                    "request_id": 1,
+                    "x": 10.0,
+                    "y": 12.0,
+                    "width": 100.0,
+                    "height": 80.0,
+                    "cpu_id": 7,
+                    "cpu_candidates": [7],
+                }
+                self._pick_cycle_candidates = [7]
+                self._pick_cycle_index = 0
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append((object_id, ctrl))
+
+        monkeypatch.setattr(picking, "_has_mesh_pick_geometry", lambda object_id: object_id == 7)
+
+        selection = SelectionService.instance()
+        previous = selection.snapshot
+        selection.select_scene_object(7, owner_id="scene_view", record_history=False)
+        try:
+            probe = PickingProbe()
+            probe._poll_scene_object_pick()
+            assert probe.picked == [(0, False)]
+            assert probe._pick_cycle_candidates == []
+            assert probe._pick_cycle_index == -1
+        finally:
+            selection.apply_snapshot(previous, record_history=False)
+
+    def test_gpu_refinement_corrects_one_mesh_aabb_to_visible_mesh(self, monkeypatch):
+        from Infernux.engine.ui import _scene_view_picking as picking
+        from Infernux.engine.interaction import SelectionService
+
+        class Engine:
+            @staticmethod
+            def query_scene_object_pick(_request_id):
+                return {"status": "completed", "object_id": 9}
+
+            @staticmethod
+            def screen_to_world_ray(*_args):
+                return (0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+
+        class PickingProbe(picking.SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._pending_scene_pick = {
+                    "request_id": 1,
+                    "x": 10.0,
+                    "y": 12.0,
+                    "width": 100.0,
+                    "height": 80.0,
+                    "cpu_id": 7,
+                    "cpu_candidates": [7],
+                }
+                self._pick_cycle_candidates = [7]
+                self._pick_cycle_index = 0
+                self._pick_cycle_last_mouse = (-1.0, -1.0)
+                self._pick_cycle_last_viewport = (0, 0)
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append((object_id, ctrl))
+
+        monkeypatch.setattr(picking, "_has_mesh_pick_geometry", lambda object_id: object_id in (7, 9))
+        monkeypatch.setattr(picking, "_is_icon_only_pick_target", lambda _object_id: False)
+        monkeypatch.setattr(picking, "_object_ray_depth", lambda object_id, *_args: {9: 1.0, 7: 2.0}[object_id])
+
+        selection = SelectionService.instance()
+        previous = selection.snapshot
+        selection.select_scene_object(7, owner_id="scene_view", record_history=False)
+        try:
+            probe = PickingProbe()
+            probe._poll_scene_object_pick()
+            assert probe.picked == [(9, False)]
+            assert probe._pick_cycle_candidates == [9, 7]
+            assert probe._pick_cycle_index == 0
+        finally:
+            selection.apply_snapshot(previous, record_history=False)
+
+    def test_gpu_refinement_preserves_intentional_overlap_cycle(self, monkeypatch):
+        from Infernux.engine.ui import _scene_view_picking as picking
+        from Infernux.engine.interaction import SelectionService
+
+        class Engine:
+            @staticmethod
+            def query_scene_object_pick(_request_id):
+                return {"status": "completed", "object_id": 7}
+
+        class PickingProbe(picking.SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._pending_scene_pick = {
+                    "request_id": 1,
+                    "x": 10.0,
+                    "y": 12.0,
+                    "width": 100.0,
+                    "height": 80.0,
+                    "cpu_id": 9,
+                    "cpu_candidates": [7, 9],
+                    "cpu_cycle_index": 1,
+                }
+                self._pick_cycle_candidates = [7, 9]
+                self._pick_cycle_index = 1
+                self._pick_cycle_last_mouse = (10.0, 12.0)
+                self._pick_cycle_last_viewport = (100, 80)
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append((object_id, ctrl))
+
+        monkeypatch.setattr(picking, "_is_icon_only_pick_target", lambda _object_id: False)
+
+        selection = SelectionService.instance()
+        previous = selection.snapshot
+        selection.select_scene_object(9, owner_id="scene_view", record_history=False)
+        try:
+            probe = PickingProbe()
+            probe._poll_scene_object_pick()
+            assert probe.picked == []
+            assert probe._pick_cycle_candidates == [7, 9]
+            assert probe._pick_cycle_index == 1
+        finally:
+            selection.apply_snapshot(previous, record_history=False)
 
     def test_particle_refinement_cannot_overwrite_a_newer_selection(self, monkeypatch):
         from Infernux.engine.ui import _scene_view_picking as picking

@@ -4,6 +4,7 @@
 #include "rhi/RhiTexture.h"
 #include "shader/ShaderProgram.h"
 #include "vk/VkDescriptorManager.h"
+#include <array>
 #include <atomic>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <functional>
@@ -68,6 +69,10 @@ class MaterialUBO
     void SetInt(const std::string &name, int value);
     void SetMat4(const std::string &name, const glm::mat4 &value);
 
+    /// Update the fixed bindless material-index ABI (set 0, binding 15).
+    void UpdateTextureIndices(const std::array<uint32_t, ShaderProgram::MaterialTextureIndexCapacity> &indices);
+    void UpdateTextureIndex(std::string_view name, uint32_t index);
+
     /**
      * @brief Get buffer for binding
      */
@@ -90,6 +95,11 @@ class MaterialUBO
     [[nodiscard]] bool IsValid() const
     {
         return m_buffer != VK_NULL_HANDLE;
+    }
+
+    [[nodiscard]] const MaterialUBOLayout &GetLayout() const noexcept
+    {
+        return m_layout;
     }
 
   private:
@@ -123,6 +133,7 @@ struct MaterialDescriptorSet
     vk::DescriptorLease descriptorLease;
     std::unique_ptr<MaterialUBO> materialUBO;
     std::unique_ptr<MaterialUBO> vertexMaterialUBO; // Vertex-stage material UBO (binding 14)
+    std::unique_ptr<MaterialUBO> textureIndexUBO;   // Bindless ABI (binding 15)
     std::vector<MergedDescriptorBinding> bindings;
     std::unordered_map<uint32_t, VkDescriptorBufferInfo> bufferBindings;
 
@@ -133,11 +144,14 @@ struct MaterialDescriptorSet
         VkSampler sampler = VK_NULL_HANDLE;
         std::shared_ptr<rhi::TextureGpuViewSlot> gpuSlot;
         std::shared_ptr<const rhi::TextureGpuView> gpuView;
+        rhi::ResourceIndex resourceIndex{};
     };
     std::unordered_map<uint32_t, TextureBinding> textureBindings;
+    std::vector<rhi::ResourceIndex> bindlessTextureIndices;
 
     bool isValid = false;
     bool hasPendingTextures = false;
+    bool usesBindlessTextureABI = false;
 };
 
 enum class TextureResolveStatus
@@ -165,6 +179,9 @@ struct TextureResolveResult
  */
 using TextureResolver =
     std::function<TextureResolveResult(const std::string &textureGuid, const std::string &bindingName)>;
+
+using BindlessTextureResolver =
+    std::function<rhi::ResourceIndex(const std::shared_ptr<const rhi::TextureGpuView> &view)>;
 
 /**
  * @brief MaterialDescriptorManager - Manages material-specific descriptor sets
@@ -209,6 +226,24 @@ class MaterialDescriptorManager
         m_textureResolver = std::move(resolver);
     }
 
+    void SetBindlessTextureResolver(BindlessTextureResolver resolver)
+    {
+        m_bindlessTextureResolver = std::move(resolver);
+    }
+
+    void SetBindlessMaterialMode(bool enabled) noexcept
+    {
+        m_bindlessMaterialMode = enabled;
+    }
+
+    [[nodiscard]] bool IsBindlessMaterialMode() const noexcept
+    {
+        return m_bindlessMaterialMode;
+    }
+
+    [[nodiscard]] const std::vector<rhi::ResourceIndex> *
+    GetBindlessTextureIndices(const std::string &materialName) const noexcept;
+
     /**
      * @brief Get or create descriptor set for a material
      * @param material The material
@@ -229,7 +264,7 @@ class MaterialDescriptorManager
      * Uses the TextureResolver to update sampler bindings.
      */
     void ResolveTextureProperties(const std::string &materialName, const InxMaterial &material,
-                                  const std::vector<MergedDescriptorBinding> &bindings);
+                                  const ShaderProgram &program);
 
     [[nodiscard]] bool HasPendingTextureProperties(const std::string &materialName) const;
 
@@ -376,6 +411,7 @@ class MaterialDescriptorManager
   private:
     // Texture resolver callback (set via SetTextureResolver)
     TextureResolver m_textureResolver;
+    BindlessTextureResolver m_bindlessTextureResolver;
 
     // Optional submission-serial queue for descriptor-owned resource cleanup.
     GpuRetirementQueue *m_deletionQueue = nullptr;
@@ -383,6 +419,7 @@ class MaterialDescriptorManager
     /// True when the device supports descriptor-indexing UPDATE_AFTER_BIND
     /// and the layouts/pool were created with the matching flags.
     bool m_updateAfterBindEnabled = false;
+    bool m_bindlessMaterialMode = false;
 
     void RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet> descriptorSet);
 
@@ -392,6 +429,8 @@ class MaterialDescriptorManager
 
     [[nodiscard]] bool TryGetDefaultTextureBinding(std::string_view bindingName,
                                                    MaterialDescriptorSet::TextureBinding &outBinding) const;
+
+    [[nodiscard]] bool ResolveBindlessIndex(MaterialDescriptorSet::TextureBinding &binding) const;
 
     [[nodiscard]] TextureResolveStatus
     ResolveExplicitTextureBinding(const std::string &texturePath, const std::string &bindingName,

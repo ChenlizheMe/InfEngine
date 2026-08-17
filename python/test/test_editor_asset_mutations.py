@@ -8,6 +8,7 @@ import pytest
 from Infernux.core.asset_ref import ParticleGraphRef
 from Infernux.engine.interaction import (
     ActionOrigin,
+    AssetReferenceRelocationPlanner,
     AssetContentChange,
     AssetMutationKind,
     AssetRenameContentRegistry,
@@ -189,6 +190,80 @@ def test_asset_rename_content_adapters_are_extensible(tmp_path):
     )
 
     assert registry.build_patch(str(source), str(destination)) == ("Old", "New")
+
+
+def test_asset_relocation_upgrades_path_only_json_references_to_guid(tmp_path):
+    project = tmp_path / "Project"
+    shader = project / "Assets" / "Shaders" / "Old.frag"
+    effect = project / "Assets" / "Effects" / "Outline.effect"
+    shader.parent.mkdir(parents=True)
+    effect.parent.mkdir(parents=True)
+    shader.write_text("#version 450\n", encoding="utf-8")
+    effect.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.render_effect",
+                "dependencies": [
+                    {"guid": "", "path_hint": "Assets/Shaders/Old.frag"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    destination = project / "Assets" / "Rendering" / "Outline.frag"
+
+    class _Database:
+        @staticmethod
+        def get_all_asset_paths():
+            return [str(shader), str(effect)]
+
+    patches = AssetReferenceRelocationPlanner.build_patches(
+        ((str(shader), str(destination), "shader-guid"),),
+        database=_Database(),
+        project_root=str(project),
+    )
+
+    assert len(patches) == 1
+    assert patches[0].source_path == str(effect)
+    reference = json.loads(patches[0].updated)["dependencies"][0]
+    assert reference == {
+        "guid": "shader-guid",
+        "path_hint": "Assets/Rendering/Outline.frag",
+    }
+
+
+def test_asset_relocation_does_not_rewrite_guid_authoritative_reference(tmp_path):
+    project = tmp_path / "Project"
+    material = project / "Assets" / "Materials" / "Surface.mat"
+    texture = project / "Assets" / "Textures" / "Old.png"
+    material.parent.mkdir(parents=True)
+    texture.parent.mkdir(parents=True)
+    texture.write_bytes(b"texture")
+    material.write_text(
+        json.dumps(
+            {
+                "texture": {
+                    "guid": "texture-guid",
+                    "path_hint": "Assets/Already/Stale.png",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    destination = project / "Assets" / "Art" / "New.png"
+
+    class _Database:
+        @staticmethod
+        def get_all_asset_paths():
+            return [str(texture), str(material)]
+
+    patches = AssetReferenceRelocationPlanner.build_patches(
+        ((str(texture), str(destination), "texture-guid"),),
+        database=_Database(),
+        project_root=str(project),
+    )
+
+    assert patches == ()
 
 
 def test_asset_move_remaps_documents_selection_and_reference_display(tmp_path):

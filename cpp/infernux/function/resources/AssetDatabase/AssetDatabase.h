@@ -78,6 +78,10 @@ class AssetCatalogSnapshot final
         return m_generation;
     }
     [[nodiscard]] const std::vector<AssetCatalogEntry> &GetDirectory(const std::string &normalizedDirectory) const;
+    [[nodiscard]] const std::unordered_map<std::string, std::vector<AssetCatalogEntry>> &GetDirectories() const noexcept
+    {
+        return m_directories;
+    }
 
   private:
     friend class AssetDatabase;
@@ -94,7 +98,20 @@ class AssetCatalogSnapshot final
  * - Provide Asset CRUD operations for editor and file watcher
  * - Own the ImporterRegistry and drive dependency scanning on import
  * - Dispatch AssetEvent notifications via AssetDependencyGraph
- * - Manage resource loaders, metadata cache and compiled resource cache
+ * - Manage resource loaders, metadata cache and
+ * compiled resource cache
+ *
+ * Durable-reference invariant:
+ * - Persistent asset dependencies are identified by GUID
+ * only.
+ * - Paths and path_hint values are mutable authoring/display metadata.
+ * - Importers, loaders, runtime code
+ * and dependency publication must never
+ *   call GetGuidFromPath() to repair or infer a stored dependency.
+ * -
+ * Path-to-GUID conversion is permitted only at an explicit editor authoring
+ *   boundary, before the reference is
+ * persisted.
  */
 class AssetDatabase
 {
@@ -129,6 +146,11 @@ class AssetDatabase
     /// @brief Add an immutable packaged-resource root. Missing metadata is kept in memory.
     void AddReadOnlyScanRoot(const std::string &path);
 
+    /// @brief Overlay the cooked Player asset identities after the immutable
+    /// project payload has been scanned. The catalog replaces editor .meta
+    /// sidecars inside Player builds and is never persisted back to disk.
+    void InstallRuntimeAssetCatalog(const std::string &catalogPath);
+
     /// @brief Import an asset and create/update its meta.
     /// Runs the appropriate AssetImporter to scan dependencies.
     [[nodiscard]] AssetMutationResult ImportAsset(const std::string &path);
@@ -155,10 +177,16 @@ class AssetDatabase
     /// @brief Check if a path exists in database
     [[nodiscard]] bool ContainsPath(const std::string &path) const;
 
-    /// @brief Get GUID by path (empty if not found)
+    /// @brief Get GUID by path (empty if not found).
+    ///
+    /// This is an authoring/discovery API for imports, file watchers, pickers
+    /// and drag/drop. It is forbidden as a fallback for resolving a persistent
+    /// asset reference or publishing a dependency edge; those operations must
+    /// already carry the authoritative GUID.
     [[nodiscard]] std::string GetGuidFromPath(const std::string &path) const;
 
-    /// @brief Get path by GUID (empty if not found)
+    /// @brief Resolve the current mutable location of an authoritative GUID.
+    /// Returns empty when the referenced asset is missing.
     [[nodiscard]] std::string GetPathFromGuid(const std::string &guid) const;
 
     /// @brief Get immutable metadata by GUID. The shared result remains valid
@@ -503,7 +531,6 @@ class AssetDatabase
         std::unordered_map<std::string, std::vector<std::string>> restoredDependencies;
         WorkingSet stagedWorkingSet;
         std::unordered_map<std::string, std::vector<std::string>> committedDependencies;
-        std::shared_ptr<const std::unordered_map<std::string, std::string>> importPathSnapshot;
         std::vector<DocumentTransactionEntry> metadataWrites;
         JobHandle metadataJobs;
         JobHandle importJobs;
@@ -551,6 +578,7 @@ class AssetDatabase
     [[nodiscard]] WorkingSet TakeWorkingSet();
     void InstallWorkingSet(WorkingSet workingSet);
     void PublishQuerySnapshot();
+    void PublishQuerySnapshotForPaths(const std::vector<std::string> &paths);
     void InstallQuerySnapshot(std::shared_ptr<QuerySnapshot> snapshot) noexcept;
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;
     [[nodiscard]] AssetScanRequest CaptureScanRequest() const;

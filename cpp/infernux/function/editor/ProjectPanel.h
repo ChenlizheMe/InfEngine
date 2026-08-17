@@ -8,9 +8,12 @@
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -42,6 +45,10 @@ class ProjectPanel : public EditorPanel
     void SetRenderer(InxRenderer *renderer);
     void SetAssetDatabase(AssetDatabase *adb);
     void SetIconsDirectory(const std::string &dir);
+    void RequestSearchFocus()
+    {
+        m_focusSearchNextFrame = true;
+    }
 
     void ClearSelection(bool notify = true);
     void SetSelectedFile(const std::string &path, bool notify = true);
@@ -142,6 +149,25 @@ class ProjectPanel : public EditorPanel
         FileItem item;
         std::string searchKey;
         std::string sortKey;
+    };
+
+    struct SearchAsyncCompletion
+    {
+        uint64_t requestSerial = 0;
+        EditorSearchToken token;
+        uint64_t indexGeneration = UINT64_MAX;
+        std::string indexRoot;
+        std::shared_ptr<const std::vector<SearchIndexEntry>> index;
+        std::vector<FileItem> results;
+        std::string error;
+        bool cancelled = false;
+    };
+
+    struct SearchAsyncState
+    {
+        std::atomic<uint64_t> desiredSerial{0};
+        std::mutex mutex;
+        std::unique_ptr<SearchAsyncCompletion> completion;
     };
 
     // ── Directory snapshot cache ─────────────────────────────────────
@@ -351,11 +377,17 @@ class ProjectPanel : public EditorPanel
     // Project-wide search (Unity-style box on the Path bar)
     char m_searchBuf[256] = {};
     EditorSearchModel m_search;
+    bool m_focusSearchNextFrame = false;
     EditorSearchToken m_searchResultToken;
+    EditorSearchToken m_searchDesiredToken;
     uint64_t m_searchIndexGeneration = UINT64_MAX;
     std::string m_searchIndexRoot;
-    std::vector<SearchIndexEntry> m_searchIndex;
+    std::shared_ptr<const std::vector<SearchIndexEntry>> m_searchIndex;
     std::vector<FileItem> m_searchResults;
+    std::shared_ptr<SearchAsyncState> m_searchAsyncState = std::make_shared<SearchAsyncState>();
+    uint64_t m_searchRequestSerial = 0;
+    bool m_searchJobInFlight = false;
+    bool m_searchBusy = false;
     static constexpr size_t kMaxSearchResults = 200;
 
     // Selection
@@ -450,7 +482,9 @@ class ProjectPanel : public EditorPanel
 
     // ── Rendering helpers ────────────────────────────────────────────
     void RenderBreadcrumb(InxGUIContext *ctx);
-    void RebuildSearchIndex(uint64_t generation);
+    void ResetAsyncSearch();
+    void PollSearchCompletion();
+    void ScheduleSearch(const EditorSearchToken &token, uint64_t generation, const std::string &folderRoot);
     void UpdateSearchResults();
     void RenderSearchResults(InxGUIContext *ctx);
     void RebuildFolderTreeRows();

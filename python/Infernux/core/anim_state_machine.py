@@ -265,6 +265,7 @@ class AnimTransition:
     target_state: str = ""
     conditions: List[AnimCondition] = field(default_factory=list)
     duration: float = 0.0     # cross-fade / blend duration in seconds
+    synchronize_normalized_time: bool = False
 
     def __post_init__(self) -> None:
         if type(self.stable_id) is not str or not self.stable_id:
@@ -274,6 +275,8 @@ class AnimTransition:
             for condition in self.conditions
         ):
             raise TypeError("animation transition conditions must be AnimCondition values")
+        if type(self.synchronize_normalized_time) is not bool:
+            raise TypeError("animation transition synchronize_normalized_time must be a bool")
         condition_ids = [condition.stable_id for condition in self.conditions]
         if len(condition_ids) != len(set(condition_ids)):
             raise ValueError("animation transition condition stable_ids must be unique")
@@ -284,13 +287,20 @@ class AnimTransition:
             "target_state": self.target_state,
             "conditions": [condition.to_dict() for condition in self.conditions],
             "duration": self.duration,
+            "synchronize_normalized_time": self.synchronize_normalized_time,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> AnimTransition:
         _require_exact_fields(
             d,
-            {"stable_id", "target_state", "conditions", "duration"},
+            {
+                "stable_id",
+                "target_state",
+                "conditions",
+                "duration",
+                "synchronize_normalized_time",
+            },
             "animation transition",
         )
         if (
@@ -309,6 +319,7 @@ class AnimTransition:
             target_state=d["target_state"],
             conditions=[AnimCondition.from_dict(value) for value in d["conditions"]],
             duration=duration,
+            synchronize_normalized_time=d["synchronize_normalized_time"],
         )
 
 

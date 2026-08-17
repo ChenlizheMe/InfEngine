@@ -11,14 +11,23 @@ from __future__ import annotations
 import ast
 import copy
 import functools
-import importlib.util
 import inspect
 import os
+from statistics import median
 import sys as _sys
 import textwrap
-from Infernux.engine.path_utils import path_key
-import types
 from time import perf_counter
+
+from Infernux.jit_hir import FunctionHIR, analyze_source, hir_fingerprint
+from Infernux.jit_runtime import (
+    BoundedLRU,
+    DispatchDecision,
+    calls_equivalent,
+    clone_call_arguments,
+    compiler_fingerprint,
+    runtime_signature,
+    static_cost_decision,
+)
 
 _HAS_NUMBA = False
 _real_njit = None
@@ -63,7 +72,7 @@ _NUITKA_COMPILED = "__compiled__" in globals()
 # Prevents re-compiling the same @njit function when a user script module
 # is re-imported (e.g. scene loading calls load_all_components_from_file
 # multiple times for the same file).  Keyed by (co_filename, func_name, code_hash).
-_compiled_cache: dict = {}
+_compiled_cache = BoundedLRU(128)
 
 try:
     from numba import prange as _numba_prange  # type: ignore[import-untyped]
@@ -80,12 +89,9 @@ def _njit_cache_key(fn, kwargs_tag: str = "") -> tuple:
     re-importing the same module reuses the previous compilation as long
     as the function source hasn't changed.
     """
-    code = getattr(fn, "__code__", None)
-    if code is None:
+    if getattr(fn, "__code__", None) is None:
         return None
-    import hashlib
-    code_hash = hashlib.sha256(code.co_code).hexdigest()[:16]
-    return (code.co_filename, fn.__name__, code_hash, kwargs_tag)
+    return compiler_fingerprint(fn, {"numba_options": kwargs_tag})
 
 
 def _compile_njit(fn, kwargs):
@@ -152,90 +158,55 @@ def _decorator_requests_auto_parallel(node) -> bool:
     return False
 
 
-def _walk_loop_body(body):
-    """Yield AST nodes from *body* without descending into nested function defs."""
-    worklist = list(body)
-    while worklist:
-        node = worklist.pop()
-        yield node
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            worklist.extend(ast.iter_child_nodes(node))
-
-
-def _body_has_supported_reduction(body) -> bool:
-    """True when *body* contains ``acc op= expr`` with a Numba-supported operator.
-
-    Supported: ``+=``, ``-=``, ``*=``, ``/=``  (but NOT ``//=``).
-    """
-    for node in _walk_loop_body(body):
-        if (isinstance(node, ast.AugAssign)
-                and isinstance(node.target, ast.Name)
-                and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div))):
-            return True
-    return False
-
-
-def _body_has_parallel_indexed_store(body, loop_var: str) -> bool:
-    """True when *body* writes to ``arr[loop_var]`` — embarrassingly parallel."""
-    for node in _walk_loop_body(body):
-        targets = []
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, ast.AugAssign):
-            targets = [node.target]
-        for target in targets:
-            if not isinstance(target, ast.Subscript):
-                continue
-            idx = target.slice
-            if isinstance(idx, ast.Name) and idx.id == loop_var:
-                return True
-            if isinstance(idx, ast.Tuple):
-                for elt in idx.elts:
-                    if isinstance(elt, ast.Name) and elt.id == loop_var:
-                        return True
-    return False
-
-
-def _body_has_unsupported_control(body) -> bool:
-    """True when *body* contains control flow unsupported in Numba prange.
-
-    ``continue`` is intentionally allowed — Numba handles it correctly.
-    """
-    for node in _walk_loop_body(body):
-        if isinstance(node, (ast.Return, ast.Break, ast.Yield, ast.YieldFrom, ast.Await, ast.Try)):
-            return True
-    return False
-
-
 class _AutoParallelRangeTransformer(ast.NodeTransformer):
-    def __init__(self):
+    def __init__(self, eligible_locations, *, range_name: str = "prange"):
+        self._eligible_locations = frozenset(eligible_locations)
+        self._range_name = range_name
         self.rewrote = False
 
     def visit_For(self, node):
         self.generic_visit(node)
-        if not _is_range_call(node.iter):
+        location = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+        if location not in self._eligible_locations or not _is_range_call(node.iter):
             return node
-        if _body_has_unsupported_control(node.body):
-            return node
-
-        loop_var = node.target.id if isinstance(node.target, ast.Name) else None
-        has_reduction = _body_has_supported_reduction(node.body)
-        has_indexed_store = loop_var and _body_has_parallel_indexed_store(
-            node.body, loop_var
-        )
-        if not has_reduction and not has_indexed_store:
-            return node
-
-        node.iter.func.id = "prange"
+        node.iter.func.id = self._range_name
         self.rewrote = True
         return node
 
 
-def _rewrite_function_node_for_auto_parallel(function_node):
+def _clear_function_annotations(function_node) -> None:
+    function_node.returns = None
+    for argument in (
+        *function_node.args.posonlyargs,
+        *function_node.args.args,
+        *function_node.args.kwonlyargs,
+    ):
+        argument.annotation = None
+    if function_node.args.vararg is not None:
+        function_node.args.vararg.annotation = None
+    if function_node.args.kwarg is not None:
+        function_node.args.kwarg.annotation = None
+
+
+def _rewrite_function_node_for_auto_parallel(
+    function_node,
+    hir: FunctionHIR,
+    *,
+    range_name: str = "prange",
+):
     rewritten_fn = copy.deepcopy(function_node)
     rewritten_fn.decorator_list = []
+    _clear_function_annotations(rewritten_fn)
 
-    transformer = _AutoParallelRangeTransformer()
+    eligible_locations = {
+        (loop.source_location.line, loop.source_location.column)
+        for loop in hir.eligible_loops
+        if loop.range_spec is not None and loop.range_spec.step_value == 1
+    }
+    transformer = _AutoParallelRangeTransformer(
+        eligible_locations,
+        range_name=range_name,
+    )
     rewritten_fn = transformer.visit(rewritten_fn)
     if not transformer.rewrote:
         return None
@@ -244,146 +215,175 @@ def _rewrite_function_node_for_auto_parallel(function_node):
     return rewritten_fn
 
 
-def build_auto_parallel_sidecar_source(source: str) -> str | None:
-    """Return module source containing rewritten auto-parallel functions only."""
-    try:
-        module_ast = ast.parse(textwrap.dedent(source))
-    except SyntaxError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return None
+def _parallel_policy_from_decorator(node) -> str:
+    if not isinstance(node, ast.Call):
+        return "auto"
+    for keyword in node.keywords:
+        if keyword.arg == "parallel_policy" and isinstance(keyword.value, ast.Constant):
+            return str(keyword.value.value)
+    return "auto"
 
-    rewritten_body = []
+
+def auto_parallel_declarations(source: str) -> tuple[tuple[str, str], ...]:
+    """Return ``(function_name, policy)`` declarations without executing code."""
+
+    try:
+        module_ast = ast.parse(source)
+    except SyntaxError:
+        return ()
+    declarations: list[tuple[str, str]] = []
     for node in module_ast.body:
         if not isinstance(node, ast.FunctionDef):
             continue
-        if not any(_decorator_requests_auto_parallel(deco) for deco in node.decorator_list):
-            continue
-        rewritten_fn = _rewrite_function_node_for_auto_parallel(node)
-        if rewritten_fn is not None:
-            rewritten_body.append(rewritten_fn)
+        decorator = next(
+            (item for item in node.decorator_list if _decorator_requests_auto_parallel(item)),
+            None,
+        )
+        if decorator is not None:
+            declarations.append((node.name, _parallel_policy_from_decorator(decorator)))
+    return tuple(declarations)
 
-    if not rewritten_body:
+
+def _hir_diagnostic(hir: FunctionHIR) -> str:
+    numba_eligible = tuple(
+        loop
+        for loop in hir.eligible_loops
+        if loop.range_spec is not None and loop.range_spec.step_value == 1
+    )
+    if numba_eligible:
+        return "; ".join(loop.reason for loop in numba_eligible)
+    if hir.eligible_loops:
+        return "rejected: the current Numba prange backend requires a constant step size of 1"
+    diagnostics = [item.format() for item in hir.diagnostics if item.is_error]
+    if diagnostics:
+        return diagnostics[0]
+    loop_reasons = [loop.reason for loop in hir.loops]
+    return loop_reasons[0] if loop_reasons else "function has no top-level affine loop"
+
+
+def build_auto_parallel_embedded_source(source: str) -> str | None:
+    """Embed verified parallel clones in the original module source.
+
+    Player builds compile this transformed module into the normal script
+    bytecode. No user-visible ``.autop.py[c]`` sidecar is emitted.
+    """
+    try:
+        module_ast = ast.parse(source)
+    except SyntaxError:
         return None
 
-    sidecar_ast = ast.Module(body=rewritten_body, type_ignores=[])
-    ast.fix_missing_locations(sidecar_ast)
-    return ast.unparse(sidecar_ast)
-
-
-def _auto_parallel_sidecar_candidates(fn):
-    seen = set()
-
-    # Gather every plausible path the function could be associated with.
-    # In packaged builds the module may not yet be in sys.modules during
-    # decorator execution, so inspect.getmodule may return None.  We also
-    # look up sys.modules[fn.__module__] directly as a fallback.
-    module = inspect.getmodule(fn)
-    module_file = getattr(module, "__file__", None)
-    if module_file is None:
-        alt_mod = _sys.modules.get(getattr(fn, "__module__", ""))
-        module_file = getattr(alt_mod, "__file__", None)
-
-    raw_paths = [
-        module_file,
-        inspect.getsourcefile(fn),
-    ]
-    try:
-        raw_paths.append(inspect.getfile(fn))
-    except (TypeError, OSError) as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
-    raw_paths.append(
-        getattr(getattr(fn, "__code__", None), "co_filename", None)
-    )
-
-    for path in raw_paths:
-        if not path:
-            continue
-        norm = path_key(path)
-        # Strip .pyc/.py so the same base path doesn't yield duplicate sidecars
-        if norm.endswith(".pyc"):
-            base_norm = norm[:-4]
-        elif norm.endswith(".py"):
-            base_norm = norm[:-3]
-        else:
-            continue
-        if base_norm in seen:
-            continue
-        seen.add(base_norm)
-        base_path = path[:-4] if norm.endswith(".pyc") else path[:-3]
-        yield base_path + ".autop.pyc"
-        yield base_path + ".autop.py"
-
-
-def _load_prebuilt_auto_parallel_variant(fn):
-    candidates = list(_auto_parallel_sidecar_candidates(fn))
-    _log_jit(f"[JIT] auto_parallel sidecar candidates for {fn.__name__}: {candidates}")
-    for sidecar_path in candidates:
-        if not os.path.isfile(sidecar_path):
-            continue
-
-        _log_jit(f"[JIT] loading sidecar: {sidecar_path}")
-        try:
-            spec = importlib.util.spec_from_file_location(
-                f"{fn.__module__}.__infernux_auto_parallel__.{fn.__name__}",
-                sidecar_path,
+    rewritten_body = []
+    changed = False
+    manifest: dict[str, dict[str, object]] = {}
+    for node in module_ast.body:
+        if isinstance(node, ast.FunctionDef):
+            decorator = next(
+                (
+                    item
+                    for item in node.decorator_list
+                    if _decorator_requests_auto_parallel(item)
+                ),
+                None,
             )
-            if spec is None or spec.loader is None:
-                continue
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-        except Exception as _sidecar_exc:
-            _log_jit(f"[JIT] sidecar load FAILED: {type(_sidecar_exc).__name__}: {_sidecar_exc}")
-            continue
+            if decorator is not None:
+                hir = analyze_source(source, node.name)
+                rewritten_fn = _rewrite_function_node_for_auto_parallel(
+                    node,
+                    hir,
+                    range_name="__infernux_prange",
+                )
+                policy = _parallel_policy_from_decorator(decorator)
+                if rewritten_fn is None:
+                    if policy == "required":
+                        raise ValueError(
+                            f"{node.name}: parallel_policy='required' rejected: {_hir_diagnostic(hir)}"
+                        )
+                else:
+                    suffix = hir.eligible_loops[0].stable_id.rsplit(":", 1)[-1]
+                    rewritten_fn.name = f"__infernux_parallel_{node.name}_{suffix}"
+                    fingerprint = hir_fingerprint(hir)
+                    rewritten_body.append(rewritten_fn)
+                    assert isinstance(decorator, ast.Call)
+                    decorator.keywords.append(
+                        ast.keyword(
+                            arg="_parallel_impl",
+                            value=ast.Name(id=rewritten_fn.name, ctx=ast.Load()),
+                        )
+                    )
+                    decorator.keywords.append(
+                        ast.keyword(
+                            arg="_parallel_fingerprint",
+                            value=ast.Constant(fingerprint),
+                        )
+                    )
+                    decorator.keywords.append(
+                        ast.keyword(
+                            arg="_parallel_static_cost",
+                            value=ast.Constant(hir.operation_cost),
+                        )
+                    )
+                    manifest[node.name] = {
+                        "compiler_revision": 1,
+                        "hir_fingerprint": fingerprint,
+                        "parallel_impl": rewritten_fn.name,
+                        "policy": policy,
+                        "loop_ids": [loop.stable_id for loop in hir.eligible_loops],
+                        "diagnostic": _hir_diagnostic(hir),
+                        "operation_cost": hir.operation_cost,
+                    }
+                    changed = True
+        rewritten_body.append(node)
 
-        sidecar_fn = getattr(module, fn.__name__, None)
-        if not callable(sidecar_fn):
-            continue
+    if not changed:
+        return None
 
-        globals_ns = dict(fn.__globals__)
-        globals_ns["prange"] = prange
-        rebound = types.FunctionType(
-            sidecar_fn.__code__,
-            globals_ns,
-            fn.__name__,
-            getattr(fn, "__defaults__", None),
-            sidecar_fn.__closure__,
-        )
-        rebound.__kwdefaults__ = getattr(fn, "__kwdefaults__", None)
-        rebound.__annotations__ = dict(getattr(fn, "__annotations__", {}))
-        rebound.__dict__.update(getattr(fn, "__dict__", {}))
-        rebound.__module__ = fn.__module__
-        return rebound
+    import_node = ast.ImportFrom(
+        module="Infernux.jit",
+        names=[ast.alias(name="prange", asname="__infernux_prange")],
+        level=0,
+    )
+    insert_at = 0
+    if (
+        rewritten_body
+        and isinstance(rewritten_body[0], ast.Expr)
+        and isinstance(rewritten_body[0].value, ast.Constant)
+        and isinstance(rewritten_body[0].value.value, str)
+    ):
+        insert_at = 1
+    while (
+        insert_at < len(rewritten_body)
+        and isinstance(rewritten_body[insert_at], ast.ImportFrom)
+        and rewritten_body[insert_at].module == "__future__"
+    ):
+        insert_at += 1
+    rewritten_body.insert(insert_at, import_node)
+    manifest_assignment = ast.Assign(
+        targets=[ast.Name(id="__infernux_jit_manifest__", ctx=ast.Store())],
+        value=ast.parse(repr(manifest), mode="eval").body,
+    )
+    rewritten_body.insert(insert_at + 1, manifest_assignment)
+    module_ast.body = rewritten_body
+    ast.fix_missing_locations(module_ast)
+    return ast.unparse(module_ast)
 
-    return None
 
-
-def _try_build_auto_parallel_variant(fn):
-    """Return a prange-rewritten clone of *fn* when safe enough.
-
-    This intentionally handles only the simple case we care about for user
-    scripts: ``for i in range(...): acc += expr``. If the source cannot be
-    recovered or no loop matches the conservative pattern, return ``None``.
-    """
-    prebuilt = _load_prebuilt_auto_parallel_variant(fn)
-    if prebuilt is not None:
-        _log_jit(f"[JIT] {fn.__name__}: using prebuilt sidecar (prange)")
-        return prebuilt
+def _try_build_auto_parallel_variant(fn, parallel_impl=None):
+    """Return a HIR-verified prange clone, or ``None`` when not provable."""
+    if callable(parallel_impl):
+        parallel_impl.__defaults__ = getattr(fn, "__defaults__", None)
+        parallel_impl.__kwdefaults__ = getattr(fn, "__kwdefaults__", None)
+        fn._infernux_parallel_diagnostic = "eligible: embedded build-time Typed HIR implementation"
+        return parallel_impl
 
     try:
         source = inspect.getsource(fn)
     except (OSError, TypeError):
-        _log_jit(
-            f"[JIT] {fn.__name__}: no sidecar found and source "
-            f"unavailable — parallel variant will NOT use prange. "
-            f"Rebuild the project to generate .autop.pyc sidecars."
-        )
         return None
 
     try:
         module_ast = ast.parse(textwrap.dedent(source))
-    except SyntaxError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except SyntaxError as exc:
+        fn._infernux_parallel_diagnostic = f"rejected: source parse failed ({exc})"
         return None
 
     function_node = None
@@ -392,9 +392,13 @@ def _try_build_auto_parallel_variant(fn):
             function_node = node
             break
     if function_node is None or not isinstance(function_node, ast.FunctionDef):
+        fn._infernux_parallel_diagnostic = "rejected: no synchronous function definition"
         return None
 
-    rewritten_fn = _rewrite_function_node_for_auto_parallel(function_node)
+    hir = analyze_source(source, function_node.name)
+    fn._infernux_parallel_operation_cost = hir.operation_cost
+    fn._infernux_parallel_diagnostic = _hir_diagnostic(hir)
+    rewritten_fn = _rewrite_function_node_for_auto_parallel(function_node, hir)
     if rewritten_fn is None:
         return None
 
@@ -426,6 +430,8 @@ def _try_build_auto_parallel_variant(fn):
     rewritten_fn.__defaults__ = getattr(fn, "__defaults__", None)
     rewritten_fn.__kwdefaults__ = getattr(fn, "__kwdefaults__", None)
     rewritten_fn.__dict__.update(getattr(fn, "__dict__", {}))
+    rewritten_fn._infernux_hir = hir
+    rewritten_fn._infernux_parallel_diagnostic = _hir_diagnostic(hir)
     return rewritten_fn
 
 
@@ -435,71 +441,179 @@ def _benchmark_callable(fn, *args, **kwargs) -> float:
     return perf_counter() - started
 
 
-def _build_auto_parallel_dispatcher(fn, serial_compiled, parallel_compiled):
-    """Return a wrapper that prefers the parallel kernel but can self-heal.
+def _numba_thread_count() -> int:
+    try:
+        from numba import get_num_threads  # type: ignore[import-untyped]
 
-    ``auto_parallel=True`` is intentionally conservative:
+        return max(1, int(get_num_threads()))
+    except Exception:
+        return max(1, int(os.cpu_count() or 1))
 
-    - Both serial and ``parallel=True`` variants are compiled.
-    - Calls default to the parallel variant.
-    - ``warmup(...)`` benchmarks both variants once and pins the faster one.
-    - If the parallel variant fails at runtime, execution falls back to the
-      serial version automatically.
+
+def _build_auto_parallel_dispatcher(
+    fn,
+    serial_compiled,
+    parallel_compiled,
+    *,
+    parallel_policy: str = "auto",
+    diagnostic: str = "",
+    operation_cost: int = 1,
+):
+    """Build a signature-aware dispatcher without speculative re-execution.
+
+    Unknown signatures run serially. ``warmup`` validates and benchmarks a
+    single runtime signature using isolated argument copies, then stores a
+    bounded decision for that dtype/rank/layout/shape/thread-count bucket.
+    A selected parallel call is executed exactly once and user exceptions are
+    never caught and replayed through the serial kernel.
     """
-    state = {"active": parallel_compiled, "mode": "parallel"}
+    decisions = BoundedLRU(64)
 
-    def _set_active(target, mode: str) -> None:
-        state["active"] = target
-        state["mode"] = mode
-        dispatcher.selected_mode = mode
+    def _signature(args, kwargs):
+        return runtime_signature(args, kwargs, thread_count=_numba_thread_count())
+
+    def _static(args, kwargs):
+        return static_cost_decision(
+            args,
+            kwargs,
+            operation_cost=operation_cost,
+            thread_count=_numba_thread_count(),
+        )
+
+    def _record(key, decision: DispatchDecision) -> None:
+        decisions[key] = decision
+        dispatcher.selected_mode = decision.mode
+        dispatcher.last_diagnostic = decision.reason
 
     @functools.wraps(fn)
     def dispatcher(*args, **kwargs):
-        try:
-            return state["active"](*args, **kwargs)
-        except Exception:
-            if state["mode"] == "parallel":
-                _set_active(serial_compiled, "serial")
-                return serial_compiled(*args, **kwargs)
-            raise
+        key = _signature(args, kwargs)
+        decision = decisions.get(key)
+        if decision is None:
+            if parallel_policy == "required":
+                decision = DispatchDecision("parallel", "parallel required by policy")
+            else:
+                static = _static(args, kwargs)
+                decision = DispatchDecision(static.mode, static.reason)
+                if static.confidence == "high":
+                    decisions[key] = decision
+        dispatcher.selected_mode = decision.mode
+        dispatcher.last_diagnostic = decision.reason
+        target = parallel_compiled if decision.mode == "parallel" else serial_compiled
+        return target(*args, **kwargs)
 
     def _warmup(*args, **kwargs):
-        # First pass pays compilation / thread-pool startup cost.
-        _log_jit(f"[JIT] warmup {fn.__name__}: compiling serial…")
-        serial_compiled(*args, **kwargs)
-
-        _log_jit(f"[JIT] warmup {fn.__name__}: compiling parallel…")
+        key = _signature(args, kwargs)
+        if parallel_compiled is serial_compiled:
+            reason = diagnostic or "serial retained: no validated parallel variant is available"
+            _record(key, DispatchDecision("serial", reason))
+            _log_jit(f"[JIT] {fn.__name__}: {reason}")
+            return
+        if parallel_policy != "required":
+            static = _static(args, kwargs)
+            if static.confidence == "high":
+                _record(key, DispatchDecision(static.mode, static.reason))
+                _log_jit(f"[JIT] {fn.__name__}: {static.reason}")
+                return
         try:
-            parallel_compiled(*args, **kwargs)
-        except Exception as _exc:
-            _log_jit(f"[JIT] warmup {fn.__name__}: parallel compilation FAILED ({_exc}), pinning serial")
-            _set_active(serial_compiled, "serial")
+            serial_args, serial_kwargs = clone_call_arguments(args, kwargs)
+            parallel_args, parallel_kwargs = clone_call_arguments(args, kwargs)
+        except TypeError as exc:
+            reason = f"serial retained: inputs cannot be isolated for validation ({exc})"
+            _record(key, DispatchDecision("serial", reason))
+            _log_jit(f"[JIT] {fn.__name__}: {reason}")
             return
 
-        # Second pass compares steady-state runtime instead of first-hit cost.
-        serial_elapsed = _benchmark_callable(serial_compiled, *args, **kwargs)
+        _log_jit(f"[JIT] warmup {fn.__name__}: compiling serial")
+        serial_result = serial_compiled(*serial_args, **serial_kwargs)
+
+        _log_jit(f"[JIT] warmup {fn.__name__}: compiling parallel")
         try:
-            parallel_elapsed = _benchmark_callable(parallel_compiled, *args, **kwargs)
-        except Exception:
-            _log_jit(f"[JIT] warmup {fn.__name__}: parallel benchmark FAILED, pinning serial")
-            _set_active(serial_compiled, "serial")
+            parallel_result = parallel_compiled(*parallel_args, **parallel_kwargs)
+        except Exception as exc:
+            if parallel_policy == "required":
+                raise RuntimeError(
+                    f"auto_parallel required kernel {fn.__name__!r} failed during validation"
+                ) from exc
+            reason = f"serial retained: parallel validation failed ({type(exc).__name__}: {exc})"
+            _record(key, DispatchDecision("serial", reason))
+            _log_jit(f"[JIT] {fn.__name__}: {reason}")
             return
 
-        _log_jit(
-            f"[JIT] warmup {fn.__name__}: serial={serial_elapsed*1000:.2f}ms  "
-            f"parallel={parallel_elapsed*1000:.2f}ms  "
-            f"→ {'parallel' if parallel_elapsed < serial_elapsed else 'serial'}"
+        if not calls_equivalent(
+            serial_result,
+            serial_args,
+            serial_kwargs,
+            parallel_result,
+            parallel_args,
+            parallel_kwargs,
+        ):
+            reason = "serial retained: serial and parallel results or mutations differ"
+            if parallel_policy == "required":
+                raise RuntimeError(f"auto_parallel required kernel {fn.__name__!r}: {reason}")
+            _record(key, DispatchDecision("serial", reason))
+            _log_jit(f"[JIT] {fn.__name__}: {reason}")
+            return
+
+        serial_samples: list[float] = []
+        parallel_samples: list[float] = []
+        try:
+            sample_target = 5
+            while len(serial_samples) < sample_target:
+                sample_args, sample_kwargs = clone_call_arguments(args, kwargs)
+                serial_samples.append(
+                    _benchmark_callable(serial_compiled, *sample_args, **sample_kwargs)
+                )
+                sample_args, sample_kwargs = clone_call_arguments(args, kwargs)
+                parallel_samples.append(
+                    _benchmark_callable(parallel_compiled, *sample_args, **sample_kwargs)
+                )
+                # Long kernels already provide a strong signal per sample.
+                # Keep a median, but avoid turning a 1.5 s serial baseline
+                # into a 30 s editor warmup through excessive cloning/runs.
+                if len(serial_samples) == 1 and max(
+                    serial_samples[0], parallel_samples[0]
+                ) >= 0.050:
+                    sample_target = 3
+        except Exception as exc:
+            if parallel_policy == "required":
+                raise
+            reason = f"serial retained: benchmark failed ({type(exc).__name__}: {exc})"
+            _record(key, DispatchDecision("serial", reason))
+            _log_jit(f"[JIT] {fn.__name__}: {reason}")
+            return
+
+        serial_elapsed = median(serial_samples)
+        parallel_elapsed = median(parallel_samples)
+        choose_parallel = parallel_policy == "required" or parallel_elapsed <= serial_elapsed * 0.90
+        mode = "parallel" if choose_parallel else "serial"
+        reason = (
+            f"{mode} selected for runtime signature; median serial={serial_elapsed * 1000:.3f}ms, "
+            f"parallel={parallel_elapsed * 1000:.3f}ms, samples={sample_target}"
         )
-        if parallel_elapsed < serial_elapsed:
-            _set_active(parallel_compiled, "parallel")
-        else:
-            _set_active(serial_compiled, "serial")
+        _record(
+            key,
+            DispatchDecision(
+                mode,
+                reason,
+                serial_elapsed,
+                parallel_elapsed,
+                sample_target,
+            ),
+        )
+        _log_jit(
+            f"[JIT] warmup {fn.__name__}: {reason}"
+        )
 
     dispatcher.py = fn
     dispatcher.serial = serial_compiled
     dispatcher.parallel = parallel_compiled
     dispatcher.auto_parallel = True
-    dispatcher.selected_mode = "parallel"
+    dispatcher.parallel_policy = parallel_policy
+    dispatcher.static_operation_cost = operation_cost
+    dispatcher.selected_mode = "parallel" if parallel_policy == "required" else "serial"
+    dispatcher.last_diagnostic = diagnostic or "runtime signature has not been validated"
+    dispatcher.decisions = decisions
     dispatcher._infernux_warmup = _warmup
     return dispatcher
 
@@ -519,17 +633,36 @@ def njit(*args, **kwargs):
         burn.py(100)    # always pure Python
     """
     auto_parallel = bool(kwargs.pop("auto_parallel", False))
+    parallel_policy = str(kwargs.pop("parallel_policy", "auto"))
+    parallel_impl = kwargs.pop("_parallel_impl", None)
+    parallel_fingerprint = str(kwargs.pop("_parallel_fingerprint", ""))
+    parallel_static_cost = max(1, int(kwargs.pop("_parallel_static_cost", 1)))
+    if parallel_policy not in {"auto", "required"}:
+        raise ValueError("parallel_policy must be 'auto' or 'required'")
 
     if not _HAS_NUMBA:
         # No-op fallback — attach .py for uniform API
-        def _wrap(fn):
+        def _attach_fallback(fn):
             fn.auto_parallel = auto_parallel
+            fn.parallel_policy = parallel_policy
+            fn.compiler_fingerprint = parallel_fingerprint
+            fn.static_operation_cost = parallel_static_cost
+            fn.selected_mode = "serial"
+            fn.last_diagnostic = "serial selected: JIT runtime is unavailable in this build"
+            fn.serial = fn
+            fn.parallel = fn
+            fn.decisions = BoundedLRU(1)
             fn.py = fn
             return fn
+
+        def _wrap(fn):
+            if auto_parallel and parallel_policy == "required":
+                raise RuntimeError("parallel_policy='required' needs the Numba JIT runtime")
+            return _attach_fallback(fn)
         if args and callable(args[0]):
-            args[0].auto_parallel = auto_parallel
-            args[0].py = args[0]
-            return args[0]
+            if auto_parallel and parallel_policy == "required":
+                raise RuntimeError("parallel_policy='required' needs the Numba JIT runtime")
+            return _attach_fallback(args[0])
         return _wrap
 
     if _NUITKA_COMPILED:
@@ -543,7 +676,10 @@ def njit(*args, **kwargs):
         parallel_kwargs["parallel"] = True
 
         def _compile_auto_parallel(fn):
-            cache_key = _njit_cache_key(fn, "auto_parallel")
+            cache_key = _njit_cache_key(
+                fn,
+                f"auto_parallel:{parallel_policy}:{parallel_fingerprint}:{sorted(serial_kwargs.items())}",
+            )
             if cache_key and cache_key in _compiled_cache:
                 _log_jit(f"[JIT] {fn.__name__}: reusing cached auto_parallel compilation")
                 cached = _compiled_cache[cache_key]
@@ -551,18 +687,41 @@ def njit(*args, **kwargs):
                 return cached
             _log_jit(f"[JIT] compiling auto_parallel: {fn.__name__}")
             serial_compiled = _compile_njit(fn, serial_kwargs)
-            parallel_source_fn = _try_build_auto_parallel_variant(fn)
+            parallel_source_fn = _try_build_auto_parallel_variant(fn, parallel_impl)
+            operation_cost = max(
+                parallel_static_cost,
+                int(getattr(fn, "_infernux_parallel_operation_cost", 1)),
+            )
+            diagnostic = getattr(
+                fn,
+                "_infernux_parallel_diagnostic",
+                "rejected: source is unavailable and no embedded HIR implementation exists",
+            )
             if parallel_source_fn is None:
+                if parallel_policy == "required":
+                    raise ValueError(
+                        f"{fn.__name__}: parallel_policy='required' rejected: {diagnostic}"
+                    )
                 _log_jit(
-                    f"[JIT] {fn.__name__}: prange rewrite unavailable "
-                    f"— both serial and parallel variants use the original source."
+                    f"[JIT] {fn.__name__}: serial retained — {diagnostic}"
                 )
+                parallel_compiled = serial_compiled
             else:
-                _log_jit(f"[JIT] {fn.__name__}: prange rewrite OK")
-            parallel_target = parallel_source_fn or fn
-            parallel_compiled = _compile_njit(parallel_target, parallel_kwargs)
+                _log_jit(f"[JIT] {fn.__name__}: Typed HIR lowering accepted")
+                parallel_compiled = _compile_njit(parallel_source_fn, parallel_kwargs)
             _log_jit(f"[JIT] {fn.__name__}: auto_parallel compilation done")
-            result = _build_auto_parallel_dispatcher(fn, serial_compiled, parallel_compiled)
+            result = _build_auto_parallel_dispatcher(
+                fn,
+                serial_compiled,
+                parallel_compiled,
+                parallel_policy=parallel_policy,
+                diagnostic=diagnostic,
+                operation_cost=operation_cost,
+            )
+            result.compiler_fingerprint = parallel_fingerprint or compiler_fingerprint(
+                fn,
+                {"parallel_policy": parallel_policy, **serial_kwargs},
+            )
             if cache_key:
                 _compiled_cache[cache_key] = result
             return result
@@ -587,8 +746,8 @@ def njit(*args, **kwargs):
 def warmup(fn, *args, **kwargs):
     """Pre-compile a ``@njit`` function by calling it once.
 
-    No-op when Numba is unavailable or inside a Nuitka standalone build.
-    Exceptions during warmup are silently swallowed.
+    No-op when Numba is unavailable. Auto-parallel validation uses isolated
+    arguments; ``parallel_policy='required'`` propagates validation failures.
 
     Usage::
 
@@ -601,18 +760,18 @@ def warmup(fn, *args, **kwargs):
     if callable(custom_warmup):
         try:
             custom_warmup(*args, **kwargs)
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+        except Exception as exc:
+            if getattr(fn, "parallel_policy", "auto") == "required":
+                raise
+            _log_jit(f"[JIT] warmup {getattr(fn, '__name__', '<kernel>')} failed: {exc}")
         return
 
     if not _HAS_NUMBA or _NUITKA_COMPILED:
         return
     try:
         fn(*args, **kwargs)
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
+    except Exception as exc:
+        _log_jit(f"[JIT] warmup {getattr(fn, '__name__', '<kernel>')} failed: {exc}")
 
 
 __all__ = [

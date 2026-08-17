@@ -101,6 +101,12 @@ uint64_t HashBytes(uint64_t hash, const void *data, size_t byteSize) noexcept
 
 struct ParticleGpuSystemManager::Impl
 {
+    // Prewarm and seek may enqueue thousands of fixed simulation steps. Recording
+    // all of them into one command buffer makes the following frame-slot fence
+    // indistinguishable from a GPU hang. Keep submissions bounded and drain the
+    // remaining exact steps over subsequent frames.
+    static constexpr uint32_t MaxQueuedSimulationStepsPerSubmission = 8;
+
     struct DiagnosticState
     {
         mutable std::mutex mutex;
@@ -224,6 +230,7 @@ struct ParticleGpuSystemManager::Impl
     std::shared_ptr<const GpuParticleRibbonRenderProgramStorage> ribbonRenderProgram;
     std::unique_ptr<ParticleGpuCollisionScene> collisionScene;
     EmitterMap emitters;
+    bool requiresCollisionScene = false;
     std::shared_ptr<GraphState> graphState;
     mutable uint64_t nextGraphGeneration = 1;
     mutable std::unordered_map<const InxMesh *, MeshUpload> meshUploads;
@@ -526,6 +533,7 @@ struct ParticleGpuSystemManager::Impl
                         capture.diagnostic.aliveCount = capture.diagnostic.capacity - capture.diagnostic.freeCount;
                         capture.diagnostic.visibleCount = counters[1];
                         capture.diagnostic.droppedCount = counters[2];
+                        capture.diagnostic.initializedSpawnCount = counters[3];
                         capture.diagnostic.collisionHitCount = counters[4];
                         capture.diagnostic.collisionResponseCount = counters[5];
                         capture.diagnostic.collisionTriggerCount = counters[6];
@@ -930,13 +938,12 @@ struct ParticleGpuSystemManager::Impl
         vectorFieldGenerations.reserve(sampledTextureCount);
         std::unordered_set<std::string> stableIds;
         for (const auto &field : program.vectorFields.vectorFields) {
-            const auto cpuData = field.texture ? field.texture->GetCpuData() : nullptr;
             const TextureSemantic expectedSemantic = field.kind == GpuVectorFieldDesc::Kind::SignedDistanceField
                                                          ? TextureSemantic::SignedDistanceField
                                                          : TextureSemantic::VectorField;
-            if (field.stableId.empty() || !stableIds.insert(field.stableId).second || !field.texture || !cpuData ||
-                !cpuData->IsValid() || cpuData->dimension != TextureDimension::Texture3D ||
-                cpuData->semantic != expectedSemantic || field.texture->GetGuid().empty() ||
+            if (field.stableId.empty() || !stableIds.insert(field.stableId).second || !field.texture ||
+                field.texture->GetDimension() != TextureDimension::Texture3D ||
+                field.texture->GetSemantic() != expectedSemantic || field.texture->GetGuid().empty() ||
                 !vectorFieldTextureResolver) {
                 SetError(error, "GPU particle volume bindings require unique identities and matching Texture3D assets");
                 return false;
@@ -1392,7 +1399,7 @@ struct ParticleGpuSystemManager::Impl
         emitter->bounds = std::make_unique<ParticleGpuBounds>();
         GpuParticleBoundsDesc boundsDesc;
         boundsDesc.capacity = emitter->runtime->Capacity();
-        boundsDesc.instances = emitter->runtime->InstanceBuffer();
+        boundsDesc.visibility = emitter->runtime->VisibilityBuffer();
         boundsDesc.sourceIndices = emitter->runtime->RenderIndexBuffer();
         boundsDesc.sourceIndirectArguments = emitter->runtime->IndirectBuffer();
         boundsDesc.simulationControl = emitter->runtime->SimulationControlBuffer();
@@ -1691,6 +1698,7 @@ struct ParticleGpuSystemManager::Impl
                 entry.ownerLayerMask = emitter->sourceProgram.ownerLayerMask;
                 entry.capacity = emitter->runtime->Capacity();
                 entry.instances = emitter->runtime->InstanceBuffer();
+                entry.visibility = emitter->runtime->VisibilityBuffer();
                 entry.renderIndices = output.renderer->RenderIndexBuffer();
                 entry.indirectArguments = output.type == GpuParticleOutputType::Ribbon
                                               ? emitter->ribbonTopology->DrawIndirectBuffer()
@@ -1897,6 +1905,7 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->FailDiagnostics(0, "GPU particle manager shut down before diagnostic recording completed");
     m_impl->graphState.reset();
     m_impl->emitters.clear();
+    m_impl->requiresCollisionScene = false;
     m_impl->meshUploads.clear();
     m_impl->collisionScene.reset();
     m_impl->drawRegistry = nullptr;
@@ -1991,6 +2000,9 @@ bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program
                             "GPU particle graph changed before diagnostic recording completed");
     m_impl->graphState = std::move(candidateGraph);
     m_impl->emitters = std::move(candidates);
+    m_impl->requiresCollisionScene =
+        std::any_of(m_impl->emitters.begin(), m_impl->emitters.end(),
+                    [](const auto &entry) { return entry.second && entry.second->sourceProgram.collisionEnabled; });
     m_impl->Retire(std::move(oldGraph), std::move(oldEmitters));
     return true;
 }
@@ -2053,6 +2065,11 @@ uint64_t ParticleGpuSystemManager::CollisionSceneRevision() const noexcept
 uint32_t ParticleGpuSystemManager::CollisionSceneColliderCount() const noexcept
 {
     return m_impl && m_impl->collisionScene ? m_impl->collisionScene->PublishedColliderCount() : 0;
+}
+
+bool ParticleGpuSystemManager::RequiresCollisionScene() const noexcept
+{
+    return m_impl && m_impl->requiresCollisionScene;
 }
 
 bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,
@@ -2170,6 +2187,7 @@ void ParticleGpuSystemManager::Clear()
     m_impl->FailDiagnostics(0, "GPU particle graph was cleared before diagnostic recording completed");
     m_impl->graphState = std::move(candidateGraph);
     m_impl->emitters.clear();
+    m_impl->requiresCollisionScene = false;
     m_impl->Retire(std::move(oldGraph), std::move(oldEmitters));
 }
 
@@ -2371,8 +2389,13 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
         INXLOG_ERROR("GPU particle collision scene upload failed");
     bool hasPendingEmitter = std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
                                          [](const auto &scheduler) { return scheduler->HasPendingFrame(); });
-    while (hasPendingEmitter) {
-        m_impl->graphState->graph->Execute(commandBuffer, rhi::QueueRole::Compute);
+    uint32_t recordedSteps = 0;
+    while (hasPendingEmitter && recordedSteps < Impl::MaxQueuedSimulationStepsPerSubmission) {
+        if (recordedSteps == 0)
+            m_impl->graphState->graph->Execute(commandBuffer, rhi::QueueRole::Compute);
+        else
+            m_impl->graphState->graph->ContinueExecution(commandBuffer, rhi::QueueRole::Compute);
+        ++recordedSteps;
         m_impl->RetireCompletedMigrations();
         if (!m_impl->HasQueuedFrameRequests())
             break;

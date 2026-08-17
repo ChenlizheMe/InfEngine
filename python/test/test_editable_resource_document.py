@@ -72,6 +72,16 @@ class _AsyncExecutionLayer(_ExecutionLayer):
         return ticket
 
 
+class _ViewScopedExecutionLayer(_ExecutionLayer):
+    view_scoped_persistence = True
+
+    def schedule_rw_save(self, resource):
+        raise AssertionError("view-scoped persistence must not own the write")
+
+    def flush_rw_autosave(self, *, force=False):
+        raise AssertionError("view-scoped persistence must not own the flush")
+
+
 def test_editable_resource_document_is_shared_without_an_inspector_view():
     previous_registry = DocumentRegistry._instance
     registry = DocumentRegistry()
@@ -110,6 +120,78 @@ def test_editable_resource_document_is_shared_without_an_inspector_view():
         assert stack_controller.autosave_debounce_sec == 0.5
     finally:
         DocumentRegistry._instance = previous_registry
+
+
+def test_dirty_editable_resource_keeps_authoritative_instance_across_views():
+    previous_registry = DocumentRegistry._instance
+    registry = DocumentRegistry()
+    original = _Resource(3.0)
+    replacement = _Resource(1.0)
+    first_state = SimpleNamespace(resource_controller=None, settings=original)
+    second_state = SimpleNamespace(resource_controller=None, settings=replacement)
+    execution = _ExecutionLayer()
+    try:
+        controller = ensure_editable_resource_document(
+            category="material",
+            document_kind=DocumentKind.MATERIAL,
+            file_path="Assets/Ocean.mat",
+            resource=original,
+            guid="ocean-guid",
+            state=first_state,
+            exec_layer=execution,
+        )
+        registry.mark_changed(controller.document_id)
+
+        rebound = ensure_editable_resource_document(
+            category="material",
+            document_kind=DocumentKind.MATERIAL,
+            file_path="Assets/Ocean.mat",
+            resource=replacement,
+            guid="ocean-guid",
+            state=second_state,
+            exec_layer=execution,
+        )
+
+        assert rebound is controller
+        assert controller.resource is original
+        assert second_state.resource_controller is controller
+        assert second_state.settings is original
+    finally:
+        DocumentRegistry._instance = previous_registry
+
+
+def test_view_scoped_execution_uses_controller_owned_asset_path(monkeypatch):
+    from Infernux.core.assets import AssetManager
+
+    resource = _Resource(6.0)
+    controller = EditableResourceDocumentController(
+        "material", "Assets/Ocean.mat", resource
+    )
+    controller.exec_layer = _ViewScopedExecutionLayer()
+    scheduled = []
+    flushed = []
+    monkeypatch.setattr(
+        AssetManager,
+        "schedule_asset_save",
+        classmethod(
+            lambda _cls, category, path, value, debounce_sec=0.0: scheduled.append(
+                (category, path, value, debounce_sec)
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        AssetManager,
+        "flush_scheduled_saves",
+        classmethod(
+            lambda _cls, path=None, force=False: flushed.append((path, force)) or True
+        ),
+    )
+
+    controller.schedule_autosave()
+    assert controller._flush_submission(force=True) is True
+
+    assert scheduled == [("material", "Assets/Ocean.mat", resource, 0.35)]
+    assert flushed == [("Assets/Ocean.mat", True)]
 
 
 def test_editable_resource_document_tracks_autosave_and_undo_revisions():

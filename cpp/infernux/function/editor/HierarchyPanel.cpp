@@ -182,7 +182,7 @@ void HierarchyPanel::SetSelectedObjectById(uint64_t id, bool clearSearchFirst)
         m_forceRootRefresh = missingFromCache;
         if (missingFromCache) {
             Scene *scene = SceneManager::Instance().GetActiveScene();
-            GameObject *selected = scene ? scene->FindByID(id) : nullptr;
+            GameObject *selected = SceneManager::Instance().FindRuntimeObjectByID(id);
             if (selected) {
                 // Runtime-only IDs can be recycled after leaving Play Mode.
                 // An explicitly revealed live scene object must not inherit a
@@ -202,7 +202,7 @@ void HierarchyPanel::ExpandToObject(uint64_t objId)
     Scene *scene = SceneManager::Instance().GetActiveScene();
     if (!scene)
         return;
-    GameObject *go = scene->FindByID(objId);
+    GameObject *go = SceneManager::Instance().FindRuntimeObjectByID(objId);
     if (!go)
         return;
     GameObject *parent = go->GetParent();
@@ -415,6 +415,11 @@ void HierarchyPanel::RebuildFlatListIfNeeded(const std::vector<GameObject *> &ro
 
 void HierarchyPanel::BuildFlatListRecurse(GameObject *obj, int depth)
 {
+    BuildFlatListRecurse(obj, depth, m_flatItems);
+}
+
+void HierarchyPanel::BuildFlatListRecurse(GameObject *obj, int depth, std::vector<FlatItem> &items)
+{
     if (!obj)
         return;
     if (HasActiveSearch() && !IsVisibleInSearch(obj))
@@ -434,7 +439,7 @@ void HierarchyPanel::BuildFlatListRecurse(GameObject *obj, int depth)
         break;
     }
 
-    m_flatItems.push_back({obj, depth, hasVisibleChildren});
+    items.push_back({obj, depth, hasVisibleChildren});
 
     // Determine expanded state
     bool isExpanded = m_treeProjection.IsExpanded(objId);
@@ -450,7 +455,7 @@ void HierarchyPanel::BuildFlatListRecurse(GameObject *obj, int depth)
         for (const auto &child : children) {
             if (IsHidden(child->GetID()))
                 continue;
-            BuildFlatListRecurse(child.get(), depth + 1);
+            BuildFlatListRecurse(child.get(), depth + 1, items);
         }
     }
 }
@@ -562,6 +567,14 @@ std::vector<uint64_t> HierarchyPanel::TopoSortIds(Scene *scene, const std::vecto
         if (idSet.empty())
             break;
     }
+    Scene *persistentScene = SceneManager::Instance().GetRuntimePersistentScene();
+    if (persistentScene && persistentScene != scene) {
+        for (const auto &root : persistentScene->GetRootObjects()) {
+            walk(root.get());
+            if (idSet.empty())
+                break;
+        }
+    }
     // Append any remaining IDs not found in tree
     for (auto id : ids) {
         if (std::find(ordered.begin(), ordered.end(), id) == ordered.end())
@@ -639,7 +652,7 @@ void HierarchyPanel::ReparentObject(uint64_t draggedId, uint64_t newParentId)
     Scene *scene = SceneManager::Instance().GetActiveScene();
     if (!scene)
         return;
-    GameObject *newParent = scene->FindByID(newParentId);
+    GameObject *newParent = SceneManager::Instance().FindRuntimeObjectByID(newParentId);
     if (!newParent)
         return;
 
@@ -650,8 +663,10 @@ void HierarchyPanel::ReparentObject(uint64_t draggedId, uint64_t newParentId)
     for (uint64_t did : sorted) {
         if (did == newParentId)
             continue;
-        auto *obj = scene->FindByID(did);
+        auto *obj = SceneManager::Instance().FindRuntimeObjectByID(did);
         if (!obj)
+            continue;
+        if (obj->GetScene() != newParent->GetScene())
             continue;
         if (IsDescendantOf(newParent, obj))
             continue;
@@ -671,7 +686,7 @@ void HierarchyPanel::MoveObjectAdjacent(uint64_t draggedId, uint64_t targetId, b
     Scene *scene = SceneManager::Instance().GetActiveScene();
     if (!scene)
         return;
-    auto *targetObj = scene->FindByID(targetId);
+    auto *targetObj = SceneManager::Instance().FindRuntimeObjectByID(targetId);
     if (!targetObj)
         return;
 
@@ -685,8 +700,10 @@ void HierarchyPanel::MoveObjectAdjacent(uint64_t draggedId, uint64_t targetId, b
     for (uint64_t did : sorted) {
         if (did == targetId)
             continue;
-        auto *obj = scene->FindByID(did);
+        auto *obj = SceneManager::Instance().FindRuntimeObjectByID(did);
         if (!obj)
+            continue;
+        if (obj->GetScene() != targetObj->GetScene())
             continue;
         if (IsDescendantOf(targetObj, obj))
             continue;
@@ -714,7 +731,7 @@ void HierarchyPanel::ReparentToRoot(uint64_t draggedId)
 
     std::vector<uint64_t> validIds;
     for (uint64_t did : sorted) {
-        auto *obj = scene->FindByID(did);
+        auto *obj = SceneManager::Instance().FindRuntimeObjectByID(did);
         if (!obj)
             continue;
         if (m_uiMode) {
@@ -786,7 +803,7 @@ void HierarchyPanel::BeginRename(uint64_t objId)
     Scene *scene = SceneManager::Instance().GetActiveScene();
     if (!scene)
         return;
-    auto *obj = scene->FindByID(objId);
+    auto *obj = SceneManager::Instance().FindRuntimeObjectByID(objId);
     if (!obj)
         return;
     m_renameId = objId;
@@ -818,7 +835,7 @@ void HierarchyPanel::CommitRename()
     if (!newName.empty()) {
         Scene *scene = SceneManager::Instance().GetActiveScene();
         if (scene) {
-            auto *obj = scene->FindByID(m_renameId);
+            auto *obj = SceneManager::Instance().FindRuntimeObjectByID(m_renameId);
             if (obj && obj->GetName() != newName) {
                 ExecuteEditorCommand("scene.rename_object", RenameCommandArgument(m_renameId, newName), "inline_edit");
             }
@@ -1063,7 +1080,8 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
 
     // Search forces matching branches open only for presentation. Preserve the
     // user's pre-search expansion choices until normal tree interaction resumes.
-    if (!HasActiveSearch() && !isLeaf && ImGui::IsItemToggledOpen())
+    const bool toggledOpen = !isLeaf && ImGui::IsItemToggledOpen();
+    if (!HasActiveSearch() && toggledOpen)
         ExecuteEditorCommand("hierarchy.set_expanded", TreeExpandedCommandArgument(objId, isOpen), "pointer");
 
     // ── Selection ───────────────────────────────────────────────
@@ -1090,7 +1108,9 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
     }
 
     // Double-click frame selected through the shared editor command path.
-    if (ctx->IsMouseDoubleClicked(0) && ctx->IsItemHovered()) {
+    // A rapid expand/collapse gesture on the disclosure arrow is not a row
+    // activation. Keep it from leaking into the double-click frame command.
+    if (!toggledOpen && ctx->IsMouseDoubleClicked(0) && ctx->IsItemHovered()) {
         ExecuteEditorCommand("scene.frame_selected", std::to_string(objId), "pointer");
     }
 
@@ -1156,7 +1176,7 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
                 // In UI mode, block selection of non-canvas objects
                 if (m_uiMode) {
                     Scene *scene = SceneManager::Instance().GetActiveScene();
-                    auto *go = scene ? scene->FindByID(pid) : nullptr;
+                    auto *go = SceneManager::Instance().FindRuntimeObjectByID(pid);
                     if (go && !IsInCanvasTree(go)) {
                         m_pendingSelectId = 0;
                         m_pendingCtrl = false;
@@ -1235,6 +1255,10 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
     // ── Search bar ──────────────────────────────────────────────
     auto searchStart = Clock::now();
     ctx->SetNextItemWidth(ctx->GetContentRegionAvailWidth());
+    if (m_focusSearchNextFrame) {
+        ctx->SetKeyboardFocusHere();
+        m_focusSearchNextFrame = false;
+    }
     std::strncpy(m_searchBuf, m_search.Query().c_str(), sizeof(m_searchBuf) - 1);
     m_searchBuf[sizeof(m_searchBuf) - 1] = '\0';
     ctx->InputTextWithHint("##HierarchySearch", Tr("hierarchy.search_placeholder").c_str(), m_searchBuf,
@@ -1260,6 +1284,17 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
             RefreshRootObjects(scene, allowStale, m_forceRootRefresh);
             m_forceRootRefresh = false;
             m_subRefreshRoots += msSince(t0);
+        }
+
+        // A root can be transferred to the runtime-persistent scene between
+        // hierarchy refreshes. Never render that stale active-scene cache
+        // entry alongside the persistent group in the same frame.
+        const auto ownedRootsEnd =
+            std::remove_if(m_cachedRoots.begin(), m_cachedRoots.end(),
+                           [scene](GameObject *root) { return root == nullptr || root->GetScene() != scene; });
+        if (ownedRootsEnd != m_cachedRoots.end()) {
+            m_cachedRoots.erase(ownedRootsEnd, m_cachedRoots.end());
+            m_flatListDirty = true;
         }
 
         // Refresh canvas roots
@@ -1314,8 +1349,8 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                 std::any_of(m_flatItems.begin(), m_flatItems.end(),
                             [this](const FlatItem &item) { return item.obj && item.obj->GetID() == m_selPrimary; });
             if (!selectedVisible) {
-                GameObject *selected = scene->FindByID(m_selPrimary);
-                if (selected && selected->GetParent() == nullptr) {
+                GameObject *selected = SceneManager::Instance().FindRuntimeObjectByID(m_selPrimary);
+                if (selected && selected->GetScene() == scene && selected->GetParent() == nullptr) {
                     const bool hasVisibleChildren =
                         std::any_of(selected->GetChildren().begin(), selected->GetChildren().end(),
                                     [this](const auto &child) { return child && !IsHidden(child->GetID()); });
@@ -1450,9 +1485,34 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
             m_subRows += msSince(rowsStart);
         }
 
+        // Unity-style runtime residency is a real, separate Scene. Keep the
+        // active authored Scene first, then present persistent roots in their
+        // own group below it.
+        Scene *persistentScene = SceneManager::Instance().GetRuntimePersistentScene();
+        if (persistentScene && !persistentScene->GetRootObjects().empty()) {
+            std::vector<GameObject *> persistentRoots = FilterHidden(persistentScene->GetRootObjects());
+            if (HasActiveSearch())
+                persistentRoots = FilterForSearch(persistentRoots);
+            if (!persistentRoots.empty()) {
+                ctx->Separator();
+                ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::TEXT_DISABLED.x, EditorTheme::TEXT_DISABLED.y,
+                                    EditorTheme::TEXT_DISABLED.z, EditorTheme::TEXT_DISABLED.w);
+                ctx->Label("DontDestroyOnLoad");
+                ctx->PopStyleColor(1);
+
+                std::vector<FlatItem> persistentItems;
+                persistentItems.reserve(persistentRoots.size() * 2);
+                for (GameObject *root : persistentRoots)
+                    BuildFlatListRecurse(root, 0, persistentItems);
+                const float baseIndentX = ctx->GetCursorPosX();
+                for (const FlatItem &item : persistentItems)
+                    RenderFlatItem(ctx, item, baseIndentX, EditorTheme::TREE_INDENT);
+            }
+        }
+
         auto popupStart = Clock::now();
         if (ctx->BeginPopup("##HierarchyItemContext")) {
-            GameObject *popupObj = scene ? scene->FindByID(m_rightClickedObjId) : nullptr;
+            GameObject *popupObj = SceneManager::Instance().FindRuntimeObjectByID(m_rightClickedObjId);
             if (popupObj)
                 RenderItemContextMenu(ctx, popupObj);
             else

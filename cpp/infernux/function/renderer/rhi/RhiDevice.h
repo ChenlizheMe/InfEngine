@@ -2,6 +2,7 @@
 
 #include "RhiCapabilities.h"
 #include "RhiDescriptors.h"
+#include "RhiResourceIndex.h"
 
 #include <atomic>
 #include <cstddef>
@@ -12,6 +13,19 @@
 
 namespace infernux::rhi
 {
+
+class TextureGpuView;
+
+struct BindlessTextureTableBinding final
+{
+    BindingLayoutHandle layout;
+    BindGroupHandle group;
+
+    [[nodiscard]] constexpr bool IsValid() const noexcept
+    {
+        return layout.IsValid() && group.IsValid();
+    }
+};
 
 enum class DeviceCapability : uint8_t
 {
@@ -53,6 +67,7 @@ struct BindlessCapabilityStatus final
 {
     DeviceCapabilityStatus descriptorIndexing;
     DeviceCapabilityStatus runtimeDescriptorArray;
+    DeviceCapabilityStatus shaderSampledImageArrayNonUniformIndexing;
     DeviceCapabilityStatus descriptorBindingPartiallyBound;
     DeviceCapabilityStatus descriptorBindingVariableDescriptorCount;
     DeviceCapabilityStatus descriptorBindingSampledImageUpdateAfterBind;
@@ -63,15 +78,16 @@ struct BindlessCapabilityStatus final
     [[nodiscard]] constexpr bool IsSupported() const noexcept
     {
         return descriptorIndexing.supported && runtimeDescriptorArray.supported &&
-               descriptorBindingPartiallyBound.supported && descriptorBindingVariableDescriptorCount.supported &&
+               shaderSampledImageArrayNonUniformIndexing.supported && descriptorBindingPartiallyBound.supported &&
+               descriptorBindingVariableDescriptorCount.supported &&
                descriptorBindingSampledImageUpdateAfterBind.supported;
     }
 
     [[nodiscard]] constexpr bool IsEnabled() const noexcept
     {
         return descriptorIndexing.enabled && runtimeDescriptorArray.enabled &&
-               descriptorBindingPartiallyBound.enabled && descriptorBindingVariableDescriptorCount.enabled &&
-               descriptorBindingSampledImageUpdateAfterBind.enabled;
+               shaderSampledImageArrayNonUniformIndexing.enabled && descriptorBindingPartiallyBound.enabled &&
+               descriptorBindingVariableDescriptorCount.enabled && descriptorBindingSampledImageUpdateAfterBind.enabled;
     }
 };
 
@@ -100,6 +116,23 @@ struct DeviceCapabilityState final
         return {};
     }
 };
+
+/// Stable shader-ABI fingerprint for the capabilities that affect descriptor
+/// set construction. It is intentionally small and backend-neutral: a shader
+/// cache must not reuse a program built for a different enabled contract.
+[[nodiscard]] constexpr uint64_t ComputeDeviceShaderContractKey(const DeviceCapabilityState &state) noexcept
+{
+    uint64_t key = 0x494e585348414445ull; // "INXSHADER"
+    const bool bindless = state.bindless.IsEnabled();
+    const bool dynamicRendering = state.dynamicRendering.IsEnabled();
+    const bool synchronization2 = state.synchronization2.IsEnabled();
+    const bool submit2 = state.submit2.IsEnabled();
+    key |= static_cast<uint64_t>(bindless) << 0u;
+    key |= static_cast<uint64_t>(dynamicRendering) << 1u;
+    key |= static_cast<uint64_t>(synchronization2) << 2u;
+    key |= static_cast<uint64_t>(submit2) << 3u;
+    return key;
+}
 
 struct DeviceCapabilityRequest final
 {
@@ -152,8 +185,7 @@ struct DeviceCapabilityCheck final
 {
     if (request.descriptorIndexing) {
         if (!state.bindless.IsSupported())
-            return {DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing,
-                    DeviceCapability::DescriptorIndexing};
+            return {DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing, DeviceCapability::DescriptorIndexing};
         if (!state.bindless.IsEnabled())
             return {DeviceCapabilityDiagnosticCode::NotEnabled, DeviceCapability::DescriptorIndexing};
     }
@@ -208,6 +240,25 @@ class Device
     [[nodiscard]] virtual std::shared_ptr<DeviceLifetime> GetLifetime() const noexcept
     {
         return {};
+    }
+
+    /// Optional device-global sampled-texture table. Backends publish this
+    /// capability once the table and its fallback descriptor are complete.
+    /// Renderers consume only RHI handles and stable ResourceIndex values.
+    [[nodiscard]] virtual BindlessTextureTableBinding GetBindlessTextureTableBinding() const noexcept
+    {
+        return {};
+    }
+    [[nodiscard]] virtual ResourceIndex
+    PublishBindlessTexture(const std::shared_ptr<const TextureGpuView> &texture) noexcept
+    {
+        (void)texture;
+        return {};
+    }
+    virtual void MarkBindlessTexturesUsed(const ResourceIndex *resources, size_t count) noexcept
+    {
+        (void)resources;
+        (void)count;
     }
 
     [[nodiscard]] virtual BufferHandle CreateBuffer(const BufferDesc &desc) = 0;

@@ -44,6 +44,19 @@ class _Controller:
         return True
 
 
+class _AutosaveController(_Controller):
+    autosave_on_close = True
+
+    def __init__(self, registry: DocumentRegistry, document_id: str) -> None:
+        super().__init__(registry, document_id)
+        self.pending_ticket = True
+        self.save_calls = 0
+
+    def save(self, *, ticket, save_as: bool = False):
+        self.save_calls += 1
+        return super().save(ticket=ticket, save_as=save_as)
+
+
 def _dirty_document(
     registry: DocumentRegistry,
     document_id: str,
@@ -226,6 +239,87 @@ def test_cancelled_async_save_returns_to_same_document_decision():
     assert close.state is CloseState.AWAITING_DECISION
     assert close.active_document is document
     assert close.issue is CloseIssue.SAVE_CANCELLED
+
+
+def test_close_drains_autosaved_resource_without_showing_unsaved_decision():
+    registry = DocumentRegistry()
+    document, _ = _dirty_document(registry, "autosaved-material")
+    controller = _AutosaveController(registry, document.document_id)
+    registry.update_metadata(document.document_id, controller=controller)
+    completed: list[str] = []
+    close = CloseCoordinator(registry)
+
+    close.request(
+        CloseIntent(
+            CloseIntentKind.CLOSE_VIEW,
+            document_ids=(document.document_id,),
+        ),
+        lambda: completed.append("closed"),
+    )
+
+    assert controller.save_calls == 1
+    assert close.state is CloseState.WAITING_FOR_SAVE
+    ticket = registry.active_save_ticket(document.document_id)
+    assert ticket is not None
+
+    registry.complete_save(ticket.ticket_id, success=True)
+    close.poll()
+
+    assert completed == ["closed"]
+    assert close.state is CloseState.IDLE
+    assert document.is_dirty is False
+
+
+def test_failed_close_autosave_falls_back_to_explicit_decision_once():
+    registry = DocumentRegistry()
+    document, _ = _dirty_document(registry, "failed-autosave")
+    controller = _AutosaveController(registry, document.document_id)
+    registry.update_metadata(document.document_id, controller=controller)
+    close = CloseCoordinator(registry)
+
+    close.request(
+        CloseIntent(
+            CloseIntentKind.EXIT_EDITOR,
+            document_ids=(document.document_id,),
+        ),
+        lambda: None,
+    )
+    ticket = registry.active_save_ticket(document.document_id)
+    assert ticket is not None
+
+    registry.complete_save(ticket.ticket_id, success=False)
+    close.poll()
+
+    assert controller.save_calls == 1
+    assert close.state is CloseState.AWAITING_DECISION
+    assert close.active_document is document
+    assert close.issue is CloseIssue.SAVE_CANCELLED
+
+
+def test_conflicted_close_autosave_enters_document_conflict_arbitration():
+    registry = DocumentRegistry()
+    document, _ = _dirty_document(registry, "conflicted-autosave")
+    controller = _AutosaveController(registry, document.document_id)
+    registry.update_metadata(document.document_id, controller=controller)
+    close = CloseCoordinator(registry)
+
+    close.request(
+        CloseIntent(
+            CloseIntentKind.EXIT_EDITOR,
+            document_ids=(document.document_id,),
+        ),
+        lambda: None,
+    )
+    ticket = registry.active_save_ticket(document.document_id)
+    assert ticket is not None
+
+    registry.complete_save(ticket.ticket_id, success=False, conflict=True)
+    close.poll()
+
+    assert controller.save_calls == 1
+    assert close.state is CloseState.WAITING_FOR_CONFLICT
+    assert close.active_document is document
+    assert document.state is DocumentState.CONFLICT
 
 
 def test_cancel_invokes_callback_without_mutating_document():

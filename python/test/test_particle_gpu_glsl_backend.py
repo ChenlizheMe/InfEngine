@@ -96,11 +96,21 @@ def test_gpu_fused_update_rendering_stage_has_structured_symbols_and_workgroup_c
     }
     assert "shared uint inx_particle_render_local_count;" in fused
     assert "shared uint inx_particle_render_group_base;" in fused
-    assert fused.count("atomicAdd(counters.visible_count") == 1
-    assert fused.count("atomicAdd(indirect_args.instance_count") == 1
-    assert fused.count("barrier();") == 3
+    assert len(re.findall(r"atomicAdd\s*\(\s*counters\.visible_count", fused)) == 1
+    assert len(re.findall(r"atomicAdd\s*\(\s*indirect_args\.instance_count", fused)) == 1
+    # Alive-list and render export share one subgroup prefix pass.  Keeping
+    # this at two barriers is the performance contract for the fused kernel.
+    fused_main = fused.rsplit("void main()", 1)[1]
+    assert fused_main.count("barrier();") == 2
+    assert "subgroupBallot(inx_particle_active_candidate)" in fused
+    assert "subgroupBallot(inx_particle_render_candidate)" in fused
+    assert "subgroupBallotExclusiveBitCount" in fused
+    assert "inx_alive_index(pc.alive_read_slot, invocation)" in fused
+    assert "inx_store_alive(pc.alive_write_slot" in fused
     assert "update_v" in fused and "render_v" in fused
     assert fused.index("update_v") < fused.index("render_v")
+    assert "ParticleVisibilityInstance" in fused
+    assert "visibility[particle_index].position_radius = vec4(" in fused
 
     render_body_start = fused.index("render_v")
     render_finite = fused.rindex("particle_alive = particle_alive &&")
@@ -117,6 +127,21 @@ def test_gpu_noneligible_emitter_keeps_only_fallback_stages():
     assert emitter.update_render_fusion["eligible"] is False
     assert emitter.update_render_fusion["fused_stage"] == ""
     assert "update_rendering_fused" not in emitter.stages()
+
+
+def test_gpu_nonfused_particle_recycling_has_one_stage_owner():
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(_scene_collision_asset())
+    )
+    emitter = GpuParticleGlslLowerer().lower(kernel).emitters[0]
+
+    # Contact and Rendering can invalidate a particle after Update has already
+    # compacted the current alive list. The following Update owns recycling so
+    # the same slot cannot be pushed twice by independent stages.
+    assert "state.lifecycle_flags &= ~INX_PARTICLE_ALIVE" in emitter.contact_dispatch
+    assert "if (!particle_alive && (particle_was_alive || pc.use_alive_list != 0u))" in emitter.update
+    assert emitter.update.count("inx_push_free(particle_index)") == 1
+    assert "inx_push_free(particle_index)" not in emitter.rendering
 
 
 def test_particle_script_until_compiles_to_valid_gpu_continuations():
@@ -269,7 +294,8 @@ class DelayedBirth(ParticleScript):
 
     assert "state.lifecycle_flags = INX_PARTICLE_ALIVE" in emitter.init
     assert "if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE" in emitter.init
-    assert "INX_PARTICLE_INIT_COMPLETE) == 0u" in emitter.update
+    assert "(state.lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) != 0u" in emitter.update
+    assert "inx_store_alive(pc.alive_write_slot" in emitter.update
     assert "INX_PARTICLE_INIT_COMPLETE) != 0u" in emitter.rendering
     assert emitter.continuation is not None
     assert "state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE" in emitter.continuation.dispatch
@@ -1836,7 +1862,7 @@ def test_gpu_set_emitter_playing_uses_graph_state_request_buffers():
     assert "set = 3, binding = 4" in emitter.update
     assert "bool v3 = false;" in emitter.update
     assert "inx_request_emitter_playing(1u, v3);" in emitter.update
-    assert "!inx_current_emitter_playing()" in emitter.update
+    assert "&& inx_current_emitter_playing();" in emitter.update
     compiled = native._compile_compute_glsl_batch(
         emitter.stages(), "particle-emitter-playing"
     )
@@ -2840,6 +2866,8 @@ def test_gpu_lowerer_emits_resident_compute_lifecycle_and_indirect_output():
     assert "inx_pop_free" in emitter.init
     assert "states[index].spawn_generation = 0u;" in emitter.bootstrap
     assert "atomicAdd(indirect_args.instance_count, committed_count)" in emitter.rendering
+    assert "ParticleVisibilityInstance" in emitter.rendering
+    assert "visibility[particle_index].position_radius = vec4(" in emitter.rendering
     assert "layout(push_constant)" in emitter.rendering
     assert "Vk" not in "\n".join(emitter.stages().values())
     assert {
@@ -2873,13 +2901,17 @@ def test_gpu_init_reserves_one_free_list_block_per_workgroup_and_compiles():
     assert "return" not in before_barrier
     assert main.count("barrier();") == 1
     assert "emitter_spawn.spawn_count - group_first_invocation" in main
+    assert "simulation_control.simulation_allowed" not in before_barrier
+    assert "inx_current_emitter_playing()" not in before_barrier
     assert re.search(
         r"free_slots\[\s*inx_particle_init_old_free_count\s*-\s*1u\s*"
         r"-\s*gl_LocalInvocationIndex\s*\]",
         main,
     )
     assert "requested_count - inx_particle_init_accepted_count" in main
+    assert "atomicAdd(counters.reserved_count, inx_particle_init_accepted_count)" in main
     assert "atomicAdd(counters.dropped_count, dropped_count)" in main
+    assert "if (!initialized_state_finite) atomicAdd(counters.dropped_count, 1u);" in main
 
     compiled = native._compile_compute_glsl_batch(
         {"init": init}, "particle-init-free-block-test"
@@ -3667,7 +3699,15 @@ def test_generated_gpu_particle_kernels_compile_to_vulkan_spirv(tmp_path):
         output_path = tmp_path / f"{stage}.spv"
         source_path.write_text(source, encoding="utf-8")
         result = subprocess.run(
-            [validator, "-V", str(source_path), "-o", str(output_path)],
+            [
+                validator,
+                "-V",
+                "--target-env",
+                "vulkan1.2",
+                str(source_path),
+                "-o",
+                str(output_path),
+            ],
             capture_output=True,
             text=True,
             check=False,

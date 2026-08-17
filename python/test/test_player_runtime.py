@@ -1,6 +1,35 @@
 from __future__ import annotations
 
 
+def _runtime_contract(tmp_path):
+    from Infernux.engine.player_service_graph import (
+        PlayerRuntimeAssetCatalog,
+        RuntimeFeatureSet,
+        RuntimeFlavor,
+        RuntimeProductManifest,
+        player_manifest_service_section,
+        runtime_policy_for,
+    )
+
+    flavor = RuntimeFlavor.PLAYER_RELEASE
+    features = RuntimeFeatureSet()
+    document = {
+        "$schema": "infernux.player_runtime_manifest",
+        "manifest_version": 1,
+        "product": {"flavor": flavor.value},
+        "features": features.to_manifest(),
+        "runtime_policy": runtime_policy_for(flavor).to_manifest(),
+        "services": player_manifest_service_section(flavor, features),
+    }
+    manifest = RuntimeProductManifest.from_document(document)
+    catalog = PlayerRuntimeAssetCatalog.from_documents(
+        str(tmp_path),
+        {"artifacts": []},
+        {"entries": []},
+    )
+    return manifest, catalog
+
+
 def _fake_scene_manager(monkeypatch, scene):
     import Infernux.lib as native_lib
 
@@ -25,8 +54,9 @@ def _fake_scene_manager(monkeypatch, scene):
     return SceneManager
 
 
-def test_player_runtime_activation_does_not_snapshot_scene(monkeypatch):
+def test_player_runtime_activation_does_not_snapshot_scene(monkeypatch, tmp_path):
     from Infernux.engine.player_runtime import PlayerRuntimeSession
+    from Infernux.scene import SceneManager as RuntimeSceneManager
 
     calls = []
 
@@ -48,23 +78,46 @@ def test_player_runtime_activation_does_not_snapshot_scene(monkeypatch):
         staticmethod(lambda current: calls.append(("refresh", current))),
     )
     monkeypatch.setattr("Infernux.timing.Time._reset", lambda: calls.append("reset"))
+    monkeypatch.setattr(
+        RuntimeSceneManager,
+        "install_runtime_service",
+        staticmethod(lambda service: calls.append(("install", service))),
+    )
+    monkeypatch.setattr(
+        RuntimeSceneManager,
+        "remove_runtime_service",
+        staticmethod(lambda service: calls.append(("remove", service))),
+    )
 
     session = PlayerRuntimeSession()
+    session.configure_runtime_contract(*_runtime_contract(tmp_path))
     assert session.activate() is True
     assert session.is_playing
     assert calls == [
         "reset",
+        ("install", session._scene_service),
         ("set_playing", True),
         ("refresh", scene),
         "play",
     ]
-    assert not hasattr(session, "_scene_backup")
+    for editor_state in (
+        "_scene_backup",
+        "_scene_dirty_backup",
+        "_resources_manager",
+        "_script_compiler",
+        "_selection_manager",
+        "_undo_manager",
+        "_preview_service",
+        "_import_coordinator",
+    ):
+        assert not hasattr(session, editor_state)
+    session.shutdown()
+    assert calls[-1] == ("remove", session._scene_service)
 
 
 def test_player_runtime_load_scene_success_does_not_initialize_runtime_state(
     monkeypatch, tmp_path
 ):
-    from Infernux.engine import player_runtime
     from Infernux.engine.player_runtime import PlayerRuntimeSession
 
     scene_path = tmp_path / "Main.scene"
@@ -80,25 +133,30 @@ def test_player_runtime_load_scene_success_does_not_initialize_runtime_state(
     _fake_scene_manager(monkeypatch, scene)
     refreshes = []
     monkeypatch.setattr(
-        player_runtime.PlayerRuntimeSession,
+        PlayerRuntimeSession,
         "_refresh_loaded_scene",
         staticmethod(lambda current: refreshes.append(current)),
     )
 
-    class Transaction:
-        error = ""
+    class SceneService:
+        active_scene_path = None
 
-        def __init__(self, current, **kwargs):
-            assert current is scene
-            assert kwargs["path"] == str(scene_path)
+        def bind_runtime_catalog(self, _catalog):
+            return None
 
-        def run_to_completion(self, *, raise_on_failure):
-            assert raise_on_failure is False
+        def load_initial(self, path):
+            assert path == str(scene_path)
+            self.active_scene_path = path
             return True
 
-    monkeypatch.setattr(player_runtime, "SceneDocumentTransaction", Transaction)
+        def process_pending_load(self):
+            return None
 
-    session = PlayerRuntimeSession()
+        def cancel_pending_load(self):
+            return None
+
+    session = PlayerRuntimeSession(scene_service=SceneService())
+    session.configure_runtime_contract(*_runtime_contract(tmp_path))
     assert session.load_scene(str(scene_path)) is True
     assert session.active_scene_path == str(scene_path)
     assert refreshes == []
@@ -107,7 +165,6 @@ def test_player_runtime_load_scene_success_does_not_initialize_runtime_state(
 def test_player_runtime_load_scene_failure_keeps_previous_scene_state(
     monkeypatch, tmp_path
 ):
-    from Infernux.engine import player_runtime
     from Infernux.engine.player_runtime import PlayerRuntimeSession
 
     scene_path = tmp_path / "Broken.scene"
@@ -122,18 +179,23 @@ def test_player_runtime_load_scene_failure_keeps_previous_scene_state(
     scene = Scene()
     _fake_scene_manager(monkeypatch, scene)
 
-    class Transaction:
-        error = "invalid scene"
+    class SceneService:
+        active_scene_path = None
 
-        def __init__(self, *_args, **_kwargs):
-            pass
+        def bind_runtime_catalog(self, _catalog):
+            return None
 
-        def run_to_completion(self, *, raise_on_failure):
+        def load_initial(self, _path):
             return False
 
-    monkeypatch.setattr(player_runtime, "SceneDocumentTransaction", Transaction)
+        def process_pending_load(self):
+            return None
 
-    session = PlayerRuntimeSession()
+        def cancel_pending_load(self):
+            return None
+
+    session = PlayerRuntimeSession(scene_service=SceneService())
+    session.configure_runtime_contract(*_runtime_contract(tmp_path))
     assert session.load_scene(str(scene_path)) is False
     assert session.active_scene_path is None
     assert session.state == "stopped"

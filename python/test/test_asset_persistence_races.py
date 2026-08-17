@@ -74,6 +74,61 @@ def test_material_save_does_not_invalidate_live_cache_before_async_commit(monkey
     assert saved == []
 
 
+def test_material_save_accepts_controller_owned_path(monkeypatch, tmp_path):
+    path = str(tmp_path / "controller-owned.mat")
+    submitted = _Ticket(committed_file_state=object())
+
+    class _MaterialWithoutPath:
+        @staticmethod
+        def serialize():
+            return '{"name":"ControllerOwned"}'
+
+    captured = []
+    monkeypatch.setattr(
+        AssetManager,
+        "note_asset_edit",
+        classmethod(lambda _cls, *args, **kwargs: None),
+    )
+    monkeypatch.setattr(
+        AssetManager,
+        "_submit_document_snapshot",
+        classmethod(
+            lambda _cls, file_path, snapshot, **kwargs: captured.append(
+                (file_path, snapshot)
+            )
+            or submitted
+        ),
+    )
+
+    assert (
+        AssetManager._save_material_resource(_MaterialWithoutPath(), path)
+        is submitted
+    )
+    assert captured == [(path, '{"name":"ControllerOwned"}')]
+
+
+def test_material_save_queue_passes_its_stable_path_to_strategy(monkeypatch, tmp_path):
+    path = str(tmp_path / "queued.mat")
+    resource = object()
+    calls = []
+    AssetManager._ensure_execution_strategies()
+    previous = AssetManager._save_handlers.get("material")
+    AssetManager._scheduled_saves.clear()
+    AssetManager._save_handlers["material"] = (
+        lambda value, target: calls.append((value, target)) or True
+    )
+    try:
+        AssetManager.schedule_asset_save("material", path, resource, debounce_sec=0.0)
+        assert AssetManager.flush_scheduled_saves(force=True) is True
+        assert calls == [(resource, path)]
+    finally:
+        AssetManager._scheduled_saves.clear()
+        if previous is None:
+            AssetManager._save_handlers.pop("material", None)
+        else:
+            AssetManager._save_handlers["material"] = previous
+
+
 def test_only_latest_material_write_callback_can_publish_a_to_b_to_c(monkeypatch, tmp_path):
     path = str(tmp_path / "rapid.mat")
     normalized = path_key(path)

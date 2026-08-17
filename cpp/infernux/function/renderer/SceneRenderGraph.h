@@ -376,7 +376,8 @@ class SceneRenderGraph
         m_fullscreenRenderer.InvalidateShader(shaderName);
     }
 
-    void UpdateMainPassClearSettings(CameraClearFlags clearFlags, const glm::vec4 &bgColor);
+    void UpdateMainPassClearSettings(CameraClearFlags clearFlags, const glm::vec4 &bgColor, bool dithering,
+                                     bool stopNaNs);
 
     // ========================================================================
     // ========================================================================
@@ -428,6 +429,17 @@ class SceneRenderGraph
         m_hasCachedDrawCalls = true;
     }
 
+    [[nodiscard]] bool CanReuseCachedSubmission(uint64_t signature) const noexcept
+    {
+        return m_hasCachedDrawCalls && signature != 0 && m_cachedSubmissionSignature == signature;
+    }
+
+    void SetCachedSubmissionSignature(uint64_t signature, std::shared_ptr<const void> owner = {})
+    {
+        m_cachedSubmissionSignature = signature;
+        m_cachedRenderWorldOwner = std::move(owner);
+    }
+
     /// @brief Cache owned or borrowed shadow-caster candidates for this graph.
     void SetCachedShadowRendererList(RendererList rendererList)
     {
@@ -440,6 +452,8 @@ class SceneRenderGraph
     {
         m_cachedShadowRenderers.Clear();
         m_hasCachedShadowDrawCalls = false;
+        m_cachedSubmissionSignature = 0;
+        m_cachedRenderWorldOwner.reset();
     }
 
     /// @brief Get cached draw calls
@@ -645,6 +659,8 @@ class SceneRenderGraph
     void RegisterTransientTextures(uint32_t width, uint32_t height,
                                    std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles);
 
+    [[nodiscard]] MaterialPassPipelineDescriptor GetEditorOverlayMaterialPass() const;
+
     /**
      * @brief Append a system auto-pass (gizmos / editor tools) that draws
      * into the backbuffer with read-only depth testing.
@@ -759,6 +775,8 @@ class SceneRenderGraph
     bool m_hasCameraClearOverride = false;
     CameraClearFlags m_cameraClearFlags = {};
     glm::vec4 m_cameraBgColor{0.1f, 0.1f, 0.1f, 1.0f};
+    bool m_cameraDithering = false;
+    bool m_cameraStopNaNs = false;
 
     // Previous frame's camera clear state — used to detect changes that
     // actually require a graph rebuild (= loadOp change) vs. changes that
@@ -780,6 +798,8 @@ class SceneRenderGraph
     bool m_hasCachedDrawCalls = false;
     RendererList m_cachedShadowRenderers;
     bool m_hasCachedShadowDrawCalls = false;
+    uint64_t m_cachedSubmissionSignature = 0;
+    std::shared_ptr<const void> m_cachedRenderWorldOwner;
     bool m_hasShadowCasterPass = false;
 
     // Per-graph camera VP cache — set by SubmitCulling so the executor

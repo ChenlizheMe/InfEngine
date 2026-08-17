@@ -415,9 +415,10 @@ void Collider::RegisterBody()
     if (!go)
         return;
 
-    // Skip physics body creation for objects in non-active scenes
-    // (e.g. prefab template cache) to avoid phantom colliders.
-    if (go->GetScene() != SceneManager::Instance().GetActiveScene())
+    // Skip physics body creation for non-runtime scenes (for example prefab
+    // template caches). DontDestroyOnLoad owns a dedicated runtime Scene and
+    // must remain physically resident across active-scene replacement.
+    if (!SceneManager::Instance().IsRuntimeScene(go->GetScene()))
         return;
 
     if (actor.bodyId != 0xFFFFFFFF) {
@@ -642,10 +643,14 @@ void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsB
         RebuildShape();
     }
 
-    // Dynamic pose changes are handled by Rigidbody using the same dirty actor
-    // queue. Scale still reaches this point so dynamic shapes can be rebuilt.
-    if (rb && rb->IsEnabled() && !rb->IsKinematic())
+    // Rigidbody owns the pose contract for both dynamic and kinematic bodies.
+    // In particular, a direct Transform write must also update interpolation
+    // history; otherwise an old presentation sample can overwrite it before
+    // the next fixed step.
+    if (rb && rb->IsEnabled()) {
+        rb->SyncExternalMovesToPhysics(fixedDeltaTime);
         return;
+    }
 
     glm::quat rot = tf->GetWorldRotation();
     glm::vec3 pos = tf->GetPosition();
@@ -660,15 +665,8 @@ void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsB
 
         PhysicsWorld &physicsWorld = PhysicsWorld::Instance();
         const bool hasRigidbodies = PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0;
-        bool isKinematicBody = (rb != nullptr && rb->IsEnabled() && rb->IsKinematic());
         bool movedWithVelocity = false;
-        if (isKinematicBody && fixedDeltaTime > 0.0f) {
-            // Cap the drive speed: a transform write that jumps far (scripted
-            // teleport) must land the body immediately, not launch it across
-            // the scene at delta/dt.
-            physicsWorld.MoveBodyKinematic(actor.bodyId, pos, rot, fixedDeltaTime,
-                                           PhysicsWorld::kMaxTransformDriveSpeed);
-        } else if (!rb && fixedDeltaTime > 0.0f && hasRigidbodies) {
+        if (fixedDeltaTime > 0.0f && hasRigidbodies) {
             // Collider-only body moved while the simulation is stepping
             // (gizmo drag / scripted move). A static teleport only produces
             // positional depenetration — overlapped dynamic bodies would be
@@ -676,7 +674,7 @@ void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsB
             // kinematically instead so contacts carry real momentum.
             physicsWorld.MoveStaticBodyWithVelocity(actor.bodyId, pos, rot, fixedDeltaTime);
             movedWithVelocity = true;
-        } else if (staticPoseBatch && !rb) {
+        } else if (staticPoseBatch) {
             staticPoseBatch->push_back({actor.bodyId, pos, rot});
         } else {
             physicsWorld.SetBodyPosition(actor.bodyId, pos, rot);
@@ -685,8 +683,7 @@ void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsB
         // After teleporting a static body, wake nearby dynamic bodies. The
         // velocity path is exempt: the body is temporarily kinematic and Jolt
         // wakes everything it touches during the step.
-        bool isStaticBody = (rb == nullptr || !rb->IsEnabled());
-        if (isStaticBody && !movedWithVelocity && hasRigidbodies) {
+        if (!movedWithVelocity && hasRigidbodies) {
             physicsWorld.WakeBodiesTouchingStatic(actor.bodyId);
         }
     }

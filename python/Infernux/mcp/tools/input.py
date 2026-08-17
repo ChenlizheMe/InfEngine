@@ -319,6 +319,7 @@ def perform_pointer_click(
         "press_render_frame": int(rendered_press["frame"]),
         "release_render_frame": int(rendered_release["frame"]),
         "press_target_active": bool(rendered_press.get("target_active")) if expected_target_id else None,
+        "press_target_accepted": _press_target_accepted(rendered_press) if expected_target_id else None,
         "press_frame": rendered_press if expected_target_id else None,
         "delivered": True,
     })

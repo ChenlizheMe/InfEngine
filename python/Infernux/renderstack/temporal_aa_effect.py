@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, TYPE_CHECKING
 
-from Infernux.components.serialized_field import serialized_field
+from Infernux.components.fields import serialized_field
 from Infernux.renderstack._pipeline_common import COLOR_TEXTURE, DEPTH_TEXTURE, MOTION_TEXTURE
 from Infernux.renderstack.fullscreen_effect import FullScreenEffect
 

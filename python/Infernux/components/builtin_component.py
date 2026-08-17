@@ -31,7 +31,7 @@ from __future__ import annotations
 import weakref
 from typing import Any, Dict, Optional, Type, TYPE_CHECKING
 
-from .serialized_field import FieldMetadata, FieldType
+from .fields import FieldMetadata, FieldType
 from .component import InxComponent
 from Infernux.debug import Debug
 
@@ -81,6 +81,7 @@ class CppProperty:
         *,
         readonly: bool = False,
         tooltip: str = "",
+        display_name_key: str = "",
         header: str = "",
         range: Optional[tuple] = None,
         enum_type=None,
@@ -105,6 +106,7 @@ class CppProperty:
             default=default,
             readonly=readonly,
             tooltip=tooltip,
+            display_name_key=display_name_key,
             header=header,
             range=range,
             enum_type=enum_type,

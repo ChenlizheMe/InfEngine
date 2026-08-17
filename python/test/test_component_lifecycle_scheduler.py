@@ -7,6 +7,8 @@ from Infernux.components._component_lifecycle import (
     RuntimeExecutionScheduler,
     refresh_runtime_dispatch_cache,
 )
+from Infernux.components.component import InxComponent
+from Infernux.engine.runtime_dispatch import build_type_dispatch_descriptor
 
 
 class _ScheduledProbe(ComponentLifecycleMixin):
@@ -42,6 +44,31 @@ class _FailingProbe(_ScheduledProbe):
         raise RuntimeError("expected")
 
 
+class _Owner:
+    def __init__(self, active: bool = True) -> None:
+        self.active_in_hierarchy = active
+
+
+def test_framework_lifecycle_noops_do_not_schedule_declarative_components():
+    class DeclarativeComponent(InxComponent):
+        pass
+
+    class UpdatingComponent(InxComponent):
+        def update(self, _delta_time: float) -> None:
+            pass
+
+    assert build_type_dispatch_descriptor(DeclarativeComponent).phase_presence == (
+        False,
+        False,
+        False,
+    )
+    assert build_type_dispatch_descriptor(UpdatingComponent).phase_presence == (
+        True,
+        False,
+        False,
+    )
+
+
 def test_runtime_scheduler_builds_once_and_reuses_stable_plan():
     scheduler = RuntimeExecutionScheduler()
     first = _ScheduledProbe(2, order=2)
@@ -60,6 +87,52 @@ def test_runtime_scheduler_builds_once_and_reuses_stable_plan():
     assert counters["plan_prepare_calls"] == 2
 
 
+def test_runtime_scheduler_reuses_immutable_execution_snapshot_between_frames():
+    scheduler = RuntimeExecutionScheduler(name="snapshot-cache")
+    probe = _ScheduledProbe(1)
+    scheduler.register_component(probe)
+
+    first = scheduler.begin_frame()
+    first_plan = first.phase_plan
+    first_components = first.component_snapshots
+    first_types = first.type_revisions
+    first.close()
+
+    second = scheduler.begin_frame()
+    try:
+        assert second.phase_plan is first_plan
+        assert second.component_snapshots is first_components
+        assert second.type_revisions is first_types
+    finally:
+        second.close()
+
+    counters = scheduler.profiler_snapshot()
+    assert counters["execution_snapshot_builds"] == 1
+    assert counters["execution_snapshot_hits"] == 1
+
+
+def test_runtime_scheduler_does_not_rescan_dispatch_types_in_steady_state(monkeypatch):
+    import Infernux.engine.runtime_dispatch as runtime_dispatch
+
+    calls = 0
+    original = runtime_dispatch.ensure_runtime_dispatch_types
+
+    def counted(component_types):
+        nonlocal calls
+        calls += 1
+        return original(component_types)
+
+    monkeypatch.setattr(runtime_dispatch, "ensure_runtime_dispatch_types", counted)
+    scheduler = RuntimeExecutionScheduler(name="steady-state")
+    scheduler.register_component(_ScheduledProbe(1))
+
+    scheduler.prepare_frame()
+    scheduler.prepare_frame()
+    scheduler.prepare_frame()
+
+    assert calls == 1
+
+
 def test_runtime_scheduler_only_rebuilds_for_structure_not_body_reload():
     scheduler = RuntimeExecutionScheduler()
     probe = _ScheduledProbe(1)
@@ -76,6 +149,28 @@ def test_runtime_scheduler_only_rebuilds_for_structure_not_body_reload():
     scheduler.mark_structure_changed("component enabled")
     assert scheduler.prepare_frame() is not plan
     assert scheduler.profiler_snapshot()["plan_builds"] == 2
+
+
+def test_starting_coroutine_invalidates_cached_phase_membership(monkeypatch):
+    scheduler = RuntimeExecutionScheduler(name="coroutine-phase-transition")
+    probe = _ScheduledProbe(1)
+    scheduler.register_component(probe)
+    monkeypatch.setattr(
+        RuntimeExecutionScheduler,
+        "_has_phase",
+        staticmethod(lambda _component, phase: phase == "update"),
+    )
+
+    assert scheduler.phase_plan("late_update") == ()
+
+    class _ActiveCoroutineScheduler:
+        count = 1
+
+    probe._runtime_coroutine_scheduler = _ActiveCoroutineScheduler()
+    RuntimeExecutionScheduler._notify_component_runtime_work(probe)
+
+    assert scheduler.phase_plan("late_update") == (probe,)
+    assert scheduler.profiler_snapshot()["coroutine_plan_invalidations"] == 1
 
 
 def test_runtime_scheduler_preserves_order_and_exception_isolation():
@@ -105,6 +200,44 @@ def test_disabled_component_is_removed_from_next_structural_plan():
     disabled._enabled = True
     scheduler.mark_structure_changed("component enabled")
     assert scheduler.phase_plan("update") == (enabled, disabled)
+
+
+def test_inactive_owner_is_excluded_but_reactivation_rebuilds_the_plan():
+    scheduler = RuntimeExecutionScheduler()
+    active_owner = _Owner(active=True)
+    inactive_owner = _Owner(active=False)
+    probe = _ScheduledProbe(1)
+    probe._game_object = active_owner
+    scheduler.register_component(probe)
+
+    assert scheduler.phase_plan("update") == (probe,)
+
+    # A present registration can be a native rebind.  It must refresh the
+    # owner mirror instead of retaining the active state from the old owner.
+    probe._game_object = inactive_owner
+    scheduler.register_component(probe)
+    assert scheduler.phase_plan("update") == ()
+
+    inactive_owner.active_in_hierarchy = True
+    probe._call_on_enable()
+    assert scheduler.phase_plan("update") == (probe,)
+
+
+def test_missing_game_object_on_lightweight_double_is_active():
+    scheduler = RuntimeExecutionScheduler()
+    probe = _ScheduledProbe(1)
+    scheduler.register_component(probe)
+
+    assert scheduler.phase_plan("update") == (probe,)
+
+
+def test_unbound_component_is_excluded_from_the_plan():
+    scheduler = RuntimeExecutionScheduler()
+    probe = _ScheduledProbe(1)
+    probe._game_object = None
+    scheduler.register_component(probe)
+
+    assert scheduler.phase_plan("update") == ()
 
 
 def test_runtime_frame_keeps_one_dispatch_revision_across_all_phases():
@@ -139,6 +272,11 @@ def test_runtime_frame_keeps_one_dispatch_revision_across_all_phases():
     scheduler.register_component(probe)
     frame = scheduler.begin_frame()
 
+    frame.execute_phase("fixed_update", 0.02)
+    frame.execute_phase("update", 0.016)
+    frame.execute_phase("late_update", 0.016)
+    frame.close()
+
     def new_fixed_update(self, _delta_time):
         self.calls.append("fixed-new")
 
@@ -152,11 +290,6 @@ def test_runtime_frame_keeps_one_dispatch_revision_across_all_phases():
     BodyProbe.update = new_update
     BodyProbe.late_update = new_late_update
     refresh_runtime_dispatch_cache(BodyProbe, (probe,))
-
-    frame.execute_phase("fixed_update", 0.02)
-    frame.execute_phase("update", 0.016)
-    frame.execute_phase("late_update", 0.016)
-    frame.close()
 
     assert probe.calls == ["fixed-old", "update-old", "late-old"]
     next_frame = scheduler.begin_frame()
@@ -189,3 +322,137 @@ def test_closed_runtime_frame_rejects_late_dispatch():
         assert "already closed" in str(exc)
     else:
         raise AssertionError("closed frame accepted lifecycle dispatch")
+
+
+def test_native_bridge_reuses_one_snapshot_across_multiple_fixed_steps():
+    scheduler = RuntimeExecutionScheduler(name="editor")
+    probe = _ScheduledProbe(1)
+    scheduler.register_component(probe)
+
+    scheduler.begin_native_frame()
+    try:
+        scheduler.execute_native_phase("fixed_update", 0.02)
+        scheduler.execute_native_phase("fixed_update", 0.02)
+        scheduler.execute_native_phase("update", 0.016)
+        scheduler.execute_native_phase("late_update", 0.016)
+    finally:
+        scheduler.end_native_frame()
+
+    assert probe.calls == [
+        "fixed:0.02",
+        "fixed:0.02",
+        "update:0.016",
+        "late:0.016",
+    ]
+    counters = scheduler.profiler_snapshot()
+    assert counters["native_frame_begins"] == 1
+    assert counters["native_frame_ends"] == 1
+    assert counters["plan_builds"] == 1
+    assert counters["frame_begins"] == 1
+
+
+def test_native_bridge_editor_update_filters_non_edit_mode_components():
+    scheduler = RuntimeExecutionScheduler(name="editor")
+    regular = _ScheduledProbe(1)
+    preview = _ScheduledProbe(2)
+    preview._execute_in_edit_mode = True
+    scheduler.register_component(regular)
+    scheduler.register_component(preview)
+
+    scheduler.begin_native_frame()
+    try:
+        scheduler.execute_native_editor_update(0.016)
+    finally:
+        scheduler.end_native_frame()
+
+    assert regular.calls == []
+    assert preview.calls == ["update:0.016"]
+
+
+def test_native_bridge_preserves_enabled_transition_between_phases():
+    scheduler = RuntimeExecutionScheduler(name="player")
+
+    class _DisablingProbe(_ScheduledProbe):
+        def fixed_update(self, delta_time: float) -> None:
+            self.calls.append(f"fixed:{delta_time}")
+            self._enabled = False
+
+    probe = _DisablingProbe(1)
+    scheduler.register_component(probe)
+
+    scheduler.begin_native_frame()
+    try:
+        scheduler.execute_native_phase("fixed_update", 0.02)
+        scheduler.execute_native_phase("update", 0.016)
+        scheduler.execute_native_phase("late_update", 0.016)
+    finally:
+        scheduler.end_native_frame()
+
+    assert probe.calls == ["fixed:0.02"]
+
+
+def test_owner_deactivation_during_fixed_update_skips_following_phases():
+    scheduler = RuntimeExecutionScheduler(name="player")
+    owner = _Owner(active=True)
+
+    class _OwnerDeactivatingProbe(_ScheduledProbe):
+        def fixed_update(self, delta_time: float) -> None:
+            self.calls.append(f"fixed:{delta_time}")
+            owner.active_in_hierarchy = False
+            self._call_on_disable()
+
+    probe = _OwnerDeactivatingProbe(1)
+    probe._game_object = owner
+    scheduler.register_component(probe)
+
+    scheduler.begin_native_frame()
+    try:
+        scheduler.execute_native_phase("fixed_update", 0.02)
+        scheduler.execute_native_phase("update", 0.016)
+        scheduler.execute_native_phase("late_update", 0.016)
+    finally:
+        scheduler.end_native_frame()
+
+    assert probe.calls == ["fixed:0.02"]
+    assert probe._enabled is True
+    assert scheduler.profiler_snapshot()["phase_skips"] == 2
+
+
+def test_disabled_component_keeps_coroutines_running_in_all_phases():
+    class _CoroutineRecorder:
+        count = 1
+
+        def __init__(self) -> None:
+            self.ticks = []
+
+        def tick_fixed_update(self, delta_time: float, *, epoch=None) -> None:
+            self.ticks.append(("fixed", delta_time, epoch))
+
+        def tick_update(self, delta_time: float, *, epoch=None) -> None:
+            self.ticks.append(("update", delta_time, epoch))
+
+        def tick_late_update(self, delta_time: float, *, epoch=None) -> None:
+            self.ticks.append(("late", delta_time, epoch))
+
+    scheduler = RuntimeExecutionScheduler(name="player")
+    probe = _ScheduledProbe(1)
+    probe._enabled = False
+    coroutine_scheduler = _CoroutineRecorder()
+    probe._runtime_coroutine_scheduler = coroutine_scheduler
+    scheduler.register_component(probe)
+
+    scheduler.begin_native_frame()
+    try:
+        scheduler.execute_native_phase("fixed_update", 0.02)
+        scheduler.execute_native_phase("update", 0.016)
+        scheduler.execute_native_phase("late_update", 0.016)
+    finally:
+        scheduler.end_native_frame()
+
+    assert probe.calls == []
+    assert [tick[:2] for tick in coroutine_scheduler.ticks] == [
+        ("fixed", 0.02),
+        ("update", 0.016),
+        ("late", 0.016),
+    ]
+    assert len({id(tick[2]) for tick in coroutine_scheduler.ticks}) == 1

@@ -149,30 +149,35 @@ class EditorActionJournal:
             return JournalPushResult(False)
 
         discarded_redo = tuple(self._entries[self._cursor :])
+        previous = self._entries[self._cursor - 1] if self._cursor else None
+        can_merge = bool(
+            previous is not None
+            and previous.origin is origin
+            and previous.transaction_id == str(transaction_id or "")
+            and previous.action.can_merge(action)
+        )
+        if can_merge:
+            # Merge before mutating the cursor or disposing the redo branch.
+            # A failing merge therefore leaves the journal exactly as it was.
+            previous.action.merge(action)
+            if discarded_redo:
+                del self._entries[self._cursor :]
+            previous.after_context = after_context
+            previous.timestamp = time.time()
+            previous.revision += 1
+            if command_id:
+                previous.command_id = str(command_id).strip()
+            self._revision += 1
+            self._dispose_action(action)
+            self._dispose_entries(discarded_redo)
+            return JournalPushResult(
+                True,
+                merged=True,
+                discarded_redo=discarded_redo,
+            )
+
         if discarded_redo:
             del self._entries[self._cursor :]
-
-        if self._entries and self._cursor == len(self._entries):
-            previous = self._entries[-1]
-            if (
-                previous.origin is origin
-                and previous.transaction_id == str(transaction_id or "")
-                and bool(previous.action.can_merge(action))
-            ):
-                previous.action.merge(action)
-                previous.after_context = after_context
-                previous.timestamp = time.time()
-                previous.revision += 1
-                if command_id:
-                    previous.command_id = str(command_id).strip()
-                self._revision += 1
-                self._dispose_action(action)
-                self._dispose_entries(discarded_redo)
-                return JournalPushResult(
-                    True,
-                    merged=True,
-                    discarded_redo=discarded_redo,
-                )
 
         entry = JournalEntry(
             action=action,
@@ -276,6 +281,11 @@ class EditorActionJournal:
         self._cursor = 0
         self._revision += 1
         self._dispose_entries(entries)
+
+    def validate(self) -> None:
+        """Raise if the cursor/storage invariant has been damaged."""
+        if not 0 <= self._cursor <= len(self._entries):
+            raise RuntimeError("action journal cursor is outside its entry stream")
 
     @staticmethod
     def _dispose_action(action: Any) -> None:

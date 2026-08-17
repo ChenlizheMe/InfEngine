@@ -15,8 +15,9 @@ from typing import Any, get_args, get_origin, get_type_hints
 
 from Infernux.components import SerializableObject, serialized_field, GameObjectRef
 from Infernux.components.ref_wrappers import ComponentRef
-from Infernux.components.serialized_field import FieldType
+from Infernux.components.fields import FieldType
 from Infernux.debug import Debug
+from Infernux.engine.runtime_dispatch import ReloadableCallbackRegistry
 
 
 # Lifecycle / internal methods that should never appear in the method picker.
@@ -251,12 +252,32 @@ def normalize_event_arguments(existing_args: list[UIEventArgument], specs: list[
     return normalized
 
 
-def materialize_event_arguments(entry: UIEventEntry, component) -> list[Any]:
+def materialize_event_arguments(
+    entry: UIEventEntry,
+    component,
+    *,
+    specs: list[UIEventMethodParameter] | tuple[UIEventMethodParameter, ...] | None = None,
+) -> list[Any]:
     """Return the runtime argument list for a bound event entry."""
-    specs = get_method_parameter_specs(component, getattr(entry, "method_name", "") or "")
-    args = normalize_event_arguments(getattr(entry, "arguments", None) or [], specs)
+    if specs is None:
+        specs = get_method_parameter_specs(
+            component,
+            getattr(entry, "method_name", "") or "",
+        )
+    specs = tuple(specs)
+    # The binding owns the immutable method signature.  Do not normalize or
+    # deep-copy the serialized list on every click; authoring code already
+    # keeps the entry aligned with the selected method.  Missing arguments are
+    # still filled from the cached specs so a partially-authored entry fails
+    # predictably without entering the reflection path.
+    existing_args = tuple(getattr(entry, "arguments", None) or [])
     values: list[Any] = []
-    for arg, spec in zip(args, specs):
+    for index, spec in enumerate(specs):
+        arg = (
+            existing_args[index]
+            if index < len(existing_args) and isinstance(existing_args[index], UIEventArgument)
+            else _build_default_argument(spec)
+        )
         if spec.kind == "bool":
             values.append(bool(arg.bool_value))
         elif spec.kind == "int":
@@ -272,3 +293,93 @@ def materialize_event_arguments(entry: UIEventEntry, component) -> list[Any]:
         else:
             values.append(str(arg.string_value or ""))
     return values
+
+
+@dataclass(frozen=True)
+class _UIEventRuntimeBinding:
+    """Non-serialized epoch binding cached by a persistent UI event owner."""
+
+    entry_identity: int
+    component_name: str
+    method_name: str
+    target_identity: int
+    component_identity: int
+    registry: ReloadableCallbackRegistry
+    reference: Any
+    parameter_specs: tuple[UIEventMethodParameter, ...]
+
+    @staticmethod
+    def _target_identity(target) -> int:
+        if target is None:
+            return 0
+        stable_id = getattr(target, "id", None)
+        if stable_id is not None:
+            try:
+                return int(stable_id)
+            except (TypeError, ValueError):
+                pass
+        return id(target)
+
+    @staticmethod
+    def _component_identity(component) -> int:
+        stable_id = getattr(component, "component_id", None)
+        if stable_id is not None:
+            try:
+                return int(stable_id)
+            except (TypeError, ValueError):
+                pass
+        return id(component)
+
+    @classmethod
+    def create(
+        cls,
+        entry: UIEventEntry,
+        component,
+        target=None,
+    ) -> "_UIEventRuntimeBinding":
+        component_name = str(getattr(entry, "component_name", "") or "")
+        method_name = str(getattr(entry, "method_name", "") or "")
+        method = getattr(component, method_name, None)
+        if not callable(method):
+            raise ValueError(f"persistent callback method '{method_name}' is unavailable")
+        registry = ReloadableCallbackRegistry()
+        reference = registry.add_listener(method)
+        return cls(
+            entry_identity=id(entry),
+            component_name=component_name,
+            method_name=method_name,
+            target_identity=cls._target_identity(target),
+            component_identity=cls._component_identity(component),
+            registry=registry,
+            reference=reference,
+            parameter_specs=tuple(get_method_parameter_specs(component, method_name)),
+        )
+
+    def matches(self, entry: UIEventEntry, target, component) -> bool:
+        if (
+            self.entry_identity != id(entry)
+            or self.component_name != str(getattr(entry, "component_name", "") or "")
+            or self.method_name != str(getattr(entry, "method_name", "") or "")
+            or self.registry.listener_count != 1
+            or self.target_identity != self._target_identity(target)
+            or self.component_identity != self._component_identity(component)
+        ):
+            return False
+        # The owner identity is already part of the cache key and the
+        # registry resolves the method against the current epoch at invoke
+        # time. Do not perform a second getattr() lookup on every click.
+        return True
+
+    def invoke(self, entry: UIEventEntry):
+        arguments = materialize_event_arguments(
+            entry,
+            None,
+            specs=self.parameter_specs,
+        )
+        results = self.registry.invoke(
+            *arguments,
+            propagate_exceptions=True,
+        )
+        if not results:
+            raise RuntimeError("persistent callback registry lost its binding")
+        return results[0]

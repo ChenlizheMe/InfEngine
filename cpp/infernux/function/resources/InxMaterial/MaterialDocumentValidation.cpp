@@ -249,6 +249,10 @@ void ValidateShaderReference(const json &document, std::string_view path)
         document["shader_id"].get_ref<const std::string &>().empty()) {
         Fail(path, "requires guid or shader_id");
     }
+    if (document["guid"].get_ref<const std::string &>().empty() &&
+        !document["path_hint"].get_ref<const std::string &>().empty()) {
+        Fail(path, "path_hint is non-authoritative and cannot replace a shader asset GUID");
+    }
 }
 
 } // namespace

@@ -841,6 +841,11 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         def before_commit():
             if sm.get_active_scene() is not scene:
                 raise RuntimeError("active scene changed while scene document was loading")
+            prepare_runtime_replace = getattr(
+                sm, "prepare_active_scene_replacement", None
+            )
+            if callable(prepare_runtime_replace):
+                prepare_runtime_replace()
             self._prepare_native_scene_swap()
             from Infernux.renderstack.render_stack import RenderStack
             RenderStack._active_instance = None

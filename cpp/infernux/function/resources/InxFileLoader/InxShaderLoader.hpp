@@ -1,6 +1,7 @@
 #pragma once
 
 #include <SPIRV/GlslangToSpv.h>
+#include <atomic>
 #include <core/types/ShaderProgramArtifact.h>
 #include <core/types/ShaderTypes.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
@@ -27,6 +28,7 @@ struct LinkedShaderProgramCompilation
     std::vector<char> vertexSpirv;
     std::vector<char> fragmentSpirv;
     std::vector<std::string> errors;
+    bool usesBindlessTextureABI = false;
 
     [[nodiscard]] bool IsValid() const noexcept
     {
@@ -77,6 +79,14 @@ class InxShaderLoader
     /// picked up on the next compile / reload.
     static void InvalidateTemplateCache();
 
+    /// Select the device-supported material texture ABI used by generated
+    /// shader source. When disabled, shaders that declare BindlessTextures
+    /// are deliberately generated with the bounded sampler ABI instead.
+    /// This is configured once after the Vulkan device capability probe and
+    /// remains device-global for the lifetime of the active renderer.
+    static void SetBindlessTextureABIEnabled(bool enabled) noexcept;
+    [[nodiscard]] static bool IsBindlessTextureABIEnabled() noexcept;
+
     /// Get the currently registered shader search paths.
     static const std::vector<std::string> &GetShaderSearchPaths()
     {
@@ -126,6 +136,13 @@ class InxShaderLoader
     /// Parse shader source into a structured ShaderDescriptor (single pass, no code generation).
     ShaderDescriptor ParseShaderSource(const std::string &source, const std::string &filePath) const;
 
+    /// Return a virtual source path whose extension carries the explicit shader
+    /// stage while preserving the real file's parent directory for imports.
+    /// Packaged Player shaders deliberately use the opaque .inxshader suffix,
+    /// so authored stage semantics must not be inferred from that suffix.
+    [[nodiscard]] static std::string StageQualifiedVirtualPath(const std::string &filePath,
+                                                               const std::string &shaderType);
+
     /// Last shader compile error message (empty on success).
     /// Set by Load() when glslang parse/link fails; read by Infernux::ReloadShaderRuntime.
     static std::string s_lastCompileError;
@@ -140,6 +157,7 @@ class InxShaderLoader
 
   private:
     static thread_local std::unordered_map<std::string, CompiledVariantSet> s_compiledVariantCache;
+    static std::atomic_bool s_bindlessTextureABIEnabled;
 
     glslang::SpvOptions m_options{};
     TBuiltInResource m_builtInResources{};

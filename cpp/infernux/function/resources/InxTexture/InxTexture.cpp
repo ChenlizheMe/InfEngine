@@ -9,14 +9,8 @@ namespace infernux
 
 size_t InxTexture::GetRuntimeMemoryBytes() const noexcept
 {
-    size_t bytes = sizeof(*this) + m_guid.capacity() + m_filePath.capacity() + m_name.capacity() +
-                   m_textureType.capacity() + m_filterMode.capacity() + m_wrapMode.capacity();
-    if (m_cpuData) {
-        bytes += sizeof(TextureCpuData);
-        bytes += m_cpuData->mipLevels.capacity() * sizeof(TextureMipLevel);
-        bytes += m_cpuData->bytes.capacity();
-    }
-    return bytes;
+    return sizeof(*this) + m_guid.capacity() + m_filePath.capacity() + m_name.capacity() + m_textureType.capacity() +
+           m_filterMode.capacity() + m_wrapMode.capacity();
 }
 
 // =============================================================================
@@ -44,7 +38,12 @@ void InxTexture::ApplyImportSettings(const InxResourceMeta &meta)
         m_wrapMode = meta.GetDataAs<std::string>("wrap_mode");
     }
     if (meta.HasKey("aniso_level")) {
-        m_anisoLevel = meta.GetDataAs<int>("aniso_level");
+        const int importedLevel = meta.GetDataAs<int>("aniso_level");
+        // Level 1 was the old importer default and never enabled Vulkan
+        // anisotropic filtering. The current authoring contract treats that
+        // legacy value as automatic device quality, matching the Python asset
+        // settings reader and the TextureImporter migration.
+        m_anisoLevel = importedLevel == 1 ? -1 : importedLevel;
     }
 }
 
@@ -69,7 +68,17 @@ std::shared_ptr<InxTexture> InxTexture::Clone() const
     clone->m_filterMode = m_filterMode;
     clone->m_wrapMode = m_wrapMode;
     clone->m_anisoLevel = m_anisoLevel;
-    clone->m_cpuData = m_cpuData;
+    clone->m_dimension = m_dimension;
+    clone->m_semantic = m_semantic;
+    clone->m_format = m_format;
+    clone->m_width = m_width;
+    clone->m_height = m_height;
+    clone->m_depth = m_depth;
+    clone->m_mipCount = m_mipCount;
+    clone->m_bakeBasis = m_bakeBasis;
+    clone->m_valueMin = m_valueMin;
+    clone->m_valueMax = m_valueMax;
+    clone->m_hasArtifactDescription = m_hasArtifactDescription;
     clone->m_generation = m_generation;
 
     return clone;

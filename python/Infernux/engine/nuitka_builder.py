@@ -38,6 +38,7 @@ from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.i18n import t
 from Infernux.engine.path_utils import path_key, resolved_path
 from Infernux.engine.player_package_native import extract_pack, read_manifest, write_pack
+from Infernux.engine.player_service_graph import forbidden_player_service_modules
 
 # ASCII-safe root for Nuitka staging and temporary build artifacts.
 _STAGING_ROOT = "C:\\_InxBuild"
@@ -58,6 +59,64 @@ _PACKAGED_RUNTIME_MODULE_DIRNAME = "_runtime_modules"
 _RUNTIME_PACK_FORBIDDEN_SUFFIXES = frozenset(
     {".bak", ".exp", ".lib", ".meta", ".pdb", ".py", ".pyi", ".pyo"}
 )
+_RUNTIME_MODULE_FORBIDDEN_SUFFIXES = _RUNTIME_PACK_FORBIDDEN_SUFFIXES | frozenset(
+    {".c", ".cc", ".cpp", ".h", ".hpp", ".pyx"}
+)
+
+
+def _runtime_payload_matches(left: Path, right: Path) -> bool:
+    """Return whether two published runtime directories contain one payload."""
+
+    try:
+        left_manifest = json.loads(
+            (left / _RUNTIME_MODULE_MANIFEST_FILENAME).read_text(encoding="utf-8")
+        )
+        right_manifest = json.loads(
+            (right / _RUNTIME_MODULE_MANIFEST_FILENAME).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(left_manifest.get("archive_sha256")) and left_manifest.get(
+        "archive_sha256"
+    ) == right_manifest.get("archive_sha256")
+
+
+def _publish_runtime_directory(temporary: Path, destination: Path) -> None:
+    """Publish a runtime payload despite Windows scanner and build races."""
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    last_error: OSError | None = None
+    for attempt in range(40):
+        if destination.is_dir() and _runtime_payload_matches(destination, temporary):
+            return
+        try:
+            if destination.exists():
+                shutil.rmtree(destination)
+            os.replace(temporary, destination)
+            return
+        except OSError as exc:
+            last_error = exc
+            # Antivirus and a concurrent CMake invocation can briefly retain a
+            # handle after generation. A competing publisher may also finish
+            # while this process waits, so revalidate on every iteration.
+            if attempt + 1 < 40:
+                time.sleep(0.05)
+    if destination.is_dir() and _runtime_payload_matches(destination, temporary):
+        return
+    assert last_error is not None
+    raise last_error
+
+
+def _authoring_service_module_names() -> frozenset[str]:
+    """Translate the authoritative service graph paths into import names."""
+
+    modules: set[str] = set()
+    for path in forbidden_player_service_modules():
+        normalized = str(path).replace("\\", "/")
+        if not normalized.endswith(".pyc"):
+            continue
+        modules.add(normalized[:-4].replace("/", "."))
+    return frozenset(modules)
 
 
 def _find_player_module_output(staging_dir: str) -> str:
@@ -904,6 +963,10 @@ class NuitkaBuilder:
             "engine/prebuilt_runtime.py",
         }
     )
+    # Source-less Runtime.inxrt must not expose the compiler that produced it.
+    # Keep this separate from _PLAYER_POST_BUILD_ONLY_FILES so changes to the
+    # compiler policy continue to invalidate the prebuilt runtime cache.
+    _PLAYER_RUNTIME_EXCLUDED_FILES = frozenset({"engine/nuitka_builder.py"})
     _GAME_BUILD_EXCLUDED_PACKAGES = frozenset({"mcp", "fastmcp"})
     _ENGINE_MANAGED_RUNTIME_PACKAGES = frozenset(
         {"infernux", "mcp", "fastmcp", "numba", "llvmlite", "numpy"}
@@ -937,7 +1000,24 @@ class NuitkaBuilder:
         "Infernux.engine.bootstrap_project",
         "Infernux.engine.bootstrap_inspector",
         "Infernux.engine.bootstrap_wiring",
+        "Infernux.engine._bootstrap_panels",
+        "Infernux.engine._bootstrap_selection",
+        "Infernux.engine._bootstrap_trace",
+        "Infernux.engine._bootstrap_wiring",
+        "Infernux.engine.candidate_import",
+        "Infernux.engine.deferred_task",
+        "Infernux.engine.hierarchy_creation_service",
         "Infernux.engine.i18n",
+        "Infernux.engine.ide_preference",
+        "Infernux.engine.library_sync",
+        "Infernux.engine.play_mode",
+        "Infernux.engine.preferences_store",
+        "Infernux.engine.project_requirements",
+        "Infernux.engine.project_view_settings",
+        "Infernux.engine._play_mode_serialization",
+        "Infernux.engine.resources_manager",
+        "Infernux.engine.scene_document_transaction",
+        "Infernux.engine.scene_manager",
         "Infernux.engine.ui.editor_panel",
         "Infernux.engine.ui.editor_services",
         "Infernux.engine.ui.panel_registry",
@@ -967,6 +1047,21 @@ class NuitkaBuilder:
         "Infernux.engine.ui.external_document_conflict",
         "Infernux.engine.ui.unsaved_changes_dialog",
         "Infernux.engine.ui.dirty_panel_confirmation",
+    }) | _authoring_service_module_names()
+    _PLAYER_EDITOR_ONLY_PACKAGE_PREFIXES = frozenset({
+        "Infernux.engine._bootstrap",
+        "Infernux.engine.bootstrap_hierarchy",
+        "Infernux.engine.bootstrap_inspector",
+        "Infernux.engine.interaction",
+        "Infernux.engine.undo",
+        "Infernux.gizmos",
+    })
+    _PLAYER_RUNTIME_UI_MODULES = frozenset({
+        "Infernux.engine.ui",
+        "Infernux.engine.ui.engine_status",
+        "Infernux.engine.ui.runtime_canvas_snapshot",
+        "Infernux.engine.ui.theme",
+        "Infernux.engine.ui.viewport_utils",
     })
 
     # Directories stripped from raw-copied JIT packages to slim down
@@ -1624,7 +1719,7 @@ print(json.dumps({{
             for source_path in sorted(payload_root.rglob("*")):
                 if not source_path.is_file():
                     continue
-                if source_path.suffix.lower() in _RUNTIME_PACK_FORBIDDEN_SUFFIXES:
+                if source_path.suffix.lower() in _RUNTIME_MODULE_FORBIDDEN_SUFFIXES:
                     continue
                 source_files.append(
                     (source_path.relative_to(payload_root).as_posix(), str(source_path))
@@ -1659,10 +1754,7 @@ print(json.dumps({{
             ) as manifest_file:
                 json.dump(manifest, manifest_file, indent=2, sort_keys=True)
                 manifest_file.write("\n")
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists():
-                shutil.rmtree(destination)
-            os.replace(temporary, destination)
+            _publish_runtime_directory(temporary, destination)
             return str(destination)
         finally:
             shutil.rmtree(payload_root, ignore_errors=True)
@@ -1995,10 +2087,9 @@ print(json.dumps({{
         # in __init__ already prevents runtime loading, but --nofollow
         # also speeds up Nuitka's compile-time analysis significantly.
         #
-        # NOTE: Do NOT exclude Infernux.engine.resources_manager here —
-        # render_stack.py lazily imports ResourcesManager.instance() and
-        # Nuitka's excluded-module deployment flag causes a hard crash
-        # instead of allowing the graceful None fallback.
+        # RenderStack hot reload is explicitly Editor-only, so the Player can
+        # exclude ResourcesManager and its watcher rather than carrying a
+        # dormant authoring service.
         for _editor_mod in (
             "watchdog",
             "PIL",
@@ -2683,7 +2774,7 @@ print(json.dumps({{
                 continue
             if relative_posix.startswith("engine/locales/"):
                 continue
-            if relative_posix in self._PLAYER_POST_BUILD_ONLY_FILES:
+            if self._is_player_runtime_excluded_source(relative_posix):
                 continue
             if source_path.suffix.casefold() in excluded_suffixes:
                 continue
@@ -2712,6 +2803,35 @@ print(json.dumps({{
             raise RuntimeError("Player Runtime is missing Infernux/__init__.pyc")
         if copied_bytecode == 0 or any(destination_root.rglob("*.py")):
             raise RuntimeError("Player Runtime engine package is not source-less")
+
+    @classmethod
+    def _is_player_runtime_excluded_source(cls, relative_posix: str) -> bool:
+        """Return whether an Infernux package source is authoring/build-only."""
+        relative = str(relative_posix or "").replace("\\", "/")
+        if (
+            relative in cls._PLAYER_POST_BUILD_ONLY_FILES
+            or relative in cls._PLAYER_RUNTIME_EXCLUDED_FILES
+        ):
+            return True
+        if not relative.endswith(".py"):
+            return False
+
+        module = "Infernux." + relative[:-3].replace("/", ".")
+        if module.endswith(".__init__"):
+            module = module[:-9]
+        if module in cls._PLAYER_EDITOR_ONLY_MODULES:
+            return True
+        if any(
+            module == prefix or module.startswith(prefix + ".")
+            for prefix in cls._PLAYER_EDITOR_ONLY_PACKAGE_PREFIXES
+        ):
+            return True
+        if (
+            module.startswith("Infernux.engine.ui.")
+            and module not in cls._PLAYER_RUNTIME_UI_MODULES
+        ):
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Inject raw JIT packages

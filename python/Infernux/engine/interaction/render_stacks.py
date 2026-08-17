@@ -107,8 +107,8 @@ class RenderStackCommandService:
     ) -> bool:
         from Infernux.engine.undo import RenderStackSetPipelineCommand
 
-        old_value = str(stack.pipeline_class_name or "")
-        new_value = str(pipeline_name or "")
+        old_value = str(stack.pipeline_class_name)
+        new_value = str(pipeline_name or "").strip() or stack.DEFAULT_PIPELINE_NAME
         if old_value == new_value:
             return False
         self._execute(

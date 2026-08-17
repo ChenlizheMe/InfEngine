@@ -14,6 +14,7 @@ if str(PACKAGING_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGING_DIR))
 
 from database import ProjectDatabase
+import model.project_model as project_model_module
 from model.project_model import ProjectModel
 from project_paths import ProjectPathError, inspect_existing_project, validate_project_name
 from project_migration import ProjectMigrationService
@@ -31,6 +32,115 @@ def _make_project(path: Path, *, name: str | None = None, version: str = "") -> 
     if version:
         (path / ".infernux-version").write_text(f"# pin\n{version}\n", encoding="utf-8")
     return path
+
+
+def test_dev_wheel_selection_prefers_the_newest_compatible_build(tmp_path: Path, monkeypatch):
+    output = tmp_path / "out" / "build" / "python_wheel"
+    dist = tmp_path / "dist"
+    output.mkdir(parents=True)
+    dist.mkdir()
+    old_wheel = dist / "infernux-0.2.9-cp312-cp312-win_amd64.whl"
+    new_wheel = output / "infernux-0.2.9-cp312-cp312-win_amd64.whl"
+    old_wheel.write_bytes(b"old")
+    new_wheel.write_bytes(b"new")
+    old_wheel.touch()
+    new_wheel.touch()
+    old_wheel_stat = old_wheel.stat()
+    new_wheel_stat = new_wheel.stat()
+    import os
+    os.utime(old_wheel, ns=(old_wheel_stat.st_atime_ns, new_wheel_stat.st_mtime_ns - 1_000_000))
+
+    monkeypatch.setattr(project_model_module, "_engine_root", lambda: str(tmp_path))
+    monkeypatch.setattr(project_model_module, "_python_cp_tag", lambda _python="": "cp312")
+    monkeypatch.setattr(project_model_module, "_wheel_matches_python", lambda *_args: True)
+
+    assert project_model_module._find_dev_wheel("python.exe") == str(new_wheel)
+
+
+def test_dev_runtime_reinstalls_same_version_only_when_wheel_fingerprint_changes(
+    tmp_path: Path,
+    monkeypatch,
+):
+    project = tmp_path / "Project"
+    project_python = project / ".venv" / "Scripts" / "python.exe"
+    site_packages = project / ".venv" / "Lib" / "site-packages"
+    project_python.parent.mkdir(parents=True)
+    site_packages.mkdir(parents=True)
+    project_python.write_bytes(b"")
+    wheel = tmp_path / "infernux-0.2.9-cp312-cp312-win_amd64.whl"
+    wheel.write_bytes(b"current wheel")
+    commands = []
+
+    monkeypatch.setattr(project_model_module, "is_frozen", lambda: False)
+    monkeypatch.setattr(project_model_module, "_find_dev_wheel", lambda *_args, **_kwargs: str(wheel))
+    monkeypatch.setattr(project_model_module, "_distribution_files_present", lambda *_args: True)
+    monkeypatch.setattr(project_model_module, "_installed_distribution_version", lambda *_args: "0.2.9")
+    monkeypatch.setattr(project_model_module, "_run_hidden", lambda args, **_kwargs: commands.append(args))
+    monkeypatch.setattr(ProjectModel, "validate_python_runtime", staticmethod(lambda _path: None))
+
+    model = ProjectModel(None)
+    model._install_infernux_in_runtime(str(project), "0.2.9")
+    assert len(commands) == 1
+    assert "--force-reinstall" in commands[0]
+
+    model._install_infernux_in_runtime(str(project), "0.2.9")
+    assert len(commands) == 1
+
+
+def test_launch_runtime_sync_trusts_matching_wheel_marker_without_spawning_python(
+    tmp_path: Path,
+    monkeypatch,
+):
+    project = tmp_path / "Project"
+    project_python = project / ".venv" / "Scripts" / "python.exe"
+    site_packages = project / ".venv" / "Lib" / "site-packages"
+    project_python.parent.mkdir(parents=True)
+    site_packages.mkdir(parents=True)
+    project_python.write_bytes(b"")
+    wheel = tmp_path / "infernux-0.2.9-cp312-cp312-win_amd64.whl"
+    wheel.write_bytes(b"current wheel")
+
+    monkeypatch.setattr(project_model_module, "is_frozen", lambda: False)
+    monkeypatch.setattr(
+        project_model_module,
+        "_find_dev_wheel",
+        lambda *_args, **_kwargs: str(wheel),
+    )
+    monkeypatch.setattr(
+        project_model_module,
+        "_distribution_files_present",
+        lambda *_args: True,
+    )
+
+    model = ProjectModel(None)
+    marker = Path(project_model_module._project_wheel_marker(str(project)))
+    marker.write_text(
+        project_model_module._wheel_install_fingerprint(str(wheel)),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        project_model_module,
+        "_installed_distribution_version",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("matching marker must not start project Python")
+        ),
+    )
+    monkeypatch.setattr(
+        ProjectModel,
+        "validate_python_runtime",
+        staticmethod(
+            lambda _path: (_ for _ in ()).throw(
+                AssertionError("launch fast path must defer validation to the editor")
+            )
+        ),
+    )
+
+    model._install_infernux_in_runtime(
+        str(project),
+        "0.2.9",
+        validate_current=False,
+    )
 
 
 @pytest.mark.parametrize("name", ["..", ".", "foo/bar", "foo\\bar", "C:drive", "CON", "trail."])

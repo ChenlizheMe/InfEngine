@@ -144,7 +144,7 @@ def _try_cds_scatter(targets: Sequence, data: np.ndarray, prop_name: str) -> boo
 
 def _field_shape_dtype(field_type) -> tuple[tuple[int, ...], "np.dtype"]:
     """Return (per-element shape, dtype) for a FieldType enum."""
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     np = _get_np()
     _map = {
         FieldType.INT:   ((), np.dtype('int64')),
@@ -167,7 +167,7 @@ def _field_shape_dtype(field_type) -> tuple[tuple[int, ...], "np.dtype"]:
 
 def _component_gather(targets: Sequence, prop_name: str) -> np.ndarray:
     """Gather a named attribute from a sequence of InxComponent instances."""
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     # Look up metadata from the class
     cls = type(targets[0])
@@ -207,7 +207,7 @@ def _component_gather(targets: Sequence, prop_name: str) -> np.ndarray:
 
 def _component_scatter(targets: Sequence, data: np.ndarray, prop_name: str) -> None:
     """Scatter a numpy array back into named attributes of InxComponent instances."""
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     cls = type(targets[0])
     meta = cls._serialized_fields_.get(prop_name)  # type: ignore[attr-defined]

@@ -87,6 +87,11 @@ class ComponentCommandService:
         object_id = int(getattr(game_object, "id", game_object) or 0)
         if object_id <= 0:
             raise ValueError("component add requires a live GameObject")
+        python_instance = self._resolve_add_target(
+            game_object,
+            type_name,
+            python_instance,
+        )
         command = AddComponentTransactionCommand(
             object_id,
             type_name,
@@ -104,6 +109,42 @@ class ComponentCommandService:
         if component is None:
             raise RuntimeError(f"component add lost its result: {type_name}")
         return component
+
+    @staticmethod
+    def _resolve_add_target(
+        game_object: Any,
+        type_name: str,
+        python_instance: Any,
+    ) -> Any:
+        """Resolve and validate one add request for every editor caller."""
+        if python_instance is None:
+            from Infernux.components.registry import (
+                ensure_engine_component_catalog_loaded,
+                get_type,
+            )
+
+            ensure_engine_component_catalog_loaded()
+            component_class = get_type(type_name)
+            if component_class is not None and not bool(
+                getattr(component_class, "_cpp_type_name", "")
+            ):
+                python_instance = component_class()
+
+        if python_instance is not None:
+            from Infernux.components.registry import get_python_attachment_blockers
+
+            blockers = get_python_attachment_blockers(
+                game_object,
+                type(python_instance),
+            )
+        else:
+            blockers = tuple(game_object.get_add_component_blockers(type_name))
+
+        if blockers:
+            raise ValueError(
+                f"cannot add '{type_name}': " + "; ".join(blockers)
+            )
+        return python_instance
 
     def remove(
         self,
@@ -460,7 +501,7 @@ class ComponentCommandService:
     def _is_python_serialized_field(cls, component: Any, field: str) -> bool:
         if not cls._is_python_component(component):
             return False
-        from Infernux.components.serialized_field import get_serialized_fields
+        from Infernux.components.fields import get_serialized_fields
 
         return field in get_serialized_fields(type(component))
 

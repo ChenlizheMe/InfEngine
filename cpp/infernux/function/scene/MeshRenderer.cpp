@@ -169,11 +169,11 @@ MeshRenderer::~MeshRenderer()
 
 void MeshRenderer::OnEnable()
 {
-    // Only register with the global renderer list if this object belongs to
-    // the active scene.  Objects living in utility scenes (e.g. the prefab
-    // template cache) must not pollute the active scene's render list.
+    // Only runtime-resident scenes contribute to the global renderer list.
+    // Utility scenes stay isolated, while DontDestroyOnLoad renderers can be
+    // disabled and re-enabled without disappearing from rendering.
     if (auto *go = GetGameObject())
-        if (go->GetScene() != SceneManager::Instance().GetActiveScene())
+        if (!SceneManager::Instance().IsRuntimeScene(go->GetScene()))
             return;
     SceneManager::Instance().RegisterMeshRenderer(this);
 }
@@ -859,6 +859,7 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
         if (!meshGuid.empty()) {
             stagedMesh = registry.LoadAsset<InxMesh>(meshGuid, ResourceType::Mesh);
         }
+        const bool meshAssetResolved = static_cast<bool>(stagedMesh);
 
         const auto &materialsDocument = j["materials"];
         std::vector<AssetRef<InxMaterial>> stagedMaterials(materialsDocument.size());
@@ -936,16 +937,22 @@ bool MeshRenderer::DeserializeDocument(const nlohmann::json &j)
             m_meshPivotOffset.z = j["meshPivotOffset"][2].get<float>();
         }
 
-        // Bounds
-        if (j.contains("boundsMin") && j["boundsMin"].is_array() && j["boundsMin"].size() == 3) {
-            m_localBoundsMin.x = j["boundsMin"][0].get<float>();
-            m_localBoundsMin.y = j["boundsMin"][1].get<float>();
-            m_localBoundsMin.z = j["boundsMin"][2].get<float>();
-        }
-        if (j.contains("boundsMax") && j["boundsMax"].is_array() && j["boundsMax"].size() == 3) {
-            m_localBoundsMax.x = j["boundsMax"][0].get<float>();
-            m_localBoundsMax.y = j["boundsMax"][1].get<float>();
-            m_localBoundsMax.z = j["boundsMax"][2].get<float>();
+        // Persisted bounds are only a fallback for an unavailable external
+        // asset. Once the mesh is resident, its imported geometry is the
+        // authoritative source. Restoring an old cache here used to overwrite
+        // SetMeshAsset()'s exact bounds and could make a model selectable from
+        // almost anywhere in the Scene view.
+        if (!meshAssetResolved) {
+            if (j.contains("boundsMin") && j["boundsMin"].is_array() && j["boundsMin"].size() == 3) {
+                m_localBoundsMin.x = j["boundsMin"][0].get<float>();
+                m_localBoundsMin.y = j["boundsMin"][1].get<float>();
+                m_localBoundsMin.z = j["boundsMin"][2].get<float>();
+            }
+            if (j.contains("boundsMax") && j["boundsMax"].is_array() && j["boundsMax"].size() == 3) {
+                m_localBoundsMax.x = j["boundsMax"][0].get<float>();
+                m_localBoundsMax.y = j["boundsMax"][1].get<float>();
+                m_localBoundsMax.z = j["boundsMax"][2].get<float>();
+            }
         }
 
         // Inline mesh data (for primitives like cubes)

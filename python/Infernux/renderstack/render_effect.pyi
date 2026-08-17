@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from typing import Any, Optional, Tuple
 
-from Infernux.renderstack.render_effect_asset import RenderEffectAsset
+from Infernux.renderstack.render_effect_asset import RenderEffectAsset, RenderEffectGroupAsset
+
+class EditableRenderEffectGroup:
+    file_path: str
+    guid: str
+    def __init__(self, source: RenderEffectGroupAsset, *, file_path: str = ..., guid: str = ...) -> None: ...
+    @property
+    def entries(self) -> tuple: ...
+    def to_asset(self) -> RenderEffectGroupAsset: ...
+    def serialize_document(self) -> dict[str, Any]: ...
+    def deserialize_document(self, document: Any) -> bool: ...
 
 class RenderEffect:
     _suppress_auto_save: bool

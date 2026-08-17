@@ -13,6 +13,7 @@ class TextureLoader final : public IAssetLoader
     {
         return true;
     }
+    RuntimeAssetPayload LoadStaging(const std::string &filePath, const std::string &guid, AssetDatabase *adb) override;
     bool Reload(const RuntimeAssetPayload &existing, const std::string &filePath, const std::string &guid,
                 AssetDatabase *adb) override;
     [[nodiscard]] size_t EstimateRuntimeBytes(const RuntimeAssetPayload &payload) const override;

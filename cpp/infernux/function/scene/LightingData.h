@@ -469,6 +469,8 @@ class SceneLightCollector
     void SetCameraPosition(const glm::vec3 &position);
 
   private:
+    void PublishCanonicalGeneration();
+
     /**
      * @brief Add a directional light to the collection.
      */
@@ -503,6 +505,10 @@ class SceneLightCollector
     SimpleLightingUBO m_simpleLightingUBO{};
     ShaderLightingUBO m_shaderLightingUBO{}; ///< Shader-compatible UBO for GPU upload
     CanonicalLightSnapshot m_canonicalLightSnapshot{};
+    std::vector<CanonicalLightData> m_lastCanonicalDirectionalLights;
+    std::vector<CanonicalLightData> m_lastCanonicalLocalLights;
+    uint64_t m_canonicalGeneration = 0;
+    bool m_hasCanonicalPublication = false;
 
     // Light counts
     uint32_t m_directionalLightCount = 0;

@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.serialized_field import FieldType
+from Infernux.components.fields import FieldType
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import lexical_path, portable_path, same_path
 
@@ -170,12 +170,12 @@ class SpriteRenderer(BuiltinComponent):
 
             previous = getattr(self, "_asset_mutation_service", None)
             if previous is not None:
-                previous.remove_listener(self._on_asset_changed)
+                previous.remove_component_listener(self._on_asset_changed)
             service = AssetMutationService.instance()
             self._asset_mutation_service = service
             if service is not None:
-                service.add_listener(self._on_asset_changed)
-        except Exception:
+                service.add_component_listener(self._on_asset_changed)
+        except (AttributeError, ImportError, RuntimeError, TypeError):
             pass
 
     def _unsubscribe_asset_events(self):
@@ -183,9 +183,9 @@ class SpriteRenderer(BuiltinComponent):
         try:
             service = getattr(self, "_asset_mutation_service", None)
             if service is not None:
-                service.remove_listener(self._on_asset_changed)
+                service.remove_component_listener(self._on_asset_changed)
             self._asset_mutation_service = None
-        except Exception:
+        except (AttributeError, ImportError, RuntimeError, TypeError):
             pass
 
     def _invalidate_native_binding(self):
@@ -811,8 +811,11 @@ class SpriteRenderer(BuiltinComponent):
                 self._apply_texture_to_material()
                 return
 
-            from Infernux.core.asset_types import read_meta_file
-            meta = read_meta_file(asset_path)
+            # Runtime packages publish authoring metadata through the native
+            # AssetDatabase and deliberately contain no .meta files. Prefer
+            # that immutable snapshot; the sidecar remains an editor fallback.
+            from Infernux.core.asset_types import read_asset_metadata
+            meta = read_asset_metadata(asset_path, guid=guid)
             if meta is None:
                 self._apply_texture_to_material()
                 return

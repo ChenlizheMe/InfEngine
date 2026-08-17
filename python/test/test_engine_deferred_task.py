@@ -51,6 +51,8 @@ class TestDeferredTaskRunner:
     def test_submit_starts_task(self, runner):
         runner.submit("Test", [("Step 1", 0.5, lambda: None)])
         assert runner.is_busy
+        assert runner.active_task_name == "Test"
+        assert runner.active_step_label == "Step 1"
 
     def test_submit_rejects_when_busy(self, runner):
         runner.submit("A", [("s", 0.5, lambda: None)])
@@ -72,9 +74,9 @@ class TestDeferredTaskRunner:
 
         runner.tick()  # execute step 2
         assert executed == [1, 2, 3]
-
-        runner.tick()  # finalize
         assert not runner.is_busy
+        assert runner.active_task_name == ""
+        assert runner.active_step_label == ""
 
     def test_on_done_callback(self, runner):
         results = []
@@ -82,8 +84,7 @@ class TestDeferredTaskRunner:
             ("S1", 1.0, lambda: None),
         ], on_done=lambda ok: results.append(ok))
 
-        runner.tick()  # execute
-        runner.tick()  # finalize
+        runner.tick()  # execute and finalize
         assert results == [True]
 
     def test_failure_propagates_to_on_done(self, runner):
@@ -96,8 +97,7 @@ class TestDeferredTaskRunner:
             ("S1", 1.0, failing),
         ], on_done=lambda ok: results.append(ok))
 
-        runner.tick()  # execute (fails)
-        runner.tick()  # finalize
+        runner.tick()  # execute (fails) and finalize
         assert results == [False]
 
     def test_cancel(self, runner):
@@ -108,13 +108,14 @@ class TestDeferredTaskRunner:
         assert runner.is_busy
         runner.cancel()
         assert not runner.is_busy
+        assert runner.active_task_name == ""
+        assert runner.active_step_label == ""
 
     def test_none_fn_does_not_crash(self, runner):
         runner.submit("Test", [
             ("S1", 1.0, None),
         ])
         runner.tick()  # should not raise
-        runner.tick()  # finalize
         assert not runner.is_busy
 
     def test_false_return_marks_failed(self, runner):
@@ -125,6 +126,5 @@ class TestDeferredTaskRunner:
         ], on_done=lambda ok: results.append(ok))
 
         runner.tick()  # S1 returns False
-        runner.tick()  # S2 skipped (failed)
-        runner.tick()  # finalize
+        runner.tick()  # S2 skipped (failed) and finalizes
         assert results == [False]

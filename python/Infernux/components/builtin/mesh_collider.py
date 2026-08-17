@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from Infernux.components.builtin.collider import Collider
 from Infernux.components.builtin_component import CppProperty
-from Infernux.components.serialized_field import FieldType
+from Infernux.components.fields import FieldType
 
 
 class MeshCollider(Collider):

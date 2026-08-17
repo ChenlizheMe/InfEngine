@@ -67,7 +67,7 @@ def _particle_parameter_storage_value(kind: str, value):
 
 def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
     """Render emitter playback and graph parameters as instance overrides."""
-    from Infernux.components.serialized_field import FieldMetadata, FieldType
+    from Infernux.components.fields import FieldMetadata, FieldType
     from Infernux.core.asset_types import IMAGE_EXTENSIONS
 
     emitter_schema = getattr(comp, "emitter_instance_schema", None)

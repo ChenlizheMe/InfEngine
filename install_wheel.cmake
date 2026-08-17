@@ -43,6 +43,20 @@ endif()
 
 list(GET WHEELS 0 WHEEL_TO_INSTALL)
 
+# Never let pip rename the live package out from under a running editor or
+# player.  This check must happen before residue cleanup and before uninstall,
+# while the existing installation is still complete and recoverable.
+execute_process(
+    COMMAND "${PYTHON_EXECUTABLE}" "${INFERNUX_SOURCE_DIR}/cmake/clean_installed_infernux.py" guard
+    RESULT_VARIABLE _package_guard_result
+    COMMAND_ECHO STDOUT
+)
+if(NOT _package_guard_result EQUAL 0)
+    message(FATAL_ERROR
+        "The installed Infernux package is currently in use. Close running editors/players and retry."
+    )
+endif()
+
 # pip renames packages to leading-tilde directories while uninstalling on
 # Windows. Interrupted installs and loaded native DLLs can leave those trees
 # behind; a later wheel install may then combine old and new package content.

@@ -49,20 +49,20 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
     if isinstance(cached, tuple) and cached[0] == cache_key:
         return cached[1]
 
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
     from Infernux.renderstack.effect_slot import EffectSlot
 
     list_metadata = get_serialized_fields(type(stack))["effect_slots"]
     effect_metadata = get_serialized_fields(EffectSlot)["effect"]
 
     def current_pipeline_index() -> int:
-        current = stack.pipeline_class_name or default_pipeline_name
+        current = stack.pipeline_class_name
         return pipeline_names.index(current) if current in pipeline_names else 0
 
     def set_pipeline_index(index: int) -> None:
         selected = pipeline_names[int(index)]
-        new_pipeline = "" if selected == default_pipeline_name else selected
-        old_pipeline = stack.pipeline_class_name or ""
+        new_pipeline = selected
+        old_pipeline = stack.pipeline_class_name
         if new_pipeline == old_pipeline:
             return
         from Infernux.engine.interaction import CommandSource, submit_renderstack_command
@@ -261,6 +261,10 @@ def _render_effect_slot_parameters(ctx, reference, widget_prefix: str) -> None:
     except (OSError, TypeError, ValueError):
         return
     for effect_index, effect in enumerate(effects):
+        group_controller = _resolve_effect_group_document_controller(effect)
+        bind_group_controller = getattr(effect, "bind_group_document_controller", None)
+        if group_controller is not None and callable(bind_group_controller):
+            bind_group_controller(group_controller)
         if len(effects) > 1 and not render_compact_section_header(
             ctx,
             f"{effect.name}##{widget_prefix}_{effect_index}",
@@ -271,8 +275,38 @@ def _render_effect_slot_parameters(ctx, reference, widget_prefix: str) -> None:
             ctx,
             effect,
             widget_prefix=f"{widget_prefix}_{effect_index}",
-            resource_controller=_resolve_effect_document_controller(effect),
+            resource_controller=(
+                group_controller or _resolve_effect_document_controller(effect)
+            ),
         )
+
+
+def _resolve_effect_group_document_controller(effect):
+    """Bind an effective group projection to its owning group document."""
+    resource = getattr(effect, "group_resource", None)
+    file_path = str(getattr(resource, "file_path", "") or "")
+    if resource is None or not file_path:
+        return None
+    from Infernux.engine.interaction import (
+        DocumentKind,
+        ensure_editable_resource_document,
+    )
+    from Infernux.renderstack.render_effect_compiler import (
+        publish_live_effect_group_document,
+    )
+
+    def publish(restored_resource) -> None:
+        publish_live_effect_group_document(file_path, restored_resource.to_asset())
+
+    return ensure_editable_resource_document(
+        category="render_effect",
+        document_kind=DocumentKind.RENDER_EFFECT,
+        file_path=file_path,
+        resource=resource,
+        guid=str(getattr(resource, "guid", "") or ""),
+        autosave_debounce_sec=0.5,
+        on_restored=publish,
+    )
 
 
 def _resolve_effect_document_controller(effect):

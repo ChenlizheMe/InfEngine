@@ -26,6 +26,7 @@ from Infernux.engine.interaction import (
     ProjectAssetInteractionService,
     ViewCommandService,
     TreeViewStateService,
+    DirectoryNavigationHistory,
 )
 
 
@@ -63,13 +64,22 @@ def _begin_hierarchy_rename(panel: object, context: CommandContext) -> bool:
     return True
 
 
-def _standard_edit_shortcuts(*, rename: bool = False) -> tuple[PanelShortcutSpec, ...]:
+def _request_search_focus(panel: object) -> bool:
+    panel.request_search_focus()
+    return True
+
+
+def _standard_edit_shortcuts(
+    *, rename: bool = False, duplicate: bool = False
+) -> tuple[PanelShortcutSpec, ...]:
     pairs = [
         ("edit.copy", "Ctrl+C"),
         ("edit.cut", "Ctrl+X"),
         ("edit.paste", "Ctrl+V"),
         ("edit.delete", "Delete"),
     ]
+    if duplicate:
+        pairs.append(("edit.duplicate", "Ctrl+D"))
     if rename:
         pairs.append(("edit.rename", "F2"))
     pairs.append(("edit.deselect", "Escape"))
@@ -150,6 +160,7 @@ def hierarchy_panel_interaction(
                 "begin_rename_object",
                 "get_expanded_object_ids",
                 "set_expanded_object_ids",
+                "request_search_focus",
             ),
             "hierarchy panel",
         )
@@ -170,6 +181,10 @@ def hierarchy_panel_interaction(
                     scene_commands.delete,
                     scene_commands.has_selection,
                 ),
+                "edit.duplicate": BoundPanelCommand(
+                    scene_commands.duplicate,
+                    scene_commands.can_copy,
+                ),
                 "edit.rename": BoundPanelCommand(
                     lambda context: _begin_hierarchy_rename(panel, context),
                     scene_commands.has_selection,
@@ -177,6 +192,10 @@ def hierarchy_panel_interaction(
                 "edit.deselect": BoundPanelCommand(
                     lambda context: _deselect(context, "hierarchy_deselect"),
                     _can_deselect,
+                ),
+                "view.focus_search": BoundPanelCommand(
+                    lambda _context: _request_search_focus(panel),
+                    lambda _context: True,
                 ),
                 "scene.instantiate_prefab": BoundPanelCommand(
                     lambda context: bool(
@@ -275,8 +294,10 @@ def hierarchy_panel_interaction(
         "edit.cut",
         "edit.paste",
         "edit.delete",
+        "edit.duplicate",
         "edit.rename",
         "edit.deselect",
+        "view.focus_search",
         "scene.instantiate_prefab",
         "scene.create_model",
         "scene.rename_object",
@@ -291,7 +312,15 @@ def hierarchy_panel_interaction(
             PanelCommandSpec(command_id)
             for command_id in command_ids
         ),
-        shortcuts=_standard_edit_shortcuts(rename=True),
+        shortcuts=_standard_edit_shortcuts(rename=True, duplicate=True)
+        + (
+            PanelShortcutSpec(
+                "view.focus_search",
+                KeyChord.parse("Ctrl+F"),
+                allow_when_text_input=True,
+                allow_when_captured=True,
+            ),
+        ),
         owned_selection_domains=frozenset({SelectionDomain.SCENE_OBJECT}),
         adapter_factory=bind,
     )
@@ -301,6 +330,7 @@ def project_panel_interaction(
     interactions: ProjectAssetInteractionService,
     navigation: NavigationService,
     tree_views: Optional[TreeViewStateService] = None,
+    directory_history: Optional[DirectoryNavigationHistory] = None,
 ) -> PanelInteractionDescriptor:
     tree_state = tree_views or TreeViewStateService.require()
 
@@ -428,16 +458,33 @@ def project_panel_interaction(
         return bool(paths and interactions.transfer(paths, target, origin=origin(context)))
 
     def navigation_path(context: CommandContext) -> str:
-        return lexical_path(
-            str(
-                context.payload.get("path", "")
-                or context.payload.get("target_id", "")
-                or ""
-            ).strip()
-        )
+        value = str(
+            context.payload.get("path", "")
+            or context.payload.get("target_id", "")
+            or ""
+        ).strip()
+        if (
+            not value
+            and context.selection.domain in {
+                SelectionDomain.ASSET,
+                SelectionDomain.ASSET_SUBRESOURCE,
+            }
+            and context.selection.primary is not None
+        ):
+            primary = context.selection.primary
+            value = str(primary.document_id or primary.target_id or "").strip()
+        return lexical_path(value)
 
     def expansion_args(context: CommandContext):
-        path = navigation_path(context)
+        # Tree projection IDs are native-owned opaque identifiers. On Windows
+        # they intentionally use generic ('/') separators; passing them
+        # through lexical_path() rewrites them to '\\', so the command is
+        # accepted but the native projection cannot match the item next frame.
+        path = str(
+            context.payload.get("target_id", "")
+            or context.payload.get("path", "")
+            or ""
+        ).strip()
         expanded = context.payload.get("expanded")
         if not path or not isinstance(expanded, bool):
             return None
@@ -484,11 +531,63 @@ def project_panel_interaction(
 
     def navigate_directory(context: CommandContext, panel: object) -> bool:
         path = navigation_path(context)
-        return ViewCommandService.require().set_value(
-            lexical_path(panel.get_current_path()),
+        current = lexical_path(panel.get_current_path())
+        if directory_history is None:
+            return ViewCommandService.require().set_value(
+                current,
+                path,
+                panel.set_current_path,
+                description="Navigate Project",
+            )
+        directory_history.sync(current)
+        return directory_history.navigate(
             path,
-            panel.set_current_path,
-            description="Navigate Project",
+            lambda target: ViewCommandService.require().set_value(
+                current,
+                target,
+                panel.set_current_path,
+                description="Navigate Project",
+            ),
+        )
+
+    def can_navigate_back(panel: object) -> bool:
+        if directory_history is None:
+            return False
+        directory_history.sync(lexical_path(panel.get_current_path()))
+        return directory_history.can_go_back
+
+    def can_navigate_forward(panel: object) -> bool:
+        if directory_history is None:
+            return False
+        directory_history.sync(lexical_path(panel.get_current_path()))
+        return directory_history.can_go_forward
+
+    def navigate_back(panel: object) -> bool:
+        if directory_history is None:
+            return False
+        current = lexical_path(panel.get_current_path())
+        directory_history.sync(current)
+        return directory_history.back(
+            lambda target: ViewCommandService.require().set_value(
+                current,
+                target,
+                panel.set_current_path,
+                description="Navigate Project Back",
+            ),
+        )
+
+    def navigate_forward(panel: object) -> bool:
+        if directory_history is None:
+            return False
+        current = lexical_path(panel.get_current_path())
+        directory_history.sync(current)
+        return directory_history.forward(
+            lambda target: ViewCommandService.require().set_value(
+                current,
+                target,
+                panel.set_current_path,
+                description="Navigate Project Forward",
+            ),
         )
 
     def can_locate_asset(context: CommandContext) -> bool:
@@ -517,6 +616,7 @@ def project_panel_interaction(
                 "set_folder_expanded_paths",
                 "get_model_expanded_paths",
                 "set_model_expanded_paths",
+                "request_search_focus",
             ),
             "project panel",
         )
@@ -548,6 +648,19 @@ def project_panel_interaction(
                     ),
                     lambda context: interactions.can_copy(selected_paths(context)),
                 ),
+                "edit.duplicate": BoundPanelCommand(
+                    lambda context: bool(
+                        interactions.copy(selected_paths(context), cut=False)
+                        and interactions.paste(
+                            destination(context, panel),
+                            origin=origin(context),
+                        )
+                    ),
+                    lambda context: bool(
+                        interactions.can_copy(selected_paths(context))
+                        and interactions.can_paste(destination(context, panel))
+                    ),
+                ),
                 "edit.rename": BoundPanelCommand(
                     lambda context: panel.begin_rename_selected_asset(
                         target_path(context)
@@ -560,6 +673,10 @@ def project_panel_interaction(
                 "edit.deselect": BoundPanelCommand(
                     lambda context: _deselect(context, "project_deselect"),
                     _can_deselect,
+                ),
+                "view.focus_search": BoundPanelCommand(
+                    lambda _context: _request_search_focus(panel),
+                    lambda _context: True,
                 ),
                 "project.create_folder": BoundPanelCommand(
                     lambda context: create_folder(context, panel),
@@ -594,6 +711,14 @@ def project_panel_interaction(
                 "project.navigate_directory": BoundPanelCommand(
                     lambda context: navigate_directory(context, panel),
                     lambda context: can_navigate_directory(context, panel),
+                ),
+                "project.navigate_back": BoundPanelCommand(
+                    lambda _context: navigate_back(panel),
+                    lambda _context: can_navigate_back(panel),
+                ),
+                "project.navigate_forward": BoundPanelCommand(
+                    lambda _context: navigate_forward(panel),
+                    lambda _context: can_navigate_forward(panel),
                 ),
                 "project.locate_asset": BoundPanelCommand(
                     locate_asset,
@@ -635,22 +760,35 @@ def project_panel_interaction(
         "edit.cut",
         "edit.paste",
         "edit.delete",
+        "edit.duplicate",
         "edit.rename",
         "edit.deselect",
+        "view.focus_search",
         "project.create_folder",
         "asset.create",
         "asset.open",
         "project.reveal_in_explorer",
         "asset.transfer",
         "project.navigate_directory",
+        "project.navigate_back",
+        "project.navigate_forward",
         "project.locate_asset",
         "project.set_folder_expanded",
         "project.set_model_expanded",
     )
     return PanelInteractionDescriptor(
         commands=tuple(PanelCommandSpec(command_id) for command_id in commands),
-        shortcuts=_standard_edit_shortcuts(rename=True)
+        shortcuts=_standard_edit_shortcuts(rename=True, duplicate=True)
         + (
+            PanelShortcutSpec(
+                "view.focus_search",
+                KeyChord.parse("Ctrl+F"),
+                allow_when_text_input=True,
+                allow_when_captured=True,
+            ),
+            PanelShortcutSpec("project.locate_asset", KeyChord.parse("F")),
+            PanelShortcutSpec("project.navigate_back", KeyChord.parse("Alt+Left")),
+            PanelShortcutSpec("project.navigate_forward", KeyChord.parse("Alt+Right")),
             PanelShortcutSpec(
                 "project.create_folder",
                 KeyChord.parse("Ctrl+Shift+N"),
@@ -1029,6 +1167,10 @@ def scene_view_panel_interaction(
                 scene_commands.delete,
                 scene_commands.has_selection,
             ),
+            "edit.duplicate": BoundPanelCommand(
+                scene_commands.duplicate,
+                scene_commands.can_copy,
+            ),
             "edit.deselect": BoundPanelCommand(
                 lambda context: _deselect(context, "scene_view_deselect"),
                 _can_deselect,
@@ -1067,6 +1209,7 @@ def scene_view_panel_interaction(
         "edit.cut",
         "edit.paste",
         "edit.delete",
+        "edit.duplicate",
         "edit.deselect",
         *tool_specs,
         "scene.align_to_camera",
@@ -1075,7 +1218,7 @@ def scene_view_panel_interaction(
     )
     return PanelInteractionDescriptor(
         commands=tuple(PanelCommandSpec(command_id) for command_id in commands),
-        shortcuts=_standard_edit_shortcuts()
+        shortcuts=_standard_edit_shortcuts(duplicate=True)
         + tuple(
             PanelShortcutSpec(command_id, KeyChord.parse(chord))
             for command_id, chord in (
@@ -1083,7 +1226,7 @@ def scene_view_panel_interaction(
                 ("scene.tool.move", "W"),
                 ("scene.tool.rotate", "E"),
                 ("scene.tool.scale", "R"),
-                ("scene.align_to_camera", "Ctrl+F"),
+                ("scene.align_to_camera", "Ctrl+Shift+F"),
                 ("scene.frame_selected", "F"),
             )
         ),
@@ -1270,6 +1413,7 @@ def console_panel_interaction(
                 "set_search_query",
                 "get_detail_height",
                 "set_detail_height",
+                "request_search_focus",
             ),
             "console panel",
         )
@@ -1394,6 +1538,10 @@ def console_panel_interaction(
                         and abs(args[0] - args[1]) > 0.5
                     ),
                 ),
+                "view.focus_search": BoundPanelCommand(
+                    lambda _context: _request_search_focus(panel),
+                    lambda _context: True,
+                ),
                 "edit.copy": BoundPanelCommand(
                     lambda _context: panel.copy_selected_entry(),
                     lambda _context: panel.has_selected_entry(),
@@ -1411,10 +1559,17 @@ def console_panel_interaction(
             PanelCommandSpec("console.set_option"),
             PanelCommandSpec("console.set_search"),
             PanelCommandSpec("console.set_detail_height"),
+            PanelCommandSpec("view.focus_search"),
             PanelCommandSpec("edit.copy"),
             PanelCommandSpec("edit.deselect"),
         ),
         shortcuts=(
+            PanelShortcutSpec(
+                "view.focus_search",
+                KeyChord.parse("Ctrl+F"),
+                allow_when_text_input=True,
+                allow_when_captured=True,
+            ),
             PanelShortcutSpec("edit.copy", KeyChord.parse("Ctrl+C")),
             PanelShortcutSpec("edit.deselect", KeyChord.parse("Escape")),
         ),

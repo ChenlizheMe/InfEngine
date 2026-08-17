@@ -1,12 +1,16 @@
 #pragma once
 
+#include <function/renderer/ProfileConfig.h>
+#include <function/renderer/rhi/GpuRetirementQueue.h>
 #include <function/renderer/rhi/RhiCapabilities.h>
 #include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiDevice.h>
 
 #include "VkDescriptorManager.h"
 
+#include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -20,16 +24,63 @@ class VulkanRhiDevice;
 
 struct VulkanGraphicsCommandContext
 {
+    static constexpr size_t BindingSlotCount = rhi::GraphicsPipelineDesc::MaxBindingLayouts;
+
     VulkanRhiDevice *device = nullptr;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     rhi::GraphicsPipelineHandle boundPipeline;
+    std::array<rhi::BindGroupHandle, BindingSlotCount> boundGroups{};
+    // These fields are deliberately unconditional. Command contexts cross
+    // DLL boundaries through RenderContext, so profile flags must never
+    // change their binary layout.
+    uint64_t pipelineBinds = 0;
+    uint64_t pipelineBindSkips = 0;
+    uint64_t groupBinds = 0;
+    uint64_t groupBindSkips = 0;
+
+    void ResetBindingState() noexcept
+    {
+        boundPipeline = {};
+        boundGroups.fill({});
+    }
+
+    void ResetMetrics() noexcept
+    {
+        pipelineBinds = 0;
+        pipelineBindSkips = 0;
+        groupBinds = 0;
+        groupBindSkips = 0;
+    }
 };
 
 struct VulkanComputeCommandContext
 {
+    static constexpr size_t BindingSlotCount = rhi::ComputePipelineDesc::MaxBindingLayouts;
+
     VulkanRhiDevice *device = nullptr;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     rhi::ComputePipelineHandle boundPipeline;
+    std::array<rhi::BindGroupHandle, BindingSlotCount> boundGroups{};
+    // Keep the layout identical in every native module; only counter updates
+    // are compiled out when frame profiling is disabled.
+    uint64_t pipelineBinds = 0;
+    uint64_t pipelineBindSkips = 0;
+    uint64_t groupBinds = 0;
+    uint64_t groupBindSkips = 0;
+
+    void ResetBindingState() noexcept
+    {
+        boundPipeline = {};
+        boundGroups.fill({});
+    }
+
+    void ResetMetrics() noexcept
+    {
+        pipelineBinds = 0;
+        pipelineBindSkips = 0;
+        groupBinds = 0;
+        groupBindSkips = 0;
+    }
 };
 
 struct VulkanTransferCommandContext
@@ -76,7 +127,8 @@ struct VulkanCapabilitySnapshot final
     bool synchronization2Extension = false;
     rhi::DeviceCapabilityState supported;
 
-    [[nodiscard]] static VulkanCapabilityProbeData QueryProbe(VkPhysicalDevice physicalDevice);
+    [[nodiscard]] static VulkanCapabilityProbeData QueryProbe(VkPhysicalDevice physicalDevice,
+                                                              uint32_t apiVersionLimit = UINT32_MAX);
     [[nodiscard]] static VulkanCapabilitySnapshot FromProbe(const VulkanCapabilityProbeData &probe) noexcept;
 };
 
@@ -181,6 +233,17 @@ class VulkanRhiDevice final : public rhi::Device
     [[nodiscard]] rhi::ShaderModuleHandle RegisterShaderModule(VkShaderModule module);
     [[nodiscard]] rhi::BindingLayoutHandle RegisterBindingLayout(VkDescriptorSetLayout layout);
     [[nodiscard]] rhi::BindGroupHandle RegisterBindGroup(VkDescriptorSet set);
+    using BindlessTexturePublisher =
+        std::function<rhi::ResourceIndex(const std::shared_ptr<const rhi::TextureGpuView> &)>;
+    using BindlessTextureUsageMarker = std::function<void(const rhi::ResourceIndex *, size_t, rhi::SubmissionSerial)>;
+    [[nodiscard]] bool ConfigureBindlessTextureTable(VkDescriptorSetLayout layout, VkDescriptorSet set,
+                                                     BindlessTexturePublisher publisher,
+                                                     BindlessTextureUsageMarker usageMarker);
+    void ClearBindlessTextureTable() noexcept;
+    [[nodiscard]] rhi::BindlessTextureTableBinding GetBindlessTextureTableBinding() const noexcept override;
+    [[nodiscard]] rhi::ResourceIndex
+    PublishBindlessTexture(const std::shared_ptr<const rhi::TextureGpuView> &texture) noexcept override;
+    void MarkBindlessTexturesUsed(const rhi::ResourceIndex *resources, size_t count) noexcept override;
     [[nodiscard]] rhi::GraphicsPipelineHandle RegisterGraphicsPipeline(VkPipeline pipeline, VkPipelineLayout layout);
     [[nodiscard]] rhi::ComputePipelineHandle RegisterComputePipeline(VkPipeline pipeline, VkPipelineLayout layout);
     /// Create a compute pipeline from backend-neutral RHI handles. The
@@ -199,15 +262,18 @@ class VulkanRhiDevice final : public rhi::Device
     [[nodiscard]] bool ReadBuffer(rhi::BufferHandle handle, uint64_t offset, void *data, uint64_t byteSize) override;
     [[nodiscard]] rhi::RenderTargetLayoutHandle RegisterRenderTargetLayout(VkRenderPass renderPass);
 
-    /// Set while command buffers for a submission are being recorded. Bind
-    /// groups touched by encoders inherit this serial for safe retirement.
-    void SetRecordingSubmissionSerial(rhi::SubmissionSerial serial) noexcept
-    {
-        m_recordingSubmissionSerial = serial;
-    }
+    void UseSubmissionSerials(std::function<rhi::SubmissionSerial()> retirementSerialSource);
     size_t CollectDescriptorRetirements(rhi::SubmissionSerial completedSerial) noexcept
     {
         return m_descriptorManager.Collect(completedSerial);
+    }
+    size_t CollectResourceRetirements(rhi::SubmissionSerial completedSerial) noexcept
+    {
+        return m_resourceRetirementQueue.Collect(completedSerial);
+    }
+    [[nodiscard]] GpuRetirementQueue::Stats GetResourceRetirementStats() const noexcept
+    {
+        return m_resourceRetirementQueue.GetStats();
     }
     [[nodiscard]] VkDescriptorManager::Stats GetDescriptorStats() const noexcept
     {
@@ -324,6 +390,7 @@ class VulkanRhiDevice final : public rhi::Device
 
     [[nodiscard]] const GraphicsPipelinePayload *ResolvePipeline(rhi::GraphicsPipelineHandle handle) const noexcept;
     [[nodiscard]] const GraphicsPipelinePayload *ResolvePipeline(rhi::ComputePipelineHandle handle) const noexcept;
+    void RetireNativeResource(std::function<void()> deleter) noexcept;
     void DestroyOwnedResources() noexcept;
 
     static void BindPipeline(void *context, rhi::GraphicsPipelineHandle pipeline);
@@ -374,8 +441,11 @@ class VulkanRhiDevice final : public rhi::Device
     std::vector<Slot<GraphicsPipelinePayload>> m_computePipelines;
     std::vector<Slot<VkRenderPass>> m_renderTargetLayouts;
     VkDescriptorManager m_descriptorManager;
+    GpuRetirementQueue m_resourceRetirementQueue;
     std::shared_ptr<rhi::DeviceLifetime> m_lifetime = std::make_shared<rhi::DeviceLifetime>();
-    rhi::SubmissionSerial m_recordingSubmissionSerial = rhi::InvalidSubmissionSerial;
+    rhi::BindlessTextureTableBinding m_bindlessTextureTableBinding{};
+    BindlessTexturePublisher m_bindlessTexturePublisher;
+    BindlessTextureUsageMarker m_bindlessTextureUsageMarker;
 
     uint32_t m_freeBuffer = UINT32_MAX;
     uint32_t m_freeTexture = UINT32_MAX;

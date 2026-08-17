@@ -494,7 +494,7 @@ InxScreenUIRenderer::~InxScreenUIRenderer()
 // ============================================================================
 
 bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat,
-                                     VkSampleCountFlagBits msaaSamples)
+                                     VkSampleCountFlagBits msaaSamples, bool useDynamicRendering)
 {
     if (m_initialized)
         return true;
@@ -503,8 +503,9 @@ bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, Vk
     m_allocator = allocator;
     m_colorFormat = colorFormat;
     m_msaaSamples = msaaSamples;
+    m_useDynamicRendering = useDynamicRendering;
 
-    if (!CreateCompatibleRenderPass()) {
+    if (!m_useDynamicRendering && !CreateCompatibleRenderPass()) {
         INXLOG_ERROR("InxScreenUIRenderer: Failed to create compatible render pass");
         return false;
     }
@@ -568,6 +569,7 @@ void InxScreenUIRenderer::Destroy()
     m_renderPass = VK_NULL_HANDLE;
     m_vertShader = VK_NULL_HANDLE;
     m_fragShader = VK_NULL_HANDLE;
+    m_useDynamicRendering = false;
     m_device = VK_NULL_HANDLE;
     m_allocator = VK_NULL_HANDLE;
     m_initialized = false;
@@ -962,7 +964,16 @@ bool InxScreenUIRenderer::CreatePipeline()
     pipeInfo.pColorBlendState = &cbInfo;
     pipeInfo.pDynamicState = &dynInfo;
     pipeInfo.layout = m_pipelineLayout;
-    pipeInfo.renderPass = m_renderPass;
+    VkPipelineRenderingCreateInfo renderingInfo{};
+    if (m_useDynamicRendering) {
+        renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        renderingInfo.colorAttachmentCount = 1;
+        renderingInfo.pColorAttachmentFormats = &m_colorFormat;
+        pipeInfo.pNext = &renderingInfo;
+        pipeInfo.renderPass = VK_NULL_HANDLE;
+    } else {
+        pipeInfo.renderPass = m_renderPass;
+    }
     pipeInfo.subpass = 0;
 
     return vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &m_pipeline) == VK_SUCCESS;

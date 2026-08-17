@@ -602,8 +602,22 @@ bool InxGUIContext::ColorPicker(const std::string &label, float color[4], int fl
 }
 
 // Unity-style helper: label on the left, DragFloatN on the right.
-static void LabeledDragFloatN(InxGUIContext &ctx, const char *label, float *value, int components, float speed,
-                              float labelWidth = 0.0f, const std::string &axisSemanticBase = "")
+static uint32_t CaptureEditLifecycle(bool changed)
+{
+    uint32_t flags = changed ? InxGUIContext::EditChanged : 0u;
+    if (ImGui::IsItemActive())
+        flags |= InxGUIContext::EditActive;
+    if (ImGui::IsItemActivated())
+        flags |= InxGUIContext::EditActivated;
+    if (ImGui::IsItemDeactivatedAfterEdit())
+        flags |= InxGUIContext::EditDeactivatedAfterEdit;
+    if (ImGui::IsItemDeactivated())
+        flags |= InxGUIContext::EditDeactivated;
+    return flags;
+}
+
+static uint32_t LabeledDragFloatN(InxGUIContext &ctx, const char *label, float *value, int components, float speed,
+                                  float labelWidth = 0.0f, const std::string &axisSemanticBase = "")
 {
     if (labelWidth <= 0.0f)
         labelWidth = ImGui::CalcTextSize(label).x + 20.0f;
@@ -615,6 +629,7 @@ static void LabeledDragFloatN(InxGUIContext &ctx, const char *label, float *valu
     std::string hiddenLabel = std::string("##") + label;
 
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
+    uint32_t lifecycle = 0;
     if (captureSemantics && components >= 2 && components <= 4 && !axisSemanticBase.empty()) {
         // Match ImGui::DragFloatN's layout so each actual field has a stable,
         // focusable semantic target instead of exposing only the aggregate row.
@@ -630,7 +645,8 @@ static void LabeledDragFloatN(InxGUIContext &ctx, const char *label, float *valu
             // Keep the editor ID below the per-axis PushID scope. An empty
             // label aliases the current ID-stack seed and can collide when
             // DragFloat temporarily swaps to its text-input representation.
-            ImGui::DragFloat("##axis_value", &value[axis], speed);
+            const bool changed = ImGui::DragFloat("##axis_value", &value[axis], speed);
+            lifecycle |= CaptureEditLifecycle(changed);
             ctx.RecordSemanticItem("vector_axis", kAxisLabels[axis], true, axisSemanticBase + "." + kAxisNames[axis],
                                    std::nullopt, static_cast<double>(value[axis]));
             ImGui::PopID();
@@ -639,30 +655,33 @@ static void LabeledDragFloatN(InxGUIContext &ctx, const char *label, float *valu
         ImGui::PopID();
         ImGui::EndGroup();
     } else {
+        bool changed = false;
         switch (components) {
         case 2:
-            ImGui::DragFloat2(hiddenLabel.c_str(), value, speed);
+            changed = ImGui::DragFloat2(hiddenLabel.c_str(), value, speed);
             break;
         case 3:
-            ImGui::DragFloat3(hiddenLabel.c_str(), value, speed);
+            changed = ImGui::DragFloat3(hiddenLabel.c_str(), value, speed);
             break;
         case 4:
-            ImGui::DragFloat4(hiddenLabel.c_str(), value, speed);
+            changed = ImGui::DragFloat4(hiddenLabel.c_str(), value, speed);
             break;
         default:
-            ImGui::DragFloat(hiddenLabel.c_str(), value, speed);
+            changed = ImGui::DragFloat(hiddenLabel.c_str(), value, speed);
             break;
         }
+        lifecycle = CaptureEditLifecycle(changed);
     }
     if (captureSemantics)
         ctx.RecordSemanticItem("vector", label);
+    return lifecycle;
 }
 
 void InxGUIContext::Vector2Control(const std::string &label, float value[2], float speed, float labelWidth,
                                    const std::string &axisSemanticBase)
 {
     CompensateWarp();
-    LabeledDragFloatN(*this, label.c_str(), value, 2, speed, labelWidth, axisSemanticBase);
+    m_lastEditLifecycleFlags = LabeledDragFloatN(*this, label.c_str(), value, 2, speed, labelWidth, axisSemanticBase);
     HandleDragCapture();
 }
 
@@ -670,14 +689,14 @@ void InxGUIContext::Vector3Control(const std::string &label, float value[3], flo
                                    const std::string &axisSemanticBase)
 {
     CompensateWarp();
-    LabeledDragFloatN(*this, label.c_str(), value, 3, speed, labelWidth, axisSemanticBase);
+    m_lastEditLifecycleFlags = LabeledDragFloatN(*this, label.c_str(), value, 3, speed, labelWidth, axisSemanticBase);
     HandleDragCapture();
 }
 
 void InxGUIContext::Vector4Control(const std::string &label, float value[4], float speed, float labelWidth)
 {
     CompensateWarp();
-    LabeledDragFloatN(*this, label.c_str(), value, 4, speed, labelWidth);
+    m_lastEditLifecycleFlags = LabeledDragFloatN(*this, label.c_str(), value, 4, speed, labelWidth);
     HandleDragCapture();
 }
 
@@ -1384,6 +1403,11 @@ void InxGUIContext::SetCursorPosX(float x)
 void InxGUIContext::SetCursorPosY(float y)
 {
     ImGui::SetCursorPosY(y);
+}
+
+void InxGUIContext::SetCursorScreenPos(float x, float y)
+{
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
 }
 
 float InxGUIContext::GetWindowPosX()
@@ -2656,7 +2680,8 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
 
 uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, const std::string &displayText,
                                                 const std::string &typeHint, bool selected, bool clickable,
-                                                bool hasPicker, uint64_t pickerTextureId, const std::string &semanticId)
+                                                bool hasPicker, uint64_t pickerTextureId, const std::string &semanticId,
+                                                float fixedWidth)
 {
     // Unity ObjectField: one shared frame height, left text inset, picker flush
     // to the right. Hover/active fill covers the whole control (body + picker).
@@ -2684,7 +2709,10 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
     const float availableWidth = ImGui::GetContentRegionAvail().x;
     const float fieldHeight = ImGui::GetFrameHeight();
     const float buttonWidth = hasPicker ? fieldHeight : 0.0f;
-    const float totalWidth = (std::max)(availableWidth, buttonWidth + 10.0f);
+    // fixedWidth > 0 caps the field (node-graph pin slots); otherwise fill the
+    // available region like a normal Inspector row.
+    const float totalWidth = fixedWidth > 0.0f ? (std::max)(fixedWidth, buttonWidth + 10.0f)
+                                               : (std::max)(availableWidth, buttonWidth + 10.0f);
     const float bodyWidth = (std::max)(totalWidth - buttonWidth, 10.0f);
 
     const ImVec2 start = ImGui::GetCursorScreenPos();

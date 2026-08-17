@@ -4,7 +4,6 @@
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <set>
 #include <string>
-#include <vector>
 
 namespace infernux
 {
@@ -14,8 +13,6 @@ namespace infernux
  *
  * This loader:
  * - Generates stable GUID for script assets
- * - Parses import statements to detect dependencies
- * - Extracts class names (especially InxComponent subclasses)
  * - Creates meta files for script tracking
  *
  * Note: Python scripts are not "loaded" into C++ memory, they are
@@ -52,23 +49,6 @@ class InxPythonScriptLoader : public IAssetLoader
     {
         return {};
     }
-
-  private:
-    /// @brief Parse Python source to extract import statements
-    /// @param source Python source code
-    /// @return Set of imported module names
-    std::set<std::string> ParseImports(const std::string &source) const;
-
-    /// @brief Parse Python source to extract class definitions
-    /// @param source Python source code
-    /// @return Vector of class names defined in the file
-    std::vector<std::string> ParseClassNames(const std::string &source) const;
-
-    /// @brief Check if a class inherits from InxComponent
-    /// @param source Python source code
-    /// @param className Name of the class to check
-    /// @return True if the class appears to inherit from InxComponent
-    bool IsInxComponentClass(const std::string &source, const std::string &className) const;
 };
 
 } // namespace infernux

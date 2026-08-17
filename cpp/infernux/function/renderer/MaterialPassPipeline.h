@@ -1,7 +1,7 @@
 #pragma once
 
 #include <core/types/ShaderTypes.h>
-#include <function/renderer/rhi/RhiTypes.h>
+#include <function/renderer/rhi/RhiDescriptors.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +10,12 @@
 
 namespace infernux
 {
+
+enum class MaterialPassRenderingMode : uint8_t
+{
+    LegacyRenderPass = 0,
+    DynamicRendering,
+};
 
 /// Immutable render-target contract for one material pass. It is deliberately
 /// backend-neutral so RenderGraph can key pipelines without leaking Vulkan
@@ -21,6 +27,42 @@ struct MaterialPassPipelineDescriptor
     rhi::PixelFormat depthFormat = rhi::PixelFormat::Undefined;
     rhi::SampleCount samples = rhi::SampleCount::One;
     bool depthReadOnly = false;
+    MaterialPassRenderingMode renderingMode = MaterialPassRenderingMode::LegacyRenderPass;
+
+    [[nodiscard]] bool UsesDynamicRendering() const noexcept
+    {
+        return renderingMode == MaterialPassRenderingMode::DynamicRendering;
+    }
+
+    [[nodiscard]] rhi::GraphicsRenderingSignature RenderingSignature() const noexcept
+    {
+        rhi::GraphicsRenderingSignature signature;
+        signature.colorFormatCount = static_cast<uint32_t>(colorFormats.size());
+        for (size_t index = 0; index < colorFormats.size() && index < signature.colorFormats.size(); ++index)
+            signature.colorFormats[index] = colorFormats[index];
+        signature.depthFormat = depthFormat;
+        signature.stencilFormat = rhi::IsStencilFormat(depthFormat) ? depthFormat : rhi::PixelFormat::Undefined;
+        signature.samples = samples;
+        return signature;
+    }
+
+    [[nodiscard]] bool MatchesRenderingSignature(const rhi::GraphicsRenderingSignature &signature) const noexcept
+    {
+        return RenderingSignature() == signature;
+    }
+
+    void ApplyRenderingContract(rhi::GraphicsPipelineDesc &descriptor,
+                                rhi::RenderTargetLayoutHandle legacyLayout) const noexcept
+    {
+        descriptor.useDynamicRendering = UsesDynamicRendering();
+        if (descriptor.useDynamicRendering) {
+            descriptor.renderTargetLayout = {};
+            descriptor.renderingSignature = RenderingSignature();
+        } else {
+            descriptor.renderTargetLayout = legacyLayout;
+            descriptor.renderingSignature = {};
+        }
+    }
 
     [[nodiscard]] bool IsValid() const noexcept
     {
@@ -35,6 +77,8 @@ struct MaterialPassPipelineDescriptor
             return false;
         if (depthReadOnly && depthFormat == rhi::PixelFormat::Undefined)
             return false;
+        if (UsesDynamicRendering() && !RenderingSignature().IsValid())
+            return false;
 
         switch (target) {
         case ShaderCompileTarget::Depth:
@@ -48,6 +92,10 @@ struct MaterialPassPipelineDescriptor
         case ShaderCompileTarget::GBuffer:
         case ShaderCompileTarget::Motion:
             return !colorFormats.empty();
+        case ShaderCompileTarget::Normal:
+        case ShaderCompileTarget::BaseColor:
+            return colorFormats.size() == 1 && colorFormats.front() == rhi::PixelFormat::RGBA16SFloat &&
+                   depthFormat != rhi::PixelFormat::Undefined;
         case ShaderCompileTarget::Count:
             return false;
         }
@@ -58,7 +106,8 @@ struct MaterialPassPipelineDescriptor
                            const MaterialPassPipelineDescriptor &rhs) noexcept
     {
         return lhs.target == rhs.target && lhs.colorFormats == rhs.colorFormats && lhs.depthFormat == rhs.depthFormat &&
-               lhs.samples == rhs.samples && lhs.depthReadOnly == rhs.depthReadOnly;
+               lhs.samples == rhs.samples && lhs.depthReadOnly == rhs.depthReadOnly &&
+               lhs.renderingMode == rhs.renderingMode;
     }
 
     friend bool operator!=(const MaterialPassPipelineDescriptor &lhs,
@@ -80,6 +129,7 @@ struct MaterialPassPipelineDescriptorHash
         combine(static_cast<size_t>(descriptor.samples));
         combine(static_cast<size_t>(descriptor.depthFormat));
         combine(static_cast<size_t>(descriptor.depthReadOnly));
+        combine(static_cast<size_t>(descriptor.renderingMode));
         combine(descriptor.colorFormats.size());
         for (const rhi::PixelFormat format : descriptor.colorFormats)
             combine(static_cast<size_t>(format));

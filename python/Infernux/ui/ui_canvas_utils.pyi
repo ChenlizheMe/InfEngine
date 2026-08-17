@@ -7,6 +7,11 @@ from typing import Any, List, Tuple
 from Infernux.ui.ui_canvas import UICanvas
 
 
+def scene_canvas_cache_key(scene: Any) -> tuple[int, int, int] | None:
+    """Return the cache identity for one native Scene lifetime."""
+    ...
+
+
 def invalidate_canvas_cache() -> None:
     """Force cache invalidation (e.g. on scene load)."""
     ...
@@ -30,4 +35,9 @@ def collect_canvases(scene: Any, *, allow_stale_empty: bool = False) -> List[UIC
 
 def collect_sorted_canvases(scene: Any, *, allow_stale_empty: bool = False) -> List[UICanvas]:
     """Return ``[UICanvas, ...]`` sorted by ``sort_order`` (cached)."""
+    ...
+
+
+def collect_sorted_runtime_canvases(active_scene: Any, persistent_scene: Any = None, *, allow_stale_empty: bool = False) -> List[UICanvas]:
+    """Return sorted canvases from active and DontDestroyOnLoad scenes."""
     ...

@@ -81,6 +81,16 @@ class ParticleGpuSurfaceBinding
     {
         return m_supportsSceneDepth;
     }
+    [[nodiscard]] bool UsesBindlessTextures() const noexcept
+    {
+        return m_usesBindlessTextures;
+    }
+    [[nodiscard]] rhi::BindlessTextureTableBinding BindlessTableBinding() const noexcept
+    {
+        return m_device && m_usesBindlessTextures ? m_device->GetBindlessTextureTableBinding()
+                                                  : rhi::BindlessTextureTableBinding{};
+    }
+    void MarkBindlessTexturesUsed() noexcept;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact> ShaderProgram() const noexcept
     {
         return m_shaderProgram;
@@ -99,6 +109,7 @@ class ParticleGpuSurfaceBinding
     struct TextureBindingState
     {
         uint32_t binding = 0;
+        uint32_t textureSlot = 0;
         rhi::ShaderStage visibility = rhi::ShaderStage::None;
         std::string name;
         std::string defaultGuid;
@@ -108,6 +119,7 @@ class ParticleGpuSurfaceBinding
         rhi::SamplerHandle sampler;
         std::shared_ptr<rhi::TextureGpuViewSlot> gpuSlot;
         std::shared_ptr<const rhi::TextureGpuView> gpuView;
+        rhi::ResourceIndex resourceIndex{};
         bool pending = false;
         bool fallback = false;
     };
@@ -124,6 +136,7 @@ class ParticleGpuSurfaceBinding
                                                        bool sceneDepthIsDepth = true) const;
     [[nodiscard]] std::string ResolveMaterialTextureGuid(const TextureBindingState &binding) const;
     [[nodiscard]] bool RebuildBindGroup();
+    [[nodiscard]] bool RefreshTextureIndexBuffer(const std::vector<TextureBindingState> &textures);
     void RetireViewBindGroups();
     void RetireBindGroup(rhi::BindGroupHandle group);
     void RetireTexture(std::shared_ptr<const rhi::TextureGpuView> gpuView);
@@ -139,11 +152,13 @@ class ParticleGpuSurfaceBinding
     rhi::BindGroupHandle m_group;
     std::vector<ViewBindGroup> m_viewGroups;
     rhi::BufferHandle m_materialBuffer;
+    rhi::BufferHandle m_textureIndexBuffer;
     std::vector<TextureBindingState> m_textures;
     GpuBillboardTextureLease m_sceneDepthFallback;
     uint64_t m_materialVersion = 0;
     bool m_materialVersionInitialized = false;
     bool m_usesTexture = false;
+    bool m_usesBindlessTextures = false;
     bool m_supportsSceneDepth = false;
 };
 

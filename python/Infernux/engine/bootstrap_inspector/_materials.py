@@ -111,6 +111,7 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
     )
 
     _material_section_heights = {}
+    _material_render_error = {"fingerprint": ""}
 
     def _render_material_sections_live(ctx, obj_id):
         from Infernux.components.builtin_component import BuiltinComponent
@@ -134,7 +135,7 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
         ):
             return
 
-        _scene, scene_version, structure_version = current_scene_versions()
+        _scene, scene_version, structure_version = current_scene_versions(obj_id)
         if (
             mat_cache["object_id"] == obj_id
             and mat_cache["scene_version"] == scene_version
@@ -206,7 +207,25 @@ def wire_material_sections(ip, _t, engine, _inspector_support,
 
         start_y = ctx.get_cursor_pos_y()
         try:
-            _render_material_sections_live(ctx, obj_id)
+            try:
+                _render_material_sections_live(ctx, obj_id)
+                _material_render_error["fingerprint"] = ""
+            except Exception as exc:
+                # Python callbacks must never unwind through the native
+                # Inspector frame.  Besides losing the rest of the panel, an
+                # escaping exception prevents ImGui child recovery and can
+                # turn one missing optional module into an error every frame.
+                fingerprint = f"{type(exc).__name__}: {exc}"
+                if _material_render_error["fingerprint"] != fingerprint:
+                    Debug.log_error(
+                        "Inspector material section failed; the rest of the "
+                        f"Inspector remains available: {fingerprint}"
+                    )
+                    _material_render_error["fingerprint"] = fingerprint
+                try:
+                    ctx.text_wrapped("Material Inspector is temporarily unavailable.")
+                except Exception:
+                    pass
         finally:
             measured_height = max(0.0, ctx.get_cursor_pos_y() - start_y)
             if measured_height > 0.0:

@@ -2,6 +2,7 @@
 
 #include "Infernux.h"
 
+#include <core/threading/JobSystem.h>
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/gui/InxGUISemantics.h>
 #include <function/renderer/gui/InxResourcePreviewer.h>
@@ -286,7 +287,6 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
             {".hlsl", "shader_hlsl"},
             {".glsl", "shader_glsl"},
             {".shadingmodel", "shadingmodel"},
-            {".wav", "audio"},
             {".ttf", "font"},
             {".otf", "font"},
             {".txt", "text"},
@@ -332,7 +332,6 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
             {".frag", {"SHADER_FILE", "Shader"}},
             {".glsl", {"SHADER_FILE", "Shader"}},
             {".hlsl", {"SHADER_FILE", "Shader"}},
-            {".wav", {"AUDIO_FILE", "Audio"}},
             {".ttf", {"FONT_FILE", "Font"}},
             {".otf", {"FONT_FILE", "Font"}},
             {".scene", {"SCENE_FILE", "Scene"}},
@@ -647,8 +646,8 @@ void ProjectPanel::SetRootPath(const std::string &path)
     m_navHasSubfolders = false;
     m_searchIndexGeneration = UINT64_MAX;
     m_searchIndexRoot.clear();
-    m_searchIndex.clear();
-    m_searchResultToken = {};
+    m_searchIndex.reset();
+    ResetAsyncSearch();
     m_folderTreeProjection.Clear();
     m_folderTreeProjection.SetExpanded(path, true);
     InvalidateDirCache();
@@ -706,8 +705,8 @@ void ProjectPanel::SetAssetDatabase(AssetDatabase *adb)
         return;
     m_assetDatabase = adb;
     m_searchIndexGeneration = UINT64_MAX;
-    m_searchIndex.clear();
-    m_searchResultToken = {};
+    m_searchIndex.reset();
+    ResetAsyncSearch();
     InvalidateDirCache();
 }
 void ProjectPanel::SetIconsDirectory(const std::string &dir)
@@ -1864,8 +1863,7 @@ void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
     double now = m_frameTimeNow;
     const bool nativeDoubleClick = ctx->IsMouseDoubleClicked(0);
     const bool repeatedClick =
-        AssetSelectionPathKey(m_lastClickedFile) == AssetSelectionPathKey(item.path) &&
-        (now - m_lastClickTime) < 0.4;
+        AssetSelectionPathKey(m_lastClickedFile) == AssetSelectionPathKey(item.path) && (now - m_lastClickTime) < 0.4;
     const bool doubleClicked = nativeDoubleClick || repeatedClick;
     m_lastClickedFile = item.path;
     m_lastClickTime = now;
@@ -1954,22 +1952,21 @@ bool ProjectPanel::CanRenameSelectedAsset(const std::string &path) const
     const std::string target = path.empty() ? m_selectedFile : path;
     if (target.empty() || IsVirtualSubAssetPath(target))
         return false;
-    const auto selected = GetSelectedPaths();
-    // Explicit command targets come from the global SelectionService. During
-    // the click frame, that authoritative selection can reach Python before
-    // the native view projection is visible here. Accept only that narrow
-    // empty-local-state case; a conflicting local selection remains rejected.
-    if (!path.empty() && selected.empty())
+    // An explicit command target is authoritative. Creation commands reach
+    // this function before the native grid has necessarily consumed the new
+    // global selection, so an older local selection must not reject rename.
+    if (!path.empty())
         return true;
+    const auto selected = GetSelectedPaths();
     return selected.size() == 1 && FilesystemPathKey(selected.front()) == FilesystemPathKey(target);
 }
 
 bool ProjectPanel::BeginRenameSelectedAsset(const std::string &path)
 {
     const std::string target = path.empty() ? m_selectedFile : path;
-    if (!CanRenameSelectedAsset(target))
+    if (!CanRenameSelectedAsset(path))
         return false;
-    if (GetSelectedPaths().empty()) {
+    if (!path.empty()) {
         PublishSelectionIntent({target}, target);
     }
     BeginRename(target);
@@ -2360,6 +2357,10 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
     if (remain > searchW)
         ctx->SetCursorPosX(ctx->GetCursorPosX() + (remain - searchW));
     ctx->SetNextItemWidth(searchW);
+    if (m_focusSearchNextFrame) {
+        ctx->SetKeyboardFocusHere();
+        m_focusSearchNextFrame = false;
+    }
     ctx->InputTextWithHint("##project_search", Tr("project.search_hint"), m_searchBuf, sizeof(m_searchBuf));
     ctx->RecordSemanticItem("text_input", Tr("project.search_hint"), true, "project.search", std::nullopt, std::nullopt,
                             std::string(m_searchBuf));
@@ -2367,96 +2368,239 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
     UpdateSearchResults();
 }
 
-void ProjectPanel::RebuildSearchIndex(uint64_t generation)
+void ProjectPanel::ResetAsyncSearch()
 {
+    ++m_searchRequestSerial;
+    m_searchAsyncState->desiredSerial.store(m_searchRequestSerial, std::memory_order_release);
+    m_searchDesiredToken = {};
+    m_searchResultToken = {};
+    m_searchResults.clear();
+    m_searchBusy = false;
+}
+
+void ProjectPanel::PollSearchCompletion()
+{
+    std::unique_ptr<SearchAsyncCompletion> completion;
+    {
+        std::lock_guard lock(m_searchAsyncState->mutex);
+        completion = std::move(m_searchAsyncState->completion);
+    }
+    if (!completion)
+        return;
+
+    m_searchJobInFlight = false;
+    if (completion->requestSerial != m_searchRequestSerial)
+        return;
+    if (completion->cancelled)
+        return;
+    if (!completion->error.empty()) {
+        INXLOG_ERROR("Project search worker failed: ", completion->error);
+        if (completion->token == m_searchDesiredToken)
+            m_searchResultToken = completion->token;
+        m_searchBusy = false;
+        return;
+    }
+
+    const uint64_t generation = m_assetDatabase ? m_assetDatabase->GetQueryGeneration() : 0;
     const std::string folderRoot = !m_preferredNavPath.empty() ? m_preferredNavPath : m_rootPath;
-    if (generation == m_searchIndexGeneration && folderRoot == m_searchIndexRoot)
-        return;
-
-    m_searchIndexGeneration = generation;
-    m_searchIndexRoot = folderRoot;
-    m_searchIndex.clear();
-    if (!m_assetDatabase)
-        return;
-
-    std::unordered_set<std::string> folderPaths;
-    const fs::path rootPath = fs::u8path(folderRoot);
-    const auto guids = m_assetDatabase->GetAllGuids();
-    m_searchIndex.reserve(guids.size());
-
-    for (const auto &guid : guids) {
-        const std::string path = m_assetDatabase->GetPathFromGuid(guid);
-        if (path.empty())
-            continue;
-        const std::string name = infernux::FromFsPath(fs::u8path(path).filename());
-        if (!ShouldShow(name))
-            continue;
-
-        std::string rel = path;
-        std::string relativePath;
-        if (!m_rootPath.empty() && infernux::TryMakeRelativeFilesystemPath(path, m_rootPath, relativePath, true))
-            rel = std::move(relativePath);
-
-        FileItem item;
-        item.type = FileItem::File;
-        item.name = name;
-        item.path = path;
-        item.ext = infernux::FromFsPath(fs::u8path(path).extension());
-        if (!item.ext.empty() && item.ext.front() == '.')
-            item.ext.erase(item.ext.begin());
-
-        SearchIndexEntry indexed;
-        indexed.item = std::move(item);
-        indexed.sortKey = EditorSearchModel::Normalize(name);
-        indexed.searchKey = indexed.sortKey + "\n" + EditorSearchModel::Normalize(rel);
-        m_searchIndex.push_back(std::move(indexed));
-
-        // Folder hits are derived from catalogued asset paths. This avoids the
-        // previous recursive directory walk on every search edit while still
-        // indexing every non-empty project folder and all of its ancestors.
-        fs::path parent = fs::u8path(path).parent_path();
-        while (!folderRoot.empty() && !parent.empty()) {
-            const std::string parentString = infernux::FromFsPath(parent);
-            std::string ignored;
-            if (!infernux::TryMakeRelativeFilesystemPath(parentString, folderRoot, ignored, true))
-                break;
-            if (parent == rootPath)
-                break;
-            folderPaths.insert(parentString);
-            const fs::path next = parent.parent_path();
-            if (next == parent)
-                break;
-            parent = next;
-        }
+    if (completion->index && completion->indexGeneration == generation && completion->indexRoot == folderRoot) {
+        m_searchIndexGeneration = completion->indexGeneration;
+        m_searchIndexRoot = completion->indexRoot;
+        m_searchIndex = std::move(completion->index);
     }
 
-    for (const std::string &path : folderPaths) {
-        FileItem item;
-        item.type = FileItem::Dir;
-        item.path = path;
-        item.name = infernux::FromFsPath(fs::u8path(path).filename());
-        if (!ShouldShow(item.name))
-            continue;
+    if (completion->token != m_searchDesiredToken)
+        return;
+    m_searchResults = std::move(completion->results);
+    m_searchResultToken = completion->token;
+    m_searchBusy = false;
+}
 
-        std::string rel = path;
-        std::string relativePath;
-        if (!m_rootPath.empty() && infernux::TryMakeRelativeFilesystemPath(path, m_rootPath, relativePath, true))
-            rel = std::move(relativePath);
-
-        SearchIndexEntry indexed;
-        indexed.item = std::move(item);
-        indexed.sortKey = EditorSearchModel::Normalize(indexed.item.name);
-        indexed.searchKey = indexed.sortKey + "\n" + EditorSearchModel::Normalize(rel);
-        m_searchIndex.push_back(std::move(indexed));
+void ProjectPanel::ScheduleSearch(const EditorSearchToken &token, uint64_t generation, const std::string &folderRoot)
+{
+    if (m_searchJobInFlight || !m_assetDatabase)
+        return;
+    if (!JobSystem::IsAvailable()) {
+        m_searchResultToken = token;
+        m_searchBusy = false;
+        return;
     }
 
-    std::sort(m_searchIndex.begin(), m_searchIndex.end(), [](const SearchIndexEntry &a, const SearchIndexEntry &b) {
-        if (a.item.type != b.item.type)
-            return a.item.type < b.item.type;
-        if (a.sortKey != b.sortKey)
-            return a.sortKey < b.sortKey;
-        return a.item.path < b.item.path;
-    });
+    const uint64_t requestSerial = m_searchRequestSerial;
+    const std::string normalizedQuery = m_search.NormalizedQuery();
+    const std::string projectRoot = m_rootPath;
+    const auto cachedIndex = m_searchIndex && m_searchIndexGeneration == generation && m_searchIndexRoot == folderRoot
+                                 ? m_searchIndex
+                                 : nullptr;
+    const auto catalog =
+        cachedIndex ? std::shared_ptr<const AssetCatalogSnapshot>{} : m_assetDatabase->GetCatalogSnapshot();
+    const auto asyncState = m_searchAsyncState;
+
+    try {
+        JobSystem::Get().Schedule(
+            [asyncState, cachedIndex, catalog, token, generation, folderRoot, projectRoot, normalizedQuery,
+             requestSerial]() {
+                auto completion = std::make_unique<SearchAsyncCompletion>();
+                completion->requestSerial = requestSerial;
+                completion->token = token;
+                completion->indexGeneration = generation;
+                completion->indexRoot = folderRoot;
+                try {
+                    const auto cancelled = [&]() {
+                        return asyncState->desiredSerial.load(std::memory_order_acquire) != requestSerial;
+                    };
+                    completion->cancelled = cancelled();
+                    std::shared_ptr<const std::vector<SearchIndexEntry>> index = cachedIndex;
+                    if (!completion->cancelled && !index) {
+                        auto built = std::make_shared<std::vector<SearchIndexEntry>>();
+                        std::unordered_set<std::string> folderPaths;
+                        const fs::path rootPath = fs::u8path(folderRoot);
+                        if (catalog) {
+                            size_t assetCount = 0;
+                            for (const auto &[directory, entries] : catalog->GetDirectories()) {
+                                if (cancelled()) {
+                                    completion->cancelled = true;
+                                    break;
+                                }
+                                (void)directory;
+                                assetCount += entries.size();
+                            }
+                            built->reserve(assetCount);
+
+                            size_t visitedAssets = 0;
+                            for (const auto &[directory, entries] : catalog->GetDirectories()) {
+                                if (completion->cancelled)
+                                    break;
+                                (void)directory;
+                                for (const AssetCatalogEntry &entry : entries) {
+                                    if ((++visitedAssets & 0xffu) == 0u && cancelled()) {
+                                        completion->cancelled = true;
+                                        break;
+                                    }
+                                    const std::string &path = entry.path;
+                                    if (path.empty() || !ProjectPanel::ShouldShow(entry.name))
+                                        continue;
+
+                                    std::string rel = path;
+                                    std::string relativePath;
+                                    if (!projectRoot.empty() &&
+                                        infernux::TryMakeRelativeFilesystemPath(path, projectRoot, relativePath, true))
+                                        rel = std::move(relativePath);
+
+                                    FileItem item;
+                                    item.type = FileItem::File;
+                                    item.name = entry.name;
+                                    item.path = path;
+                                    item.ext = infernux::FromFsPath(fs::u8path(path).extension());
+                                    if (!item.ext.empty() && item.ext.front() == '.')
+                                        item.ext.erase(item.ext.begin());
+                                    item.resourceType = entry.resourceType;
+
+                                    SearchIndexEntry indexed;
+                                    indexed.item = std::move(item);
+                                    indexed.sortKey = EditorSearchModel::Normalize(entry.name);
+                                    indexed.searchKey = indexed.sortKey + "\n" + EditorSearchModel::Normalize(rel);
+                                    built->push_back(std::move(indexed));
+
+                                    fs::path parent = fs::u8path(path).parent_path();
+                                    while (!folderRoot.empty() && !parent.empty()) {
+                                        const std::string parentString = infernux::FromFsPath(parent);
+                                        std::string ignored;
+                                        if (!infernux::TryMakeRelativeFilesystemPath(parentString, folderRoot, ignored,
+                                                                                     true))
+                                            break;
+                                        if (parent == rootPath)
+                                            break;
+                                        folderPaths.insert(parentString);
+                                        const fs::path next = parent.parent_path();
+                                        if (next == parent)
+                                            break;
+                                        parent = next;
+                                    }
+                                }
+                            }
+                        }
+
+                        size_t visitedFolders = 0;
+                        for (const std::string &path : folderPaths) {
+                            if ((++visitedFolders & 0xffu) == 0u && cancelled()) {
+                                completion->cancelled = true;
+                                break;
+                            }
+                            FileItem item;
+                            item.type = FileItem::Dir;
+                            item.path = path;
+                            item.name = infernux::FromFsPath(fs::u8path(path).filename());
+                            if (!ProjectPanel::ShouldShow(item.name))
+                                continue;
+
+                            std::string rel = path;
+                            std::string relativePath;
+                            if (!projectRoot.empty() &&
+                                infernux::TryMakeRelativeFilesystemPath(path, projectRoot, relativePath, true))
+                                rel = std::move(relativePath);
+
+                            SearchIndexEntry indexed;
+                            indexed.item = std::move(item);
+                            indexed.sortKey = EditorSearchModel::Normalize(indexed.item.name);
+                            indexed.searchKey = indexed.sortKey + "\n" + EditorSearchModel::Normalize(rel);
+                            built->push_back(std::move(indexed));
+                        }
+
+                        if (!completion->cancelled) {
+                            std::sort(built->begin(), built->end(),
+                                      [](const SearchIndexEntry &left, const SearchIndexEntry &right) {
+                                          if (left.item.type != right.item.type)
+                                              return left.item.type < right.item.type;
+                                          if (left.sortKey != right.sortKey)
+                                              return left.sortKey < right.sortKey;
+                                          return left.item.path < right.item.path;
+                                      });
+                            completion->cancelled = cancelled();
+                        }
+                        if (!completion->cancelled)
+                            index = std::move(built);
+                    }
+
+                    if (!completion->cancelled)
+                        completion->index = index;
+                    completion->results.reserve((std::min)(kMaxSearchResults, index ? index->size() : size_t{0}));
+                    size_t visitedMatches = 0;
+                    if (!completion->cancelled && index) {
+                        for (const SearchIndexEntry &indexed : *index) {
+                            if ((++visitedMatches & 0xffu) == 0u && cancelled()) {
+                                completion->cancelled = true;
+                                completion->results.clear();
+                                break;
+                            }
+                            if (indexed.searchKey.find(normalizedQuery) == std::string::npos)
+                                continue;
+                            completion->results.push_back(indexed.item);
+                            if (completion->results.size() == kMaxSearchResults)
+                                break;
+                        }
+                        if (cancelled()) {
+                            completion->cancelled = true;
+                            completion->results.clear();
+                        }
+                    }
+                } catch (const std::exception &exception) {
+                    completion->error = exception.what();
+                } catch (...) {
+                    completion->error = "unknown exception";
+                }
+
+                std::lock_guard lock(asyncState->mutex);
+                if (!asyncState->completion || asyncState->completion->requestSerial <= completion->requestSerial)
+                    asyncState->completion = std::move(completion);
+            },
+            JobDomain::Asset, JobPriority::Low);
+        m_searchJobInFlight = true;
+        m_searchBusy = true;
+    } catch (const std::exception &exception) {
+        INXLOG_ERROR("Could not schedule Project search: ", exception.what());
+        m_searchBusy = false;
+    }
 }
 
 void ProjectPanel::UpdateSearchResults()
@@ -2464,57 +2608,60 @@ void ProjectPanel::UpdateSearchResults()
     const uint64_t generation = m_assetDatabase ? m_assetDatabase->GetQueryGeneration() : 0;
     const std::string folderRoot = !m_preferredNavPath.empty() ? m_preferredNavPath : m_rootPath;
     const EditorSearchToken token = m_search.MakeToken(generation, folderRoot);
+    if (token != m_searchDesiredToken) {
+        ++m_searchRequestSerial;
+        m_searchAsyncState->desiredSerial.store(m_searchRequestSerial, std::memory_order_release);
+        m_searchDesiredToken = token;
+        m_searchResults.clear();
+        m_searchBusy = m_search.IsActive();
+    }
+    PollSearchCompletion();
+    if (!m_search.IsActive()) {
+        m_searchResultToken = token;
+        m_searchIndexRoot = folderRoot;
+        m_searchBusy = false;
+        return;
+    }
     if (token == m_searchResultToken)
         return;
-
-    m_searchResultToken = token;
-    m_searchResults.clear();
-    if (!m_search.IsActive()) {
-        m_searchIndexRoot = folderRoot;
-        return;
-    }
-
-    RebuildSearchIndex(generation);
-    m_searchResults.reserve((std::min)(kMaxSearchResults, m_searchIndex.size()));
-    for (const auto &indexed : m_searchIndex) {
-        if (!m_search.MatchesNormalized(indexed.searchKey))
-            continue;
-        m_searchResults.push_back(indexed.item);
-        if (m_searchResults.size() == kMaxSearchResults)
-            break;
-    }
+    ScheduleSearch(token, generation, folderRoot);
 }
 
 void ProjectPanel::RenderSearchResults(InxGUIContext *ctx)
 {
     if (m_searchResults.empty()) {
-        ctx->Label(Tr("project.search_no_results"));
+        ctx->Label(Tr(m_searchBusy ? "project.searching" : "project.search_no_results"));
         return;
     }
 
     FileItem activatedItem;
     bool hasActivatedItem = false;
-    for (const auto &item : m_searchResults) {
-        std::string rel = item.path;
-        if (!m_rootPath.empty()) {
-            std::string tmp;
-            if (infernux::TryMakeRelativeFilesystemPath(item.path, m_rootPath, tmp, true))
-                rel = std::move(tmp);
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(m_searchResults.size()));
+    while (!hasActivatedItem && clipper.Step()) {
+        for (int itemIndex = clipper.DisplayStart; itemIndex < clipper.DisplayEnd; ++itemIndex) {
+            const FileItem &item = m_searchResults[static_cast<size_t>(itemIndex)];
+            std::string rel = item.path;
+            if (!m_rootPath.empty()) {
+                std::string tmp;
+                if (infernux::TryMakeRelativeFilesystemPath(item.path, m_rootPath, tmp, true))
+                    rel = std::move(tmp);
+            }
+
+            const std::string kind =
+                (item.type == FileItem::Dir) ? Tr("project.search_folder") : Tr("project.search_asset");
+            // Show "Name — relative/path" so users can tell duplicates apart.
+            const std::string label = item.name + "  —  " + rel + "  (" + kind + ")##search_" + item.path;
+            if (!ctx->Selectable(label, false))
+                continue;
+
+            // Keep a stable copy. Clearing m_searchResults while item still refers to
+            // one of its elements leaves a dangling reference and made activation
+            // intermittently navigate to an invalid path.
+            activatedItem = item;
+            hasActivatedItem = true;
+            break;
         }
-
-        const std::string kind =
-            (item.type == FileItem::Dir) ? Tr("project.search_folder") : Tr("project.search_asset");
-        // Show "Name — relative/path" so users can tell duplicates apart.
-        const std::string label = item.name + "  —  " + rel + "  (" + kind + ")##search_" + item.path;
-        if (!ctx->Selectable(label, false))
-            continue;
-
-        // Keep a stable copy. Clearing m_searchResults while item still refers to
-        // one of its elements leaves a dangling reference and made activation
-        // intermittently navigate to an invalid path.
-        activatedItem = item;
-        hasActivatedItem = true;
-        break;
     }
 
     if (!hasActivatedItem)
@@ -2528,8 +2675,7 @@ void ProjectPanel::RenderSearchResults(InxGUIContext *ctx)
         return;
     m_searchBuf[0] = '\0';
     (void)m_search.Clear();
-    m_searchResultToken = {};
-    m_searchResults.clear();
+    ResetAsyncSearch();
 }
 
 // ════════════════════════════════════════════════════════════════════

@@ -3,8 +3,8 @@
 #include "Component.h"
 #include <cstddef>
 #include <cstdint>
-#include <pybind11/pybind11.h>
 #include <optional>
+#include <pybind11/pybind11.h>
 #include <string>
 
 namespace py = pybind11;
@@ -23,9 +23,9 @@ struct CollisionInfo;
  * calls to the corresponding Python methods.
  *
  * Ownership: The PyComponentProxy owns a reference to the Python object.
- * GameObject invokes on_destroy for actual
- * component destruction; replacing a
- * proxy during script reload deliberately skips that user lifecycle callback.
+ * GameObject invokes on_destroy for actual component destruction; replacing a
+ * proxy during script reload
+ * deliberately skips that user lifecycle callback.
  */
 class PyComponentProxy : public Component
 {
@@ -33,9 +33,11 @@ class PyComponentProxy : public Component
     /**
      * Keep the interpreter lock across one native lifecycle phase.
      *
-     * Scene traversal remains native and ordered; this scope only removes
+     * Scene traversal remains native
+     * and ordered; this scope only removes
      * repeated lock transitions at each Python component boundary. It is
-     * intentionally a small RAII helper so native tests can run without an
+
+     * * intentionally a small RAII helper so native tests can run without an
      * initialized interpreter.
      */
     class PythonLifecyclePhaseScope
@@ -120,9 +122,39 @@ class PyComponentProxy : public Component
         return m_executeInEditMode;
     }
 
-    [[nodiscard]] bool WantsPhysicsCallbacks() const override
+    [[nodiscard]] bool UsesRuntimeLifecycleScheduler() const override
     {
         return true;
+    }
+
+    [[nodiscard]] bool WantsPhysicsCallbacks() const override
+    {
+        return m_overridesCollisionEnter || m_overridesCollisionStay || m_overridesCollisionExit ||
+               m_overridesTriggerEnter || m_overridesTriggerStay || m_overridesTriggerExit;
+    }
+    [[nodiscard]] bool WantsCollisionEnterCallbacks() const override
+    {
+        return m_overridesCollisionEnter;
+    }
+    [[nodiscard]] bool WantsCollisionStayCallbacks() const override
+    {
+        return m_overridesCollisionStay;
+    }
+    [[nodiscard]] bool WantsCollisionExitCallbacks() const override
+    {
+        return m_overridesCollisionExit;
+    }
+    [[nodiscard]] bool WantsTriggerEnterCallbacks() const override
+    {
+        return m_overridesTriggerEnter;
+    }
+    [[nodiscard]] bool WantsTriggerStayCallbacks() const override
+    {
+        return m_overridesTriggerStay;
+    }
+    [[nodiscard]] bool WantsTriggerExitCallbacks() const override
+    {
+        return m_overridesTriggerExit;
     }
 
     /// Bridge Python @require_component decorator to C++ RequireComponent system.
@@ -200,6 +232,10 @@ class PyComponentProxy : public Component
     /// Bind a newly published Python mirror and copy the preserved native
     /// lifecycle state into it without invoking user lifecycle methods.
     void RebindPythonMirror();
+    /// Prepare a fresh scripting-domain instance for the next Play lifecycle.
+    /// Runtime hot reload must not call this because it intentionally keeps
+    /// Awake/Start state alive while only replacing executable method bodies.
+    void ResetLifecycleForPlay();
     /// Refresh cached Python lifecycle wrappers and native phase gates after
     /// an in-place class-body reload. This never invokes user lifecycle code.
     void RefreshPythonLifecycleDispatch();
@@ -233,6 +269,7 @@ class PyComponentProxy : public Component
     void BindPythonMirror();
     void SyncPythonMirror() const;
     void RefreshPythonLifecycleDispatchPlan();
+    void RefreshPythonLifecycleOverrideMask();
     void RefreshCoroutineSchedulerFlag();
     void RefreshConstraintTypeId();
 
@@ -264,6 +301,12 @@ class PyComponentProxy : public Component
     bool m_overridesUpdate = true;
     bool m_overridesFixedUpdate = true;
     bool m_overridesLateUpdate = true;
+    bool m_overridesCollisionEnter = true;
+    bool m_overridesCollisionStay = true;
+    bool m_overridesCollisionExit = true;
+    bool m_overridesTriggerEnter = true;
+    bool m_overridesTriggerStay = true;
+    bool m_overridesTriggerExit = true;
     bool m_hasCoroutineScheduler = false;
     uint64_t m_updateDispatchCount = 0;
     uint64_t m_updateForwardCount = 0;

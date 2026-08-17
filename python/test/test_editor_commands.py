@@ -121,6 +121,10 @@ class _SceneCommandStub:
         panel = self._panel_getter()
         return bool(panel and panel.paste_clipboard())
 
+    def duplicate(self, _context):
+        panel = self._panel_getter()
+        return bool(panel and panel.duplicate_selected())
+
     def delete(self, _context):
         panel = self._panel_getter()
         if panel is None:
@@ -834,6 +838,7 @@ def test_hierarchy_and_scene_edit_shortcuts_share_command_handlers():
         paste_clipboard=lambda: calls.append("paste") or True,
         has_clipboard_data=lambda: True,
         delete_selected_objects=lambda: calls.append("delete"),
+        duplicate_selected=lambda: calls.append("duplicate") or True,
         begin_rename_object=lambda object_id: calls.append(("rename", object_id)),
         instantiate_prefab=lambda reference, parent_id, is_guid: calls.append(
             ("instantiate_prefab", reference, parent_id, is_guid)
@@ -851,6 +856,7 @@ def test_hierarchy_and_scene_edit_shortcuts_share_command_handlers():
         set_expanded_object_ids=lambda ids: calls.append(
             ("hierarchy_expanded", tuple(ids))
         ),
+        request_search_focus=lambda: calls.append("focus_search"),
     )
     scene_commands = _SceneCommandStub(lambda: bootstrap.hierarchy)
     bootstrap.interaction_core.prefabs = _PrefabCommandStub(calls)
@@ -878,7 +884,7 @@ def test_hierarchy_and_scene_edit_shortcuts_share_command_handlers():
         _coord_space=0,
         _set_tool_mode=lambda _mode: None,
         _set_coordinate_space=lambda value: setattr(scene_view, "_coord_space", int(value)),
-        _align_object_to_camera=lambda: True,
+        _align_object_to_camera=lambda: calls.append("align_with_view") or True,
         can_frame_object_by_id=lambda object_id: int(object_id) == 42,
         frame_object_by_id=lambda object_id: calls.append(
             ("frame_selected", int(object_id))
@@ -908,14 +914,50 @@ def test_hierarchy_and_scene_edit_shortcuts_share_command_handlers():
         owner_id="hierarchy",
     )
 
+    assert core.commands.execute(
+        "hierarchy.set_expanded",
+        source=CommandSource.POINTER,
+        payload={"target_id": 42, "expanded": True},
+    ).accepted
+    assert calls[-1] == ("hierarchy_expanded", (42,))
+    calls.clear()
+
     copied = core.shortcuts.route(ShortcutEvent(KeyChord.parse("Ctrl+C")))
     deleted = core.shortcuts.route(ShortcutEvent(KeyChord.parse("Delete")))
     renamed = core.shortcuts.route(ShortcutEvent(KeyChord.parse("F2")))
+    duplicated = core.shortcuts.route(ShortcutEvent(KeyChord.parse("Ctrl+D")))
 
     assert copied.status is ShortcutRouteStatus.EXECUTED
     assert deleted.status is ShortcutRouteStatus.EXECUTED
     assert renamed.status is ShortcutRouteStatus.EXECUTED
-    assert calls == [("copy", False), "delete", ("rename", 42)]
+    assert duplicated.status is ShortcutRouteStatus.EXECUTED
+    assert calls == [("copy", False), "delete", ("rename", 42), "duplicate"]
+
+    calls.clear()
+    focused = core.shortcuts.route(
+        ShortcutEvent(
+            KeyChord.parse("Ctrl+F"),
+            game_view_captured=True,
+            text_input_active=True,
+        )
+    )
+    assert focused.status is ShortcutRouteStatus.EXECUTED
+    assert calls == ["focus_search"]
+
+    calls.clear()
+    core.focus.activate_panel("scene_view", view_id="scene_view")
+    aligned = core.shortcuts.route(
+        ShortcutEvent(KeyChord.parse("Ctrl+Shift+F"))
+    )
+    find_is_not_scene_align = core.shortcuts.route(
+        ShortcutEvent(KeyChord.parse("Ctrl+F"))
+    )
+    framed = core.shortcuts.route(ShortcutEvent(KeyChord.parse("F")))
+    assert aligned.status is ShortcutRouteStatus.EXECUTED
+    assert find_is_not_scene_align.status is ShortcutRouteStatus.NO_MATCH
+    assert framed.status is ShortcutRouteStatus.EXECUTED
+    assert calls == ["align_with_view", ("frame_selected", 42)]
+    core.focus.activate_panel("hierarchy", view_id="hierarchy")
 
     assert core.commands.execute(
         "scene.create_object",
@@ -1133,6 +1175,7 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
         set_model_expanded_paths=lambda paths: calls.append(
             ("model_expanded", tuple(paths))
         ),
+        request_search_focus=lambda: calls.append("focus_search"),
     )
     _bind_panel(
         bootstrap.interaction_core,
@@ -1156,7 +1199,15 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
         owner_id="project",
     )
 
-    for chord in ("Ctrl+C", "Ctrl+X", "Ctrl+V", "Delete", "F2", "Ctrl+Shift+N"):
+    for chord in (
+        "Ctrl+C",
+        "Ctrl+X",
+        "Ctrl+V",
+        "Delete",
+        "F2",
+        "Ctrl+D",
+        "Ctrl+Shift+N",
+    ):
         assert core.shortcuts.route(
             ShortcutEvent(KeyChord.parse(chord))
         ).status is ShortcutRouteStatus.EXECUTED
@@ -1167,6 +1218,8 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
         ("paste_asset", "C:/Project/Assets", ActionOrigin.USER),
         ("delete_asset", (os.path.normpath("C:/Project/Assets/Smoke.mat"),), ActionOrigin.USER),
         ("rename_asset", os.path.normpath("C:/Project/Assets/Smoke.mat")),
+        ("copy_asset", (os.path.normpath("C:/Project/Assets/Smoke.mat"),), False),
+        ("paste_asset", "C:/Project/Assets", ActionOrigin.USER),
         (
             "create_asset",
             "folder",
@@ -1226,6 +1279,9 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
     assert calls[-1] == ("navigate", os.path.normpath("C:/Project/Assets/Materials"))
     core.focus.activate_panel("project", view_id="project", record_history=False)
 
+    assert core.commands.get("project.navigate_back") is not None
+    assert core.commands.get("project.navigate_forward") is not None
+
     frozen_target = core.commands.context(
         CommandSource.CONTEXT_MENU,
         {"target_id": "C:/Project/Assets/RightClicked.mat"},
@@ -1238,6 +1294,17 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
         (os.path.normpath("C:/Project/Assets/RightClicked.mat"),),
         False,
     )
+
+    # Native tree projections own generic-path stable IDs. They must remain
+    # byte-for-byte intact instead of being rewritten to Windows separators.
+    model_id = "C:/Project/Assets/Models/Hero.fbx"
+    expanded = core.commands.execute(
+        "project.set_model_expanded",
+        source=CommandSource.POINTER,
+        payload={"target_id": model_id, "expanded": True},
+    )
+    assert expanded.accepted
+    assert calls[-1] == ("model_expanded", (model_id,))
 
 
 def test_asset_rename_command_uses_project_asset_authority_and_command_origin():
@@ -1348,6 +1415,8 @@ def test_graph_edit_shortcuts_route_through_the_global_command_registry(panel_id
         command_graph_add_node=lambda _context: False,
         can_graph_create_node=lambda _context: False,
         command_graph_create_node=lambda _context: False,
+        can_graph_open_create=lambda _context: False,
+        command_graph_open_create=lambda _context: False,
         can_graph_workspace_add=lambda _context: False,
         command_graph_workspace_add=lambda _context: False,
     )
@@ -1521,6 +1590,8 @@ def test_animation_new_commands_route_through_focused_panel_and_can_execute():
             "command_graph_add_node",
             "can_graph_create_node",
             "command_graph_create_node",
+            "can_graph_open_create",
+            "command_graph_open_create",
             "can_graph_workspace_add",
             "command_graph_workspace_add",
         )
@@ -1879,6 +1950,7 @@ def test_console_copy_shortcut_routes_through_the_focused_panel_adapter():
         set_detail_height=lambda value: view.__setitem__(
             "detail_height", float(value)
         ),
+        request_search_focus=lambda: calls.append("focus_search"),
     )
     bootstrap = BootstrapHarness()
     bootstrap.interaction_core = EditorInteractionCore()
@@ -1913,10 +1985,16 @@ def test_console_copy_shortcut_routes_through_the_focused_panel_adapter():
     assert result.status is ShortcutRouteStatus.EXECUTED
     assert calls == ["copy_log"]
 
+    result = core.shortcuts.route(
+        ShortcutEvent(KeyChord.parse("Ctrl+F"), game_view_captured=True)
+    )
+    assert result.status is ShortcutRouteStatus.EXECUTED
+    assert calls == ["copy_log", "focus_search"]
+
     result = core.commands.execute("console.clear", source=CommandSource.POINTER)
 
     assert result.accepted
-    assert calls == ["copy_log", "clear"]
+    assert calls == ["copy_log", "focus_search", "clear"]
     assert not core.commands.can_execute(
         "console.clear", core.commands.context(CommandSource.POINTER)
     )
@@ -1964,6 +2042,7 @@ def test_console_view_changes_use_non_dirty_global_history():
         set_detail_height=lambda value: view.__setitem__(
             "detail_height", float(value)
         ),
+        request_search_focus=lambda: None,
     )
     try:
         _bind_panel(

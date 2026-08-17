@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from typing import Callable, List, Optional, Tuple, Type, TypeVar
+
+_SerializedValue = TypeVar("_SerializedValue")
+
 # Engine
 from Infernux.engine import release_engine as release_engine
 from Infernux.engine import run_headless as run_headless
@@ -26,18 +30,45 @@ from Infernux.lib import Space as Space
 from Infernux.lib import PrimitiveType as PrimitiveType
 # Components — user-facing
 from Infernux.components import InxComponent as InxComponent
-from Infernux.components import serialized_field as serialized_field
 from Infernux.components import int_field as int_field
 from Infernux.components import list_field as list_field
 from Infernux.components import component_field as component_field
 from Infernux.components import component_list_field as component_list_field
 from Infernux.components import hide_field as hide_field
+from Infernux.components import InspectorSpace as InspectorSpace
 from Infernux.components import FieldType as FieldType
 from Infernux.components import GameObjectRef as GameObjectRef
 from Infernux.components import MaterialRef as MaterialRef
 from Infernux.components import ComponentRef as ComponentRef
 from Infernux.components import PrefabRef as PrefabRef
 from Infernux.components import SerializableObject as SerializableObject
+
+def serialized_field(
+    default: _SerializedValue = ...,
+    *,
+    field_type: Optional[FieldType] = ...,
+    element_type: Optional[FieldType] = ...,
+    element_class: Optional[Type] = ...,
+    serializable_class: Optional[Type] = ...,
+    component_type: Optional[str] = ...,
+    asset_type: Optional[str] = ...,
+    range: Optional[Tuple[float, float]] = ...,
+    tooltip: str = ...,
+    display_name_key: str = ...,
+    enum_labels: Optional[List[str]] = ...,
+    readonly: bool = ...,
+    header: str = ...,
+    space: float = ...,
+    group: str = ...,
+    info_text: str = ...,
+    multiline: bool = ...,
+    slider: bool = ...,
+    drag_speed: Optional[float] = ...,
+    required_component: Optional[str] = ...,
+    visible_when: Optional[Callable] = ...,
+    hdr: bool = ...,
+    hidden: bool = ...,
+) -> _SerializedValue: ...
 # Builtin components
 from Infernux.components import Light as Light
 from Infernux.components import MeshRenderer as MeshRenderer
@@ -47,6 +78,7 @@ from Infernux.components import Collider as Collider
 from Infernux.components import BoxCollider as BoxCollider
 from Infernux.components import SphereCollider as SphereCollider
 from Infernux.components import CapsuleCollider as CapsuleCollider
+from Infernux.components import CylinderCollider as CylinderCollider
 from Infernux.components import MeshCollider as MeshCollider
 from Infernux.components import Rigidbody as Rigidbody
 from Infernux.components import RigidbodyConstraints as RigidbodyConstraints
@@ -112,6 +144,7 @@ from Infernux.coroutine import (
     WaitForSeconds as WaitForSeconds,
     WaitForSecondsRealtime as WaitForSecondsRealtime,
     WaitForEndOfFrame as WaitForEndOfFrame,
+    WaitForFrames as WaitForFrames,
     WaitForFixedUpdate as WaitForFixedUpdate,
     WaitUntil as WaitUntil,
     WaitWhile as WaitWhile,

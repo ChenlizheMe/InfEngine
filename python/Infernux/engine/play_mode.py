@@ -14,8 +14,10 @@ Handles:
 
 import time
 import os
+import sys
+import types
 from enum import Enum, auto
-from typing import Optional, List, Dict, Any, Callable, TYPE_CHECKING
+from typing import Optional, List, Dict, Any, Callable, Iterable, TYPE_CHECKING
 from dataclasses import dataclass
 from Infernux.debug import Debug, LogType
 from Infernux.engine.project_context import resolve_script_path
@@ -38,6 +40,404 @@ class PlayModeEvent:
     old_state: PlayModeState
     new_state: PlayModeState
     timestamp: float
+
+
+@dataclass(frozen=True)
+class ScriptReloadOutcome:
+    """Result of applying one validated script revision to live components."""
+
+    success: bool
+    had_live_targets: bool
+    reloaded_count: int = 0
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class ScriptReloadBatchInput:
+    """One frontend script revision offered to the Play/Pause batch API."""
+
+    file_path: str
+    script_guid: str = ""
+    source: bytes | str | None = None
+    code: types.CodeType | None = None
+    retire_script_paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ScriptReloadBatchMember:
+    file_path: str
+    script_guid: str
+    had_live_targets: bool
+    target_count: int
+
+
+@dataclass
+class ScriptReloadBatch:
+    """Prepared multi-script transaction owned by one PlayModeManager."""
+
+    transaction: object
+    members: tuple[ScriptReloadBatchMember, ...]
+
+    @property
+    def had_live_targets(self) -> bool:
+        return bool(getattr(self.transaction, "had_live_targets", False))
+
+    @property
+    def committed(self) -> bool:
+        return bool(getattr(self.transaction, "committed", False))
+
+    @property
+    def rolled_back(self) -> bool:
+        return bool(getattr(self.transaction, "rolled_back", False))
+
+    def commit(self) -> dict[type, tuple[str, ...]]:
+        return self.transaction.commit()
+
+    def rollback(self) -> None:
+        self.transaction.rollback()
+
+    def finalize(self) -> None:
+        finalize = getattr(self.transaction, "finalize", None)
+        if callable(finalize):
+            finalize()
+
+
+@dataclass(frozen=True)
+class EditComponentReloadMember:
+    """One fully prepared Edit-mode replacement, before scene mutation."""
+
+    object_id: int
+    old_component: object
+    new_component: object
+    component_index: int
+
+
+@dataclass(frozen=True)
+class _MissingScriptRecoveryMember:
+    object_id: int
+    component_index: int
+    missing_component: object
+    file_path: str
+    script_guid: str
+    state: dict
+    enabled: bool
+    awake_called: bool
+    has_started: bool
+    execution_order: int
+
+
+class _MissingScriptRecoveryTransaction:
+    """Publish real types and atomically replace matching MissingScript values."""
+
+    def __init__(
+        self,
+        manager: "PlayModeManager",
+        body_transaction: object,
+        members: tuple[_MissingScriptRecoveryMember, ...],
+    ) -> None:
+        self.manager = manager
+        self.body_transaction = body_transaction
+        self.members = members
+        self.had_live_targets = bool(
+            getattr(body_transaction, "had_live_targets", False) or members
+        )
+        self._prepared: list[tuple[_MissingScriptRecoveryMember, object]] = []
+        self._replaced: list[tuple[_MissingScriptRecoveryMember, object]] = []
+        self._committed = False
+        self._rolled_back = False
+        self._finalized = False
+
+    @property
+    def committed(self) -> bool:
+        return self._committed and not self._rolled_back
+
+    @property
+    def rolled_back(self) -> bool:
+        return self._rolled_back
+
+    @property
+    def finalized(self) -> bool:
+        return self._finalized
+
+    @property
+    def recovered_count(self) -> int:
+        return len(self._replaced) if self.committed else 0
+
+    def _candidate_type(self, member: _MissingScriptRecoveryMember) -> type:
+        candidates = []
+        for _path, component_types in getattr(
+            self.body_transaction, "registry_entries", ()
+        ):
+            for component_type in component_types:
+                if str(getattr(component_type, "_asset_script_guid_", "") or "") != member.script_guid:
+                    continue
+                candidates.append(component_type)
+
+        type_guid = str(member.state.get("type_guid") or "")
+        exact_guid = [
+            component_type
+            for component_type in candidates
+            if str(component_type._get_type_guid() or "") == type_guid
+        ]
+        if len(exact_guid) == 1:
+            return exact_guid[0]
+
+        qualified_name = str(member.state.get("qualified_name") or "")
+        exact_qualified = [
+            component_type
+            for component_type in candidates
+            if component_type.__qualname__ == qualified_name
+        ]
+        if len(exact_qualified) == 1:
+            return exact_qualified[0]
+
+        type_name = str(member.state.get("type_name") or "")
+        exact_name = [
+            component_type
+            for component_type in candidates
+            if component_type.__name__ == type_name
+        ]
+        if len(exact_name) == 1:
+            return exact_name[0]
+        if not exact_name:
+            raise RuntimeError(
+                f"restored script does not define component type '{type_name}'"
+            )
+        raise RuntimeError(
+            f"restored script defines ambiguous component type '{type_name}'"
+        )
+
+    def _prepare_replacements(self) -> None:
+        from Infernux.components.script_loader import create_component_instance
+
+        for member in self.members:
+            component_type = self._candidate_type(member)
+            instance = create_component_instance(component_type)
+            instance._script_guid = member.script_guid
+            instance._script_path = member.file_path
+            self.manager._apply_py_component_state(instance, member.state)
+            self.manager._copy_replacement_lifecycle_state(
+                member.missing_component,
+                instance,
+                enabled=member.enabled,
+                awake_called=member.awake_called,
+                has_started=member.has_started,
+                execution_order=member.execution_order,
+            )
+            self._prepared.append((member, instance))
+
+    @staticmethod
+    def _discard_prepared(instances: Iterable[tuple[_MissingScriptRecoveryMember, object]]) -> None:
+        for _member, instance in instances:
+            detach = getattr(instance, "_detach_native_binding_for_replacement", None)
+            if callable(detach):
+                detach()
+
+    def commit(self) -> dict[type, tuple[str, ...]]:
+        if self._rolled_back:
+            raise RuntimeError("MissingScript recovery transaction has been rolled back")
+        if self._committed:
+            return {}
+        from Infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
+
+        try:
+            assert_runtime_dispatch_safe_point()
+            changed_by_type = self.body_transaction.commit()
+            self._prepare_replacements()
+            for member, instance in self._prepared:
+                scene = self.manager._get_active_scene_for_script_reload()
+                if scene is None:
+                    raise RuntimeError("active scene disappeared during MissingScript recovery")
+                obj = scene.find_by_id(member.object_id)
+                if obj is None:
+                    raise RuntimeError(
+                        f"GameObject {member.object_id} disappeared during MissingScript recovery"
+                    )
+                self.manager._replace_edit_component_exact(
+                    obj,
+                    member.missing_component,
+                    instance,
+                    member.component_index,
+                )
+                self.manager._copy_replacement_lifecycle_state(
+                    member.missing_component,
+                    instance,
+                    enabled=member.enabled,
+                    awake_called=member.awake_called,
+                    has_started=member.has_started,
+                    execution_order=member.execution_order,
+                )
+                self._replaced.append((member, instance))
+            for _member, instance in self._replaced:
+                callback = getattr(instance, "_call_on_after_deserialize", None)
+                if callable(callback):
+                    callback()
+            self._committed = True
+            return changed_by_type
+        except Exception:
+            self.rollback()
+            raise
+
+    def rollback(self) -> None:
+        if self._rolled_back:
+            return
+        if self._finalized:
+            raise RuntimeError(
+                "finalized MissingScript recovery transaction cannot be rolled back"
+            )
+        rollback_errors = []
+        scene = self.manager._get_active_scene_for_script_reload()
+        for member, instance in reversed(self._replaced):
+            try:
+                if scene is None:
+                    raise RuntimeError("active scene disappeared")
+                obj = scene.find_by_id(member.object_id)
+                if obj is None:
+                    raise RuntimeError(f"GameObject {member.object_id} disappeared")
+                self.manager._replace_edit_component_exact(
+                    obj,
+                    instance,
+                    member.missing_component,
+                    member.component_index,
+                )
+                self.manager._copy_replacement_lifecycle_state(
+                    instance,
+                    member.missing_component,
+                    enabled=member.enabled,
+                    awake_called=member.awake_called,
+                    has_started=member.has_started,
+                    execution_order=member.execution_order,
+                )
+            except Exception as exc:
+                rollback_errors.append(str(exc))
+        if rollback_errors:
+            raise RuntimeError(
+                "failed to restore MissingScript scene state: "
+                + "; ".join(rollback_errors)
+            )
+        # Release candidate-owned instance state while its provisional schema
+        # is still published, then roll back module/registry/dispatch/CDS.
+        self._discard_prepared(self._prepared)
+        self.body_transaction.rollback()
+        self._prepared.clear()
+        self._replaced.clear()
+        self._committed = False
+        self._rolled_back = True
+
+    def finalize(self) -> None:
+        if self._rolled_back:
+            raise RuntimeError("MissingScript recovery transaction has been rolled back")
+        if not self._committed:
+            raise RuntimeError("MissingScript recovery transaction must commit first")
+        if self._finalized:
+            return
+        self.body_transaction.finalize()
+        self._prepared.clear()
+        self._replaced.clear()
+        self._finalized = True
+
+
+class ScriptDeleteBatch:
+    """Transactional conversion of live script components to MissingScript."""
+
+    def __init__(
+        self,
+        manager: "PlayModeManager",
+        members: tuple[EditComponentReloadMember, ...],
+        *,
+        retired_types: tuple[type, ...] = (),
+    ):
+        self.manager = manager
+        self.members = members
+        self._replaced: list[EditComponentReloadMember] = []
+        self._committed = False
+        self._rolled_back = False
+        self.retired_types = tuple(retired_types)
+        self._dispatch_publication = None
+
+    @property
+    def committed(self) -> bool:
+        return self._committed and not self._rolled_back
+
+    @property
+    def rolled_back(self) -> bool:
+        return self._rolled_back
+
+    @property
+    def had_live_targets(self) -> bool:
+        return bool(self.members)
+
+    def commit(self) -> int:
+        if self._rolled_back:
+            raise RuntimeError("script delete batch has been rolled back")
+        if self._committed:
+            return len(self._replaced)
+        try:
+            from Infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
+
+            # Reject before replacing the first live component.  Waiting
+            # until dispatch retirement would expose a half-deleted scene to
+            # an active lifecycle frame before the compensating rollback.
+            assert_runtime_dispatch_safe_point()
+            for member in self.members:
+                scene = self.manager._get_active_scene_for_script_reload()
+                if scene is None:
+                    raise RuntimeError("active scene disappeared during script deletion")
+                obj = scene.find_by_id(member.object_id)
+                if obj is None:
+                    raise RuntimeError(
+                        f"GameObject {member.object_id} disappeared during script deletion"
+                    )
+                self.manager._replace_edit_component_exact(
+                    obj,
+                    member.old_component,
+                    member.new_component,
+                    member.component_index,
+                )
+                self._replaced.append(member)
+            from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+
+            self._dispatch_publication = publish_runtime_dispatch_epoch(
+                (),
+                retired_types=self.retired_types,
+                defer_commit=True,
+            )
+            self._dispatch_publication.commit()
+            self._committed = True
+            return len(self._replaced)
+        except Exception:
+            self.rollback()
+            raise
+
+    def rollback(self) -> None:
+        if self._rolled_back:
+            return
+        errors = []
+        try:
+            if self._dispatch_publication is not None:
+                self._dispatch_publication.rollback()
+            scene = self.manager._get_active_scene_for_script_reload()
+            if scene is not None:
+                for member in reversed(self._replaced):
+                    obj = scene.find_by_id(member.object_id)
+                    if obj is None:
+                        errors.append(f"GameObject {member.object_id} disappeared")
+                        continue
+                    try:
+                        self.manager._replace_edit_component_exact(
+                            obj,
+                            member.new_component,
+                            member.old_component,
+                            member.component_index,
+                        )
+                    except Exception as exc:
+                        errors.append(str(exc))
+        finally:
+            self._replaced.clear()
+            self._committed = False
+            self._rolled_back = True
+        if errors:
+            raise RuntimeError("failed to roll back script deletion: " + "; ".join(errors))
 
 
 def _get_scene_manager():
@@ -95,6 +495,10 @@ class PlayModeManager(PlayModeSerializationMixin):
         self._delta_time: float = 0.0
         self._time_scale: float = 1.0
         self._total_play_time: float = 0.0
+        # Monotonic within one Play session.  A paused editor frame does not
+        # advance Time.frame_count and may not consume a fixed physics step,
+        # so automation needs an explicit completion sequence for Step.
+        self._step_sequence: int = 0
         
         # Typed scene document captured before entering play mode.
         self._scene_backup: Optional[Any] = None
@@ -116,6 +520,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         self._runtime_hidden_object_ids: set[int] = set()
         self._runtime_hidden_listeners: list[Callable[[], None]] = []
         self._last_rebuild_timings_ms: dict[str, float] = {}
+        self._last_transition_timings_ms: dict[str, Any] = {}
 
         # C++ engine handle for renderer-level play mode signalling
         self._native_engine = None
@@ -228,6 +633,20 @@ class PlayModeManager(PlayModeSerializationMixin):
     def total_play_time(self) -> float:
         """Total time elapsed since entering play mode."""
         return self._total_play_time
+
+    @property
+    def step_sequence(self) -> int:
+        """Number of completed paused Step commands in this Play session."""
+        return self._step_sequence
+
+    @property
+    def last_transition_timings_ms(self) -> dict[str, Any]:
+        """Timing breakdown for the most recently completed Play Mode transition."""
+        timings = dict(self._last_transition_timings_ms)
+        phases = timings.get("phases")
+        if isinstance(phases, dict):
+            timings["phases"] = dict(phases)
+        return timings
     
     # ========================================================================
     # State Transitions
@@ -268,13 +687,18 @@ class PlayModeManager(PlayModeSerializationMixin):
             )
             return False
 
-        Debug.log_internal("▶ Entering Play Mode...")
-
         from Infernux.engine.deferred_task import DeferredTaskRunner
         runner = DeferredTaskRunner.instance()
         if runner.is_busy:
-            Debug.log_warning("Cannot enter play mode: a deferred task is already running")
+            if runner.active_task_name == "Enter Play Mode":
+                return True
+            Debug.log_warning(
+                "Cannot enter play mode while deferred task "
+                f"'{runner.active_task_name or runner.active_step_label or 'unknown'}' is running"
+            )
             return False
+
+        Debug.log_internal("▶ Entering Play Mode...")
 
         # ── Step functions (closures capture self) ───────────────────
         def step_enter():
@@ -294,6 +718,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             self._last_frame_time = time.time()
             self._total_play_time = 0.0
             self._delta_time = 0.0
+            self._step_sequence = 0
             try:
                 from Infernux.timing import Time
                 Time._reset()
@@ -356,6 +781,15 @@ class PlayModeManager(PlayModeSerializationMixin):
                 scene_manager.play()
             native_start_ms = (time.perf_counter() - native_start_started) * 1000.0
             total_ms = (time.perf_counter() - transition_started) * 1000.0
+            self._last_transition_timings_ms = {
+                "transition": "enter",
+                "total": total_ms,
+                "snapshot": snapshot_ms,
+                "rebuild": rebuild_ms,
+                "native_start": native_start_ms,
+                "sprite_init": sprite_init_ms,
+                "notify": notify_ms,
+            }
             Debug.log_internal(
                 "[Perf] PlayMode enter: "
                 f"total={total_ms:.1f}ms snapshot={snapshot_ms:.1f}ms "
@@ -393,7 +827,12 @@ class PlayModeManager(PlayModeSerializationMixin):
         from Infernux.engine.deferred_task import DeferredTaskRunner
         runner = DeferredTaskRunner.instance()
         if runner.is_busy:
-            Debug.log_warning("Cannot exit play mode: a deferred task is already running")
+            if runner.active_task_name == "Exit Play Mode":
+                return True
+            Debug.log_warning(
+                "Cannot exit play mode while deferred task "
+                f"'{runner.active_task_name or runner.active_step_label or 'unknown'}' is running"
+            )
             return False
 
         # ── Immediate actions (same frame as button click) ───────────
@@ -432,13 +871,11 @@ class PlayModeManager(PlayModeSerializationMixin):
         #    during the last play frame — we're about to restore the backup.
         try:
             from Infernux.scene import SceneManager as _SceneMgr
-            _SceneMgr._pending_scene_load = None
+            _SceneMgr._scene_load_generation += 1
             transaction = _SceneMgr._active_scene_transaction
             if transaction is not None and not transaction.is_complete:
                 transaction.cancel()
-            _SceneMgr._active_scene_transaction = None
-            _SceneMgr._active_scene_load_path = None
-            _SceneMgr._active_scene_file_manager = None
+            _SceneMgr._clear_runtime_load_state()
         except Exception as exc:
             Debug.log_suppressed("PlayModeManager.exit_play_mode.discard_pending_load", exc)
 
@@ -469,6 +906,13 @@ class PlayModeManager(PlayModeSerializationMixin):
             self._notify_state_change(old_state, PlayModeState.EDIT)
             notify_ms = (time.perf_counter() - notify_started) * 1000.0
             total_ms = (time.perf_counter() - transition_started) * 1000.0
+            self._last_transition_timings_ms = {
+                "transition": "exit",
+                "total": total_ms,
+                "rebuild": rebuild_ms,
+                "notify": notify_ms,
+                "phases": dict(self._last_rebuild_timings_ms),
+            }
             phase_text = " ".join(
                 f"{name}={duration:.1f}ms"
                 for name, duration in self._last_rebuild_timings_ms.items()
@@ -564,6 +1008,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         if scene_manager:
             dt = self._delta_time if self._delta_time > 0 else (1.0 / 60.0)
             scene_manager.step(dt)
+            self._step_sequence += 1
             Debug.log_internal(f"[Step] Stepped one frame (dt={dt:.4f}s)")
 
     def _arm_debug_frame_pause_gate(
@@ -780,6 +1225,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             asset_database=self._asset_database,
             clear_registries=True,
             borrow_document=True,
+            prefer_loaded_types=True,
             before_commit=before_commit,
             after_publish=after_publish,
         )
@@ -788,6 +1234,29 @@ class PlayModeManager(PlayModeSerializationMixin):
             Debug.log_error(f"Cannot rebuild scene: document transaction failed: {transaction.error}")
             return False
         self._last_rebuild_timings_ms = transaction.phase_timings_ms
+
+        # A play/edit transition replaces native objects while preserving
+        # their authored IDs. Cached editor projections therefore cannot use
+        # identity alone to detect the replacement. Publish the rebuild once
+        # so Inspector, render extraction, and other revision consumers all
+        # observe the fresh graph on the next frame.
+        from Infernux.engine.runtime_change_journal import (
+            RuntimeChangeDomain,
+            runtime_change_journal,
+        )
+
+        change_journal = runtime_change_journal()
+        change_journal.publish(RuntimeChangeDomain.SCENE_TOPOLOGY, broad=True)
+        change_journal.publish(RuntimeChangeDomain.COMPONENT_STRUCTURE, broad=True)
+        change_journal.publish(RuntimeChangeDomain.TRANSFORM_LOCAL, broad=True)
+        change_journal.publish(RuntimeChangeDomain.TRANSFORM_WORLD, broad=True)
+        try:
+            from Infernux.engine.ui.inspector_snapshot import invalidate_rebuilt_scene
+
+            invalidate_rebuilt_scene()
+        except ImportError:
+            # Player/headless distributions intentionally omit editor UI.
+            pass
 
         if restore_scene_path:
             self._restore_scene_file_path()
@@ -798,192 +1267,471 @@ class PlayModeManager(PlayModeSerializationMixin):
     # Python component helpers (serialization / reload)
     # ========================================================================
 
-    def reload_components_from_script(self, file_path: str):
-        """
-        Reload all Python components that originate from the given script file.
+    def reload_components_from_script(
+        self,
+        file_path: str,
+        *,
+        source: bytes | str | None = None,
+        code: types.CodeType | None = None,
+    ) -> int:
+        """Reload components and retain the legacy count-based return value."""
+        outcome = self.reload_components_from_script_result(
+            file_path,
+            source=source,
+            code=code,
+        )
+        if not outcome.success or not outcome.had_live_targets:
+            return 0
+        return outcome.reloaded_count
 
-        Edit mode keeps its established instance replacement behavior. During
-        Play/Pause, a compatible script is patched into the existing class so
-        every live Python/native identity and cross-component reference remains
-        intact.
+    def reload_components_from_script_result(
+        self,
+        file_path: str,
+        *,
+        source: bytes | str | None = None,
+        code: types.CodeType | None = None,
+    ) -> ScriptReloadOutcome:
         """
-        if self._state in (PlayModeState.PLAYING, PlayModeState.PAUSED):
-            return self._reload_play_component_body(file_path)
-        if self._state != PlayModeState.EDIT:
-            return
-        if not self._asset_database:
-            return
+        Reload all Python components and report whether publication was applied.
 
-        script_path_abs = resolve_script_path(file_path)
-        if not script_path_abs or not os.path.exists(script_path_abs):
-            return
+        Edit, Play, and Pause all publish through the same stable-class
+        transaction.  Existing component/native identities and cross-component
+        references therefore never depend on which editor mode observed the
+        source revision.
+        """
+        if self._state in (
+            PlayModeState.EDIT,
+            PlayModeState.PLAYING,
+            PlayModeState.PAUSED,
+        ):
+            return self._reload_play_component_body(
+                file_path,
+                source=source,
+                code=code,
+            )
+        return ScriptReloadOutcome(True, False)
+
+    def _get_active_scene_for_script_reload(self):
         scene_manager = self._get_scene_manager()
-        if not scene_manager:
-            return
-        scene = scene_manager.get_active_scene()
-        if not scene:
-            return
+        return scene_manager.get_active_scene() if scene_manager else None
 
-        from Infernux.components.script_loader import (
-            create_component_instance,
-            load_all_components_from_file,
+    def _replace_edit_component_exact(
+        self,
+        obj,
+        old_component,
+        new_component,
+        component_index: int,
+    ) -> None:
+        """Replace one component while preserving native identity/order."""
+        replace = getattr(obj, "replace_py_component", None)
+        if callable(replace):
+            try:
+                result = replace(old_component, new_component)
+                if result is not new_component:
+                    raise RuntimeError(
+                        f"component replacement was rejected on GameObject {getattr(obj, 'id', '?')}"
+                    )
+                return
+            except Exception:
+                # A native binding may have published before reporting a
+                # failure. Best-effort immediate reversal keeps the batch
+                # boundary intact; the outer transaction also reverses prior
+                # successful members.
+                try:
+                    attached = tuple(obj.get_py_components() or ())
+                    if new_component in attached and old_component not in attached:
+                        restored = replace(new_component, old_component)
+                        if restored is not old_component:
+                            raise RuntimeError("native replacement reversal was rejected")
+                except Exception as rollback_exc:
+                    raise RuntimeError(
+                        f"component replacement failed and could not be reversed: {rollback_exc}"
+                    )
+                raise
+
+        remove = getattr(obj, "remove_py_component", None)
+        add = getattr(obj, "add_py_component", None)
+        if not callable(remove) or not callable(add):
+            raise RuntimeError("GameObject does not support transactional component replacement")
+        if old_component not in tuple(obj.get_py_components() or ()):
+            raise RuntimeError("old component is no longer attached")
+        if remove(old_component) is False:
+            raise RuntimeError("GameObject rejected removal of the old component")
+        add(new_component)
+        current = list(obj.get_py_components() or ())
+        if new_component not in current or old_component in current:
+            raise RuntimeError("GameObject did not publish the replacement component")
+        # Test doubles and Python-only objects may expose their ordered list;
+        # restore that order without changing the native replacement path.
+        ordered = getattr(obj, "_components", None)
+        if isinstance(ordered, list):
+            ordered.remove(new_component)
+            ordered.insert(min(component_index, len(ordered)), new_component)
+
+    @staticmethod
+    def _copy_replacement_lifecycle_state(
+        source,
+        destination,
+        *,
+        enabled: bool | None = None,
+        awake_called: bool | None = None,
+        has_started: bool | None = None,
+        execution_order: int | None = None,
+    ) -> None:
+        """Stage lifecycle mirrors without invoking user lifecycle methods."""
+        destination._enabled = bool(
+            getattr(source, "_enabled", True) if enabled is None else enabled
+        )
+        destination._awake_called = bool(
+            getattr(source, "_awake_called", False)
+            if awake_called is None
+            else awake_called
+        )
+        destination._has_started = bool(
+            getattr(source, "_has_started", False)
+            if has_started is None
+            else has_started
+        )
+        destination._is_destroyed = False
+        destination._execution_order = int(
+            getattr(source, "_execution_order", 0)
+            if execution_order is None
+            else execution_order
         )
 
-        reloaded_count = 0
-        target_guid = None
-        if self._asset_database:
-            target_guid = self._asset_database.get_guid_from_path(script_path_abs)
-        if not target_guid:
-            return
+    def prepare_edit_script_reload_batch(
+        self,
+        revisions: Iterable[ScriptReloadBatchInput],
+    ) -> ScriptReloadBatch:
+        """Route Edit authoring through the stable-class reload transaction."""
+        if self._state != PlayModeState.EDIT:
+            raise RuntimeError("Edit component reload requires Edit mode")
+        if not self._asset_database:
+            raise RuntimeError("Edit component reload requires an asset database")
+        return self.prepare_script_reload_batch(revisions)
 
-        pending_reload: list[tuple[int, Any, Dict[str, Any]]] = []
+    def commit_edit_script_reload_batch(self, batch: ScriptReloadBatch) -> int:
+        if not isinstance(batch, ScriptReloadBatch):
+            raise TypeError("batch must be a ScriptReloadBatch")
+        outcome = self.commit_script_reload_batch(batch)
+        if not outcome.success:
+            raise RuntimeError(outcome.error or "Edit script reload was rejected")
+        # This direct Edit API has no outer dependency/LKG transaction.  Its
+        # successful return is therefore the durable edge and must close the
+        # provisional native schema transaction itself.  ResourcesManager uses
+        # the lower-level commit/finalize pair so it can finalize after LKG.
+        try:
+            self.finalize_script_reload_batch(batch)
+        except Exception:
+            if not bool(getattr(batch.transaction, "finalized", False)):
+                self.rollback_script_reload_batch(batch)
+            raise
+        return sum(member.target_count for member in batch.members)
+
+    def rollback_edit_script_reload_batch(self, batch: ScriptReloadBatch) -> None:
+        if not isinstance(batch, ScriptReloadBatch):
+            raise TypeError("batch must be a ScriptReloadBatch")
+        self.rollback_script_reload_batch(batch)
+
+    def prepare_script_delete_batch(
+        self,
+        script_guid: str,
+        file_path: str,
+    ) -> ScriptDeleteBatch:
+        """Stage missing-script replacements for Edit or Play mode."""
+        if self._state not in (PlayModeState.EDIT, PlayModeState.PLAYING, PlayModeState.PAUSED):
+            raise RuntimeError("script deletion requires Edit, Play, or Pause mode")
+        scene = self._get_active_scene_for_script_reload()
+        if scene is None:
+            raise RuntimeError("no active scene for script deletion")
+        from Infernux.components.missing_script import create_missing_script_component
+        from Infernux.components.registry import component_types_for_script_path
+
+        members = []
+        target_guid = str(script_guid or "").strip()
         for obj in scene.get_all_objects():
             if not hasattr(obj, "get_py_components"):
                 continue
-            py_components = list(obj.get_py_components())
-
-            for comp in py_components:
-                comp_guid = getattr(comp, "_script_guid", None)
-                if comp_guid != target_guid:
+            for index, component in enumerate(list(obj.get_py_components() or ())):
+                if str(getattr(component, "_script_guid", "") or "") != target_guid:
                     continue
-                try:
-                    state = self._serialize_py_component(comp)
-                except Exception as exc:
-                    Debug.log_error(
-                        f"Failed to snapshot component '{getattr(comp, 'type_name', type(comp).__name__)}' "
-                        f"before reloading {os.path.basename(script_path_abs)}: {exc}"
+                state = self._serialize_py_component(component)
+                fields = dict(state.get("fields", {}))
+                fields["__type_name__"] = state["type_name"]
+                fields["__component_id__"] = state["component_id"]
+                missing = create_missing_script_component(
+                    type_name=state["type_name"],
+                    script_guid=target_guid,
+                    type_guid=state["type_guid"],
+                    module_name=state.get("module_name", ""),
+                    qualified_name=state.get("qualified_name", ""),
+                    fields=fields,
+                    error=f"Script asset is missing: {file_path}",
+                )
+                missing.enabled = bool(state.get("enabled", True))
+                missing._script_path = str(file_path or "")
+                missing._deserialize_fields_document(
+                    fields,
+                    _skip_on_after_deserialize=True,
+                )
+                self._copy_replacement_lifecycle_state(component, missing)
+                if not callable(getattr(obj, "replace_py_component", None)) and not (
+                    callable(getattr(obj, "remove_py_component", None))
+                    and callable(getattr(obj, "add_py_component", None))
+                ):
+                    raise RuntimeError(
+                        f"GameObject {obj.id} cannot transactionally replace Python components"
                     )
-                    continue
-                pending_reload.append((obj.id, comp, state))
+                members.append(
+                    EditComponentReloadMember(
+                        obj.id,
+                        component,
+                        missing,
+                        index,
+                    )
+                )
+        return ScriptDeleteBatch(
+            self,
+            tuple(members),
+            retired_types=component_types_for_script_path(file_path),
+        )
 
-        if not pending_reload:
-            return
+    def commit_script_delete_batch(self, batch: ScriptDeleteBatch) -> int:
+        if not isinstance(batch, ScriptDeleteBatch):
+            raise TypeError("batch must be a ScriptDeleteBatch")
+        return batch.commit()
 
-        try:
-            reloaded_classes = load_all_components_from_file(script_path_abs)
-        except Exception as exc:
-            Debug.log_error(
-                f"Failed to reload component classes from {os.path.basename(script_path_abs)}: {exc}"
+    def rollback_script_delete_batch(self, batch: ScriptDeleteBatch) -> None:
+        if not isinstance(batch, ScriptDeleteBatch):
+            raise TypeError("batch must be a ScriptDeleteBatch")
+        batch.rollback()
+
+    def prepare_script_reload_batch(
+        self,
+        revisions: Iterable[ScriptReloadBatchInput],
+    ) -> ScriptReloadBatch:
+        """Collect active-scene targets and stage one stable-class batch."""
+        profile_started = time.perf_counter()
+        profile_marks: list[tuple[str, float]] = []
+
+        def mark(label: str) -> None:
+            profile_marks.append((label, time.perf_counter()))
+
+        if self._state not in (
+            PlayModeState.EDIT,
+            PlayModeState.PLAYING,
+            PlayModeState.PAUSED,
+        ):
+            raise ScriptReloadRejected(
+                "batch body reload requires Edit, Play, or Pause mode"
             )
-            return
 
-        if not reloaded_classes:
-            return
+        from Infernux.components.script_loader import (
+            ComponentBodyReloadRequest,
+            ScriptReloadRejected,
+            stage_component_body_reload_batch,
+        )
 
-        reloaded_by_name = {cls.__name__: cls for cls in reloaded_classes}
+        scene_manager = self._get_scene_manager()
+        scene = scene_manager.get_active_scene() if scene_manager else None
+        targets_by_guid: dict[str, dict[type, list[object]]] = {}
+        missing_by_guid: dict[str, list[tuple[int, int, object, dict]]] = {}
+        from Infernux.components.missing_script import MissingScript
 
-        for object_id, old_comp, state in pending_reload:
-            obj = scene.find_by_id(object_id)
-            if obj is None:
-                continue
-
-            target_type_name = state.get("type_name") or getattr(old_comp, "type_name", type(old_comp).__name__)
-            component_class = reloaded_by_name.get(target_type_name)
-            if component_class is None and len(reloaded_classes) == 1:
-                # Class rename inside a one-component script file.
-                component_class = reloaded_classes[0]
-
-            if component_class is None:
-                Debug.log_error(
-                    f"Failed to reload component '{target_type_name}' from {os.path.basename(script_path_abs)}: "
-                    f"type not found after reload"
-                )
-                continue
-
-            # Rebind to the AssetDatabase GUID so renames that preserve the GUID
-            # do not look like a type identity change.
-            from Infernux.components.component_identity import bind_asset_script_guid
-            bind_asset_script_guid(component_class, target_guid)
-
-            try:
-                new_comp = create_component_instance(component_class)
-            except Exception as exc:
-                Debug.log_error(
-                    f"Failed to recreate component '{target_type_name}' from {os.path.basename(script_path_abs)}: {exc}"
-                )
-                new_comp = None
-
-            if new_comp is None:
-                continue
-
-            new_comp._script_guid = target_guid
-            new_comp._script_path = script_path_abs
-
-            try:
-                self._apply_py_component_state(new_comp, state)
-            except Exception as exc:
-                Debug.log_error(
-                    f"Failed to apply state to reloaded component '{target_type_name}': {exc}"
-                )
-
-            replace = getattr(obj, "replace_py_component", None)
-            if callable(replace):
-                if replace(old_comp, new_comp) is None:
-                    Debug.log_error(
-                        f"Failed to replace reloaded component '{target_type_name}' on object {object_id}"
-                    )
+        if scene is not None:
+            for obj in scene.get_all_objects():
+                if not hasattr(obj, "get_py_components"):
                     continue
-            else:
-                if hasattr(obj, "remove_py_component"):
-                    obj.remove_py_component(old_comp)
-                obj.add_py_component(new_comp)
-            reloaded_count += 1
+                for index, component in enumerate(obj.get_py_components() or ()):
+                    guid = str(getattr(component, "_script_guid", "") or "")
+                    if not guid:
+                        continue
+                    if isinstance(component, MissingScript):
+                        missing_by_guid.setdefault(guid, []).append(
+                            (
+                                obj.id,
+                                index,
+                                component,
+                                self._serialize_py_component(component),
+                            )
+                        )
+                        continue
+                    targets_by_guid.setdefault(guid, {}).setdefault(
+                        type(component),
+                        [],
+                    ).append(component)
+        mark("scene_targets")
 
-        if reloaded_count > 0:
+        inputs = tuple(revisions)
+        if not inputs:
+            raise ValueError("at least one script revision is required")
+        requests = []
+        members = []
+        recovery_members = []
+        seen_guids: set[str] = set()
+        for revision in inputs:
+            if not isinstance(revision, ScriptReloadBatchInput):
+                raise TypeError("revisions must contain ScriptReloadBatchInput values")
+            path = resolve_script_path(revision.file_path)
+            guid = revision.script_guid
+            if not guid and self._asset_database and path:
+                guid = self._asset_database.get_guid_from_path(path) or ""
+            guid = str(guid or "")
+            if guid and guid in seen_guids:
+                raise ScriptReloadRejected(f"duplicate script GUID in reload batch: {guid}")
+            if guid:
+                seen_guids.add(guid)
+            grouped = targets_by_guid.get(guid, {})
+            missing = tuple(missing_by_guid.get(guid, ()))
+            instances_by_type = {
+                component_type: tuple(instances)
+                for component_type, instances in grouped.items()
+            }
+            target_types = tuple(instances_by_type)
+            requests.append(
+                ComponentBodyReloadRequest(
+                    file_path=path or revision.file_path,
+                    target_types=target_types,
+                    instances_by_type=instances_by_type,
+                    script_guid=guid,
+                    source=revision.source,
+                    code=revision.code,
+                    retire_script_paths=tuple(revision.retire_script_paths),
+                )
+            )
+            members.append(
+                ScriptReloadBatchMember(
+                    file_path=path or revision.file_path,
+                    script_guid=guid,
+                    had_live_targets=bool(target_types or missing),
+                    target_count=(
+                        sum(len(values) for values in instances_by_type.values())
+                        + len(missing)
+                    ),
+                )
+            )
+            for object_id, index, component, state in missing:
+                recovery_members.append(
+                    _MissingScriptRecoveryMember(
+                        object_id=object_id,
+                        component_index=index,
+                        missing_component=component,
+                        file_path=path or revision.file_path,
+                        script_guid=guid,
+                        state=state,
+                        enabled=bool(state.get("enabled", True)),
+                        awake_called=bool(getattr(component, "_awake_called", False)),
+                        has_started=bool(getattr(component, "_has_started", False)),
+                        execution_order=int(getattr(component, "_execution_order", 0)),
+                    )
+                )
+        mark("requests")
+
+        transaction = stage_component_body_reload_batch(tuple(requests))
+        mark("stage_bodies")
+        if recovery_members:
+            transaction = _MissingScriptRecoveryTransaction(
+                self,
+                transaction,
+                tuple(recovery_members),
+            )
+            mark("missing_recovery")
+        elapsed_ms = (time.perf_counter() - profile_started) * 1000.0
+        if elapsed_ms >= 10.0:
+            previous = profile_started
+            pieces = []
+            for label, current in profile_marks:
+                pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
+                previous = current
+            Debug.log_internal(
+                f"[ScriptReloadProfile] prepare_batch={elapsed_ms:.2f}ms "
+                f"members={len(inputs)} " + " ".join(pieces)
+            )
+        return ScriptReloadBatch(transaction, tuple(members))
+
+    def commit_script_reload_batch(
+        self,
+        batch: ScriptReloadBatch,
+    ) -> ScriptReloadOutcome:
+        """Commit one prepared batch and refresh dispatch only after all plans apply."""
+        if not isinstance(batch, ScriptReloadBatch):
+            raise TypeError("batch must be a ScriptReloadBatch")
+        try:
+            changed_by_type = batch.commit()
+        except Exception as exc:
+            return ScriptReloadOutcome(
+                False,
+                batch.had_live_targets,
+                0,
+                str(exc),
+            )
+        if changed_by_type:
             try:
                 from Infernux.engine.undo import _bump_inspector_structure
                 _bump_inspector_structure()
             except Exception as exc:
-                Debug.log_suppressed("PlayModeManager.reload_components.bump_inspector_structure", exc)
-            Debug.log_internal(f"Reloaded {reloaded_count} component(s) from {os.path.basename(script_path_abs)}")
+                Debug.log_suppressed("PlayModeManager.commit_script_reload_batch.bump_inspector_structure", exc)
+            Debug.log_internal(
+                f"Reloaded {len(changed_by_type)} component type(s) in one script batch"
+            )
+        recovered_count = int(getattr(batch.transaction, "recovered_count", 0) or 0)
+        return ScriptReloadOutcome(
+            True,
+            batch.had_live_targets,
+            len(changed_by_type) + recovered_count,
+            "",
+        )
 
-    def _reload_play_component_body(self, file_path: str) -> int:
-        """Apply a body-only reload without replacing live component objects."""
+    def rollback_script_reload_batch(self, batch: ScriptReloadBatch) -> None:
+        """Explicitly undo a successful or failed batch publication."""
+        if not isinstance(batch, ScriptReloadBatch):
+            raise TypeError("batch must be a ScriptReloadBatch")
+        batch.rollback()
+
+    def finalize_script_reload_batch(self, batch: ScriptReloadBatch) -> None:
+        """Finalize native schema publication after the outer LKG commit."""
+        if not isinstance(batch, ScriptReloadBatch):
+            raise TypeError("batch must be a ScriptReloadBatch")
+        batch.finalize()
+
+    def _reload_play_component_body(
+        self,
+        file_path: str,
+        *,
+        source: bytes | str | None = None,
+        code: types.CodeType | None = None,
+    ) -> ScriptReloadOutcome:
+        """Apply a body-only reload and report publication success explicitly."""
         if not self._asset_database:
-            return 0
+            return ScriptReloadOutcome(True, False)
 
         script_path_abs = resolve_script_path(file_path)
         if not script_path_abs or not os.path.exists(script_path_abs):
-            return 0
-        scene_manager = self._get_scene_manager()
-        scene = scene_manager.get_active_scene() if scene_manager else None
-        if scene is None:
-            return 0
-
+            return ScriptReloadOutcome(True, False)
         target_guid = self._asset_database.get_guid_from_path(script_path_abs)
         if not target_guid:
-            return 0
-
-        targets = {}
-        for obj in scene.get_all_objects():
-            if not hasattr(obj, "get_py_components"):
-                continue
-            for component in obj.get_py_components() or ():
-                if getattr(component, "_script_guid", "") != target_guid:
-                    continue
-                component_type = type(component)
-                targets.setdefault(component_type, []).append(component)
-
-        if not targets:
-            return 0
+            return ScriptReloadOutcome(True, False)
 
         from Infernux.components.script_loader import (
             ScriptReloadRejected,
             get_script_error_by_path,
-            reload_component_bodies,
             set_script_error,
         )
 
         try:
-            changed_by_type = reload_component_bodies(
-                script_path_abs,
-                tuple(targets),
-                script_guid=target_guid,
-                instances_by_type={
-                    component_type: tuple(instances)
-                    for component_type, instances in targets.items()
-                },
-            )
+            batch = self.prepare_script_reload_batch((
+                ScriptReloadBatchInput(
+                    file_path=script_path_abs,
+                    script_guid=target_guid,
+                    source=source,
+                    code=code,
+                ),
+            ))
+            outcome = self.commit_script_reload_batch(batch)
+            if not outcome.success:
+                raise ScriptReloadRejected(outcome.error or "batch body reload failed")
+            self.finalize_script_reload_batch(batch)
+            return outcome
         except Exception as exc:
             diagnostic = get_script_error_by_path(script_path_abs)
             message = diagnostic or str(exc)
@@ -993,16 +1741,8 @@ class PlayModeManager(PlayModeSerializationMixin):
                 f"Script hot reload rejected for {os.path.basename(script_path_abs)}: {message}",
                 source_file=script_path_abs,
             )
-            return 0
+            return ScriptReloadOutcome(False, True, 0, message)
 
-        for component_type, changed in changed_by_type.items():
-            instances = targets[component_type]
-            Debug.log_internal(
-                f"Reloaded body for {component_type.__name__} "
-                f"({len(instances)} live instance(s), {len(changed)} body member(s)) "
-                f"from {os.path.basename(script_path_abs)}"
-            )
-        return len(changed_by_type)
 
     def mark_components_missing_for_script(self, script_guid: str, file_path: str) -> int:
         """Replace live instances of a deleted script with field-preserving placeholders."""
@@ -1049,6 +1789,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             missing.enabled = bool(state.get("enabled", True))
             missing._script_path = str(file_path or "")
             missing._deserialize_fields_document(fields, _skip_on_after_deserialize=True)
+            self._copy_replacement_lifecycle_state(component, missing)
             replace = getattr(obj, "replace_py_component", None)
             if callable(replace):
                 if replace(old_component, missing) is None:
@@ -1198,4 +1939,3 @@ class PlayModeManager(PlayModeSerializationMixin):
         for listener in self._state_change_listeners:
             listener(event)
     
-

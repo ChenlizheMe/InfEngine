@@ -320,11 +320,23 @@ class BootstrapSelectionMixin:
             return True
         if not request.record_history:
             return bool(self.project_panel.set_current_path(parent))
-        return ViewCommandService.require().set_value(
-            current,
+        directory_history = getattr(self.interaction_core, "directory_navigation", None)
+        if directory_history is None:
+            return ViewCommandService.require().set_value(
+                current,
+                parent,
+                self.project_panel.set_current_path,
+                description="Navigate Project",
+            )
+        directory_history.sync(current)
+        return directory_history.navigate(
             parent,
-            self.project_panel.set_current_path,
-            description="Navigate Project",
+            lambda target: ViewCommandService.require().set_value(
+                current,
+                target,
+                self.project_panel.set_current_path,
+                description="Navigate Project",
+            ),
         )
 
     def _present_scene_navigation_target(
@@ -337,8 +349,13 @@ class BootstrapSelectionMixin:
             return False
         from Infernux.lib import SceneManager
 
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(object_id) if scene is not None else None
+        manager = SceneManager.instance()
+        resolve_runtime = getattr(manager, "find_runtime_object_by_id", None)
+        if callable(resolve_runtime):
+            obj = resolve_runtime(object_id)
+        else:
+            scene = manager.get_active_scene()
+            obj = scene.find_by_id(object_id) if scene is not None else None
         if obj is None:
             return False
         if request.activate_panel:
@@ -768,6 +785,13 @@ class BootstrapSelectionMixin:
             if primary is not None:
                 primary_path = _project_path_for_target(primary)
             self.project_panel.set_selected_files(paths, primary_path, False)
+            from Infernux.engine.ui.inspector_snapshot import (
+                InspectorSnapshotService,
+                InspectorTarget,
+            )
+            InspectorSnapshotService.instance().set_active_target(
+                InspectorTarget.asset(primary_path)
+            )
             self._inspector_set_selected_file(primary_path)
             self._set_outline(0, [])
             return
@@ -792,12 +816,26 @@ class BootstrapSelectionMixin:
                 ]
                 primary_id = primary.scene_object_id() if primary is not None else 0
 
+            from Infernux.engine.ui.inspector_snapshot import (
+                InspectorSnapshotService,
+                InspectorTarget,
+            )
+            InspectorSnapshotService.instance().set_active_target(
+                InspectorTarget.scene_object(primary_id or 0)
+            )
             inspector.set_selected_object_id(primary_id or 0)
             self.project_panel.clear_selection(False)
             self._set_outline(primary_id, object_ids)
             return
 
         self.project_panel.clear_selection(False)
+        from Infernux.engine.ui.inspector_snapshot import (
+            InspectorSnapshotService,
+            InspectorTarget,
+        )
+        InspectorSnapshotService.instance().set_active_target(
+            InspectorTarget.none()
+        )
         self.inspector_panel.clear_selected_object()
         self._inspector_set_selected_file("")
         self._set_outline(0, [])
@@ -857,8 +895,13 @@ class BootstrapSelectionMixin:
 
         from Infernux.lib import SceneManager
 
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(object_id) if scene else None
+        manager = SceneManager.instance()
+        resolve_runtime = getattr(manager, "find_runtime_object_by_id", None)
+        if callable(resolve_runtime):
+            obj = resolve_runtime(object_id)
+        else:
+            scene = manager.get_active_scene()
+            obj = scene.find_by_id(object_id) if scene else None
         if obj is None:
             return False
 

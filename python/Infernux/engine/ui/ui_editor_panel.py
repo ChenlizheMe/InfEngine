@@ -25,7 +25,7 @@ from Infernux.ui.enums import TextResizeMode
 from Infernux.ui.inx_ui_screen_component import clear_rect_cache
 from Infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
 from Infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
-from Infernux.ui.ui_canvas_utils import collect_canvases_with_go
+from Infernux.ui.ui_canvas_utils import scene_canvas_cache_key
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .editor_icons import EditorIcons
@@ -59,6 +59,7 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         # resolved screen component for the current service revision.
         self._selected_element_cache_revision: int = -1
         self._selected_element_cache_object_id: int = 0
+        self._selected_element_cache_scene_key = None
         self._selected_element_cache = None
         self._dragging: bool = False
         self._drag_start_x: float = 0.0
@@ -87,8 +88,8 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         self._engine = None                  # Engine instance (for game texture)
         self._on_request_ui_mode = None      # Callback(bool) to toggle hierarchy UI mode
 
-        # ── Focus tracking ──
-        self._was_focused: bool = False
+        # ── Shared Hierarchy presentation ──
+        self._hierarchy_mode_active: bool = False
         self._settings_loaded: bool = False
         self._active_alignment_guides: list[tuple[str, float, float, float]] = []
 
@@ -251,6 +252,7 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
     def _invalidate_selected_element_cache(self) -> None:
         self._selected_element_cache_revision = -1
         self._selected_element_cache_object_id = 0
+        self._selected_element_cache_scene_key = None
         self._selected_element_cache = None
 
     @staticmethod
@@ -265,19 +267,43 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
 
         selection = SelectionService.instance()
         object_id = selection.primary_scene_object_id()
+        from Infernux.lib import SceneManager
+
+        scene_manager = SceneManager.instance()
+        scene = scene_manager.get_active_scene()
+        persistent_getter = getattr(
+            scene_manager,
+            "get_runtime_persistent_scene",
+            None,
+        )
+        persistent_scene = persistent_getter() if callable(persistent_getter) else None
+        scenes = tuple(
+            candidate
+            for candidate in (scene, persistent_scene)
+            if candidate is not None
+        )
+        scene_key = tuple(scene_canvas_cache_key(candidate) for candidate in scenes)
+        cached_component = getattr(self, "_selected_element_cache", None)
         if (
             self._selected_element_cache_revision == selection.revision
             and self._selected_element_cache_object_id == object_id
+            and getattr(self, "_selected_element_cache_scene_key", None) == scene_key
+            and (
+                cached_component is None
+                or bool(getattr(cached_component, "is_valid", True))
+            )
         ):
-            return self._selected_element_cache
+            return cached_component
 
         component = None
         if object_id > 0:
-            from Infernux.lib import SceneManager
             from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent
 
-            scene = SceneManager.instance().get_active_scene()
-            game_object = scene.find_by_id(object_id) if scene is not None else None
+            game_object = None
+            for candidate_scene in scenes:
+                game_object = candidate_scene.find_by_id(object_id)
+                if game_object is not None:
+                    break
             if game_object is not None:
                 component = next(
                     (
@@ -290,6 +316,7 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
 
         self._selected_element_cache_revision = selection.revision
         self._selected_element_cache_object_id = object_id
+        self._selected_element_cache_scene_key = scene_key
         self._selected_element_cache = component
         return component
 
@@ -526,17 +553,19 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
 
     def _on_visible_pre(self, ctx):
         self._load_view_settings()
-        # Keep UI mode active the entire time the panel is visible
-        if self._on_request_ui_mode:
+        # Hierarchy mode follows the visible central workspace, not keyboard
+        # focus. Clicking Hierarchy/Inspector must not make a still-visible UI
+        # Editor suddenly present the normal scene tree.
+        if not self._hierarchy_mode_active and self._on_request_ui_mode:
             self._on_request_ui_mode(True)
-        self._was_focused = self._is_window_or_child_focused(ctx)
+        self._hierarchy_mode_active = True
 
     def _on_not_visible(self, ctx):
         self._commit_pending_view_edits()
         self._finish_element_manipulation(commit=True)
-        if self._on_request_ui_mode:
+        if self._hierarchy_mode_active and self._on_request_ui_mode:
             self._on_request_ui_mode(False)
-        self._was_focused = False
+        self._hierarchy_mode_active = False
 
     def on_disable(self) -> None:
         self._commit_pending_view_edits()

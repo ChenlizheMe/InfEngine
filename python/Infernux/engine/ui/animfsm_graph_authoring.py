@@ -105,6 +105,9 @@ class AnimFSMGraphAuthoringModel(NodeGraph):
                 condition.to_dict() for condition in transition.conditions
             ],
             "duration": float(getattr(transition, "duration", 0.0) or 0.0),
+            "synchronize_normalized_time": bool(
+                getattr(transition, "synchronize_normalized_time", False)
+            ),
             "fsm_transition": transition.to_dict(),
         }
 

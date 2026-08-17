@@ -40,6 +40,10 @@ class HierarchyPanel : public EditorPanel
     }
 
     void ClearSearch();
+    void RequestSearchFocus()
+    {
+        m_focusSearchNextFrame = true;
+    }
     void ClearSelectionAndNotify();
     void SetSelectedObjectById(uint64_t id, bool clearSearch = false);
     void SetSelectionSnapshot(const std::vector<uint64_t> &ids, uint64_t primary);
@@ -158,6 +162,7 @@ class HierarchyPanel : public EditorPanel
     char m_searchBuf[256] = {};
     EditorSearchModel m_search;
     std::unordered_map<uint64_t, bool> m_searchVisCache;
+    bool m_focusSearchNextFrame = false;
 
     // ── UI mode ──────────────────────────────────────────────────────
     bool m_uiMode = false;
@@ -181,6 +186,7 @@ class HierarchyPanel : public EditorPanel
     void BuildFlatVisibleList(const std::vector<GameObject *> &roots);
     void RebuildFlatListIfNeeded(const std::vector<GameObject *> &roots);
     void BuildFlatListRecurse(GameObject *obj, int depth);
+    void BuildFlatListRecurse(GameObject *obj, int depth, std::vector<FlatItem> &items);
     void RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, float baseIndentX, float indentStep);
 
     // ── Pending selection (deferred left-click) ──────────────────────

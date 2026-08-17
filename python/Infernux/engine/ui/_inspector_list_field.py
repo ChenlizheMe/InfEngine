@@ -21,7 +21,7 @@ from ._inspector_references import (
 
 
 def _make_list_default_element(metadata, element_type):
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     from Infernux.math import Vector2, Vector3, vec4f
 
     if element_type == FieldType.INT:
@@ -39,7 +39,7 @@ def _make_list_default_element(metadata, element_type):
     if element_type == FieldType.VEC4:
         return vec4f(0.0, 0.0, 0.0, 0.0)
     if element_type == FieldType.COLOR:
-        from Infernux.components.serialized_field import RGBA_DEFAULT
+        from Infernux.components.fields import RGBA_DEFAULT
         return list(RGBA_DEFAULT)
     if element_type == FieldType.ENUM and metadata.enum_type is not None:
         members = _get_enum_members(metadata.enum_type)
@@ -72,12 +72,12 @@ def _make_list_default_element(metadata, element_type):
 
 
 def _infer_list_element_type(metadata, current_value):
-    from Infernux.components.serialized_field import infer_field_type_from_value, FieldType
+    from Infernux.components.fields import infer_field_type_from_value, FieldType
 
     if metadata.element_type is not None:
         return metadata.element_type
 
-    from Infernux.components.serialized_field import is_rgba_storage
+    from Infernux.components.fields import is_rgba_storage
 
     for container in (current_value, metadata.default):
         if is_rgba_storage(container):
@@ -95,7 +95,7 @@ def _infer_list_element_type(metadata, current_value):
 
 
 def _list_drag_drop_type(element_type, metadata=None):
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     mapping = {
         FieldType.GAME_OBJECT: ["HIERARCHY_GAMEOBJECT", "PREFAB_GUID", "PREFAB_FILE"],
@@ -115,7 +115,7 @@ def _list_drag_drop_type(element_type, metadata=None):
 
 
 def _list_type_hint(element_type, metadata):
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     if element_type == FieldType.GAME_OBJECT:
         return f"GameObject:{metadata.required_component}" if metadata.required_component else "GameObject"
@@ -140,7 +140,7 @@ def _list_type_hint(element_type, metadata):
 
 def _make_list_picker_providers(element_type, metadata):
     """Return ``(scene_items_fn_or_None, asset_items_fn_or_None)`` for a list element type."""
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     if element_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT):
         _rc = metadata.component_type if element_type == FieldType.COMPONENT else metadata.required_component
@@ -158,7 +158,7 @@ def _make_list_picker_providers(element_type, metadata):
 
 def _create_list_pick_ref(element_type, value, required_component=None, metadata=None):
     """Create a reference wrapper from a picker selection for a list element."""
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     if element_type == FieldType.GAME_OBJECT:
         from Infernux.components.ref_wrappers import GameObjectRef
@@ -184,7 +184,7 @@ def _render_reference_list_item(ctx, field_name, index, item, items, metadata, e
 
     Mutates *items* in-place on drop/pick/clear. Returns True if changed.
     """
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     from .igui import IGUI
     changed = False
     _req = metadata.component_type if element_type == FieldType.COMPONENT else metadata.required_component
@@ -274,7 +274,7 @@ def _render_serializable_list_item(
     )
     if not render_compact_section_header(ctx, so_label, level="tertiary"):
         return False
-    from Infernux.components.serialized_field import get_serialized_fields as _gsf
+    from Infernux.components.fields import get_serialized_fields as _gsf
     if not so_class or item is None:
         return False
     so_fields = _gsf(so_class)
@@ -283,7 +283,7 @@ def _render_serializable_list_item(
     for so_fn, so_meta in so_fields.items():
         if getattr(so_meta, "hidden", False):
             continue
-        from Infernux.components.serialized_field import FieldType, get_raw_field_value
+        from Infernux.components.fields import FieldType, get_raw_field_value
         reference_types = {
             FieldType.MATERIAL,
             FieldType.TEXTURE,
@@ -329,7 +329,7 @@ def _render_serializable_asset_reference(
     label_width,
 ):
     """Render a resource ref nested inside a SerializableObject list item."""
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     from Infernux.components._serialize_helpers import make_null_ref
     from ._inspector_references import (
         _create_asset_ref_from_payload,
@@ -408,7 +408,7 @@ def _render_list_items_body(
     """Render list item rows, reorder separators, and bottom drop zone. Returns True if changed."""
     from .igui import IGUI
     from .inspector_utils import render_serialized_field, has_field_changed
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     from dataclasses import replace
 
     changed = False
@@ -501,7 +501,7 @@ def _render_list_field(
     item_renderer=None,
     on_change=None,
 ):
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     from .igui import IGUI
 
     items = list(current_value) if isinstance(current_value, list) else []

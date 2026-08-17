@@ -160,8 +160,8 @@ def test_build_settings_scene_controls_expose_stable_semantic_ids(monkeypatch):
 
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
     panel._scenes = [
-        "C:/RacingPilot/Assets/racetrack.scene",
-        "C:/RacingPilot/Assets/results.scene",
+        "Assets/racetrack.scene",
+        "Assets/results.scene",
     ]
     panel._save = lambda: None
     ctx = _Context()
@@ -180,6 +180,26 @@ def test_build_settings_scene_controls_expose_stable_semantic_ids(monkeypatch):
     } <= semantic_ids
     assert ctx.semantic_values["build_settings.scene.0.row"] == "Assets/racetrack.scene"
     assert ctx.semantic_values["build_settings.scene.1.row"] == "Assets/results.scene"
+
+
+def test_build_settings_runtime_resource_roots_expose_stable_semantic_ids():
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._additional_cook_roots = ["Assets/Runtime/Addressable"]
+    panel._save = lambda: None
+    ctx = _Context()
+
+    panel._render_runtime_resource_section(ctx)
+
+    semantic_ids = {item[3] for item in ctx.semantic_items}
+    assert {
+        "build_settings.cook_root.add",
+        "build_settings.cook_root.0",
+        "build_settings.cook_root.0.remove",
+    } <= semantic_ids
+    assert (
+        ctx.semantic_values["build_settings.cook_root.0"]
+        == "Assets/Runtime/Addressable"
+    )
 
 
 def test_build_settings_does_not_turn_external_splash_deletion_into_user_edit():
@@ -223,8 +243,23 @@ def test_build_settings_add_open_scene_uses_the_button_result(monkeypatch):
 
     panel._render_scene_section(_Context(button_results=[True]))
 
-    assert panel._scenes == [os.path.abspath(current_scene)]
-    assert saves == [[os.path.abspath(current_scene)]]
+    assert panel._scenes == ["Assets/racetrack.scene"]
+    assert saves == [["Assets/racetrack.scene"]]
+
+
+def test_build_settings_rejects_scene_outside_assets(monkeypatch):
+    import Infernux.engine.ui.build_settings_panel as module
+
+    monkeypatch.setattr(module, "get_project_root", lambda: "C:/RacingPilot")
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._scenes = []
+    saves = []
+    panel._save = lambda: saves.append(True)
+
+    panel._add_scene("C:/RacingPilot/Legacy.scene")
+
+    assert panel._scenes == []
+    assert saves == []
 
 
 def test_build_settings_output_controls_expose_stable_semantic_ids(monkeypatch):
@@ -310,7 +345,7 @@ def test_build_click_cannot_unbalance_the_disabled_stack_mid_frame():
     panel._build_cancelled = False
     panel._build_error = None
     panel._build_output_dir = None
-    panel._scenes = ["C:/RacingPilot/Assets/MainMenu.scene"]
+    panel._scenes = ["Assets/MainMenu.scene"]
     panel._output_dir = "C:/Builds/RacingPilot"
     commands: list[str] = []
     panel._execute_build_command = lambda command_id: (
@@ -391,7 +426,7 @@ def test_build_status_actions_expose_stable_semantic_ids():
 def test_build_commands_gate_start_and_cancel_without_entering_undo():
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
     panel._building = False
-    panel._scenes = ["C:/RacingPilot/Assets/Main.scene"]
+    panel._scenes = ["Assets/Main.scene"]
     panel._output_dir = "C:/Builds/RacingPilot"
     panel._cancel_event = threading.Event()
     starts: list[bool] = []
@@ -409,3 +444,38 @@ def test_build_commands_gate_start_and_cancel_without_entering_undo():
     assert panel._cancel_event.is_set()
     assert not panel.can_cancel_build()
     assert not panel.command_cancel_build()
+
+
+def test_build_preparation_flushes_writes_before_publishing_asset_index(
+    monkeypatch, tmp_path
+):
+    import Infernux.core.assets as assets_module
+
+    events: list[str] = []
+    index_path = tmp_path / "Library" / "AssetIndex.json"
+
+    class _Database:
+        asset_index_path = str(index_path)
+
+        def refresh(self) -> None:
+            events.append("refresh")
+            index_path.parent.mkdir(parents=True, exist_ok=True)
+            index_path.write_text('{"project_root":"test","entries":[]}\n', encoding="utf-8")
+
+        def flush_derived_index(self) -> None:
+            events.append("flush_index")
+
+    monkeypatch.setattr(
+        assets_module.AssetManager,
+        "flush_all_asset_writes",
+        classmethod(lambda cls: events.append("flush_writes")),
+    )
+    monkeypatch.setattr(
+        BuildSettingsPanel,
+        "services",
+        property(lambda _self: SimpleNamespace(asset_database=_Database())),
+    )
+
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    assert panel._prepare_asset_catalog_for_build() == str(index_path)
+    assert events == ["flush_writes", "refresh", "flush_index"]

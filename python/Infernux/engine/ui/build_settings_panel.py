@@ -10,15 +10,25 @@ Features:
 """
 
 import os
-import json
 import sys
 import threading
 import copy
 from collections import deque
-from Infernux.engine.path_utils import portable_path, relative_path, resolved_path, same_path
+from Infernux.engine.path_utils import (
+    is_path_within,
+    portable_path,
+    relative_path,
+    resolved_path,
+    same_path,
+)
 from typing import Dict, List, Optional
 
 from Infernux.debug import Debug
+from Infernux.engine.build_settings import (
+    BUILD_SETTINGS_FILE,
+    build_settings_path as _settings_path,
+    load_build_settings,
+)
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.game_builder import (
@@ -44,36 +54,12 @@ from ._dialogs import pick_folder_dialog, pick_file_dialog
 # Persistence helpers
 # ---------------------------------------------------------------------------
 
-BUILD_SETTINGS_FILE = "BuildSettings.json"
-
 _VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tga"}
 _ICON_EXTS = {".png", ".jpg", ".jpeg", ".ico"}
 
 _DISPLAY_MODES_KEYS = ["build.fullscreen_borderless", "build.windowed"]
 _DISPLAY_MODE_KEYS = ["fullscreen_borderless", "windowed"]
-
-
-def _settings_path(project_path: Optional[str] = None) -> Optional[str]:
-    root = project_path or get_project_root()
-    if not root:
-        return None
-    return os.path.join(root, "ProjectSettings", BUILD_SETTINGS_FILE)
-
-
-def load_build_settings(project_path: Optional[str] = None) -> dict:
-    """Load BuildSettings.json."""
-    path = _settings_path(project_path)
-    if not path or not os.path.isfile(path):
-        return {"scenes": []}
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError, ValueError):
-        data = {"scenes": []}
-    if "scenes" not in data:
-        data["scenes"] = []
-    return data
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +128,7 @@ class BuildSettingsPanel(FloatingEditorPanel):
         )
         self._game_name: str = ""
         self._scenes: List[str] = []
+        self._additional_cook_roots: List[str] = []
         self._output_dir: str = ""
         self._icon_path: str = ""
         self._display_mode_idx: int = 0  # 0=fullscreen, 1=windowed
@@ -210,6 +197,7 @@ class BuildSettingsPanel(FloatingEditorPanel):
     def _apply_build_settings(self, data: dict) -> None:
         self._game_name = data.get("game_name", "")
         self._scenes = list(data.get("scenes", []))
+        self._additional_cook_roots = list(data.get("additional_cook_roots", []))
         self._output_dir = data.get("output_dir", "")
         self._icon_path = data.get("icon_path", "")
         mode_key = data.get("display_mode", "fullscreen_borderless")
@@ -229,6 +217,7 @@ class BuildSettingsPanel(FloatingEditorPanel):
         return normalize_build_settings({
             "game_name": self._game_name,
             "scenes": self._scenes,
+            "additional_cook_roots": self._additional_cook_roots,
             "output_dir": self._output_dir,
             "icon_path": self._icon_path,
             "display_mode": _DISPLAY_MODE_KEYS[self._display_mode_idx],
@@ -287,10 +276,13 @@ class BuildSettingsPanel(FloatingEditorPanel):
         ctx.dummy(0.0, 4.0)
         # Reserve ~80px at the bottom for build controls
         child_h = max(0, ctx.get_content_region_avail_height() - 80)
-        
+        # The worker can complete between BeginDisabled and EndDisabled.
+        # Keep the pair governed by one immutable decision for this frame.
+        building_this_frame = self._building
+         
         ctx.push_style_color(ImGuiCol.ChildBg, 0.0, 0.0, 0.0, 0.0)
         ctx.push_style_var_float(ImGuiStyleVar.ChildBorderSize, 0.0)
-        if self._building:
+        if building_this_frame:
             ctx.begin_disabled(True)
         if ctx.begin_child("##build_body", 0, child_h, False):
             self._render_output_section(ctx)
@@ -300,8 +292,10 @@ class BuildSettingsPanel(FloatingEditorPanel):
             self._render_splash_section(ctx)
             ctx.separator()
             self._render_scene_section(ctx)
+            ctx.separator()
+            self._render_runtime_resource_section(ctx)
         ctx.end_child()
-        if self._building:
+        if building_this_frame:
             ctx.end_disabled()
         ctx.pop_style_var(1)
         ctx.pop_style_color(1)
@@ -698,13 +692,16 @@ class BuildSettingsPanel(FloatingEditorPanel):
 
             name = os.path.splitext(os.path.basename(scene_path))[0]
             root = get_project_root() or ""
+            absolute_scene = resolved_path(
+                scene_path
+                if os.path.isabs(scene_path) or not root
+                else os.path.join(root, scene_path)
+            )
             try:
-                rel = relative_path(scene_path, root) if root else scene_path
+                rel = relative_path(absolute_scene, root) if root else scene_path
             except ValueError:
                 # Windows cannot compute a relative path across drive letters.
-                # A copied project can temporarily retain absolute build-scene
-                # paths from its source project, so keep the panel renderable.
-                rel = resolved_path(scene_path)
+                rel = absolute_scene
 
             ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.BUILD_SETTINGS_ROW_SPC)
             
@@ -790,6 +787,66 @@ class BuildSettingsPanel(FloatingEditorPanel):
             ctx.label("")
             ctx.label("  " + t("build.list_empty"))
             ctx.label("  " + t("build.drag_scenes_hint"))
+
+    # ------------------------------------------------------------------
+    # RUNTIME RESOURCE ROOTS
+    # ------------------------------------------------------------------
+
+    def _render_runtime_resource_section(self, ctx):
+        """Declare explicit Assets roots for runtime-only dynamic loading."""
+
+        ctx.label(t("build.additional_cook_roots"))
+        ctx.push_style_color(ImGuiCol.Text, 0.5, 0.5, 0.5, 1.0)
+        ctx.label("  " + t("build.additional_cook_roots_hint"))
+        ctx.pop_style_color(1)
+
+        roots = getattr(self, "_additional_cook_roots", [])
+        remove_idx: Optional[int] = None
+        add_label = t("build.add_cook_root")
+        if ctx.button(add_label + "##add_cook_root", self._add_empty_cook_root, width=180):
+            pass
+        ctx.record_semantic_item(
+            "button", add_label, True, "build_settings.cook_root.add"
+        )
+
+        for index, root in enumerate(roots):
+            ctx.push_id(20000 + index)
+            ctx.set_next_item_width(max(240, ctx.get_content_region_avail_width() - 88))
+            new_root = ctx.text_input(
+                f"##cook_root_{index}", root, 512
+            )
+            ctx.record_semantic_item(
+                "text_input",
+                t("build.additional_cook_root").format(index=index + 1),
+                True,
+                f"build_settings.cook_root.{index}",
+                string_value=new_root,
+            )
+            if new_root != root:
+                roots[index] = new_root
+                if new_root.strip() and all(str(item).strip() for item in roots):
+                    self._save()
+            ctx.same_line()
+
+            def _remove(idx=index):
+                nonlocal remove_idx
+                remove_idx = idx
+
+            remove_label = t("build.remove")
+            ctx.button(remove_label + f"##cook_root_remove_{index}", _remove, width=72)
+            ctx.record_semantic_item(
+                "button", remove_label, True, f"build_settings.cook_root.{index}.remove"
+            )
+            ctx.pop_id()
+
+        if remove_idx is not None:
+            del roots[remove_idx]
+            self._save()
+
+    def _add_empty_cook_root(self):
+        # Keep a new row editable without persisting an invalid placeholder.
+        # The first non-empty edit persists the complete normalized list.
+        self._additional_cook_roots.append("")
 
     # ------------------------------------------------------------------
     # Build controls
@@ -950,6 +1007,7 @@ class BuildSettingsPanel(FloatingEditorPanel):
             debug_mode=self._debug_mode,
             lto=self._lto,
             enable_jit=self._enable_jit,
+            additional_cook_roots=self._additional_cook_roots,
         )
 
     def _execute_build_command(self, command_id: str) -> bool:
@@ -1010,6 +1068,32 @@ class BuildSettingsPanel(FloatingEditorPanel):
         if self._cancel_event.is_set():
             raise BuildCancelled()
 
+    def _prepare_asset_catalog_for_build(self) -> str:
+        """Publish a durable asset catalog before the worker reads the project.
+
+        Asset writes intentionally invalidate ``Library/AssetIndex.json`` until
+        the native database has observed the new disk state.  Build startup is
+        an ownership boundary: finish coalesced writes and rebuild the derived
+        catalog on the editor thread before handing immutable inputs to the
+        background builder.
+        """
+        from Infernux.core.assets import AssetManager
+        from Infernux.renderstack.discovery import discover_effect_features
+
+        AssetManager.flush_all_asset_writes()
+        discover_effect_features()
+        database = self.services.asset_database
+        if database is None:
+            raise RuntimeError("The editor asset database is unavailable")
+        database.refresh()
+        database.flush_derived_index()
+        index_path = str(getattr(database, "asset_index_path", "") or "")
+        if not index_path or not os.path.isfile(index_path):
+            raise RuntimeError(
+                "The editor could not publish the current Library/AssetIndex.json"
+            )
+        return index_path
+
     def _do_build(self, *, run_after: bool) -> bool:
         if self._building:
             return False
@@ -1041,6 +1125,7 @@ class BuildSettingsPanel(FloatingEditorPanel):
             return False
 
         try:
+            self._prepare_asset_catalog_for_build()
             builder = self._make_builder()
             builder._validate_output_directory()
         except BuildOutputDirectoryError as exc:
@@ -1050,6 +1135,18 @@ class BuildSettingsPanel(FloatingEditorPanel):
                 self._build_error or "Build output directory is unavailable",
                 0.0,
                 duration=3.0,
+                source="build",
+                priority=20,
+            )
+            return False
+        except Exception as exc:
+            self._building = False
+            self._build_error = str(exc)
+            EngineStatus.flash(
+                self._build_error or "Build preparation failed",
+                0.0,
+                duration=3.0,
+                kind="error",
                 source="build",
                 priority=20,
             )
@@ -1118,9 +1215,20 @@ class BuildSettingsPanel(FloatingEditorPanel):
         abs_path = resolved_path(path)
         if not abs_path.lower().endswith(".scene"):
             return
+        root = get_project_root()
+        assets_root = resolved_path(os.path.join(root, "Assets")) if root else ""
+        if not root or not is_path_within(abs_path, assets_root, allow_root=False):
+            Debug.log_warning(
+                f"Build scene must be inside the project Assets folder: {path}"
+            )
+            return
+        stored_path = relative_path(abs_path, root).replace("\\", "/")
         for existing in self._scenes:
-            if same_path(existing, abs_path):
+            existing_path = resolved_path(
+                existing if os.path.isabs(existing) else os.path.join(root, existing)
+            )
+            if same_path(existing_path, abs_path):
                 return
-        self._scenes.append(abs_path)
+        self._scenes.append(stored_path)
         self._save()
         Debug.log_internal(f"Added scene to build list: {os.path.basename(path)}")

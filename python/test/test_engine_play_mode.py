@@ -1,11 +1,15 @@
 """Tests for Infernux.engine.play_mode — PlayModeState, PlayModeEvent, PlayModeManager."""
 
+import sys
 import threading
 import time
+
+import pytest
 
 from Infernux.components import InxComponent
 from Infernux.components.component_identity import bind_asset_script_guid
 from Infernux.components.missing_script import MissingScript
+from Infernux.core.asset_ref import MaterialRef
 from Infernux.engine.play_mode import PlayModeState, PlayModeEvent, PlayModeManager
 
 
@@ -52,6 +56,32 @@ class _FakeScriptScene:
 
     def find_by_id(self, object_id):
         return self.game_object if object_id == self.game_object.id else None
+
+
+class _FakeMultiScriptScene:
+    def __init__(self, game_objects):
+        self.game_objects = list(game_objects)
+
+    def get_all_objects(self):
+        return list(self.game_objects)
+
+    def find_by_id(self, object_id):
+        return next((obj for obj in self.game_objects if obj.id == object_id), None)
+
+
+class _FailingRecoveryGameObject(_FakeScriptGameObject):
+    def __init__(self, object_id: int, component):
+        super().__init__(object_id, component)
+        self.fail_recovery = False
+
+    def replace_py_component(self, old_component, new_component):
+        if (
+            self.fail_recovery
+            and isinstance(old_component, MissingScript)
+            and not isinstance(new_component, MissingScript)
+        ):
+            raise RuntimeError("simulated MissingScript replacement failure")
+        return super().replace_py_component(old_component, new_component)
 
 
 class _FakeScriptSceneManager:
@@ -111,6 +141,26 @@ class TestPlayModeManager:
         assert mgr._delta_time == 0.0
         assert mgr._time_scale == 1.0
         assert mgr._total_play_time == 0.0
+        assert mgr.step_sequence == 0
+
+    def test_paused_step_sequence_records_completed_commands(self):
+        class _SceneManager:
+            def __init__(self):
+                self.steps = []
+
+            def step(self, delta_time):
+                self.steps.append(delta_time)
+
+        mgr = PlayModeManager()
+        scene_manager = _SceneManager()
+        mgr._state = PlayModeState.PAUSED
+        mgr._get_scene_manager = lambda: scene_manager
+
+        mgr.step_frame()
+        mgr.step_frame()
+
+        assert mgr.step_sequence == 2
+        assert scene_manager.steps == [pytest.approx(1.0 / 60.0)] * 2
 
     def test_tick_does_not_poll_scene_load_service_without_pending_work(self, monkeypatch):
         mgr = PlayModeManager()
@@ -335,6 +385,24 @@ class TestPlayModeManager:
         mgr = PlayModeManager()
         assert mgr._state_change_listeners == []
 
+    def test_last_transition_timings_returns_an_isolated_snapshot(self):
+        mgr = PlayModeManager()
+        mgr._last_transition_timings_ms = {
+            "transition": "exit",
+            "total": 12.0,
+            "phases": {"native_commit": 8.0},
+        }
+
+        timings = mgr.last_transition_timings_ms
+        timings["total"] = 0.0
+        timings["phases"]["native_commit"] = 0.0
+
+        assert mgr.last_transition_timings_ms == {
+            "transition": "exit",
+            "total": 12.0,
+            "phases": {"native_commit": 8.0},
+        }
+
     def test_set_asset_database(self):
         mgr = PlayModeManager()
         mgr.set_asset_database("fake_db")
@@ -344,12 +412,19 @@ class TestPlayModeManager:
         script_guid = "1" * 32
 
         class ScriptProbe(InxComponent):
+            _uses_component_data_store = False
             speed: float = 1.0
+            material: MaterialRef = MaterialRef()
 
         bind_asset_script_guid(ScriptProbe, script_guid)
         component = ScriptProbe()
         component._script_guid = script_guid
         component.speed = 7.5
+        component.material = MaterialRef(guid="material-guid", path_hint="Assets/Test.mat")
+        component.enabled = False
+        component.execution_order = 23
+        component._call_awake()
+        component._call_start()
         original_id = component.component_id
 
         game_object = _FakeScriptGameObject(91, component)
@@ -368,14 +443,25 @@ class TestPlayModeManager:
         assert missing.component_id == original_id
         assert missing._script_guid == script_guid
         assert missing._serialize_fields_document()["speed"] == 7.5
+        assert missing._serialize_fields_document()["material"]["guid"] == "material-guid"
+        assert missing._enabled is False
+        assert missing._awake_called is True
+        assert missing._has_started is True
+        assert missing._execution_order == 23
         assert game_object.replace_calls == 1
         assert game_object.remove_calls == 0
         assert game_object.add_calls == 0
 
         script.write_text(
             "from Infernux.components import InxComponent\n"
+            "from Infernux.core.asset_ref import MaterialRef\n"
+            "CALLS = []\n"
             "class ScriptProbe(InxComponent):\n"
-            "    speed: float = 1.0\n",
+            "    _uses_component_data_store = False\n"
+            "    speed: float = 1.0\n"
+            "    material: MaterialRef = MaterialRef()\n"
+            "    def awake(self): CALLS.append('awake')\n"
+            "    def start(self): CALLS.append('start')\n",
             encoding="utf-8",
         )
 
@@ -393,9 +479,96 @@ class TestPlayModeManager:
         assert restored._script_guid == script_guid
         assert restored._script_path == str(script.resolve())
         assert restored.speed == 7.5
+        from Infernux.components.fields import get_raw_field_value
+
+        restored_material = get_raw_field_value(restored, "material")
+        assert restored_material.guid == "material-guid"
+        assert restored_material.path_hint == "Assets/Test.mat"
+        assert restored._enabled is False
+        assert restored._awake_called is True
+        assert restored._has_started is True
+        assert restored._execution_order == 23
+        restored._call_awake()
+        restored._call_start()
+        assert sys.modules[restored.__class__.__module__].CALLS == []
         assert game_object.replace_calls == 2
         assert game_object.remove_calls == 0
         assert game_object.add_calls == 0
+
+    def test_missing_script_recovery_failure_rolls_back_scene_registry_and_module(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from Infernux.components.registry import snapshot_component_registry_state
+        from Infernux.engine.project_context import get_script_module_name
+
+        script_guid = "2" * 32
+
+        class AtomicRecoveryProbe(InxComponent):
+            _uses_component_data_store = False
+            speed: float = 1.0
+
+        bind_asset_script_guid(AtomicRecoveryProbe, script_guid)
+        first = AtomicRecoveryProbe()
+        second = AtomicRecoveryProbe()
+        for index, component in enumerate((first, second), start=1):
+            component._script_guid = script_guid
+            component.speed = index * 4.5
+            component.enabled = index == 1
+            component._call_awake()
+            component._call_start()
+
+        first_object = _FailingRecoveryGameObject(101, first)
+        second_object = _FailingRecoveryGameObject(102, second)
+        scene = _FakeMultiScriptScene((first_object, second_object))
+        manager = PlayModeManager()
+        monkeypatch.setattr(
+            manager,
+            "_get_scene_manager",
+            lambda: _FakeScriptSceneManager(scene),
+        )
+
+        script = tmp_path / "atomic_recovery_probe.py"
+        assert manager.mark_components_missing_for_script(script_guid, str(script)) == 2
+        first_missing = first_object.components[0]
+        second_missing = second_object.components[0]
+        before_registry = snapshot_component_registry_state()
+        module_name = get_script_module_name(str(script.resolve()))
+        before_module = sys.modules.get(module_name)
+
+        script.write_text(
+            "from Infernux.components import InxComponent\n"
+            "class AtomicRecoveryProbe(InxComponent):\n"
+            "    _uses_component_data_store = False\n"
+            "    speed: float = 1.0\n",
+            encoding="utf-8",
+        )
+
+        class _AssetDatabase:
+            def get_guid_from_path(self, path):
+                assert path == str(script.resolve())
+                return script_guid
+
+        manager.set_asset_database(_AssetDatabase())
+        second_object.fail_recovery = True
+        outcome = manager.reload_components_from_script_result(str(script))
+
+        assert outcome.success is False
+        assert "simulated MissingScript replacement failure" in outcome.error
+        assert first_object.components[0] is first_missing
+        assert second_object.components[0] is second_missing
+        assert first_missing._serialize_fields_document()["speed"] == 4.5
+        assert second_missing._serialize_fields_document()["speed"] == 9.0
+        assert first_missing._awake_called is True
+        assert first_missing._has_started is True
+        assert second_missing._awake_called is True
+        assert second_missing._has_started is True
+        assert snapshot_component_registry_state() == before_registry
+        if before_module is None:
+            assert module_name not in sys.modules
+        else:
+            assert sys.modules[module_name] is before_module
 
     def test_register_runtime_hidden_object_tracks_ids(self):
         mgr = PlayModeManager()
@@ -500,7 +673,7 @@ class TestPlayModeManager:
         monkeypatch.setattr(
             component_restore,
             "preflight_scene_python_components",
-            lambda snapshot, asset_database=None: component_restore.PreparedPythonComponentGraph([]),
+            lambda snapshot, asset_database=None, **_kwargs: component_restore.PreparedPythonComponentGraph([]),
         )
         monkeypatch.setattr(
             component_restore,

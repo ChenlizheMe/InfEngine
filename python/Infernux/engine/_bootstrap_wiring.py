@@ -39,6 +39,26 @@ from Infernux.engine.ui import panel_state as _panel_state
 class BootstrapWiringMixin:
     """BootstrapWiringMixin method group for EditorBootstrap."""
 
+    @staticmethod
+    def _toggle_window_target(wm, target_id: str) -> bool:
+        """Toggle one registered utility window through the shared command path."""
+        from Infernux.engine._bootstrap_panels import (
+            PERMANENT_EDITOR_WINDOW_TYPE_IDS,
+        )
+
+        target = str(target_id or "").strip()
+        if not target or target not in wm.get_registered_types():
+            return False
+        if target in PERMANENT_EDITOR_WINDOW_TYPE_IDS:
+            return False
+        if wm.is_window_open(target):
+            wm.close_window(target)
+            return True
+        return wm.open_window_from_user(
+            target,
+            reason="window_toggle_command",
+        ) is not None
+
     def _register_core_editor_commands(self, wm, sfm) -> None:
         from Infernux.engine.interaction import (
             ActionOrigin,
@@ -130,18 +150,7 @@ class BootstrapWiringMixin:
             return wm.open_window_from_user(target_id) is not None
 
         def _toggle_window_target(target_id: str) -> bool:
-            target = str(target_id or "").strip()
-            if not target or target not in wm.get_registered_types():
-                return False
-            if target in PERMANENT_EDITOR_WINDOW_TYPE_IDS:
-                return False
-            if wm.is_window_open(target):
-                wm.close_window(target)
-                return True
-            return wm.open_window_from_user(
-                target,
-                reason="window_toggle_command",
-            ) is not None
+            return self._toggle_window_target(wm, target_id)
 
         def _toggle_window(context) -> bool:
             return _toggle_window_target(_window_target(context))
@@ -460,7 +469,11 @@ class BootstrapWiringMixin:
             ):
                 return None
             try:
-                return tuple(object_ids), tuple(transforms)
+                return (
+                    tuple(object_ids),
+                    tuple(transforms),
+                    str(payload.get("gesture_id", "") or "").strip(),
+                )
             except TypeError:
                 return None
 
@@ -580,6 +593,17 @@ class BootstrapWiringMixin:
                 default_shortcut="F2",
             ),
             EditorCommand(
+                "hierarchy.set_expanded",
+                lambda context: _invoke_panel_command(
+                    context, "hierarchy.set_expanded"
+                ),
+                display_name="Set Hierarchy Item Expanded",
+                category="Hierarchy",
+                can_execute=lambda context: _can_panel_command(
+                    context, "hierarchy.set_expanded"
+                ),
+            ),
+            EditorCommand(
                 "edit.duplicate",
                 lambda context: _invoke_panel_command(context, "edit.duplicate"),
                 display_name="Duplicate",
@@ -588,6 +612,16 @@ class BootstrapWiringMixin:
                     context, "edit.duplicate"
                 ),
                 default_shortcut="Ctrl+D",
+            ),
+            EditorCommand(
+                "view.focus_search",
+                lambda context: _invoke_panel_command(context, "view.focus_search"),
+                display_name="Focus Search",
+                category="View",
+                can_execute=lambda context: _can_panel_command(
+                    context, "view.focus_search"
+                ),
+                default_shortcut="Ctrl+F",
             ),
             EditorCommand(
                 "component.open_script",
@@ -830,6 +864,28 @@ class BootstrapWiringMixin:
                 category="Assets",
                 can_execute=lambda context: _can_target_panel_command(
                     context, "project", "project.navigate_directory"
+                ),
+            ),
+            EditorCommand(
+                "project.navigate_back",
+                lambda context: _invoke_target_panel_command(
+                    context, "project", "project.navigate_back"
+                ),
+                display_name="Navigate Project Back",
+                category="Assets",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "project", "project.navigate_back"
+                ),
+            ),
+            EditorCommand(
+                "project.navigate_forward",
+                lambda context: _invoke_target_panel_command(
+                    context, "project", "project.navigate_forward"
+                ),
+                display_name="Navigate Project Forward",
+                category="Assets",
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "project", "project.navigate_forward"
                 ),
             ),
             EditorCommand(
@@ -1108,6 +1164,10 @@ class BootstrapWiringMixin:
                 display_name="Edit Transform",
                 category="GameObject",
                 can_execute=_can_set_transforms,
+                # A native drag spans many rendered frames. The Transform
+                # service supplies one stable gesture transaction instead of
+                # wrapping every sample in a separate user action.
+                creates_user_action=False,
             ),
             EditorCommand(
                 "scene.move_hierarchy",
@@ -1264,7 +1324,7 @@ class BootstrapWiringMixin:
                 can_execute=lambda context: _can_panel_command(
                     context, "scene.align_to_camera"
                 ),
-                default_shortcut="Ctrl+F",
+                default_shortcut="Ctrl+Shift+F",
             ),
             EditorCommand(
                 "scene.frame_selected",
@@ -1421,6 +1481,33 @@ class BootstrapWiringMixin:
 
         register_asset_reference_commands(registry)
 
+        # A panel descriptor is the authority for its interaction surface.
+        # Project panel-only commands into the global registry so shortcuts,
+        # pointer actions, menus, and automation cannot drift into separate
+        # registration paths. Explicit commands above retain their richer
+        # labels and destination semantics.
+        for _type_id, descriptor in panel_interactions.descriptors():
+            for command_spec in descriptor.commands:
+                command_id = command_spec.command_id
+                if registry.get(command_id) is not None:
+                    continue
+                registry.register(
+                    EditorCommand(
+                        command_id,
+                        lambda context, _command_id=command_id: _invoke_panel_command(
+                            context,
+                            _command_id,
+                        ),
+                        display_name=command_id.replace(".", " ").replace("_", " ").title(),
+                        category="Panel",
+                        can_execute=lambda context, _command_id=command_id: _can_panel_command(
+                            context,
+                            _command_id,
+                        ),
+                        palette_visible=False,
+                    )
+                )
+
         bindings = (
             ("file.new_scene", "Ctrl+N", "default.file.new_scene"),
             ("file.save", "Ctrl+S", "default.file.save"),
@@ -1483,6 +1570,9 @@ class BootstrapWiringMixin:
                     binding_id="default.command_palette.execute",
                 ),
             )
+        )
+        panel_interactions.require_registered_commands(
+            command.command_id for command in registry.commands
         )
         default_shortcuts.extend(panel_interactions.iter_shortcut_bindings())
         self.interaction_core.preferences.bind_shortcuts(
@@ -1602,7 +1692,10 @@ class BootstrapWiringMixin:
             command_registry.register(
                 EditorCommand(
                     command_id,
-                    lambda _context, target=panel_id: _toggle_window_target(target),
+                    lambda _context, target=panel_id: self._toggle_window_target(
+                        wm,
+                        target,
+                    ),
                     display_name=display_name,
                     category="Window",
                     is_checked=lambda _context, target=panel_id: wm.is_window_open(target),
@@ -1632,7 +1725,6 @@ class BootstrapWiringMixin:
             self.interaction_core.modals,
         )
         from Infernux.engine.ui.modal_portal import ModalPortal
-
         _modal_portal = ModalPortal(self.interaction_core.modals)
 
         class _EditorGlobalOverlays(InxGUIRenderable):

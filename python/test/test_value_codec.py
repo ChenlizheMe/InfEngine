@@ -4,7 +4,7 @@ import inspect
 
 import pytest
 
-from Infernux.components.serialized_field import FieldMetadata, FieldType
+from Infernux.components.fields import FieldMetadata, FieldType
 from Infernux.components.value_codec import ValueCodecDescriptor, ValueCodecRegistry
 from Infernux.components.value_document import (
     TYPE_KEY,

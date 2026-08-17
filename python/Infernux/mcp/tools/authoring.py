@@ -13,6 +13,7 @@ import tempfile
 import math
 from typing import Any
 
+from Infernux.core.asset_types import AUDIO_EXTENSIONS
 from Infernux.engine.path_utils import (
     is_path_within,
     relative_path,
@@ -33,7 +34,6 @@ from Infernux.mcp.tools.common import (
 
 
 _BINARY_ASSET_EXTENSIONS = frozenset({
-    ".wav", ".ogg",
     ".png", ".jpg", ".jpeg", ".jpe", ".bmp", ".tga", ".gif", ".psd",
     ".hdr", ".pic", ".pnm", ".pgm", ".ppm", ".inxvfield", ".inxsdf",
     ".fbx", ".obj", ".gltf", ".glb", ".dae", ".3ds", ".ply", ".stl",
@@ -41,7 +41,7 @@ _BINARY_ASSET_EXTENSIONS = frozenset({
     ".dxf", ".hmp", ".ifc", ".iqm", ".irrmesh", ".lwo", ".lws",
     ".m3d", ".md2", ".md3", ".md4", ".md5mesh", ".mdc", ".mmd",
     ".ms3d", ".nff", ".off", ".ogex", ".x3d", ".ttf", ".otf",
-})
+}) | AUDIO_EXTENSIONS
 
 
 def _copy_file_atomically(source: str, target: str, *, overwrite: bool) -> int:
@@ -208,6 +208,258 @@ def _save_model_asset(model, target: str, *, action: str) -> None:
     notify_asset_changed(target, action)
 
 
+def _document_status(path: str) -> dict[str, Any]:
+    """Describe the live document state for a newly-created resource."""
+    status = {
+        "open": False,
+        "dirty": False,
+        "document_id": "",
+    }
+    try:
+        from Infernux.engine.interaction import DocumentRegistry
+
+        registry = DocumentRegistry.instance()
+        if registry is None:
+            return status
+        target = resolved_path(path)
+        for document in registry.documents:
+            resource = str(getattr(document, "resource_path", "") or "")
+            if not resource or not same_path(resource, target):
+                continue
+            status.update({
+                "open": True,
+                "dirty": bool(getattr(document, "is_dirty", False)),
+                "document_id": str(getattr(document, "document_id", "") or ""),
+            })
+            break
+    except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    return status
+
+
+def _create_editor_model_asset(
+    project_path: str,
+    target: str,
+    model: Any,
+    *,
+    overwrite: bool,
+    description: str,
+) -> dict[str, Any]:
+    """Create an Editor-owned model through the canonical asset command."""
+    from Infernux.engine.interaction import ActionOrigin, ProjectAssetCommandService
+
+    service = ProjectAssetCommandService.instance()
+    if service is None:
+        raise RuntimeError("Editor Project asset command service is unavailable")
+    if not service.configured:
+        service.configure(project_path, get_asset_database())
+    elif not same_path(service.project_root, project_path):
+        raise RuntimeError("Editor Project asset commands are bound to another project")
+
+    target = resolved_path(target)
+    existed = os.path.exists(target)
+
+    def _creator():
+        if not bool(model.save(target)):
+            return False, f"The public asset model could not save '{target}'"
+        try:
+            # The command owns the mutation; this notification publishes the
+            # new file to AssetDatabase and the normal resource reload path.
+            notify_asset_changed(target, "created")
+        except Exception:
+            try:
+                os.remove(target)
+            except OSError:
+                pass
+            raise
+        return True, ""
+
+    service.create(
+        os.path.dirname(target),
+        _creator,
+        description=description,
+        origin=ActionOrigin.AUTOMATION,
+        replace_path=target if overwrite and existed else "",
+    )
+    database = get_asset_database()
+    guid = str(database.get_guid_from_path(target) or "") if database is not None else ""
+    return {
+        "path": relative_path(target, project_path),
+        "guid": guid,
+        "document": _document_status(target),
+        "asset_registered": bool(guid),
+    }
+
+
+def _resolve_imported_animated_model(
+    project_path: str,
+    *,
+    model_path: str,
+    model_guid: str,
+    take_name: str,
+) -> dict[str, Any]:
+    """Resolve one imported model and validate one importer-reported take."""
+    from Infernux.core.asset_types import MESH_EXTENSIONS, read_meta_file
+
+    if bool(str(model_path).strip()) == bool(str(model_guid).strip()):
+        raise ValueError("Provide exactly one of model_path or model_guid")
+    take = str(take_name or "").strip()
+    if not take:
+        raise ValueError("take_name must not be empty")
+
+    database = get_asset_database()
+    if database is None:
+        raise RuntimeError("AssetDatabase is not available")
+    if model_guid:
+        source = str(database.get_path_from_guid(str(model_guid).strip()) or "")
+        if not source:
+            raise FileNotFoundError(f"Animated model GUID was not found: {model_guid}")
+    else:
+        source = resolve_asset_path(project_path, model_path)
+    source = resolved_path(source)
+    assets_root = resolved_path(os.path.join(project_path, "Assets"))
+    if not is_path_within(source, assets_root):
+        raise ValueError("The animated model must be an asset below Assets/")
+    if not os.path.isfile(source):
+        raise FileNotFoundError(f"Animated model file not found: {model_path or model_guid}")
+    if os.path.splitext(source)[1].lower() not in MESH_EXTENSIONS:
+        raise ValueError("The source asset must be an imported 3D model")
+
+    canonical_guid = str(database.get_guid_from_path(source) or "").strip()
+    if not canonical_guid:
+        raise ValueError("The source model is not registered in AssetDatabase")
+    if model_guid and canonical_guid != str(model_guid).strip():
+        raise ValueError("AssetDatabase returned a different GUID for the source model")
+
+    meta = read_meta_file(source) or {}
+    raw_names = meta.get("animation_names_csv") or ""
+    names = [item.strip() for item in raw_names.split(",") if item.strip()] if isinstance(raw_names, str) else []
+    if not names:
+        # A newly discovered model can already have authoritative runtime skin
+        # data while its asynchronous importer has not enriched the sidecar
+        # metadata yet.  Do not reject a valid first-import take solely because
+        # the optional metadata cache is lagging behind the AssetRegistry.
+        from Infernux.lib import AssetRegistry
+
+        runtime_mesh = AssetRegistry.instance().load_mesh_by_guid(canonical_guid)
+        if runtime_mesh is not None and bool(getattr(runtime_mesh, "has_skinned_data", False)):
+            names = [
+                str(item).strip()
+                for item in getattr(runtime_mesh, "skinned_animation_names", ())
+                if str(item).strip()
+            ]
+    if take not in names:
+        available = ", ".join(names) if names else "none"
+        raise ValueError(f"Animation take '{take}' was not imported from the model; available takes: {available}")
+    raw_bones = meta.get("bone_names_csv") or ""
+    bones = [item.strip() for item in raw_bones.split(",") if item.strip()] if isinstance(raw_bones, str) else []
+    return {
+        "path": source,
+        "guid": canonical_guid,
+        "take_name": take,
+        "bind_pose_bone_names": bones,
+    }
+
+
+def _resolve_animation_clip_reference(
+    project_path: str,
+    *,
+    clip_path: str,
+    clip_guid: str,
+) -> tuple[str, str, Any]:
+    """Resolve a registered .animclip3d using the public asset identity."""
+    from Infernux.core.animation_clip3d import AnimationClip3D
+
+    if bool(str(clip_path).strip()) == bool(str(clip_guid).strip()):
+        raise ValueError("Provide exactly one of clip_path or clip_guid")
+    database = get_asset_database()
+    if database is None:
+        raise RuntimeError("AssetDatabase is not available")
+    target = (
+        str(database.get_path_from_guid(str(clip_guid).strip()) or "")
+        if clip_guid
+        else resolve_asset_path(project_path, clip_path)
+    )
+    target = resolved_path(target)
+    if not os.path.isfile(target) or not target.lower().endswith(".animclip3d"):
+        raise FileNotFoundError(f"AnimationClip3D asset not found: {clip_path or clip_guid}")
+    guid = str(database.get_guid_from_path(target) or "").strip()
+    if not guid:
+        raise ValueError("The animation clip is not registered in AssetDatabase")
+    if clip_guid and guid != str(clip_guid).strip():
+        raise ValueError("AssetDatabase returned a different GUID for the animation clip")
+    clip = AnimationClip3D.load(target)
+    if clip is None or not clip.is_valid_reference:
+        raise ValueError("The AnimationClip3D asset is invalid or has no model reference")
+    return target, guid, clip
+
+
+def _resolve_sprite_texture_reference(
+    project_path: str,
+    *,
+    texture_path: str,
+    texture_guid: str,
+) -> tuple[str, str, Any]:
+    """Resolve one registered Sprite texture and its persistent frame contract."""
+
+    from Infernux.core.asset_types import TextureType, read_texture_import_settings
+
+    if bool(str(texture_path).strip()) == bool(str(texture_guid).strip()):
+        raise ValueError("Provide exactly one of texture_path or texture_guid")
+    database = get_asset_database()
+    if database is None:
+        raise RuntimeError("AssetDatabase is not available")
+    target = (
+        str(database.get_path_from_guid(str(texture_guid).strip()) or "")
+        if texture_guid
+        else resolve_asset_path(project_path, texture_path)
+    )
+    target = resolved_path(target)
+    if not os.path.isfile(target):
+        raise FileNotFoundError("Sprite texture asset was not found")
+    canonical_guid = str(database.get_guid_from_path(target) or "").strip()
+    if not canonical_guid:
+        raise ValueError("Sprite texture is not registered in AssetDatabase")
+    settings = read_texture_import_settings(target)
+    if settings.texture_type is not TextureType.SPRITE:
+        raise ValueError("Texture must be imported as Sprite")
+    if not settings.sprite_frames:
+        raise ValueError("Sprite texture has no persistent SpriteFrame subresources")
+    return target, canonical_guid, settings
+
+
+def _resolve_animation_clip2d_reference(
+    project_path: str,
+    *,
+    clip_path: str,
+    clip_guid: str,
+) -> tuple[str, str, Any]:
+    """Resolve one registered AnimationClip2D through AssetDatabase identity."""
+
+    from Infernux.core.animation_clip import AnimationClip
+
+    if bool(str(clip_path).strip()) == bool(str(clip_guid).strip()):
+        raise ValueError("Provide exactly one of clip_path or clip_guid")
+    database = get_asset_database()
+    if database is None:
+        raise RuntimeError("AssetDatabase is not available")
+    target = (
+        str(database.get_path_from_guid(str(clip_guid).strip()) or "")
+        if clip_guid
+        else resolve_asset_path(project_path, clip_path)
+    )
+    target = resolved_path(target)
+    if not os.path.isfile(target) or not target.lower().endswith(".animclip2d"):
+        raise FileNotFoundError("AnimationClip2D asset was not found")
+    canonical_guid = str(database.get_guid_from_path(target) or "").strip()
+    if not canonical_guid:
+        raise ValueError("AnimationClip2D is not registered in AssetDatabase")
+    clip = AnimationClip.load(target)
+    if clip is None:
+        raise ValueError("AnimationClip2D could not be loaded")
+    return target, canonical_guid, clip
+
+
 def _vec3_input(value: list[float] | None, default: list[float], label: str) -> list[float]:
     raw = list(default if value is None else value)
     if len(raw) != 3 or any(
@@ -267,6 +519,14 @@ def register_authoring_tools(mcp, project_path: str) -> None:
             "Edit an AnimationTimeline through its public model and save it.",
             "animation/authoring", ["animation", "timeline", "keyframe"],
         ),
+        "animation_clip2d_create": (
+            "Create an AnimationClip2D from persistent SpriteFrame subresources.",
+            "animation/authoring", ["animation", "animclip2d", "sprite", "create"],
+        ),
+        "animation_fsm2d_create": (
+            "Create a 2D AnimStateMachine from registered AnimationClip2D assets.",
+            "animation/authoring", ["animation", "animfsm", "2d", "state"],
+        ),
         "timeline_fsm_create": (
             "Create a timeline-mode state machine and optionally reference a timeline asset.",
             "animation/authoring", ["animation", "timelinefsm", "create"],
@@ -274,6 +534,14 @@ def register_authoring_tools(mcp, project_path: str) -> None:
         "timeline_fsm_add_state": (
             "Add a timeline state to a saved timeline-mode state machine.",
             "animation/authoring", ["animation", "timelinefsm", "state"],
+        ),
+        "animation_clip3d_create_from_model": (
+            "Create an AnimationClip3D from an imported model take through the Editor asset command.",
+            "animation/authoring", ["animation", "animclip3d", "model", "take"],
+        ),
+        "animation_fsm3d_create": (
+            "Create a 3D AnimStateMachine with an optional looping default clip state.",
+            "animation/authoring", ["animation", "animfsm", "3d", "state"],
         ),
     }
     for name, (summary, category, tags) in metadata.items():
@@ -343,8 +611,8 @@ def register_authoring_tools(mcp, project_path: str) -> None:
                 clip = resolve_asset_path(project_path, clip_path)
                 if not os.path.isfile(clip):
                     raise FileNotFoundError(f"Audio asset not found: {clip_path}")
-                if os.path.splitext(clip)[1].lower() not in {".wav", ".ogg"}:
-                    raise ValueError("clip_path must point to a .wav or .ogg asset")
+                if os.path.splitext(clip)[1].lower() not in AUDIO_EXTENSIONS:
+                    raise ValueError("clip_path must point to a WAV, OGG, MP3, or FLAC asset")
                 guid = _asset_guid(clip)
                 if guid:
                     source.set_track_clip_by_guid(index, guid)
@@ -451,6 +719,173 @@ def register_authoring_tools(mcp, project_path: str) -> None:
             return _timeline_summary(timeline, target)
         return main_thread("animation_timeline_add_keyframe", _edit, arguments={"path": path, "time_seconds": time_seconds, "interp": interp})
 
+    @mcp.tool(name="animation_clip2d_create")
+    def animation_clip2d_create(
+        path: str,
+        sprite_frame_ids: list[str],
+        texture_path: str = "",
+        texture_guid: str = "",
+        fps: float = 12.0,
+        loop: bool = True,
+        overwrite: bool = False,
+    ) -> dict:
+        """Create a .animclip2d using stable SpriteFrame IDs."""
+
+        def _create():
+            from Infernux.core.animation_clip import AnimationClip, AnimationFrame
+
+            target = resolve_asset_path(project_path, path)
+            if not target.lower().endswith(".animclip2d"):
+                raise ValueError("path must end with .animclip2d")
+            require_existing_parent_directory(project_path, target)
+            if os.path.exists(target) and not overwrite:
+                raise FileExistsError(f"Asset already exists: {path}")
+            source, source_guid, settings = _resolve_sprite_texture_reference(
+                project_path,
+                texture_path=texture_path,
+                texture_guid=texture_guid,
+            )
+            requested = [str(value or "").strip() for value in sprite_frame_ids]
+            if not requested or any(not value for value in requested):
+                raise ValueError("sprite_frame_ids must contain at least one stable ID")
+            available = {frame.stable_id for frame in settings.sprite_frames}
+            missing = sorted(set(requested) - available)
+            if missing:
+                raise ValueError(
+                    f"SpriteFrame IDs do not belong to the source texture: {missing}"
+                )
+            fps_value = float(fps)
+            if not math.isfinite(fps_value) or fps_value <= 0.0:
+                raise ValueError("fps must be a positive finite number")
+            clip = AnimationClip(
+                name=os.path.splitext(os.path.basename(target))[0],
+                authoring_texture_guid=source_guid,
+                authoring_texture_path=relative_path(source, project_path),
+                frames=[
+                    AnimationFrame(sprite_frame_id=frame_id)
+                    for frame_id in requested
+                ],
+                fps=fps_value,
+                loop=bool(loop),
+            )
+            result = _create_editor_model_asset(
+                project_path,
+                target,
+                clip,
+                overwrite=bool(overwrite),
+                description="Create AnimationClip2D",
+            )
+            result.update({
+                "texture_guid": source_guid,
+                "texture_path": relative_path(source, project_path),
+                "frame_count": len(clip.frames),
+                "sprite_frame_ids": requested,
+                "fps": fps_value,
+                "loop": bool(loop),
+            })
+            return result
+
+        return main_thread(
+            "animation_clip2d_create",
+            _create,
+            arguments={
+                "path": path,
+                "texture_path": texture_path,
+                "texture_guid": texture_guid,
+                "frame_count": len(sprite_frame_ids),
+                "fps": fps,
+                "loop": loop,
+                "overwrite": overwrite,
+            },
+        )
+
+    @mcp.tool(name="animation_fsm2d_create")
+    def animation_fsm2d_create(
+        path: str,
+        states: list[dict],
+        default_state: str = "",
+        overwrite: bool = False,
+    ) -> dict:
+        """Create a 2D .animfsm from named AnimationClip2D state records."""
+
+        def _create():
+            from Infernux.core.anim_state_machine import AnimStateMachine
+
+            target = resolve_asset_path(project_path, path)
+            if not target.lower().endswith(".animfsm"):
+                raise ValueError("path must end with .animfsm")
+            require_existing_parent_directory(project_path, target)
+            if os.path.exists(target) and not overwrite:
+                raise FileExistsError(f"Asset already exists: {path}")
+            if not states:
+                raise ValueError("states must contain at least one state")
+
+            fsm = AnimStateMachine(
+                name=os.path.splitext(os.path.basename(target))[0],
+                mode="2d",
+            )
+            seen_names: set[str] = set()
+            for index, value in enumerate(states):
+                if type(value) is not dict:
+                    raise TypeError("states entries must be objects")
+                allowed = {
+                    "name", "clip_path", "clip_guid", "loop", "speed", "position",
+                }
+                unknown = set(value) - allowed
+                if unknown:
+                    raise ValueError(
+                        f"unsupported animation state fields: {sorted(unknown)}"
+                    )
+                name = str(value.get("name") or "").strip()
+                if not name or name in seen_names:
+                    raise ValueError(
+                        "animation state names must be non-empty and unique"
+                    )
+                seen_names.add(name)
+                clip_target, guid, _clip = _resolve_animation_clip2d_reference(
+                    project_path,
+                    clip_path=str(value.get("clip_path") or ""),
+                    clip_guid=str(value.get("clip_guid") or ""),
+                )
+                state = fsm.add_state(name)
+                state.clip_guid = guid
+                state.clip_path = relative_path(clip_target, project_path)
+                state.loop = bool(value.get("loop", True))
+                state.speed = float(value.get("speed", 1.0))
+                position = value.get("position", [160.0 + index * 220.0, 80.0])
+                if type(position) is not list or len(position) != 2:
+                    raise ValueError(
+                        "animation state position must contain two numbers"
+                    )
+                state.position = [float(position[0]), float(position[1])]
+
+            selected_default = str(default_state or fsm.states[0].name).strip()
+            if selected_default not in seen_names:
+                raise ValueError("default_state must reference a declared state")
+            fsm.default_state = selected_default
+            result = _create_editor_model_asset(
+                project_path,
+                target,
+                fsm,
+                overwrite=bool(overwrite),
+                description="Create 2D Animation State Machine",
+            )
+            result.update(
+                _fsm_summary(fsm, relative_path(target, project_path))
+            )
+            return result
+
+        return main_thread(
+            "animation_fsm2d_create",
+            _create,
+            arguments={
+                "path": path,
+                "state_count": len(states),
+                "default_state": default_state,
+                "overwrite": overwrite,
+            },
+        )
+
     @mcp.tool(name="timeline_fsm_create")
     def timeline_fsm_create(
         path: str,
@@ -503,3 +938,136 @@ def register_authoring_tools(mcp, project_path: str) -> None:
             _save_model_asset(fsm, target, action="modified")
             return _fsm_summary(fsm, target)
         return main_thread("timeline_fsm_add_state", _edit, arguments={"path": path, "state_name": state_name, "timeline_path": timeline_path})
+
+    @mcp.tool(name="animation_clip3d_create_from_model")
+    def animation_clip3d_create_from_model(
+        path: str,
+        take_name: str,
+        model_path: str = "",
+        model_guid: str = "",
+        overwrite: bool = False,
+    ) -> dict:
+        """Create a .animclip3d that points at one imported model animation take."""
+        def _create():
+            from Infernux.core.animation_clip3d import AnimationClip3D
+
+            target = resolve_asset_path(project_path, path)
+            if not target.lower().endswith(".animclip3d"):
+                raise ValueError("path must end with .animclip3d")
+            require_existing_parent_directory(project_path, target)
+            if os.path.exists(target) and not overwrite:
+                raise FileExistsError(f"Asset already exists: {path}")
+            source = _resolve_imported_animated_model(
+                project_path,
+                model_path=model_path,
+                model_guid=model_guid,
+                take_name=take_name,
+            )
+            clip = AnimationClip3D(
+                name=os.path.splitext(os.path.basename(target))[0],
+                source_model_guid=source["guid"],
+                source_model_path=source["path"],
+                take_name=source["take_name"],
+                bind_pose_bone_names=source["bind_pose_bone_names"],
+            )
+            result = _create_editor_model_asset(
+                project_path,
+                target,
+                clip,
+                overwrite=bool(overwrite),
+                description="Create AnimationClip3D",
+            )
+            result.update({
+                "source_model_guid": source["guid"],
+                "source_model_path": relative_path(source["path"], project_path),
+                "take_name": source["take_name"],
+            })
+            return result
+
+        return main_thread(
+            "animation_clip3d_create_from_model",
+            _create,
+            arguments={
+                "path": path,
+                "take_name": take_name,
+                "model_path": model_path,
+                "model_guid": model_guid,
+                "overwrite": overwrite,
+            },
+        )
+
+    @mcp.tool(name="animation_fsm3d_create")
+    def animation_fsm3d_create(
+        path: str,
+        clip_path: str = "",
+        clip_guid: str = "",
+        state_name: str = "Default",
+        overwrite: bool = False,
+    ) -> dict:
+        """Create a 3D .animfsm and optionally bind one looping default state."""
+        def _create():
+            from Infernux.core.anim_state_machine import AnimStateMachine
+
+            target = resolve_asset_path(project_path, path)
+            if not target.lower().endswith(".animfsm"):
+                raise ValueError("path must end with .animfsm")
+            require_existing_parent_directory(project_path, target)
+            if os.path.exists(target) and not overwrite:
+                raise FileExistsError(f"Asset already exists: {path}")
+
+            fsm = AnimStateMachine(
+                name=os.path.splitext(os.path.basename(target))[0],
+                mode="3d",
+            )
+            if clip_path or clip_guid:
+                clip_target, guid, _clip = _resolve_animation_clip_reference(
+                    project_path,
+                    clip_path=clip_path,
+                    clip_guid=clip_guid,
+                )
+                name = str(state_name or "Default").strip()
+                if not name:
+                    raise ValueError("state_name must not be empty")
+                state = fsm.add_state(name)
+                state.kind = "clip"
+                state.clip_guid = guid
+                state.clip_path = clip_target
+                state.loop = True
+                state.restart_same_clip = False
+
+            result = _create_editor_model_asset(
+                project_path,
+                target,
+                fsm,
+                overwrite=bool(overwrite),
+                description="Create 3D Animation State Machine",
+            )
+            result.update({
+                "mode": fsm.mode,
+                "default_state": fsm.default_state,
+                "state_count": fsm.state_count,
+                "states": [
+                    {
+                        "stable_id": state.stable_id,
+                        "name": state.name,
+                        "kind": state.kind,
+                        "clip_guid": state.clip_guid,
+                        "clip_path": relative_path(state.clip_path, project_path) if state.clip_path else "",
+                        "loop": bool(state.loop),
+                    }
+                    for state in fsm.states
+                ],
+            })
+            return result
+
+        return main_thread(
+            "animation_fsm3d_create",
+            _create,
+            arguments={
+                "path": path,
+                "clip_path": clip_path,
+                "clip_guid": clip_guid,
+                "state_name": state_name,
+                "overwrite": overwrite,
+            },
+        )

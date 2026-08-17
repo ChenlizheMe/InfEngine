@@ -32,6 +32,7 @@ from Infernux.engine.component_restore import (
     instantiate_prepared_game_object_document,
     preflight_game_object_python_components,
     preflight_scene_python_components,
+    replace_scene_python_components_for_play,
 )
 from Infernux.engine.scene_document_transaction import (
     SceneDocumentTransaction,
@@ -74,6 +75,28 @@ class _ReplacementLifecycleSource(InxComponent):
 
 class _ReplacementLifecycleTarget(InxComponent):
     value: int = 0
+
+
+class _PlayLifecycleResetComponent(InxComponent):
+    awake_calls = 0
+    start_calls = 0
+    destroy_calls = 0
+    active_instance = None
+
+    def awake(self):
+        type(self).awake_calls += 1
+        if type(self).active_instance not in (None, self):
+            raise RuntimeError("edit-domain singleton registration leaked into Play")
+        type(self).active_instance = self
+        self._runtime_token = "initialized-in-awake"
+
+    def start(self):
+        type(self).start_calls += 1
+
+    def on_destroy(self):
+        type(self).destroy_calls += 1
+        if type(self).active_instance is self:
+            type(self).active_instance = None
 
 
 class _AdditiveSceneComponent(InxComponent):
@@ -277,6 +300,24 @@ class TestGameObject:
         scene.create_game_object("X")
         scene.create_game_object("Y")
         assert len(scene.get_all_objects()) == 2
+
+    def test_python_component_queries_follow_stable_type_identity_across_reload(self, scene):
+        namespace = {"__module__": __name__, "__qualname__": "_ReloadedQueryComponent"}
+        old_type = type("_ReloadedQueryComponent", (InxComponent,), dict(namespace))
+        new_type = type("_ReloadedQueryComponent", (InxComponent,), dict(namespace))
+        assert old_type is not new_type
+        assert old_type._get_type_guid() == new_type._get_type_guid()
+
+        parent = scene.create_game_object("ReloadedQueryParent")
+        child = scene.create_game_object("ReloadedQueryChild")
+        child.set_parent(parent)
+        component = parent.add_py_component(old_type())
+
+        assert parent.get_py_component(new_type) is component
+        assert parent.get_component(new_type) is component
+        assert parent.get_components(new_type) == [component]
+        assert parent.get_component_in_children(new_type) is component
+        assert child.get_component_in_parent(new_type) is component
 
     def test_destroy_game_object(self, scene):
         go = scene.create_game_object("Temp")
@@ -769,7 +810,7 @@ class TestPrimitives:
             PrimitiveType.Cube: "BoxCollider",
             PrimitiveType.Sphere: "SphereCollider",
             PrimitiveType.Capsule: "CapsuleCollider",
-            PrimitiveType.Cylinder: "MeshCollider",
+            PrimitiveType.Cylinder: "CylinderCollider",
             PrimitiveType.Plane: "MeshCollider",
         }[ptype]
         assert expected_collider in comps
@@ -2004,6 +2045,7 @@ class TestSceneSerialization:
             "box_size",
             "sphere_radius",
             "capsule_direction",
+            "cylinder_direction",
             "mesh_convex",
         ],
     )
@@ -2023,6 +2065,8 @@ class TestSceneSerialization:
             component_type = "SphereCollider"
         elif corruption == "capsule_direction":
             component_type = "CapsuleCollider"
+        elif corruption == "cylinder_direction":
+            component_type = "CylinderCollider"
         elif corruption == "mesh_convex":
             component_type = "MeshCollider"
         component = existing.transform if component_type is None else existing.add_component(component_type)
@@ -2043,6 +2087,8 @@ class TestSceneSerialization:
             elif corruption == "sphere_radius":
                 component_document["radius"] = 0.0
             elif corruption == "capsule_direction":
+                component_document["direction"] = 9
+            elif corruption == "cylinder_direction":
                 component_document["direction"] = 9
             else:
                 component_document["convex"] = "yes"
@@ -2072,6 +2118,7 @@ class TestSceneSerialization:
             "BoxCollider",
             "SphereCollider",
             "CapsuleCollider",
+            "CylinderCollider",
             "MeshCollider",
             "MeshRenderer",
             "SkinnedMeshRenderer",
@@ -3140,6 +3187,37 @@ class TestSceneSerialization:
         assert target.execution_order == 42
         assert target.enabled is False
         assert target.value == 13
+
+    def test_play_domain_replacement_resets_lifecycle_before_scene_start(self, scene):
+        _PlayLifecycleResetComponent.awake_calls = 0
+        _PlayLifecycleResetComponent.start_calls = 0
+        _PlayLifecycleResetComponent.destroy_calls = 0
+        _PlayLifecycleResetComponent.active_instance = None
+        root = scene.create_game_object("PlayLifecycleReset")
+        edit_component = root.add_py_component(_PlayLifecycleResetComponent())
+        snapshot = scene._capture_play_mode_snapshot()
+
+        assert edit_component._awake_called is True
+        assert replace_scene_python_components_for_play(scene, snapshot) is True
+
+        play_component = root.get_py_component(_PlayLifecycleResetComponent)
+        assert play_component is not edit_component
+        assert play_component._awake_called is False
+        assert play_component._has_started is False
+        assert not hasattr(play_component, "_runtime_token")
+        assert _PlayLifecycleResetComponent.destroy_calls == 1
+        assert _PlayLifecycleResetComponent.active_instance is None
+
+        scene.set_playing(True)
+        scene.start()
+
+        assert play_component._runtime_token == "initialized-in-awake"
+        assert play_component._awake_called is True
+        assert play_component._has_started is True
+        assert _PlayLifecycleResetComponent.awake_calls == 2
+        assert _PlayLifecycleResetComponent.start_calls == 1
+        assert _PlayLifecycleResetComponent.destroy_calls == 1
+        assert _PlayLifecycleResetComponent.active_instance is play_component
 
     def test_python_component_replacement_rejects_new_registry_constraints(self, scene):
         class ReloadSource(InxComponent):

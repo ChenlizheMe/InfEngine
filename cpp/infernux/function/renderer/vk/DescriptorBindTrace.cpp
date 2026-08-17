@@ -70,6 +70,11 @@ void PopDescriptorRecordingContext() noexcept
     g_recordingSubmissionSerial = previous.serial;
 }
 
+rhi::SubmissionSerial GetDescriptorRecordingSubmissionSerial() noexcept
+{
+    return g_recordingSubmissionSerial;
+}
+
 #if INFERNUX_VULKAN_VALIDATION_LAYERS
 void RecordDescriptorBind(const char *site, VkCommandBuffer cmdBuf, VkPipelineLayout layout, uint32_t firstSet,
                           uint32_t descriptorSetCount, const VkDescriptorSet *descriptorSets)

@@ -67,7 +67,7 @@ def test_pipeline_snapshot_reports_live_values_separately_from_defaults():
 
 
 def test_pipeline_parameter_coercion_accepts_enum_name_for_agent_editing():
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
     from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
 
     metadata = get_serialized_fields(DefaultForwardPipeline)["msaa_samples"]

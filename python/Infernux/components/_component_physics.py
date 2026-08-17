@@ -27,56 +27,51 @@ import threading
 import weakref
 
 from Infernux.lib import GameObject
+from Infernux.engine.runtime_dispatch import current_runtime_epoch
 
 
 class ComponentPhysicsMixin:
     """ComponentPhysicsMixin method group for InxComponent."""
 
-    def _call_on_collision_enter(self, collision):
-        """Internal: Trigger on_collision_enter lifecycle."""
+    def _dispatch_runtime_event(self, method_name: str, *args) -> None:
+        """Dispatch one native/editor event against one published epoch."""
         if not self.enabled:
             return
-        self._safe_lifecycle_call("on_collision_enter", collision)
+        self._safe_lifecycle_call(
+            method_name,
+            *args,
+            epoch=current_runtime_epoch(),
+        )
+
+    def _call_on_collision_enter(self, collision):
+        """Internal: Trigger on_collision_enter lifecycle."""
+        self._dispatch_runtime_event("on_collision_enter", collision)
 
     def _call_on_collision_stay(self, collision):
         """Internal: Trigger on_collision_stay lifecycle."""
-        if not self.enabled:
-            return
-        self._safe_lifecycle_call("on_collision_stay", collision)
+        self._dispatch_runtime_event("on_collision_stay", collision)
 
     def _call_on_collision_exit(self, collision):
         """Internal: Trigger on_collision_exit lifecycle."""
-        if not self.enabled:
-            return
-        self._safe_lifecycle_call("on_collision_exit", collision)
+        self._dispatch_runtime_event("on_collision_exit", collision)
 
     def _call_on_trigger_enter(self, other):
         """Internal: Trigger on_trigger_enter lifecycle."""
-        if not self.enabled:
-            return
-        self._safe_lifecycle_call("on_trigger_enter", other)
+        self._dispatch_runtime_event("on_trigger_enter", other)
 
     def _call_on_trigger_stay(self, other):
         """Internal: Trigger on_trigger_stay lifecycle."""
-        if not self.enabled:
-            return
-        self._safe_lifecycle_call("on_trigger_stay", other)
+        self._dispatch_runtime_event("on_trigger_stay", other)
 
     def _call_on_trigger_exit(self, other):
         """Internal: Trigger on_trigger_exit lifecycle."""
-        if not self.enabled:
-            return
-        self._safe_lifecycle_call("on_trigger_exit", other)
+        self._dispatch_runtime_event("on_trigger_exit", other)
 
     def _call_on_draw_gizmos(self):
         """Internal: Trigger on_draw_gizmos lifecycle (editor only)."""
-        if not self.enabled:
-            return
-        self._safe_lifecycle_call("on_draw_gizmos")
+        self._dispatch_runtime_event("on_draw_gizmos")
 
     def _call_on_draw_gizmos_selected(self):
         """Internal: Trigger on_draw_gizmos_selected lifecycle (editor only)."""
-        if not self.enabled:
-            return
-        self._safe_lifecycle_call("on_draw_gizmos_selected")
+        self._dispatch_runtime_event("on_draw_gizmos_selected")
 

@@ -5,7 +5,7 @@ ShaderInfo {
 // ============================================================================
 // lib/camera.glsl — Camera and screen-space utility functions
 //
-// Requires: InfGlobals UBO (auto-injected by engine at set 2, binding 0)
+// Requires: shader-linker camera contract plus InfGlobals for screen/depth data
 // Usage: ShaderInfo Imports: Lib Camera
 // ============================================================================
 
@@ -23,14 +23,23 @@ ivec2 getPixelCoord() {
 
 // ---- Camera ----
 
+// Structured shaders receive a camera source selected by the shader linker.
+// Lit passes resolve this to the camera-local set-1 LightingUBO; unlit passes
+// retain the engine-globals fallback. Never read _WorldSpaceCameraPos directly
+// here: that buffer is shared by Scene and Game graphs and is staged from the
+// editor camera.
+#ifndef INX_SHADING_CAMERA_POSITION
+#define INX_SHADING_CAMERA_POSITION _Globals._WorldSpaceCameraPos.xyz
+#endif
+
 // World-space camera position
 vec3 getCameraPosition() {
-    return _Globals._WorldSpaceCameraPos.xyz;
+    return INX_SHADING_CAMERA_POSITION;
 }
 
 // Normalized view direction from camera to fragment (world-space)
 vec3 getViewDirection(vec3 worldPos) {
-    return normalize(_Globals._WorldSpaceCameraPos.xyz - worldPos);
+    return normalize(INX_SHADING_CAMERA_POSITION - worldPos);
 }
 
 // Camera near plane distance

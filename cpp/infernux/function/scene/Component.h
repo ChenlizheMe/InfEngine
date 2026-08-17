@@ -356,12 +356,59 @@ class Component
         return false;
     }
 
+    /// @brief Whether the runtime scheduler owns this component's per-frame
+    /// lifecycle dispatch. Native components remain on the Scene traversal;
+    /// Python proxies opt into the shared scheduler bridge.
+    [[nodiscard]] virtual bool UsesRuntimeLifecycleScheduler() const
+    {
+        return false;
+    }
+
+    /// Native components opt into only the runtime phases they actually use.
+    /// Python proxies are owned by the shared runtime scheduler instead.
+    [[nodiscard]] virtual bool WantsRuntimeUpdate() const
+    {
+        return false;
+    }
+    [[nodiscard]] virtual bool WantsRuntimeFixedUpdate() const
+    {
+        return false;
+    }
+    [[nodiscard]] virtual bool WantsRuntimeLateUpdate() const
+    {
+        return false;
+    }
+
     /// @brief Whether this component wants physics callbacks dispatched.
     /// Default false to avoid per-contact dispatch overhead on components that
     /// do not implement collision/trigger behavior.
     [[nodiscard]] virtual bool WantsPhysicsCallbacks() const
     {
         return false;
+    }
+    [[nodiscard]] virtual bool WantsCollisionEnterCallbacks() const
+    {
+        return WantsPhysicsCallbacks();
+    }
+    [[nodiscard]] virtual bool WantsCollisionStayCallbacks() const
+    {
+        return WantsPhysicsCallbacks();
+    }
+    [[nodiscard]] virtual bool WantsCollisionExitCallbacks() const
+    {
+        return WantsPhysicsCallbacks();
+    }
+    [[nodiscard]] virtual bool WantsTriggerEnterCallbacks() const
+    {
+        return WantsPhysicsCallbacks();
+    }
+    [[nodiscard]] virtual bool WantsTriggerStayCallbacks() const
+    {
+        return WantsPhysicsCallbacks();
+    }
+    [[nodiscard]] virtual bool WantsTriggerExitCallbacks() const
+    {
+        return WantsPhysicsCallbacks();
     }
 
     // ========================================================================

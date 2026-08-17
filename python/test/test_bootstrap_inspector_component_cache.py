@@ -35,15 +35,28 @@ class _Scene:
         self.game_object = game_object
 
     def find_by_id(self, object_id):
-        return self.game_object if object_id == self.game_object.id else None
+        return (
+            self.game_object
+            if self.game_object is not None and object_id == self.game_object.id
+            else None
+        )
 
 
 class _SceneManagerInstance:
-    def __init__(self, scene):
+    def __init__(self, scene, persistent_scene=None):
         self.scene = scene
+        self.persistent_scene = persistent_scene
 
     def get_active_scene(self):
         return self.scene
+
+    def find_runtime_object_by_id(self, object_id):
+        found = self.scene.find_by_id(object_id) if self.scene is not None else None
+        if found is not None:
+            return found
+        if self.persistent_scene is not None:
+            return self.persistent_scene.find_by_id(object_id)
+        return None
 
 
 class _SceneManager:
@@ -144,3 +157,43 @@ def test_python_script_error_lookup_runs_only_when_diagnostics_change(monkeypatc
         assert lookups == [component, component]
     finally:
         _clear_script_error(str(changed_script))
+
+
+def test_component_cache_resolves_dont_destroy_on_load_object_from_persistent_scene(
+    monkeypatch,
+):
+    raw = _RawComponent()
+    game_object = _GameObject(raw)
+    active_scene = _Scene(None)
+    persistent_scene = _Scene(game_object)
+    game_object.scene = persistent_scene
+    _SceneManager.current = _SceneManagerInstance(active_scene, persistent_scene)
+    monkeypatch.setitem(
+        BuiltinComponent._builtin_registry,
+        _RawComponent.type_name,
+        _CacheProbeBuiltin,
+    )
+    BuiltinComponent._wrapper_cache.clear()
+
+    ctx = SimpleNamespace(
+        SceneManager=_SceneManager,
+        InspectorComponentInfo=_InspectorComponentInfo,
+        InxComponent=__import__(
+            "Infernux.components.component", fromlist=["InxComponent"]
+        ).InxComponent,
+        _inspector_support=SimpleNamespace(
+            get_component_structure_version=lambda: 1,
+        ),
+        get_component_icon_id=lambda *_args: 0,
+        engine=SimpleNamespace(get_asset_database=lambda: None),
+        ip=SimpleNamespace(),
+    )
+    _wire_cache_init(ctx)
+    _wire_component_list(ctx)
+
+    items = ctx.ip.get_component_list(game_object.id)
+    resolved = ctx.resolve_component(game_object.id, raw.component_id, True)
+
+    assert [item.type_name for item in items] == ["CacheProbeBuiltin"]
+    assert isinstance(resolved, _CacheProbeBuiltin)
+    assert ctx.current_scene_and_versions(game_object.id)[0] is persistent_scene

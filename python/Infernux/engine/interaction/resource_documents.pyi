@@ -2,6 +2,7 @@ from typing import Any, Callable
 from .documents import DocumentKind
 
 class EditableResourceDocumentController:
+    autosave_on_close: bool
     category: str
     file_path: str
     resource: Any

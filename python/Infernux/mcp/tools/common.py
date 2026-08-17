@@ -550,7 +550,7 @@ def _scene_guard_failure(name: str, explain: dict[str, Any]) -> dict[str, Any] |
     if sfm is None:
         return None
     status = scene_status()
-    if name in {"scene_open", "scene_new", "scene_save"}:
+    if name in {"scene_open", "scene_new", "scene_discard", "scene_save"}:
         if status["play_state"] != "edit":
             return _state_guard_fail(
                 "error.play_mode_active",
@@ -632,7 +632,12 @@ def _state_guard_fail(
 
 
 def _is_edit_mode_mutation(name: str) -> bool:
-    return _requires_saved_scene_file(name) or name in {"scene_open", "scene_new", "scene_save"}
+    return _requires_saved_scene_file(name) or name in {
+        "scene_open",
+        "scene_new",
+        "scene_discard",
+        "scene_save",
+    }
 
 
 def _requires_saved_scene_file(name: str) -> bool:
@@ -978,12 +983,16 @@ def write_external_source_text(
 def serialize_vector(value) -> Any:
     if value is None:
         return None
-    if all(hasattr(value, attr) for attr in ("x", "y", "z", "w")):
-        return [float(value.x), float(value.y), float(value.z), float(value.w)]
-    if all(hasattr(value, attr) for attr in ("x", "y", "z")):
-        return [float(value.x), float(value.y), float(value.z)]
-    if all(hasattr(value, attr) for attr in ("x", "y")):
-        return [float(value.x), float(value.y)]
+    # Reference wrappers intentionally proxy arbitrary attribute reads to
+    # their target and can therefore look structurally like a vector while
+    # unresolved. Only accept a shape when every coordinate is numeric.
+    for shape in (("x", "y", "z", "w"), ("x", "y", "z"), ("x", "y")):
+        try:
+            coordinates = [getattr(value, attr) for attr in shape]
+        except (AttributeError, ReferenceError, RuntimeError):
+            continue
+        if all(isinstance(coordinate, (bool, int, float)) for coordinate in coordinates):
+            return [float(coordinate) for coordinate in coordinates]
     return value
 
 
@@ -1044,10 +1053,11 @@ def serialize_component(comp) -> dict[str, Any]:
 
 def find_game_object(object_id: int):
     from Infernux.lib import SceneManager
-    scene = SceneManager.instance().get_active_scene()
+    scene_manager = SceneManager.instance()
+    scene = scene_manager.get_active_scene()
     if not scene:
         raise RuntimeError("No active scene.")
-    obj = scene.find_by_id(int(object_id))
+    obj = scene_manager.find_runtime_object_by_id(int(object_id))
     if obj is None:
         raise FileNotFoundError(f"GameObject {object_id} was not found.")
     return obj

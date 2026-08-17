@@ -72,6 +72,7 @@ CameraDrawCallResult SceneRenderBridge::CullAndBuildForCamera(Camera *camera, bo
         view.projection = camera->GetProjectionMatrix();
         view.viewProjection = camera->GetViewProjectionMatrix();
         view.cullingMask = camera->GetCullingMask();
+        view.cameraId = camera->GetComponentID();
         view.valid = true;
         if (GameObject *object = camera->GetGameObject()) {
             if (Transform *transform = object->GetTransform()) {

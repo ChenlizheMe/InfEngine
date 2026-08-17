@@ -69,7 +69,7 @@ from .floating_workspace_panel import (
 )
 from .node_graph_view import NodeGraphView
 from .graph_details import GraphDetailContributor, GraphDetailHost
-from .inspector_utils import preserve_ui_float_precision
+from .inspector_utils import preserve_ui_float_precision, render_color_value_bar
 
 
 _GRAPH_WORKSPACE_CONTEXT_MENU_BUILDER = ContextMenuBuilder()
@@ -96,6 +96,8 @@ def _bind_node_graph_panel(panel: object) -> PanelCommandAdapter:
         "command_graph_add_node",
         "can_graph_create_node",
         "command_graph_create_node",
+        "can_graph_open_create",
+        "command_graph_open_create",
         "can_graph_workspace_add",
         "command_graph_workspace_add",
     )
@@ -151,6 +153,10 @@ def _bind_node_graph_panel(panel: object) -> PanelCommandAdapter:
                 panel.command_graph_create_node,
                 panel.can_graph_create_node,
             ),
+            "graph.open_create": BoundPanelCommand(
+                panel.command_graph_open_create,
+                panel.can_graph_open_create,
+            ),
             "graph.workspace.add": BoundPanelCommand(
                 panel.command_graph_workspace_add,
                 panel.can_graph_workspace_add,
@@ -174,6 +180,7 @@ NODE_GRAPH_PANEL_INTERACTION = PanelInteractionDescriptor(
         PanelCommandSpec("graph.reset_zoom"),
         PanelCommandSpec("graph.add_node"),
         PanelCommandSpec("graph.create_node"),
+        PanelCommandSpec("graph.open_create"),
         PanelCommandSpec("graph.workspace.add"),
     ),
     shortcuts=tuple(
@@ -186,6 +193,7 @@ NODE_GRAPH_PANEL_INTERACTION = PanelInteractionDescriptor(
             ("edit.rename", "F2"),
             ("edit.duplicate", "Ctrl+D"),
             ("edit.deselect", "Escape"),
+            ("graph.open_create", "Space"),
         )
     ),
     adapter_factory=_bind_node_graph_panel,
@@ -460,6 +468,23 @@ class NodeGraphEditorPanel(EditorPanel):
         if entry is None or not entry.enabled:
             return False
         self._view._create_from_palette(entry, request)
+        return True
+
+    def can_graph_open_create(self, context: CommandContext) -> bool:
+        view = getattr(self, "_view", None)
+        return bool(view is not None and view.graph is not None)
+
+    def command_graph_open_create(self, context: CommandContext) -> bool:
+        """Space: open the node-create palette at the canvas centre."""
+        view = getattr(self, "_view", None)
+        if view is None or view.graph is None:
+            return False
+        if view._node_create_request is not None:
+            return False
+        cx = view._origin_x + view._canvas_w * 0.5
+        cy = view._origin_y + view._canvas_h * 0.5
+        gx, gy = view.screen_to_graph(cx, cy)
+        view._request_node_creation(gx, gy)
         return True
 
     def _execute_node_creation_command(self, payload: Mapping[str, object]) -> bool:
@@ -1433,6 +1458,10 @@ class NodeGraphEditorPanel(EditorPanel):
                 "_on_node_graph_view_gesture_committed",
             ),
             "on_canvas_drop": ("_on_canvas_drop",),
+            "on_node_asset_reference": ("_on_node_asset_reference",),
+            "on_node_asset_reference_items": (
+                "_node_asset_reference_items",
+            ),
         }
         for callback_name, candidates in bindings.items():
             callback = next(
@@ -1544,11 +1573,21 @@ class NodeGraphEditorPanel(EditorPanel):
                 float(ctx.drag_float(widget_id, float(value), 0.05, -1.0e7, 1.0e7)),
                 value,
             )
+        if value_type is ValueType.COLOR:
+            return preserve_ui_float_precision(
+                render_color_value_bar(
+                    ctx,
+                    widget_id,
+                    value,
+                    allow_hdr=True,
+                    default_hdr_enabled=True,
+                ),
+                value,
+            )
         if value_type in {
             ValueType.VEC2,
             ValueType.VEC3,
             ValueType.VEC4,
-            ValueType.COLOR,
             ValueType.MAT3,
             ValueType.MAT4,
         }:

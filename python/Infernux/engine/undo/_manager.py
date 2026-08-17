@@ -16,7 +16,10 @@ from Infernux.engine.interaction import (
     JournalEntry,
 )
 from Infernux.engine.undo._base import UndoCommand
-from Infernux.engine.undo._helpers import _bump_inspector_values
+from Infernux.engine.undo._helpers import (
+    _bump_inspector_values,
+    _inspector_snapshot_revision,
+)
 
 
 @dataclass(slots=True)
@@ -201,8 +204,9 @@ class UndoManager:
                 cmd.dispose()
                 return False
             try:
+                inspector_revision = _inspector_snapshot_revision()
                 cmd.execute()
-                _bump_inspector_values()
+                _bump_inspector_values(inspector_revision)
             except Exception as exc:
                 Debug.log_exception(exc)
                 cmd.dispose()
@@ -211,6 +215,7 @@ class UndoManager:
             return True
 
         self._is_executing = True
+        inspector_revision = _inspector_snapshot_revision()
         try:
             cmd.execute()
         except Exception as exc:
@@ -220,7 +225,7 @@ class UndoManager:
             return False
         finally:
             self._is_executing = False
-        _bump_inspector_values()
+        _bump_inspector_values(inspector_revision)
 
         if self._suppress_property_recording and cmd._is_property_edit:
             cmd.dispose()
@@ -307,8 +312,6 @@ class UndoManager:
             operation_id=journal_command.operation_id,
             command_id=command_id,
         )
-        if recorded:
-            _bump_inspector_values()
         return recorded
 
     def undo(self) -> None:
@@ -397,7 +400,6 @@ class UndoManager:
                 else:
                     self._journal.commit_redo(pending.entry)
                 self._pending_replay = None
-                _bump_inspector_values()
                 self._fire_state_changed()
                 self._debug_dump_stack(pending.direction)
                 return ContextRestoreStatus.READY
@@ -413,7 +415,6 @@ class UndoManager:
             if status is ContextRestoreStatus.PENDING:
                 return status
             self._pending_replay = None
-            _bump_inspector_values()
             self._fire_state_changed()
             if status is ContextRestoreStatus.FAILED:
                 Debug.log_error(
@@ -433,8 +434,10 @@ class UndoManager:
             pending.entry.action.undo if is_undo else pending.entry.action.redo
         )
         self._is_executing = True
+        inspector_revision = _inspector_snapshot_revision()
         try:
             callback()
+            _bump_inspector_values(inspector_revision)
             return True
         except Exception as exc:
             Debug.log_exception(exc)
@@ -445,6 +448,8 @@ class UndoManager:
     def clear(self) -> None:
         if self._pending_replay is not None:
             raise RuntimeError("cannot clear Undo/Redo history during context restore")
+        if self.is_user_action_active:
+            raise RuntimeError("cannot clear Undo/Redo history during an active user action")
         self._journal.clear()
         self._fire_state_changed()
 

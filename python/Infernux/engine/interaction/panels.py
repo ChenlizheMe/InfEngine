@@ -312,6 +312,26 @@ class PanelInteractionRegistry:
                 f"{names}"
             )
 
+    def require_registered_commands(self, command_ids: Iterable[str]) -> None:
+        """Fail when a panel advertises a command missing from the global registry."""
+        registered = {
+            str(command_id or "").strip()
+            for command_id in command_ids
+            if str(command_id or "").strip()
+        }
+        declared = {
+            command.command_id
+            for descriptor in self._descriptors.values()
+            for command in descriptor.commands
+        }
+        missing = declared.difference(registered)
+        if missing:
+            names = ", ".join(sorted(missing))
+            raise RuntimeError(
+                "panel interaction commands are missing from the global registry: "
+                f"{names}"
+            )
+
     def bind_view(self, view_id: str, type_id: str, instance: object) -> None:
         resolved_view_id = str(view_id or "").strip()
         resolved_type_id = str(type_id or "").strip()

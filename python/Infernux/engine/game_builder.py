@@ -20,6 +20,9 @@ Windows output layout::
 
 from __future__ import annotations
 
+import ast
+import copy
+import ctypes
 import io
 import importlib.machinery
 import json
@@ -59,15 +62,29 @@ from Infernux.engine.path_utils import (
     resolved_path,
     same_path,
 )
+from Infernux.engine.build_settings import load_build_settings
 from Infernux.engine.runtime_artifact_catalog import (
+    RUNTIME_JSON_DOCUMENT_SUFFIXES,
     RuntimeArtifactError,
     build_catalog,
     load_asset_index,
     logical_asset_type,
     logical_type_for_path,
     payload_kind_for,
+    RUNTIME_DOCUMENT_PAYLOAD_KINDS,
     runtime_artifact_id,
+    runtime_artifact_reason_for,
+    source_fingerprint,
     validate_artifact,
+)
+from Infernux.engine.player_service_graph import (
+    RuntimeFeatureSet,
+    RuntimeFlavor,
+    player_runtime_contract_sections,
+)
+from Infernux.engine.runtime_type_registry import (
+    RUNTIME_TYPE_REGISTRY_SCHEMA,
+    RUNTIME_TYPE_REGISTRY_VERSION,
 )
 
 
@@ -172,6 +189,54 @@ def _copy_player_file_atomic(source: str, destination: str) -> None:
             os.remove(temporary)
         except FileNotFoundError:
             pass
+
+
+def _write_json_atomic(
+    destination: str,
+    payload: object,
+    *,
+    indent: int | None = 2,
+) -> None:
+    """Durably replace one JSON document without exposing partial bytes."""
+
+    destination = os.fspath(destination)
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    temporary = destination + f".{os.getpid()}.{time.time_ns()}.tmp"
+    try:
+        with open(temporary, "x", encoding="utf-8", newline="\n") as stream:
+            json.dump(
+                payload,
+                stream,
+                ensure_ascii=False,
+                indent=indent,
+                sort_keys=True,
+                separators=None if indent is not None else (",", ":"),
+            )
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    finally:
+        try:
+            os.remove(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _player_builder_process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+    if not handle:
+        return False
+    ctypes.windll.kernel32.CloseHandle(handle)
+    return True
 
 
 def _publish_player_cache(
@@ -298,7 +363,13 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
 
     OUTPUT_MARKER_FILENAME = ".infernux-build-output"
     _BUILD_TEMP_DIR_NAME = "_build_temp"
-    _GAME_DATA_DIRS = ["Assets", "ProjectSettings", "materials"]
+    _GAME_DATA_FILES = frozenset(
+        {
+            "ProjectSettings/BuildSettings.json",
+            "ProjectSettings/PhysicsSettings.json",
+            "ProjectSettings/TagLayerSettings.json",
+        }
+    )
     _EXCLUDE_PATTERNS = {
         "__pycache__",
         ".git",
@@ -321,22 +392,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             "ProjectSettings/GameView.ini",
         }
     )
-    _PLAYER_PORTABLE_DOCUMENT_SUFFIXES = frozenset(
-        {
-            ".animclip",
-            ".animfsm",
-            ".animtimeline",
-            ".effect",
-            ".effectgroup",
-            ".json",
-            ".mat",
-            ".particlegraph",
-            ".prefab",
-            ".scene",
-            ".timeline",
-            ".timelinefsm",
-        }
-    )
+    _PLAYER_PORTABLE_DOCUMENT_SUFFIXES = RUNTIME_JSON_DOCUMENT_SUFFIXES
     _NUMPY_RUNTIME_EXCLUDED_DIRECTORIES = frozenset(
         {
             "__pycache__",
@@ -430,6 +486,8 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     _RUNTIME_ARCHIVE_FILENAME = "Runtime.inxrt"
     _PARALLEL_ARCHIVE_FILENAME = "Parallel.inxmod"
     _PLAYER_MANIFEST_FILENAME = "Player.inxmanifest"
+    _RUNTIME_ASSET_RECORDS_FILENAME = "RuntimeAssetRecords.json"
+    _RUNTIME_TYPE_REGISTRY_FILENAME = "RuntimeTypeRegistry.json"
     _PLAYER_CONTENT_CONTROL_RELATIVE_PATHS = frozenset(
         {
             "BuildManifest.json",
@@ -453,6 +511,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         debug_mode: bool = False,
         lto: bool = True,
         enable_jit: bool = False,
+        additional_cook_roots: Optional[List[str]] = None,
     ):
         self.project_path = resolved_path(project_path)
         self.project_name = game_name.strip() if game_name.strip() else os.path.basename(self.project_path)
@@ -467,6 +526,16 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self.debug_mode = debug_mode
         self.lto = lto
         self.enable_jit = enable_jit
+        self.additional_cook_roots = (
+            list(additional_cook_roots)
+            if additional_cook_roots is not None
+            else None
+        )
+        self._validated_additional_cook_roots: list[str] = []
+        self._full_build_validated = False
+        self._runtime_type_records: list[dict[str, object]] = []
+        self._build_output_transaction: dict[str, str] | None = None
+        self._asset_index_entries_snapshot: list[dict] | None = None
 
     def _player_inxpack_profile(self) -> str:
         """Return the compression profile for this concrete Player build."""
@@ -486,6 +555,10 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
 
         build_start = time.perf_counter()
         _stage_t0 = build_start
+        # A build is an immutable transaction.  The live Editor may continue
+        # invalidating its derived AssetIndex while Nuitka runs, so every
+        # stage below must share the catalog captured during validation.
+        self._asset_index_entries_snapshot = None
 
         # Keep build diagnostics outside the project. A Player build must not
         # mutate the author's project by creating Logs/build.log, and a
@@ -543,12 +616,14 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 pass
             if build_succeeded:
                 shutil.rmtree(log_dir, ignore_errors=True)
+            self._abort_output_transaction()
 
     def _build_inner(self, _p, _blog, on_progress, cancel_event, build_start) -> str:
         """Internal build pipeline (separated for clean exception handling)."""
 
         _p(t("build.step.validating"), 0.00)
         self._validate()
+        self._begin_output_transaction()
 
         _p(t("build.step.cleaning_output"), 0.02)
         self._clean_output()
@@ -582,6 +657,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
 
         _p(t("build.step.compiling_scripts"), 0.91)
         self._compile_user_scripts(final_dir)
+        self._write_runtime_asset_records(final_dir)
 
         _p(t("build.step.processing_splash"), 0.93)
         self._process_build_icon(final_dir)
@@ -628,6 +704,8 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         # Log per-directory size breakdown so the user sees where size goes
         self._report_build_size(final_dir, _blog)
 
+        final_dir = self._commit_output_transaction(final_dir)
+
         _p(t("build.step.complete"), 1.0)
         elapsed_seconds = time.perf_counter() - build_start
         done_msg = t("build.completed_log").format(
@@ -637,6 +715,157 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         Debug.log(done_msg)
         _blog(done_msg)
         return final_dir
+
+    def _begin_output_transaction(self) -> None:
+        """Claim an isolated sibling staging directory for this build."""
+
+        if self._build_output_transaction is not None:
+            raise RuntimeError("Player output transaction is already active")
+        final_dir = resolved_path(self.output_dir)
+        parent = os.path.dirname(final_dir)
+        basename = os.path.basename(final_dir.rstrip("\\/"))
+        os.makedirs(parent, exist_ok=True)
+        lock_path = final_dir + ".infernux-build.lock"
+        prefix = f".{basename}.infernux-staging-"
+        backup_prefix = f".{basename}.infernux-previous-"
+
+        def reclaim_stale_lock() -> None:
+            try:
+                lock_age = time.time() - os.stat(lock_path).st_mtime
+            except OSError:
+                return
+            try:
+                with open(lock_path, "r", encoding="utf-8") as stream:
+                    owner = json.load(stream)
+            except (OSError, json.JSONDecodeError, TypeError):
+                owner = {}
+            try:
+                pid = int(owner.get("pid", 0)) if isinstance(owner, dict) else 0
+            except (TypeError, ValueError):
+                pid = 0
+            if _player_builder_process_is_alive(pid) or (not pid and lock_age < 2.0):
+                raise RuntimeError(
+                    f"Another Player build owns this output directory: {final_dir}"
+                )
+            stale_staging = (
+                str(owner.get("staging", "")) if isinstance(owner, dict) else ""
+            )
+            stale_backup = (
+                str(owner.get("backup", "")) if isinstance(owner, dict) else ""
+            )
+            if stale_backup:
+                stale_backup = resolved_path(stale_backup)
+                if (
+                    same_path(os.path.dirname(stale_backup), parent)
+                    and os.path.basename(stale_backup).startswith(backup_prefix)
+                    and os.path.exists(stale_backup)
+                ):
+                    if os.path.exists(final_dir):
+                        _remove_player_path(stale_backup, ignore_errors=True)
+                    else:
+                        os.replace(stale_backup, final_dir)
+            if stale_staging:
+                stale_staging = resolved_path(stale_staging)
+                if (
+                    same_path(os.path.dirname(stale_staging), parent)
+                    and os.path.basename(stale_staging).startswith(prefix)
+                ):
+                    _remove_player_path(stale_staging, ignore_errors=True)
+            try:
+                os.remove(lock_path)
+            except FileNotFoundError:
+                pass
+
+        for _attempt in range(2):
+            try:
+                lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                reclaim_stale_lock()
+        else:
+            raise RuntimeError(f"Unable to claim Player output: {final_dir}")
+
+        generation = f"{os.getpid()}-{time.time_ns()}"
+        staging = os.path.join(parent, f"{prefix}{generation}")
+        backup = os.path.join(parent, f"{backup_prefix}{generation}")
+        try:
+            lock_payload = json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "project_identity": path_fingerprint(self.project_path),
+                    "staging": portable_path(staging),
+                    "backup": portable_path(backup),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+            os.write(lock_fd, lock_payload)
+            os.fsync(lock_fd)
+        finally:
+            os.close(lock_fd)
+
+        try:
+            os.makedirs(staging, exist_ok=False)
+        except Exception:
+            try:
+                os.remove(lock_path)
+            except FileNotFoundError:
+                pass
+            raise
+        self._build_output_transaction = {
+            "final": final_dir,
+            "staging": resolved_path(staging),
+            "backup": resolved_path(backup),
+            "lock": lock_path,
+        }
+        self.output_dir = resolved_path(staging)
+
+    def _commit_output_transaction(self, staged_dir: str) -> str:
+        """Publish an audited staging product while preserving the old one."""
+
+        state = self._build_output_transaction
+        if state is None or not same_path(staged_dir, state["staging"]):
+            raise RuntimeError("Player output transaction staging identity changed")
+        final_dir = state["final"]
+        backup = state["backup"]
+        moved_old = False
+        try:
+            if os.path.exists(final_dir):
+                os.replace(final_dir, backup)
+                moved_old = True
+            try:
+                os.replace(state["staging"], final_dir)
+            except Exception:
+                if moved_old and not os.path.exists(final_dir):
+                    os.replace(backup, final_dir)
+                raise
+            if moved_old:
+                _remove_player_path(backup, ignore_errors=True)
+            self.output_dir = final_dir
+            self._release_output_transaction_lock()
+            self._build_output_transaction = None
+            return final_dir
+        except Exception:
+            self.output_dir = final_dir
+            raise
+
+    def _release_output_transaction_lock(self) -> None:
+        state = self._build_output_transaction
+        if state is None:
+            return
+        try:
+            os.remove(state["lock"])
+        except FileNotFoundError:
+            pass
+
+    def _abort_output_transaction(self) -> None:
+        state = self._build_output_transaction
+        if state is None:
+            return
+        self.output_dir = state["final"]
+        _remove_player_path(state["staging"], ignore_errors=True)
+        self._release_output_transaction_lock()
+        self._build_output_transaction = None
 
     # ------------------------------------------------------------------
     # Validation
@@ -651,17 +880,17 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             else os.path.join(self.project_path, scene_path)
         )
         absolute = resolved_path(candidate)
-        try:
-            relative_path(absolute, self.project_path)
-        except ValueError as exc:
+        assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
+        if not is_path_within(absolute, assets_root, allow_root=False):
             raise ValueError(
-                f"Build scene must be inside the project: {scene_path}"
-            ) from exc
+                f"Build scene must be inside the project Assets folder: {scene_path}"
+            )
         if not absolute.lower().endswith(".scene"):
             raise ValueError(f"Build scene must use the .scene extension: {scene_path}")
         return absolute
 
     def _validate(self):
+        self._full_build_validated = False
         bs = os.path.join(
             self.project_path, "ProjectSettings", "BuildSettings.json"
         )
@@ -683,6 +912,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             names = ", ".join(os.path.basename(m) for m in missing)
             raise FileNotFoundError(f"Scene file(s) not found: {names}")
 
+        self._validated_additional_cook_roots = self._resolve_additional_cook_roots()
+
+        self._asset_index_entries()
         self._validate_animation_clip_assets()
 
         if self.icon_path:
@@ -695,6 +927,61 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 )
 
         self._validate_output_directory()
+        self._full_build_validated = True
+
+    def _asset_index_entries(self) -> list[dict]:
+        """Return this build transaction's immutable AssetIndex snapshot."""
+
+        if self._asset_index_entries_snapshot is None:
+            self._asset_index_entries_snapshot = copy.deepcopy(
+                load_asset_index(self.project_path)
+            )
+        # Callers build lookup maps from these documents.  Keep the canonical
+        # snapshot isolated in case a future cook stage mutates an entry.
+        return copy.deepcopy(self._asset_index_entries_snapshot)
+
+    def _configured_additional_cook_roots(self) -> list[str]:
+        """Return the one current Build Settings resource-root field."""
+
+        if self.additional_cook_roots is not None:
+            return list(self.additional_cook_roots)
+        data = load_build_settings(self.project_path)
+        roots = data.get("additional_cook_roots", [])
+        if not isinstance(roots, list):
+            raise ValueError(
+                "BuildSettings additional_cook_roots must be an array of paths"
+            )
+        return list(roots)
+
+    def _resolve_additional_cook_root(self, configured: str) -> str:
+        if type(configured) is not str or not configured.strip():
+            raise ValueError(
+                "Additional Cook Root must be a non-empty path inside Assets"
+            )
+        raw = configured.strip()
+        candidate = raw if os.path.isabs(raw) else os.path.join(self.project_path, raw)
+        absolute = resolved_path(candidate)
+        assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
+        if not is_path_within(absolute, assets_root, allow_root=False):
+            raise ValueError(
+                f"Additional Cook Root must be inside the project Assets folder: {configured}"
+            )
+        if not os.path.exists(absolute):
+            raise FileNotFoundError(
+                f"Additional Cook Root does not exist: {configured}"
+            )
+        return absolute
+
+    def _resolve_additional_cook_roots(self) -> list[str]:
+        roots: list[str] = []
+        seen: set[str] = set()
+        for configured in self._configured_additional_cook_roots():
+            resolved = self._resolve_additional_cook_root(configured)
+            key = resolved.casefold()
+            if key not in seen:
+                roots.append(resolved)
+                seen.add(key)
+        return roots
 
     def _validate_animation_clip_assets(self) -> None:
         """Reject dangling SpriteFrame references before packaging content."""
@@ -845,17 +1132,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             "state": state,
             "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-        temporary = marker_path + f".{os.getpid()}.tmp"
-        try:
-            with open(temporary, "w", encoding="utf-8") as marker_file:
-                json.dump(marker_payload, marker_file, indent=2, ensure_ascii=False)
-                marker_file.write("\n")
-            os.replace(temporary, marker_path)
-        finally:
-            try:
-                os.remove(temporary)
-            except FileNotFoundError:
-                pass
+        _write_json_atomic(marker_path, marker_payload)
 
     # ------------------------------------------------------------------
     # Generate boot script (temporary, fed to Nuitka)
@@ -875,7 +1152,7 @@ os.environ["_INFERNUX_PLAYER_MODE"] = "1"
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
 
-_PLAYER_ROOT = os.path.dirname(os.path.abspath(sys.argv[0]))
+_PLAYER_ROOT = os.path.dirname(sys.executable)
 _EXE_STEM = os.path.splitext(os.path.basename(sys.argv[0]))[0]
 _DATA_ROOT = os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", "").strip()
 if not _DATA_ROOT:
@@ -1054,19 +1331,27 @@ if sys.platform == "win32":
         except OSError:
             pass
 
-_LOGS_DIR = os.path.join(_DATA_ROOT, "Logs")
+_STATE_HOME = (
+    os.environ.get("LOCALAPPDATA", "").strip()
+    or os.environ.get("XDG_STATE_HOME", "").strip()
+    or os.path.join(os.path.expanduser("~"), ".local", "state")
+)
+_PLAYER_STATE_ROOT = os.path.join(
+    _STATE_HOME, "Infernux", "Players", _SAFE_GAME_NAME
+)
+_LOGS_DIR = os.path.join(_PLAYER_STATE_ROOT, "Logs")
 _LOG = os.path.join(_LOGS_DIR, "player.log")
 os.environ["_INFERNUX_PLAYER_LOG"] = _LOG
+os.makedirs(_LOGS_DIR, exist_ok=True)
 
 if _DEBUG_MODE:
-    _DEBUG_LOG = os.path.join(_DATA_ROOT, _SAFE_GAME_NAME + "_debug.log")
+    _DEBUG_LOG = os.path.join(_LOGS_DIR, _SAFE_GAME_NAME + "_debug.log")
     _debug_fh = open(_DEBUG_LOG, "w", encoding="utf-8")
     sys.stdout = _debug_fh
     sys.stderr = _debug_fh
 
 def _log(_message):
     try:
-        os.makedirs(_LOGS_DIR, exist_ok=True)
         with open(_LOG, "a", encoding="utf-8") as _stream:
             _stream.write(str(_message) + "\\n")
     except OSError:
@@ -1499,57 +1784,100 @@ finally:
         self._runtime_artifact_bindings = {}
         self._runtime_artifact_source_paths = set()
         data_dir = os.path.join(final_dir, "Data")
-        ignore = shutil.ignore_patterns(*self._EXCLUDE_PATTERNS)
-        for dirname in self._GAME_DATA_DIRS:
-            src = os.path.join(self.project_path, dirname)
-            dst = os.path.join(data_dir, dirname)
-            if os.path.isdir(src):
-                _t0 = time.perf_counter()
-                if sys.platform == "win32":
-                    os.makedirs(dst, exist_ok=True)
-                    rc = subprocess.call(
-                        ["robocopy", src, dst, "/E",
-                         "/MT:16", "/R:1", "/W:1", "/XJ",
-                         "/COPY:DAT", "/DCOPY:DAT",
-                         "/NFL", "/NDL", "/NJH", "/NJS", "/NP",
-                         "/XD", "__pycache__", ".git", "Logs"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=0x08000000,
-                    )
-                    if rc >= 8:
-                        Debug.log_warning(
-                            f"robocopy failed for {dirname}/ (exit {rc}), "
-                            f"falling back to shutil.copytree"
-                        )
-                        if os.path.isdir(dst):
-                            shutil.rmtree(dst)
-                        shutil.copytree(src, dst, ignore=ignore)
-                else:
-                    shutil.copytree(src, dst, ignore=ignore)
-                Debug.log_internal(
-                    f"  copied {dirname}/ in {time.perf_counter() - _t0:.2f}s"
-                )
+        # Runtime settings are an explicit whitelist. Recursively copying the
+        # authoring ProjectSettings directory would make every future Editor
+        # or MCP document an accidental Player dependency.
+        for relative in sorted(self._GAME_DATA_FILES):
+            source = os.path.join(self.project_path, *relative.split("/"))
+            if not os.path.isfile(source):
+                continue
+            destination = os.path.join(data_dir, *relative.split("/"))
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copy2(source, destination)
 
-        self._prune_proven_unreachable_staged_assets(data_dir)
+        self._copy_cooked_assets(data_dir)
         self._prune_player_editor_data(data_dir)
         self._stage_library_runtime_artifacts(data_dir)
-
-        for artifact_kind in ("RenderEffect",):
-            artifact_source = os.path.join(
-                self.project_path, "Library", "Artifacts", artifact_kind
-            )
-            if os.path.isdir(artifact_source):
-                shutil.copytree(
-                    artifact_source,
-                    os.path.join(data_dir, "Library", "Artifacts", artifact_kind),
-                    dirs_exist_ok=True,
-                )
+        self._stage_library_runtime_documents(data_dir)
 
         self._copy_reachable_particle_artifacts(data_dir)
         self._copy_particle_data_interface_artifacts(data_dir)
 
         self._filter_shipped_requirements(data_dir)
+
+    def _copy_cooked_assets(self, data_dir: str) -> None:
+        """Stage only the declared AssetIndex closure and explicit roots."""
+
+        try:
+            entries = self._asset_index_entries()
+            selected = self._collect_library_asset_entries(entries)
+        except RuntimeArtifactError as exc:
+            raise RuntimeError(f"Player asset cook failed: {exc}") from exc
+
+        self._cooked_asset_entries = dict(selected)
+
+        assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
+        builtin_resources_root = resolved_path(
+            os.path.join(self.project_path, "Library", "Resources")
+        )
+        copied: set[str] = set()
+
+        def copy_source(source_path: str, *, reason: str) -> None:
+            source = resolved_path(source_path)
+            if not is_path_within(source, assets_root, allow_root=False):
+                raise RuntimeError(
+                    f"Player asset cook source is outside Assets ({reason}): {source}"
+                )
+            if not os.path.isfile(source):
+                raise RuntimeError(
+                    f"Player asset cook source is missing ({reason}): {source}"
+                )
+            if source.casefold().endswith(".meta"):
+                return
+            relative = relative_path(source, self.project_path).replace("\\", "/")
+            key = relative.casefold()
+            if key in copied:
+                return
+            destination = os.path.join(data_dir, *relative.split("/"))
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copy2(source, destination)
+            copied.add(key)
+
+        for guid in sorted(selected):
+            entry = selected[guid]
+            source = self._library_source_entry_path(entry)
+            try:
+                source_fingerprint(self.project_path, entry)
+            except RuntimeArtifactError as exc:
+                raise RuntimeError(
+                    f"Player asset cook rejected stale AssetIndex entry {guid}: {exc}"
+                ) from exc
+            if str(entry.get("artifact_path", "") or "").strip():
+                # The current Library artifact replaces its authoring source;
+                # _stage_library_runtime_artifacts validates and stages it.
+                continue
+            if is_path_within(source, assets_root, allow_root=False):
+                copy_source(source, reason=f"AssetIndex GUID {guid}")
+                continue
+            if bool(entry.get("read_only", False)) and is_path_within(
+                source,
+                builtin_resources_root,
+                allow_root=False,
+            ):
+                # Built-in resources are supplied once by Runtime.inxrt. They
+                # may participate in the GUID closure, but must never be
+                # duplicated into project Content or treated as author files.
+                continue
+            raise RuntimeError(
+                "Player asset cook selected an unsupported source outside "
+                f"Assets: guid={guid}, source={source}"
+            )
+
+        if not copied and self._full_build_validated:
+            raise RuntimeError(
+                "Player asset cook selected no runtime assets; add a valid scene "
+                "or an Additional Cook Root in Build Settings"
+            )
 
     @classmethod
     def _is_player_editor_path(cls, relative: str) -> bool:
@@ -1573,48 +1901,8 @@ finally:
                 continue
         self._remove_empty_directory_tree(os.path.join(data_dir, "Logs"))
 
-    def _prune_proven_unreachable_staged_assets(self, data_dir: str) -> None:
-        """Remove only indexed staging files proven outside the build closure.
-
-        Unindexed files remain untouched because they may belong to a future
-        dynamic-loading resource group. Such groups need explicit additional
-        roots in the complete cooker; guessing from filenames is not safe.
-        """
-
-        indexed_paths, reachable_paths = self._project_asset_reachability_evidence()
-        unreachable = indexed_paths - reachable_paths
-        if not unreachable or not os.path.isdir(data_dir):
-            return
-
-        removed = 0
-        for root, _dirs, filenames in os.walk(data_dir, topdown=False):
-            for filename in filenames:
-                path = os.path.join(root, filename)
-                try:
-                    staged_relative = relative_path(path, data_dir).replace("\\", "/")
-                except (OSError, ValueError):
-                    continue
-                staged_key = staged_relative.casefold()
-                source_key = staged_key[:-5] if staged_key.endswith(".meta") else staged_key
-                if source_key not in unreachable:
-                    continue
-                try:
-                    os.remove(path)
-                    removed += 1
-                except FileNotFoundError:
-                    continue
-            if not same_path(root, data_dir):
-                try:
-                    os.rmdir(root)
-                except OSError:
-                    pass
-        if removed:
-            Debug.log_internal(
-                f"  pruned {removed} indexed staging files outside the BuildSettings closure"
-            )
-
     @staticmethod
-    def _asset_reference_values(value):
+    def _asset_reference_values(value, known_guids: frozenset[str] = frozenset()):
         if isinstance(value, dict):
             if value.get("$type") == "asset_ref":
                 guid = value.get("guid", "")
@@ -1622,18 +1910,37 @@ finally:
                 if isinstance(guid, str) and isinstance(path_hint, str) and (guid or path_hint):
                     yield guid, path_hint
             for nested in value.values():
-                yield from GameBuilder._asset_reference_values(nested)
+                yield from GameBuilder._asset_reference_values(nested, known_guids)
         elif isinstance(value, list):
             for nested in value:
-                yield from GameBuilder._asset_reference_values(nested)
+                yield from GameBuilder._asset_reference_values(nested, known_guids)
+        elif isinstance(value, str):
+            if value in known_guids:
+                # Native scene/component serializers use compact GUID scalars
+                # for fields such as MeshRenderer.materials.
+                yield value, ""
+                return
+            if value.startswith("python:"):
+                # Python component identities embed the owning script GUID in
+                # the type id instead of storing a separate asset reference.
+                fields = value.split(":", 2)
+                if len(fields) == 3 and fields[1] in known_guids:
+                    yield fields[1], ""
 
-    def _load_json_asset_references(self, source_path: str) -> set[tuple[str, str]]:
+    def _load_json_asset_references(
+        self,
+        source_path: str,
+        *,
+        known_guids: frozenset[str] = frozenset(),
+    ) -> set[tuple[str, str]]:
         try:
             with open(source_path, "r", encoding="utf-8") as stream:
                 value = json.load(stream)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return set()
-        return set(self._asset_reference_values(value))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"Player cook cannot read indexed runtime document: {source_path}"
+            ) from exc
+        return set(self._asset_reference_values(value, known_guids))
 
     def _library_source_entry_path(self, entry: dict) -> str:
         raw = str(entry.get("normalized_path", "")).replace("\\", "/")
@@ -1641,13 +1948,141 @@ finally:
         return resolved_path(candidate)
 
     def _collect_library_asset_entries(self, entries: list[dict]) -> dict[str, dict]:
-        """Return the current artifact-backed closure rooted at build scenes."""
+        """Return the current AssetIndex closure for scenes and cook roots."""
 
         by_guid = {str(item["guid"]): item for item in entries}
+        known_guids = frozenset(by_guid)
         by_path = {
             str(item["normalized_path"]).replace("\\", "/").casefold(): item
             for item in entries
         }
+        by_project_path = {
+            relative_path(self._library_source_entry_path(item), self.project_path)
+            .replace("\\", "/")
+            .casefold(): item
+            for item in entries
+        }
+        indexed_sources = {
+            self._library_source_entry_path(item).casefold() for item in entries
+        }
+        shader_guids_by_id: dict[str, set[str]] = {}
+        for guid, entry in by_guid.items():
+            metadata = entry.get("metadata", {})
+            if isinstance(metadata, dict):
+                metadata = metadata.get("metadata", metadata)
+            shader_id_value = metadata.get("shader_id") if isinstance(metadata, dict) else None
+            if isinstance(shader_id_value, dict):
+                shader_id_value = shader_id_value.get("value")
+            shader_id = str(shader_id_value or "").strip()
+            if shader_id:
+                shader_guids_by_id.setdefault(shader_id.casefold(), set()).add(guid)
+        project_assets = resolved_path(os.path.join(self.project_path, "Assets"))
+        script_guid_by_module: dict[str, str] = {}
+        script_module_by_guid: dict[str, str] = {}
+        for guid, entry in by_guid.items():
+            source_path = self._library_source_entry_path(entry)
+            if not source_path.casefold().endswith(".py") or not is_path_within(
+                source_path,
+                project_assets,
+                allow_root=False,
+            ):
+                continue
+            relative_script = relative_path(source_path, project_assets).replace("\\", "/")
+            module_parts = relative_script[:-3].split("/")
+            if module_parts[-1] == "__init__":
+                module_parts.pop()
+            if not module_parts or any(not part.isidentifier() for part in module_parts):
+                raise RuntimeError(
+                    "Player project script has no stable import identity: "
+                    f"Assets/{relative_script}"
+                )
+            module_name = ".".join(module_parts)
+            script_guid_by_module[module_name.casefold()] = guid
+            script_module_by_guid[guid] = module_name
+
+        def project_script_dependencies(
+            guid: str, source_path: str
+        ) -> tuple[set[str], set[str]]:
+            module_name = script_module_by_guid.get(guid)
+            if module_name is None:
+                return set(), set()
+            try:
+                with open(source_path, "r", encoding="utf-8") as stream:
+                    tree = ast.parse(stream.read(), filename=source_path)
+            except (OSError, UnicodeDecodeError, SyntaxError) as exc:
+                raise RuntimeError(
+                    f"Player cook cannot inspect project script imports: {source_path}"
+                ) from exc
+
+            package_parts = module_name.split(".")[:-1]
+            imported: set[str] = set()
+            referenced_assets: set[str] = set()
+
+            def add_module(candidate: str) -> None:
+                candidate = candidate.strip(".")
+                if not candidate:
+                    return
+                dependency_guid = script_guid_by_module.get(candidate.casefold())
+                if dependency_guid is not None:
+                    imported.add(dependency_guid)
+
+            def add_shader(shader_id: str) -> None:
+                referenced_assets.update(
+                    shader_guids_by_id.get(shader_id.strip().casefold(), ())
+                )
+
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "get_shader_list":
+                    for nested in ast.walk(node):
+                        if isinstance(nested, ast.Constant) and isinstance(nested.value, str):
+                            add_shader(nested.value)
+                if isinstance(node, ast.Call):
+                    function_name = ""
+                    if isinstance(node.func, ast.Attribute):
+                        function_name = node.func.attr
+                    elif isinstance(node.func, ast.Name):
+                        function_name = node.func.id
+                    if (
+                        function_name == "fullscreen_quad"
+                        and node.args
+                        and isinstance(node.args[0], ast.Constant)
+                        and isinstance(node.args[0].value, str)
+                    ):
+                        add_shader(node.args[0].value)
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    literal = node.value.strip().replace("\\", "/")
+                    if literal.casefold().startswith("assets/"):
+                        entry = by_project_path.get(literal.casefold())
+                        if entry is None:
+                            raise RuntimeError(
+                                "Player project script references an asset absent from "
+                                f"Library/AssetIndex.json: {literal} ({source_path})"
+                            )
+                        referenced_assets.add(str(entry["guid"]))
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        add_module(alias.name)
+                    continue
+                if not isinstance(node, ast.ImportFrom):
+                    continue
+                if node.level:
+                    keep = len(package_parts) - (node.level - 1)
+                    if keep < 0:
+                        continue
+                    base_parts = package_parts[:keep]
+                    if node.module:
+                        base_parts.extend(node.module.split("."))
+                    base_module = ".".join(base_parts)
+                else:
+                    base_module = node.module or ""
+                add_module(base_module)
+                for alias in node.names:
+                    if alias.name != "*":
+                        add_module(
+                            f"{base_module}.{alias.name}" if base_module else alias.name
+                        )
+            return imported, referenced_assets
+
         roots: set[str] = set()
         settings_path = os.path.join(self.project_path, "ProjectSettings", "BuildSettings.json")
         try:
@@ -1663,43 +2098,108 @@ finally:
                 scene_entry = by_path.get(
                     relative_path(scene_path, self.project_path).casefold()
                 )
-            if scene_entry is not None:
-                roots.add(str(scene_entry["guid"]))
-                for guid, path_hint in self._load_json_asset_references(scene_path):
-                    if guid and guid in by_guid:
-                        roots.add(guid)
-                    elif path_hint:
-                        candidate = path_hint.replace("\\", "/").casefold()
-                        roots.update(
-                            str(item["guid"])
-                            for key, item in by_path.items()
-                            if key.endswith(candidate)
-                        )
-
-        # A missing build scene list is invalid for a normal build, but keep
-        # this helper deterministic for legacy test fixtures that only stage
-        # Library assets.  In that case every indexed artifact is a root.
-        if not roots:
-            roots.update(
-                str(item["guid"])
-                for item in entries
-                if item.get("artifact_path") or logical_asset_type(item) == "particlegraph"
+            if scene_entry is None:
+                raise RuntimeError(
+                    "BuildSettings scene is absent from the current "
+                    f"Library/AssetIndex.json: {configured}"
+                )
+            roots.add(str(scene_entry["guid"]))
+            self._add_asset_reference_roots(
+                roots,
+                scene_path,
+                by_guid=by_guid,
+                by_path=by_path,
+                known_guids=known_guids,
             )
+
+        for root in self._additional_cook_root_paths():
+            candidates: list[str] = []
+            if os.path.isfile(root):
+                candidates.append(root)
+            elif os.path.isdir(root):
+                for current, directories, filenames in os.walk(root):
+                    directories[:] = sorted(
+                        directory
+                        for directory in directories
+                        if directory not in self._EXCLUDE_PATTERNS
+                    )
+                    candidates.extend(
+                        os.path.join(current, filename)
+                        for filename in sorted(filenames)
+                        if filename not in self._EXCLUDE_PATTERNS
+                        and not filename.casefold().endswith(".meta")
+                    )
+            missing_from_index = [
+                candidate
+                for candidate in candidates
+                if resolved_path(candidate).casefold() not in indexed_sources
+            ]
+            if missing_from_index:
+                raise RuntimeError(
+                    "Additional Cook Root contains files absent from the current "
+                    "Library/AssetIndex.json: "
+                    + ", ".join(
+                        relative_path(path, self.project_path).replace("\\", "/")
+                        for path in missing_from_index[:12]
+                    )
+                )
+            for entry in entries:
+                source_path = self._library_source_entry_path(entry)
+                if not is_path_within(source_path, root, allow_root=True):
+                    continue
+                roots.add(str(entry["guid"]))
+                if (
+                    os.path.isfile(source_path)
+                    and Path(source_path).suffix.casefold()
+                    in self._PLAYER_PORTABLE_DOCUMENT_SUFFIXES
+                ):
+                    self._add_asset_reference_roots(
+                        roots,
+                        source_path,
+                        by_guid=by_guid,
+                        by_path=by_path,
+                        known_guids=known_guids,
+                    )
+
+            if os.path.isfile(root) and Path(root).suffix.casefold() in self._PLAYER_PORTABLE_DOCUMENT_SUFFIXES:
+                self._add_asset_reference_roots(
+                    roots,
+                    root,
+                    by_guid=by_guid,
+                    by_path=by_path,
+                    known_guids=known_guids,
+                )
 
         selected: dict[str, dict] = {}
         pending = sorted(roots)
         while pending:
             guid = pending.pop(0)
-            if guid in selected or guid not in by_guid:
+            if guid in selected:
                 continue
+            if guid not in by_guid:
+                raise RuntimeError(
+                    "AssetIndex dependency is absent from the current catalog: "
+                    f"{guid}"
+                )
             entry = by_guid[guid]
             selected[guid] = entry
             for dependency in sorted(entry.get("dependencies", [])):
                 if dependency not in selected:
                     pending.append(str(dependency))
             source_path = self._library_source_entry_path(entry)
+            script_dependencies, literal_asset_dependencies = (
+                project_script_dependencies(guid, source_path)
+            )
+            for dependency_guid in sorted(
+                script_dependencies.union(literal_asset_dependencies)
+            ):
+                if dependency_guid not in selected:
+                    pending.append(dependency_guid)
             if os.path.isfile(source_path) and Path(source_path).suffix.casefold() in self._PLAYER_PORTABLE_DOCUMENT_SUFFIXES:
-                for dependency_guid, dependency_path in self._load_json_asset_references(source_path):
+                for dependency_guid, dependency_path in self._load_json_asset_references(
+                    source_path,
+                    known_guids=known_guids,
+                ):
                     if dependency_guid in by_guid:
                         pending.append(dependency_guid)
                     elif dependency_path:
@@ -1710,6 +2210,38 @@ finally:
                             if key.endswith(suffix)
                         )
         return selected
+
+    def _additional_cook_root_paths(self) -> list[str]:
+        """Resolve configured roots even when called by a staging helper."""
+
+        if self._validated_additional_cook_roots:
+            return list(self._validated_additional_cook_roots)
+        roots = self._resolve_additional_cook_roots()
+        self._validated_additional_cook_roots = list(roots)
+        return roots
+
+    def _add_asset_reference_roots(
+        self,
+        roots: set[str],
+        source_path: str,
+        *,
+        by_guid: dict[str, dict],
+        by_path: dict[str, dict],
+        known_guids: frozenset[str],
+    ) -> None:
+        for guid, path_hint in self._load_json_asset_references(
+            source_path,
+            known_guids=known_guids,
+        ):
+            if guid and guid in by_guid:
+                roots.add(guid)
+            elif path_hint:
+                candidate = path_hint.replace("\\", "/").casefold()
+                roots.update(
+                    str(item["guid"])
+                    for key, item in by_path.items()
+                    if key.endswith(candidate)
+                )
 
     def _particle_library_artifacts(self) -> dict[str, dict]:
         index_path = os.path.join(
@@ -1732,11 +2264,8 @@ finally:
     def _stage_library_runtime_artifacts(self, data_dir: str) -> None:
         """Stage current compiled artifacts and remember source replacements."""
 
-        index_path = os.path.join(self.project_path, "Library", "AssetIndex.json")
-        if not os.path.isfile(index_path):
-            return
         try:
-            entries = load_asset_index(self.project_path)
+            entries = self._asset_index_entries()
             selected = self._collect_library_asset_entries(entries)
         except RuntimeArtifactError as exc:
             raise RuntimeError(f"Library artifact selection failed: {exc}") from exc
@@ -1823,17 +2352,88 @@ finally:
                     skin_binding["dependencies"] = list(binding.get("dependencies", [])) if binding else []
                     self._runtime_artifact_bindings[skin_relative] = skin_binding
 
+    def _stage_library_runtime_documents(self, data_dir: str) -> None:
+        """Cook remaining runtime-ready project payloads into Library.
+
+        Serialized resources still use their established loader formats, but
+        the Player consumes a deterministic GUID-addressed build artifact
+        instead of the authoring Assets path. This is intentionally separate
+        from importer-produced texture, mesh and particle artifacts.
+        """
+
+        assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
+        compiled_guids = {
+            str(binding.get("source_guid", ""))
+            for binding in self._runtime_artifact_bindings.values()
+            if isinstance(binding, dict) and binding.get("source_guid")
+        }
+        for guid, entry in sorted(
+            getattr(self, "_cooked_asset_entries", {}).items()
+        ):
+            guid = str(guid)
+            if guid in compiled_guids:
+                continue
+            if any(part in guid for part in ("/", "\\")) or guid in {".", ".."}:
+                raise RuntimeError(f"Player asset GUID is not path-safe: {guid!r}")
+
+            source_path = self._library_source_entry_path(entry)
+            if not is_path_within(source_path, assets_root, allow_root=False):
+                continue
+            suffix = Path(source_path).suffix.casefold()
+            if suffix == ".py":
+                # User scripts are compiled after data staging.
+                continue
+
+            source_relative = relative_path(
+                source_path, self.project_path
+            ).replace("\\", "/")
+            logical_type = logical_type_for_path(source_relative)
+            payload_kind = payload_kind_for(logical_type)
+            if payload_kind == "serialized_runtime_document":
+                artifact_directory = "Document"
+            elif logical_type == "audio":
+                artifact_directory = "Audio"
+            elif payload_kind == "direct_runtime_asset":
+                artifact_directory = "Blob"
+            else:
+                continue
+
+            artifact_suffix = (
+                ".inxshader" if suffix in {".vert", ".frag"} else suffix
+            )
+            runtime_path = (
+                f"Library/Artifacts/{artifact_directory}/{guid}{artifact_suffix}"
+            )
+            destination = os.path.join(data_dir, *runtime_path.split("/"))
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copy2(source_path, destination)
+            self._rewrite_player_document_paths(destination, suffix)
+
+            source_state = entry.get("source", {})
+            source_fingerprint = {
+                "size": int(source_state.get("size", 0)),
+                "modified_ns": int(source_state.get("modified_ns", 0)),
+                "content_hash": str(entry.get("content_hash", "")),
+            }
+            artifact_sha256 = self._sha256_file(destination)
+            binding = {
+                "source_guid": guid,
+                "source_path": source_relative,
+                "source_fingerprint": source_fingerprint,
+                "artifact_path": runtime_path,
+                "artifact_sha256": artifact_sha256,
+                "artifact_source_hash": str(entry.get("content_hash", "")),
+                "dependencies": [],
+            }
+            self._runtime_artifact_bindings[runtime_path] = binding
+            self._runtime_artifact_source_paths.add(source_relative.casefold())
+
     def _copy_reachable_particle_artifacts(self, data_dir: str) -> None:
         """Copy only Particle artifacts referenced by scenes in BuildSettings."""
-        asset_index_path = os.path.join(
-            self.project_path, "Library", "AssetIndex.json"
-        )
-        if not os.path.isfile(asset_index_path):
-            raise RuntimeError(
-                "Player build requires the current Library/AssetIndex.json "
-                "before selecting runtime artifacts"
-            )
         references = self._collect_reachable_particle_artifacts()
+        if not references:
+            return
+
         destination_root = os.path.join(
             data_dir, "Library", "Artifacts", "Particle"
         )
@@ -1860,9 +2460,7 @@ finally:
                 "$schema": "infernux.particle_runtime_index",
                 "entries": references,
             }
-            with open(index_path, "w", encoding="utf-8") as stream:
-                json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
-                stream.write("\n")
+            _write_json_atomic(index_path, payload)
 
     def _collect_reachable_particle_stable_ids(self) -> set[str]:
         return {
@@ -1888,6 +2486,38 @@ finally:
                     f"Build scene is not valid current JSON: {scene_path}"
                 ) from exc
             self._collect_particle_asset_references(scene, references)
+
+        # Reuse the same AssetIndex closure as content/artifact staging so a
+        # ParticleGraph declared only through an Additional Cook Root also
+        # receives a runtime lookup entry.
+        live_index_path = os.path.join(
+            self.project_path, "Library", "AssetIndex.json"
+        )
+        if (
+            self._asset_index_entries_snapshot is None
+            and not os.path.isfile(live_index_path)
+        ):
+            if references:
+                raise RuntimeError(
+                    "Player build requires the current Library/AssetIndex.json "
+                    "before selecting runtime artifacts"
+                )
+            return []
+        try:
+            indexed_entries = self._asset_index_entries()
+            selected_entries = self._collect_library_asset_entries(indexed_entries)
+        except RuntimeArtifactError as exc:
+            raise RuntimeError(f"Particle runtime cook failed: {exc}") from exc
+        for entry in selected_entries.values():
+            if logical_asset_type(entry) != "particlegraph":
+                continue
+            source_path = self._library_source_entry_path(entry)
+            references.add(
+                (
+                    str(entry.get("guid", "")),
+                    relative_path(source_path, self.project_path).replace("\\", "/"),
+                )
+            )
 
         entries: list[dict[str, str]] = []
         guid_index: Optional[dict[str, str]] = None
@@ -1947,23 +2577,14 @@ finally:
         return candidate if os.path.isfile(candidate) else None
 
     def _build_asset_guid_index(self) -> dict[str, str]:
-        result: dict[str, str] = {}
-        assets_root = os.path.join(self.project_path, "Assets")
-        for root, _dirs, filenames in os.walk(assets_root):
-            for filename in filenames:
-                if not filename.endswith(".meta"):
-                    continue
-                meta_path = os.path.join(root, filename)
-                try:
-                    with open(meta_path, "r", encoding="utf-8") as stream:
-                        metadata = json.load(stream).get("metadata", {})
-                    guid = metadata.get("guid", {}).get("value", "")
-                except (OSError, AttributeError, json.JSONDecodeError):
-                    continue
-                source_path = meta_path[:-5]
-                if guid and os.path.isfile(source_path):
-                    result[str(guid)] = source_path
-        return result
+        try:
+            entries = self._asset_index_entries()
+        except RuntimeArtifactError as exc:
+            raise RuntimeError(f"Player GUID lookup failed: {exc}") from exc
+        return {
+            str(entry["guid"]): self._library_source_entry_path(entry)
+            for entry in entries
+        }
 
     @staticmethod
     def _particle_source_stable_id(source_path: str) -> str:
@@ -2078,7 +2699,7 @@ finally:
             try:
                 indexed = {
                     str(item["guid"]): item
-                    for item in load_asset_index(self.project_path)
+                    for item in self._asset_index_entries()
                 }.get(guid)
                 if indexed is None:
                     raise RuntimeError(
@@ -2107,7 +2728,7 @@ finally:
         def _keep(line: str) -> bool:
             if self._is_game_build_excluded_requirement(line):
                 return False
-            if not self.enable_jit and re.match(r"^\s*numba\b", line, re.IGNORECASE):
+            if not self.enable_jit and re.match(r"^\s*(?:numba|llvmlite)\b", line, re.IGNORECASE):
                 return False
             return True
 
@@ -2141,12 +2762,97 @@ finally:
     # Compile user scripts
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _runtime_script_module_name(runtime_path: str) -> str:
+        normalized = runtime_path.replace("\\", "/")
+        if not normalized.startswith("Assets/") or not normalized.endswith(".pyc"):
+            raise RuntimeError(f"Invalid Player script runtime path: {runtime_path}")
+        parts = normalized[len("Assets/"):-4].split("/")
+        if parts and parts[-1] == "__init__":
+            parts.pop()
+        if not parts or any(not part.isidentifier() for part in parts):
+            raise RuntimeError(
+                f"Player component script has no stable module identity: {runtime_path}"
+            )
+        return ".".join(parts)
+
+    @classmethod
+    def _runtime_component_type_records(
+        cls,
+        source_text: str,
+        *,
+        script_guid: str,
+        runtime_path: str,
+    ) -> list[dict[str, object]]:
+        """Extract Player component identities without executing author code."""
+        tree = ast.parse(source_text, filename=runtime_path)
+        component_bases = {"InxComponent"}
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom) and node.module in {
+                "Infernux",
+                "Infernux.components",
+            }:
+                for alias in node.names:
+                    if alias.name == "InxComponent" or alias.name == "*":
+                        component_bases.add(alias.asname or "InxComponent")
+
+        def base_name(expression: ast.expr) -> str:
+            if isinstance(expression, ast.Name):
+                return expression.id
+            if isinstance(expression, ast.Attribute):
+                return expression.attr
+            return ""
+
+        lifecycle_names = {
+            "awake", "start", "fixed_update", "update", "late_update",
+            "on_enable", "on_disable", "on_destroy",
+            "on_collision_enter", "on_collision_stay", "on_collision_exit",
+            "on_trigger_enter", "on_trigger_stay", "on_trigger_exit",
+        }
+        module_name = cls._runtime_script_module_name(runtime_path)
+        from Infernux.components.component_identity import component_type_guid
+
+        records: list[dict[str, object]] = []
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if not any(base_name(base) in component_bases for base in node.bases):
+                continue
+            if not script_guid:
+                raise RuntimeError(
+                    f"Player component script has no Asset GUID: {runtime_path}"
+                )
+            component_bases.add(node.name)
+            lifecycle = sorted(
+                child.name
+                for child in node.body
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and child.name in lifecycle_names
+            )
+            type_guid = component_type_guid(script_guid, node.name)
+            records.append(
+                {
+                    "script_guid": script_guid,
+                    "type_guid": type_guid,
+                    "type_id": (
+                        f"python:{script_guid}:{type_guid}:{module_name}:{node.name}"
+                    ),
+                    "module": module_name,
+                    "qualname": node.name,
+                    "runtime_path": runtime_path,
+                    "lifecycle": lifecycle,
+                    "schema_sha256": hashlib.sha256(
+                        ast.dump(node, include_attributes=False).encode("utf-8")
+                    ).hexdigest(),
+                }
+            )
+        return records
+
     def _compile_user_scripts(self, final_dir: str):
         """Compile .py in Data/Assets/ to .pyc and remove originals.
 
-        Also generates ``Data/_script_guid_map.json`` so that the
-        player can resolve script GUIDs without the original ``.py``
-        files (the C++ AssetDatabase only recognises ``.py``).
+        Script identity comes only from the current Library AssetIndex. The
+        authoring ``.meta`` files never enter staging or the Player package.
         """
         assets_dir = os.path.join(final_dir, "Data", "Assets")
         if not os.path.isdir(assets_dir):
@@ -2156,28 +2862,51 @@ finally:
         _compile_count = 0
         data_dir = os.path.join(final_dir, "Data")
         guid_map: dict[str, str] = {}
+        project_assets = os.path.join(self.project_path, "Assets")
+        cooked_guid_by_path = {
+            relative_path(self._library_source_entry_path(entry), self.project_path)
+            .replace("\\", "/")
+            .casefold(): str(guid)
+            for guid, entry in getattr(self, "_cooked_asset_entries", {}).items()
+            if is_path_within(
+                self._library_source_entry_path(entry),
+                project_assets,
+                allow_root=False,
+            )
+        }
 
-        # First pass: build GUID → .pyc relative-path map from .meta
+        # R7 embeds verified parallel implementations in the owning script
+        # bytecode. Purge stale outputs from older incremental build folders
+        # before they can be mistaken for user scripts or shipped.
+        for root, _dirs, files in os.walk(assets_dir):
+            for fname in files:
+                if fname.endswith((".autop.py", ".autop.pyc")):
+                    try:
+                        os.remove(os.path.join(root, fname))
+                    except FileNotFoundError:
+                        pass
+
+        # First pass: build GUID -> .pyc relative-path map from the selected
+        # current AssetIndex closure. There is deliberately no .meta fallback.
         for root, _dirs, files in os.walk(assets_dir):
             for fname in files:
                 if fname.endswith(".py"):
                     py_path = os.path.join(root, fname)
-                    meta_path = py_path + ".meta"
-                    if os.path.isfile(meta_path):
-                        try:
-                            with open(meta_path, "r", encoding="utf-8") as mf:
-                                meta = json.load(mf)
-                            guid = (meta.get("metadata", {})
-                                        .get("guid", {})
-                                        .get("value", ""))
-                            if guid:
-                                pyc_rel = relative_path(py_path + "c", data_dir)
-                                guid_map[guid] = pyc_rel
-                        except (json.JSONDecodeError, OSError) as _exc:
-                            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                            pass
+                    staged_relative = relative_path(py_path, data_dir).replace("\\", "/")
+                    indexed_guid = cooked_guid_by_path.get(staged_relative.casefold(), "")
+                    if not indexed_guid:
+                        raise RuntimeError(
+                            "Player script cook found a staged script without a "
+                            f"current AssetIndex identity: {staged_relative}"
+                        )
+                    guid_map[indexed_guid] = relative_path(py_path + "c", data_dir)
 
         # Second pass: compile and remove originals
+        guid_by_runtime_path = {
+            str(path).replace("\\", "/").casefold(): str(guid)
+            for guid, path in guid_map.items()
+        }
+        runtime_type_records: list[dict[str, object]] = []
         for root, _dirs, files in os.walk(assets_dir):
             for fname in files:
                 if fname.endswith(".py"):
@@ -2186,27 +2915,37 @@ finally:
                     try:
                         with open(py_path, "r", encoding="utf-8") as sf:
                             source_text = sf.read()
-                        sidecar_source = _jit_kernels.build_auto_parallel_sidecar_source(source_text)
-                        if sidecar_source:
-                            sidecar_py = py_path[:-3] + ".autop.py"
-                            with open(sidecar_py, "w", encoding="utf-8", newline="\n") as apf:
-                                apf.write(sidecar_source)
-                            py_compile.compile(
-                                sidecar_py,
-                                cfile=sidecar_py + "c",
-                                dfile=relative_path(sidecar_py, data_dir),
-                                optimize=2,
-                                doraise=True,
+                        runtime_path = relative_path(py_path + "c", data_dir).replace("\\", "/")
+                        script_guid = guid_by_runtime_path.get(runtime_path.casefold(), "")
+                        runtime_type_records.extend(
+                            self._runtime_component_type_records(
+                                source_text,
+                                script_guid=script_guid,
+                                runtime_path=runtime_path,
                             )
-                            os.remove(sidecar_py)
-                            Debug.log_internal(
-                                f"  auto_parallel sidecar: {os.path.basename(sidecar_py)}c"
-                            )
-                    except (OSError, SyntaxError, py_compile.PyCompileError) as _sc_exc:
-                        Debug.log_warning(
-                            f"  auto_parallel sidecar generation failed for "
-                            f"{fname}: {_sc_exc}"
                         )
+                        declarations = _jit_kernels.auto_parallel_declarations(source_text)
+                        if not self.enable_jit:
+                            required = [name for name, policy in declarations if policy == "required"]
+                            if required:
+                                raise RuntimeError(
+                                    "parallel_policy='required' needs the Auto Parallel build option: "
+                                    + ", ".join(required)
+                                )
+                        else:
+                            embedded_source = _jit_kernels.build_auto_parallel_embedded_source(source_text)
+                            if embedded_source is not None:
+                                with open(py_path, "w", encoding="utf-8", newline="\n") as compiled_source:
+                                    compiled_source.write(embedded_source)
+                                Debug.log_internal(
+                                    f"  embedded Typed HIR kernels: {fname}"
+                                )
+                    except ValueError as exc:
+                        raise RuntimeError(
+                            f"auto_parallel compilation rejected for {fname}: {exc}"
+                        ) from exc
+                    except OSError as exc:
+                        Debug.log_warning(f"  Typed HIR preparation failed for {fname}: {exc}")
 
                     try:
                         py_compile.compile(
@@ -2229,8 +2968,223 @@ finally:
         # Write manifest
         if guid_map:
             manifest_path = os.path.join(data_dir, "_script_guid_map.json")
-            with open(manifest_path, "w", encoding="utf-8") as mf:
-                json.dump(guid_map, mf)
+            _write_json_atomic(manifest_path, guid_map, indent=None)
+        self._runtime_type_records = sorted(
+            runtime_type_records,
+            key=lambda record: str(record["type_guid"]),
+        )
+        library_dir = os.path.join(data_dir, "Library")
+        os.makedirs(library_dir, exist_ok=True)
+        _write_json_atomic(
+            os.path.join(library_dir, self._RUNTIME_TYPE_REGISTRY_FILENAME),
+            {
+                "$schema": RUNTIME_TYPE_REGISTRY_SCHEMA,
+                "registry_version": RUNTIME_TYPE_REGISTRY_VERSION,
+                "types": self._runtime_type_records,
+            },
+        )
+
+    def _write_runtime_asset_records(self, final_dir: str) -> None:
+        """Persist cooked GUID identity without shipping editor sidecars."""
+
+        data_dir = os.path.join(final_dir, "Data")
+        assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
+        builtin_resources_root = resolved_path(
+            os.path.join(self.project_path, "Library", "Resources")
+        )
+        project_prefix = portable_path(resolved_path(self.project_path)).rstrip("/") + "/"
+
+        def portable_metadata(value):
+            if isinstance(value, dict):
+                return {key: portable_metadata(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [portable_metadata(item) for item in value]
+            if isinstance(value, str):
+                normalized = portable_path(value)
+                if normalized.casefold().startswith(project_prefix.casefold()):
+                    return normalized[len(project_prefix):]
+            return value
+
+        cooked_entries = getattr(self, "_cooked_asset_entries", {})
+        compiled_bindings_by_guid: dict[str, list[tuple[str, dict[str, object]]]] = {}
+        for runtime_path, binding in getattr(
+            self, "_runtime_artifact_bindings", {}
+        ).items():
+            if not isinstance(binding, dict):
+                continue
+            source_guid = str(binding.get("source_guid", ""))
+            if not source_guid:
+                continue
+            compiled_bindings_by_guid.setdefault(source_guid, []).append(
+                (str(runtime_path).replace("\\", "/"), binding)
+            )
+
+        staged: list[dict[str, object]] = []
+        primary_artifact_by_guid: dict[str, str] = {}
+        for guid, entry in sorted(cooked_entries.items()):
+            source_path = self._library_source_entry_path(entry)
+            is_project_asset = is_path_within(
+                source_path, assets_root, allow_root=False
+            )
+            is_builtin_resource = bool(entry.get("read_only", False)) and is_path_within(
+                source_path, builtin_resources_root, allow_root=False
+            )
+            if not is_project_asset and not is_builtin_resource:
+                continue
+            runtime_path = relative_path(source_path, self.project_path).replace("\\", "/")
+            if runtime_path.casefold().endswith(".py"):
+                runtime_path += "c"
+            compiled_bindings = sorted(
+                compiled_bindings_by_guid.get(str(guid), []),
+                key=lambda item: item[0],
+            )
+            payloads = [
+                {
+                    "package": self._CONTENT_ARCHIVE_FILENAME,
+                    "runtime_path": path,
+                }
+                for path, _binding in compiled_bindings
+            ]
+            if not payloads and is_builtin_resource:
+                builtin_relative = relative_path(
+                    source_path, builtin_resources_root
+                ).replace("\\", "/")
+                payloads = [
+                    {
+                        "package": self._RUNTIME_ARCHIVE_FILENAME,
+                        "runtime_path": f"Infernux/resources/{builtin_relative}",
+                    }
+                ]
+            elif not payloads:
+                payloads = [
+                    {
+                        "package": self._CONTENT_ARCHIVE_FILENAME,
+                        "runtime_path": runtime_path,
+                    }
+                ]
+            artifact_ids = [
+                runtime_artifact_id(payload["package"], payload["runtime_path"])
+                for payload in payloads
+            ]
+            pass_through_reason = (
+                ""
+                if compiled_bindings
+                else self._runtime_artifact_reason(runtime_path)
+            )
+            primary_artifact_by_guid[str(guid)] = artifact_ids[0]
+
+            metadata = portable_metadata(entry.get("metadata", {}))
+            metadata_entries = metadata.get("metadata") if isinstance(metadata, dict) else None
+            if not isinstance(metadata_entries, dict) or not metadata_entries:
+                raise RuntimeError(
+                    "Player asset metadata was not compiled into the current AssetIndex: "
+                    f"guid={guid}, path={runtime_path}. Refusing to discard the .meta sidecar."
+                )
+            file_path = metadata_entries.get("file_path")
+            if isinstance(file_path, dict):
+                file_path["value"] = runtime_path
+            source_state = entry.get("source", {})
+            source_fingerprint = {
+                "size": int(source_state.get("size", 0)),
+                "modified_ns": int(source_state.get("modified_ns", 0)),
+                "content_hash": str(entry.get("content_hash", "")),
+            }
+            staged.append(
+                {
+                    "guid": str(guid),
+                    "runtime_path": runtime_path,
+                    "resource_type": int(entry.get("resource_type", 0)),
+                    "artifact_path": str(entry.get("artifact_path", "")).replace("\\", "/"),
+                    "dependency_guids": sorted(
+                        str(item) for item in entry.get("dependencies", [])
+                    ),
+                    "runtime_artifact_ids": artifact_ids,
+                    "primary_runtime_artifact_id": artifact_ids[0],
+                    "runtime_artifact_reason": pass_through_reason,
+                    "runtime_artifacts": [
+                        dict(payload, runtime_artifact_id=artifact_id)
+                        for payload, artifact_id in zip(payloads, artifact_ids)
+                    ],
+                    "source_fingerprint": source_fingerprint,
+                    "metadata": metadata,
+                    "_payloads": payloads,
+                    "_compiled_bindings": compiled_bindings,
+                }
+            )
+
+        records: list[dict[str, object]] = []
+        identity_bindings: dict[str, dict[str, object]] = {}
+        for staged_record in staged:
+            dependency_guids = staged_record.pop("dependency_guids")
+            payloads = staged_record.pop("_payloads")
+            compiled_bindings = staged_record.pop("_compiled_bindings")
+            dependency_ids = sorted(
+                {
+                    primary_artifact_by_guid[dependency_guid]
+                    for dependency_guid in dependency_guids
+                    if dependency_guid in primary_artifact_by_guid
+                }
+            )
+            missing_dependencies = sorted(
+                dependency_guid
+                for dependency_guid in dependency_guids
+                if dependency_guid not in primary_artifact_by_guid
+            )
+            if missing_dependencies:
+                raise RuntimeError(
+                    "Player runtime asset dependency is outside the cooked closure: "
+                    f"guid={staged_record['guid']}, missing={missing_dependencies}"
+                )
+            staged_record["dependencies"] = dependency_ids
+            records.append(staged_record)
+
+            base_binding = {
+                "source_guid": staged_record["guid"],
+                "source_path": staged_record["runtime_path"],
+                "source_fingerprint": staged_record["source_fingerprint"],
+                "dependencies": dependency_ids,
+            }
+            reason = str(staged_record.get("runtime_artifact_reason", ""))
+            if reason:
+                base_binding["runtime_artifact_reason"] = reason
+            compiled_by_path = dict(compiled_bindings)
+            for payload in payloads:
+                payload_path = str(payload["runtime_path"])
+                binding = dict(compiled_by_path.get(payload_path, base_binding))
+                binding["source_guid"] = staged_record["guid"]
+                binding["source_path"] = staged_record["runtime_path"]
+                binding["source_fingerprint"] = staged_record["source_fingerprint"]
+                binding["dependencies"] = dependency_ids
+                identity_bindings[payload_path] = binding
+
+        self._runtime_asset_identity_bindings = identity_bindings
+
+        library_dir = os.path.join(data_dir, "Library")
+        os.makedirs(library_dir, exist_ok=True)
+        destination = os.path.join(library_dir, self._RUNTIME_ASSET_RECORDS_FILENAME)
+        _write_json_atomic(
+            destination,
+            {
+                "$schema": "infernux.runtime_asset_records",
+                "records_version": 2,
+                "entries": records,
+            },
+        )
+
+    @staticmethod
+    def _runtime_artifact_reason(runtime_path: str) -> str:
+        """Reject an asset that failed to produce a Library artifact."""
+
+        logical_type = logical_type_for_path(runtime_path)
+        payload_kind = payload_kind_for(logical_type)
+        reason = runtime_artifact_reason_for(logical_type)
+        if payload_kind in RUNTIME_DOCUMENT_PAYLOAD_KINDS:
+            raise RuntimeError(
+                "Player source payload has no current Library artifact and direct "
+                f"runtime shipping is forbidden: {runtime_path}"
+                + (f" (expected reason: {reason})" if reason else "")
+            )
+        return ""
 
     @staticmethod
     def _sha256_file(path: str) -> str:
@@ -2513,6 +3467,7 @@ finally:
         excluded_files: list[str] = []
         source_bytes = 0
         forbidden_plaintext: list[str] = []
+        forbidden_direct_payloads: list[str] = []
 
         for root, dirs, filenames in os.walk(data_root):
             dirs[:] = [directory for directory in dirs if directory != "Logs"]
@@ -2544,6 +3499,9 @@ finally:
                     ".tesc", ".tese", ".hlsl", ".shader",
                 }:
                     forbidden_plaintext.append(relative)
+                logical_type = logical_type_for_path(portable_relative)
+                if payload_kind_for(logical_type) in RUNTIME_DOCUMENT_PAYLOAD_KINDS:
+                    forbidden_direct_payloads.append(relative)
                 self._rewrite_player_document_paths(path, suffix)
                 files.append((relative, path))
                 source_bytes += os.path.getsize(path)
@@ -2553,6 +3511,12 @@ finally:
                 "Player content contains authoring/source files that must be "
                 "compiled into Library artifacts first: "
                 + ", ".join(sorted(forbidden_plaintext)[:12])
+            )
+        if forbidden_direct_payloads:
+            raise RuntimeError(
+                "Player content contains direct or serialized runtime payloads; "
+                "cook them into Library artifacts before packing: "
+                + ", ".join(sorted(forbidden_direct_payloads)[:12])
             )
         if not files:
             raise RuntimeError("Player Content.inxpkg would be empty")
@@ -2624,9 +3588,7 @@ finally:
         rewritten = rewrite(document)
         if not changed:
             return
-        with open(path, "w", encoding="utf-8", newline="\n") as destination:
-            json.dump(rewritten, destination, ensure_ascii=False, separators=(",", ":"))
-            destination.write("\n")
+        _write_json_atomic(path, rewritten, indent=None)
 
     def _write_payload_manifest(self, final_dir: str) -> None:
         """Write the deterministic runtime artifact catalog.
@@ -2696,7 +3658,13 @@ finally:
                             package_path,
                             entry_path,
                         )
-                    binding = getattr(self, "_runtime_artifact_bindings", {}).get(entry_path)
+                    binding = getattr(
+                        self, "_runtime_asset_identity_bindings", {}
+                    ).get(entry_path)
+                    if binding is None:
+                        binding = getattr(
+                            self, "_runtime_artifact_bindings", {}
+                        ).get(entry_path)
                     if binding is not None:
                         package_entry["asset_binding"] = binding
                     package_entries.append(package_entry)
@@ -2709,6 +3677,13 @@ finally:
         executable = os.path.join(final_dir, f"{self.project_name}.exe")
         if not os.path.isfile(executable):
             raise RuntimeError(f"Player executable is missing: {executable}")
+        proven_residual_assets = self._residual_direct_runtime_assets(package_entries)
+        if proven_residual_assets:
+            raise RuntimeError(
+                "Player Content contains direct or serialized runtime payloads; "
+                "all such assets must be converted to Library artifacts: "
+                + ", ".join(proven_residual_assets)
+            )
         catalog = build_catalog(
             package_entries,
             player_host={
@@ -2718,77 +3693,29 @@ finally:
             },
             package_records=packages,
         )
-        proven_residual_assets = self._residual_direct_runtime_assets(package_entries)
-        if proven_residual_assets:
-            raise RuntimeError(
-                "Player asset cook/prune gate rejected proven residual assets: "
-                + ", ".join(proven_residual_assets)
-            )
         catalog_path = os.path.join(library_root, "RuntimeAssetCatalog.json")
-        with open(catalog_path, "w", encoding="utf-8") as catalog_file:
-            json.dump(catalog, catalog_file, indent=2, sort_keys=True)
-            catalog_file.write("\n")
+        _write_json_atomic(catalog_path, catalog)
 
     def _residual_direct_runtime_assets(
         self,
         package_entries: list[dict[str, object]],
     ) -> list[str]:
-        """Return only residual project payloads supported by hard evidence.
+        """Return every direct or serialized payload left in Content.inxpkg."""
 
-        Serialized documents and direct audio are valid current runtime inputs.
-        Until the complete cooker exists, absence of an artifact is not proof
-        that an asset is stale. We reject only indexed assets outside the
-        BuildSettings closure, sources already replaced by a current Library
-        artifact, and explicit build-only payloads. Unproven candidates remain
-        visible to the package audit without breaking a real Player build.
-        """
-
-        indexed_paths, reachable_paths = self._project_asset_reachability_evidence()
-        replaced_sources = {
-            str(path).replace("\\", "/").casefold()
-            for path in getattr(self, "_runtime_artifact_source_paths", set())
-        }
-        for binding in getattr(self, "_runtime_artifact_bindings", {}).values():
-            if not isinstance(binding, dict):
-                continue
-            source_path = binding.get("source_path")
-            if isinstance(source_path, str) and source_path:
-                replaced_sources.add(source_path.replace("\\", "/").casefold())
-
-        proven: list[str] = []
-        unresolved: list[str] = []
+        residual: list[str] = []
         for entry in package_entries:
             package = str(entry.get("package", ""))
             runtime_path = str(entry.get("runtime_path", "")).replace("\\", "/")
             if not package.casefold().endswith(GameBuilder._CONTENT_ARCHIVE_FILENAME.casefold()):
                 continue
-            path_key = runtime_path.casefold()
             if self._is_explicit_build_only_content_path(runtime_path):
-                proven.append(runtime_path)
-                continue
-            if path_key in replaced_sources:
-                proven.append(runtime_path)
+                residual.append(runtime_path)
                 continue
             logical_type = logical_type_for_path(runtime_path)
-            if payload_kind_for(logical_type) not in {
-                "serialized_runtime_document",
-                "direct_runtime_asset",
-            }:
-                continue
-            if path_key in indexed_paths:
-                if path_key not in reachable_paths:
-                    proven.append(runtime_path)
-                continue
-            unresolved.append(runtime_path)
+            if payload_kind_for(logical_type) in RUNTIME_DOCUMENT_PAYLOAD_KINDS:
+                residual.append(runtime_path)
 
-        self._unproven_residual_runtime_assets = sorted(set(unresolved))
-        if unresolved:
-            Debug.log_warning(
-                "Player asset reachability is not yet provable for: "
-                + ", ".join(sorted(set(unresolved))[:12])
-                + ". Keeping current runtime payload until the complete cook graph is available."
-            )
-        return sorted(set(proven))
+        return sorted(set(residual))
 
     def _project_asset_reachability_evidence(self) -> tuple[set[str], set[str]]:
         """Return indexed and reachable project paths when the scene closure is provable."""
@@ -2801,7 +3728,7 @@ finally:
                 configured_scenes = json.load(stream).get("scenes", [])
             if not isinstance(configured_scenes, list) or not configured_scenes:
                 return set(), set()
-            entries = load_asset_index(self.project_path)
+            entries = self._asset_index_entries()
         except (
             OSError,
             UnicodeDecodeError,
@@ -2883,10 +3810,11 @@ finally:
             absolute = self._resolve_build_scene_path(scene_path)
             rel = relative_path(absolute, self.project_path)
             rel_scenes.append(portable_path(rel))
-        data["scenes"] = rel_scenes
-
-        with open(bs, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        # BuildSettings is an authoring document.  The Player needs only the
+        # ordered scene list; output paths, compiler switches, editor icon
+        # sources and cook roots belong to BuildManifest/catalog generation
+        # and must never leak workstation paths into the shipped content.
+        _write_json_atomic(bs, {"scenes": rel_scenes})
 
     # ------------------------------------------------------------------
     # Generate BuildManifest.json
@@ -2915,6 +3843,17 @@ finally:
                 "fade_out": item.get("fade_out", 0.5),
             })
 
+        flavor = (
+            RuntimeFlavor.PLAYER_DEBUG
+            if self.debug_mode
+            else RuntimeFlavor.PLAYER_RELEASE
+        )
+        features = RuntimeFeatureSet(
+            jit=bool(self.enable_jit),
+            parallel=bool(self.enable_jit),
+            optional_subsystems=("splash",) if splash_runtime else (),
+        )
+
         manifest = {
             "game_name": self.project_name,
             "icon_path": self._built_icon_path,
@@ -2925,6 +3864,7 @@ finally:
             "window_resizable": self.window_resizable,
             "scenes": scenes,
             "splash_items": splash_runtime,
+            "runtime_contract": player_runtime_contract_sections(flavor, features),
             "build_output": {
                 "tool": "Infernux",
                 "project_name": self.project_name,
@@ -2933,9 +3873,7 @@ finally:
         }
 
         manifest_path = os.path.join(final_dir, "Data", "BuildManifest.json")
-        os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        _write_json_atomic(manifest_path, manifest)
 
     # ------------------------------------------------------------------
     # Cleanup
@@ -3021,9 +3959,8 @@ finally:
                 if fname.casefold().startswith("_infernuxbootstrap"):
                     _queue_file(os.path.join(lib_dir, fname))
 
-        # Project metadata remains under Data/Assets because it carries the
-        # stable GUID identity referenced by scenes and other assets. Engine
-        # package metadata is build-time authoring state and is never shipped.
+        # Metadata is authoring/import state. Runtime identity has already
+        # moved into AssetIndex-derived records, so no engine metadata is kept.
         for metadata_root in (os.path.join(final_dir, "Infernux"),):
             if not os.path.isdir(metadata_root):
                 continue
@@ -3032,17 +3969,14 @@ finally:
                     if fname.endswith(".meta"):
                         _queue_file(os.path.join(root, fname))
 
-        # ── Global cleanup: __pycache__, .dist-info, and stale .pyc ──
-        jit_dirs = {os.path.join(final_dir, p) for p in ("numba", "llvmlite", "numpy")}
+        # ── Global cleanup: cache directories and packaging metadata ──
+        # Raw runtime dependencies are deliberately compiled to adjacent
+        # sourceless .pyc files by NuitkaBuilder. Those files are the package
+        # implementation and must survive until Runtime.inxrt is assembled.
         for root, dirs, files in os.walk(final_dir, topdown=False):
             for dname in dirs:
                 if dname == "__pycache__" or dname.endswith(".dist-info"):
                     dirs_to_remove.append(os.path.join(root, dname))
-            # Remove stale .pyc from raw-copied JIT packages
-            if any(root == jd or root.startswith(jd + os.sep) for jd in jit_dirs):
-                for fname in files:
-                    if fname.endswith(".pyc"):
-                        files_to_remove.append(os.path.join(root, fname))
             for fname in files:
                 if os.path.splitext(fname)[1].lower() in {".pdb", ".lib", ".exp", ".pyi"}:
                     files_to_remove.append(os.path.join(root, fname))

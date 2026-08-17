@@ -14,6 +14,17 @@ class PythonComponentRestoreError(RuntimeError):
     """Raised when a Python component graph cannot be restored exactly."""
 
 
+def _notify_editor_scene_changed() -> None:
+    """Invalidate editor-only scene views without pulling them into Player."""
+    from Infernux.application import Application
+
+    if not Application.is_editor():
+        return
+    from Infernux.gizmos.collector import notify_scene_changed
+
+    notify_scene_changed()
+
+
 def _validate_reference_documents(
     value,
     path: str,
@@ -442,7 +453,12 @@ def _prepare_python_component_records(
         raise
 
 
-def preflight_scene_python_components(document, asset_database=None) -> PreparedPythonComponentGraph:
+def preflight_scene_python_components(
+    document,
+    asset_database=None,
+    *,
+    prefer_loaded_types: bool = False,
+) -> PreparedPythonComponentGraph:
     """Resolve and decode the complete Python graph before native scene commit."""
     records = getattr(document, "_python_component_records", None)
     if callable(records):
@@ -454,6 +470,7 @@ def preflight_scene_python_components(document, asset_database=None) -> Prepared
         set(native_types),
         list(raw_descriptors),
         asset_database,
+        prefer_loaded_types=prefer_loaded_types,
     )
 
 
@@ -664,8 +681,7 @@ def _publish_prepared_scene_python_components(
         InxComponent._clear_all_instances()
         from Infernux.components.builtin_component import BuiltinComponent
         BuiltinComponent._clear_cache()
-        from Infernux.gizmos.collector import notify_scene_changed
-        notify_scene_changed()
+        _notify_editor_scene_changed()
 
     attached = []
     try:
@@ -733,11 +749,18 @@ def replace_scene_python_components_for_play(
     recreating thousands of renderers and colliders is unnecessary. Stop Mode
     continues to restore the complete document transactionally.
     """
-    prepared_graph = preflight_scene_python_components(document, asset_database)
+    # Asset watching owns script publication. Entering Play must create fresh
+    # component instances from that latest accepted revision, not execute every
+    # project script from disk again on the UI thread.
+    prepared_graph = preflight_scene_python_components(
+        document,
+        asset_database,
+        prefer_loaded_types=True,
+    )
     prepared = list(prepared_graph.components)
     existing_by_object: dict[int, list[Any]] = {}
     targets: dict[int, Any] = {}
-    replaced: list[tuple[Any, Any, Any]] = []
+    replaced: list[tuple[Any, Any, Any, bool]] = []
 
     try:
         for item in prepared:
@@ -780,6 +803,7 @@ def replace_scene_python_components_for_play(
                 raise PythonComponentRestoreError(
                     f"Python component '{item.type_name}' lost its edit-mode counterpart"
                 )
+            previous_was_awake = bool(getattr(previous, "_awake_called", False))
             instance = target.replace_py_component(previous, item.instance)
             if instance is not item.instance:
                 raise PythonComponentRestoreError(
@@ -791,15 +815,40 @@ def replace_scene_python_components_for_play(
                     f"Python component '{item.type_name}' was not bound to a native proxy"
                 )
             native_component.execution_order = item.execution_order
-            replaced.append((target, previous, item.instance))
+            replaced.append((target, previous, item.instance, previous_was_awake))
 
-        for _target, _previous, instance in replaced:
+        for _target, _previous, instance, _previous_was_awake in replaced:
             instance._call_on_after_deserialize()
+
+        # Replacement normally preserves lifecycle flags because runtime hot
+        # reload must not invoke Awake/Start again.  This transaction is
+        # different: every replacement is a fresh Play-domain instance.  Reset
+        # only after every fallible publication callback has succeeded so a
+        # rollback can still restore the untouched edit-domain lifecycle.
+        for _target, _previous, instance, _previous_was_awake in replaced:
+            native_component = getattr(instance, "_cpp_component", None)
+            reset_lifecycle = getattr(
+                native_component, "_reset_lifecycle_for_play", None
+            )
+            if not callable(reset_lifecycle):
+                raise PythonComponentRestoreError(
+                    f"Python component '{type(instance).__name__}' cannot reset its Play lifecycle"
+                )
+            reset_lifecycle()
+
+        # Generic identity-preserving replacement intentionally suppresses
+        # on_destroy for hot reload. A committed Play-domain handoff must retire
+        # the edit instances so class-level singleton registrations and other
+        # edit-domain state cannot reject the fresh Play instances in Awake.
+        for _target, previous, _instance, previous_was_awake in replaced:
+            previous._finalize_play_domain_replacement(
+                was_awake=previous_was_awake
+            )
         prepared_graph.consume()
         return True
     except Exception as exc:
         rollback_errors = []
-        for target, previous, current in reversed(replaced):
+        for target, previous, current, _previous_was_awake in reversed(replaced):
             try:
                 if target.replace_py_component(current, previous) is not previous:
                     rollback_errors.append(type(previous).__name__)
@@ -1174,6 +1223,11 @@ def create_component_instance(
     if not script_guid or not type_guid or not type_name:
         raise ValueError("Python component identity requires script_guid, type_guid, and type_name")
 
+    from Infernux.engine.runtime_type_registry import (
+        bind_runtime_lifecycle_contract,
+        validate_runtime_component_identity,
+    )
+
     script_path = resolve_script_from_guid(script_guid, asset_database)
 
     instance = None
@@ -1190,27 +1244,24 @@ def create_component_instance(
         if component_type is not None:
             instance = component_type()
             instance._script_guid = script_guid
+            if asset_exists:
+                runtime_contract = validate_runtime_component_identity(
+                    script_guid=script_guid,
+                    type_guid=type_guid,
+                    module_name=component_type.__module__,
+                    qualified_name=component_type.__qualname__,
+                )
+                bind_runtime_lifecycle_contract(component_type, runtime_contract)
             return instance, script_path
     if asset_exists:
         loaded_from_asset = True
-        if asset_database is not None:
-            from Infernux.components.script_loader import load_and_create_component
-            instance = load_and_create_component(
-                script_path,
-                asset_database=asset_database,
-                type_name=type_name,
-                script_guid=script_guid,
-            )
-        else:
-            from Infernux.components.script_loader import (
-                create_component_instance as construct_component,
-                load_component_class_from_file,
-            )
-            from Infernux.components.component_identity import bind_asset_script_guid
-            component_type = load_component_class_from_file(script_path, type_name=type_name)
-            if component_type is not None:
-                bind_asset_script_guid(component_type, script_guid)
-                instance = construct_component(component_type)
+        from Infernux.components.script_loader import load_and_create_component
+        instance = load_and_create_component(
+            script_path,
+            asset_database=asset_database,
+            type_name=type_name,
+            script_guid=script_guid,
+        )
         if instance is not None:
             instance._script_guid = script_guid
     elif asset_database is None or registered_is_builtin:
@@ -1228,5 +1279,14 @@ def create_component_instance(
         and instance.__class__._get_type_guid() != type_guid
     ):
         instance = None
+
+    if instance is not None and loaded_from_asset:
+        runtime_contract = validate_runtime_component_identity(
+            script_guid=script_guid,
+            type_guid=type_guid,
+            module_name=instance.__class__.__module__,
+            qualified_name=instance.__class__.__qualname__,
+        )
+        bind_runtime_lifecycle_contract(instance.__class__, runtime_contract)
 
     return instance, script_path

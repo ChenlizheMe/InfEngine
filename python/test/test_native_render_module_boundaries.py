@@ -36,6 +36,75 @@ def _function_body(source: str, signature: str) -> str:
     raise AssertionError(f"Unterminated C++ function body: {signature}")
 
 
+def test_material_texture_sampler_honors_device_max_anisotropy_and_filter_mode() -> None:
+    source = (RENDERER / "VkCoreMaterial.cpp").read_text(encoding="utf-8")
+    importer = (
+        ROOT
+        / "cpp"
+        / "infernux"
+        / "function"
+        / "resources"
+        / "AssetImporter"
+        / "ConcreteImporters.h"
+    ).read_text(encoding="utf-8")
+
+    assert "anisoLevel < 0 ? deviceMaxAnisotropy" in source
+    assert "sampler.maxAnisotropy" in source
+    assert 'filterMode == "linear" || filterMode == "bilinear"' in source
+    assert "sampler.mipFilter = rhi::FilterMode::Nearest" in source
+    assert 'meta.GetDataAs<int>("aniso_level") == 1' in importer
+    assert 'meta.AddMetadata("aniso_level", -1)' in importer
+
+
+def test_native_texture_settings_migrate_the_legacy_anisotropy_default() -> None:
+    source = (
+        ROOT
+        / "cpp"
+        / "infernux"
+        / "function"
+        / "resources"
+        / "InxTexture"
+        / "InxTexture.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "importedLevel == 1 ? -1 : importedLevel" in source
+
+
+def test_lit_geometry_uses_the_camera_local_lighting_domain() -> None:
+    source = (
+        ROOT
+        / "cpp"
+        / "infernux"
+        / "function"
+        / "resources"
+        / "InxFileLoader"
+        / "InxShaderLoader.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert 'if (needsLightingUBO)' in source
+    assert '#define INX_SHADING_CAMERA_POSITION lighting.cameraPos.xyz' in source
+    assert source.index('if (needsLightingUBO)') < source.index(
+        '#define INX_SHADING_CAMERA_POSITION lighting.cameraPos.xyz'
+    )
+
+
+def test_texture_hot_reload_keeps_last_gpu_publication_during_async_decode() -> None:
+    engine = (ROOT / "cpp" / "infernux" / "Infernux.cpp").read_text(encoding="utf-8")
+    renderer = (RENDERER / "InxVkCoreModular.cpp").read_text(encoding="utf-8")
+    reload_texture = _function_body(engine, "void Infernux::ReloadTexture")
+    invalidate_texture = _function_body(
+        renderer,
+        "void InxVkCoreModular::InvalidateTextureCache",
+    )
+
+    assert "registry.InvalidateAsset(guid);" in reload_texture
+    assert "registry.ReloadAsset(guid);" not in reload_texture
+    assert "registry.LoadAsset<InxTexture>" not in reload_texture
+    assert "RequestAssetRevision(textureGuid, requestedRevision)" in invalidate_texture
+    assert "runtimeVersion + 1" in invalidate_texture
+    assert "RefreshMaterialsUsingTexture(textureGuid)" in invalidate_texture
+
+
 def test_render_core_remains_backend_neutral() -> None:
     violations: list[str] = []
     native_type = re.compile(r"\bVk[A-Z][A-Za-z0-9_]*\b")
@@ -244,6 +313,21 @@ def test_fullscreen_effect_shader_reload_retires_cached_pipeline_revision() -> N
     )
 
 
+def test_fullscreen_passes_use_render_graph_dynamic_rendering_contract() -> None:
+    fullscreen_header = (RENDERER / "FullscreenRenderer.h").read_text(encoding="utf-8")
+    fullscreen = (RENDERER / "FullscreenRenderer.cpp").read_text(encoding="utf-8")
+    scene_graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
+
+    assert "bool useDynamicRendering = false;" in fullscreen_header
+    assert "BuildVkPipelineRenderingInfo" in fullscreen
+    assert "pipelineInfo.renderPass = key.useDynamicRendering ? VK_NULL_HANDLE : renderPass;" in fullscreen
+    assert "const bool useDynamicFullscreen = m_renderGraph->SupportsDynamicRendering();" in scene_graph
+    assert "key.useDynamicRendering = useDynamicFullscreen;" in scene_graph
+    assert "perViewShadowTextureName" in scene_graph
+    assert "builder.ReadSampledDepth(fullscreenShadowInput);" in scene_graph
+    assert "fullscreenShadowDependencyDeclared = true;" in scene_graph
+
+
 def test_presentation_recreation_uses_queue_scoped_drain() -> None:
     swapchain = (VULKAN_BACKEND / "VkSwapchainManager.cpp").read_text(encoding="utf-8")
     core = (
@@ -390,7 +474,7 @@ def test_scene_picking_pass_publishes_dynamic_viewport_before_any_draw() -> None
     picking = (RENDERER / "ScenePickingService.cpp").read_text(encoding="utf-8")
     record = _function_body(picking, "void ScenePickingService::Record")
 
-    begin = record.index("vkCmdBeginRenderPass")
+    begin = record.index("dynamicCommands.begin")
     viewport = record.index("vkCmdSetViewport", begin)
     scissor = record.index("vkCmdSetScissor", viewport)
     geometry = record.index("DrawSceneFiltered", scissor)
@@ -402,6 +486,86 @@ def test_floating_editor_windows_move_only_from_their_title_bar() -> None:
     gui = (RENDERER / "gui" / "InxGUI.cpp").read_text(encoding="utf-8")
 
     assert "io.ConfigWindowsMoveFromTitleBarOnly = true;" in gui
+
+
+def test_imgui_preview_textures_publish_only_after_async_upload_completion() -> None:
+    gui = (RENDERER / "gui" / "InxGUI.cpp").read_text(encoding="utf-8")
+    pump = _function_body(gui, "void InxGUI::PumpTextureUploads")
+    submit = _function_body(gui, "uint64_t InxGUI::SubmitTextureForImGui")
+
+    completion_guard = "pending.ticket->IsAsync() && !pending.ticket->IsComplete()"
+    assert completion_guard in pump
+    assert pump.index(completion_guard) < pump.index("TryPublishTextureUpload")
+    assert "RequestFrame();" in pump
+    assert "RequestFrame();" in submit
+
+
+def test_imgui_preview_uploads_use_one_validated_mip_for_all_editor_sizes() -> None:
+    gui = (RENDERER / "gui" / "InxGUI.cpp").read_text(encoding="utf-8")
+    submit = _function_body(gui, "uint64_t InxGUI::SubmitTextureForImGui")
+
+    assert "static_cast<uint32_t>(height), false" in submit
+    assert "sampler.maxLod = 0.0f" in submit
+
+
+def test_resident_texture_previews_keep_their_display_encoding_semantic() -> None:
+    gui_header = (RENDERER / "gui" / "InxGUI.h").read_text(encoding="utf-8")
+    gui = (RENDERER / "gui" / "InxGUI.cpp").read_text(encoding="utf-8")
+    publish = _function_body(gui, "uint64_t InxGUI::PublishTextureViewForImGui")
+    get_texture = _function_body(gui, "uint64_t InxGUI::GetImGuiTextureId")
+    touch_texture = _function_body(gui, "bool InxGUI::TouchImGuiTextureId")
+
+    assert "bool requiresDisplayEncoding = false;" in gui_header
+    assert "resource.requiresDisplayEncoding = requiresDisplayEncoding;" in publish
+    assert "ImGui_ImplVulkan_SetTextureLinearColor" in get_texture
+    assert "requiresDisplayEncoding" in get_texture
+    assert "ImGui_ImplVulkan_SetTextureLinearColor" in touch_texture
+    assert "requiresDisplayEncoding" in touch_texture
+
+
+def test_imgui_display_shader_is_compiled_from_the_current_source() -> None:
+    external_cmake = (ROOT / "external" / "CMakeLists.txt").read_text(encoding="utf-8")
+    shader = (
+        RENDERER / "gui" / "backend" / "infernux_imgui_frag.frag"
+    ).read_text(encoding="utf-8")
+    backend_patch = (ROOT / "cmake" / "patch_imgui_vulkan_backend.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Vulkan_GLSLANG_VALIDATOR_EXECUTABLE" in external_cmake
+    assert "INFERNUX_IMGUI_FRAGMENT_SOURCE" in external_cmake
+    assert "INFERNUX_IMGUI_FRAGMENT_HEADER" in external_cmake
+    assert "linear_to_srgb" in shader
+    assert "sampled.rgb = linear_to_srgb(sampled.rgb);" in shader
+    assert 'include "infernux_imgui_frag.u32"' in backend_patch
+
+
+def test_completed_async_uploads_retain_timeline_dependency_until_publication() -> None:
+    manager_header = (RENDERER / "vk" / "VkResourceManager.h").read_text(encoding="utf-8")
+    manager = (RENDERER / "vk" / "VkResourceManager.cpp").read_text(encoding="utf-8")
+    publish_texture = _function_body(manager, "bool VkResourceManager::TryPublishTextureUpload")
+    poll = _function_body(manager, "void VkResourceManager::PollGpuUploads")
+
+    assert "uint64_t m_uploadTimelineValue = 0;" in manager_header
+    assert "ticket->m_uploadTimelineValue = ticket->m_upload.timelineValue;" in manager
+    assert manager.count("m_asyncTransfer->GetTimelineSemaphore() != VK_NULL_HANDLE") >= 4
+    assert "ticket->m_upload = {};" in poll
+    assert "publishTimelineDependency();" in publish_texture
+    assert publish_texture.index("if (ticket->m_complete)") < publish_texture.index("ticket->m_published = true;")
+    assert publish_texture.index("publishTimelineDependency();") < publish_texture.index("ticket->m_published = true;")
+
+
+def test_runtime_screen_ui_uses_dynamic_rendering_with_msaa_resolve() -> None:
+    screen_ui = (RENDERER / "gui" / "InxScreenUIRenderer.cpp").read_text(encoding="utf-8")
+    scene_graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
+    graph_compile = (RENDERER / "vk" / "RenderGraphCompile.cpp").read_text(encoding="utf-8")
+
+    assert "VkPipelineRenderingCreateInfo renderingInfo" in screen_ui
+    assert "pipeInfo.renderPass = VK_NULL_HANDLE" in screen_ui
+    assert "m_screenUIRenderer->UsesDynamicRendering()" in scene_graph
+    assert "builder.UseDynamicRendering();" in scene_graph
+    assert "attachment.resolveImageView" in graph_compile
+    assert "VK_RESOLVE_MODE_AVERAGE_BIT" in graph_compile
 
 
 def test_per_view_descriptor_publication_only_waits_for_its_frame_slot() -> None:
@@ -643,6 +807,24 @@ def test_particle_contact_diagnostics_are_explicit_bounded_readbacks() -> None:
     assert "static_assert(sizeof(GpuParticleContactCounters) == 48);" in contact_runtime
 
 
+def test_collision_free_particle_graphs_skip_scene_collider_extraction() -> None:
+    manager_header = (
+        RENDERER / "particle" / "ParticleGpuSystemManager.h"
+    ).read_text(encoding="utf-8")
+    manager = (
+        RENDERER / "particle" / "ParticleGpuSystemManager.cpp"
+    ).read_text(encoding="utf-8")
+    renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+
+    assert "RequiresCollisionScene() const noexcept" in manager_header
+    assert "m_impl->requiresCollisionScene =" in manager
+    assert "entry.second->sourceProgram.collisionEnabled" in manager
+    update_collision_scene = _function_body(
+        renderer, "void InxRenderer::UpdateParticleCollisionScene()"
+    )
+    assert "!m_particleGpuSystemManager->RequiresCollisionScene()" in update_collision_scene
+
+
 def test_msaa_public_contract_is_exactly_1_2_4_8() -> None:
     policy = (RENDERER / "MsaaPolicy.h").read_text(encoding="utf-8")
     pipeline = (
@@ -744,6 +926,41 @@ def test_material_consumers_resolve_after_property_publication() -> None:
         "passBindings.push_back(binding)", 1
     )[0]
     assert preview_publish.index("UpdateMaterialUBO") < preview_publish.index("refreshPassBinding")
+
+
+def test_dynamic_rendering_migration_covers_outline_gizmos_and_previews() -> None:
+    graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
+    graph_header = (RENDERER / "SceneRenderGraph.h").read_text(encoding="utf-8")
+    outline_header = (RENDERER / "OutlineRenderer.h").read_text(encoding="utf-8")
+    outline = (RENDERER / "OutlineRenderer.cpp").read_text(encoding="utf-8")
+    core_header = (RENDERER / "InxVkCoreModular.h").read_text(encoding="utf-8")
+    core = (RENDERER / "VkCoreMaterial.cpp").read_text(encoding="utf-8")
+
+    assert "GetEditorOverlayMaterialPass() const" in graph_header
+    assert "const auto editorOverlayPass = GetEditorOverlayMaterialPass();" in graph
+    assert graph.count("&editorOverlayPass") >= 3
+    assert graph.count("builder.UseDynamicRendering();") >= 3
+
+    assert "GraphicsRenderingSignature &maskSignature" in outline_header
+    assert "BuildVkPipelineRenderingInfo(m_outlineMaskRenderingSignature" in outline
+    assert "BuildVkPipelineRenderingInfo(m_outlineCompositeRenderingSignature" in outline
+    assert "m_outlineMaskUsesDynamicRendering" in outline
+    assert "m_outlineCompositeUsesDynamicRendering" in outline
+
+    assert "GetOrCreatePreviewMaterialPass" in core_header
+    assert "GetOrCreatePreviewMaterialPass" in core
+    for preview in ("GPUMaterialPreview", "GPUMeshPreview"):
+        header = (RENDERER / "gui" / f"{preview}.h").read_text(encoding="utf-8")
+        source = (RENDERER / "gui" / f"{preview}.cpp").read_text(encoding="utf-8")
+        assert "DynamicRenderingCommands m_dynamicRenderingCommands" in header
+        assert "ResolveDynamicRenderingCommands" in source
+        assert "GetOrCreatePreviewMaterialPass" in source
+        assert "m_dynamicRenderingCommands.begin" in source
+        assert "m_dynamicRenderingCommands.end" in source
+        assert "SelectDynamicRenderingPath" not in source
+        assert "vkCmdBeginRenderPass" not in source
+        assert "vkCreateRenderPass" not in source
+        assert "vkCreateFramebuffer" not in source
 
 
 def test_game_camera_stack_owns_one_render_graph_per_camera() -> None:

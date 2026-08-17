@@ -174,6 +174,10 @@ class ProjectAssetCommandService:
             on_changed=self._notify_changed,
         )
         self._execute(command, origin)
+        self._select_project_paths(
+            (destination,),
+            reason="project_asset_rename",
+        )
         return destination
 
     def can_rename(self, source_path: str, new_name: str) -> bool:
@@ -203,9 +207,7 @@ class ProjectAssetCommandService:
         from Infernux.engine.undo import ProjectAssetDeleteCommand
 
         self._require_configured()
-        normalized = tuple(self._project_path(path) for path in paths)
-        if not normalized:
-            raise ValueError("Asset deletion requires at least one path")
+        normalized = self.preflight_delete(paths)
 
         def on_deleted() -> None:
             if clear_asset_selection:
@@ -222,6 +224,70 @@ class ProjectAssetCommandService:
             description="Delete Asset" if len(normalized) == 1 else "Delete Assets",
         )
         self._execute(command, origin)
+        return normalized
+
+    def preflight_delete(self, paths: Iterable[str]) -> tuple[str, ...]:
+        """Validate a complete delete before confirmation or filesystem work.
+
+        Scene documents are graph roots and must never be removed while they
+        are active or open.  Non-scene authoring resources are intentionally
+        allowed: the committed AssetMutation is then consumed by the common
+        WindowManager/DocumentRegistry deletion contract, which closes their
+        views and discards their dormant state.  This check is shared by the
+        visible Project panel and MCP because both eventually call ``delete``.
+        """
+        self._require_configured()
+        normalized = tuple(self._project_path(path) for path in paths)
+        if not normalized:
+            raise ValueError("Asset deletion requires at least one path")
+
+        from .documents import DocumentKind, DocumentRegistry
+
+        registry = DocumentRegistry._instance
+        opened = tuple(
+            document
+            for root in normalized
+            if registry is not None
+            for document in registry.documents_under_resource(root)
+        )
+        opened_scene = next(
+            (
+                document
+                for document in opened
+                if document.kind is DocumentKind.SCENE
+            ),
+            None,
+        )
+
+        active_scene_path = ""
+        try:
+            from Infernux.engine.scene_manager import SceneFileManager
+
+            manager = SceneFileManager.instance()
+            active_scene_path = str(
+                getattr(manager, "current_scene_path", "") or ""
+            )
+        except (ImportError, RuntimeError, AttributeError):
+            pass
+
+        if active_scene_path:
+            for root in normalized:
+                if same_path(active_scene_path, root) or is_path_within(
+                    active_scene_path,
+                    root,
+                    allow_root=True,
+                ):
+                    raise ValueError(
+                        "Refusing to delete the active scene. "
+                        "Save/close it through the scene API first."
+                    )
+
+        if opened_scene is not None:
+            raise ValueError(
+                "Refusing to delete an open scene document. "
+                "Close it through the scene API first."
+            )
+
         return normalized
 
     def transfer_to_directory(
@@ -520,7 +586,12 @@ class ProjectAssetCommandService:
 
                 Debug.log_suppressed("ProjectAssetCommandService.listener", exc)
 
-    def _select_project_paths(self, paths: Iterable[str]) -> None:
+    def _select_project_paths(
+        self,
+        paths: Iterable[str],
+        *,
+        reason: str = "project_asset_transfer",
+    ) -> None:
         from .descriptors import SelectionTarget
 
         targets = tuple(SelectionTarget.asset(path) for path in paths)
@@ -530,7 +601,7 @@ class ProjectAssetCommandService:
             targets,
             owner_id="project",
             primary=targets[-1],
-            reason="project_asset_transfer",
+            reason=reason,
             record_history=False,
         )
 
@@ -717,6 +788,13 @@ class ProjectAssetInteractionService:
             return False
         resolved = self._valid_project_paths(paths)
         if not resolved:
+            return False
+
+        # Fail closed before opening a confirmation dialog.  ``delete``
+        # repeats the same preflight at execution time for TOCTOU safety.
+        try:
+            self._assets.preflight_delete(resolved)
+        except (OSError, RuntimeError, ValueError):
             return False
 
         def delete_confirmed(confirmed: list[str]) -> bool:

@@ -32,6 +32,8 @@ nlohmann::json Camera::SerializeDocument() const
     j["cullingMask"] = m_cullingMask;
     j["clearFlags"] = static_cast<int>(m_clearFlags);
     j["backgroundColor"] = {m_backgroundColor.r, m_backgroundColor.g, m_backgroundColor.b, m_backgroundColor.a};
+    j["dithering"] = m_dithering;
+    j["stopNaNs"] = m_stopNaNs;
 
     return j;
 }
@@ -41,7 +43,8 @@ void Camera::ValidateSerializedDocument(const nlohmann::json &j)
     using namespace component_document_validation;
     ValidateComponentDocument(j, "Camera",
                               {"projectionMode", "fov", "aspectRatio", "orthoSize", "nearClip", "farClip", "depth",
-                               "cullingMask", "clearFlags", "backgroundColor"});
+                               "cullingMask", "clearFlags", "backgroundColor"},
+                              {"dithering", "stopNaNs"});
     const int projectionMode = RequireInteger(j, "projectionMode", "Camera");
     const float fov = RequireFiniteFloat(j, "fov", "Camera");
     const float aspectRatio = RequireFiniteFloat(j, "aspectRatio", "Camera");
@@ -52,6 +55,10 @@ void Camera::ValidateSerializedDocument(const nlohmann::json &j)
     const uint64_t cullingMask = RequireUnsignedInteger(j, "cullingMask", "Camera");
     const int clearFlags = RequireInteger(j, "clearFlags", "Camera");
     RequireFiniteVector(j, "backgroundColor", 4, "Camera");
+    if (j.contains("dithering"))
+        RequireBoolean(j, "dithering", "Camera");
+    if (j.contains("stopNaNs"))
+        RequireBoolean(j, "stopNaNs", "Camera");
 
     if (projectionMode < static_cast<int>(CameraProjection::Perspective) ||
         projectionMode > static_cast<int>(CameraProjection::Orthographic))
@@ -88,6 +95,8 @@ bool Camera::DeserializeDocument(const nlohmann::json &j)
         const auto &background = j["backgroundColor"];
         m_backgroundColor = glm::vec4(background[0].get<float>(), background[1].get<float>(),
                                       background[2].get<float>(), background[3].get<float>());
+        m_dithering = j.value("dithering", false);
+        m_stopNaNs = j.value("stopNaNs", false);
         m_projectionDirty = true;
 
         return true;
@@ -257,6 +266,8 @@ std::unique_ptr<Component> Camera::Clone() const
     clone->m_cullingMask = m_cullingMask;
     clone->m_clearFlags = m_clearFlags;
     clone->m_backgroundColor = m_backgroundColor;
+    clone->m_dithering = m_dithering;
+    clone->m_stopNaNs = m_stopNaNs;
     clone->m_screenWidth = m_screenWidth;
     clone->m_screenHeight = m_screenHeight;
     return clone;

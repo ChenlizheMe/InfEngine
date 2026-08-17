@@ -3,6 +3,7 @@
 #include <function/renderer/gui/InxGUIContext.h>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 namespace infernux
 {
@@ -22,14 +23,17 @@ void EditorShortcutInput::OnRender(InxGUIContext *ctx)
     const auto pressedOnce = [](ImGuiKey key) { return ImGui::IsKeyPressed(key, false); };
     const bool textInputActive = ImGui::GetIO().WantTextInput;
     const bool popupActiveNow = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+    const bool modalActiveNow = ImGui::GetTopMostPopupModal() != nullptr;
     // ImGui may consume Escape and retire a popup before this late-frame input
     // adapter runs. Preserve the previous rendered frame as a capture barrier
     // so the same key edge cannot also execute a panel command.
     const bool popupActive = popupActiveNow || m_popupActivePreviousFrame;
+    const bool modalActive = modalActiveNow || m_modalActivePreviousFrame;
     m_popupActivePreviousFrame = popupActiveNow;
-    const auto dispatch = [&](const char *chord) {
+    m_modalActivePreviousFrame = modalActiveNow;
+    const auto dispatch = [&](const char *chord, bool allowTransientPopup = false) {
         if (routeShortcut)
-            routeShortcut(chord, textInputActive, popupActive);
+            routeShortcut(chord, textInputActive, allowTransientPopup ? modalActive : popupActive);
     };
 
     if (ctrl && !alt && !super) {
@@ -38,9 +42,9 @@ void EditorShortcutInput::OnRender(InxGUIContext *ctx)
         if (pressedOnce(ImGuiKey_N))
             dispatch(shift ? "Ctrl+Shift+N" : "Ctrl+N");
         if (pressedOnce(ImGuiKey_Z))
-            dispatch(shift ? "Ctrl+Shift+Z" : "Ctrl+Z");
+            dispatch(shift ? "Ctrl+Shift+Z" : "Ctrl+Z", true);
         if (!shift && pressedOnce(ImGuiKey_Y))
-            dispatch("Ctrl+Y");
+            dispatch("Ctrl+Y", true);
         if (!shift && pressedOnce(ImGuiKey_C))
             dispatch("Ctrl+C");
         if (!shift && pressedOnce(ImGuiKey_X))
@@ -49,8 +53,8 @@ void EditorShortcutInput::OnRender(InxGUIContext *ctx)
             dispatch("Ctrl+V");
         if (!shift && pressedOnce(ImGuiKey_D))
             dispatch("Ctrl+D");
-        if (!shift && pressedOnce(ImGuiKey_F))
-            dispatch("Ctrl+F");
+        if (pressedOnce(ImGuiKey_F))
+            dispatch(shift ? "Ctrl+Shift+F" : "Ctrl+F");
         if (shift && pressedOnce(ImGuiKey_P))
             dispatch("Ctrl+Shift+P");
         return;
@@ -95,6 +99,14 @@ void EditorShortcutInput::OnRender(InxGUIContext *ctx)
             dispatch("Shift+Up");
         if (pressedOnce(ImGuiKey_DownArrow))
             dispatch("Shift+Down");
+        return;
+    }
+
+    if (!ctrl && !shift && alt && !super) {
+        if (pressedOnce(ImGuiKey_LeftArrow))
+            dispatch("Alt+Left");
+        if (pressedOnce(ImGuiKey_RightArrow))
+            dispatch("Alt+Right");
     }
 }
 

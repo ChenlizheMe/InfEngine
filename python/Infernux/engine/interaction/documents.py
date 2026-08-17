@@ -1678,6 +1678,28 @@ class DocumentRegistry:
             if document.resource_path and path_key(document.resource_path) == identity
         )
 
+    def documents_under_resource(self, resource_path: str) -> tuple[EditorDocument, ...]:
+        """Return live documents whose durable source is a path or its child.
+
+        Project deletion is a tree mutation.  An exact-path lookup is enough
+        for deleting one file, but it misses an authoring document inside a
+        deleted folder and lets the registry outlive the filesystem change.
+        Keep this query in the registry so every caller uses the same document
+        ownership rules.
+        """
+        root = path_key(resource_path)
+        if not root:
+            return ()
+        return tuple(
+            document
+            for document in self._documents.values()
+            if document.resource_path
+            and (
+                path_key(document.resource_path) == root
+                or path_key(document.resource_path).startswith(root + os.sep)
+            )
+        )
+
     @staticmethod
     def _reload_callback(document: EditorDocument):
         """Resolve the durable reload hook without weakening document identity.

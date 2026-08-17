@@ -29,6 +29,35 @@ class _Controller:
         return True
 
 
+class _IdentityMaterial(_Material):
+    def __init__(self, value: float = 1.0) -> None:
+        super().__init__(value)
+        self.name = "Durable Material"
+        self.builtin = False
+
+    def clone(self):
+        candidate = copy.deepcopy(self)
+        candidate.name = f"{self.name} (Instance_1)"
+        candidate.builtin = True
+        return candidate
+
+    def serialize_document(self):
+        return {
+            "name": self.name,
+            "builtin": self.builtin,
+            "value": self.value,
+        }
+
+
+class _IdentityController(_Controller):
+    def apply_document(self, document, **kwargs):
+        self.calls.append((copy.deepcopy(document), dict(kwargs)))
+        self.resource.name = str(document["name"])
+        self.resource.builtin = bool(document["builtin"])
+        self.resource.value = float(document["value"])
+        return True
+
+
 def test_mcp_material_edit_uses_resource_document_with_automation_origin(monkeypatch):
     material = _Material()
     controller = _Controller(material)
@@ -52,6 +81,31 @@ def test_mcp_material_edit_uses_resource_document_with_automation_origin(monkeyp
     assert document == {"value": 4.0}
     assert kwargs["view_id"] == "automation"
     assert kwargs["origin"] is ActionOrigin.AUTOMATION
+
+
+def test_mcp_material_edit_does_not_persist_clone_identity(monkeypatch):
+    material = _IdentityMaterial()
+    controller = _IdentityController(material)
+    monkeypatch.setattr(
+        material_tools,
+        "_editable_material",
+        lambda _project, _path: (material, controller),
+    )
+
+    material_tools._apply_material_edit(
+        "Project",
+        "Assets/Test.mat",
+        lambda candidate: setattr(candidate, "value", 8.0),
+        edit_key="property:value",
+        description="Set Material value",
+    )
+
+    document, _kwargs = controller.calls[0]
+    assert document == {
+        "name": "Durable Material",
+        "builtin": False,
+        "value": 8.0,
+    }
 
 
 def test_mcp_material_setters_have_no_direct_save_or_asset_reload_path():

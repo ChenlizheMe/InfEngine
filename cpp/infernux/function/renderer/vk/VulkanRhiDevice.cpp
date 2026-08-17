@@ -240,8 +240,8 @@ template <typename Feature> void AppendFeature(void *&tail, VkPhysicalDeviceFeat
     tail = node;
 }
 
-template <typename Property> void AppendProperty(void *&tail, VkPhysicalDeviceProperties2 &root,
-                                                  Property &property) noexcept
+template <typename Property>
+void AppendProperty(void *&tail, VkPhysicalDeviceProperties2 &root, Property &property) noexcept
 {
     auto *node = reinterpret_cast<VkBaseOutStructure *>(&property);
     node->pNext = nullptr;
@@ -259,14 +259,18 @@ void SetEnabled(rhi::DeviceCapabilityStatus &status) noexcept
 
 } // namespace
 
-VulkanCapabilityProbeData VulkanCapabilitySnapshot::QueryProbe(VkPhysicalDevice physicalDevice)
+VulkanCapabilityProbeData VulkanCapabilitySnapshot::QueryProbe(VkPhysicalDevice physicalDevice,
+                                                               uint32_t apiVersionLimit)
 {
     VulkanCapabilityProbeData probe{};
     if (physicalDevice == VK_NULL_HANDLE)
         return probe;
 
     vkGetPhysicalDeviceProperties(physicalDevice, &probe.properties);
-    probe.apiVersion = probe.properties.apiVersion;
+    // A physical device may expose a newer core API than the application
+    // negotiated for its instance. Promoted features above that effective
+    // version must still use their KHR/EXT feature structs and entry points.
+    probe.apiVersion = std::min(probe.properties.apiVersion, apiVersionLimit);
     vkGetPhysicalDeviceFeatures(physicalDevice, &probe.coreFeatures);
 
     uint32_t extensionCount = 0;
@@ -345,30 +349,36 @@ VulkanCapabilitySnapshot VulkanCapabilitySnapshot::FromProbe(const VulkanCapabil
                                                  descriptor.descriptorBindingPartiallyBound == VK_TRUE &&
                                                  descriptor.descriptorBindingVariableDescriptorCount == VK_TRUE &&
                                                  descriptor.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
-    const bool runtimeDescriptorArray = core12 ? v12.runtimeDescriptorArray == VK_TRUE
+    const bool runtimeDescriptorArray =
+        core12 ? v12.runtimeDescriptorArray == VK_TRUE
+               : probe.descriptorIndexingExtension && descriptor.runtimeDescriptorArray == VK_TRUE;
+    const bool sampledImageNonUniform =
+        core12 ? v12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE
+               : probe.descriptorIndexingExtension && descriptor.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
+    const bool partiallyBound =
+        core12 ? v12.descriptorBindingPartiallyBound == VK_TRUE
+               : probe.descriptorIndexingExtension && descriptor.descriptorBindingPartiallyBound == VK_TRUE;
+    const bool variableCount =
+        core12 ? v12.descriptorBindingVariableDescriptorCount == VK_TRUE
+               : probe.descriptorIndexingExtension && descriptor.descriptorBindingVariableDescriptorCount == VK_TRUE;
+    const bool sampledUpdateAfterBind = core12 ? v12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE
                                                : probe.descriptorIndexingExtension &&
-                                                     descriptor.runtimeDescriptorArray == VK_TRUE;
-    const bool partiallyBound = core12 ? v12.descriptorBindingPartiallyBound == VK_TRUE
-                                       : probe.descriptorIndexingExtension &&
-                                             descriptor.descriptorBindingPartiallyBound == VK_TRUE;
-    const bool variableCount = core12 ? v12.descriptorBindingVariableDescriptorCount == VK_TRUE
-                                      : probe.descriptorIndexingExtension &&
-                                            descriptor.descriptorBindingVariableDescriptorCount == VK_TRUE;
-    const bool sampledUpdateAfterBind =
-        core12 ? v12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE
-               : probe.descriptorIndexingExtension && descriptor.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
+                                                     descriptor.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
     const bool storageUpdateAfterBind =
-        core12 ? v12.descriptorBindingStorageBufferUpdateAfterBind == VK_TRUE
-               : probe.descriptorIndexingExtension && descriptor.descriptorBindingStorageBufferUpdateAfterBind == VK_TRUE;
+        core12
+            ? v12.descriptorBindingStorageBufferUpdateAfterBind == VK_TRUE
+            : probe.descriptorIndexingExtension && descriptor.descriptorBindingStorageBufferUpdateAfterBind == VK_TRUE;
     const bool uniformUpdateAfterBind =
-        core12 ? v12.descriptorBindingUniformBufferUpdateAfterBind == VK_TRUE
-               : probe.descriptorIndexingExtension && descriptor.descriptorBindingUniformBufferUpdateAfterBind == VK_TRUE;
-    const bool updateUnused = core12 ? v12.descriptorBindingUpdateUnusedWhilePending == VK_TRUE
-                                     : probe.descriptorIndexingExtension &&
-                                           descriptor.descriptorBindingUpdateUnusedWhilePending == VK_TRUE;
+        core12
+            ? v12.descriptorBindingUniformBufferUpdateAfterBind == VK_TRUE
+            : probe.descriptorIndexingExtension && descriptor.descriptorBindingUniformBufferUpdateAfterBind == VK_TRUE;
+    const bool updateUnused =
+        core12 ? v12.descriptorBindingUpdateUnusedWhilePending == VK_TRUE
+               : probe.descriptorIndexingExtension && descriptor.descriptorBindingUpdateUnusedWhilePending == VK_TRUE;
 
     result.supported.bindless.descriptorIndexing = {descriptorIndexing, false};
     result.supported.bindless.runtimeDescriptorArray = {runtimeDescriptorArray, false};
+    result.supported.bindless.shaderSampledImageArrayNonUniformIndexing = {sampledImageNonUniform, false};
     result.supported.bindless.descriptorBindingPartiallyBound = {partiallyBound, false};
     result.supported.bindless.descriptorBindingVariableDescriptorCount = {variableCount, false};
     result.supported.bindless.descriptorBindingSampledImageUpdateAfterBind = {sampledUpdateAfterBind, false};
@@ -376,15 +386,15 @@ VulkanCapabilitySnapshot VulkanCapabilitySnapshot::FromProbe(const VulkanCapabil
     result.supported.bindless.descriptorBindingStorageBufferUpdateAfterBind = {storageUpdateAfterBind, false};
     result.supported.bindless.descriptorBindingUpdateUnusedWhilePending = {updateUnused, false};
 
-    const bool timeline = core12 ? v12.timelineSemaphore == VK_TRUE
-                                 : probe.timelineSemaphoreExtension &&
-                                       probe.timelineSemaphoreFeaturesKHR.timelineSemaphore == VK_TRUE;
-    const bool dynamicRendering = core13 ? v13.dynamicRendering == VK_TRUE
-                                         : probe.dynamicRenderingExtension &&
-                                               probe.dynamicRenderingFeaturesKHR.dynamicRendering == VK_TRUE;
-    const bool synchronization2 = core13 ? v13.synchronization2 == VK_TRUE
-                                         : probe.synchronization2Extension &&
-                                               probe.synchronization2FeaturesKHR.synchronization2 == VK_TRUE;
+    const bool timeline =
+        core12 ? v12.timelineSemaphore == VK_TRUE
+               : probe.timelineSemaphoreExtension && probe.timelineSemaphoreFeaturesKHR.timelineSemaphore == VK_TRUE;
+    const bool dynamicRendering =
+        core13 ? v13.dynamicRendering == VK_TRUE
+               : probe.dynamicRenderingExtension && probe.dynamicRenderingFeaturesKHR.dynamicRendering == VK_TRUE;
+    const bool synchronization2 =
+        core13 ? v13.synchronization2 == VK_TRUE
+               : probe.synchronization2Extension && probe.synchronization2FeaturesKHR.synchronization2 == VK_TRUE;
     result.supported.timelineSemaphore = {timeline, false};
     result.supported.dynamicRendering = {dynamicRendering, false};
     result.supported.synchronization2 = {synchronization2, false};
@@ -424,6 +434,7 @@ void VulkanDeviceFeatureChain::ResetChain() noexcept
     m_enabled = m_supported.supported;
     m_enabled.bindless.descriptorIndexing.enabled = false;
     m_enabled.bindless.runtimeDescriptorArray.enabled = false;
+    m_enabled.bindless.shaderSampledImageArrayNonUniformIndexing.enabled = false;
     m_enabled.bindless.descriptorBindingPartiallyBound.enabled = false;
     m_enabled.bindless.descriptorBindingVariableDescriptorCount.enabled = false;
     m_enabled.bindless.descriptorBindingSampledImageUpdateAfterBind.enabled = false;
@@ -462,6 +473,7 @@ bool VulkanDeviceFeatureChain::EnableDescriptorIndexing() noexcept
         }
         m_vulkan12.descriptorIndexing = VK_TRUE;
         m_vulkan12.runtimeDescriptorArray = VK_TRUE;
+        m_vulkan12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
         m_vulkan12.descriptorBindingPartiallyBound = VK_TRUE;
         m_vulkan12.descriptorBindingVariableDescriptorCount = VK_TRUE;
         m_vulkan12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
@@ -477,6 +489,7 @@ bool VulkanDeviceFeatureChain::EnableDescriptorIndexing() noexcept
             m_descriptorIndexingEXTLinked = true;
         }
         m_descriptorIndexingEXT.runtimeDescriptorArray = VK_TRUE;
+        m_descriptorIndexingEXT.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
         m_descriptorIndexingEXT.descriptorBindingPartiallyBound = VK_TRUE;
         m_descriptorIndexingEXT.descriptorBindingVariableDescriptorCount = VK_TRUE;
         m_descriptorIndexingEXT.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
@@ -493,6 +506,7 @@ bool VulkanDeviceFeatureChain::EnableDescriptorIndexing() noexcept
     m_enabled.bindless = m_supported.supported.bindless;
     SetEnabled(m_enabled.bindless.descriptorIndexing);
     SetEnabled(m_enabled.bindless.runtimeDescriptorArray);
+    SetEnabled(m_enabled.bindless.shaderSampledImageArrayNonUniformIndexing);
     SetEnabled(m_enabled.bindless.descriptorBindingPartiallyBound);
     SetEnabled(m_enabled.bindless.descriptorBindingVariableDescriptorCount);
     SetEnabled(m_enabled.bindless.descriptorBindingSampledImageUpdateAfterBind);
@@ -663,9 +677,16 @@ VulkanRhiDevice::~VulkanRhiDevice()
     DestroyOwnedResources();
 }
 
+void VulkanRhiDevice::UseSubmissionSerials(std::function<rhi::SubmissionSerial()> retirementSerialSource)
+{
+    if (!retirementSerialSource)
+        throw std::invalid_argument("Vulkan RHI retirement requires a completion epoch source");
+    m_descriptorManager.UseSubmissionSerials(retirementSerialSource);
+    m_resourceRetirementQueue.BindSerialSource(std::move(retirementSerialSource));
+}
+
 void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
-                            uint32_t graphicsQueueFamily, uint32_t computeQueueFamily,
-                            uint32_t transferQueueFamily,
+                            uint32_t graphicsQueueFamily, uint32_t computeQueueFamily, uint32_t transferQueueFamily,
                             const rhi::DeviceCapabilityState &capabilityState) noexcept
 {
     if (m_lifetime) {
@@ -684,7 +705,6 @@ void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator, const rhi::
     m_computeQueueFamily = computeQueueFamily;
     m_transferQueueFamily = transferQueueFamily;
     m_descriptorManager.Reset(device, m_deviceId);
-    m_recordingSubmissionSerial = rhi::InvalidSubmissionSerial;
     ResetSlots(m_buffers, m_freeBuffer);
     ResetSlots(m_textures, m_freeTexture);
     ResetSlots(m_textureViews, m_freeTextureView);
@@ -810,6 +830,56 @@ rhi::BindGroupHandle VulkanRhiDevice::RegisterBindGroup(VkDescriptorSet set)
                                                                   VK_NULL_HANDLE, VK_NULL_HANDLE}});
 }
 
+bool VulkanRhiDevice::ConfigureBindlessTextureTable(VkDescriptorSetLayout layout, VkDescriptorSet set,
+                                                    BindlessTexturePublisher publisher,
+                                                    BindlessTextureUsageMarker usageMarker)
+{
+    ClearBindlessTextureTable();
+    if (layout == VK_NULL_HANDLE || set == VK_NULL_HANDLE || !publisher || !usageMarker)
+        return false;
+
+    const rhi::BindingLayoutHandle rhiLayout = RegisterBindingLayout(layout);
+    const rhi::BindGroupHandle rhiGroup = RegisterBindGroup(set);
+    if (!rhiLayout.IsValid() || !rhiGroup.IsValid()) {
+        Release(rhiGroup);
+        Release(rhiLayout);
+        return false;
+    }
+
+    m_bindlessTextureTableBinding = {rhiLayout, rhiGroup};
+    m_bindlessTexturePublisher = std::move(publisher);
+    m_bindlessTextureUsageMarker = std::move(usageMarker);
+    return true;
+}
+
+void VulkanRhiDevice::ClearBindlessTextureTable() noexcept
+{
+    m_bindlessTexturePublisher = {};
+    m_bindlessTextureUsageMarker = {};
+    Release(m_bindlessTextureTableBinding.group);
+    Release(m_bindlessTextureTableBinding.layout);
+    m_bindlessTextureTableBinding = {};
+}
+
+rhi::BindlessTextureTableBinding VulkanRhiDevice::GetBindlessTextureTableBinding() const noexcept
+{
+    return m_bindlessTextureTableBinding;
+}
+
+rhi::ResourceIndex
+VulkanRhiDevice::PublishBindlessTexture(const std::shared_ptr<const rhi::TextureGpuView> &texture) noexcept
+{
+    return m_bindlessTexturePublisher ? m_bindlessTexturePublisher(texture) : rhi::ResourceIndex{};
+}
+
+void VulkanRhiDevice::MarkBindlessTexturesUsed(const rhi::ResourceIndex *resources, size_t count) noexcept
+{
+    const rhi::SubmissionSerial recordingSerial = vkdebug::GetDescriptorRecordingSubmissionSerial();
+    if (m_bindlessTextureUsageMarker && (resources || count == 0) && recordingSerial != rhi::InvalidSubmissionSerial) {
+        m_bindlessTextureUsageMarker(resources, count, recordingSerial);
+    }
+}
+
 rhi::BufferHandle VulkanRhiDevice::CreateBuffer(const rhi::BufferDesc &desc)
 {
     const VkBufferUsageFlags usage = ToVkBufferUsage(desc.usage);
@@ -918,6 +988,8 @@ rhi::TextureHandle VulkanRhiDevice::CreateTexture(const rhi::TextureDesc &desc)
     VkImageCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     createInfo.flags = desc.cubeCompatible ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+    if (desc.mutableFormat)
+        createInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
     createInfo.imageType = imageType;
     createInfo.format = format;
     createInfo.extent = {desc.width, desc.height,
@@ -954,7 +1026,8 @@ rhi::TextureViewHandle VulkanRhiDevice::CreateTextureView(const rhi::TextureView
         return {};
 
     const rhi::PixelFormat format = desc.format == rhi::PixelFormat::Undefined ? texture->desc.format : desc.format;
-    if (format != texture->desc.format)
+    if (format != texture->desc.format &&
+        (!texture->desc.mutableFormat || !rhi::AreColorSpaceViewFormatsCompatible(texture->desc.format, format)))
         return {};
     const bool depth = rhi::IsDepthFormat(format);
     if ((!depth && desc.aspect != rhi::TextureAspect::Color) || (depth && desc.aspect == rhi::TextureAspect::Color) ||
@@ -1242,15 +1315,23 @@ rhi::ComputePipelineHandle VulkanRhiDevice::CreateComputePipeline(const rhi::Com
 rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc)
 {
     if (m_device == VK_NULL_HANDLE || !desc.vertexShader.IsValid() || !desc.fragmentShader.IsValid() ||
-        !desc.renderTargetLayout.IsValid() || desc.bindingLayoutCount > desc.bindingLayouts.size() ||
+        !desc.HasValidRenderingContract() || desc.bindingLayoutCount > desc.bindingLayouts.size() ||
         desc.colorTargetCount > desc.colorTargets.size() || (desc.pushConstantBytes % 4u) != 0u ||
         (desc.pushConstantBytes > 0 && desc.pushConstantStages == rhi::ShaderStage::None))
         return {};
 
+    std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> dynamicColorFormats{};
+    VkPipelineRenderingCreateInfo dynamicRenderingInfo{};
+    if (desc.useDynamicRendering &&
+        (!m_capabilityState.dynamicRendering.IsEnabled() || desc.renderingSignature.viewMask != 0 ||
+         !rhi::BuildVkPipelineRenderingInfo(desc.renderingSignature, dynamicColorFormats, dynamicRenderingInfo)))
+        return {};
+
     const VkShaderModule vertex = Resolve(desc.vertexShader);
     const VkShaderModule fragment = Resolve(desc.fragmentShader);
-    const VkRenderPass renderPass = Resolve(desc.renderTargetLayout);
-    if (vertex == VK_NULL_HANDLE || fragment == VK_NULL_HANDLE || renderPass == VK_NULL_HANDLE)
+    const VkRenderPass renderPass = desc.useDynamicRendering ? VK_NULL_HANDLE : Resolve(desc.renderTargetLayout);
+    if (vertex == VK_NULL_HANDLE || fragment == VK_NULL_HANDLE ||
+        (!desc.useDynamicRendering && renderPass == VK_NULL_HANDLE))
         return {};
 
     std::array<VkDescriptorSetLayout, rhi::GraphicsPipelineDesc::MaxBindingLayouts> layouts{};
@@ -1343,6 +1424,7 @@ rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::G
 
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.pNext = desc.useDynamicRendering ? &dynamicRenderingInfo : nullptr;
     pipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
     pipelineInfo.pStages = stages.data();
     pipelineInfo.pVertexInputState = &vertexInput;
@@ -1355,6 +1437,7 @@ rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::G
     pipelineInfo.pDynamicState = &dynamic;
     pipelineInfo.layout = layout;
     pipelineInfo.renderPass = renderPass;
+    pipelineInfo.subpass = 0;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
@@ -1375,61 +1458,88 @@ rhi::RenderTargetLayoutHandle VulkanRhiDevice::RegisterRenderTargetLayout(VkRend
 void VulkanRhiDevice::Release(rhi::TextureViewHandle handle) noexcept
 {
     const auto *payload = Resolve(m_textureViews, handle);
-    if (payload && payload->owned && m_device != VK_NULL_HANDLE && payload->view != VK_NULL_HANDLE)
-        vkDestroyImageView(m_device, payload->view, nullptr);
+    if (payload && payload->owned && m_device != VK_NULL_HANDLE && payload->view != VK_NULL_HANDLE) {
+        const VkDevice device = m_device;
+        const VkImageView view = payload->view;
+        RetireNativeResource([device, view] { vkDestroyImageView(device, view, nullptr); });
+    }
     Release(m_textureViews, m_freeTextureView, handle);
 }
 void VulkanRhiDevice::Release(rhi::BufferHandle handle) noexcept
 {
     const auto *payload = Resolve(m_buffers, handle);
-    if (payload && payload->owned && m_allocator != VK_NULL_HANDLE && payload->buffer != VK_NULL_HANDLE)
-        vmaDestroyBuffer(m_allocator, payload->buffer, payload->allocation);
+    if (payload && payload->owned && m_allocator != VK_NULL_HANDLE && payload->buffer != VK_NULL_HANDLE) {
+        const VmaAllocator allocator = m_allocator;
+        const VkBuffer buffer = payload->buffer;
+        const VmaAllocation allocation = payload->allocation;
+        RetireNativeResource([allocator, buffer, allocation] { vmaDestroyBuffer(allocator, buffer, allocation); });
+    }
     Release(m_buffers, m_freeBuffer, handle);
 }
 
 void VulkanRhiDevice::Release(rhi::TextureHandle handle) noexcept
 {
     const auto *payload = Resolve(m_textures, handle);
-    if (payload && payload->owned && m_allocator != VK_NULL_HANDLE && payload->image != VK_NULL_HANDLE)
-        vmaDestroyImage(m_allocator, payload->image, payload->allocation);
+    if (payload && payload->owned && m_allocator != VK_NULL_HANDLE && payload->image != VK_NULL_HANDLE) {
+        const VmaAllocator allocator = m_allocator;
+        const VkImage image = payload->image;
+        const VmaAllocation allocation = payload->allocation;
+        RetireNativeResource([allocator, image, allocation] { vmaDestroyImage(allocator, image, allocation); });
+    }
     Release(m_textures, m_freeTexture, handle);
 }
 void VulkanRhiDevice::Release(rhi::SamplerHandle handle) noexcept
 {
     const auto *payload = Resolve(m_samplers, handle);
-    if (payload && payload->owned && m_device != VK_NULL_HANDLE && payload->sampler != VK_NULL_HANDLE)
-        vkDestroySampler(m_device, payload->sampler, nullptr);
+    if (payload && payload->owned && m_device != VK_NULL_HANDLE && payload->sampler != VK_NULL_HANDLE) {
+        const VkDevice device = m_device;
+        const VkSampler sampler = payload->sampler;
+        RetireNativeResource([device, sampler] { vkDestroySampler(device, sampler, nullptr); });
+    }
     Release(m_samplers, m_freeSampler, handle);
 }
 void VulkanRhiDevice::Release(rhi::ShaderModuleHandle handle) noexcept
 {
     const auto *payload = Resolve(m_shaderModules, handle);
-    if (payload && payload->owned && m_device != VK_NULL_HANDLE && payload->module != VK_NULL_HANDLE)
-        vkDestroyShaderModule(m_device, payload->module, nullptr);
+    if (payload && payload->owned && m_device != VK_NULL_HANDLE && payload->module != VK_NULL_HANDLE) {
+        const VkDevice device = m_device;
+        const VkShaderModule module = payload->module;
+        RetireNativeResource([device, module] { vkDestroyShaderModule(device, module, nullptr); });
+    }
     Release(m_shaderModules, m_freeShaderModule, handle);
 }
 void VulkanRhiDevice::Release(rhi::BindingLayoutHandle handle) noexcept
 {
     const auto *payload = Resolve(m_bindingLayouts, handle);
-    if (payload && payload->owned && m_device != VK_NULL_HANDLE && payload->layout != VK_NULL_HANDLE)
-        vkDestroyDescriptorSetLayout(m_device, payload->layout, nullptr);
+    if (payload && payload->owned && m_device != VK_NULL_HANDLE && payload->layout != VK_NULL_HANDLE) {
+        const VkDevice device = m_device;
+        const VkDescriptorSetLayout layout = payload->layout;
+        RetireNativeResource([device, layout] { vkDestroyDescriptorSetLayout(device, layout, nullptr); });
+    }
     Release(m_bindingLayouts, m_freeBindingLayout, handle);
 }
 void VulkanRhiDevice::Release(rhi::BindGroupHandle handle) noexcept
 {
     const auto *payload = Resolve(m_bindGroups, handle);
     if (payload && payload->owned && m_device != VK_NULL_HANDLE)
-        m_descriptorManager.Retire(payload->lease, m_recordingSubmissionSerial);
+        m_descriptorManager.Retire(payload->lease, vkdebug::GetDescriptorRecordingSubmissionSerial());
     Release(m_bindGroups, m_freeBindGroup, handle);
 }
 void VulkanRhiDevice::Release(rhi::GraphicsPipelineHandle handle) noexcept
 {
     const auto *payload = ResolvePipeline(handle);
     if (payload && m_device != VK_NULL_HANDLE) {
-        if (payload->ownsPipeline && payload->pipeline != VK_NULL_HANDLE)
-            vkDestroyPipeline(m_device, payload->pipeline, nullptr);
-        if (payload->ownsLayout && payload->layout != VK_NULL_HANDLE)
-            vkDestroyPipelineLayout(m_device, payload->layout, nullptr);
+        const VkDevice device = m_device;
+        const VkPipeline pipeline = payload->ownsPipeline ? payload->pipeline : VK_NULL_HANDLE;
+        const VkPipelineLayout layout = payload->ownsLayout ? payload->layout : VK_NULL_HANDLE;
+        if (pipeline != VK_NULL_HANDLE || layout != VK_NULL_HANDLE) {
+            RetireNativeResource([device, pipeline, layout] {
+                if (pipeline != VK_NULL_HANDLE)
+                    vkDestroyPipeline(device, pipeline, nullptr);
+                if (layout != VK_NULL_HANDLE)
+                    vkDestroyPipelineLayout(device, layout, nullptr);
+            });
+        }
     }
     Release(m_graphicsPipelines, m_freeGraphicsPipeline, handle);
 }
@@ -1437,10 +1547,17 @@ void VulkanRhiDevice::Release(rhi::ComputePipelineHandle handle) noexcept
 {
     const auto *payload = ResolvePipeline(handle);
     if (payload && m_device != VK_NULL_HANDLE) {
-        if (payload->ownsPipeline && payload->pipeline != VK_NULL_HANDLE)
-            vkDestroyPipeline(m_device, payload->pipeline, nullptr);
-        if (payload->ownsLayout && payload->layout != VK_NULL_HANDLE)
-            vkDestroyPipelineLayout(m_device, payload->layout, nullptr);
+        const VkDevice device = m_device;
+        const VkPipeline pipeline = payload->ownsPipeline ? payload->pipeline : VK_NULL_HANDLE;
+        const VkPipelineLayout layout = payload->ownsLayout ? payload->layout : VK_NULL_HANDLE;
+        if (pipeline != VK_NULL_HANDLE || layout != VK_NULL_HANDLE) {
+            RetireNativeResource([device, pipeline, layout] {
+                if (pipeline != VK_NULL_HANDLE)
+                    vkDestroyPipeline(device, pipeline, nullptr);
+                if (layout != VK_NULL_HANDLE)
+                    vkDestroyPipelineLayout(device, layout, nullptr);
+            });
+        }
     }
     Release(m_computePipelines, m_freeComputePipeline, handle);
 }
@@ -1516,8 +1633,35 @@ VulkanRhiDevice::ResolvePipeline(rhi::ComputePipelineHandle handle) const noexce
     return Resolve(m_computePipelines, handle);
 }
 
+void VulkanRhiDevice::RetireNativeResource(std::function<void()> deleter) noexcept
+{
+    if (!deleter)
+        return;
+    if (!m_resourceRetirementQueue.HasSerialSource()) {
+        deleter();
+        return;
+    }
+
+    // The completion-epoch source is installed immediately after queue setup.
+    // Preserve a fallback copy so an unexpected source exception cannot leak
+    // the Vulkan object during teardown or a partial initialization failure.
+    auto fallback = deleter;
+    try {
+        m_resourceRetirementQueue.Retire(std::move(deleter));
+    } catch (...) {
+        fallback();
+    }
+}
+
 void VulkanRhiDevice::DestroyOwnedResources() noexcept
 {
+    m_bindlessTexturePublisher = {};
+    m_bindlessTextureUsageMarker = {};
+    m_bindlessTextureTableBinding = {};
+    // VkDeviceContext drains the device before destroying the RHI adapter.
+    // Flush resources retired by earlier releases before destroying objects
+    // that are still present in the live slot arrays.
+    m_resourceRetirementQueue.FlushAll();
     if (m_device == VK_NULL_HANDLE)
         return;
     for (auto &slot : m_textureViews) {
@@ -1552,7 +1696,7 @@ void VulkanRhiDevice::DestroyOwnedResources() noexcept
     }
     for (auto &slot : m_bindGroups) {
         if (slot.occupied && slot.payload.owned && slot.payload.lease.IsValid())
-            m_descriptorManager.Retire(slot.payload.lease, m_recordingSubmissionSerial);
+            m_descriptorManager.Retire(slot.payload.lease, vkdebug::GetDescriptorRecordingSubmissionSerial());
         slot.payload.owned = false;
     }
     for (auto &slot : m_bindingLayouts) {
@@ -1585,7 +1729,8 @@ rhi::GraphicsCommandEncoder VulkanRhiDevice::MakeGraphicsCommandEncoder(VulkanGr
 {
     context.device = this;
     context.commandBuffer = commandBuffer;
-    context.boundPipeline = {};
+    context.ResetBindingState();
+    context.ResetMetrics();
     return {&context, &s_graphicsDispatch};
 }
 
@@ -1594,7 +1739,8 @@ rhi::ComputeCommandEncoder VulkanRhiDevice::MakeComputeCommandEncoder(VulkanComp
 {
     context.device = this;
     context.commandBuffer = commandBuffer;
-    context.boundPipeline = {};
+    context.ResetBindingState();
+    context.ResetMetrics();
     return {&context, &s_computeDispatch};
 }
 
@@ -1608,12 +1754,23 @@ rhi::TransferCommandEncoder VulkanRhiDevice::MakeTransferCommandEncoder(VulkanTr
 void VulkanRhiDevice::BindPipeline(void *context, rhi::GraphicsPipelineHandle pipeline)
 {
     auto &command = *static_cast<VulkanGraphicsCommandContext *>(context);
-    command.boundPipeline = {};
     const auto *native = command.device ? command.device->ResolvePipeline(pipeline) : nullptr;
-    if (native && command.commandBuffer != VK_NULL_HANDLE) {
-        vkCmdBindPipeline(command.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, native->pipeline);
-        command.boundPipeline = pipeline;
+    if (!native || command.commandBuffer == VK_NULL_HANDLE) {
+        command.ResetBindingState();
+        return;
     }
+    if (command.boundPipeline == pipeline) {
+#if INFERNUX_FRAME_PROFILE
+        ++command.pipelineBindSkips;
+#endif
+        return;
+    }
+    vkCmdBindPipeline(command.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, native->pipeline);
+#if INFERNUX_FRAME_PROFILE
+    ++command.pipelineBinds;
+#endif
+    command.boundPipeline = pipeline;
+    command.boundGroups.fill({});
 }
 
 void VulkanRhiDevice::BindGroup(void *context, rhi::GraphicsPipelineHandle pipeline, uint32_t setIndex,
@@ -1624,12 +1781,24 @@ void VulkanRhiDevice::BindGroup(void *context, rhi::GraphicsPipelineHandle pipel
     const VkDescriptorSet nativeGroup = command.device ? command.device->Resolve(group) : VK_NULL_HANDLE;
     if (nativePipeline && nativeGroup != VK_NULL_HANDLE && command.commandBuffer != VK_NULL_HANDLE &&
         command.boundPipeline == pipeline) {
+        if (setIndex < command.boundGroups.size() && command.boundGroups[setIndex] == group) {
+#if INFERNUX_FRAME_PROFILE
+            ++command.groupBindSkips;
+#endif
+            return;
+        }
         vkdebug::CmdBindDescriptorSetsTracked("RHI.GraphicsCommandEncoder.BindGroup", command.commandBuffer,
                                               VK_PIPELINE_BIND_POINT_GRAPHICS, nativePipeline->layout, setIndex, 1,
                                               &nativeGroup, 0, nullptr);
+#if INFERNUX_FRAME_PROFILE
+        ++command.groupBinds;
+#endif
+        if (setIndex < command.boundGroups.size())
+            command.boundGroups[setIndex] = group;
         const auto *payload = command.device->Resolve(command.device->m_bindGroups, group);
         if (payload)
-            command.device->m_descriptorManager.MarkUsed(payload->lease, command.device->m_recordingSubmissionSerial);
+            command.device->m_descriptorManager.MarkUsed(payload->lease,
+                                                         vkdebug::GetDescriptorRecordingSubmissionSerial());
     }
 }
 
@@ -1665,12 +1834,23 @@ void VulkanRhiDevice::DrawIndirect(void *context, rhi::BufferHandle arguments, u
 void VulkanRhiDevice::BindComputePipeline(void *context, rhi::ComputePipelineHandle pipeline)
 {
     auto &command = *static_cast<VulkanComputeCommandContext *>(context);
-    command.boundPipeline = {};
     const auto *native = command.device ? command.device->ResolvePipeline(pipeline) : nullptr;
-    if (native && command.commandBuffer != VK_NULL_HANDLE) {
-        vkCmdBindPipeline(command.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, native->pipeline);
-        command.boundPipeline = pipeline;
+    if (!native || command.commandBuffer == VK_NULL_HANDLE) {
+        command.ResetBindingState();
+        return;
     }
+    if (command.boundPipeline == pipeline) {
+#if INFERNUX_FRAME_PROFILE
+        ++command.pipelineBindSkips;
+#endif
+        return;
+    }
+    vkCmdBindPipeline(command.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, native->pipeline);
+#if INFERNUX_FRAME_PROFILE
+    ++command.pipelineBinds;
+#endif
+    command.boundPipeline = pipeline;
+    command.boundGroups.fill({});
 }
 
 void VulkanRhiDevice::BindComputeGroup(void *context, rhi::ComputePipelineHandle pipeline, uint32_t setIndex,
@@ -1681,12 +1861,24 @@ void VulkanRhiDevice::BindComputeGroup(void *context, rhi::ComputePipelineHandle
     const VkDescriptorSet nativeGroup = command.device ? command.device->Resolve(group) : VK_NULL_HANDLE;
     if (nativePipeline && nativeGroup != VK_NULL_HANDLE && command.commandBuffer != VK_NULL_HANDLE &&
         command.boundPipeline == pipeline) {
+        if (setIndex < command.boundGroups.size() && command.boundGroups[setIndex] == group) {
+#if INFERNUX_FRAME_PROFILE
+            ++command.groupBindSkips;
+#endif
+            return;
+        }
         vkdebug::CmdBindDescriptorSetsTracked("RHI.ComputeCommandEncoder.BindGroup", command.commandBuffer,
                                               VK_PIPELINE_BIND_POINT_COMPUTE, nativePipeline->layout, setIndex, 1,
                                               &nativeGroup, 0, nullptr);
+#if INFERNUX_FRAME_PROFILE
+        ++command.groupBinds;
+#endif
+        if (setIndex < command.boundGroups.size())
+            command.boundGroups[setIndex] = group;
         const auto *payload = command.device->Resolve(command.device->m_bindGroups, group);
         if (payload)
-            command.device->m_descriptorManager.MarkUsed(payload->lease, command.device->m_recordingSubmissionSerial);
+            command.device->m_descriptorManager.MarkUsed(payload->lease,
+                                                         vkdebug::GetDescriptorRecordingSubmissionSerial());
     }
 }
 

@@ -287,11 +287,14 @@ void main() {
             assert((hasCapability("Fullscreen") || hasCapability("Standalone")) &&
                    "explicit main() stages must declare their direct compilation domain");
         }
-        const std::string filename = entry.path().filename().string();
-        const bool linkedParticleStage = filename == "particle_unlit.frag" ||
-                                         filename == "particle_six_way_smoke.frag" ||
-                                         filename == "particle_sprite.vert";
-        if ((extension == ".vert" || extension == ".frag") && !linkedParticleStage)
+        const bool directStage =
+            std::find(builtinInfo.capabilities.begin(), builtinInfo.capabilities.end(), "Fullscreen") !=
+                builtinInfo.capabilities.end() ||
+            std::find(builtinInfo.capabilities.begin(), builtinInfo.capabilities.end(), "Standalone") !=
+                builtinInfo.capabilities.end();
+        const bool linkedMaterialStage =
+            !directStage && (!builtinInfo.inputs.empty() || !builtinInfo.outputs.empty());
+        if ((extension == ".vert" || extension == ".frag") && !linkedMaterialStage)
             RequireCompiles(compiler, source, path);
     }
 
@@ -299,6 +302,8 @@ void main() {
     RequireLinkedProgramCompiles(compiler, shaderRoot + "/particle_sprite.vert", shaderRoot + "/particle_unlit.frag");
     RequireLinkedProgramCompiles(compiler, shaderRoot + "/particle_sprite.vert",
                                  shaderRoot + "/particle_six_way_smoke.frag");
+    RequireLinkedProgramCompiles(compiler, shaderRoot + "/spectral_ocean.vert",
+                                 shaderRoot + "/spectral_ocean.frag");
 
     const std::string removedAnnotationSource =
         "#version 450\n" + std::string(1, '@') + "shader_id: Removed\nvoid main() { }\n";

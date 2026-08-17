@@ -141,6 +141,7 @@ class ShortcutEvent:
     text_input_active: bool = False
     modal_active: bool = False
     game_view_captured: bool = False
+    event_id: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "phase", ShortcutPhase(self.phase))
@@ -185,6 +186,7 @@ class ShortcutRouter:
         self._route_revision = 0
         self._last_event: Optional[ShortcutEvent] = None
         self._last_result: Optional[ShortcutRouteResult] = None
+        self._last_event_key: Optional[tuple[str, KeyChord, ShortcutPhase]] = None
         ShortcutRouter._instance = self
 
     @classmethod
@@ -249,6 +251,13 @@ class ShortcutRouter:
             and bool(modals.active_modal_id)
         ):
             event = replace(event, modal_active=True)
+        event_id = str(event.event_id or "").strip()
+        event_key = (event_id, event.chord, event.phase) if event_id else None
+        if event_key is not None and event_key == self._last_event_key:
+            return self._publish_route(
+                event,
+                ShortcutRouteResult(ShortcutRouteStatus.NO_OP),
+            )
         matching = [
             binding
             for binding in self._bindings.values()
@@ -328,6 +337,10 @@ class ShortcutRouter:
     ) -> ShortcutRouteResult:
         self._last_event = event
         self._last_result = result
+        event_id = str(event.event_id or "").strip()
+        self._last_event_key = (
+            (event_id, event.chord, event.phase) if event_id else None
+        )
         self._route_revision += 1
         return result
 
@@ -363,4 +376,5 @@ class ShortcutRouter:
             self._revision += 1
         self._last_event = None
         self._last_result = None
+        self._last_event_key = None
         self._route_revision = 0

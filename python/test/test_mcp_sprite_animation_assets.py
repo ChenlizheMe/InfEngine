@@ -166,3 +166,68 @@ def test_animation_clip_contract_reports_missing_sprite_frame_subresource(sprite
         "sprite_frame_id": missing_id,
         "index": 0,
     }]
+
+
+def test_texture_import_tool_persists_stable_sprite_frames(
+    sprite_asset_tools, monkeypatch
+):
+    tools, texture, _clip_path, texture_guid, _clip_guid = sprite_asset_tools
+    applied = []
+
+    def _apply(_category, path, settings):
+        applied.append((path, settings.copy()))
+        _write_texture_meta(texture, settings.sprite_frames)
+        return True
+
+    monkeypatch.setattr(
+        "Infernux.core.assets.AssetManager.apply_import_settings", _apply
+    )
+    result = tools["asset_apply_texture_import_settings"](
+        guid=texture_guid,
+        texture_type="sprite",
+        sprite_frames=[{
+            "sprite_frame_id": "a" * 32,
+            "name": "Run_0",
+            "x": 12,
+            "y": 34,
+            "width": 48,
+            "height": 56,
+            "pivot_x": 0.5,
+            "pivot_y": 0.1,
+        }],
+    )
+
+    assert result["texture_type"] == "sprite"
+    assert result["frame_count"] == 1
+    assert result["frames"][0]["sprite_frame_id"] == "a" * 32
+    assert result["frames"][0]["rect"] == {
+        "x": 12,
+        "y": 34,
+        "width": 48,
+        "height": 56,
+    }
+    assert applied[0][0] == str(texture.resolve())
+    assert applied[0][1].generate_mipmaps is False
+
+
+def test_texture_import_tool_rejects_invalid_sprite_rectangles(
+    sprite_asset_tools, monkeypatch
+):
+    tools, _texture, _clip_path, texture_guid, _clip_guid = sprite_asset_tools
+    monkeypatch.setattr(
+        "Infernux.core.assets.AssetManager.apply_import_settings",
+        lambda *_args: pytest.fail("invalid settings must not reach reimport"),
+    )
+
+    with pytest.raises(ValueError, match="width and height must be positive"):
+        tools["asset_apply_texture_import_settings"](
+            guid=texture_guid,
+            texture_type="sprite",
+            sprite_frames=[{
+                "name": "Broken",
+                "x": 0,
+                "y": 0,
+                "width": 0,
+                "height": 32,
+            }],
+        )

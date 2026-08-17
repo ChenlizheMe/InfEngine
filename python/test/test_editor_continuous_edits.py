@@ -298,3 +298,54 @@ def test_material_structural_text_edit_does_not_record_intermediate_values():
         edits.clear(commit=False)
         UndoManager._instance = previous_manager
         DocumentRegistry._instance = previous_registry
+
+
+def test_transient_inline_material_edit_stays_memory_local():
+    from Infernux.engine.ui.inspector_material import _apply_material_changes
+
+    class _TransientMaterial:
+        guid = ""
+        file_path = ""
+
+        def __init__(self):
+            self.document = {"properties": {"tint": {"value": [1.0, 0.0, 0.0, 1.0]}}}
+            self.version = 1
+
+        def deserialize_document(self, document):
+            self.document = document
+            self.version += 1
+            return True
+
+        def get_version(self):
+            return self.version
+
+    material = _TransientMaterial()
+    old_document = {"properties": {"tint": {"value": [1.0, 0.0, 0.0, 1.0]}}}
+    live_document = {"properties": {"tint": {"value": [0.0, 0.0, 1.0, 1.0]}}}
+    state = SimpleNamespace(
+        file_path="",
+        extra={
+            "cached_data": live_document,
+            "cached_json": "",
+            "_inline_autosave_pending": True,
+        },
+        resource_controller=None,
+        document_id="",
+    )
+
+    _apply_material_changes(
+        None,
+        state,
+        live_document,
+        material,
+        True,
+        False,
+        old_document,
+        "property.tint",
+        None,
+    )
+
+    assert material.document == live_document
+    assert state.extra["cached_data"] == live_document
+    assert state.extra["_inline_autosave_pending"] is False
+    assert state.extra["_applied_version"] == material.version

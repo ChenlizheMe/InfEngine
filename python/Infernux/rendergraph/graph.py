@@ -351,11 +351,12 @@ class RenderPassBuilder:
             sort_mode: Sorting strategy — "front_to_back", "back_to_front",
                        or "none".
             pass_tag: Filter draw calls by shader pass tag (empty = no filter).
-            override_material: Force all objects to use this material name
+            override_material: Force accepted objects to use a built-in material
+                key or a project material GUID.
                                (empty = per-object material).
             material_pass: Linked material program used by this pass. Supported
             values are ``forward``, ``forward_plus``, ``gbuffer``, ``depth``,
-                           ``picking``, and ``motion``.
+                           ``picking``, ``motion``, ``normal``, and ``base_color``.
             material_filter: Select all materials, only Deferred-compatible
                              materials, or only models that declare
                              ``Unsupported [Deferred]``.
@@ -368,6 +369,8 @@ class RenderPassBuilder:
             "depth",
             "picking",
             "motion",
+            "normal",
+            "base_color",
         }:
             raise ValueError(f"Unknown material pass '{material_pass}'")
         self._action = "draw_renderers"
@@ -419,8 +422,9 @@ class RenderPassBuilder:
     ) -> "RenderPassBuilder":
         """Configure this pass to draw screen-space UI.
 
-        The UI commands are accumulated via InxScreenUIRenderer during BuildFrame
-        and rendered here inside the scene render graph.
+        The runtime submission service accumulates UI commands through
+        InxScreenUIRenderer at camera submission, then this pass renders the
+        immutable command snapshot inside the scene render graph.
 
         Args:
             list: ``"camera"`` (before post-process, affected by post-processing)
@@ -603,6 +607,10 @@ class RenderGraph:
         self._effect_stage_active_resolver = None
         self._name_scopes: List[str] = []
         self._effect_resource_scopes: List[Dict[str, TextureHandle]] = []
+        self._pass_result_scopes: List[object] = []
+        self._geometry_buffer_requirements = frozenset()
+        self._pass_results: Dict[str, object] = {}
+        self._pass_result_revision = 0
 
     @property
     def name(self) -> str:
@@ -644,6 +652,78 @@ class RenderGraph:
     def effect_stages(self) -> list:
         """Pipeline-declared user attachment stages in topology order."""
         return list(self._effect_stages_list)
+
+    def set_geometry_buffer_requirements(self, requirements) -> None:
+        """Set semantic geometry buffers demanded by this graph revision."""
+        normalized = {str(value or "").strip().lower() for value in requirements}
+        normalized.discard("")
+        self._geometry_buffer_requirements = frozenset(normalized)
+
+    def require_geometry_buffers(self, requirements) -> None:
+        self.set_geometry_buffer_requirements(
+            set(self._geometry_buffer_requirements) | set(requirements)
+        )
+
+    @property
+    def geometry_buffer_requirements(self):
+        return self._geometry_buffer_requirements
+
+    def needs_geometry_buffer(self, semantic: str) -> bool:
+        return str(semantic or "").strip().lower() in self._geometry_buffer_requirements
+
+    def publish_pass_result(self, source: str, buffers, *, materialize=None):
+        """Publish the named buffers available after one stage or pass."""
+        from Infernux.renderstack.pass_result import PassResult
+
+        source_name = str(source or "").strip()
+        if not source_name:
+            raise ValueError("pass result source cannot be empty")
+        if source_name in self._pass_results:
+            raise ValueError(
+                f"pass result source {source_name!r} is already published"
+            )
+        for semantic, texture in dict(buffers).items():
+            if texture is not None and not isinstance(texture, TextureHandle):
+                raise TypeError(
+                    f"pass buffer {semantic!r} must be a TextureHandle"
+                )
+        self._pass_result_revision += 1
+        result = PassResult(
+            source=source_name,
+            revision=self._pass_result_revision,
+            buffers=buffers,
+            _materialize=materialize,
+        )
+        self._pass_results[source_name] = result
+        return result
+
+    def derive_pass_result(self, source: str, parent, overrides):
+        """Create a result after a pass writes one or more named buffers."""
+        from Infernux.renderstack.pass_result import PassResult
+
+        if not isinstance(parent, PassResult):
+            raise TypeError("derive_pass_result() requires a PassResult parent")
+        merged = dict(parent.snapshot)
+        merged.update(dict(overrides))
+        return self.publish_pass_result(
+            source,
+            merged,
+            materialize=parent._materialize,
+        )
+
+    def write_buffer(self, source: str, parent, name: str, texture):
+        """Derive one result revision after writing a named virtual texture."""
+        return self.derive_pass_result(source, parent, {name: texture})
+
+    @property
+    def pass_results(self):
+        return dict(self._pass_results)
+
+    def get_pass_result(self, source: str):
+        return self._pass_results.get(str(source or "").strip())
+
+    # Transitional aliases are intentionally absent. This is a breaking API
+    # revision: source-scoped PassResult replaces global geometry/scene maps.
 
     # ---- Resource creation ----
 
@@ -697,6 +777,37 @@ class RenderGraph:
         if not self._effect_resource_scopes:
             return {}
         return dict(self._effect_resource_scopes[-1])
+
+    @contextmanager
+    def pass_result(self, result):
+        """Make one source-scoped result current while declaring stages.
+
+        Effect compilation uses this explicit source instead of resolving
+        process-global color/depth aliases. The callback may replace the top
+        result with a derived revision after writing named buffers.
+        """
+        from Infernux.renderstack.pass_result import PassResult
+
+        if not isinstance(result, PassResult):
+            raise TypeError("pass_result() requires a PassResult")
+        self._pass_result_scopes.append(result)
+        try:
+            yield self
+        finally:
+            self._pass_result_scopes.pop()
+
+    @property
+    def current_pass_result(self):
+        return self._pass_result_scopes[-1] if self._pass_result_scopes else None
+
+    def replace_current_pass_result(self, result) -> None:
+        from Infernux.renderstack.pass_result import PassResult
+
+        if not self._pass_result_scopes:
+            raise RuntimeError("no active pass-result scope")
+        if not isinstance(result, PassResult):
+            raise TypeError("current pass result must be a PassResult")
+        self._pass_result_scopes[-1] = result
 
     def resolve_effect_route_policy(self, stages):
         """Resolve mounted route effects without coupling the graph to a scene."""
@@ -1105,6 +1216,10 @@ class RenderGraph:
         with self.add_pass("_DisplayEncode") as p:
             p.set_texture("_SourceTex", "color")
             p.write_color("_display_encode")
+            # The native per-camera render context overwrites these values at
+            # draw time without rebuilding the graph.
+            p.set_param("dithering", 0.0)
+            p.set_param("stopNaNs", 0.0)
             p.fullscreen_quad("Display Encode")
         with self.add_pass("_DisplayEncode_Commit") as p:
             p.set_texture("_SourceTex", "_display_encode")
@@ -1317,6 +1432,19 @@ class RenderGraph:
                 ):
                     raise ValueError(
                         f"Motion pass '{p._name}' requires one RG16_SFLOAT color output, "
+                        "one readable depth texture, and no depth write"
+                    )
+            elif p._material_pass == "normal":
+                colors = [texture_map[name] for _, name in sorted(p._write_colors.items())]
+                depth_reads = [texture_map[name] for name in p._reads if texture_map[name].is_depth]
+                if (
+                    len(colors) != 1
+                    or colors[0].format != Format.RGBA16_SFLOAT
+                    or len(depth_reads) != 1
+                    or p._write_depth is not None
+                ):
+                    raise ValueError(
+                        f"Normal pass '{p._name}' requires one RGBA16_SFLOAT color output, "
                         "one readable depth texture, and no depth write"
                     )
             elif not p._write_colors:
@@ -1585,6 +1713,8 @@ class RenderGraph:
             "shadow": MaterialPassType.SHADOW,
             "picking": MaterialPassType.PICKING,
             "motion": MaterialPassType.MOTION,
+            "normal": MaterialPassType.NORMAL,
+            "base_color": MaterialPassType.BASE_COLOR,
         }
         _material_filter_map = {
             "all": GraphMaterialFilter.ALL,

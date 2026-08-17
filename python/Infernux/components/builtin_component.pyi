@@ -5,7 +5,7 @@ from __future__ import annotations
 import weakref
 from typing import Any, Dict, Optional, Tuple, Type
 
-from .serialized_field import FieldMetadata, FieldType
+from .fields import FieldMetadata, FieldType
 from .component import InxComponent
 
 

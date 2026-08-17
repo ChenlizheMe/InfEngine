@@ -131,6 +131,12 @@ class Scene
     /// @brief Attach an object to root list (takes ownership)
     void AttachRootObject(std::unique_ptr<GameObject> gameObject);
 
+    /// Transfer a complete root hierarchy to another live Scene without
+    /// replaying Awake/Start/OnEnable. Object/component addresses and IDs are
+    /// preserved; lookup maps, pending Start work, camera ownership and Python
+    /// native mirrors are moved as one transaction.
+    bool TransferRootObjectTo(GameObject *gameObject, Scene &destination);
+
     /// @brief Reorder a root object to a new sibling index
     void SetRootObjectSiblingIndex(GameObject *gameObject, int newIndex);
 
@@ -257,6 +263,18 @@ class Scene
         return m_hasStarted;
     }
 
+    /// @brief True when Python per-frame lifecycle is owned by the shared
+    /// RuntimeExecutionScheduler bridge rather than GameObject traversal.
+    [[nodiscard]] bool UsesRuntimeLifecycleScheduler() const noexcept
+    {
+        return m_runtimeLifecycleSchedulerEnabled;
+    }
+
+    void SetRuntimeLifecycleSchedulerEnabled(bool enabled) noexcept
+    {
+        m_runtimeLifecycleSchedulerEnabled = enabled;
+    }
+
     void SetPlaying(bool playing)
     {
         m_isPlaying = playing;
@@ -379,6 +397,8 @@ class Scene
     /// @brief Shared recursive traversal for all update variants.
     /// @param updateMethod Pointer-to-member on GameObject (e.g. &GameObject::Update).
     void TraverseActiveObjects(GameObject *obj, float dt, void (GameObject::*updateMethod)(float));
+    void RebuildRuntimeLifecycleObjectCaches();
+    void CollectRuntimeLifecycleObjects(GameObject *obj);
 
     void UpdateObject(GameObject *obj, float deltaTime);
     void FixedUpdateObject(GameObject *obj, float fixedDeltaTime);
@@ -433,12 +453,22 @@ class Scene
     bool m_isLoaded = false;
     bool m_isPlaying = false;
     bool m_hasStarted = false;
+    bool m_runtimeLifecycleSchedulerEnabled = false;
 
     // Per-scene environment (skybox material + ambient) settings
     SceneEnvironmentSettings m_environment;
 
     // Structure version counter (bumped on add/remove/reparent)
     uint64_t m_structureVersion = 0;
+
+    // Runtime lifecycle dispatch is sparse in ordinary scenes: most objects
+    // only contain Transform/render data. Rebuild these ordered receiver lists
+    // only after a hierarchy/component mutation instead of walking the entire
+    // hierarchy for every Update, FixedUpdate and LateUpdate phase.
+    uint64_t m_lifecycleObjectCacheVersion = UINT64_MAX;
+    std::vector<GameObject *> m_updateObjects;
+    std::vector<GameObject *> m_fixedUpdateObjects;
+    std::vector<GameObject *> m_lateUpdateObjects;
 
     // Explicit seeks/cuts only. The renderer consumes this monotonic revision
     // once before view extraction and invalidates temporal histories together.

@@ -42,7 +42,7 @@ class SerializedFieldCollectorMixin:
             if attr is None:
                 continue
 
-            from Infernux.components.serialized_field import (
+            from Infernux.components.fields import (
                 FieldMetadata,
                 HiddenField,
                 SerializedFieldDescriptor,

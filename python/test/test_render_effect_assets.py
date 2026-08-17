@@ -2,6 +2,8 @@ import json
 
 import pytest
 
+from Infernux.core.asset_ref import RenderEffectRef
+from Infernux.core.assets import AssetManager
 from Infernux.renderstack.effect_stage import EffectResourceContract, EffectScope, EffectStage
 from Infernux.renderstack.render_effect_asset import (
     EffectAssetReference,
@@ -12,6 +14,7 @@ from Infernux.renderstack.render_effect_asset import (
     dump_render_effect_document,
     parse_render_effect_document,
 )
+from Infernux.renderstack.render_effect import EditableRenderEffectGroup
 
 
 def test_effect_stage_has_stable_identity_scope_and_contract():
@@ -70,6 +73,42 @@ def test_render_effect_group_preserves_order_and_direct_dependencies():
 
     assert restored == group
     assert direct_effect_dependencies(restored) == (bloom, tone)
+
+
+def test_editable_render_effect_group_replaces_its_strict_document(tmp_path):
+    initial = RenderEffectGroupAsset()
+    resource = EditableRenderEffectGroup(
+        initial,
+        file_path=str(tmp_path / "Post.effectgroup"),
+        guid="group-guid",
+    )
+    document = RenderEffectGroupAsset(
+        entries=(
+            RenderEffectGroupEntry(
+                "bloom",
+                EffectAssetReference(guid="bloom-guid", path_hint="Assets/Bloom.effect"),
+            ),
+        )
+    ).to_dict()
+
+    assert resource.deserialize_document(document)
+    assert resource.serialize_document() == document
+    assert resource.entries[0].entry_id == "bloom"
+
+
+def test_render_effect_reference_resolves_effect_group_as_a_live_resource(tmp_path):
+    path = tmp_path / "Default Post Processing.effectgroup"
+    path.write_text(
+        dump_render_effect_document(RenderEffectGroupAsset()),
+        encoding="utf-8",
+    )
+
+    assert AssetManager._type_from_extension(".effectgroup").__name__ == "RenderEffect"
+    resource = RenderEffectRef(path_hint=str(path)).resolve()
+
+    assert isinstance(resource, EditableRenderEffectGroup)
+    assert resource.file_path == str(path)
+    assert resource.entries == ()
 
 
 def test_render_effect_documents_reject_unknown_fields_and_duplicate_entry_ids():

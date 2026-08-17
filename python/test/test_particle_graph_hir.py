@@ -2796,7 +2796,6 @@ def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
     assert {item.name for item in output.shader_properties} == {
         "baseColor",
         "texSampler",
-        "softness",
     }
     assert output.soft_particles is False
     assert output.cast_shadows is False

@@ -28,10 +28,10 @@
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
 
+#include "InfernuxJoltJobSystemAdapter.h"
 #include "PhysicsContactListener.h"
 #include "PhysicsLayers.h"
 #include "PhysicsWorld.h"
-#include "InfernuxJoltJobSystemAdapter.h"
 
 #include "../Collider.h"
 #include "../Component.h"
@@ -352,8 +352,8 @@ void PhysicsWorld::Initialize()
 
     m_tempAllocator = std::make_unique<JPH::TempAllocatorImpl>(cfg.physicsTempAllocatorSize);
 
-    m_jobSystem = std::make_unique<InfernuxJoltJobSystemAdapter>(
-        cfg.physicsMaxJobs, cfg.physicsMaxBarriers, cfg.physicsMaxConcurrency);
+    m_jobSystem = std::make_unique<InfernuxJoltJobSystemAdapter>(cfg.physicsMaxJobs, cfg.physicsMaxBarriers,
+                                                                 cfg.physicsMaxConcurrency);
 
     // Layer interfaces
     m_layers = std::make_unique<LayerInterfaces>();
@@ -650,8 +650,8 @@ void PhysicsWorld::Step(float deltaTime)
         while (remainingTime > kMinStepDuration) {
             const float hitFraction = FindEarliestDynamicCCDFraction(remainingTime);
             if (hitFraction >= 1.0f || dynamicCCDSplits >= kMaxDynamicCCDSplits) {
-                m_physicsSystem->Update(remainingTime, EngineConfig::Get().physicsCollisionSteps,
-                                        m_tempAllocator.get(), m_jobSystem.get());
+                m_physicsSystem->Update(remainingTime, EngineConfig::Get().physicsCollisionSteps, m_tempAllocator.get(),
+                                        m_jobSystem.get());
                 remainingTime = 0.0f;
                 break;
             }
@@ -711,6 +711,80 @@ size_t PhysicsWorld::DispatchContactEvents()
     receiversA.reserve(8);
     receiversB.reserve(8);
 
+    enum PhysicsCallbackBit : uint8_t {
+        CollisionEnterBit = 1u << 0u,
+        CollisionStayBit = 1u << 1u,
+        CollisionExitBit = 1u << 2u,
+        TriggerEnterBit = 1u << 3u,
+        TriggerStayBit = 1u << 4u,
+        TriggerExitBit = 1u << 5u,
+    };
+
+    std::unordered_map<GameObject *, uint8_t> callbackMasks;
+    callbackMasks.reserve(std::min(events.size() * 2u, m_bodyToCollider.size()));
+
+    auto callbackMask = [&](GameObject *go) {
+        const auto found = callbackMasks.find(go);
+        if (found != callbackMasks.end())
+            return found->second;
+
+        uint8_t mask = 0;
+        for (const auto &comp : go->GetAllComponents()) {
+            if (!comp || !comp->IsEnabled() || !comp->WantsPhysicsCallbacks())
+                continue;
+            if (comp->WantsCollisionEnterCallbacks())
+                mask |= CollisionEnterBit;
+            if (comp->WantsCollisionStayCallbacks())
+                mask |= CollisionStayBit;
+            if (comp->WantsCollisionExitCallbacks())
+                mask |= CollisionExitBit;
+            if (comp->WantsTriggerEnterCallbacks())
+                mask |= TriggerEnterBit;
+            if (comp->WantsTriggerStayCallbacks())
+                mask |= TriggerStayBit;
+            if (comp->WantsTriggerExitCallbacks())
+                mask |= TriggerExitBit;
+        }
+        callbackMasks.emplace(go, mask);
+        return mask;
+    };
+
+    auto eventBit = [](ContactEventType type) -> uint8_t {
+        switch (type) {
+        case ContactEventType::CollisionEnter:
+            return CollisionEnterBit;
+        case ContactEventType::CollisionStay:
+            return CollisionStayBit;
+        case ContactEventType::CollisionExit:
+            return CollisionExitBit;
+        case ContactEventType::TriggerEnter:
+            return TriggerEnterBit;
+        case ContactEventType::TriggerStay:
+            return TriggerStayBit;
+        case ContactEventType::TriggerExit:
+            return TriggerExitBit;
+        }
+        return 0;
+    };
+
+    auto wantsEvent = [](const Component &comp, ContactEventType type) {
+        switch (type) {
+        case ContactEventType::CollisionEnter:
+            return comp.WantsCollisionEnterCallbacks();
+        case ContactEventType::CollisionStay:
+            return comp.WantsCollisionStayCallbacks();
+        case ContactEventType::CollisionExit:
+            return comp.WantsCollisionExitCallbacks();
+        case ContactEventType::TriggerEnter:
+            return comp.WantsTriggerEnterCallbacks();
+        case ContactEventType::TriggerStay:
+            return comp.WantsTriggerStayCallbacks();
+        case ContactEventType::TriggerExit:
+            return comp.WantsTriggerExitCallbacks();
+        }
+        return false;
+    };
+
     for (const auto &evt : events) {
         Collider *colA = ResolveColliderForSubShape(evt.bodyIdA, evt.subShapeIdA);
         Collider *colB = ResolveColliderForSubShape(evt.bodyIdB, evt.subShapeIdB);
@@ -751,19 +825,29 @@ size_t PhysicsWorld::DispatchContactEvents()
                 continue;
         }
 
+        const uint8_t requiredBit = eventBit(type);
+        const bool wantsA = (callbackMask(goA) & requiredBit) != 0;
+        const bool wantsB = (callbackMask(goB) & requiredBit) != 0;
+        if (!wantsA && !wantsB)
+            continue;
+
         receiversA.clear();
         receiversB.clear();
 
-        for (const auto &comp : goA->GetAllComponents()) {
-            if (!comp || !comp->IsEnabled() || !comp->WantsPhysicsCallbacks())
-                continue;
-            receiversA.push_back(comp.get());
+        if (wantsA) {
+            for (const auto &comp : goA->GetAllComponents()) {
+                if (!comp || !comp->IsEnabled() || !wantsEvent(*comp, type))
+                    continue;
+                receiversA.push_back(comp.get());
+            }
         }
 
-        for (const auto &comp : goB->GetAllComponents()) {
-            if (!comp || !comp->IsEnabled() || !comp->WantsPhysicsCallbacks())
-                continue;
-            receiversB.push_back(comp.get());
+        if (wantsB) {
+            for (const auto &comp : goB->GetAllComponents()) {
+                if (!comp || !comp->IsEnabled() || !wantsEvent(*comp, type))
+                    continue;
+                receiversB.push_back(comp.get());
+            }
         }
 
         if (receiversA.empty() && receiversB.empty())
@@ -1294,11 +1378,11 @@ void PhysicsWorld::SetBodyMotionQuality(uint32_t bodyId, int quality)
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
-    JPH::EMotionQuality mq =
-        (MapMotionQualityMode(quality) == 1) ? JPH::EMotionQuality::LinearCast : JPH::EMotionQuality::Discrete;
+    const int mappedQuality = MapMotionQualityMode(quality);
+    JPH::EMotionQuality mq = (mappedQuality == 1) ? JPH::EMotionQuality::LinearCast : JPH::EMotionQuality::Discrete;
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     bi.SetMotionQuality(JPH::BodyID(bodyId), mq);
-    if (mq == JPH::EMotionQuality::LinearCast)
+    if (quality == 2)
         m_continuousBodyIds.insert(bodyId);
     else
         m_continuousBodyIds.erase(bodyId);

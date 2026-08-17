@@ -10,7 +10,7 @@
       "displayName": "Release Preset (Windows / MSVC)",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
-      "binaryDir": "${sourceDir}/out/build",
+      "binaryDir": "${sourceDir}/out/build-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "INFERNUX_BUILD_PLAYER_HOST": "ON"
@@ -20,6 +20,7 @@
       "name": "debug",
       "displayName": "Debug Preset (Windows, RelWithDebInfo + Profiling)",
       "inherits": "release",
+      "binaryDir": "${sourceDir}/out/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "INFERNUX_BUILD_PLAYER_HOST": "OFF"
@@ -67,7 +68,7 @@
       "name": "release-macos",
       "displayName": "Release Preset (macOS / Ninja)",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/out/build",
+      "binaryDir": "${sourceDir}/out/build-macos-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
@@ -76,6 +77,7 @@
       "name": "debug-macos",
       "displayName": "Debug Preset (macOS, RelWithDebInfo + Profiling)",
       "inherits": "release-macos",
+      "binaryDir": "${sourceDir}/out/build-macos-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
@@ -84,7 +86,7 @@
       "name": "release-linux",
       "displayName": "Release Preset (Linux / Ninja)",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/out/build-linux",
+      "binaryDir": "${sourceDir}/out/build-linux-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
@@ -93,6 +95,7 @@
       "name": "debug-linux",
       "displayName": "Debug Preset (Linux)",
       "inherits": "release-linux",
+      "binaryDir": "${sourceDir}/out/build-linux-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
@@ -103,11 +106,8 @@
       "name": "release",
       "configurePreset": "release",
       "configuration": "Release",
-      "environment": {
-        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
-      },
+      "jobs": 8,
       "targets": [
-        "ALL_BUILD",
         "package_and_install_python"
       ]
     },
@@ -115,11 +115,8 @@
       "name": "debug",
       "configurePreset": "debug",
       "configuration": "RelWithDebInfo",
-      "environment": {
-        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
-      },
+      "jobs": 8,
       "targets": [
-        "ALL_BUILD",
         "package_and_install_python"
       ]
     },
@@ -132,11 +129,8 @@
       "name": "debug-no-vulkan-validation",
       "configurePreset": "debug-no-vulkan-validation",
       "configuration": "RelWithDebInfo",
-      "environment": {
-        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
-      },
+      "jobs": 8,
       "targets": [
-        "ALL_BUILD",
         "package_and_install_python"
       ]
     },
@@ -152,41 +146,31 @@
       "name": "native-tests",
       "configurePreset": "native-tests",
       "configuration": "RelWithDebInfo",
-      "environment": {
-        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
-      }
+      "jobs": 8
     },
     {
       "name": "release-macos",
       "configurePreset": "release-macos",
-      "targets": [
-        "all",
-        "package_and_install_python"
-      ]
+      "jobs": 8,
+      "targets": ["package_and_install_python"]
     },
     {
       "name": "debug-macos",
       "configurePreset": "debug-macos",
-      "targets": [
-        "all",
-        "package_and_install_python"
-      ]
+      "jobs": 8,
+      "targets": ["package_and_install_python"]
     },
     {
       "name": "release-linux",
       "configurePreset": "release-linux",
-      "targets": [
-        "all",
-        "package_and_install_python"
-      ]
+      "jobs": 8,
+      "targets": ["package_and_install_python"]
     },
     {
       "name": "debug-linux",
       "configurePreset": "debug-linux",
-      "targets": [
-        "all",
-        "package_and_install_python"
-      ]
+      "jobs": 8,
+      "targets": ["package_and_install_python"]
     },
     {
       "name": "format",

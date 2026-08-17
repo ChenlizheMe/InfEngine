@@ -75,6 +75,7 @@ class CloseCoordinator:
         self._message = ""
         self._on_complete: Optional[Callable[[], None]] = None
         self._on_cancel: Optional[Callable[[], None]] = None
+        self._autosave_attempted_document_ids: set[str] = set()
 
     @property
     def registry(self) -> DocumentRegistry:
@@ -122,6 +123,7 @@ class CloseCoordinator:
         self._message = ""
         self._on_complete = on_complete
         self._on_cancel = on_cancel
+        self._autosave_attempted_document_ids.clear()
         self._advance()
         return True
 
@@ -210,6 +212,10 @@ class CloseCoordinator:
             self._cursor += 1
             self._advance()
             return
+        if document.state is DocumentState.CONFLICT:
+            self._state = CloseState.WAITING_FOR_CONFLICT
+            self._clear_issue()
+            return
         if not document.is_dirty:
             self._cursor += 1
             self._advance()
@@ -282,6 +288,35 @@ class CloseCoordinator:
                 self._clear_issue()
                 return
             if document is not None and document.is_dirty:
+                controller = document.controller
+                should_drain_autosave = bool(
+                    getattr(controller, "autosave_on_close", False)
+                )
+                if (
+                    should_drain_autosave
+                    and document.document_id
+                    not in self._autosave_attempted_document_ids
+                ):
+                    self._autosave_attempted_document_ids.add(document.document_id)
+                    result = self.registry.request_save(document.document_id)
+                    if result.status is DocumentActionStatus.PENDING:
+                        self._state = CloseState.WAITING_FOR_SAVE
+                        self._clear_issue()
+                        return
+                    if result.status in {
+                        DocumentActionStatus.APPLIED,
+                        DocumentActionStatus.NO_OP,
+                    } and not document.is_dirty:
+                        self._cursor += 1
+                        continue
+                    issue = (
+                        CloseIssue.SAVE_NOT_SUPPORTED
+                        if result.status is DocumentActionStatus.REJECTED
+                        and "not supported" in result.message
+                        else CloseIssue.SAVE_FAILED
+                    )
+                    self._set_issue(issue, result.message)
+                    return
                 self._state = CloseState.AWAITING_DECISION
                 self._clear_issue()
                 return
@@ -307,6 +342,7 @@ class CloseCoordinator:
         self._clear_issue()
         self._on_complete = None
         self._on_cancel = None
+        self._autosave_attempted_document_ids.clear()
 
     @staticmethod
     def _invoke(callback: Optional[Callable[[], None]], action: str) -> None:

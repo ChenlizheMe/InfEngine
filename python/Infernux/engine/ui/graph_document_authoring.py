@@ -599,6 +599,135 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         stage = str(uid).split(cls._UID_SEPARATOR, 1)[0]
         return stage if stage in cls.STAGES or stage.startswith("event.") else ""
 
+    @staticmethod
+    def _is_portable_operator(node) -> bool:
+        """Return whether a node is a stage-neutral authoring expression."""
+        return bool(node is not None and str(node.type_id).startswith("common."))
+
+    def _portable_component(self, node_uid: str) -> set[str]:
+        """Collect the connected pure-operator island containing *node_uid*."""
+        first = self.find_node(node_uid)
+        if not self._is_portable_operator(first):
+            return set()
+        pending = [str(node_uid)]
+        result: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in result:
+                continue
+            node = self.find_node(current)
+            if not self._is_portable_operator(node):
+                continue
+            result.add(current)
+            for link in self.links:
+                if link.source_node == current:
+                    other = link.target_node
+                elif link.target_node == current:
+                    other = link.source_node
+                else:
+                    continue
+                if other not in result and self._is_portable_operator(
+                    self.find_node(other)
+                ):
+                    pending.append(other)
+        return result
+
+    def _portable_component_anchors(self, component: set[str]) -> set[str]:
+        anchors: set[str] = set()
+        for link in self.links:
+            if link.source_node in component and link.target_node not in component:
+                other = link.target_node
+            elif link.target_node in component and link.source_node not in component:
+                other = link.source_node
+            else:
+                continue
+            stage = self.stage_for_uid(other)
+            if stage:
+                anchors.add(stage)
+        return anchors
+
+    def _portable_rehome_plan(
+        self, src_node: str, dst_node: str
+    ) -> dict[str, str] | None:
+        """Plan a stage move that lets pure operators join one lifecycle chain.
+
+        Particle lifecycle nodes remain hard stage boundaries. Common math,
+        random and vector operators are compiler-local expressions, so their
+        stage is inferred from the chain they feed instead of becoming a
+        permanent authoring trap based on where they were first created.
+        """
+        source_stage = self.stage_for_uid(src_node)
+        target_stage = self.stage_for_uid(dst_node)
+        if not source_stage or not target_stage:
+            return None
+        if source_stage == target_stage:
+            return {}
+
+        source_component = self._portable_component(src_node)
+        target_component = self._portable_component(dst_node)
+        if not source_component and not target_component:
+            return None
+
+        moving = source_component | target_component
+        anchors = self._portable_component_anchors(source_component)
+        anchors.update(self._portable_component_anchors(target_component))
+        if not source_component:
+            anchors.add(source_stage)
+        if not target_component:
+            anchors.add(target_stage)
+        if len(anchors) > 1:
+            return None
+        destination = next(iter(anchors), source_stage)
+        if any(
+            destination not in self._allowed_stages.get(
+                self.find_node(uid).type_id, set()
+            )
+            for uid in moving
+        ):
+            return None
+        return {
+            uid: destination
+            for uid in moving
+            if self.stage_for_uid(uid) != destination
+        }
+
+    def _apply_portable_rehome(self, plan: dict[str, str]) -> dict[str, str]:
+        """Apply inferred compiler placement without moving authoring nodes.
+
+        The stage prefix is only the persistence/compilation owner for a pure
+        expression. It must never change the node's visible canvas position or
+        behave as an authoring-stage classification.
+        """
+        if not plan:
+            return {}
+        node_ids = {
+            old_uid: self._canvas_uid(stage, self._document_uid(old_uid))
+            for old_uid, stage in plan.items()
+        }
+        occupied_nodes = {node.uid for node in self.nodes} - set(node_ids)
+        if occupied_nodes.intersection(node_ids.values()):
+            raise ValueError("portable node stage inference produced a duplicate node id")
+
+        for node in self.nodes:
+            old_uid = node.uid
+            destination = plan.get(old_uid)
+            if destination:
+                node.uid = node_ids[old_uid]
+        for link in self.links:
+            link.source_node = node_ids.get(link.source_node, link.source_node)
+            link.target_node = node_ids.get(link.target_node, link.target_node)
+
+        occupied_links: set[str] = set()
+        for link in self.links:
+            source_stage = self.stage_for_uid(link.source_node)
+            new_uid = self._canvas_uid(source_stage, self._document_uid(link.uid))
+            if new_uid in occupied_links:
+                raise ValueError("portable node stage inference produced a duplicate link id")
+            link.uid = new_uid
+            occupied_links.add(new_uid)
+        self._mark_attribute_catalog_dirty()
+        return node_ids
+
     @classmethod
     def event_stage_canvas_origin(cls, event_index: int) -> float:
         """Return the canvas Y origin for an emitter's indexed Event flow."""
@@ -1281,7 +1410,12 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
     ) -> LinkValidationResult:
         source_stage = self.stage_for_uid(src_node)
         target_stage = self.stage_for_uid(dst_node)
-        if not source_stage or source_stage != target_stage:
+        rehome_plan = self._portable_rehome_plan(src_node, dst_node)
+        if (
+            not source_stage
+            or not target_stage
+            or (source_stage != target_stage and rehome_plan is None)
+        ):
             return LinkValidationResult(
                 False, "cross_stage", "Particle stage chains cannot be connected"
             )
@@ -1408,10 +1542,21 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
 
     def add_link(self, src_node, src_pin, dst_node, dst_pin, uid=None, **data):
         checkpoint = self.capture_authoring_state()
-        stage = self.stage_for_uid(src_node)
-        raw_uid = str(uid) if uid else uuid.uuid4().hex[:8]
-        canvas_uid = raw_uid if self.stage_for_uid(raw_uid) else self._canvas_uid(stage, raw_uid)
         try:
+            rehome_plan = self._portable_rehome_plan(src_node, dst_node)
+            if self.stage_for_uid(src_node) != self.stage_for_uid(dst_node):
+                if rehome_plan is None:
+                    return None
+                node_ids = self._apply_portable_rehome(rehome_plan)
+                src_node = node_ids.get(src_node, src_node)
+                dst_node = node_ids.get(dst_node, dst_node)
+            stage = self.stage_for_uid(src_node)
+            raw_uid = str(uid) if uid else uuid.uuid4().hex[:8]
+            canvas_uid = (
+                raw_uid
+                if self.stage_for_uid(raw_uid)
+                else self._canvas_uid(stage, raw_uid)
+            )
             link = super().add_link(
                 src_node, src_pin, dst_node, dst_pin, uid=canvas_uid, **data
             )
@@ -1426,6 +1571,17 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
     def replace_link(self, link_uid, src_node, src_pin, dst_node, dst_pin):
         checkpoint = self.capture_authoring_state()
         try:
+            raw_link_uid = self._document_uid(link_uid)
+            rehome_plan = self._portable_rehome_plan(src_node, dst_node)
+            if self.stage_for_uid(src_node) != self.stage_for_uid(dst_node):
+                if rehome_plan is None:
+                    return None
+                node_ids = self._apply_portable_rehome(rehome_plan)
+                src_node = node_ids.get(src_node, src_node)
+                dst_node = node_ids.get(dst_node, dst_node)
+                link_uid = self._canvas_uid(
+                    self.stage_for_uid(src_node), raw_link_uid
+                )
             link = super().replace_link(
                 link_uid, src_node, src_pin, dst_node, dst_pin
             )

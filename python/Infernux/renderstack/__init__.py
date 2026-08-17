@@ -49,9 +49,16 @@ from Infernux.renderstack.render_effect_compiler import (
     RenderEffectCompileError,
     RenderEffectFeature,
     get_render_effect_feature,
+    render_effect_feature,
     register_render_effect_feature,
 )
 from Infernux.renderstack.resource_bus import ResourceBus
+from Infernux.renderstack.pass_result import BufferHandle, PassResult
+from Infernux.renderstack.geometry_buffers import (
+    GeometryBufferTopologyError,
+    GeometryStagePhase,
+    geometry_buffer,
+)
 from Infernux.renderstack.render_pass import RenderPass
 from Infernux.renderstack.render_pipeline import RenderPipeline, RenderPipelineAsset
 from Infernux.renderstack.pipeline_dsl import (
@@ -64,7 +71,7 @@ from Infernux.renderstack.pipeline_dsl import (
 )
 from Infernux.renderstack.route_policy import RoutePolicy, merge_route_policies
 from Infernux.renderstack.geometry_pass import GeometryPass
-from Infernux.renderstack.fullscreen_effect import FullScreenEffect
+from Infernux.renderstack.fullscreen_effect import EffectColorComposition, FullScreenEffect
 from Infernux.renderstack.bloom_effect import BloomEffect
 from Infernux.renderstack.pixelation_effect import PixelationEffect, PixelationSampling
 from Infernux.renderstack.tonemapping_effect import ToneMappingEffect
@@ -119,13 +126,20 @@ __all__ = [
     "RenderEffectArtifactRegistry",
     "RenderEffectFeature",
     "get_render_effect_feature",
+    "render_effect_feature",
     "register_render_effect_feature",
     # Resource bus
     "ResourceBus",
+    "BufferHandle",
+    "PassResult",
+    "GeometryBufferTopologyError",
+    "GeometryStagePhase",
+    "geometry_buffer",
     # Pass base classes
     "RenderPass",
     "GeometryPass",
     "FullScreenEffect",
+    "EffectColorComposition",
     # Built-in effects
     "BloomEffect",
     "PixelationEffect",

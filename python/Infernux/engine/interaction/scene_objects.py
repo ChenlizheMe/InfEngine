@@ -231,6 +231,12 @@ class SceneObjectCommandService:
             and self._clipboard.has_payload(ClipboardDomain.SCENE_OBJECT)
         )
 
+    def duplicate(self, context: CommandContext) -> bool:
+        """Duplicate the current scene selection through the existing atomic paste path."""
+        if not self.can_copy(context):
+            return False
+        return bool(self.copy(context, cut=False) and self.paste(context))
+
     def can_external_drop(
         self,
         reference: str,
@@ -898,7 +904,7 @@ class SceneObjectCommandService:
             return None
         return ids, before, after
 
-    def can_set_transforms(self, object_ids, transform_values) -> bool:
+    def can_set_transforms(self, object_ids, transform_values, gesture_id="") -> bool:
         prepared = self._prepare_transform_edit(object_ids, transform_values)
         if prepared is None:
             return False
@@ -913,7 +919,7 @@ class SceneObjectCommandService:
             and not manager.is_executing
         )
 
-    def set_transforms(self, object_ids, transform_values) -> bool:
+    def set_transforms(self, object_ids, transform_values, gesture_id="") -> bool:
         """Commit one single- or multi-object Transform edit atomically."""
         prepared = self._prepare_transform_edit(object_ids, transform_values)
         if prepared is None:
@@ -946,6 +952,7 @@ class SceneObjectCommandService:
             capture,
             restore,
             "Edit Transform" if len(ids) == 1 else "Edit Transforms",
+            gesture_id=str(gesture_id or "").strip(),
         )
         return transaction.commit(after) is PropertyTransactionStatus.APPLIED
 

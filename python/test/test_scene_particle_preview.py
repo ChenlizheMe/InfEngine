@@ -36,6 +36,70 @@ def test_scene_particle_preview_follows_primary_selection():
     assert calls == ["begin", "pause"]
 
 
+def test_scene_particle_preview_rejects_selected_inactive_object():
+    panel = _panel()
+    calls = []
+    hierarchy_reads = []
+    component = SimpleNamespace(
+        editor_preview_begin=lambda: calls.append("begin") or True,
+    )
+
+    class Selected:
+        @property
+        def active_in_hierarchy(self):
+            hierarchy_reads.append("selection")
+            return False
+
+        @staticmethod
+        def get_py_components():
+            return [component]
+
+    selected = Selected()
+
+    panel._on_particle_preview_selection(selected)
+
+    assert panel._particle_preview_component is None
+    assert panel._particle_preview_object is None
+    assert panel._particle_preview_playing is False
+    assert calls == []
+    assert hierarchy_reads
+
+
+def test_scene_particle_preview_suspends_when_selected_owner_becomes_inactive():
+    panel = _panel()
+    calls = []
+    hierarchy_reads = []
+
+    class Owner:
+        id = 9
+        active = True
+
+        @property
+        def active_in_hierarchy(self):
+            hierarchy_reads.append("tick")
+            return self.active
+
+    owner = Owner()
+    component = SimpleNamespace(
+        game_object=owner,
+        editor_preview_pause=lambda: calls.append("pause") or True,
+        editor_preview_suspend=lambda: calls.append("suspend") or True,
+        editor_preview_update=lambda *_args: calls.append("update") or True,
+    )
+    panel._particle_preview_component = component
+    panel._particle_preview_object = owner
+    panel._particle_preview_playing = True
+
+    owner.active = False
+    panel._tick_particle_preview(0.016)
+
+    assert calls == ["suspend"]
+    assert panel._particle_preview_component is None
+    assert panel._particle_preview_object is None
+    assert panel._particle_preview_playing is False
+    assert hierarchy_reads
+
+
 def test_scene_particle_preview_ticks_only_in_edit_mode():
     panel = _panel()
     component = ParticleSystem()

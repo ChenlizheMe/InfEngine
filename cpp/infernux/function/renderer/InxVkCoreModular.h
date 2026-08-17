@@ -46,6 +46,7 @@
 #include "VkTextureCache.h"
 #include "rhi/GpuRetirementQueue.h"
 #include "vk/VkCore.h"
+#include "vk/VulkanBindlessTextureTable.h"
 #include "vk/VulkanFrameSubmission.h"
 #include "vk/VulkanSubmissionExecutor.h"
 #if INFERNUX_FRAME_PROFILE
@@ -55,8 +56,9 @@
 #include <function/renderer/lighting/CanonicalLightGpuBuffer.h>
 #include <function/scene/LightingData.h>
 
-#include <functional>
+#include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -85,6 +87,7 @@ struct FrameSubmissionTelemetry
 };
 
 class AssetLoadTicket;
+class TextureUploadStagingTicket;
 class EditorGizmos;
 class GPUMaterialPreview;
 class GPUMeshPreview;
@@ -302,10 +305,12 @@ class InxVkCoreModular
 
     void DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin, int queueMax,
                            ShadowCameraResourceId resourceId, const lighting::ShadowFrame &shadowFrame,
-                           int lightIndex = 0, const ShadowViewDrawCallback &additionalDraws = {});
+                           int lightIndex = 0, VkRenderPass compatibleRenderPass = VK_NULL_HANDLE,
+                           VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
+                           const ShadowViewDrawCallback &additionalDraws = {});
 
     /// @brief Set draw calls for multi-material rendering (stores pointer, no copy)
-    void SetDrawCalls(const std::vector<DrawCall> *drawCalls);
+    void SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool forceRefresh = false);
 
     [[nodiscard]] bool UsesDrawCalls(const std::vector<DrawCall> *drawCalls) const noexcept
     {
@@ -313,7 +318,12 @@ class InxVkCoreModular
     }
 
     /// @brief Set shadow-caster draw calls (stores pointer, no copy)
-    void SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls);
+    void SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls, bool forceRefresh = false);
+
+    /// @brief Drop active draw-list pointers and their GPU buffer leases.
+    ///
+    /// Must run before the owning RenderGraphs or Vulkan device are destroyed.
+    void ReleaseActiveDrawLists() noexcept;
 
     /// @brief Stage per-frame engine globals (called by InxRenderer each frame).
     void StageGlobals(const EngineGlobalsUBO &globals);
@@ -441,7 +451,7 @@ class InxVkCoreModular
     }
     [[nodiscard]] size_t GetPendingTextureCpuLoadCount() const noexcept
     {
-        return m_pendingTextureCpuLoads.size();
+        return m_pendingTextureAssetLoads.size() + m_pendingTextureStagingLoads.size();
     }
     [[nodiscard]] size_t GetPendingTextureUploadCount() const noexcept
     {
@@ -725,6 +735,12 @@ class InxVkCoreModular
         return m_textureCache;
     }
 
+    /// Resolve the same final imported GPU texture used by materials for an
+    /// editor preview. Pending uploads return an empty pointer and are polled
+    /// on following frames.
+    [[nodiscard]] std::shared_ptr<const rhi::TextureGpuView>
+    ResolveTextureForEditorPreview(const std::string &textureGuid);
+
     // ========================================================================
     // Direct Vulkan Access (for compatibility)
     // ========================================================================
@@ -789,8 +805,14 @@ class InxVkCoreModular
     bool RefreshPreviewMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
                                         const std::string &fragShaderName, bool reportDomainMismatch = true);
 
+    /// Resolve the immutable material pass used by an offscreen preview. The
+    /// preview owns its attachment contract, so this must not borrow the
+    /// scene's legacy Forward pipeline when Dynamic Rendering is active.
+    MaterialPassRenderData *GetOrCreatePreviewMaterialPass(std::shared_ptr<InxMaterial> material,
+                                                           bool useDynamicRendering);
+
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket>
-    BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size);
+    BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size, bool *texturePending = nullptr);
     bool TryCompleteMaterialPreviewGPU(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
                                        std::vector<unsigned char> &outPixels);
 
@@ -818,7 +840,8 @@ class InxVkCoreModular
     /// @brief Resolve the shared shadow pipeline and cached material binding.
     /// @return The material descriptor set used at set 2, or VK_NULL_HANDLE on failure.
     VkDescriptorSet EnsureMaterialShadowPipeline(const std::shared_ptr<InxMaterial> &material,
-                                                 const std::string &vertShaderName, const std::string &fragShaderName);
+                                                 const std::string &vertShaderName, const std::string &fragShaderName,
+                                                 VkRenderPass compatibleRenderPass, VkFormat depthFormat);
 
     /// Shadow pipeline layout always includes set 2; bind this when a material
     /// has no per-material shadow descriptors (e.g. alpha clip off, no vtx UBO).
@@ -906,6 +929,18 @@ class InxVkCoreModular
     [[nodiscard]] MaterialPipelineManager &GetMaterialPipelineManager()
     {
         return m_materialPipelineManager;
+    }
+
+    /// Device-global bindless table for shaders that explicitly opt into the
+    /// BindlessTextures capability. Bounded and special paths remain valid
+    /// when the device cannot provide the complete contract.
+    [[nodiscard]] vk::VulkanBindlessTextureTable &GetBindlessTextureTable() noexcept
+    {
+        return m_bindlessTextureTable;
+    }
+    [[nodiscard]] const vk::VulkanBindlessTextureTable &GetBindlessTextureTable() const noexcept
+    {
+        return m_bindlessTextureTable;
     }
 
     /// @brief Set ambient color (convenience method)
@@ -1196,6 +1231,7 @@ class InxVkCoreModular
     uint64_t m_materialPassResolutionCacheGeneration = 0;
 
     // Texture cache (GPU textures keyed by name/GUID, thread-safe)
+    vk::VulkanBindlessTextureTable m_bindlessTextureTable;
     VkTextureCache m_textureCache;
     struct PendingTextureGpuUpload
     {
@@ -1203,7 +1239,8 @@ class InxVkCoreModular
         uint64_t runtimeVersion = 0;
         std::shared_ptr<vk::TextureUploadTicket> ticket;
     };
-    std::unordered_map<std::string, std::shared_ptr<AssetLoadTicket>> m_pendingTextureCpuLoads;
+    std::unordered_map<std::string, std::shared_ptr<AssetLoadTicket>> m_pendingTextureAssetLoads;
+    std::unordered_map<std::string, std::shared_ptr<TextureUploadStagingTicket>> m_pendingTextureStagingLoads;
     std::unordered_map<std::string, PendingTextureGpuUpload> m_pendingTextureGpuUploads;
     uint64_t m_submittedTextureUploadCount = 0;
     uint64_t m_completedTextureUploadCount = 0;
@@ -1367,8 +1404,12 @@ class InxVkCoreModular
     std::function<uint64_t()> m_frameAsyncComputeGeneration;
     bool m_frameAsyncComputePrimed = false;
     uint64_t m_frameAsyncComputePrimedGeneration = 0;
-    VkSemaphore m_frameAsyncPreviousExportTimeline = VK_NULL_HANDLE;
-    uint64_t m_frameAsyncPreviousExportTimelineValue = 0;
+    // Completion point for the last submitted frame, regardless of whether
+    // that frame used async particle simulation. An async-generation prime
+    // may reuse render-export resources that the previous Graphics frame is
+    // still consuming, so the dependency must survive mode/readiness changes.
+    VkSemaphore m_previousFrameCompletionTimeline = VK_NULL_HANDLE;
+    uint64_t m_previousFrameCompletionTimelineValue = 0;
     std::function<void(vk::RenderContext &ctx)> m_guiRenderCallback;
     rhi::RenderViewContext m_presentationView;
 
@@ -1429,6 +1470,46 @@ class InxVkCoreModular
     };
     std::vector<SortableDrawCall> m_eligibleScratch;
 
+    // Static renderer lists are immutable until SetDrawCalls activates a new
+    // publication. Keep the expensive queue/material/buffer filter result so
+    // stable cameras do not rebuild the same tens-of-thousands-entry list on
+    // every frame. Small lists are intentionally left on the ordinary path.
+    struct StaticFilteredListCache
+    {
+        uint64_t drawListActivation = 0;
+        uint64_t materialPublicationGeneration = 0;
+        int queueMin = 0;
+        int queueMax = 0;
+        ShaderCompileTarget target = ShaderCompileTarget::Forward;
+        GraphMaterialFilter materialFilter = GraphMaterialFilter::All;
+        std::string sortMode;
+        std::string passTag;
+        std::vector<SortableDrawCall> draws;
+        uint64_t sequenceKey = 0;
+        bool uniformBatch = false;
+    };
+    std::vector<StaticFilteredListCache> m_staticFilteredListCaches;
+    uint64_t m_nextStaticFilteredSequenceKey = 1;
+
+    // A render graph commonly submits the same static instance sequence to
+    // several geometry passes in one frame. The first pass owns the SSBO
+    // range; later passes may address that exact range directly. DrawCall
+    // pointers are compared exactly and are valid only for one list activation.
+    struct StaticInstanceRange
+    {
+        uint64_t drawListActivation = 0;
+        uint64_t sequenceKey = 0;
+        uint32_t frameIndex = 0;
+        uint32_t firstInstance = 0;
+        uint32_t instanceCount = 0;
+        VkBuffer instanceBuffer = VK_NULL_HANDLE;
+        VkBuffer skinInstanceBuffer = VK_NULL_HANDLE;
+        uint64_t lastUsedFrame = 0;
+    };
+    uint64_t m_drawListActivation = 0;
+    uint64_t m_staticInstanceRangeFrame = UINT64_MAX;
+    std::vector<StaticInstanceRange> m_staticInstanceRanges;
+
     // Cached builtin material lookups (refreshed per SetDrawCalls)
     std::shared_ptr<InxMaterial> m_cachedDefaultLit;
     std::shared_ptr<InxMaterial> m_cachedErrorMat;
@@ -1445,6 +1526,15 @@ class InxVkCoreModular
     };
     std::vector<ShadowDraw> m_shadowDrawScratch;
     std::vector<uint32_t> m_shadowViewVisible; ///< Per-view visible indices into m_shadowDrawScratch
+    uint64_t m_shadowScratchDrawListActivation = 0;
+    uint64_t m_shadowScratchMaterialPublicationGeneration = 0;
+    VkRenderPass m_shadowScratchRenderPass = VK_NULL_HANDLE;
+    VkFormat m_shadowScratchDepthFormat = VK_FORMAT_UNDEFINED;
+    int m_shadowScratchQueueMin = 0;
+    int m_shadowScratchQueueMax = 0;
+    bool m_shadowScratchValid = false;
+    bool m_shadowScratchStatic = false;
+    bool m_shadowScratchUniformBatch = false;
 
     struct ResolvedShadowMaterial
     {
@@ -1460,10 +1550,54 @@ class InxVkCoreModular
     VkDescriptorSetLayout m_shadowDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_shadowGlobalsDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_shadowMaterialDescSetLayout = VK_NULL_HANDLE;
+    bool m_shadowUsesBindlessTextureTable = false;
     struct ShadowCameraResources
     {
+        struct StaticShadowDrawState
+        {
+            uint64_t objectId = 0;
+            uint32_t layerMask = 0;
+            glm::mat4 worldMatrix{1.0f};
+            AABB worldBounds;
+            VkBuffer vertexBuffer = VK_NULL_HANDLE;
+            VkBuffer indexBuffer = VK_NULL_HANDLE;
+            VkPipeline pipeline = VK_NULL_HANDLE;
+            VkDescriptorSet materialDescriptor = VK_NULL_HANDLE;
+            uint32_t indexStart = 0;
+            uint32_t indexCount = 0;
+            int32_t vertexStart = 0;
+        };
+
+        struct StaticShadowViewCache
+        {
+            glm::mat4 viewProjection{1.0f};
+            uint32_t cullingMask = 0;
+            lighting::ShadowViewType type = lighting::ShadowViewType::DirectionalCascade;
+            uint64_t generation = 0;
+            std::vector<uint32_t> visibleIndices;
+            bool valid = false;
+        };
+
+        struct StaticShadowSubmissionCache
+        {
+            std::vector<StaticShadowDrawState> draws;
+            std::array<StaticShadowViewCache, lighting::MaxShadowViews> views;
+            uint64_t nextGeneration = 1;
+            bool valid = false;
+        };
+
         struct StreamFrame
         {
+            struct StaticViewUpload
+            {
+                uint64_t visibilityGeneration = 0;
+                uint32_t firstInstance = 0;
+                uint32_t instanceCount = 0;
+                VkBuffer instanceBuffer = VK_NULL_HANDLE;
+                VkBuffer skinInstanceBuffer = VK_NULL_HANDLE;
+                bool valid = false;
+            };
+
             VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
             std::unique_ptr<vk::VkBufferHandle> instanceBuffer;
             std::unique_ptr<vk::VkBufferHandle> skinInstanceBuffer;
@@ -1477,6 +1611,7 @@ class InxVkCoreModular
             uint32_t skinPaletteWriteOffset = 0;
             uint64_t frameSerial = 0;
             std::unordered_map<const void *, GPUSkinInstanceData> skinPaletteCache;
+            std::array<StaticViewUpload, lighting::MaxShadowViews> staticViewUploads;
         };
 
         std::vector<vk::DescriptorLease> descriptorLeases;
@@ -1486,11 +1621,11 @@ class InxVkCoreModular
         std::vector<void *> mappedPointers;
         std::vector<vk::DescriptorLease> streamDescriptorLeases;
         std::vector<StreamFrame> streamFrames;
+        StaticShadowSubmissionCache staticSubmissionCache;
     };
     std::unordered_map<ShadowCameraResourceId, ShadowCameraResources> m_shadowCameraResources;
     ShadowCameraResourceId m_nextShadowCameraResourceId = 1;
     VkSampler m_shadowDepthSampler = VK_NULL_HANDLE;
-    VkRenderPass m_shadowCompatRenderPass = VK_NULL_HANDLE; ///< For pipeline compatibility
     bool m_shadowPipelineReady = false;
 
     /// Cache of shadow pipelines keyed by shader ID (vert|frag).
@@ -1524,7 +1659,7 @@ class InxVkCoreModular
     uint64_t m_shadowMaterialBindingRetirements = 0;
 
     /// @brief Lazily create/recreate shadow pipeline resources.
-    bool EnsureShadowPipeline(VkRenderPass compatibleRenderPass);
+    bool EnsureShadowPipeline(VkRenderPass compatibleRenderPass, VkFormat depthFormat);
     bool EnsureShadowCameraResources(ShadowCameraResourceId resourceId);
     bool EnsureShadowCameraStreamCapacity(ShadowCameraResources &resources, uint32_t frameIndex, size_t instanceCount,
                                           size_t skinPaletteCount);

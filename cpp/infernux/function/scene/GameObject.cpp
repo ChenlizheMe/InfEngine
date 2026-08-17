@@ -243,9 +243,13 @@ void GameObject::RefreshLifecycleDispatchFlags()
             continue;
         }
 
-        if (dynamic_cast<AudioSource *>(component.get())) {
+        if (component->WantsRuntimeUpdate()) {
             m_hasUpdateReceivers = true;
         }
+        if (component->WantsRuntimeFixedUpdate())
+            m_hasFixedUpdateReceivers = true;
+        if (component->WantsRuntimeLateUpdate())
+            m_hasLateUpdateReceivers = true;
     }
 }
 
@@ -949,6 +953,12 @@ void GameObject::Update(float deltaTime)
     for (Component *comp : components) {
         if (!comp)
             continue;
+        // Python proxies are dispatched by SceneManager's shared runtime
+        // scheduler when the bridge is active. Native components remain in
+        // this traversal, preserving the native scene update path without
+        // invoking the same Python proxy a second time.
+        if (m_scene && m_scene->UsesRuntimeLifecycleScheduler() && comp->UsesRuntimeLifecycleScheduler())
+            continue;
         if (comp->IsEnabled()) {
             comp->Update(deltaTime);
         } else {
@@ -965,6 +975,8 @@ void GameObject::FixedUpdate(float fixedDeltaTime)
     const auto &components = GetComponentsInExecutionOrderCached();
     for (Component *comp : components) {
         if (!comp)
+            continue;
+        if (m_scene && m_scene->UsesRuntimeLifecycleScheduler() && comp->UsesRuntimeLifecycleScheduler())
             continue;
         if (comp->IsEnabled()) {
             comp->FixedUpdate(fixedDeltaTime);
@@ -983,6 +995,8 @@ void GameObject::LateUpdate(float deltaTime)
     for (Component *comp : components) {
         if (!comp)
             continue;
+        if (m_scene && m_scene->UsesRuntimeLifecycleScheduler() && comp->UsesRuntimeLifecycleScheduler())
+            continue;
         if (comp->IsEnabled()) {
             comp->LateUpdate(deltaTime);
         } else {
@@ -999,6 +1013,8 @@ void GameObject::EditorUpdate(float deltaTime)
     const auto &components = GetComponentsInExecutionOrderCached();
     for (Component *comp : components) {
         if (!comp || !comp->IsEnabled())
+            continue;
+        if (m_scene && m_scene->UsesRuntimeLifecycleScheduler() && comp->UsesRuntimeLifecycleScheduler())
             continue;
         if (!comp->WantsEditModeUpdate())
             continue;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -21,13 +22,13 @@ namespace infernux
 /// Power-save / idle configuration for the editor main loop.
 /// When no user input is detected for a short period, the loop sleeps
 /// via ``SDL_WaitEventTimeout`` to reduce CPU/GPU usage.
-/// An editor FPS cap also limits the maximum frame rate in edit mode.
+/// An optional editor FPS cap can limit edit mode when explicitly requested.
 struct FpsIdling
 {
-    float fpsIdle = 10.0f;       ///< Target FPS when idling (0 = disable idle)
-    float editorFpsCap = 144.0f; ///< Max FPS in editor mode (0 = uncapped)
-    bool enableIdling = true;    ///< Master switch for idle detection
-    bool isIdling = false;       ///< Output — true when the last frame went idle
+    float fpsIdle = 10.0f;     ///< Target FPS when idling (0 = disable idle)
+    float editorFpsCap = 0.0f; ///< Max FPS in editor mode (0 = uncapped)
+    bool enableIdling = true;  ///< Master switch for idle detection
+    bool isIdling = false;     ///< Output — true when the last frame went idle
 };
 
 /// Per-frame pacing diagnostics for editor FPS cap / idle mode.
@@ -43,12 +44,22 @@ struct FramePacingSample
     bool wokeByWindowEvent = false;
     bool wokeByOtherEvent = false;
     bool hadInputEvent = false;
-    int cooldownRemaining = 0;
+    int cooldownRemainingMs = 0;
     float targetFps = 0.0f;
     double elapsedBeforeSleepMs = 0.0;
     double frameBudgetMs = 0.0;
     double requestedSleepMs = 0.0;
     double actualSleepMs = 0.0;
+    uint32_t queuedEventCount = 0;
+    uint32_t mouseMotionEventCount = 0;
+    uint32_t dispatchedMouseMotionCount = 0;
+    double inputBeginFrameMs = 0.0;
+    double inputPumpEventsMs = 0.0;
+    double inputPeepEventsMs = 0.0;
+    double inputImGuiDispatchMs = 0.0;
+    double inputManagerDispatchMs = 0.0;
+    double inputSyntheticDispatchMs = 0.0;
+    double inputWindowQueryMs = 0.0;
 };
 
 class InxView
@@ -143,11 +154,17 @@ class InxView
 
     /// Signal that the current frame required full-speed rendering
     /// (e.g. animation playing, programmatic scene change).
-    /// Resets the idle cooldown so the next few frames run at editor cap.
+    /// Extends the real-time idle cooldown so active editor work stays smooth
+    /// regardless of the machine's current frame rate.
     void RequestFullSpeedFrame()
     {
-        m_activeFramesRemaining = ACTIVE_COOLDOWN_FRAMES;
+        m_activeUntil = std::chrono::steady_clock::now() + ACTIVE_COOLDOWN_DURATION;
     }
+
+    /// Wake an editor frame requested by a non-render thread (for example the
+    /// asset watcher). The render thread consumes the activity flag before
+    /// touching the non-atomic idle deadline.
+    void RequestExternalWake() noexcept;
 
     void CreateSurface(VkInstance *vkInstance, VkSurfaceKHR *vkSurface);
     void SetAppMetadata(InxAppMetadata appMetaData);
@@ -194,10 +211,13 @@ class InxView
     // ---- Power-save idle state ----
     FpsIdling m_idling;
     FramePacingSample m_lastPacingSample;
-    /// Number of full-speed frames remaining after the last user interaction.
-    /// When this reaches 0 and idling is enabled the loop will sleep more.
-    static constexpr int ACTIVE_COOLDOWN_FRAMES = 10;
-    int m_activeFramesRemaining = ACTIVE_COOLDOWN_FRAMES;
+    // Keep editor activity time-based. A frame-count cooldown expires almost
+    // immediately on high-refresh machines and makes continuously visible
+    // panels oscillate between full speed and the 10 FPS idle tier.
+    static constexpr auto ACTIVE_COOLDOWN_DURATION = std::chrono::milliseconds(100);
+    std::chrono::steady_clock::time_point m_activeUntil =
+        std::chrono::steady_clock::now() + ACTIVE_COOLDOWN_DURATION;
+    std::atomic_bool m_externalWakeRequested{false};
 
     /// Timestamp of the last frame start — used to compute the remaining
     /// frame budget so the sleep duration adapts to actual render time.
@@ -207,6 +227,8 @@ class InxView
     std::deque<SyntheticInputEvent> m_syntheticInputEvents;
     uint64_t m_nextSyntheticInputSequence = 1;
     std::atomic<uint64_t> m_lastProcessedSyntheticInputSequence{0};
+    double m_currentImGuiEventDispatchMs = 0.0;
+    double m_currentInputManagerDispatchMs = 0.0;
     // A synthetic mouse release is held until InxRenderer confirms that a
     // real ImGui frame has consumed the corresponding press transition.
     uint8_t m_syntheticMouseButtonsAwaitingGuiFrame = 0;

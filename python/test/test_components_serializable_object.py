@@ -6,7 +6,7 @@ from Infernux.components.serializable_object import (
     get_serializable_class,
     get_serializable_type_id,
 )
-from Infernux.components.serialized_field import serialized_field, FieldType
+from Infernux.components.fields import serialized_field, FieldType
 from Infernux.components.value_document import make_serializable_object
 import pytest
 

@@ -57,7 +57,8 @@ class ShortcutEvent:
     text_input_active: bool
     modal_active: bool
     game_view_captured: bool
-    def __init__(self, chord: KeyChord, phase: ShortcutPhase = ShortcutPhase.PRESS, text_input_active: bool = False, modal_active: bool = False, game_view_captured: bool = False) -> None: ...
+    event_id: str
+    def __init__(self, chord: KeyChord, phase: ShortcutPhase = ShortcutPhase.PRESS, text_input_active: bool = False, modal_active: bool = False, game_view_captured: bool = False, event_id: str = "") -> None: ...
 
 class ShortcutRouteResult:
     status: ShortcutRouteStatus

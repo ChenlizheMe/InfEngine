@@ -344,7 +344,7 @@ def _render_numeric_sf(ctx, wid, display_name, metadata, current_value, lw, has_
 
 def _render_vec_sf(ctx, wid, current_value, lw, has_visible_label, vector_label, ft):
     """Render a VEC2, VEC3, or VEC4 inspector field."""
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     vec_lw = lw if has_visible_label else 1.0
     # The native VectorN helpers use their visible label as the aggregate
     # widget ID. Scope them with the serialized field ID so repeated/localized
@@ -415,7 +415,12 @@ def _render_color_sf(ctx, wid, display_name, metadata, current_value, lw, has_vi
         r, g, b, a = 1.0, 1.0, 1.0, 1.0
     _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
     allow_hdr = getattr(metadata, 'hdr', False)
-    nr, ng, nb, na = _render_color_bar(ctx, wid, r, g, b, a, allow_hdr=allow_hdr)
+    nr, ng, nb, na = render_color_value_bar(
+        ctx,
+        wid,
+        (r, g, b, a),
+        allow_hdr=allow_hdr,
+    )
     if (nr, ng, nb, na) != (r, g, b, a):
         return [nr, ng, nb, na]
     return current_value
@@ -435,7 +440,7 @@ def render_serialized_field(
     ``FLOAT``, ``INT``, ``BOOL``, ``STRING``, ``VEC2``, ``VEC3``, ``VEC4``,
     ``ENUM``, ``COLOR``.
     """
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     ft = metadata.field_type
     has_visible_label = bool(display_name and str(display_name).strip())
@@ -480,7 +485,7 @@ def has_field_changed(field_type, old_value, new_value) -> bool:
     types (``render_serialized_field`` already creates a new vec object
     only when the value differs).
     """
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     if field_type == FieldType.FLOAT:
         if isinstance(new_value, (int, float)) and isinstance(old_value, (int, float)):
@@ -488,7 +493,7 @@ def has_field_changed(field_type, old_value, new_value) -> bool:
     elif field_type in (FieldType.VEC2, FieldType.VEC3, FieldType.VEC4):
         return new_value is not old_value
     elif field_type == FieldType.COLOR:
-        from Infernux.components.serialized_field import rgba_equal
+        from Infernux.components.fields import rgba_equal
         return not rgba_equal(old_value, new_value)
     return new_value != old_value
 
@@ -518,7 +523,18 @@ _color_popup_live: dict = {}
 _color_popup_guard: set = set()
 
 
-def _render_color_popup(ctx, wid, popup_id, r, g, b, a, allow_hdr, first_frame_set):
+def _render_color_popup(
+    ctx,
+    wid,
+    popup_id,
+    r,
+    g,
+    b,
+    a,
+    allow_hdr,
+    first_frame_set,
+    default_hdr_enabled=False,
+):
     """Render the colour-edit popup contents. Return *(nr, ng, nb, na)*."""
     nr, ng, nb, na = r, g, b, a
     if ctx.begin_popup(popup_id):
@@ -526,8 +542,28 @@ def _render_color_popup(ctx, wid, popup_id, r, g, b, a, allow_hdr, first_frame_s
         if first_frame:
             first_frame_set.discard(wid)
 
-        state = _hdr_state.setdefault(wid, {"enabled": False, "intensity": 1.0})
+        state = _hdr_state.setdefault(
+            wid,
+            {
+                "enabled": bool(allow_hdr and default_hdr_enabled),
+                "intensity": 1.0,
+            },
+        )
         live = _color_popup_live.setdefault(wid, [r, g, b, a])
+
+        # Undo/redo is allowed while this non-modal popup remains open. Pull an
+        # externally restored value back into the popup once no picker control
+        # owns the pointer; otherwise the stale live cache would visually mask
+        # the undo and could reapply the discarded colour on the next drag.
+        if not ctx.is_any_item_active():
+            incoming = [r, g, b, a]
+            if allow_hdr and state["enabled"] and state["intensity"] not in (0.0, 0):
+                inverse_intensity = 1.0 / state["intensity"]
+                incoming[0] *= inverse_intensity
+                incoming[1] *= inverse_intensity
+                incoming[2] *= inverse_intensity
+            if any(abs(float(live[index]) - float(incoming[index])) > 1e-6 for index in range(4)):
+                live[:] = incoming
         lr, lg, lb, la = live[0], live[1], live[2], live[3]
 
         # AlphaBar = 1 << 18
@@ -591,6 +627,9 @@ def _render_color_bar(
     r: float, g: float, b: float, a: float,
     *,
     allow_hdr: bool = False,
+    default_hdr_enabled: bool = False,
+    width: float | None = None,
+    height: float | None = None,
 ) -> tuple:
     """Render a Unity-style colour bar and return ``(nr, ng, nb, na)``.
 
@@ -604,8 +643,13 @@ def _render_color_bar(
     intensity slider.  The returned RGBA values are multiplied by the
     HDR intensity when HDR is enabled.
     """
-    avail_w = ctx.get_content_region_avail_width()
-    clicked = ctx.invisible_button(f"{wid}_bar", avail_w, _COLOR_BAR_H)
+    bar_width = (
+        ctx.get_content_region_avail_width()
+        if width is None
+        else max(1.0, float(width))
+    )
+    bar_height = _COLOR_BAR_H if height is None else max(1.0, float(height))
+    clicked = ctx.invisible_button(f"{wid}_bar", bar_width, bar_height)
 
     min_x = ctx.get_item_rect_min_x()
     min_y = ctx.get_item_rect_min_y()
@@ -643,10 +687,50 @@ def _render_color_bar(
         _color_popup_guard.add(wid)
         ctx.open_popup(popup_id)
 
-    nr, ng, nb, na = _render_color_popup(ctx, wid, popup_id, r, g, b, a,
-                                          allow_hdr, _color_popup_guard)
+    nr, ng, nb, na = _render_color_popup(
+        ctx,
+        wid,
+        popup_id,
+        r,
+        g,
+        b,
+        a,
+        allow_hdr,
+        _color_popup_guard,
+        default_hdr_enabled,
+    )
 
     return nr, ng, nb, na
+
+
+def render_color_value_bar(
+    ctx: InxGUIContext,
+    wid: str,
+    value,
+    *,
+    allow_hdr: bool = False,
+    default_hdr_enabled: bool = False,
+    width: float | None = None,
+    height: float | None = None,
+) -> list[float]:
+    """Render the shared Inspector-style RGBA bar for any editor surface."""
+    components = list(value) if isinstance(value, (list, tuple)) else []
+    defaults = (1.0, 1.0, 1.0, 1.0)
+    rgba = [
+        float(components[index]) if index < len(components) else defaults[index]
+        for index in range(4)
+    ]
+    return list(
+        _render_color_bar(
+            ctx,
+            wid,
+            *rgba,
+            allow_hdr=allow_hdr,
+            default_hdr_enabled=default_hdr_enabled,
+            width=width,
+            height=height,
+        )
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -712,12 +796,14 @@ def render_component_header(
     ctx.push_draw_list_clip_rect(0.0, 0.0, _clip_max_x, 1e7, True)
     header_open = ctx.collapsing_header(f"##comp_{header_key}")
     ctx.pop_draw_list_clip_rect()
+    content_cursor_y = ctx.get_cursor_pos_y()
     header_min_y = ctx.get_item_rect_min_y()
     header_height = max(0.0, ctx.get_item_rect_max_y() - header_min_y)
 
     # ── overlay icon / checkbox / label on the same row ──
     indent = Theme.INSPECTOR_HEADER_CONTENT_INDENT
-    ctx.same_line(indent, 0)
+    overlay_x = ctx.get_window_pos_x() + indent
+    ctx.set_cursor_screen_pos(overlay_x, header_min_y)
 
     if icon_id:
         icon_size = float(Theme.COMPONENT_ICON_SIZE)
@@ -735,9 +821,10 @@ def render_component_header(
     if show_enabled:
         # Position the fixed-size square vertically centered in the header row.
         box_size = float(Theme.INSPECTOR_CHECKBOX_BOX_PX)
-        win_y = ctx.get_window_pos_y()
-        ctx.set_cursor_pos_y(
-            header_min_y - win_y + (header_height - box_size) * 0.5
+        ctx.set_cursor_screen_pos(
+            ctx.get_item_rect_max_x() + Theme.INSPECTOR_HEADER_ITEM_SPC[0]
+            if icon_id else overlay_x,
+            header_min_y + (header_height - box_size) * 0.5,
         )
         new_enabled = bool(ctx.checkbox("##hdr_en", is_enabled))
         ctx.same_line(0, Theme.INSPECTOR_HEADER_ITEM_SPC[0])
@@ -745,11 +832,18 @@ def render_component_header(
         cb_top = ctx.get_item_rect_min_y()
         cb_bot = ctx.get_item_rect_max_y()
         name_h = ctx.calc_text_size(display_name)[1]
-        ctx.set_cursor_pos_y((cb_top + cb_bot) * 0.5 - win_y - name_h * 0.5)
+        ctx.set_cursor_screen_pos(
+            ctx.get_item_rect_max_x() + Theme.INSPECTOR_HEADER_ITEM_SPC[0],
+            (cb_top + cb_bot) * 0.5 - name_h * 0.5,
+        )
         ctx.label(display_name)
     else:
         ctx.align_text_to_frame_padding()
         ctx.label(display_name)
+
+    # Overlay controls must not become the layout anchor for the component
+    # body.  Continue exactly where CollapsingHeader left the cursor.
+    ctx.set_cursor_pos_y(content_cursor_y)
 
     # ── cleanup ──
     ctx.set_window_font_scale(1.0)
@@ -955,7 +1049,7 @@ def _ensure_prop_map():
     global _FIELD_TYPE_TO_PROP
     if _FIELD_TYPE_TO_PROP is not None:
         return
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     _FIELD_TYPE_TO_PROP = {
         FieldType.FLOAT:  PROP_FLOAT,
         FieldType.INT:    PROP_INT,
@@ -974,7 +1068,7 @@ def _ensure_prop_map():
 
 def is_batch_renderable(field_type) -> bool:
     """Return True if this FieldType can be handled by C++ batch renderer."""
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     _ensure_prop_map()
     if field_type == FieldType.COLOR:
         return False
@@ -1073,12 +1167,14 @@ def build_scalar_desc(
 
     # --- Layout ---
     if header_text:
-        desc["hdr"] = header_text
+        from Infernux.engine.i18n import t
+        desc["hdr"] = t(header_text)
     if space_before > 0:
         desc["spc"] = space_before
 
     # --- Tooltip ---
     if metadata.tooltip:
-        desc["tt"] = metadata.tooltip
+        from Infernux.engine.i18n import t
+        desc["tt"] = t(metadata.tooltip)
 
     return desc

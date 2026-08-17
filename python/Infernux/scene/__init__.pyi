@@ -74,6 +74,22 @@ class SceneManager:
         """Load a scene by file path or build index."""
         ...
     @staticmethod
+    def wait_for_load_scene(scene: Union[int, str]) -> bool:
+        """Prepare a scene asynchronously and switch when it is ready."""
+        ...
+    @staticmethod
+    def prepare_scene(scene: Union[int, str]) -> bool:
+        """Prepare a scene asynchronously without publishing it."""
+        ...
+    @staticmethod
+    def is_scene_prepared() -> bool:
+        """Return whether a held scene is ready to publish."""
+        ...
+    @staticmethod
+    def activate_prepared_scene() -> bool:
+        """Publish the scene previously prepared by prepare_scene."""
+        ...
+    @staticmethod
     def process_pending_load() -> None:
         """Process any pending scene load request."""
         ...

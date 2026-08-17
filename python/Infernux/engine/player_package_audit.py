@@ -12,25 +12,40 @@ import argparse
 import hashlib
 import importlib.machinery
 import json
+import os
 import re
 import struct
+import time
 from collections import defaultdict
 from pathlib import Path
 
 from .path_utils import resolved_path
 from .player_package_native import read_entry, read_manifest
+from .player_service_graph import (
+    PLAYER_MANIFEST_SCHEMA,
+    PLAYER_MANIFEST_VERSION,
+    RuntimeFeatureSet,
+    RuntimeFlavor,
+    RuntimeProductManifest,
+    forbidden_player_service_modules,
+    player_runtime_contract_sections,
+)
 from .runtime_artifact_catalog import (
     CATALOG_SCHEMA,
     CATALOG_VERSION,
+    RUNTIME_ARTIFACT_REASONS,
+    RUNTIME_AUTHORING_DOCUMENT_SUFFIXES,
+    RUNTIME_DOCUMENT_PAYLOAD_KINDS,
     logical_type_for_path,
     package_kind,
     payload_kind_for,
     runtime_artifact_id,
+    runtime_artifact_reason_for,
 )
 
 
 MANIFEST_FILENAME = "Player.inxmanifest"
-MANIFEST_SCHEMA = "infernux.player_runtime_manifest"
+MANIFEST_SCHEMA = PLAYER_MANIFEST_SCHEMA
 
 # These are the native files that the current single-process Player must be
 # able to resolve before Runtime.inxrt has been extracted.  The allowlist is
@@ -81,6 +96,22 @@ BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset(
 )
 EDITOR_I18N_PREFIX = "Infernux/engine/locales/"
 
+PLAYER_FORBIDDEN_RUNTIME_MODULES = forbidden_player_service_modules() | frozenset(
+    {
+        "Infernux/engine/_play_mode_serialization.pyc",
+        "Infernux/engine/deferred_task.pyc",
+        "Infernux/engine/scene_document_transaction.pyc",
+        "Infernux/engine/scene_manager.pyc",
+    }
+)
+PLAYER_FORBIDDEN_RUNTIME_PREFIXES = frozenset(
+    {
+        "Infernux/engine/interaction/",
+        "Infernux/engine/undo/",
+        "Infernux/gizmos/",
+    }
+)
+
 AUTHOR_SOURCE_SUFFIXES = frozenset(
     {
         ".py",
@@ -112,21 +143,15 @@ RUNTIME_BUILTIN_SHADER_SUFFIXES = frozenset(
     {".glsl", ".vert", ".frag", ".shadingmodel"}
 )
 RUNTIME_BUILTIN_SHADER_PREFIX = "Infernux/resources/shaders/"
-# These are serialized runtime documents. They may be stored inside the
-# native content package, but are not source code and must not be present as
-# loose files in the final Player directory.
-RUNTIME_DOCUMENT_SUFFIXES = frozenset(
+# Authoring documents with these suffixes are forbidden as direct Player
+# payloads. Cooked copies may retain the suffix only under the GUID-addressed
+# Library/Artifacts/Document namespace.
+RUNTIME_DOCUMENT_SUFFIXES = RUNTIME_AUTHORING_DOCUMENT_SUFFIXES
+PLAYER_RUNTIME_PROJECT_SETTINGS = frozenset(
     {
-        ".scene",
-        ".prefab",
-        ".timeline",
-        ".animclip",
-        ".animclip2d",
-        ".animfsm",
-        ".graph",
-        ".effect",
-        ".effectgroup",
-        ".mat",
+        "ProjectSettings/BuildSettings.json",
+        "ProjectSettings/PhysicsSettings.json",
+        "ProjectSettings/TagLayerSettings.json",
     }
 )
 TEXT_SUFFIXES = AUTHOR_SOURCE_SUFFIXES | RUNTIME_DOCUMENT_SUFFIXES | frozenset(
@@ -135,7 +160,7 @@ TEXT_SUFFIXES = AUTHOR_SOURCE_SUFFIXES | RUNTIME_DOCUMENT_SUFFIXES | frozenset(
 NATIVE_SUFFIXES = frozenset({".exe", ".dll", ".pyd", ".so", ".dylib"})
 NATIVE_ARCHIVE_SUFFIXES = frozenset({".inxrt", ".inxpkg", ".inxmod"})
 ABSOLUTE_PATH_RE = re.compile(
-    r"(?:[A-Za-z]:[\\/]|\\\\|/(?:Users|home|workspace|mnt|var|tmp)/)"
+    r"(?:(?<![A-Za-z0-9+.-])[A-Za-z]:[\\/]|\\\\|/(?:Users|home|workspace|mnt|var|tmp)/)"
 )
 _PE_SIGNATURE = b"PE\0\0"
 _PE_MACHINES = frozenset({0x014C, 0x8664, 0xAA64})
@@ -149,6 +174,27 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _write_json_atomic(path: Path, payload: object) -> None:
+    """Publish audit evidence only after the complete JSON is durable."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(
+        f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    )
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _portable(relative: str) -> str:
@@ -353,9 +399,10 @@ def _archive_entry_records(
             native_files.append(entry_relative)
         if entry_suffix == ".exe":
             hidden_executables.append(entry_relative)
-        if entry_name.startswith("ProjectSettings/") and entry_suffix in {
-            ".yaml", ".yml", ".txt"
-        }:
+        if (
+            entry_name.startswith("ProjectSettings/")
+            and entry_name not in PLAYER_RUNTIME_PROJECT_SETTINGS
+        ):
             unknown_author_documents.append(entry_relative)
         if entry_suffix in TEXT_SUFFIXES and payload is not None:
             try:
@@ -378,14 +425,32 @@ def _archive_entry_records(
     return manifest
 
 
-def _runtime_service_ids() -> list[str]:
-    return [
-        "player_bootstrap",
-        "engine",
-        "player_runtime_session",
-        "player_gui",
-        "game_camera",
-    ]
+def _payload_category(qualified_path: str) -> str:
+    archive_path, separator, entry_path = qualified_path.partition("::")
+    path = entry_path if separator else archive_path
+    suffix = Path(path).suffix.casefold()
+    if suffix in NATIVE_SUFFIXES:
+        return "native"
+    if suffix in {".pyc", ".pyo"}:
+        return "python"
+    if separator and archive_path.endswith("/Content.inxpkg"):
+        return "asset"
+    if path.startswith("Infernux/resources/"):
+        return "resource"
+    return "runtime_support"
+
+
+def _payload_category_report(
+    archive_entries: list[dict[str, object]],
+) -> dict[str, dict[str, int]]:
+    report: defaultdict[str, dict[str, int]] = defaultdict(
+        lambda: {"count": 0, "bytes": 0}
+    )
+    for entry in archive_entries:
+        category = _payload_category(str(entry["path"]))
+        report[category]["count"] += 1
+        report[category]["bytes"] += int(entry["bytes"])
+    return dict(sorted(report.items()))
 
 
 def audit_player_package(
@@ -520,10 +585,10 @@ def audit_player_package(
             f"{data_relative}/Assets/"
         ):
             authoring_tree_files.append(relative)
-        if relative.startswith(f"{data_relative}/ProjectSettings/") and suffix in {
-            ".yaml", ".yml", ".txt"
-        }:
-            unknown_author_documents.append(relative)
+        if relative.startswith(f"{data_relative}/ProjectSettings/"):
+            project_setting = relative[len(f"{data_relative}/") :]
+            if project_setting not in PLAYER_RUNTIME_PROJECT_SETTINGS:
+                unknown_author_documents.append(relative)
         if suffix == ".zip":
             legacy_zips.append(relative)
         if suffix == ".inxpack":
@@ -639,6 +704,68 @@ def audit_player_package(
         if str(entry["path"]).startswith(runtime_prefix)
     }
     runtime_entries_by_casefold = {path.casefold(): path for path in runtime_entry_paths}
+    build_manifest_path = f"{data_relative}/BuildManifest.json"
+    build_manifest_document: dict[str, object] = {}
+    runtime_contract_gaps: list[str] = []
+    try:
+        build_manifest_document = json.loads(
+            (root / build_manifest_path).read_text(encoding="utf-8")
+        )
+        if not isinstance(build_manifest_document, dict):
+            raise RuntimeError("BuildManifest root is not an object")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RuntimeError) as exc:
+        runtime_contract_gaps.append(f"BuildManifest is unreadable: {exc}")
+        build_manifest_document = {}
+
+    declared_contract = build_manifest_document.get("runtime_contract")
+    runtime_flavor = RuntimeFlavor.PLAYER_RELEASE
+    runtime_features = RuntimeFeatureSet()
+    if not isinstance(declared_contract, dict):
+        runtime_contract_gaps.append(
+            "BuildManifest has no authoritative runtime_contract"
+        )
+    else:
+        product = declared_contract.get("product")
+        try:
+            runtime_flavor = RuntimeFlavor(
+                str(product.get("flavor", "")) if isinstance(product, dict) else ""
+            )
+            if not runtime_flavor.is_player:
+                raise ValueError("EditorDevelopment is not a Player product")
+            runtime_features = RuntimeFeatureSet.from_manifest(
+                declared_contract.get("features")
+            )
+            expected_contract = player_runtime_contract_sections(
+                runtime_flavor,
+                runtime_features,
+            )
+            if declared_contract != expected_contract:
+                raise RuntimeError(
+                    "runtime_contract differs from the authoritative service graph"
+                )
+            expected_debug = runtime_flavor is RuntimeFlavor.PLAYER_DEBUG
+            if bool(build_manifest_document.get("debug_build", False)) != expected_debug:
+                raise RuntimeError(
+                    "debug_build disagrees with the declared RuntimeFlavor"
+                )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            runtime_contract_gaps.append(str(exc))
+
+    runtime_contract = player_runtime_contract_sections(
+        runtime_flavor,
+        runtime_features,
+    )
+    runtime_service_graph = runtime_contract["services"]["graph"]
+    runtime_editor_services = sorted(
+        path
+        for path in runtime_entry_paths
+        if path in PLAYER_FORBIDDEN_RUNTIME_MODULES
+        or any(path.startswith(prefix) for prefix in PLAYER_FORBIDDEN_RUNTIME_PREFIXES)
+    )
+    forbidden.extend(
+        f"{data_relative}/Runtime.inxrt::{path}: editor service is not a Player payload"
+        for path in runtime_editor_services
+    )
     runtime_required_native_files = set(RUNTIME_REQUIRED_NATIVE_FILES)
     runtime_required_native_files.update(
         conditional
@@ -650,6 +777,32 @@ def audit_player_package(
         for required in sorted(runtime_required_native_files)
         if required.casefold() not in runtime_entries_by_casefold
     ]
+    if any(path.casefold().startswith("numpy/") for path in runtime_entry_paths):
+        for required in ("numpy/__init__.pyc", "numpy/_core/__init__.pyc"):
+            if required.casefold() not in runtime_entries_by_casefold:
+                runtime_payload_gap.append(
+                    f"incomplete NumPy runtime package: {required} is missing"
+                )
+    runtime_payload_gap.extend(
+        f"missing required Player service module: {record['module']}"
+        for record in runtime_service_graph
+        if (
+            (
+                str(record["module"]).startswith("Modules/")
+                and not (data_root / str(record["module"])).is_file()
+            )
+            or (
+                not str(record["module"]).startswith("Modules/")
+                and str(record["module"]) not in runtime_entry_paths
+            )
+        )
+    )
+    parallel_present = (data_root / "Modules" / "Parallel.inxmod").is_file()
+    if parallel_present != runtime_features.parallel:
+        runtime_payload_gap.append(
+            "Parallel.inxmod presence disagrees with RuntimeManifest features"
+        )
+    runtime_payload_gap.extend(runtime_contract_gaps)
     runtime_payload_gap.extend(
         f"legacy shader compiler DLL must not be packaged after static linking: "
         f"{runtime_entries_by_casefold[legacy.casefold()]}"
@@ -764,6 +917,17 @@ def audit_player_package(
             "content_sha256": str(archive_entry["sha256"]).lower(),
             "content_bytes": int(archive_entry["bytes"]),
         }
+    actual_direct_assets = sorted(
+        artifact_id
+        for artifact_id, artifact in actual_artifacts.items()
+        if artifact.get("payload_kind") in RUNTIME_DOCUMENT_PAYLOAD_KINDS
+    )
+    if actual_direct_assets:
+        library_artifact_gap.extend(
+            "native Player package contains a direct or serialized runtime "
+            f"payload: {artifact_id}"
+            for artifact_id in actual_direct_assets
+        )
 
     actual_packages = {
         path: {
@@ -778,6 +942,11 @@ def audit_player_package(
         for path, manifest in archive_manifests.items()
         if path in catalog_package_paths
     }
+    if not any(
+        artifact.get("runtime_path") == "Library/RuntimeTypeRegistry.json"
+        for artifact in actual_artifacts.values()
+    ):
+        library_artifact_gap.append("Library/RuntimeTypeRegistry.json is missing")
     catalog_packages_by_path = {
         str(package.get("path")): package
         for package in catalog_packages
@@ -841,13 +1010,124 @@ def audit_player_package(
             not isinstance(item, str) or item not in catalog_ids for item in dependencies
         ):
             library_artifact_gap.append(f"catalog dependencies are invalid for {artifact_id}")
+        unresolved = artifact.get("unresolved_dependencies", [])
+        if not isinstance(unresolved, list) or unresolved:
+            library_artifact_gap.append(
+                f"catalog has unresolved runtime dependencies for {artifact_id}"
+            )
+
+    artifact_ids_by_guid: dict[str, set[str]] = defaultdict(set)
+    for artifact_id, artifact in catalog_by_id.items():
+        asset_guid = artifact.get("asset_guid")
+        if asset_guid is None:
+            continue
+        if not isinstance(asset_guid, str) or not asset_guid:
+            library_artifact_gap.append(
+                f"catalog artifact has an invalid asset GUID: {artifact_id}"
+            )
+            continue
+        artifact_ids_by_guid[asset_guid].add(artifact_id)
+
+    runtime_asset_records: dict[str, object] = {}
+    try:
+        runtime_asset_records = json.loads(
+            read_entry(
+                data_root / "Content.inxpkg",
+                "Library/RuntimeAssetRecords.json",
+            ).decode("utf-8")
+        )
+    except (OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+        library_artifact_gap.append(
+            "Content.inxpkg has no readable Library/RuntimeAssetRecords.json"
+        )
+    raw_asset_records = runtime_asset_records.get("entries", [])
+    if (
+        runtime_asset_records.get("$schema") != "infernux.runtime_asset_records"
+        or runtime_asset_records.get("records_version") != 2
+        or not isinstance(raw_asset_records, list)
+    ):
+        library_artifact_gap.append("runtime asset records use an unsupported schema")
+        raw_asset_records = []
+    seen_asset_guids: set[str] = set()
+    for record in raw_asset_records:
+        if not isinstance(record, dict):
+            library_artifact_gap.append("runtime asset records contain a malformed entry")
+            continue
+        guid = record.get("guid")
+        primary_id = record.get("primary_runtime_artifact_id")
+        runtime_ids = record.get("runtime_artifact_ids")
+        dependencies = record.get("dependencies", [])
+        record_reason = record.get("runtime_artifact_reason", "")
+        if (
+            not isinstance(guid, str)
+            or not guid
+            or guid in seen_asset_guids
+            or not isinstance(primary_id, str)
+            or not isinstance(runtime_ids, list)
+            or primary_id not in runtime_ids
+        ):
+            library_artifact_gap.append("runtime asset record has incomplete identity")
+            continue
+        if any(not isinstance(value, str) for value in runtime_ids):
+            library_artifact_gap.append(
+                f"runtime asset record has invalid artifact IDs: {guid}"
+            )
+            continue
+        if set(runtime_ids) != artifact_ids_by_guid.get(guid, set()):
+            library_artifact_gap.append(
+                f"runtime asset record disagrees with catalog artifacts: {guid}"
+            )
+        if not isinstance(dependencies, list) or any(
+            dependency not in catalog_ids for dependency in dependencies
+        ):
+            library_artifact_gap.append(
+                f"runtime asset record has invalid dependencies: {guid}"
+            )
+        catalog_reasons = {
+            str(catalog_by_id[artifact_id].get("runtime_artifact_reason", ""))
+            for artifact_id in runtime_ids
+            if artifact_id in catalog_by_id
+            and catalog_by_id[artifact_id].get("payload_kind")
+            in {"serialized_runtime_document", "direct_runtime_asset"}
+        }
+        catalog_reasons.discard("")
+        if catalog_reasons:
+            if len(catalog_reasons) != 1 or record_reason not in catalog_reasons:
+                library_artifact_gap.append(
+                    f"runtime asset record reason disagrees with catalog: {guid}"
+                )
+        elif record_reason:
+            library_artifact_gap.append(
+                f"compiled runtime asset record has a pass-through reason: {guid}"
+            )
+        seen_asset_guids.add(guid)
+    missing_asset_records = sorted(set(artifact_ids_by_guid) - seen_asset_guids)
+    if missing_asset_records:
+        library_artifact_gap.append(
+            f"runtime asset records omit {len(missing_asset_records)} catalog GUIDs"
+        )
 
     source_replacement_gaps: list[str] = []
     compiled_asset_types = {
+        "animation_clip_2d_artifact",
+        "animation_clip_3d_artifact",
+        "animation_clip_artifact",
+        "animation_fsm_artifact",
+        "animation_timeline_artifact",
+        "audio_artifact",
         "texture_artifact",
         "mesh_artifact",
         "skinned_mesh_artifact",
         "particle_graph_artifact",
+        "material_artifact",
+        "prefab_artifact",
+        "render_effect_artifact",
+        "render_effect_group_artifact",
+        "scene_artifact",
+        "timeline_artifact",
+        "timeline_fsm_artifact",
+        "project_runtime_document_artifact",
+        "project_runtime_blob_artifact",
     }
     for artifact_id, artifact in catalog_by_id.items():
         if artifact.get("logical_type") not in compiled_asset_types:
@@ -907,15 +1187,39 @@ def audit_player_package(
             in {"serialized_runtime_document", "direct_runtime_asset"}
         }
     )
+    direct_payload_reason_gaps: list[str] = []
+    if residual_direct_assets:
+        direct_payload_reason_gaps.extend(
+            "direct or serialized runtime payload is forbidden in the Player "
+            f"package: {artifact_id}"
+            for artifact_id in residual_direct_assets
+        )
+    for artifact_id in residual_direct_assets:
+        artifact = catalog_by_id[artifact_id]
+        reason = artifact.get("runtime_artifact_reason")
+        expected_reason = runtime_artifact_reason_for(
+            str(artifact.get("logical_type", ""))
+        )
+        if reason not in RUNTIME_ARTIFACT_REASONS or reason != expected_reason:
+            direct_payload_reason_gaps.append(
+                f"direct runtime payload has no auditable reason: {artifact_id}"
+            )
+        if not isinstance(artifact.get("asset_guid"), str) or not artifact.get(
+            "asset_guid"
+        ):
+            direct_payload_reason_gaps.append(
+                f"direct runtime payload has no AssetIndex GUID: {artifact_id}"
+            )
 
     layout = "infernux-single-entry-player"
-    build_manifest_path = f"{data_relative}/BuildManifest.json"
+    runtime_policy = runtime_contract["runtime_policy"]
     reachability_gaps = []
     if missing_without_manifest:
         reachability_gaps.append("required native runtime/content artifact is missing")
     reachability_gaps.extend(player_host_gap)
     reachability_gaps.extend(library_artifact_gap)
     reachability_gaps.extend(source_replacement_gaps)
+    reachability_gaps.extend(direct_payload_reason_gaps)
     reachability_gaps.extend(runtime_payload_gap)
     reachability_gaps.extend(bootstrap_payload_gap)
     single_entry_point = len(executables) == 1 and "/" not in executables[0]
@@ -938,19 +1242,21 @@ def audit_player_package(
         or player_host_gap
         or library_artifact_gap
         or source_replacement_gaps
+        or direct_payload_reason_gaps
         or runtime_payload_gap
         or bootstrap_payload_gap
     )
 
     result = {
         "$schema": MANIFEST_SCHEMA,
-        "manifest_version": 1,
+        "manifest_version": PLAYER_MANIFEST_VERSION,
         "product": {
             "layout": layout,
-            "flavor": "debug" if "debug" in root.name.casefold() else "release",
+            **runtime_contract["product"],
             "entry_points": executables,
             "single_entry_point": len(executables) == 1 and "/" not in executables[0],
         },
+        "features": runtime_contract["features"],
         "bootstrap_surface": {
             "policy": "phase_a_strict_root_surface",
             "allowed": root_surface,
@@ -968,11 +1274,8 @@ def audit_player_package(
             "forbidden_legacy": sorted(RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES),
             "gaps": sorted(set(runtime_payload_gap)),
         },
-        "services": {
-            "kind": "player",
-            "declared": _runtime_service_ids(),
-            "editor_services": [],
-        },
+        "services": runtime_contract["services"],
+        "runtime_policy": runtime_policy,
         "reachability": {
             "build_manifest": build_manifest_path,
             "runtime_artifacts": sorted(archive_manifests),
@@ -985,6 +1288,7 @@ def audit_player_package(
             "gaps": reachability_gaps,
             "residual_direct_assets": residual_direct_assets,
             "source_replacement_gaps": sorted(source_replacement_gaps),
+            "direct_payload_reason_gaps": sorted(direct_payload_reason_gaps),
         },
         "audit": {
             "passed": audit_passed,
@@ -1007,6 +1311,7 @@ def audit_player_package(
             "runtime_payload_gaps": sorted(set(runtime_payload_gap)),
             "bootstrap_payload_gaps": sorted(set(bootstrap_payload_gap)),
             "source_replacement_gaps": sorted(set(source_replacement_gaps)),
+            "direct_payload_reason_gaps": sorted(set(direct_payload_reason_gaps)),
             "player_host_gap": sorted(set(player_host_gap)),
             "library_artifact_gap": sorted(set(library_artifact_gap)),
             "layout_gaps": sorted(set(reachability_gaps)),
@@ -1023,9 +1328,17 @@ def audit_player_package(
                 if Path(str(item["path"])).suffix.casefold() in NATIVE_SUFFIXES
             ),
             "archive_entry_count": len(archive_entries),
+            "payload_categories": _payload_category_report(archive_entries),
             "archives": archive_entries,
         },
     }
+    if result["audit"]["passed"]:
+        try:
+            RuntimeProductManifest.from_document(result)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"Generated Player runtime manifest is invalid: {exc}"
+            ) from exc
     if not result["audit"]["passed"]:
         raise RuntimeError(
             "Player package audit failed: "
@@ -1033,10 +1346,7 @@ def audit_player_package(
         )
     if write_manifest:
         manifest_path = data_root / MANIFEST_FILENAME
-        manifest_path.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        _write_json_atomic(manifest_path, result)
     return result
 
 

@@ -1,3 +1,5 @@
+from pathlib import Path as FilePath
+
 import pytest
 
 from Infernux.core.asset_ref import RenderEffectRef
@@ -343,7 +345,7 @@ def test_compiler_accepts_clustered_lighting_with_forward_plus_routes():
     )
 
 
-def test_custom_pipeline_exposes_accumulated_motion_at_effect_stages():
+def test_custom_pipeline_omits_unrequested_motion_at_effect_stages():
     pipeline = PipelineBuilder()
     pipeline.frame(msaa=4)
     with pipeline.opaque() as opaque:
@@ -355,24 +357,16 @@ def test_custom_pipeline_exposes_accumulated_motion_at_effect_stages():
     graph = RenderGraph("Motion Resources")
     compile_pipeline_definition(pipeline.build(), graph)
 
-    assert graph.get_texture("motion").format == Format.RG16_SFLOAT
-    assert graph.get_texture("motion").samples == 1
-    assert graph.get_texture("_motion_msaa").samples == 4
+    assert graph.get_texture("motion") is None
     motion_passes = [
         render_pass
         for render_pass in graph._passes
         if render_pass._material_pass == "motion"
     ]
-    assert len(motion_passes) == 2
-    assert all(render_pass._reads == ["depth"] for render_pass in motion_passes)
-    assert all(
-        render_pass._write_colors == {0: "_motion_msaa"}
-        for render_pass in motion_passes
-    )
-    assert all(render_pass._resolve_color == "motion" for render_pass in motion_passes)
+    assert motion_passes == []
     stages = {stage.stable_id: stage for stage in graph.effect_stages}
-    assert "motion" in stages["opaque_motion_consumer"].contract.inputs
-    assert "motion" in stages["final_motion_consumer"].contract.inputs
+    assert "motion" not in stages["opaque_motion_consumer"].contract.inputs
+    assert "motion" not in stages["final_motion_consumer"].contract.inputs
     graph.build()
 
 
@@ -563,6 +557,20 @@ def test_pixelation_clamps_runtime_parameters_to_production_limits():
     assert constants["gridOffsetY"] == -1.0
     assert constants["intensity"] == 1.0
     assert constants["samplingMode"] == 2.0
+
+
+def test_pixelation_shader_replaces_instead_of_blending_the_source_image():
+    shader_path = (
+        FilePath(__file__).parents[1]
+        / "Infernux"
+        / "resources"
+        / "shaders"
+        / "pixelation.frag"
+    )
+    source = shader_path.read_text(encoding="utf-8")
+
+    assert "outColor = pixelated;" in source
+    assert "mix(original, pixelated" not in source
 
 
 def test_bloom_route_extracts_only_additive_energy_and_handles_one_mip():

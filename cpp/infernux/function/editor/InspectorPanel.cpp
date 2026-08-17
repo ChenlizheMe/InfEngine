@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <unordered_map>
 #include <utility>
 
@@ -80,6 +81,20 @@ static nlohmann::json MakeTransformValue(float px, float py, float pz, float rx,
                                          float sz)
 {
     return nlohmann::json{{"position", {px, py, pz}}, {"rotation", {rx, ry, rz}}, {"scale", {sx, sy, sz}}};
+}
+
+static uint32_t CaptureInspectorEditLifecycle(bool changed)
+{
+    uint32_t flags = changed ? infernux::InxGUIContext::EditChanged : 0u;
+    if (ImGui::IsItemActive())
+        flags |= infernux::InxGUIContext::EditActive;
+    if (ImGui::IsItemActivated())
+        flags |= infernux::InxGUIContext::EditActivated;
+    if (ImGui::IsItemDeactivatedAfterEdit())
+        flags |= infernux::InxGUIContext::EditDeactivatedAfterEdit;
+    if (ImGui::IsItemDeactivated())
+        flags |= infernux::InxGUIContext::EditDeactivated;
+    return flags;
 }
 
 static std::string MakeComponentReorderCommandArgument(const std::vector<uint64_t> &objectIds,
@@ -168,20 +183,26 @@ void InspectorPanel::InvalidateObjectCaches()
     m_cachedObjInfoId = 0;
     m_cachedComponentListObjId = 0;
     m_cachedComponents.clear();
-    m_cachedValueGeneration = 0;
-    m_cachedValueRefreshTime = 0.0f;
+    m_cachedObjectTargetRevision = 0;
+    m_cachedObjectValueRevision = 0;
+    m_cachedComponentTargetRevision = 0;
+    m_cachedComponentSchemaRevision = 0;
+    m_cachedTransformObjId = 0;
+    m_cachedTransformValueRevision = 0;
+    m_cachedTransformData = {};
+    m_transformGestureIds = {};
 
     m_cachedMultiComponentsValid = false;
     m_cachedMultiComponentIds.clear();
     m_cachedMultiCommonComponents.clear();
-    m_cachedMultiComponentValueGeneration = 0;
-    m_cachedMultiComponentRefreshTime = 0.0f;
+    m_cachedMultiComponentTargetRevision = 0;
+    m_cachedMultiComponentSchemaRevision = 0;
 
     m_cachedMultiTransformValid = false;
     m_cachedMultiTransformIds.clear();
     m_cachedMultiTransformSnapshot = {};
-    m_cachedMultiTransformValueGeneration = 0;
-    m_cachedMultiTransformRefreshTime = 0.0f;
+    m_cachedMultiTransformTargetRevision = 0;
+    m_cachedMultiTransformValueRevision = 0;
 }
 
 // ============================================================================
@@ -289,6 +310,24 @@ void InspectorPanel::VisiblePreRender(InxGUIContext * /*ctx*/)
 
 void InspectorPanel::OnRenderContent(InxGUIContext *ctx)
 {
+    try {
+        if (getRevisionSnapshot) {
+            m_frameRevisions = getRevisionSnapshot();
+        } else {
+            const uint64_t generation = getValueGeneration ? getValueGeneration() : 0;
+            m_frameRevisions = {generation, generation, generation, generation};
+        }
+        m_revisionSnapshotErrorReported = false;
+    } catch (const std::exception &error) {
+        // Keep the preceding immutable packet.  A transient Python retirement
+        // race must not abort DrawFrame or force lifecycle getters on stale
+        // components; the next visible frame retries the journal projection.
+        if (!m_revisionSnapshotErrorReported) {
+            INXLOG_ERROR("Inspector revision snapshot failed; retaining the previous packet: ", error.what());
+            m_revisionSnapshotErrorReported = true;
+        }
+    }
+
     float totalHeight = ImGui::GetContentRegionAvail().y;
 
     bool hasDetailContent = !m_selectedFile.empty();
@@ -442,10 +481,11 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     using clock = std::chrono::high_resolution_clock;
 #endif
 
-    uint64_t valueGeneration = getValueGeneration ? getValueGeneration() : 0;
     const bool objectChanged = (m_cachedObjInfoId != objId) || (m_cachedComponentListObjId != objId);
-    bool refreshSnapshots = objectChanged || (valueGeneration != m_cachedValueGeneration) ||
-                            ((m_frameTimeNow - m_cachedValueRefreshTime) >= VALUE_CACHE_TTL);
+    const bool refreshObject = objectChanged || m_cachedObjectTargetRevision != m_frameRevisions.target ||
+                               m_cachedObjectValueRevision != m_frameRevisions.value;
+    const bool refreshComponents = objectChanged || m_cachedComponentTargetRevision != m_frameRevisions.target ||
+                                   m_cachedComponentSchemaRevision != m_frameRevisions.schema;
 
     if (objectChanged) {
         m_cachedComponentBodyHeights.clear();
@@ -457,7 +497,7 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     auto t0 = clock::now();
 #endif
 
-    if (refreshSnapshots) {
+    if (refreshObject) {
         if (getObjectInfo)
             m_cachedObjInfo = getObjectInfo(objId);
         else
@@ -467,6 +507,8 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
             m_cachedPrefabInfo = getPrefabInfo(objId);
         else
             m_cachedPrefabInfo = {};
+        m_cachedObjectTargetRevision = m_frameRevisions.target;
+        m_cachedObjectValueRevision = m_frameRevisions.value;
     }
 
 #if INFERNUX_FRAME_PROFILE
@@ -563,14 +605,14 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     auto t4 = clock::now();
 #endif
 
-    if (refreshSnapshots) {
+    if (refreshComponents) {
         if (getComponentList)
             m_cachedComponents = getComponentList(objId);
         else
             m_cachedComponents.clear();
         m_cachedComponentListObjId = objId;
-        m_cachedValueGeneration = valueGeneration;
-        m_cachedValueRefreshTime = m_frameTimeNow;
+        m_cachedComponentTargetRevision = m_frameRevisions.target;
+        m_cachedComponentSchemaRevision = m_frameRevisions.schema;
     }
 
     const auto &components = m_cachedComponents;
@@ -680,17 +722,16 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
 const std::vector<InspectorPanel::CommonComponent> &
 InspectorPanel::GetCommonComponentsForMultiSelection(const std::vector<uint64_t> &ids)
 {
-    const uint64_t valueGeneration = getValueGeneration ? getValueGeneration() : 0;
     const bool refreshSnapshots = !m_cachedMultiComponentsValid || (m_cachedMultiComponentIds != ids) ||
-                                  (valueGeneration != m_cachedMultiComponentValueGeneration) ||
-                                  ((m_frameTimeNow - m_cachedMultiComponentRefreshTime) >= VALUE_CACHE_TTL);
+                                  m_cachedMultiComponentTargetRevision != m_frameRevisions.target ||
+                                  m_cachedMultiComponentSchemaRevision != m_frameRevisions.schema;
     if (!refreshSnapshots)
         return m_cachedMultiCommonComponents;
 
     m_cachedMultiComponentsValid = true;
     m_cachedMultiComponentIds = ids;
-    m_cachedMultiComponentValueGeneration = valueGeneration;
-    m_cachedMultiComponentRefreshTime = m_frameTimeNow;
+    m_cachedMultiComponentTargetRevision = m_frameRevisions.target;
+    m_cachedMultiComponentSchemaRevision = m_frameRevisions.schema;
     m_cachedMultiCommonComponents.clear();
 
     if (!getComponentList || ids.empty())
@@ -752,17 +793,16 @@ InspectorPanel::GetCommonComponentsForMultiSelection(const std::vector<uint64_t>
 const InspectorPanel::MultiTransformSnapshot &
 InspectorPanel::GetMultiTransformSnapshot(const std::vector<uint64_t> &ids)
 {
-    const uint64_t valueGeneration = getValueGeneration ? getValueGeneration() : 0;
     const bool refreshSnapshot = !m_cachedMultiTransformValid || (m_cachedMultiTransformIds != ids) ||
-                                 (valueGeneration != m_cachedMultiTransformValueGeneration) ||
-                                 ((m_frameTimeNow - m_cachedMultiTransformRefreshTime) >= VALUE_CACHE_TTL);
+                                 m_cachedMultiTransformTargetRevision != m_frameRevisions.target ||
+                                 m_cachedMultiTransformValueRevision != m_frameRevisions.value;
     if (!refreshSnapshot)
         return m_cachedMultiTransformSnapshot;
 
     m_cachedMultiTransformValid = true;
     m_cachedMultiTransformIds = ids;
-    m_cachedMultiTransformValueGeneration = valueGeneration;
-    m_cachedMultiTransformRefreshTime = m_frameTimeNow;
+    m_cachedMultiTransformTargetRevision = m_frameRevisions.target;
+    m_cachedMultiTransformValueRevision = m_frameRevisions.value;
     m_cachedMultiTransformSnapshot = {};
 
     if (!getTransformData || ids.empty())
@@ -1056,12 +1096,38 @@ void InspectorPanel::RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const
 // Transform rendering
 // ============================================================================
 
+std::string InspectorPanel::UpdateTransformGesture(size_t rowIndex, uint32_t lifecycleFlags)
+{
+    if (rowIndex >= m_transformGestureIds.size())
+        return {};
+    auto &gestureId = m_transformGestureIds[rowIndex];
+    const bool activated = (lifecycleFlags & InxGUIContext::EditActivated) != 0u;
+    const bool changed = (lifecycleFlags & InxGUIContext::EditChanged) != 0u;
+    if (activated || (changed && gestureId.empty())) {
+        gestureId = "inspector.transform:" + std::to_string(++m_transformGestureSerial);
+    }
+    return gestureId;
+}
+
+void InspectorPanel::FinishTransformGesture(size_t rowIndex, uint32_t lifecycleFlags)
+{
+    if (rowIndex >= m_transformGestureIds.size())
+        return;
+    if ((lifecycleFlags & InxGUIContext::EditDeactivated) != 0u)
+        m_transformGestureIds[rowIndex].clear();
+}
+
 void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId)
 {
     if (!getTransformData)
         return;
 
-    TransformData td = getTransformData(objId);
+    if (m_cachedTransformObjId != objId || m_cachedTransformValueRevision != m_frameRevisions.value) {
+        m_cachedTransformData = getTransformData(objId);
+        m_cachedTransformObjId = objId;
+        m_cachedTransformValueRevision = m_frameRevisions.value;
+    }
+    TransformData td = m_cachedTransformData;
     float labelW = EditorTheme::INSPECTOR_MIN_LABEL_WIDTH;
 
     // Vector3Control modifies the array in-place
@@ -1077,12 +1143,18 @@ void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId)
     const std::string scaleSemanticId = captureSemantics ? transformBase + "scale" : std::string{};
 
     ctx->Vector3Control(Tr("Position"), pos, DRAG_SPEED_DEFAULT, labelW, positionSemanticId);
+    const uint32_t positionLifecycle = ctx->GetLastEditLifecycleFlags();
+    const std::string positionGesture = UpdateTransformGesture(0, positionLifecycle);
     if (captureSemantics)
         ctx->RecordSemanticItem("inspector_transform", Tr("Position"), true, positionSemanticId);
     ctx->Vector3Control(Tr("Rotation"), rot, DRAG_SPEED_DEFAULT, labelW, rotationSemanticId);
+    const uint32_t rotationLifecycle = ctx->GetLastEditLifecycleFlags();
+    const std::string rotationGesture = UpdateTransformGesture(1, rotationLifecycle);
     if (captureSemantics)
         ctx->RecordSemanticItem("inspector_transform", Tr("Rotation"), true, rotationSemanticId);
     ctx->Vector3Control(Tr("Scale"), scl, DRAG_SPEED_FINE, labelW, scaleSemanticId);
+    const uint32_t scaleLifecycle = ctx->GetLastEditLifecycleFlags();
+    const std::string scaleGesture = UpdateTransformGesture(2, scaleLifecycle);
     if (captureSemantics)
         ctx->RecordSemanticItem("inspector_transform", Tr("Scale"), true, scaleSemanticId);
 
@@ -1098,12 +1170,23 @@ void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId)
     changed |= std::abs(scl[2] - td.sz) > 1e-6f;
 
     if (changed) {
+        const bool positionChanged =
+            std::abs(pos[0] - td.px) > 1e-6f || std::abs(pos[1] - td.py) > 1e-6f || std::abs(pos[2] - td.pz) > 1e-6f;
+        const bool rotationChanged =
+            std::abs(rot[0] - td.rx) > 1e-6f || std::abs(rot[1] - td.ry) > 1e-6f || std::abs(rot[2] - td.rz) > 1e-6f;
+        const std::string &gestureId = positionChanged   ? positionGesture
+                                       : rotationChanged ? rotationGesture
+                                                         : scaleGesture;
         const nlohmann::json payload{
             {"object_ids", {objId}},
             {"transforms",
-             {MakeTransformValue(pos[0], pos[1], pos[2], rot[0], rot[1], rot[2], scl[0], scl[1], scl[2])}}};
+             {MakeTransformValue(pos[0], pos[1], pos[2], rot[0], rot[1], rot[2], scl[0], scl[1], scl[2])}},
+            {"gesture_id", gestureId}};
         ExecuteEditorCommand("scene.set_transforms", payload.dump(), "pointer");
     }
+    FinishTransformGesture(0, positionLifecycle);
+    FinishTransformGesture(1, rotationLifecycle);
+    FinishTransformGesture(2, scaleLifecycle);
 }
 
 void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<uint64_t> &ids)
@@ -1122,6 +1205,7 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
     float rot[3] = {first.rx, first.ry, first.rz};
     float scl[3] = {first.sx, first.sy, first.sz};
     bool axisChanged[9] = {};
+    uint32_t rowLifecycle[3] = {};
 
     auto renderRow = [&](const std::string &label, const char *rowId, float *values, const float *originalValues,
                          const bool *rowMixed, int baseIndex, float speed) {
@@ -1145,6 +1229,7 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
                 auto &buffer = mixedBuffers[bufferKey];
                 const bool submitted = ImGui::InputTextWithHint("##mixed", "--", buffer.data(), buffer.size(),
                                                                 ImGuiInputTextFlags_EnterReturnsTrue);
+                rowLifecycle[baseIndex / 3] |= CaptureInspectorEditLifecycle(submitted);
                 const bool committed = submitted || ImGui::IsItemDeactivatedAfterEdit();
                 if (committed) {
                     char *end = nullptr;
@@ -1158,7 +1243,9 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
                     buffer.fill('\0');
                 }
             } else {
-                ImGui::DragFloat("##value", &values[axisIndex], speed, -1000000.0f, 1000000.0f, "%.3f");
+                const bool edited =
+                    ImGui::DragFloat("##value", &values[axisIndex], speed, -1000000.0f, 1000000.0f, "%.3f");
+                rowLifecycle[baseIndex / 3] |= CaptureInspectorEditLifecycle(edited);
                 axisChanged[baseIndex + axisIndex] = std::abs(values[axisIndex] - originalValues[axisIndex]) > 1e-6f;
             }
             ImGui::PopID();
@@ -1174,11 +1261,21 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
     renderRow(Tr("Rotation"), "rotation", rot, originalRot, mixed + 3, 3, DRAG_SPEED_DEFAULT);
     renderRow(Tr("Scale"), "scale", scl, originalScale, mixed + 6, 6, DRAG_SPEED_FINE);
 
+    const std::array<std::string, 3> gestureIds = {
+        UpdateTransformGesture(0, rowLifecycle[0]),
+        UpdateTransformGesture(1, rowLifecycle[1]),
+        UpdateTransformGesture(2, rowLifecycle[2]),
+    };
+
     bool anyAxisChanged = false;
     for (bool changed : axisChanged)
         anyAxisChanged |= changed;
-    if (!anyAxisChanged)
+    if (!anyAxisChanged) {
+        FinishTransformGesture(0, rowLifecycle[0]);
+        FinishTransformGesture(1, rowLifecycle[1]);
+        FinishTransformGesture(2, rowLifecycle[2]);
         return;
+    }
 
     nlohmann::json transforms = nlohmann::json::array();
     for (uint64_t id : ids) {
@@ -1203,9 +1300,17 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
             td.sz = scl[2];
         transforms.push_back(MakeTransformValue(td.px, td.py, td.pz, td.rx, td.ry, td.rz, td.sx, td.sy, td.sz));
     }
-    const nlohmann::json payload{{"object_ids", ids}, {"transforms", std::move(transforms)}};
+    size_t changedRow = 0;
+    while (changedRow < 2 && !axisChanged[changedRow * 3] && !axisChanged[changedRow * 3 + 1] &&
+           !axisChanged[changedRow * 3 + 2])
+        ++changedRow;
+    const nlohmann::json payload{
+        {"object_ids", ids}, {"transforms", std::move(transforms)}, {"gesture_id", gestureIds[changedRow]}};
     if (ExecuteEditorCommand("scene.set_transforms", payload.dump(), "pointer"))
         m_cachedMultiTransformValid = false;
+    FinishTransformGesture(0, rowLifecycle[0]);
+    FinishTransformGesture(1, rowLifecycle[1]);
+    FinishTransformGesture(2, rowLifecycle[2]);
 }
 
 // ============================================================================
@@ -1346,6 +1451,9 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     const bool headerLeftClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
     const bool headerRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
     ImGui::GetWindowDrawList()->PopClipRect();
+    // CollapsingHeader owns layout for the row.  The controls below are an
+    // overlay and must restore this cursor before component contents render.
+    const float contentCursorY = ImGui::GetCursorPosY();
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
     const std::string semanticBase =
         captureSemantics ? (semanticId.empty() ? "inspector.component." + headerId : semanticId) : std::string{};
@@ -1439,9 +1547,12 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     float headerMaxY = headerMax.y;
     float headerHeight = (std::max)(0.0f, headerMaxY - headerMinY);
 
-    // Overlay: icon + checkbox + label on the same row
-    float indent = EditorTheme::INSPECTOR_HEADER_CONTENT_INDENT;
-    ImGui::SameLine(indent, 0);
+    // Overlay: icon + checkbox + label on the same row. The header rectangle
+    // already contains ImGui's scrolling transform, so keep every overlay item
+    // in that same screen-space coordinate system.
+    const float indent = EditorTheme::INSPECTOR_HEADER_CONTENT_INDENT;
+    const float overlayX = ImGui::GetWindowPos().x + indent;
+    ImGui::SetCursorScreenPos(ImVec2(overlayX, headerMin.y));
 
     if (iconId != 0) {
         float iconSize = EditorTheme::COMPONENT_ICON_SIZE;
@@ -1466,7 +1577,8 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     bool enabledClicked = false;
     if (showEnabled) {
         const float checkboxRowHeight = (std::max)(EditorTheme::INSPECTOR_CHECKBOX_BOX_PX, ImGui::GetTextLineHeight());
-        ImGui::SetCursorPosY(headerMin.y - ImGui::GetWindowPos().y + (headerHeight - checkboxRowHeight) * 0.5f);
+        ImGui::SetCursorScreenPos(
+            ImVec2(ImGui::GetCursorScreenPos().x, headerMin.y + (headerHeight - checkboxRowHeight) * 0.5f));
         ctx->CheckboxInspector("##hdr_en", &newEnabled);
         enabledClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
         if (ctx && captureSemantics)
@@ -1477,7 +1589,7 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
         const ImVec2 cbMin = ImGui::GetItemRectMin();
         const ImVec2 cbMax = ImGui::GetItemRectMax();
         const float labelH = ImGui::GetTextLineHeight();
-        ImGui::SetCursorPosY((cbMin.y + cbMax.y) * 0.5f - ImGui::GetWindowPos().y - labelH * 0.5f);
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, (cbMin.y + cbMax.y) * 0.5f - labelH * 0.5f));
         ImGui::TextUnformatted(displayName.c_str());
     } else {
         ImGui::AlignTextToFramePadding();
@@ -1511,6 +1623,8 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     const bool headerRowClicked =
         ImGui::IsMouseHoveringRect(headerMin, headerMax, false) &&
         (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right));
+
+    ImGui::SetCursorPosY(contentCursorY);
 
     // Cleanup
     ImGui::SetWindowFontScale(1.0f);

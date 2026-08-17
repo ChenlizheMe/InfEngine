@@ -398,6 +398,7 @@ InxRenderer::~InxRenderer()
     if (m_vkCore) {
         m_vkCore->GetDeviceContext().WaitIdle();
         m_vkCore->SetShuttingDown(true);
+        m_vkCore->ReleaseActiveDrawLists();
     }
 
     // 2. Destroy all subsystems that hold raw VkCore pointers — order:
@@ -413,6 +414,7 @@ InxRenderer::~InxRenderer()
     m_captureService.reset();
     m_scenePickingService.reset();
 
+    m_pendingRenderTargetRetirements.clear();
     m_gameRenderTarget.reset();
     m_sceneRenderTarget.reset();
 
@@ -697,9 +699,8 @@ void InxRenderer::PreparePipeline()
             UpdateParticleCollisionScene();
             m_particleGpuSystemManager->Execute(cmdBuf);
         });
-        m_vkCore->SetFrameComputeWorkPredicate([this] {
-            return m_particleGpuSystemManager && m_particleGpuSystemManager->HasPendingGpuWork();
-        });
+        m_vkCore->SetFrameComputeWorkPredicate(
+            [this] { return m_particleGpuSystemManager && m_particleGpuSystemManager->HasPendingGpuWork(); });
         m_vkCore->SetFrameAsyncComputeExecutors(
             [this](VkCommandBuffer cmdBuf) {
                 if (!m_particleGpuSystemManager)
@@ -848,7 +849,8 @@ void InxRenderer::PreparePipeline()
                         rhi::PipelineStage::AllCommands, std::move(releaseDependencies),
                         [compiled, sourceQueue](VkCommandBuffer commandBuffer) {
                             return compiled->RecordExternalQueueOwnershipReleases(sourceQueue, commandBuffer);
-                        }));
+                        },
+                        "SceneGraph/OwnershipRelease"));
                 }
                 if (graphDependencies.empty())
                     graphDependencies.push_back(predecessor);
@@ -875,7 +877,8 @@ void InxRenderer::PreparePipeline()
                                                           graph->GetPerViewBindGroup(), graph->GetCachedView());
                         }
                         return true;
-                    });
+                    },
+                    "SceneGraph/Finalize");
                 completedViews.push_back(finalize);
                 if (finalWorkItem)
                     *finalWorkItem = finalize;
@@ -931,6 +934,10 @@ void InxRenderer::PreparePipeline()
 
 void InxRenderer::DrawFrame()
 {
+    const bool samplePerformanceFrame = m_framePerformanceWindowActive;
+    const auto performanceWindowFrameStart =
+        samplePerformanceFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+
     // Calculate delta time
     auto currentTime = std::chrono::high_resolution_clock::now();
     m_deltaTime = std::chrono::duration<float>(currentTime - m_lastFrameTime).count();
@@ -993,6 +1000,16 @@ void InxRenderer::DrawFrame()
         int wokeByOtherFrames = 0;
         int inputFrames = 0;
         int playBypassFrames = 0;
+        uint64_t queuedEvents = 0;
+        uint64_t mouseMotionEvents = 0;
+        uint64_t dispatchedMouseMotions = 0;
+        double inputBeginFrameMs = 0.0;
+        double inputPumpEventsMs = 0.0;
+        double inputPeepEventsMs = 0.0;
+        double inputImGuiDispatchMs = 0.0;
+        double inputManagerDispatchMs = 0.0;
+        double inputSyntheticDispatchMs = 0.0;
+        double inputWindowQueryMs = 0.0;
     };
     static FramePacingAccum _pacingAccum;
     _fp.stamp(); // [0] frame start
@@ -1046,6 +1063,16 @@ void InxRenderer::DrawFrame()
         _pacingAccum.wokeByOtherFrames += pacing.wokeByOtherEvent ? 1 : 0;
         _pacingAccum.inputFrames += pacing.hadInputEvent ? 1 : 0;
         _pacingAccum.playBypassFrames += pacing.playModeBypass ? 1 : 0;
+        _pacingAccum.queuedEvents += pacing.queuedEventCount;
+        _pacingAccum.mouseMotionEvents += pacing.mouseMotionEventCount;
+        _pacingAccum.dispatchedMouseMotions += pacing.dispatchedMouseMotionCount;
+        _pacingAccum.inputBeginFrameMs += pacing.inputBeginFrameMs;
+        _pacingAccum.inputPumpEventsMs += pacing.inputPumpEventsMs;
+        _pacingAccum.inputPeepEventsMs += pacing.inputPeepEventsMs;
+        _pacingAccum.inputImGuiDispatchMs += pacing.inputImGuiDispatchMs;
+        _pacingAccum.inputManagerDispatchMs += pacing.inputManagerDispatchMs;
+        _pacingAccum.inputSyntheticDispatchMs += pacing.inputSyntheticDispatchMs;
+        _pacingAccum.inputWindowQueryMs += pacing.inputWindowQueryMs;
     }
 #endif
 
@@ -1109,6 +1136,15 @@ void InxRenderer::DrawFrame()
 
     _scenePhaseT0 = std::chrono::high_resolution_clock::now();
     TransformECSStore::Instance().EndFrameCache();
+    SceneManager &sceneManager = SceneManager::Instance();
+    if (Scene *activeScene = sceneManager.GetActiveScene())
+        TransformECSStore::Instance().SyncSceneWorldMatrices(activeScene);
+    sceneManager.PublishAuthoredTransformsToPhysics();
+    sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::FinalTransformResolve);
+    // Animation and Timeline currently execute as ordinary component updates.
+    // This boundary publishes their finalized transform/pose output to all
+    // downstream render and snapshot consumers without running them twice.
+    sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::AnimationTimeline);
     ConsumeSceneTemporalDiscontinuity();
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.frameCacheEndMs =
@@ -1150,6 +1186,7 @@ void InxRenderer::DrawFrame()
     m_guiBuildMs = guiBuilt ? std::chrono::duration<double, std::milli>(_guiBuildEnd - _guiBuildStart).count() : 0.0;
     if (guiBuilt)
         RecordUIPerformanceFrame();
+    DrainPendingRenderTargetRetirements();
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [4] after GUI::BuildFrame (ImGui → Python panels)
 #endif
@@ -1164,6 +1201,7 @@ void InxRenderer::DrawFrame()
     // so we always operate on the current scene state.
     SceneRenderBridge &bridge = SceneRenderBridge::Instance();
     auto _prepareStart = std::chrono::high_resolution_clock::now();
+    sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderExtraction);
     bridge.PrepareFrame(sceneViewActive);
     auto _prepareEnd = std::chrono::high_resolution_clock::now();
     m_prepareFrameMs = std::chrono::duration<double, std::milli>(_prepareEnd - _prepareStart).count();
@@ -1179,8 +1217,10 @@ void InxRenderer::DrawFrame()
     // Update camera from scene system (uses PrepareFrame results)
     bridge.UpdateCameraData(m_cameraPos, m_cameraLookAt, m_cameraUp);
 
-    if (CheckAndApplyMsaaRequest(false, sceneViewActive, gameViewActive))
+    if (CheckAndApplyMsaaRequest(false, sceneViewActive, gameViewActive)) {
+        sceneManager.EndFrame();
         return;
+    }
 
     // Render scene via Python SRP render pipeline
 
@@ -1262,8 +1302,10 @@ void InxRenderer::DrawFrame()
     // RenderPipeline::Render() applies the current Python graph. Re-check the
     // requested MSAA here so a newly selected pipeline can switch sample count
     // before any stale render graph executes this frame.
-    if (CheckAndApplyMsaaRequest(true, sceneViewActive, gameViewActive))
+    if (CheckAndApplyMsaaRequest(true, sceneViewActive, gameViewActive)) {
+        sceneManager.EndFrame();
         return;
+    }
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [6] after RenderPipeline::Render (Python SRP)
 #endif
@@ -1349,15 +1391,17 @@ void InxRenderer::DrawFrame()
     }
 
     // Render frame with scene camera
+    sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderGraph);
     m_vkCore->DrawFrame(m_cameraPos, m_cameraLookAt, m_cameraUp);
     SubmitPendingCaptureReadbacks();
     if (m_captureService)
         m_captureService->Poll();
+    sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::SnapshotPublication);
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [10] after VkCore::DrawFrame (GPU submit + present)
 #endif
 
-    SceneManager::Instance().EndFrame();
+    sceneManager.EndFrame();
 
     if (++m_gpuResidencyCheckFrames == 60) {
         m_gpuResidencyCheckFrames = 0;
@@ -1375,6 +1419,13 @@ void InxRenderer::DrawFrame()
     // ========================================================================
     if (m_postDrawCallback) {
         m_postDrawCallback();
+    }
+
+    if (samplePerformanceFrame) {
+        const double frameMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - performanceWindowFrameStart)
+                .count();
+        RecordFramePerformanceSample(frameMs);
     }
 
     // ========================================================================
@@ -1411,7 +1462,6 @@ void InxRenderer::DrawFrame()
 
         const auto &sceneProfile = SceneManager::Instance().GetLastFrameProfile();
         const double totalFrameMs = _fp.ms(0, 11);
-        RecordFramePerformanceSample(totalFrameMs);
         _frameTimeSamples.push_back(totalFrameMs);
         if (sceneProfile.fixedSteps > 0.0)
             _fixedStepFrameSamples.push_back(totalFrameMs);
@@ -1596,8 +1646,40 @@ void InxRenderer::DrawFrame()
                         << (rgProfile.executeCalls ? static_cast<double>(rgProfile.graphicsPassCount) /
                                                          static_cast<double>(rgProfile.executeCalls)
                                                    : 0.0)
+                        << " dynamic/exec="
+                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.dynamicRenderingPassCount) /
+                                                         static_cast<double>(rgProfile.executeCalls)
+                                                   : 0.0)
+                        << " renderPass/exec="
+                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.legacyRenderPassCount) /
+                                                         static_cast<double>(rgProfile.executeCalls)
+                                                   : 0.0)
                         << " barrierCalls/exec="
                         << (rgProfile.executeCalls ? static_cast<double>(rgProfile.barrierCallCount) /
+                                                         static_cast<double>(rgProfile.executeCalls)
+                                                   : 0.0)
+                        << " sync2/exec="
+                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.synchronization2BarrierBatchCount) /
+                                                         static_cast<double>(rgProfile.executeCalls)
+                                                   : 0.0)
+                        << " legacy/exec="
+                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.legacyBarrierBatchCount) /
+                                                         static_cast<double>(rgProfile.executeCalls)
+                                                   : 0.0)
+                        << " rhiPipeline/exec="
+                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.rhiPipelineBinds) /
+                                                         static_cast<double>(rgProfile.executeCalls)
+                                                   : 0.0)
+                        << " skipped="
+                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.rhiPipelineBindSkips) /
+                                                         static_cast<double>(rgProfile.executeCalls)
+                                                   : 0.0)
+                        << " rhiGroups/exec="
+                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.rhiGroupBinds) /
+                                                         static_cast<double>(rgProfile.executeCalls)
+                                                   : 0.0)
+                        << " skipped="
+                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.rhiGroupBindSkips) /
                                                          static_cast<double>(rgProfile.executeCalls)
                                                    : 0.0);
 
@@ -1648,7 +1730,17 @@ void InxRenderer::DrawFrame()
                 << " idle=" << _pacingAccum.idleFrames << '/' << static_cast<int>(kWindow)
                 << " wakeByEvent=" << _pacingAccum.wokeByEventFrames << " wakeInput=" << _pacingAccum.wokeByInputFrames
                 << " wakeWindow=" << _pacingAccum.wokeByWindowFrames << " wakeOther=" << _pacingAccum.wokeByOtherFrames
-                << " input=" << _pacingAccum.inputFrames << " playBypass=" << _pacingAccum.playBypassFrames;
+                << " input=" << _pacingAccum.inputFrames << " playBypass=" << _pacingAccum.playBypassFrames
+                << " events/frame=" << (static_cast<double>(_pacingAccum.queuedEvents) / kWindow)
+                << " motion/frame=" << (static_cast<double>(_pacingAccum.mouseMotionEvents) / kWindow)
+                << " motionDispatch/frame=" << (static_cast<double>(_pacingAccum.dispatchedMouseMotions) / kWindow);
+            oss << "\n    InputDetail: begin=" << (_pacingAccum.inputBeginFrameMs / kWindow)
+                << "ms pump=" << (_pacingAccum.inputPumpEventsMs / kWindow)
+                << "ms peep+dispatch=" << (_pacingAccum.inputPeepEventsMs / kWindow)
+                << "ms imgui=" << (_pacingAccum.inputImGuiDispatchMs / kWindow)
+                << "ms manager=" << (_pacingAccum.inputManagerDispatchMs / kWindow)
+                << "ms synthetic=" << (_pacingAccum.inputSyntheticDispatchMs / kWindow)
+                << "ms windowQuery=" << (_pacingAccum.inputWindowQueryMs / kWindow) << "ms";
 
             oss << "\n  Scene: editorCam=" << (_sceneAccum.editorCameraMs / kWindow)
                 << "ms editor=" << (_sceneAccum.editorUpdateMs / kWindow)
@@ -1715,7 +1807,9 @@ void InxRenderer::DrawFrame()
                 for (const auto &kv : projectItems)
                     oss << ' ' << kv.first << '=' << (kv.second / kWindow) << "ms";
             }
-            INXLOG_WARN(oss.str());
+            // Periodic profiling is diagnostic telemetry, not an engine fault.
+            // Keep it visible without poisoning Console warning/error gates.
+            INXLOG_INFO(oss.str());
 #if INFERNUX_FRAME_PROFILE_TERMINAL
             std::cerr << oss.str() << std::endl;
 #endif
@@ -2483,6 +2577,14 @@ uint64_t InxRenderer::SubmitTextureForImGui(const std::string &name, const unsig
     return m_gui->SubmitTextureForImGui(name, pixels, byteCount, width, height, filter, pinned);
 }
 
+uint64_t InxRenderer::QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid)
+{
+    if (!m_gui || !m_vkCore || textureGuid.empty())
+        return 0;
+    auto texture = m_vkCore->ResolveTextureForEditorPreview(textureGuid);
+    return texture ? m_gui->PublishTextureViewForImGui(name, std::move(texture)) : 0;
+}
+
 void InxRenderer::SupersedePendingImGuiTextureUploads(const std::string &name)
 {
     if (m_gui)
@@ -2729,6 +2831,40 @@ uint64_t InxRenderer::GetSceneTextureId() const
     return 0;
 }
 
+void InxRenderer::QueueRenderTargetRetirement(std::unique_ptr<SceneRenderTarget> target)
+{
+    if (!target)
+        return;
+    m_pendingRenderTargetRetirements.push_back(std::move(target));
+    if (m_gui)
+        m_gui->RequestFrame();
+}
+
+void InxRenderer::DrainPendingRenderTargetRetirements()
+{
+    if (!m_vkCore || m_pendingRenderTargetRetirements.empty())
+        return;
+
+    auto &retirementQueue = m_vkCore->GetRetirementQueue();
+    const rhi::SubmissionSerial retirementEpoch =
+        m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
+    size_t writeIndex = 0;
+    bool needsAnotherGuiFrame = false;
+    for (auto &target : m_pendingRenderTargetRetirements) {
+        const uint64_t textureId = target ? target->GetImGuiTextureId() : 0;
+        if (m_gui && m_gui->IsTextureReferencedByCurrentDrawData(textureId)) {
+            m_pendingRenderTargetRetirements[writeIndex++] = std::move(target);
+            needsAnotherGuiFrame = true;
+            continue;
+        }
+        if (target)
+            target->RetireResourcesAfter(retirementQueue, retirementEpoch);
+    }
+    m_pendingRenderTargetRetirements.resize(writeIndex);
+    if (needsAnotherGuiFrame && m_gui)
+        m_gui->RequestFrame();
+}
+
 std::shared_ptr<vk::ImageReadbackTicket> InxRenderer::RequestRenderTargetReadback(bool gameView)
 {
     SceneRenderTarget *target = gameView ? m_gameRenderTarget.get() : m_sceneRenderTarget.get();
@@ -2910,6 +3046,7 @@ uint64_t InxRenderer::BeginFramePerformanceWindow()
     m_framePerformanceWriteIndex = 0;
     m_framePerformanceSampleCount = 0;
     m_framePerformanceDroppedSampleCount = 0;
+    m_framePerformanceWindowActive = true;
     return m_frameCount + 1;
 }
 
@@ -2925,10 +3062,13 @@ void InxRenderer::RecordFramePerformanceSample(double frameMs)
     sample.prepareMs = m_prepareFrameMs;
 
     m_framePerformanceWriteIndex = (m_framePerformanceWriteIndex + 1) % FRAME_PERFORMANCE_HISTORY_SIZE;
-    if (m_framePerformanceSampleCount < FRAME_PERFORMANCE_HISTORY_SIZE)
+    if (m_framePerformanceSampleCount < FRAME_PERFORMANCE_HISTORY_SIZE) {
         ++m_framePerformanceSampleCount;
-    else
+        if (m_framePerformanceSampleCount == FRAME_PERFORMANCE_HISTORY_SIZE)
+            m_framePerformanceWindowActive = false;
+    } else {
         ++m_framePerformanceDroppedSampleCount;
+    }
 }
 
 RendererFramePerformanceSnapshot InxRenderer::GetFramePerformanceWindow() const
@@ -2943,10 +3083,9 @@ RendererFramePerformanceSnapshot InxRenderer::GetFramePerformanceWindow() const
     const size_t firstSlot =
         (m_framePerformanceWriteIndex + FRAME_PERFORMANCE_HISTORY_SIZE - count) % FRAME_PERFORMANCE_HISTORY_SIZE;
     snapshot.firstFrame = m_framePerformanceHistory[firstSlot].frame;
-    snapshot.lastFrame =
-        m_framePerformanceHistory[(m_framePerformanceWriteIndex + FRAME_PERFORMANCE_HISTORY_SIZE - 1) %
-                                  FRAME_PERFORMANCE_HISTORY_SIZE]
-            .frame;
+    snapshot.lastFrame = m_framePerformanceHistory[(m_framePerformanceWriteIndex + FRAME_PERFORMANCE_HISTORY_SIZE - 1) %
+                                                   FRAME_PERFORMANCE_HISTORY_SIZE]
+                             .frame;
 
     const auto summarize = [](std::vector<double> values) {
         UIPerformanceMetricStats stats;
@@ -3255,7 +3394,7 @@ void InxRenderer::ResizeSceneRenderTarget(uint32_t width, uint32_t height)
             std::shared_ptr<OutlineRenderer> retired(retiredOutline.release());
             retirementQueue.RetireAfter(cutoverEpoch, [retired = std::move(retired)] { retired->Cleanup(false); });
         }
-        retiredTarget->RetireResourcesAfter(retirementQueue, cutoverEpoch);
+        QueueRenderTargetRetirement(std::move(retiredTarget));
 
         ++m_sceneRenderTargetGeneration;
         if (m_captureService)
@@ -3315,7 +3454,7 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
 
 void InxRenderer::UpdateParticleCollisionScene()
 {
-    if (!m_particleGpuSystemManager)
+    if (!m_particleGpuSystemManager || !m_particleGpuSystemManager->RequiresCollisionScene())
         return;
 
     auto &store = PhysicsECSStore::Instance();
@@ -3544,13 +3683,15 @@ bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
 }
 
 std::shared_ptr<vk::ImageReadbackTicket>
-InxRenderer::BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size)
+InxRenderer::BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size, bool *texturePending)
 {
+    if (texturePending)
+        *texturePending = false;
     if (!m_vkCore || !material)
         return nullptr;
     if (m_shaderProgramArtifactResolver)
         m_shaderProgramArtifactResolver(material);
-    return m_vkCore->BeginMaterialPreviewGPU(material, size);
+    return m_vkCore->BeginMaterialPreviewGPU(material, size, texturePending);
 }
 
 bool InxRenderer::TryCompleteMaterialPreviewGPU(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
@@ -3911,9 +4052,13 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
         // Create the screen UI renderer for GPU-based 2D UI in the game render graph
         if (!m_screenUIRenderer) {
             m_screenUIRenderer = std::make_unique<InxScreenUIRenderer>();
+            const bool dynamicCommandsAvailable = rhi::ResolveDynamicRenderingCommands(m_vkCore->GetDevice()).IsValid();
+            const bool useDynamicRendering = rhi::SelectDynamicRenderingPath(
+                m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilityState().dynamicRendering.enabled,
+                dynamicCommandsAvailable, false);
             m_screenUIRenderer->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
                                            m_gameRenderTarget->GetColorFormat(),
-                                           m_gameRenderTarget->GetMsaaSampleCount());
+                                           m_gameRenderTarget->GetMsaaSampleCount(), useDynamicRendering);
             m_screenUIRenderer->SetRetirementQueue(&m_vkCore->GetRetirementQueue());
             m_screenUIRenderer->SetTextureUsageValidator(
                 [this](uint64_t textureId) { return m_gui && m_gui->TouchImGuiTextureId(textureId); });
@@ -3948,7 +4093,7 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
             (void)cameraId;
             graph->ReplaceSceneTarget(m_gameRenderTarget.get());
         }
-        retiredTarget->RetireResourcesAfter(m_vkCore->GetRetirementQueue(), cutoverEpoch);
+        QueueRenderTargetRetirement(std::move(retiredTarget));
 
         ++m_gameRenderTargetGeneration;
         if (m_captureService)
@@ -4117,8 +4262,12 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
 
     if (m_gameRenderTarget && (!gameAligned || !materialsAligned)) {
         replacementScreenUI = std::make_unique<InxScreenUIRenderer>();
+        const bool dynamicCommandsAvailable = rhi::ResolveDynamicRenderingCommands(m_vkCore->GetDevice()).IsValid();
+        const bool useDynamicRendering = rhi::SelectDynamicRenderingPath(
+            m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilityState().dynamicRendering.enabled,
+            dynamicCommandsAvailable, false);
         if (!replacementScreenUI->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
-                                             m_gameRenderTarget->GetColorFormat(), vkSamples)) {
+                                             m_gameRenderTarget->GetColorFormat(), vkSamples, useDynamicRendering)) {
             INXLOG_ERROR("Failed to create the replacement Screen UI pipeline for ", samples,
                          "x MSAA; keeping all current resources.");
             return false;
@@ -4209,9 +4358,9 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
         retirementQueue.RetireAfter(cutoverEpoch, [retired = std::move(retired)] {});
     }
     if (retiredSceneTarget)
-        retiredSceneTarget->RetireResourcesAfter(retirementQueue, cutoverEpoch);
+        QueueRenderTargetRetirement(std::move(retiredSceneTarget));
     if (retiredGameTarget)
-        retiredGameTarget->RetireResourcesAfter(retirementQueue, cutoverEpoch);
+        QueueRenderTargetRetirement(std::move(retiredGameTarget));
 
     // BuildFrame() ran before the MSAA request was observed. Replacing render
     // targets and preview renderers invalidates texture descriptor sets already
@@ -4368,6 +4517,12 @@ void InxRenderer::RequestFullSpeedFrame()
 {
     if (m_view)
         m_view->RequestFullSpeedFrame();
+}
+
+void InxRenderer::RequestExternalWake()
+{
+    if (m_view)
+        m_view->RequestExternalWake();
 }
 
 } // namespace infernux

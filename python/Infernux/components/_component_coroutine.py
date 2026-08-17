@@ -56,6 +56,9 @@ class ComponentCoroutineMixin:
         # coroutines.  The scheduler object itself remains retained so a later
         # start_coroutine call preserves existing ownership semantics.
         self.__dict__["_runtime_coroutine_scheduler"] = scheduler if active else None
+        from ._component_lifecycle import RuntimeExecutionScheduler
+
+        RuntimeExecutionScheduler._notify_component_runtime_work(self)
 
     def start_coroutine(self, generator) -> 'Coroutine':
         """Start a coroutine on this component.
@@ -84,9 +87,19 @@ class ComponentCoroutineMixin:
                         yield WaitForSeconds(2)
         """
         from Infernux.coroutine import CoroutineScheduler
+        from Infernux.engine.runtime_dispatch import current_runtime_epoch
+
+        creation_epoch = current_runtime_epoch()
         if self._coroutine_scheduler is None:
-            self._coroutine_scheduler = CoroutineScheduler(on_active_changed=self._sync_native_coroutine_scheduler_state)
-        coroutine = self._coroutine_scheduler.start(generator, owner=self)
+            self._coroutine_scheduler = CoroutineScheduler(
+                on_active_changed=self._sync_native_coroutine_scheduler_state,
+                creation_epoch=creation_epoch,
+            )
+        coroutine = self._coroutine_scheduler.start(
+            generator,
+            owner=self,
+            epoch=creation_epoch,
+        )
         return coroutine
 
     def stop_coroutine(self, coroutine) -> None:

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.components.serialized_field import FieldType, get_raw_field_value, get_serialized_fields
+from Infernux.components.fields import FieldType, get_raw_field_value, get_serialized_fields
 from Infernux.core.asset_ref import RenderEffectRef
 from Infernux.renderstack.effect_slot import EffectSlot
 from Infernux.renderstack.render_effect import RenderEffect
@@ -18,6 +18,7 @@ from Infernux.renderstack.render_effect_compiler import (
     RenderEffectArtifactRegistry,
     RenderEffectCompileError,
     expand_render_effect_reference,
+    publish_live_effect_group_document,
 )
 from Infernux.renderstack.render_stack import RenderStack
 from Infernux.renderstack.render_pipeline import RenderPipeline
@@ -636,6 +637,24 @@ def test_render_stack_structured_slots_round_trip_without_hidden_json():
     assert not hasattr(restored, "effect_stage_bindings_json")
 
 
+def test_render_stack_serializes_an_explicit_default_pipeline_name():
+    stack = RenderStack()
+
+    document = stack._serialize_fields_document()
+
+    assert document["pipeline_class_name"] == "Default Forward"
+
+
+def test_render_stack_normalizes_the_removed_empty_default_sentinel():
+    stack = RenderStack()
+    document = stack._serialize_fields_document()
+    document["pipeline_class_name"] = ""
+
+    stack._deserialize_fields_document(document)
+
+    assert stack.pipeline_class_name == "Default Forward"
+
+
 def test_render_stack_rejects_obsolete_json_binding_field():
     stack = RenderStack()
     with pytest.raises(ValueError, match="removed fields"):
@@ -921,11 +940,11 @@ def test_motion_blur_consumes_color_depth_and_resolved_motion():
     assert command.shader_name == "Motion Blur"
     assert bindings["_SourceTex"]
     assert bindings["_DepthTex"] == "depth"
-    assert bindings["_MotionTex"] == "motion"
+    assert bindings["_MotionTex"] == "_result/opaque/motion"
     assert set(motion_blur.read_textures) >= {
         bindings["_SourceTex"],
         "depth",
-        "motion",
+        bindings["_MotionTex"],
     }
     assert constants == {
         "intensity": pytest.approx(1.25),
@@ -997,7 +1016,7 @@ def test_temporal_aa_consumes_motion_and_commits_typed_history():
     history_write = textures[commit.commands[0].destination_resource]
 
     assert command.shader_name == "Temporal Anti-Aliasing"
-    assert bindings["_MotionTex"] == "motion"
+    assert bindings["_MotionTex"] == "_result/opaque/motion"
     assert bindings["_DepthTex"] == "depth"
     assert history_read.temporal_key == history_write.temporal_key
     assert history_read.role.name == "TEMPORAL_READ"
@@ -1079,6 +1098,236 @@ def test_effect_group_expands_in_order_with_non_destructive_overrides(tmp_path):
         "infernux.post.tonemapping",
     ]
     assert effects[0].get_float("intensity") == pytest.approx(0.9)
+
+
+def test_effect_group_inline_parameter_edit_updates_group_and_live_projection(tmp_path):
+    from Infernux.engine.ui.render_effect_inspector import (
+        apply_render_effect_parameter_edit,
+    )
+
+    RenderEffectArtifactRegistry.clear()
+    bloom_path = tmp_path / "Bloom.effect"
+    bloom_path.write_text(
+        dump_render_effect_document(
+            RenderEffectAsset(
+                feature_type="infernux.post.bloom",
+                parameters={"intensity": 0.5, "max_iterations": 2},
+            )
+        ),
+        encoding="utf-8",
+    )
+    group_path = tmp_path / "Post.effectgroup"
+    group_document = RenderEffectGroupAsset(
+        entries=(
+            RenderEffectGroupEntry(
+                "bloom",
+                EffectAssetReference(path_hint=bloom_path.name),
+            ),
+        )
+    )
+    group_path.write_text(
+        dump_render_effect_document(group_document),
+        encoding="utf-8",
+    )
+    effect = expand_render_effect_reference(
+        RenderEffectRef(path_hint=str(group_path))
+    )[0]
+    initial_revision = effect.revision
+
+    class GroupController:
+        def __init__(self, resource):
+            self.resource = resource
+
+        def capture_document(self):
+            return self.resource.serialize_document()
+
+        def apply_document(self, document, **_kwargs):
+            assert self.resource.deserialize_document(document)
+            publish_live_effect_group_document(
+                str(group_path), self.resource.to_asset()
+            )
+            return True
+
+    effect.bind_group_document_controller(GroupController(effect.group_resource))
+
+    assert apply_render_effect_parameter_edit(effect, "intensity", 1.75)
+    assert effect.get_float("intensity") == pytest.approx(1.75)
+    assert effect.revision > initial_revision
+    assert effect.group_resource.entries[0].overrides["intensity"] == pytest.approx(1.75)
+
+
+def test_effect_group_parameter_publication_preserves_projection_identity(tmp_path):
+    RenderEffectArtifactRegistry.clear()
+    bloom_path = tmp_path / "Bloom.effect"
+    bloom_path.write_text(
+        dump_render_effect_document(
+            RenderEffectAsset(
+                feature_type="infernux.post.bloom",
+                parameters={"intensity": 0.5, "max_iterations": 2},
+            )
+        ),
+        encoding="utf-8",
+    )
+    group_path = tmp_path / "Post.effectgroup"
+    original = RenderEffectGroupAsset(
+        entries=(
+            RenderEffectGroupEntry(
+                "bloom",
+                EffectAssetReference(path_hint=bloom_path.name),
+                overrides={"intensity": 0.75},
+            ),
+        )
+    )
+    group_path.write_text(
+        dump_render_effect_document(original),
+        encoding="utf-8",
+    )
+    reference = RenderEffectRef(path_hint=str(group_path))
+    effect = expand_render_effect_reference(reference)[0]
+    old_revision = effect.revision
+
+    edited = RenderEffectGroupAsset(
+        entries=(
+            RenderEffectGroupEntry(
+                "bloom",
+                EffectAssetReference(path_hint=bloom_path.name),
+                overrides={"intensity": 1.25},
+            ),
+        )
+    )
+    publish_live_effect_group_document(str(group_path), edited)
+
+    assert expand_render_effect_reference(reference)[0] is effect
+    assert effect.get_float("intensity") == pytest.approx(1.25)
+    assert effect.revision > old_revision
+
+
+def test_effect_group_parameter_publication_reaches_compiled_render_stack(tmp_path):
+    RenderEffectArtifactRegistry.clear()
+    bloom_path = tmp_path / "Bloom.effect"
+    bloom_path.write_text(
+        dump_render_effect_document(
+            RenderEffectAsset(
+                feature_type="infernux.post.bloom",
+                parameters={"intensity": 0.5, "max_iterations": 2},
+            )
+        ),
+        encoding="utf-8",
+    )
+    group_path = tmp_path / "World.effectgroup"
+    original = RenderEffectGroupAsset(
+        entries=(
+            RenderEffectGroupEntry(
+                "bloom",
+                EffectAssetReference(path_hint=bloom_path.name),
+                overrides={"intensity": 0.75},
+            ),
+        )
+    )
+    group_path.write_text(
+        dump_render_effect_document(original),
+        encoding="utf-8",
+    )
+
+    stack = RenderStack()
+    stack.add_effect_slot(
+        "final",
+        RenderEffectRef(path_hint=str(group_path)),
+    )
+    stack._graph_desc = stack.build_graph()
+
+    class Context:
+        graph_instance_id = 41
+
+    requires_rebuild, initial = stack._collect_effect_parameter_updates(Context())
+    assert requires_rebuild is False
+    assert any(
+        dict(update.values).get("intensity") == pytest.approx(0.75)
+        for update in initial
+    )
+    assert stack._collect_effect_parameter_updates(Context()) == (False, [])
+
+    edited = RenderEffectGroupAsset(
+        entries=(
+            RenderEffectGroupEntry(
+                "bloom",
+                EffectAssetReference(path_hint=bloom_path.name),
+                overrides={"intensity": 1.5},
+            ),
+        )
+    )
+    publish_live_effect_group_document(str(group_path), edited)
+    requires_rebuild, updates = stack._collect_effect_parameter_updates(Context())
+
+    assert requires_rebuild is False
+    assert any(
+        dict(update.values).get("intensity") == pytest.approx(1.5)
+        for update in updates
+    )
+
+
+def test_pixelation_group_parameter_publication_reaches_compiled_render_stack(tmp_path):
+    RenderEffectArtifactRegistry.clear()
+    pixelation_path = tmp_path / "Pixelation.effect"
+    pixelation_path.write_text(
+        dump_render_effect_document(
+            RenderEffectAsset(
+                feature_type="infernux.route.pixelation",
+                parameters={"intensity": 0.0, "pixel_size": 4},
+            )
+        ),
+        encoding="utf-8",
+    )
+    group_path = tmp_path / "World.effectgroup"
+    group_path.write_text(
+        dump_render_effect_document(
+            RenderEffectGroupAsset(
+                entries=(
+                    RenderEffectGroupEntry(
+                        "pixel",
+                        EffectAssetReference(path_hint=pixelation_path.name),
+                        overrides={"intensity": 0.0, "pixel_size": 4},
+                    ),
+                )
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    stack = RenderStack()
+    stack.add_effect_slot("final", RenderEffectRef(path_hint=str(group_path)))
+    stack._graph_desc = stack.build_graph()
+
+    class Context:
+        graph_instance_id = 42
+
+    requires_rebuild, initial = stack._collect_effect_parameter_updates(Context())
+    assert requires_rebuild is False
+    assert any(
+        dict(update.values).get("intensity") == pytest.approx(0.0)
+        and dict(update.values).get("pixelSize") == pytest.approx(4.0)
+        for update in initial
+    )
+    assert stack._collect_effect_parameter_updates(Context()) == (False, [])
+
+    edited = RenderEffectGroupAsset(
+        entries=(
+            RenderEffectGroupEntry(
+                "pixel",
+                EffectAssetReference(path_hint=pixelation_path.name),
+                overrides={"intensity": 0.65, "pixel_size": 24},
+            ),
+        )
+    )
+    publish_live_effect_group_document(str(group_path), edited)
+    requires_rebuild, updates = stack._collect_effect_parameter_updates(Context())
+
+    assert requires_rebuild is False
+    assert any(
+        dict(update.values).get("intensity") == pytest.approx(0.65)
+        and dict(update.values).get("pixelSize") == pytest.approx(24.0)
+        for update in updates
+    )
 
 
 def test_effect_group_expansion_is_published_in_memory_until_asset_reimport(

@@ -23,10 +23,11 @@ from Infernux.components import (
     Multiline, ReadOnly, HideInInspector, NonSerialized, HDR, Color,
     VALUE_CODECS,
 )
-from Infernux.components.serialized_field import (
-    build_field_from_annotation, _unwrap_annotation, _UNSET,
+from Infernux.components.fields import (
+    build_field_from_annotation, coerce_serialized_field_input,
+    _unwrap_annotation, _UNSET,
 )
-from Infernux.components.ref_wrappers import MaterialRef, GameObjectRef, ComponentRef
+from Infernux.components.ref_wrappers import MaterialRef, GameObjectRef, ComponentRef, PrefabRef
 from Infernux.core.asset_ref import AudioClipRef, ParticleGraphRef, TextureRef
 
 
@@ -94,7 +95,7 @@ class TestBuildField:
         assert meta is not None and meta.hidden is True
 
     def test_non_serialized_returns_sentinel(self):
-        from Infernux.components.serialized_field import NON_SERIALIZED_FIELD
+        from Infernux.components.fields import NON_SERIALIZED_FIELD
         meta = build_field_from_annotation(Annotated[int, NonSerialized], default=7)
         assert meta is NON_SERIALIZED_FIELD
 
@@ -105,6 +106,17 @@ class TestBuildField:
         meta = build_field_from_annotation(Mode, default=_UNSET)
         assert meta.field_type == FieldType.ENUM
         assert meta.enum_type is Mode and meta.default == Mode.A
+
+    def test_enum_editor_input_accepts_member_name_and_integer(self):
+        class Mode(enum.Enum):
+            A = 1
+            B = 2
+
+        meta = build_field_from_annotation(Mode, default=Mode.A)
+
+        assert coerce_serialized_field_input("B", meta, "Probe.mode") is Mode.B
+        assert coerce_serialized_field_input("b", meta, "Probe.mode") is Mode.B
+        assert coerce_serialized_field_input(1, meta, "Probe.mode") is Mode.A
 
     def test_color_annotation(self):
         meta = build_field_from_annotation(Color, default=_UNSET)
@@ -142,6 +154,24 @@ class TestBuildField:
 
         assert meta.field_type == FieldType.ASSET
         assert meta.asset_type == "ParticleGraph"
+
+    def test_prefab_ref_annotation_is_a_game_object_asset_field(self):
+        meta = build_field_from_annotation(PrefabRef, default=_UNSET)
+
+        assert meta.field_type == FieldType.GAME_OBJECT
+        assert isinstance(meta.default, PrefabRef)
+
+    def test_prefab_path_coerces_to_prefab_ref(self):
+        meta = build_field_from_annotation(PrefabRef, default=_UNSET)
+
+        value = coerce_serialized_field_input(
+            "Assets/Prefabs/Coin.prefab",
+            meta,
+            "Spawner.coin_prefab",
+        )
+
+        assert isinstance(value, PrefabRef)
+        assert value.path_hint == "Assets/Prefabs/Coin.prefab"
 
     def test_asset_list_annotation_propagates_element_contract(self):
         meta = build_field_from_annotation(list[AudioClipRef], default=_UNSET)
@@ -407,7 +437,7 @@ class TestStrictSerializationFailures:
 
 class TestColorInference:
     def test_color_factory_infers_as_color(self):
-        from Infernux.components.serialized_field import infer_field_type_from_value
+        from Infernux.components.fields import infer_field_type_from_value
         assert infer_field_type_from_value(Color(1, 0, 0)) == FieldType.COLOR
 
     def test_color_value_without_annotation(self):

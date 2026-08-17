@@ -45,7 +45,10 @@ struct GpuParticleCullerDesc
 {
     uint32_t capacity = 0;
     uint32_t vertexCount = 0;
-    rhi::BufferHandle instances;
+    rhi::BufferHandle visibility;
+    // Ribbon connectivity still needs authored ribbon flags. Ordinary
+    // instance culling never dereferences this full render payload.
+    rhi::BufferHandle ribbonInstances;
     rhi::BufferHandle sourceIndirectArguments;
     rhi::BufferHandle sourceIndices;
     rhi::BufferHandle bounds;
@@ -100,9 +103,9 @@ class ParticleGpuCuller
     {
         return m_vertexCount;
     }
-    [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept
+    [[nodiscard]] rhi::BufferHandle VisibilityBuffer() const noexcept
     {
-        return m_instances;
+        return m_visibility;
     }
     [[nodiscard]] rhi::BufferHandle SourceIndirectBuffer() const noexcept
     {
@@ -149,7 +152,8 @@ class ParticleGpuCuller
     rhi::Device *m_device = nullptr;
     uint32_t m_capacity = 0;
     uint32_t m_vertexCount = 0;
-    rhi::BufferHandle m_instances;
+    rhi::BufferHandle m_visibility;
+    rhi::BufferHandle m_ribbonInstances;
     rhi::BufferHandle m_sourceIndirectArguments;
     rhi::BufferHandle m_sourceIndices;
     rhi::BufferHandle m_bounds;

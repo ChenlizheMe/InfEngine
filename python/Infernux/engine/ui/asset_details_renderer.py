@@ -251,12 +251,66 @@ class _ImportSettingsController:
         )
 
         registry = DocumentRegistry.instance()
+        content = self._content_document(self.settings)
         registry.capture_save_revision(
             ticket.ticket_id,
-            content_token=document_content_token(
-                self._content_document(self.settings)
-            ),
+            content_token=document_content_token(content),
         )
+        if self.category == "texture":
+            from Infernux.engine.interaction import (
+                DocumentActionResult,
+                DocumentActionStatus,
+            )
+            from Infernux.engine.ui.asset_import_progress import (
+                AssetImportProgressService,
+            )
+
+            settings_snapshot = copy.deepcopy(self.settings)
+            content_token = document_content_token(content)
+
+            def _work() -> bool:
+                if not self.exec_layer.apply_import_settings(settings_snapshot):
+                    return False
+                from Infernux.core.assets import AssetManager
+
+                AssetManager.flush_pending_gpu_texture_reloads()
+                return True
+
+            def _is_published() -> bool:
+                from Infernux.engine.ui.asset_resource_preview import (
+                    ensure_imported_texture_preview,
+                )
+
+                return ensure_imported_texture_preview(self.file_path)
+
+            def _complete(success: bool, message: str) -> None:
+                if success:
+                    self.disk_settings = copy.deepcopy(settings_snapshot)
+                    if self.state is not None and self.state.import_controller is self:
+                        self.state.disk_settings = self.disk_settings
+                registry.complete_save(
+                    ticket.ticket_id,
+                    success=success,
+                    message=message,
+                    content_token=content_token if success else None,
+                )
+
+            started = AssetImportProgressService.instance().begin(
+                title=t("asset.import_progress.texture_title"),
+                path=self.file_path,
+                work=_work,
+                is_published=_is_published,
+                complete=_complete,
+            )
+            if not started:
+                registry.complete_save(
+                    ticket.ticket_id,
+                    success=False,
+                    message="another asset import is already in progress",
+                )
+                return False
+            return DocumentActionResult(DocumentActionStatus.PENDING)
+
         if not self.exec_layer.apply_import_settings(self.settings):
             return False
         self.disk_settings = copy.deepcopy(self.settings)
@@ -265,9 +319,7 @@ class _ImportSettingsController:
         registry.complete_save(
             ticket.ticket_id,
             success=True,
-            content_token=document_content_token(
-                self._content_document(self.settings)
-            ),
+            content_token=document_content_token(content),
         )
         return True
 
@@ -570,6 +622,9 @@ def _ensure_categories():
                       ("asset.wrap_clamp", WrapMode.CLAMP),
                       ("asset.wrap_mirror", WrapMode.MIRROR)]),
             FieldDef("generate_mipmaps", "asset.generate_mipmaps", WidgetType.CHECKBOX),
+            FieldDef("aniso_level", "asset.aniso_level", WidgetType.COMBO,
+                     [("asset.aniso_device_max", -1), ("asset.aniso_off", 0)]
+                     + [(str(level), level) for level in (2, 4, 8, 16)]),
             FieldDef("format", "asset.texture_format", WidgetType.COMBO,
                      [("asset.format_auto", TextureFormat.AUTO),
                       ("RGBA8 (32-bit)", TextureFormat.RGBA8),
@@ -824,7 +879,10 @@ def _load_material(path: str):
 
 
 def _load_render_effect(path: str):
-    from Infernux.renderstack.render_effect import RenderEffect
+    from Infernux.renderstack.render_effect import (
+        EditableRenderEffectGroup,
+        RenderEffect,
+    )
 
     if path.lower().endswith(".effect"):
         from Infernux.core.assets import AssetManager
@@ -844,7 +902,12 @@ def _load_render_effect(path: str):
         return None
     if not isinstance(document, RenderEffectGroupAsset):
         return None
-    return document, {"document_kind": "group"}
+    guid = str((read_meta_file(path) or {}).get("guid", "") or "")
+    return EditableRenderEffectGroup(
+        document,
+        file_path=path,
+        guid=guid,
+    ), {"document_kind": "group"}
 
 
 def _load_physic_material(path: str):
@@ -3294,9 +3357,69 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
         )
         return
 
-    # Effect groups remain structural assets, but expose their referenced
-    # shared effects so editing from the group Inspector updates every stack.
+    # Effect groups are first-class editable assets. Their ordered references
+    # are authored here, while each referenced effect keeps its own shared
+    # material-like parameter document.
     from Infernux.core.asset_ref import RenderEffectRef
+    from Infernux.engine.ui._inspector_references import (
+        _resolve_guid_and_path,
+        render_asset_reference_field,
+    )
+
+    def apply_group_document(document, edit_key: str, description: str) -> bool:
+        return _apply_editable_resource_document(
+            state,
+            document,
+            edit_key=edit_key,
+            description=description,
+        )
+
+    def replace_entry(index: int, **changes) -> bool:
+        document = resource.serialize_document()
+        entry_document = dict(document["entries"][index])
+        entry_document.update(changes)
+        document["entries"][index] = entry_document
+        return apply_group_document(
+            document,
+            f"entries.{index}",
+            f"Edit Render Effect Group entry {index + 1}",
+        )
+
+    def assign_entry(index: int, payload) -> None:
+        guid, path_hint = _resolve_guid_and_path(payload)
+        if guid or path_hint:
+            replace_entry(index, asset={"guid": guid, "path_hint": path_hint})
+
+    def append_entry(payload) -> None:
+        guid, path_hint = _resolve_guid_and_path(payload)
+        if not guid and not path_hint:
+            return
+        document = resource.serialize_document()
+        used_ids = {str(entry.get("entry_id", "")) for entry in document["entries"]}
+        stem = os.path.splitext(os.path.basename(path_hint))[0].strip() or "Effect"
+        entry_id = stem
+        suffix = 2
+        while entry_id in used_ids:
+            entry_id = f"{stem} {suffix}"
+            suffix += 1
+        document["entries"].append(
+            {
+                "entry_id": entry_id,
+                "asset": {"guid": guid, "path_hint": path_hint},
+                "enabled": True,
+                "overrides": {},
+            }
+        )
+        apply_group_document(document, "entries.add", "Add Render Effect Group entry")
+
+    if not render_compact_section_header(
+        ctx,
+        t("asset.render_effect_group_entries"),
+        level="primary",
+    ):
+        return
+    if not resource.entries:
+        ctx.label(t("asset.render_effect_group_empty"))
 
     for index, entry in enumerate(resource.entries):
         label = entry.entry_id or f"Effect {index + 1}"
@@ -3306,6 +3429,76 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
             level="secondary",
         ):
             continue
+        labels = [
+            t("asset.render_effect_group_enabled"),
+            t("asset.render_effect_group_name"),
+            t("asset.render_effect_group_asset"),
+        ]
+        label_width = max_label_w(ctx, labels)
+
+        field_label(ctx, labels[0], label_width)
+        enabled = bool(ctx.checkbox(f"##effect_group_enabled_{index}", entry.enabled))
+        if enabled != entry.enabled:
+            replace_entry(index, enabled=enabled)
+
+        field_label(ctx, labels[1], label_width)
+        entry_id = ctx.text_input(
+            f"##effect_group_name_{index}",
+            entry.entry_id,
+            256,
+        ).strip()
+        other_ids = {
+            other.entry_id
+            for other_index, other in enumerate(resource.entries)
+            if other_index != index
+        }
+        if entry_id and entry_id != entry.entry_id and entry_id not in other_ids:
+            replace_entry(index, entry_id=entry_id)
+
+        field_label(ctx, labels[2], label_width)
+        render_asset_reference_field(
+            ctx,
+            f"##effect_group_asset_{index}",
+            os.path.basename(entry.asset.path_hint) or entry.asset.guid or t("asset.none"),
+            "RenderEffect",
+            asset_type="RenderEffect",
+            on_assign=lambda payload, _index=index: assign_entry(_index, payload),
+            ping_path=entry.asset.path_hint or None,
+            has_value=True,
+            reference_value={
+                "asset_type": "RenderEffect",
+                "guid": entry.asset.guid,
+                "path_hint": entry.asset.path_hint,
+            },
+            semantic_id=f"render_effect_group.entry.{index}.asset",
+        )
+
+        if index > 0 and ctx.button(f"{t('asset.move_up')}##effect_group_up_{index}"):
+            document = resource.serialize_document()
+            document["entries"][index - 1], document["entries"][index] = (
+                document["entries"][index],
+                document["entries"][index - 1],
+            )
+            apply_group_document(document, "entries.order", "Reorder Render Effect Group")
+        if index > 0:
+            ctx.same_line()
+        if index + 1 < len(resource.entries) and ctx.button(
+            f"{t('asset.move_down')}##effect_group_down_{index}"
+        ):
+            document = resource.serialize_document()
+            document["entries"][index], document["entries"][index + 1] = (
+                document["entries"][index + 1],
+                document["entries"][index],
+            )
+            apply_group_document(document, "entries.order", "Reorder Render Effect Group")
+        if index + 1 < len(resource.entries):
+            ctx.same_line()
+        if ctx.button(f"{t('asset.remove')}##effect_group_remove_{index}"):
+            document = resource.serialize_document()
+            del document["entries"][index]
+            apply_group_document(document, f"entries.{index}.remove", "Remove Render Effect Group entry")
+            return
+
         reference = RenderEffectRef(
             guid=entry.asset.guid,
             path_hint=entry.asset.path_hint,
@@ -3329,3 +3522,21 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
                 ctx.end_disabled()
         if controller is not None:
             controller.flush_autosave()
+
+    ctx.separator()
+    field_label(
+        ctx,
+        t("asset.render_effect_group_add"),
+        max_label_w(ctx, [t("asset.render_effect_group_add")]),
+    )
+    render_asset_reference_field(
+        ctx,
+        "##effect_group_add",
+        t("asset.none"),
+        "RenderEffect",
+        asset_type="RenderEffect",
+        on_assign=append_entry,
+        has_value=False,
+        reference_value=None,
+        semantic_id="render_effect_group.add",
+    )

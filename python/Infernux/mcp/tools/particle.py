@@ -29,7 +29,20 @@ def register_particle_tools(mcp, project_path: str) -> None:
                 )
             if not os.path.isfile(target):
                 raise FileNotFoundError(f"ParticleGraph asset not found: {asset_path}")
-            panel = _open_particle_graph_panel(target)
+            try:
+                panel = _open_particle_graph_panel(target)
+            except _ParticleGraphOpenPending as exc:
+                # The visible panel has accepted the resource, but the formal
+                # DocumentRegistry publication can be deferred until the next
+                # editor tick. This is a successful, retryable state rather
+                # than an asset-open failure.
+                return {
+                    "status": "pending",
+                    "path": relative_path(target, project_path),
+                    "document_registered": False,
+                    "retryable": True,
+                    "message": str(exc),
+                }
             return _portable_snapshot(panel.authoring_snapshot(), project_path)
 
         return main_thread(
@@ -1017,6 +1030,33 @@ def register_particle_runtime_tools(mcp) -> None:
         )
 
 
+class _ParticleGraphOpenPending(RuntimeError):
+    """The panel accepted a graph but its document publication is deferred."""
+
+
+def _particle_graph_document_registered(panel, file_path: str) -> bool:
+    """Verify the panel and registry agree on the opened graph resource."""
+
+    from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+
+    state = panel.authoring_document_state()
+    if not same_path(str(state.get("file_path") or ""), file_path):
+        return False
+    registry = DocumentRegistry.instance()
+    document_id = str(getattr(panel, "document_id", "") or "").strip()
+    document = registry.get(document_id) if document_id else None
+    if document is not None:
+        return (
+            document.kind is DocumentKind.PARTICLE_GRAPH
+            and same_path(document.resource_path, file_path)
+        )
+    return any(
+        document.kind is DocumentKind.PARTICLE_GRAPH
+        and same_path(document.resource_path, file_path)
+        for document in registry.documents_for_resource(file_path)
+    )
+
+
 def _require_particle_graph_panel():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
     from Infernux.engine.ui.window_manager import WindowManager
@@ -1076,6 +1116,10 @@ def _open_particle_graph_panel(file_path: str):
         state = panel.authoring_document_state()
         current_path = str(state.get("file_path") or "")
         if current_path and same_path(current_path, file_path):
+            if not _particle_graph_document_registered(panel, file_path):
+                raise _ParticleGraphOpenPending(
+                    "Particle Graph panel accepted the resource; waiting for its DocumentRegistry entry"
+                )
             _focus_particle_graph_panel(manager)
             return panel
         if bool(state.get("dirty")):
@@ -1086,21 +1130,47 @@ def _open_particle_graph_panel(file_path: str):
     core = EditorInteractionCore.instance()
     if core is None:
         raise RuntimeError("EditorInteractionCore is not initialized")
+    asset_database = get_asset_database()
+    guid = ""
+    if asset_database is not None:
+        try:
+            guid = str(asset_database.get_guid_from_path(file_path) or "").strip()
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            guid = ""
+
     result = core.document_open.open_resource(
         DocumentKind.PARTICLE_GRAPH,
         file_path,
+        guid=guid,
+        title=os.path.basename(file_path),
     )
     if result.status is DocumentOpenStatus.PENDING:
-        raise RuntimeError(
+        raise _ParticleGraphOpenPending(
             "Particle Graph open is waiting for the editor's unsaved-change decision"
         )
     if result.status is DocumentOpenStatus.FAILED:
+        # A loader may have completed the visible panel update while the
+        # registry publication is deferred by one frame. Do not report that
+        # accepted operation as a hard failure, and never invoke the loader a
+        # second time here.
+        if _particle_graph_document_registered(panel, file_path):
+            _focus_particle_graph_panel(manager)
+            return panel
+        current_state = panel.authoring_document_state()
+        if same_path(str(current_state.get("file_path") or ""), file_path):
+            raise _ParticleGraphOpenPending(
+                "Particle Graph panel accepted the resource; waiting for its DocumentRegistry entry"
+            )
         raise RuntimeError(
             result.message or f"ParticleGraph asset could not be opened: {file_path}"
         )
     panel = manager.get_window_instance("particle_graph_editor")
     if not isinstance(panel, ParticleGraphEditorPanel):
         raise RuntimeError("Particle Graph Editor window could not be opened")
+    if not _particle_graph_document_registered(panel, file_path):
+        raise _ParticleGraphOpenPending(
+            "Particle Graph panel opened; waiting for its DocumentRegistry entry"
+        )
     _focus_particle_graph_panel(manager)
     return panel
 

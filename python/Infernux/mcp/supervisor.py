@@ -115,7 +115,7 @@ class SupervisorSession:
     def player_runtime_log_path(self) -> str:
         if not self._player_executable:
             return ""
-        return os.path.join(_player_data_root(self._player_executable), "Logs", "player.log")
+        return os.path.join(self._player_log_root(), "player.log")
 
     @property
     def player_debug_log_path(self) -> str:
@@ -124,13 +124,24 @@ class SupervisorSession:
         data_root = _player_data_root(self._player_executable)
         data_name = os.path.basename(data_root)
         game_name = data_name[:-5] if data_name.endswith("_Data") else data_name
-        return os.path.join(data_root, f"{game_name}_debug.log")
+        return os.path.join(self._player_log_root(), f"{game_name}_debug.log")
 
     @property
     def player_crash_log_path(self) -> str:
         if not self._player_executable:
             return ""
-        return os.path.join(_player_data_root(self._player_executable), "Logs", "crash.log")
+        return os.path.join(self._player_log_root(), "crash.log")
+
+    def _player_log_root(self) -> str:
+        data_root = _player_data_root(self._player_executable)
+        data_name = os.path.basename(data_root)
+        game_name = data_name[:-5] if data_name.endswith("_Data") else data_name
+        state_home = (
+            os.environ.get("LOCALAPPDATA", "").strip()
+            or os.environ.get("XDG_STATE_HOME", "").strip()
+            or os.path.join(os.path.expanduser("~"), ".local", "state")
+        )
+        return os.path.join(state_home, "Infernux", "Players", game_name, "Logs")
 
     @classmethod
     def resume(
@@ -1570,6 +1581,29 @@ def _validate_player_executable(executable_path: str, project_root: str) -> tupl
     output_root = os.path.dirname(launcher)
     game_name = os.path.splitext(os.path.basename(launcher))[0]
     data_root = resolved_path(os.path.join(output_root, f"{game_name}_Data"))
+    manifest_path = os.path.join(data_root, "BuildManifest.json")
+    manifest = _read_json_object(manifest_path)
+    if not manifest:
+        raise FileNotFoundError(f"Player BuildManifest was not found: {manifest_path}")
+
+    player_manifest = _read_json_object(os.path.join(data_root, "Player.inxmanifest"))
+    product = player_manifest.get("product") or {}
+    if product.get("layout") == "infernux-single-entry-player":
+        entry_points = [str(value or "") for value in product.get("entry_points", []) or []]
+        if not bool(product.get("single_entry_point", False)) or entry_points != [os.path.basename(launcher)]:
+            raise ValueError("Player single-entry manifest does not match the selected executable.")
+        if not bool((player_manifest.get("audit") or {}).get("passed", False)):
+            raise ValueError("Player package audit did not pass for the selected executable.")
+        build_output = manifest.get("build_output") or {}
+        if str(build_output.get("project_identity", "") or "") != path_fingerprint(project_root):
+            raise ValueError("Player build output belongs to a different project.")
+        if not bool(manifest.get("debug_build", False)):
+            raise RuntimeError("Supervisor validation control is available only in a Debug Player build.")
+        runtime_policy = (manifest.get("runtime_contract") or {}).get("runtime_policy") or {}
+        if runtime_policy.get("player_control") != "token_authenticated":
+            raise RuntimeError("Debug Player does not expose the authenticated validation control channel.")
+        return launcher, manifest
+
     layout_path = os.path.join(data_root, "PlayerLayout.json")
     layout = _read_json_object(layout_path)
     if layout.get("layout") != "infernux-windows-player":
@@ -1590,10 +1624,6 @@ def _validate_player_executable(executable_path: str, project_root: str) -> tupl
         raise ValueError("Player executable is not inside a verified Infernux build output directory.")
     if str(marker.get("project_identity", "") or "") != path_fingerprint(project_root):
         raise ValueError("Player build output belongs to a different project.")
-    manifest_path = os.path.join(data_root, "BuildManifest.json")
-    manifest = _read_json_object(manifest_path)
-    if not manifest:
-        raise FileNotFoundError(f"Player BuildManifest was not found: {manifest_path}")
     if not bool(manifest.get("debug_build", False)):
         raise RuntimeError("Supervisor validation control is available only in a Debug Player build.")
     return runtime_executable, manifest
@@ -1602,6 +1632,12 @@ def _validate_player_executable(executable_path: str, project_root: str) -> tupl
 def _player_data_root(runtime_executable: str) -> str:
     runtime = resolved_path(str(runtime_executable or ""))
     runtime_directory = os.path.dirname(runtime)
+    single_entry_data = resolved_path(
+        os.path.join(runtime_directory, f"{os.path.splitext(os.path.basename(runtime))[0]}_Data")
+    )
+    player_manifest = _read_json_object(os.path.join(single_entry_data, "Player.inxmanifest"))
+    if (player_manifest.get("product") or {}).get("layout") == "infernux-single-entry-player":
+        return single_entry_data
     if os.path.basename(runtime_directory) != "Runtime":
         raise ValueError("Player runtime executable is not inside the current organized Player layout.")
     data_root = resolved_path(os.path.dirname(runtime_directory))

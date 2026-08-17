@@ -11,9 +11,45 @@ from typing import Any, Optional, Tuple
 
 from Infernux.renderstack.render_effect_asset import (
     RenderEffectAsset,
+    RenderEffectGroupAsset,
     dump_render_effect_document,
     parse_render_effect_document,
 )
+
+
+class EditableRenderEffectGroup:
+    """Mutable document wrapper used by the shared asset editing service."""
+
+    def __init__(self, source: RenderEffectGroupAsset, *, file_path: str = "", guid: str = "") -> None:
+        if not isinstance(source, RenderEffectGroupAsset):
+            raise TypeError("EditableRenderEffectGroup requires a group source")
+        self._source = source
+        self.file_path = str(file_path or "")
+        self.guid = str(guid or "")
+
+    @property
+    def entries(self):
+        return self._source.entries
+
+    def to_asset(self) -> RenderEffectGroupAsset:
+        return self._source
+
+    def serialize_document(self) -> dict[str, Any]:
+        return self._source.to_dict()
+
+    def deserialize_document(self, document) -> bool:
+        try:
+            source = (
+                document
+                if isinstance(document, RenderEffectGroupAsset)
+                else parse_render_effect_document(document)
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if not isinstance(source, RenderEffectGroupAsset):
+            return False
+        self._source = source
+        return True
 
 
 class RenderEffect:

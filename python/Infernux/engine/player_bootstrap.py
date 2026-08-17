@@ -16,30 +16,27 @@ No undo, no selection, no hierarchy, no inspector, no docking layout.
 
 from __future__ import annotations
 
-import logging
 import hashlib
 import json
 import os
-from typing import Dict, List, Optional
+import sys
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import Infernux.resources as _resources
-from Infernux.engine.engine import Engine, LogLevel
-from Infernux.engine.player_gui import PlayerGUI
+from Infernux.lib import LogLevel
 from Infernux.engine.path_utils import (
     is_path_within,
-    relative_path,
     resolved_path,
-    safe_path as _safe_path,
-)
-from Infernux.engine.runtime_artifact_catalog import (
-    CATALOG_SCHEMA,
-    CATALOG_VERSION,
-    package_kind,
-    runtime_artifact_id,
 )
 from Infernux.debug import Debug
 
-_log = logging.getLogger("Infernux.player")
+if TYPE_CHECKING:
+    from Infernux.engine.engine import Engine
+    from Infernux.engine.player_gui import PlayerGUI
+    from Infernux.engine.player_service_graph import (
+        PlayerRuntimeAssetCatalog,
+        RuntimeProductManifest,
+    )
 
 
 def _plog(msg):
@@ -82,14 +79,15 @@ class PlayerBootstrap:
         self.engine: Optional[Engine] = None
         self.runtime_session = None
         self._player_gui: Optional[PlayerGUI] = None
-        self._runtime_catalog: Optional[Dict] = None
+        self._runtime_manifest: Optional[RuntimeProductManifest] = None
+        self._runtime_catalog: Optional[PlayerRuntimeAssetCatalog] = None
 
     # ── Public entry point ─────────────────────────────────────────────
 
     def run(self):
         """Execute all bootstrap phases and start the main loop."""
         self._force_player_mode()
-        self._ensure_project_requirements()
+        self._load_runtime_contract()
         self._init_engine()
         self._create_managers()
         self._setup_game_camera()
@@ -108,25 +106,22 @@ class PlayerBootstrap:
         ``ResourcesManager`` and its file watcher in either path.
         """
         os.environ["_INFERNUX_PLAYER_MODE"] = "1"
-        try:
-            from Infernux.engine import engine as engine_module
+        engine_module = sys.modules.get("Infernux.engine.engine")
+        if engine_module is not None:
             engine_module._PLAYER_MODE = "1"
-        except Exception as exc:
-            raise RuntimeError("Unable to establish Infernux Player mode") from exc
 
-    def _ensure_project_requirements(self):
+    def _load_runtime_contract(self) -> None:
+        """Load the build-authored runtime contract without source discovery."""
         self._validate_runtime_manifest()
-        try:
-            from Infernux.engine.project_requirements import ensure_project_requirements
-
-            ensure_project_requirements(self.project_path, auto_install=False)
-        except ImportError:
-            # Optional packaging helper missing — runtime continues without
-            # auto-install; happens in slim distribution variants.
-            pass
+        self._apply_runtime_policy()
 
     def _validate_runtime_manifest(self) -> None:
         """Require the current Player.inxmanifest before engine startup."""
+        from Infernux.engine.player_service_graph import (
+            PlayerRuntimeAssetCatalog,
+            RuntimeProductManifest,
+        )
+
         data_root = os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", "").strip()
         manifest_path = os.path.join(
             data_root or self.project_path,
@@ -143,9 +138,17 @@ class PlayerBootstrap:
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Player runtime manifest is unreadable: {manifest_path}") from exc
 
-        if manifest.get("$schema") != "infernux.player_runtime_manifest":
-            raise RuntimeError("Unsupported Player runtime manifest schema")
+        runtime_manifest = RuntimeProductManifest.from_document(manifest)
+        runtime_manifest.require_service("player_bootstrap")
+        runtime_manifest.require_service("runtime_asset_catalog")
+        from Infernux.engine.runtime_artifact_catalog import (
+            CATALOG_SCHEMA,
+            CATALOG_VERSION,
+            runtime_artifact_id,
+        )
         audit = manifest.get("audit", {})
+        if not isinstance(audit, dict):
+            raise RuntimeError("Player runtime package audit is missing")
         if audit.get("passed") is not True:
             raise RuntimeError("Player runtime package audit did not pass")
         if audit.get("legacy_zip_files") or audit.get("legacy_inxpack_files"):
@@ -215,6 +218,10 @@ class PlayerBootstrap:
             if artifact_id in artifact_ids:
                 raise RuntimeError("Runtime asset catalog contains duplicate artifact IDs")
             artifact_ids.add(artifact_id)
+            asset_guid = artifact.get("asset_guid")
+            if asset_guid is not None:
+                if not isinstance(asset_guid, str) or not asset_guid:
+                    raise RuntimeError("Runtime asset catalog contains an invalid asset GUID")
             digest = str(artifact.get("content_sha256", ""))
             if len(digest) != 64 or any(char not in "0123456789abcdefABCDEF" for char in digest):
                 raise RuntimeError("Runtime asset catalog contains an invalid artifact checksum")
@@ -222,7 +229,89 @@ class PlayerBootstrap:
             for dependency in artifact.get("dependencies", []):
                 if dependency not in artifact_ids:
                     raise RuntimeError("Runtime asset catalog contains an unknown dependency")
-        self._runtime_catalog = catalog
+
+        records_path = os.path.join(
+            self.project_path, "Library", "RuntimeAssetRecords.json"
+        )
+        try:
+            with open(records_path, "r", encoding="utf-8") as records_stream:
+                asset_records = json.load(records_stream)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Player runtime asset records are unreadable") from exc
+        if (
+            not isinstance(asset_records, dict)
+            or asset_records.get("$schema") != "infernux.runtime_asset_records"
+            or asset_records.get("records_version") != 2
+            or not isinstance(asset_records.get("entries"), list)
+        ):
+            raise RuntimeError("Player runtime asset records use an unsupported schema")
+        runtime_catalog = PlayerRuntimeAssetCatalog.from_documents(
+            self.project_path,
+            catalog,
+            asset_records,
+        )
+
+        type_registry_path = os.path.join(
+            self.project_path, "Library", "RuntimeTypeRegistry.json"
+        )
+        runtime_manifest.require_service("runtime_type_registry")
+        try:
+            from Infernux.engine.runtime_type_registry import (
+                install_runtime_type_registry,
+            )
+
+            install_runtime_type_registry(type_registry_path)
+        except (OSError, json.JSONDecodeError, RuntimeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Player runtime type registry is invalid: {type_registry_path}"
+            ) from exc
+        self._runtime_manifest = runtime_manifest
+        self._runtime_catalog = runtime_catalog
+
+    def _apply_runtime_policy(self) -> None:
+        """Apply the validated product policy once, before Engine creation."""
+        from Infernux.engine.player_service_graph import (
+            LoggingPolicy,
+            RuntimeFlavor,
+        )
+
+        manifest = self._runtime_manifest
+        if manifest is None:
+            raise RuntimeError("Player runtime manifest is not loaded")
+        expected_debug = manifest.flavor is RuntimeFlavor.PLAYER_DEBUG
+        declared_debug = os.environ.get("_INFERNUX_PLAYER_DEBUG_BUILD", "").strip()
+        if declared_debug not in {"0", "1"} or (declared_debug == "1") != expected_debug:
+            raise RuntimeError("Player build flavor disagrees with RuntimeManifest")
+
+        control_environment = (
+            "_INFERNUX_PLAYER_CONTROL_FILE",
+            "_INFERNUX_PLAYER_RESPONSE_FILE",
+            "_INFERNUX_PLAYER_CONTROL_TOKEN",
+            "_INFERNUX_PLAYER_ARTIFACT_ROOT",
+        )
+        if not expected_debug and any(
+            os.environ.get(name, "").strip() for name in control_environment
+        ):
+            raise RuntimeError("PlayerRelease cannot enable the debug control channel")
+
+        has_splash = manifest.service_graph.contains("splash_player")
+        if has_splash != bool(self.splash_items):
+            raise RuntimeError("Player splash configuration disagrees with the service graph")
+
+        data_root = os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", "").strip()
+        parallel_module = os.path.join(
+            data_root or self.project_path,
+            "Modules",
+            "Parallel.inxmod",
+        )
+        if os.path.isfile(parallel_module) != manifest.features.parallel:
+            raise RuntimeError("Parallel.inxmod presence disagrees with RuntimeManifest")
+
+        self.engine_log_level = (
+            LogLevel.Debug
+            if manifest.policy.logging is LoggingPolicy.DEBUG
+            else LogLevel.Info
+        )
 
     @staticmethod
     def _sha256_file(path: str) -> str:
@@ -235,6 +324,8 @@ class PlayerBootstrap:
     @staticmethod
     def _validated_archive_summary(package_path: str) -> Optional[tuple[str, int]]:
         """Read the summary produced by the boot-time native manifest pass."""
+
+        from Infernux.engine.runtime_artifact_catalog import package_kind
 
         kind = package_kind(package_path).upper()
         digest = os.environ.get(f"_INFERNUX_PLAYER_{kind}_ARCHIVE_SHA256", "").casefold()
@@ -262,26 +353,17 @@ class PlayerBootstrap:
         return candidate if is_path_within(candidate, data_root, allow_root=False) else None
 
     def _resolve_runtime_scene(self, scene_reference: str) -> Optional[str]:
-        if self._runtime_catalog is None:
+        if self._runtime_manifest is None or self._runtime_catalog is None:
             return None
-        normalized = scene_reference.replace("\\", "/").lstrip("./")
-        if os.path.isabs(scene_reference):
-            candidate = resolved_path(scene_reference)
-            if not is_path_within(candidate, self.project_path, allow_root=False):
-                return None
-            normalized = relative_path(candidate, self.project_path)
-        for artifact in self._runtime_catalog.get("artifacts", []):
-            if not isinstance(artifact, dict) or artifact.get("logical_type") != "scene":
-                continue
-            if package_kind(str(artifact.get("package", ""))) != "content":
-                continue
-            if artifact.get("runtime_path") == normalized:
-                candidate = resolved_path(os.path.join(self.project_path, normalized))
-                if is_path_within(candidate, self.project_path, allow_root=False) and os.path.isfile(candidate):
-                    return candidate
-        return None
+        self._runtime_manifest.require_service("runtime_asset_catalog")
+        return self._runtime_catalog.resolve_scene(scene_reference)
 
     def _init_engine(self):
+        if self._runtime_manifest is None:
+            raise RuntimeError("Player runtime manifest is not loaded")
+        self._runtime_manifest.require_service("engine")
+        from Infernux.engine.engine import Engine
+
         self.engine = Engine(self.engine_log_level)
         self.engine._set_application_role("player")
 
@@ -316,24 +398,61 @@ class PlayerBootstrap:
 
 
     def _create_managers(self):
+        if self.engine is None or self._runtime_manifest is None:
+            raise RuntimeError("Player Engine or RuntimeManifest is unavailable")
+        if self._runtime_catalog is None:
+            raise RuntimeError("Player RuntimeAssetCatalog is unavailable")
+        self._runtime_manifest.require_service("runtime_execution_scheduler")
+        self._runtime_manifest.require_service("player_scene_service")
+        self._runtime_manifest.require_service("player_runtime_session")
         self.runtime_session = self.engine.get_player_runtime()
         if self.runtime_session is None:
             raise RuntimeError("Player startup did not create a PlayerRuntimeSession")
+        self.runtime_session.configure_runtime_contract(
+            self._runtime_manifest,
+            self._runtime_catalog,
+        )
+        leaked_services = [
+            name
+            for name in ("_resources_manager", "_play_mode_manager")
+            if getattr(self.engine, name, None) is not None
+        ]
+        if leaked_services:
+            raise RuntimeError(
+                "Player Engine created Editor services: " + ", ".join(leaked_services)
+            )
 
 
     def _setup_game_camera(self):
+        if self.engine is None or self._runtime_manifest is None:
+            raise RuntimeError("Player Engine is unavailable")
+        self._runtime_manifest.require_service("engine")
         self.engine.set_game_camera_enabled(True)
 
 
     def _register_player_gui(self):
+        if self.engine is None or self._runtime_manifest is None:
+            raise RuntimeError("Player Engine or RuntimeManifest is unavailable")
+        self._runtime_manifest.require_service("player_gui")
+        from Infernux.engine.player_gui import PlayerGUI
+
+        control_channel = None
+        if self._runtime_manifest.service_graph.contains("player_control_debug"):
+            from Infernux.engine.player_control import PlayerControlChannel
+
+            control_channel = PlayerControlChannel.from_environment()
         self._player_gui = PlayerGUI(
             self.engine,
             splash_items=self.splash_items,
             data_root=self.project_path,
+            control_channel=control_channel,
         )
         self.engine.register_gui("player_gui", self._player_gui)
 
     def _load_initial_scene(self):
+        if self._runtime_manifest is None:
+            raise RuntimeError("Player runtime manifest is not loaded")
+        self._runtime_manifest.require_service("player_scene_service")
         import json as _json
         bs_path = os.path.join(
             self.project_path, "ProjectSettings", "BuildSettings.json"
@@ -353,16 +472,16 @@ class PlayerBootstrap:
         first_scene = scenes[0]
         requested_scene = os.environ.get("_INFERNUX_PLAYER_START_SCENE", "").strip()
         if requested_scene:
-            candidate = resolved_path(
-                requested_scene if os.path.isabs(requested_scene) else os.path.join(self.project_path, requested_scene)
-            )
-            try:
-                is_inside_project = is_path_within(candidate, self.project_path)
-            except ValueError:
-                is_inside_project = False
-            if is_inside_project and os.path.splitext(candidate)[1].lower() == ".scene" and os.path.isfile(candidate):
-                first_scene = candidate
-                Debug.log_internal(f"Loaded Supervisor validation scene: {os.path.basename(first_scene)}")
+            # A packaged Player contains cooked scene artifacts rather than the
+            # source ``Assets/*.scene`` documents.  The Supervisor already
+            # constrains this value to BuildManifest scenes; the immutable
+            # RuntimeAssetCatalog is the final authority inside the Player.
+            if self._resolve_runtime_scene(requested_scene) is not None:
+                first_scene = requested_scene
+                Debug.log_internal(
+                    "Loaded Supervisor validation scene: "
+                    f"{os.path.basename(requested_scene)}"
+                )
             else:
                 Debug.log_warning("Ignored invalid Supervisor Player start-scene override")
         # Resolve relative paths against project root (packaged builds
@@ -378,19 +497,20 @@ class PlayerBootstrap:
             raise RuntimeError(f"First scene file not found: {first_scene}")
 
         if self.runtime_session is None or not self.runtime_session.load_scene(first_scene):
-            raise RuntimeError(f"Failed to load initial scene: {first_scene}")
+            detail = (
+                str(getattr(self.runtime_session, "last_scene_error", ""))
+                if self.runtime_session is not None
+                else "Player runtime session is unavailable"
+            )
+            raise RuntimeError(
+                f"Failed to load initial scene: {first_scene}: "
+                f"{detail or 'scene transaction rejected the document'}"
+            )
 
     def _enter_play_mode(self):
-        """Activate the initial scene on the first safe main-loop frame."""
-        from Infernux.engine.deferred_task import DeferredTaskRunner
-
-        runner = DeferredTaskRunner.instance()
-        queued = runner.submit(
-            "Player Startup",
-            [("Starting game...", 1.0, self._activate_initial_scene_for_play)],
-        )
-        if not queued:
-            raise RuntimeError("Cannot start Player while another deferred task is active")
+        """Activate the loaded Player scene before entering the main loop."""
+        if not self._activate_initial_scene_for_play():
+            raise RuntimeError("Cannot activate the initial Player scene")
 
     def _activate_initial_scene_for_play(self):
         """Start the freshly loaded scene without rebuilding it a second time."""

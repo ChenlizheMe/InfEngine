@@ -20,4 +20,4 @@ def _resource_dir() -> str:
 
 RESOURCE_DIR = _resource_dir()
 ICON_PATH = os.path.join(RESOURCE_DIR, "icon.png")
-FONT_PATH = os.path.join(RESOURCE_DIR, "PingFangTC-Regular.otf")
+FONT_PATH = os.path.join(RESOURCE_DIR, "PingFangSC-Regular.ttf")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 from Infernux.components.serializable_object import SerializableObject
-from Infernux.components.serialized_field import serialized_field
+from Infernux.components.fields import serialized_field
 from Infernux.core.asset_ref import RenderEffectRef
 
 
@@ -35,6 +35,6 @@ class EffectSlot(SerializableObject):
     @property
     def effect_ref(self) -> RenderEffectRef:
         """Return the raw asset reference without resolving it."""
-        from Infernux.components.serialized_field import get_raw_field_value
+        from Infernux.components.fields import get_raw_field_value
 
         return get_raw_field_value(self, "effect")

@@ -9,6 +9,7 @@ from Infernux.engine.path_utils import path_key, relative_path, resolved_path, s
 from Infernux.mcp.threading import MainThreadCommandQueue
 from Infernux.mcp.tools.common import (
     get_asset_database,
+    fail,
     main_thread,
     ok,
     register_tool_metadata,
@@ -87,7 +88,20 @@ def register_project_tools(mcp, project_path: str) -> None:
             if _asset_expectation_met(state, bool(exists)):
                 return ok({**state, "settled": True, "expected_exists": bool(exists), "polls": polls})
             if time.monotonic() >= deadline:
-                return ok({**state, "settled": False, "expected_exists": bool(exists), "polls": polls})
+                return fail(
+                    "ASSET_WAIT_TIMEOUT",
+                    "Timed out waiting for the requested asset state to settle.",
+                    explain={
+                        "state": {
+                            **state,
+                            "settled": False,
+                            "expected_exists": bool(exists),
+                            "polls": polls,
+                        },
+                        "requested_path": requested_path,
+                        "requested_guid": requested_guid,
+                    },
+                )
             time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
 
     @mcp.tool(name="project_build_scenes_get")

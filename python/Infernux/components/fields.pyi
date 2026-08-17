@@ -1,13 +1,15 @@
-"""Type stubs for Infernux.components.serialized_field."""
+"""Type stubs for Infernux.components.fields."""
 
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TYPE_CHECKING, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TYPE_CHECKING, TypeVar, Union
 from dataclasses import dataclass
 
 if TYPE_CHECKING:
     from .component import InxComponent
+
+_T = TypeVar("_T")
 
 
 class FieldType(Enum):
@@ -66,6 +68,10 @@ class DragSpeed:
 class RequiredComponent:
     type_name: str
 
+@dataclass(frozen=True)
+class FormerlySerializedAs:
+    name: str
+
 class Multiline: ...
 class ReadOnly: ...
 class HideInInspector: ...
@@ -113,6 +119,7 @@ class FieldMetadata:
     getter: Optional[Callable] = ...
     setter: Optional[Callable] = ...
     hidden: bool = ...
+    former_names: tuple[str, ...] = ...
 
 
 class SerializedFieldDescriptor:
@@ -159,7 +166,7 @@ def resolve_annotation(annotation: Any) -> Optional[FieldMetadata]:
 
 
 def serialized_field(
-    default: Any = ...,
+    default: _T = ...,
     *,
     field_type: Optional[FieldType] = ...,
     element_type: Optional[FieldType] = ...,
@@ -170,6 +177,7 @@ def serialized_field(
     range: Optional[Tuple[float, float]] = ...,
     tooltip: str = ...,
     display_name_key: str = ...,
+    enum_labels: Optional[List[str]] = ...,
     readonly: bool = ...,
     header: str = ...,
     space: float = ...,
@@ -182,7 +190,7 @@ def serialized_field(
     visible_when: Optional[Callable] = ...,
     hdr: bool = ...,
     hidden: bool = ...,
-) -> Any:
+) -> _T:
     """Mark a field as serialized and inspector-visible.
 
     Args:

@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import json
 
-from Infernux.engine.path_utils import relative_path, same_path
+from Infernux.engine.path_utils import is_path_within, relative_path, same_path
 from Infernux.mcp.tools.common import (
+    find_game_object,
     get_asset_database,
     ensure_not_active_scene_file,
     main_thread,
@@ -74,6 +75,46 @@ def _sprite_frame_contract(frame, index: int) -> dict:
         },
         "pivot": {"x": float(frame.pivot_x), "y": float(frame.pivot_y)},
     }
+
+
+def _sprite_frame_from_mcp(value: dict):
+    """Build one persistent SpriteFrame from the public MCP contract."""
+
+    from Infernux.core.asset_types import SpriteFrame
+
+    if type(value) is not dict:
+        raise TypeError("sprite_frames entries must be objects")
+    allowed = {
+        "sprite_frame_id", "name", "x", "y", "width", "height",
+        "pivot_x", "pivot_y",
+    }
+    unknown = set(value) - allowed
+    if unknown:
+        raise ValueError(f"unsupported sprite frame fields: {sorted(unknown)}")
+    required = {"name", "x", "y", "width", "height"}
+    missing = required - set(value)
+    if missing:
+        raise ValueError(f"sprite frame fields are missing: {sorted(missing)}")
+    frame_id = str(value.get("sprite_frame_id") or "").strip()
+    if not frame_id:
+        import uuid
+
+        frame_id = uuid.uuid4().hex
+    frame = SpriteFrame.from_dict({
+        "stable_id": frame_id,
+        "name": value["name"],
+        "x": value["x"],
+        "y": value["y"],
+        "w": value["width"],
+        "h": value["height"],
+        "pivot_x": value.get("pivot_x", 0.5),
+        "pivot_y": value.get("pivot_y", 0.5),
+    })
+    if frame.w <= 0 or frame.h <= 0:
+        raise ValueError("sprite frame width and height must be positive")
+    if frame.x < 0 or frame.y < 0:
+        raise ValueError("sprite frame x and y must be non-negative")
+    return frame
 
 
 def register_asset_tools(mcp, project_path: str) -> None:
@@ -301,7 +342,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
 
     @mcp.tool(name="asset_delete")
     def asset_delete(path: str) -> dict:
-        """Delete a file or directory inside the project."""
+        """Delete one project asset through the unified reversible asset transaction."""
 
         def _delete():
             target = resolve_project_path(project_path, path)
@@ -309,8 +350,10 @@ def register_asset_tools(mcp, project_path: str) -> None:
                 raise ValueError("Refusing to delete the project root.")
             if not os.path.exists(target):
                 raise FileNotFoundError(f"Path not found: {path}")
+            assets_root = resolve_project_dir(project_path, "Assets")
+            if not is_path_within(target, assets_root):
+                raise ValueError("asset_delete only allows files and folders inside Assets/.")
             is_dir = os.path.isdir(target)
-            ensure_not_active_scene_file(project_path, target, "delete")
             from Infernux.engine.interaction import ActionOrigin
 
             _project_asset_commands(project_path).delete(
@@ -330,7 +373,15 @@ def register_asset_tools(mcp, project_path: str) -> None:
             if adb is None:
                 raise RuntimeError("AssetDatabase is not available.")
             adb.refresh()
-            return {"refreshed": True}
+            # Refresh reconciles the live registry, while Player builds consume
+            # its durable derived catalog. Keep those two views atomic for
+            # automation callers instead of leaving a refreshed Editor with a
+            # missing/stale Library/AssetIndex.json.
+            adb.flush_derived_index()
+            return {
+                "refreshed": True,
+                "asset_index_path": str(getattr(adb, "asset_index_path", "") or ""),
+            }
 
         return main_thread("asset_refresh", _refresh)
 
@@ -457,25 +508,55 @@ def register_asset_tools(mcp, project_path: str) -> None:
 
     @mcp.tool(name="asset_get_meta")
     def asset_get_meta(path: str = "", guid: str = "") -> dict:
-        """Return AssetDatabase metadata when available."""
+        """Return one asset's canonical AssetDatabase identity and type."""
 
         def _meta():
             adb = get_asset_database()
             if adb is None:
                 raise RuntimeError("AssetDatabase is not available.")
-            meta = None
-            if guid:
-                meta = adb.get_meta_by_guid(guid)
-            elif path:
-                meta = adb.get_meta_by_path(resolve_project_path(project_path, path))
-            else:
+            requested_path = resolve_project_path(project_path, path) if path else ""
+            requested_guid = str(guid or "").strip()
+            if not requested_path and not requested_guid:
                 raise ValueError("Provide path or guid.")
+
+            # Resolve path and GUID from the same published database generation
+            # used by project_asset_state. The meta object is only the payload
+            # source; it is not allowed to define a second, stale identity.
+            database_path = (
+                str(adb.get_path_from_guid(requested_guid) or "")
+                if requested_guid
+                else ""
+            )
+            effective_path = requested_path or database_path
+            database_guid = (
+                str(adb.get_guid_from_path(effective_path) or "")
+                if effective_path
+                else ""
+            )
+            if requested_guid and database_guid and database_guid != requested_guid:
+                raise FileNotFoundError(
+                    f"AssetDatabase identity mismatch for GUID: {requested_guid}"
+                )
+            canonical_guid = database_guid or requested_guid
+            if canonical_guid and not database_path:
+                database_path = str(adb.get_path_from_guid(canonical_guid) or "")
+            effective_path = database_path or effective_path
+            if not canonical_guid or not effective_path:
+                raise FileNotFoundError("Asset metadata not found in AssetDatabase.")
+
+            meta = adb.get_meta_by_guid(canonical_guid)
+            if meta is None:
+                meta = adb.get_meta_by_path(effective_path)
             if meta is None:
                 raise FileNotFoundError("Asset metadata not found.")
+            meta_guid = _metadata_string(meta, "guid", "get_guid") or canonical_guid
+            meta_type = _metadata_value(meta, "type", "get_resource_type")
+            if not meta_type:
+                meta_type = _metadata_value(adb, "resource_type", "get_resource_type", effective_path)
             return {
-                "guid": str(getattr(meta, "guid", guid or "")),
-                "path": str(getattr(meta, "path", path or "")),
-                "type": str(getattr(getattr(meta, "type", None), "name", getattr(meta, "type", ""))),
+                "guid": meta_guid,
+                "path": relative_path(effective_path, project_path, allow_root=True),
+                "type": _metadata_enum_name(meta_type),
             }
 
         return main_thread("asset_get_meta", _meta)
@@ -513,6 +594,214 @@ def register_asset_tools(mcp, project_path: str) -> None:
             "asset_list_sprite_frames",
             _list_sprite_frames,
             arguments={"path": path, "guid": guid},
+        )
+
+    @mcp.tool(name="asset_apply_texture_import_settings")
+    def asset_apply_texture_import_settings(
+        path: str = "",
+        guid: str = "",
+        texture_type: str = "",
+        wrap_mode: str = "",
+        filter_mode: str = "",
+        generate_mipmaps: bool | None = None,
+        srgb: bool | None = None,
+        max_size: int | None = None,
+        aniso_level: int | None = None,
+        texture_format: str = "",
+        texture_compression: str = "",
+        texture_compression_quality: str = "",
+        sprite_frames: list[dict] | None = None,
+    ) -> dict:
+        """Apply texture import settings through the Editor's canonical reimport path.
+
+        Sprite frames use stable ``sprite_frame_id`` values. Omitting an ID creates
+        one; pass a previously listed ID to preserve subresource identity.
+        """
+
+        def _apply_texture_settings():
+            from Infernux.core.asset_types import (
+                FilterMode,
+                TextureCompression,
+                TextureCompressionQuality,
+                TextureFormat,
+                TextureType,
+                WrapMode,
+                read_meta_file,
+                read_texture_import_settings,
+            )
+            from Infernux.core.assets import AssetManager
+
+            file_path, asset_guid = _resolve_asset_identity(project_path, path, guid)
+            settings = read_texture_import_settings(file_path)
+            type_values = {
+                "default": TextureType.DEFAULT,
+                "normal_map": TextureType.NORMAL_MAP,
+                "ui": TextureType.UI,
+                "sprite": TextureType.SPRITE,
+                "data": TextureType.DATA,
+                "vector_field": TextureType.VECTOR_FIELD,
+                "sdf": TextureType.SDF,
+            }
+
+            if texture_type:
+                key = str(texture_type).strip().lower()
+                if key not in type_values:
+                    raise ValueError(f"unsupported texture_type: {texture_type}")
+                settings.texture_type = type_values[key]
+                settings._sync_derived_fields()
+            if wrap_mode:
+                key = str(wrap_mode).strip().lower()
+                if key not in {"repeat", "clamp", "mirror"}:
+                    raise ValueError(f"unsupported wrap_mode: {wrap_mode}")
+                settings.wrap_mode = WrapMode.from_string(key)
+            if filter_mode:
+                key = str(filter_mode).strip().lower()
+                if key not in {"point", "nearest", "linear", "bilinear", "trilinear"}:
+                    raise ValueError(f"unsupported filter_mode: {filter_mode}")
+                settings.filter_mode = FilterMode.from_string(key)
+            if generate_mipmaps is not None:
+                settings.generate_mipmaps = bool(generate_mipmaps)
+            if srgb is not None:
+                settings.srgb = bool(srgb)
+            if max_size is not None:
+                settings.max_size = int(max_size)
+            if aniso_level is not None:
+                settings.aniso_level = int(aniso_level)
+            if texture_format:
+                key = str(texture_format).strip().lower()
+                allowed = {"auto", "rgba8", "rgba4444", "rgba16_unorm", "rgba16_float", "rgba32_float"}
+                if key not in allowed:
+                    raise ValueError(f"unsupported texture_format: {texture_format}")
+                settings.format = TextureFormat.from_string(key)
+                if settings.format is not TextureFormat.AUTO:
+                    settings.compression = TextureCompression.NONE
+            if texture_compression:
+                key = str(texture_compression).strip().lower()
+                if key not in {"none", "auto", "bc1", "bc3", "bc4", "bc5"}:
+                    raise ValueError(f"unsupported texture_compression: {texture_compression}")
+                settings.compression = TextureCompression.from_string(key)
+                if settings.compression is not TextureCompression.NONE:
+                    settings.format = TextureFormat.AUTO
+            if texture_compression_quality:
+                key = str(texture_compression_quality).strip().lower()
+                if key not in {"fast", "normal", "high"}:
+                    raise ValueError(
+                        f"unsupported texture_compression_quality: {texture_compression_quality}"
+                    )
+                settings.compression_quality = TextureCompressionQuality.from_string(key)
+            if sprite_frames is not None:
+                settings.sprite_frames = [
+                    _sprite_frame_from_mcp(value) for value in sprite_frames
+                ]
+
+            if settings.texture_type is TextureType.SPRITE and not settings.sprite_frames:
+                metadata = read_meta_file(file_path) or {}
+                width = int(metadata.get("width", 0) or 0)
+                height = int(metadata.get("height", 0) or 0)
+                if width <= 0 or height <= 0:
+                    raise ValueError(
+                        "sprite texture dimensions are unavailable; provide sprite_frames or reimport first"
+                    )
+                settings.sprite_frames = [_sprite_frame_from_mcp({
+                    "name": "frame_0",
+                    "x": 0,
+                    "y": 0,
+                    "width": width,
+                    "height": height,
+                })]
+
+            # to_dict performs the complete current-contract validation before IO.
+            settings.to_dict()
+            if not AssetManager.apply_import_settings("texture", file_path, settings):
+                raise RuntimeError("texture import settings could not be applied")
+            frames = [
+                _sprite_frame_contract(frame, index)
+                for index, frame in enumerate(settings.sprite_frames)
+            ]
+            return {
+                "guid": asset_guid,
+                "path": relative_path(file_path, project_path),
+                "texture_type": settings.texture_type.name.lower(),
+                "wrap_mode": settings.wrap_mode.to_string(),
+                "filter_mode": settings.filter_mode.to_string(),
+                "generate_mipmaps": settings.generate_mipmaps,
+                "srgb": settings.srgb,
+                "frame_count": len(frames),
+                "frames": frames,
+                "reimported": True,
+            }
+
+        return main_thread(
+            "asset_apply_texture_import_settings",
+            _apply_texture_settings,
+            arguments={
+                "path": path,
+                "guid": guid,
+                "texture_type": texture_type,
+                "sprite_frame_count": (
+                    len(sprite_frames) if sprite_frames is not None else None
+                ),
+            },
+        )
+
+    @mcp.tool(name="prefab_save_from_object")
+    def prefab_save_from_object(
+        object_id: int,
+        path: str,
+        overwrite: bool = False,
+    ) -> dict:
+        """Save one live scene hierarchy as a reusable Prefab asset."""
+
+        def _save_prefab():
+            from Infernux.engine.interaction import ActionOrigin
+            from Infernux.engine.prefab_manager import save_prefab
+
+            game_object = find_game_object(int(object_id))
+            if game_object is None:
+                raise ValueError(f"GameObject not found: {object_id}")
+
+            suffix = ".prefab"
+            requested = str(path or "").strip()
+            if not requested:
+                raise ValueError("Prefab path is required.")
+            if not requested.lower().endswith(suffix):
+                requested += suffix
+            target = resolve_project_path(project_path, requested)
+            assets_root = os.path.join(os.path.abspath(project_path), "Assets")
+            if not is_path_within(target, assets_root):
+                raise ValueError("Prefab path must stay inside Assets/.")
+            if os.path.exists(target) and not overwrite:
+                raise FileExistsError(f"Prefab already exists: {requested}")
+
+            parent = os.path.dirname(target)
+            os.makedirs(parent, exist_ok=True)
+            adb = get_asset_database()
+
+            def _creator():
+                if not save_prefab(game_object, target, asset_database=adb):
+                    raise RuntimeError("Prefab serialization failed.")
+                return True
+
+            result = _project_asset_commands(project_path).create(
+                parent,
+                _creator,
+                description="Create Prefab",
+                origin=ActionOrigin.AUTOMATION,
+                replace_path=target if os.path.exists(target) else "",
+            )
+            guid = str(adb.get_guid_from_path(target) or "") if adb else ""
+            return {
+                "object_id": int(object_id),
+                "path": relative_path(target, project_path),
+                "absolute_path": target,
+                "guid": guid,
+                "saved": bool(result),
+            }
+
+        return main_thread(
+            "prefab_save_from_object",
+            _save_prefab,
+            arguments={"object_id": object_id, "path": path, "overwrite": overwrite},
         )
 
     @mcp.tool(name="asset_inspect_animation_clip_2d")
@@ -730,6 +1019,30 @@ def register_asset_tools(mcp, project_path: str) -> None:
 
         return main_thread("asset_patch_text", _patch_text)
 
+
+
+def _metadata_value(value, attribute: str, method: str, *args) -> object:
+    candidate = getattr(value, attribute, None)
+    if not args and candidate not in (None, "") and not callable(candidate):
+        return candidate
+    getter = getattr(value, method, None)
+    if callable(getter):
+        try:
+            return getter(*args)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return ""
+    return ""
+
+
+def _metadata_string(value, attribute: str, method: str) -> str:
+    return str(_metadata_value(value, attribute, method) or "").strip()
+
+
+def _metadata_enum_name(value: object) -> str:
+    if value in (None, ""):
+        return ""
+    name = getattr(value, "name", None)
+    return str(name if name not in (None, "") else value)
 
 
 def _create_builtin(project_path: str, kind: str, name: str, directory: str, shader_type: str) -> dict:

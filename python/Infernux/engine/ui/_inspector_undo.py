@@ -66,13 +66,21 @@ def _record_material_slot(renderer, slot: int, old_guid: str, new_guid: str,
 
 def _record_generic_component(comp, old_document: dict, new_document: dict):
     """Record a generic native-component document edit."""
-    _component_service().commit_documents(
+    changed = _component_service().commit_documents(
         comp,
         old_document,
         new_document,
         description=f"Edit {comp.type_name}",
         restore_before_execute=True,
     )
+    if changed:
+        from .inspector_snapshot import InspectorSnapshotService, target_for_component
+
+        InspectorSnapshotService.instance().invalidate_value(
+            target_for_component(comp),
+            component_id=int(getattr(comp, "component_id", 0) or id(comp)),
+            domain="document",
+        )
 
 
 def _record_builtin_property(comp, cpp_attr: str, old_value, new_value,

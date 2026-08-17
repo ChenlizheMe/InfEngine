@@ -138,9 +138,11 @@ InputManager &InputManager::Instance()
 InputManager::InputManager()
 {
     m_keys.fill(0);
-    m_prevKeys.fill(0);
+    m_keyDown.fill(0);
+    m_keyUp.fill(0);
     m_mouseButtons.fill(0);
-    m_prevMouseButtons.fill(0);
+    m_mouseButtonDown.fill(0);
+    m_mouseButtonUp.fill(0);
     BuildNameTable();
 }
 
@@ -150,9 +152,10 @@ InputManager::InputManager()
 
 void InputManager::BeginFrame()
 {
-    // Swap current → previous
-    std::memcpy(m_prevKeys.data(), m_keys.data(), INPUT_MAX_KEYS);
-    std::memcpy(m_prevMouseButtons.data(), m_mouseButtons.data(), INPUT_MAX_MOUSE_BUTTONS);
+    m_keyDown.fill(0);
+    m_keyUp.fill(0);
+    m_mouseButtonDown.fill(0);
+    m_mouseButtonUp.fill(0);
 
     // Clear per-frame deltas
     m_mouseDX = 0.f;
@@ -198,6 +201,9 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
     case SDL_EVENT_KEY_DOWN: {
         int sc = static_cast<int>(event.key.scancode);
         if (sc >= 0 && sc < INPUT_MAX_KEYS) {
+            if (m_keys[sc] == 0) {
+                m_keyDown[sc] = 1;
+            }
             m_keys[sc] = 1;
         }
         break;
@@ -205,6 +211,9 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
     case SDL_EVENT_KEY_UP: {
         int sc = static_cast<int>(event.key.scancode);
         if (sc >= 0 && sc < INPUT_MAX_KEYS) {
+            if (m_keys[sc] != 0) {
+                m_keyUp[sc] = 1;
+            }
             m_keys[sc] = 0;
         }
         break;
@@ -216,6 +225,9 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {
         int btn = remapButton(event.button.button);
         if (btn >= 0 && btn < INPUT_MAX_MOUSE_BUTTONS) {
+            if (m_mouseButtons[btn] == 0) {
+                m_mouseButtonDown[btn] = 1;
+            }
             m_mouseButtons[btn] = 1;
         }
         break;
@@ -223,6 +235,9 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
     case SDL_EVENT_MOUSE_BUTTON_UP: {
         int btn = remapButton(event.button.button);
         if (btn >= 0 && btn < INPUT_MAX_MOUSE_BUTTONS) {
+            if (m_mouseButtons[btn] != 0) {
+                m_mouseButtonUp[btn] = 1;
+            }
             m_mouseButtons[btn] = 0;
         }
         break;
@@ -327,14 +342,14 @@ bool InputManager::GetKeyDown(int scancode) const
 {
     if (scancode < 0 || scancode >= INPUT_MAX_KEYS)
         return false;
-    return m_keys[scancode] != 0 && m_prevKeys[scancode] == 0;
+    return m_keyDown[scancode] != 0;
 }
 
 bool InputManager::GetKeyUp(int scancode) const
 {
     if (scancode < 0 || scancode >= INPUT_MAX_KEYS)
         return false;
-    return m_keys[scancode] == 0 && m_prevKeys[scancode] != 0;
+    return m_keyUp[scancode] != 0;
 }
 
 bool InputManager::AnyKey() const
@@ -349,7 +364,7 @@ bool InputManager::AnyKey() const
 bool InputManager::AnyKeyDown() const
 {
     for (int i = 0; i < INPUT_MAX_KEYS; ++i) {
-        if (m_keys[i] && !m_prevKeys[i])
+        if (m_keyDown[i])
             return true;
     }
     return false;
@@ -370,14 +385,14 @@ bool InputManager::GetMouseButtonDown(int button) const
 {
     if (button < 0 || button >= INPUT_MAX_MOUSE_BUTTONS)
         return false;
-    return m_mouseButtons[button] != 0 && m_prevMouseButtons[button] == 0;
+    return m_mouseButtonDown[button] != 0;
 }
 
 bool InputManager::GetMouseButtonUp(int button) const
 {
     if (button < 0 || button >= INPUT_MAX_MOUSE_BUTTONS)
         return false;
-    return m_mouseButtons[button] == 0 && m_prevMouseButtons[button] != 0;
+    return m_mouseButtonUp[button] != 0;
 }
 
 std::tuple<float, float, float, float, bool, bool, bool> InputManager::GetMouseFrameState(int button) const
@@ -387,8 +402,8 @@ std::tuple<float, float, float, float, bool, bool, bool> InputManager::GetMouseF
     }
 
     const bool held = (m_mouseButtons[button] != 0);
-    const bool down = held && (m_prevMouseButtons[button] == 0);
-    const bool up = (!held) && (m_prevMouseButtons[button] != 0);
+    const bool down = (m_mouseButtonDown[button] != 0);
+    const bool up = (m_mouseButtonUp[button] != 0);
     return {m_mouseX, m_mouseY, m_scrollX, m_scrollY, held, down, up};
 }
 
@@ -399,9 +414,11 @@ std::tuple<float, float, float, float, bool, bool, bool> InputManager::GetMouseF
 void InputManager::ResetAll()
 {
     m_keys.fill(0);
-    m_prevKeys.fill(0);
+    m_keyDown.fill(0);
+    m_keyUp.fill(0);
     m_mouseButtons.fill(0);
-    m_prevMouseButtons.fill(0);
+    m_mouseButtonDown.fill(0);
+    m_mouseButtonUp.fill(0);
     m_mouseX = m_mouseY = 0.f;
     m_mouseDX = m_mouseDY = 0.f;
     m_editorMouseDX = m_editorMouseDY = 0.f;

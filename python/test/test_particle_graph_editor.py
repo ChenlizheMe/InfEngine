@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from Infernux.engine.i18n import t
 from Infernux.engine.interaction import DocumentRegistry
 from Infernux.engine.ui.graph_document_authoring import (
     GraphDocumentAuthoringModel,
@@ -743,6 +744,164 @@ def test_particle_common_node_creation_keeps_the_requested_stage():
 
     assert noise.uid.startswith("update::")
     assert model.authoring_stage == "update"
+
+
+def test_particle_common_operator_chain_follows_the_lifecycle_node_it_feeds():
+    model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
+    model.prepare_node_creation("init")
+    random_value = model.add_node("common.random.f32", 360.0, 80.0)
+    model.prepare_node_creation("update")
+    vector = model.add_node("common.vector.compose3", 560.0, 260.0)
+    original_vector_uid = vector.uid
+    original_vector_position = (vector.pos_x, vector.pos_y)
+    before_connection = model.capture_authoring_state()
+
+    validation = model.validate_link(
+        random_value.uid, "value", vector.uid, "x"
+    )
+    assert validation
+    assert model.add_link(random_value.uid, "value", vector.uid, "x") is not None
+
+    migrated_vector_uid = model._canvas_uid(
+        "init", model._document_uid(original_vector_uid)
+    )
+    assert model.find_node(original_vector_uid) is None
+    migrated_vector = model.find_node(migrated_vector_uid)
+    assert migrated_vector is not None
+    assert (migrated_vector.pos_x, migrated_vector.pos_y) == original_vector_position
+    assert model.add_link(
+        migrated_vector_uid,
+        "value",
+        "init::init.velocity",
+        "value",
+    ) is not None
+
+    documents = model.to_documents()
+    assert any(
+        node.type_id == "common.random.f32" for node in documents["init"].nodes
+    )
+    assert any(
+        node.type_id == "common.vector.compose3" for node in documents["init"].nodes
+    )
+    assert not any(
+        node.type_id == "common.vector.compose3" for node in documents["update"].nodes
+    )
+
+    after_connection = model.capture_authoring_state()
+    mutations = model.diff_authoring_states(before_connection, after_connection)
+    model.apply_authoring_mutations(model.invert_authoring_mutations(mutations))
+    assert model.capture_authoring_state() == before_connection
+    model.apply_authoring_mutations(mutations)
+    assert model.capture_authoring_state() == after_connection
+
+
+def test_particle_port_drag_rehomes_and_connects_a_common_operator():
+    from Infernux.engine.ui.node_graph_view import NodeGraphView, PinKind
+
+    model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
+    model.prepare_node_creation("init")
+    random_value = model.add_node("common.random.f32", 360.0, 80.0)
+    model.prepare_node_creation("update")
+    vector = model.add_node("common.vector.compose3", 560.0, 260.0)
+
+    view = NodeGraphView()
+    view.bind_graph(model, preserve_selection=False)
+    view._origin_x = 0.0
+    view._origin_y = 0.0
+    view._compute_layouts()
+    vector_layout = view.get_layout(vector.uid)
+    target_pin = next(
+        pin for pin in vector_layout.input_pins if pin.pin_def.id == "x"
+    )
+    view._dragging_pin = True
+    view._drag_src_node = random_value.uid
+    view._drag_src_pin = "value"
+    view._drag_src_kind = PinKind.OUTPUT
+    view.on_link_created = lambda *endpoints: model.add_link(*endpoints)
+
+    view._try_complete_link(target_pin.cx, target_pin.cy)
+
+    assert len(
+        [
+            link
+            for link in model.links
+            if link.source_pin == "value" and link.target_pin == "x"
+        ]
+    ) == 1
+    assert all(
+        model.stage_for_uid(link.source_node)
+        == model.stage_for_uid(link.target_node)
+        for link in model.links
+    )
+
+
+def test_particle_link_topology_edits_never_move_authoring_nodes():
+    from dataclasses import replace
+
+    emitter = ParticleGraphAsset().emitters[0]
+    model = ParticleEmitterGraphAuthoringModel(emitter)
+    model.prepare_node_creation("init")
+    random_value = model.add_node("common.random.f32", 371.0, 117.0)
+    model.prepare_node_creation("update")
+    vector = model.add_node("common.vector.compose3", 619.0, 287.0)
+
+    def positions_by_raw_id(graph):
+        return {
+            graph._document_uid(node.uid): (node.pos_x, node.pos_y)
+            for node in graph.nodes
+        }
+
+    original = positions_by_raw_id(model)
+    first = model.add_link(random_value.uid, "value", vector.uid, "x")
+    assert first is not None
+    assert positions_by_raw_id(model) == original
+
+    vector_uid = model._canvas_uid("init", model._document_uid(vector.uid))
+    second = model.add_link(
+        vector_uid,
+        "value",
+        "init::init.velocity",
+        "value",
+    )
+    assert second is not None
+    assert positions_by_raw_id(model) == original
+
+    replaced = model.replace_link(
+        first.uid,
+        random_value.uid,
+        "value",
+        vector_uid,
+        "y",
+    )
+    assert replaced is not None
+    assert positions_by_raw_id(model) == original
+
+    assert model.remove_link(second.uid)
+    assert positions_by_raw_id(model) == original
+
+    # Once the pure island is detached it may be consumed by another
+    # lifecycle. Re-inference changes only compiler ownership, never layout.
+    third = model.add_link(
+        vector_uid,
+        "value",
+        "update::update.velocity",
+        "value",
+    )
+    assert third is not None
+    assert positions_by_raw_id(model) == original
+
+    documents = model.to_documents()
+    reopened_emitter = replace(
+        emitter,
+        init=documents["init"],
+        update=documents["update"],
+        collision_enter=documents["collision_enter"],
+        collision_stay=documents["collision_stay"],
+        collision_exit=documents["collision_exit"],
+        rendering=documents["rendering"],
+    )
+    reopened = ParticleEmitterGraphAuthoringModel(reopened_emitter)
+    assert positions_by_raw_id(reopened) == original
 
 
 def test_particle_graph_palette_request_freezes_source_or_canvas_stage():
@@ -1524,7 +1683,6 @@ def test_particle_output_exposes_selected_shader_properties_as_node_inputs():
     assert shader_ports == {
         "shader.baseColor": ValueType.COLOR,
         "shader.texSampler": ValueType.TEXTURE2D,
-        "shader.softness": ValueType.F32,
     }
 
 
@@ -1560,7 +1718,6 @@ def test_every_particle_output_uses_the_same_shader_property_contract(type_id):
     } == {
         "shader.baseColor",
         "shader.texSampler",
-        "shader.softness",
     }
 
     if type_id == "particle.output.mesh":
@@ -1597,6 +1754,208 @@ def test_particle_output_texture_port_uses_live_asset_reference_path(
         "path_hint": "Assets/VFX/Smoke.png",
     }
     assert panel._model.find_node(output.uid).data["shader.texSampler"] == reference
+
+
+def test_particle_inline_texture_field_uses_structured_picker_and_clear_contract(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from Infernux.engine.ui import igui
+    from Infernux.engine.ui import node_graph_view as graph_view
+    from Infernux.engine.ui import particle_graph_editor_panel as module
+
+    texture_path = tmp_path / "Smoke.png"
+    texture_path.write_bytes(b"png")
+    monkeypatch.setattr(module, "_asset_guid_from_path", lambda _path: "smoke-guid")
+    monkeypatch.setattr(
+        module,
+        "_portable_asset_path_hint",
+        lambda _path: "Assets/VFX/Smoke.png",
+    )
+
+    panel, manager = _particle_panel_with_history()
+    output = panel._model.find_node("rendering::output.sprite")
+    layout = graph_view._NodeLayout(
+        node=output,
+        typedef=panel._definition_for_node(output),
+    )
+    field = SimpleNamespace(id="shader.texSampler", label="Texture")
+    calls = []
+
+    def choose(_ctx, _field_id, display, _type_hint, **kwargs):
+        calls.append((display, kwargs))
+        kwargs["on_assign"](
+            {
+                "asset_type": "Texture",
+                "builtin": "",
+                "guid": "smoke-guid",
+                "path_hint": str(texture_path),
+            }
+        )
+        return False
+
+    monkeypatch.setattr(igui.IGUI, "asset_reference_field", choose)
+    manager.clear()
+    panel._view._render_inline_asset_reference(
+        object(), layout, field, "Texture", None, 180.0
+    )
+
+    assert panel._model.find_node(output.uid).data["shader.texSampler"] == {
+        "guid": "smoke-guid",
+        "path_hint": "Assets/VFX/Smoke.png",
+    }
+    assert calls[-1][0] == t("igui.none")
+    assert calls[-1][1]["has_value"] is False
+    assert manager.can_undo
+
+    def clear(_ctx, _field_id, display, _type_hint, **kwargs):
+        calls.append((display, kwargs))
+        kwargs["on_clear"]()
+        return False
+
+    monkeypatch.setattr(igui.IGUI, "asset_reference_field", clear)
+    panel._view._render_inline_asset_reference(
+        object(),
+        layout,
+        field,
+        "Texture",
+        panel._model.find_node(output.uid).data["shader.texSampler"],
+        180.0,
+    )
+
+    assert panel._model.find_node(output.uid).data["shader.texSampler"] == {
+        "guid": "",
+        "path_hint": "",
+    }
+    assert calls[-1][0] == "Smoke.png"
+    assert calls[-1][1]["has_value"] is True
+
+
+def test_particle_node_inspector_texture_field_uses_live_asset_reference_path(
+    tmp_path, monkeypatch
+):
+    from Infernux.engine.ui import particle_graph_editor_panel as module
+
+    texture_path = tmp_path / "Smoke.png"
+    texture_path.write_bytes(b"png")
+    monkeypatch.setattr(module, "_asset_guid_from_path", lambda _path: "smoke-guid")
+    monkeypatch.setattr(
+        module,
+        "_portable_asset_path_hint",
+        lambda _path: "Assets/VFX/Smoke.png",
+    )
+
+    class Context:
+        semantic_capture_enabled = False
+
+        @staticmethod
+        def label(_label):
+            pass
+
+        @staticmethod
+        def separator():
+            pass
+
+    calls = []
+
+    def choose(_ctx, _field_id, _display, _type_hint, **kwargs):
+        calls.append(kwargs)
+        kwargs["on_assign"](
+            {
+                "asset_type": "Texture",
+                "guid": "smoke-guid",
+                "path_hint": str(texture_path),
+            }
+        )
+        return False
+
+    monkeypatch.setattr(module, "render_asset_reference_field", choose)
+    monkeypatch.setattr(
+        module,
+        "_node_property_is_visible",
+        lambda _node, key: key == "shader.texSampler",
+    )
+    panel, manager = _particle_panel_with_history()
+    output = panel._model.find_node("rendering::output.sprite")
+    panel._selected_node_uid = output.uid
+    manager.clear()
+
+    panel._render_node_properties(Context())
+
+    assert panel._model.find_node(output.uid).data["shader.texSampler"] == {
+        "guid": "smoke-guid",
+        "path_hint": "Assets/VFX/Smoke.png",
+    }
+    assert calls[-1]["reference_value"]["asset_type"] == "Texture"
+    assert manager.can_undo
+
+
+def test_particle_node_inspector_texture_clear_uses_live_asset_reference_path(
+    monkeypatch,
+):
+    from Infernux.engine.ui import particle_graph_editor_panel as module
+
+    class Context:
+        semantic_capture_enabled = False
+
+        @staticmethod
+        def label(_label):
+            pass
+
+        @staticmethod
+        def separator():
+            pass
+
+    def clear(_ctx, _field_id, _display, _type_hint, **kwargs):
+        kwargs["on_clear"]()
+        return False
+
+    monkeypatch.setattr(module, "render_asset_reference_field", clear)
+    monkeypatch.setattr(
+        module,
+        "_node_property_is_visible",
+        lambda _node, key: key == "shader.texSampler",
+    )
+    panel, manager = _particle_panel_with_history()
+    output = panel._model.find_node("rendering::output.sprite")
+    output.data["shader.texSampler"] = {
+        "guid": "smoke-guid",
+        "path_hint": "Assets/VFX/Smoke.png",
+    }
+    panel._selected_node_uid = output.uid
+    manager.clear()
+
+    panel._render_node_properties(Context())
+
+    assert panel._model.find_node(output.uid).data["shader.texSampler"] == {
+        "guid": "",
+        "path_hint": "",
+    }
+    assert manager.can_undo
+
+
+def test_particle_inline_mesh_field_offers_builtin_meshes():
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        ParticleGraphEditorPanel,
+    )
+
+    panel = ParticleGraphEditorPanel()
+    panel._install_node_graph_view_callbacks()
+
+    provider = panel._view.on_node_asset_reference_items
+
+    assert callable(provider)
+    assert (
+        "Built-in/Cube",
+        {
+            "asset_type": "Mesh",
+            "builtin": "Cube",
+            "guid": "",
+            "path_hint": "",
+        },
+    ) in provider("node", "mesh", "Mesh", "cube")
+    assert provider("node", "texture", "Texture", "") == ()
 
 
 def test_particle_output_shader_schema_hot_reload_preserves_selection(monkeypatch):
@@ -2021,6 +2380,22 @@ def test_particle_graph_editor_exposes_asset_local_burst_node():
     assert created["properties"]["emitter"] in {
         emitter.stable_id for emitter in panel._asset.emitters
     }
+
+
+def test_particle_graph_editor_switches_emitter_without_old_selection_winning():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    second = panel.add_authoring_emitter("Second")
+    first_id = panel._asset.emitters[0].stable_id
+
+    panel.select_authoring_emitter(first_id)
+    selected = panel.select_authoring_emitter(second["stable_id"])
+
+    assert selected["index"] == 1
+    assert panel.authoring_snapshot()["emitter_index"] == 1
+    assert panel._selected_emitter().stable_id == second["stable_id"]
 
 
 def test_particle_graph_editor_edits_unlinked_value_input_defaults():
@@ -2562,6 +2937,104 @@ def test_particle_node_numeric_semantics_are_bound_during_widget_submission():
     assert ctx.semantic_id == f"particle_graph.node.{node.uid}.property.frames"
 
 
+def test_particle_node_color_inputs_use_shared_color_bar(monkeypatch):
+    import Infernux.engine.ui.particle_graph_editor_panel as particle_editor
+
+    class Context:
+        semantic_capture_enabled = False
+
+        @staticmethod
+        def label(_label):
+            pass
+
+        @staticmethod
+        def separator():
+            pass
+
+        @staticmethod
+        def combo(_label, value, _options, _popup_height):
+            return value
+
+        @staticmethod
+        def drag_float(*_args, **_kwargs):
+            raise AssertionError("Color inputs must not render as XYZW drag fields")
+
+    calls = []
+
+    def render_color(_ctx, widget_id, value, **kwargs):
+        calls.append((widget_id, list(value), kwargs))
+        return list(value)
+
+    monkeypatch.setattr(particle_editor, "render_color_value_bar", render_color)
+    panel = particle_editor.ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    node = panel._on_node_add("particle.attribute.color", 400.0, 230.0)
+    panel._selected_node_uid = node.uid
+
+    panel._render_node_properties(Context())
+
+    assert calls == [
+        (
+            f"##particle_node_{node.uid}_value",
+            [1.0, 1.0, 1.0, 1.0],
+            {"allow_hdr": True, "default_hdr_enabled": True},
+        )
+    ]
+
+
+def test_color_node_can_drive_sprite_output_and_compile_to_gpu_glsl():
+    from dataclasses import replace
+
+    from Infernux.engine.ui.graph_document_authoring import (
+        ParticleEmitterGraphAuthoringModel,
+    )
+    from Infernux.particle import (
+        GpuParticleGlslLowerer,
+        ParticleGraphCompiler,
+        ParticleKernelLowerer,
+    )
+    from Infernux.particle.asset import ParticleGraphAsset
+    from Infernux.particle.nodes import particle_graph_node_definitions
+
+    asset = ParticleGraphAsset()
+    emitter = asset.emitters[0]
+    definitions = particle_graph_node_definitions(asset)
+    model = ParticleEmitterGraphAuthoringModel(
+        emitter,
+        definition_set=definitions,
+    )
+    model.set_authoring_stage("rendering")
+    model.prepare_node_creation("rendering")
+    color = model.add_node(
+        "common.constant.color",
+        180.0,
+        model._STAGE_Y["rendering"] + 100.0,
+        value=[2.0, 0.5, 0.25, 1.0],
+    )
+    link = model.add_link(
+        color.uid,
+        "value",
+        "rendering::output.sprite",
+        "shader.baseColor",
+    )
+    assert link is not None
+
+    documents = model.to_documents()
+    emitter = replace(emitter, rendering=documents["rendering"])
+    asset = replace(asset, emitters=(emitter,))
+    compiled = ParticleGraphCompiler().compile(asset)
+    output = compiled.emitters[0].render_plan.outputs[0]
+    base_color = next(
+        item for item in output.shader_properties if item.name == "baseColor"
+    )
+
+    assert base_color.default == [2.0, 0.5, 0.25, 1.0]
+    assert base_color.parameter_id == ""
+    kernel = ParticleKernelLowerer().lower(compiled)
+    gpu_program = GpuParticleGlslLowerer().lower(kernel)
+    assert gpu_program.emitters
+
+
 def test_particle_gradient_editor_uses_hdr_and_channel_semantics():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
     from Infernux.graph.ramp import Gradient
@@ -3033,6 +3506,39 @@ def test_particle_node_drag_records_only_stable_node_positions():
     ) == after
 
 
+def test_connect_vector3_to_set_velocity_never_moves_nodes_through_panel_history():
+    """The real panel transaction must preserve layout across connect/undo/redo."""
+    panel, manager = _particle_panel_with_history()
+    model = panel._model
+    model.prepare_node_creation("init")
+    vector = model.add_node("common.vector.compose3", 619.0, 287.0)
+    velocity = model.find_node("init::init.velocity")
+    assert velocity is not None
+
+    def positions_by_raw_id():
+        return {
+            model._document_uid(node.uid): (node.pos_x, node.pos_y)
+            for node in model.nodes
+        }
+
+    expected = positions_by_raw_id()
+    manager.clear()
+    panel._on_link_created(vector.uid, "value", velocity.uid, "value")
+
+    assert positions_by_raw_id() == expected
+    assert any(
+        link.source_node == vector.uid
+        and link.source_pin == "value"
+        and link.target_node == velocity.uid
+        and link.target_pin == "value"
+        for link in model.links
+    )
+    manager.undo()
+    assert positions_by_raw_id() == expected
+    manager.redo()
+    assert positions_by_raw_id() == expected
+
+
 def test_particle_node_drag_keeps_exact_cross_panel_history_order():
     """A graph drag must remain between the two Scene editing sessions."""
     from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
@@ -3311,7 +3817,7 @@ def test_particle_graph_document_state_does_not_serialize_stale_model(monkeypatc
 
 def test_particle_system_inspector_metadata_is_localizable_and_backend_is_emitter_owned():
     from Infernux.components.particle_system import ParticleSystem
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
 
     fields = get_serialized_fields(ParticleSystem)
     assert {

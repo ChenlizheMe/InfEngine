@@ -37,6 +37,10 @@ class ConsolePanel : public EditorPanel
     /// Clear all log entries.
     void Clear();
 
+    /// Remove diagnostics owned by one source file without disturbing other
+    /// Console history. Returns the number of removed entries.
+    size_t RemoveEntriesFromSource(const std::string &sourceFile);
+
     /// Query counts for status bar integration.
     int GetInfoCount() const;
     int GetWarningCount() const;
@@ -59,12 +63,34 @@ class ConsolePanel : public EditorPanel
     [[nodiscard]] uint64_t GetRevision() const noexcept;
     [[nodiscard]] uint64_t GetSelectedUid() const noexcept;
     [[nodiscard]] bool HasSelectedEntry() const noexcept;
+
+    /// Snapshot the entries currently visible in the native Console view.
+    /// This is intentionally a bounded, filtered view so external tools do
+    /// not copy the full log buffer every frame.
+    struct VisibleLogSnapshot
+    {
+        std::string message;
+        std::string timestamp;
+        std::string stackTrace;
+        std::string sourceFile;
+        int sourceLine = 0;
+        LogLevel level = LOG_INFO;
+        uint64_t uid = 0;
+        uint64_t latestUid = 0;
+        int count = 1;
+    };
+
+    std::vector<VisibleLogSnapshot> GetVisibleLogSnapshot(size_t limit);
     bool CopySelectedEntry();
     [[nodiscard]] bool HasViewOption(const std::string &option) const noexcept;
     [[nodiscard]] bool GetViewOption(const std::string &option) const noexcept;
     void SetViewOption(const std::string &option, bool enabled);
     [[nodiscard]] std::string GetSearchQuery() const;
     void SetSearchQuery(const std::string &query);
+    void RequestSearchFocus()
+    {
+        m_focusSearchNextFrame = true;
+    }
     [[nodiscard]] float GetDetailHeight() const noexcept;
     void SetDetailHeight(float height) noexcept;
 
@@ -146,6 +172,7 @@ class ConsolePanel : public EditorPanel
     bool m_scrollToBottom = false;
     std::array<char, 256> m_search{};
     std::string m_searchEditStart;
+    bool m_focusSearchNextFrame = false;
     float m_rowHeight = 22.0f;
     bool m_rowHeightMeasured = false;
     float m_detailHeight = 90.0f;

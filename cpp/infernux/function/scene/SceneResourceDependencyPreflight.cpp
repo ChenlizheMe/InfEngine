@@ -130,7 +130,8 @@ class ResourcePreflight
             return;
         const std::string &type = record.nativeTypeName;
         const nlohmann::json data = BuildNativeComponentDocument(record);
-        if (type == "BoxCollider" || type == "SphereCollider" || type == "CapsuleCollider" || type == "MeshCollider") {
+        if (type == "BoxCollider" || type == "SphereCollider" || type == "CapsuleCollider" ||
+            type == "CylinderCollider" || type == "MeshCollider") {
             const std::string guid = data.at("physic_material_guid").get<std::string>();
             if (!guid.empty())
                 RequireAsset(guid, ResourceType::PhysicMaterial, path + ".physic_material_guid");

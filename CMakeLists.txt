@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.22)
 project(Infernux LANGUAGES C CXX)
 
+if(MSVC)
+    # Limit /MP globally, including third-party projects. CMake maps /MP to
+    # MultiProcessorCompilation and the actual worker cap comes from this
+    # Visual Studio global property.
+    set(INFERNUX_MSVC_COMPILE_JOBS "4" CACHE STRING
+        "Maximum MSVC translation units compiled concurrently per project")
+    list(APPEND CMAKE_VS_GLOBALS "CL_MPCount=${INFERNUX_MSVC_COMPILE_JOBS}")
+endif()
+
 #------------------------------------------------------------------------------
 # Linux: force -fPIC for all static libraries (fixes imgui linking error)
 # ------------------------------------------------------------------------------
@@ -253,10 +262,13 @@ endif()
 
 # Set UTF-8 encoding for MSVC to avoid C4819 warnings
 if(MSVC)
+    # MSBuild already compiles independent projects concurrently. Unbounded
+    # /MP inside every project multiplies that concurrency and intermittently
+    # exhausts compiler, PDB, and file-system resources.
     foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
         target_compile_options(${_infernux_target} PRIVATE
             /utf-8
-            /MP       # Compile independent translation units concurrently.
+            /MP
             /FS       # Serialize writes to the shared compiler PDB under parallel MSBuild.
             /bigobj   # pybind11 binding TUs exceed the default COFF section limit
         )
@@ -397,6 +409,7 @@ foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
         $<$<CONFIG:MinSizeRel>:INFERNUX_FILE_LOGGING=1>
         $<$<CONFIG:Release>:INFERNUX_DEFERRED_FILE_LOGGING=1>
         $<$<CONFIG:MinSizeRel>:INFERNUX_DEFERRED_FILE_LOGGING=1>
+        $<$<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>>:INFERNUX_COMPILE_OUT_DEBUG_LOGS=1>
         # Make diagnostics explicit for every configuration. Release and
         # MinSizeRel remain off regardless of the cache policy.
         ${_infernux_vulkan_validation_definition}
@@ -414,6 +427,7 @@ target_link_libraries(InfernuxRuntime PUBLIC
     glm::glm
     imgui
     stb
+    dr_libs
     Vulkan::Vulkan
     Jolt
     GPUOpen::VulkanMemoryAllocator
@@ -602,6 +616,35 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.editor_gui_frame_scheduler COMMAND infernux_editor_gui_frame_scheduler_tests)
 
+    add_executable(infernux_log_release_policy_tests
+        cpp/tests/InxLogReleasePolicyTests.cpp
+        cpp/infernux/core/log/InxLog.cpp
+    )
+    target_include_directories(infernux_log_release_policy_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    target_compile_definitions(infernux_log_release_policy_tests PRIVATE
+        INFERNUX_COMPILE_OUT_DEBUG_LOGS=1
+    )
+    if(MSVC)
+        target_compile_options(infernux_log_release_policy_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.log_release_policy COMMAND infernux_log_release_policy_tests)
+
+    add_executable(infernux_input_manager_tests
+        cpp/tests/InputManagerTests.cpp
+        cpp/infernux/platform/input/InputManager.cpp
+        cpp/infernux/core/log/InxLog.cpp
+    )
+    target_include_directories(infernux_input_manager_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    target_link_libraries(infernux_input_manager_tests PRIVATE SDL3::SDL3)
+    if(MSVC)
+        target_compile_options(infernux_input_manager_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.input_manager COMMAND infernux_input_manager_tests)
+
     add_executable(infernux_atomic_file_tests
         cpp/tests/AtomicFileTests.cpp
         cpp/infernux/platform/filesystem/AtomicFile.cpp
@@ -654,7 +697,9 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
     )
     if(MSVC)
-        target_compile_options(infernux_component_data_store_tests PRIVATE /utf-8)
+        target_compile_options(infernux_component_data_store_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_component_data_store_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.component_data_store COMMAND infernux_component_data_store_tests)
 
@@ -684,6 +729,7 @@ if(INFERNUX_BUILD_TESTS)
 
     add_executable(infernux_canonical_light_snapshot_tests
         cpp/tests/CanonicalLightSnapshotTests.cpp
+        cpp/infernux/function/renderer/lighting/CanonicalLightGpuBuffer.cpp
         cpp/infernux/function/renderer/lighting/ForwardPlusLightGrid.cpp
     )
     target_include_directories(infernux_canonical_light_snapshot_tests PRIVATE
@@ -759,6 +805,17 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.rhi_capabilities COMMAND infernux_rhi_capabilities_tests)
 
+    add_executable(infernux_rhi_resource_index_tests
+        cpp/tests/RhiResourceIndexTests.cpp
+    )
+    target_include_directories(infernux_rhi_resource_index_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_rhi_resource_index_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.rhi_resource_index COMMAND infernux_rhi_resource_index_tests)
+
     add_executable(infernux_msaa_policy_tests
         cpp/tests/MsaaPolicyTests.cpp
     )
@@ -807,6 +864,7 @@ if(INFERNUX_BUILD_TESTS)
         cpp/infernux/function/renderer/vk/DescriptorBindTrace.cpp
         cpp/infernux/function/renderer/vk/VmaContext.cpp
         cpp/infernux/function/renderer/vk/VkDescriptorManager.cpp
+        cpp/infernux/function/renderer/vk/VulkanBindlessTextureTable.cpp
         cpp/infernux/function/renderer/vk/VulkanRhiDevice.cpp
     )
     target_include_directories(infernux_vulkan_rhi_device_tests PRIVATE
@@ -869,6 +927,36 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_py_component_proxy_tests PRIVATE /utf-8)
     endif()
     add_test(NAME infernux.py_component_proxy COMMAND infernux_py_component_proxy_tests)
+
+    add_executable(infernux_runtime_frame_barrier_tests
+        cpp/tests/RuntimeFrameBarrierTests.cpp
+    )
+    target_include_directories(infernux_runtime_frame_barrier_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_runtime_frame_barrier_tests PRIVATE InfernuxRuntime)
+    if(MSVC)
+        target_compile_options(infernux_runtime_frame_barrier_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_runtime_frame_barrier_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.runtime_frame_barrier COMMAND infernux_runtime_frame_barrier_tests)
+
+    add_executable(infernux_runtime_persistent_scene_tests
+        cpp/tests/RuntimePersistentSceneTests.cpp
+    )
+    target_include_directories(infernux_runtime_persistent_scene_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_runtime_persistent_scene_tests PRIVATE InfernuxRuntime)
+    if(MSVC)
+        target_compile_options(infernux_runtime_persistent_scene_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_runtime_persistent_scene_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.runtime_persistent_scene COMMAND infernux_runtime_persistent_scene_tests)
 
     add_executable(infernux_particle_gpu_runtime_tests
         cpp/tests/ParticleGpuRuntimeTests.cpp
@@ -1264,7 +1352,7 @@ add_custom_target(clean_python_pycache
             "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
             -DPYTHON_DIR=${CMAKE_SOURCE_DIR}/python
             -P ${CMAKE_SOURCE_DIR}/cmake/clean_python_pycache.cmake
-    COMMENT "Removing __pycache__ directories and .meta files under python/ for Release"
+    COMMENT "Removing __pycache__ directories under python/ for Release"
     VERBATIM
 )
 add_dependencies(_Infernux _InfernuxBootstrap clean_python_pycache)
@@ -1282,11 +1370,12 @@ configure_file(
 
 foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
     add_custom_command(TARGET ${_infernux_dll} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E remove "${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:${_infernux_dll}>"
-        COMMAND ${CMAKE_COMMAND} -E copy
-            "$<TARGET_FILE:${_infernux_dll}>"
-            "${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:${_infernux_dll}>"
+        COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE=$<TARGET_FILE:${_infernux_dll}>"
+            "-DDESTINATION=${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:${_infernux_dll}>"
+            -P "${CMAKE_SOURCE_DIR}/cmake/stage_build_file.cmake"
         COMMENT "Copy ${_infernux_dll} shared library to python/Infernux/lib"
+        VERBATIM
     )
 endforeach()
 
@@ -1294,14 +1383,10 @@ add_custom_command(TARGET _Infernux POST_BUILD
     # Remove native modules from other Python ABIs/builds first so wheels can
     # never ship two _Infernux modules (GitHub issue #47).
     COMMAND ${CMAKE_COMMAND}
-        -DTARGET_DIR=${PYTHON_TARGET_DIR}
-        -DKEEP_NAME=$<TARGET_FILE_NAME:_Infernux>
-        -P "${CMAKE_SOURCE_DIR}/cmake/clean_stale_native_modules.cmake"
-
-    # Copy the native module (.pyd on Windows, .so on macOS/Linux)
-    COMMAND ${CMAKE_COMMAND} -E copy
-        "$<TARGET_FILE:_Infernux>"
-        "${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:_Infernux>"
+        "-DSOURCE=$<TARGET_FILE:_Infernux>"
+        "-DTARGET_DIR=${PYTHON_TARGET_DIR}"
+        "-DKEEP_NAME=$<TARGET_FILE_NAME:_Infernux>"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_native_module.cmake"
 
     COMMENT "Copy _Infernux binding module to python/Infernux/lib"
 )
@@ -1368,13 +1453,13 @@ endif()
 # ------------------------------------------------------------------------------
 # Wheel-distributed Player Runtime Pack
 # ------------------------------------------------------------------------------
-# Included in the default build so release packaging can consume the
-# compressed Player payload. The script exits immediately for non-Release
-# configurations (e.g. RelWithDebInfo / debug presets), so debug installs
-# still get wheel packaging without building a Player Runtime Pack.
+# This is an explicit stage in the package_and_install_python dependency chain.
+# The script exits immediately for non-Release configurations (for example
+# RelWithDebInfo), so debug installs still package without building a Player
+# Runtime Pack.
 set(INFERNUX_PREBUILT_RUNTIME_DIR "${CMAKE_SOURCE_DIR}/python/Infernux/_runtime_packs")
 set(INFERNUX_PREBUILT_RUNTIME_MODULE_DIR "${CMAKE_SOURCE_DIR}/python/Infernux/_runtime_modules")
-add_custom_target(prebuild_player_runtime ALL
+add_custom_target(prebuild_player_runtime
     COMMAND ${CMAKE_COMMAND}
         "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
         "-DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
@@ -1391,7 +1476,7 @@ add_custom_target(prebuild_player_runtime ALL
         "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
         "-DPYTHON_DIR=${CMAKE_SOURCE_DIR}/packaging"
         -P "${CMAKE_SOURCE_DIR}/cmake/clean_python_pycache.cmake"
-    DEPENDS _Infernux
+    DEPENDS _Infernux _InfernuxBootstrap
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     COMMENT "Preparing wheel-distributed Release Player Runtime Pack and parallel module"
     VERBATIM
@@ -1417,10 +1502,13 @@ add_custom_target(player_package_audit
 )
 
 add_custom_command(TARGET _InfernuxBootstrap POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy
-        "$<TARGET_FILE:_InfernuxBootstrap>"
-        "${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:_InfernuxBootstrap>"
+    COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE=$<TARGET_FILE:_InfernuxBootstrap>"
+        "-DTARGET_DIR=${PYTHON_TARGET_DIR}"
+        "-DKEEP_NAME=$<TARGET_FILE_NAME:_InfernuxBootstrap>"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_native_module.cmake"
     COMMENT "Copy _InfernuxBootstrap binding module to python/Infernux/lib"
+    VERBATIM
 )
 
 # ------------------------------------------------------------------------------
@@ -1504,7 +1592,10 @@ add_custom_target(package_and_install_python
     COMMENT "Python packaging and installation after native module build"
 )
 
-add_dependencies(package_and_install_python clean_python_pycache prebuild_player_runtime)
+# Keep packaging behind one ordered dependency chain. The native Python
+# modules already depend on clean_python_pycache; adding cleanup here as a
+# second root allows it to race runtime staging under parallel MSBuild.
+add_dependencies(package_and_install_python prebuild_player_runtime)
 
 # ------------------------------------------------------------------------------
 # API Reference Generation (auto-introspect Python package → Markdown)

@@ -211,7 +211,7 @@ def _snapshot_value(val: Any) -> Any:
 
     # RGBA colour fields: material ptype-7 ``[r,g,b,a]`` lists.
     try:
-        from Infernux.components.serialized_field import is_rgba_storage, snapshot_rgba
+        from Infernux.components.fields import is_rgba_storage, snapshot_rgba
         if is_rgba_storage(val):
             return snapshot_rgba(val)
     except Exception:

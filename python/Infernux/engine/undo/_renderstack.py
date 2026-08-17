@@ -24,7 +24,7 @@ class RenderStackFieldCommand(SetPropertyCommand):
         self._stack = stack
         self._stack_game_object_id = _game_object_id_of(stack)
         self._stack_type_name = _comp_type_name_of(stack)
-        self._pipeline_class_name = str(stack.pipeline_class_name or "")
+        self._pipeline_class_name = str(stack.pipeline_class_name)
 
     def _live_stack(self):
         return _resolve_target(

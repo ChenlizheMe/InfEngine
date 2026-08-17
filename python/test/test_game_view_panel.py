@@ -124,7 +124,9 @@ def test_game_viewport_is_exposed_as_a_semantic_click_target(monkeypatch):
     import Infernux.engine.ui.game_view_panel as module
 
     monkeypatch.setattr(module, "_SM", SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: None)))
-    monkeypatch.setattr(module, "collect_sorted_canvases", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        module, "collect_sorted_runtime_canvas_snapshot", lambda *_args, **_kwargs: []
+    )
     monkeypatch.setattr(
         module,
         "capture_viewport_info",
@@ -157,7 +159,9 @@ def test_game_viewport_does_not_steal_clicks_through_a_floating_window(monkeypat
     import Infernux.engine.ui.game_view_panel as module
 
     monkeypatch.setattr(module, "_SM", SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: None)))
-    monkeypatch.setattr(module, "collect_sorted_canvases", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        module, "collect_sorted_runtime_canvas_snapshot", lambda *_args, **_kwargs: []
+    )
     monkeypatch.setattr(
         module,
         "capture_viewport_info",
@@ -188,7 +192,9 @@ def test_game_viewport_activates_on_mouse_down_before_imgui_button_release(monke
     import Infernux.engine.ui.game_view_panel as module
 
     monkeypatch.setattr(module, "_SM", SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: None)))
-    monkeypatch.setattr(module, "collect_sorted_canvases", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        module, "collect_sorted_runtime_canvas_snapshot", lambda *_args, **_kwargs: []
+    )
     monkeypatch.setattr(
         module,
         "capture_viewport_info",
@@ -281,7 +287,102 @@ def test_hidden_game_view_disables_rendering_without_runtime_acceptance(monkeypa
     assert panel._game_camera_was_enabled is False
 
 
-def test_game_view_retains_canvas_snapshot_until_scene_structure_changes(monkeypatch):
+def test_game_texture_handle_is_retained_across_unrelated_scene_revisions(monkeypatch):
+    class _CountingEngine(_Engine):
+        def __init__(self):
+            super().__init__()
+            self.texture_queries = 0
+
+        def get_game_texture_id(self) -> int:
+            self.texture_queries += 1
+            return 91
+
+    camera_owner = SimpleNamespace(id=17, active_in_hierarchy=True)
+    camera = SimpleNamespace(
+        component_id=23,
+        enabled=True,
+        game_object=camera_owner,
+    )
+    scene = SimpleNamespace(main_camera=camera, structure_version=1)
+    engine = _CountingEngine()
+    panel = GameViewPanel(engine=engine)
+    monkeypatch.setattr(panel, "_game_texture_render_revision", lambda: (4, 8))
+
+    assert panel._get_game_texture_id(scene) == 91
+    scene.structure_version += 100_000
+    assert panel._get_game_texture_id(scene) == 91
+    assert engine.texture_queries == 1
+
+
+def test_game_texture_handle_refreshes_after_resize_or_camera_change(monkeypatch):
+    class _CountingEngine(_Engine):
+        def __init__(self):
+            super().__init__()
+            self.texture_queries = 0
+
+        def get_game_texture_id(self) -> int:
+            self.texture_queries += 1
+            return 100 + self.texture_queries
+
+    first_owner = SimpleNamespace(id=17, active_in_hierarchy=True)
+    first_camera = SimpleNamespace(
+        component_id=23,
+        enabled=True,
+        game_object=first_owner,
+    )
+    scene = SimpleNamespace(main_camera=first_camera)
+    engine = _CountingEngine()
+    panel = GameViewPanel(engine=engine)
+    monkeypatch.setattr(panel, "_game_texture_render_revision", lambda: (4, 8))
+
+    assert panel._get_game_texture_id(scene) == 101
+    panel._game_texture_refresh_required = True
+    assert panel._get_game_texture_id(scene) == 102
+
+    scene.main_camera = SimpleNamespace(
+        component_id=29,
+        enabled=True,
+        game_object=SimpleNamespace(id=31, active_in_hierarchy=True),
+    )
+    assert panel._get_game_texture_id(scene) == 103
+    assert engine.texture_queries == 3
+
+
+def test_game_texture_handle_refreshes_when_native_target_generation_changes(monkeypatch):
+    class _CountingEngine(_Engine):
+        def __init__(self):
+            super().__init__()
+            self.texture_queries = 0
+            self.target_generation = 4
+
+        def get_game_texture_id(self) -> int:
+            self.texture_queries += 1
+            return 200 + self.texture_queries
+
+        def get_game_render_target_generation(self) -> int:
+            return self.target_generation
+
+    camera = SimpleNamespace(
+        component_id=23,
+        enabled=True,
+        game_object=SimpleNamespace(id=17, active_in_hierarchy=True),
+    )
+    scene = SimpleNamespace(main_camera=camera)
+    engine = _CountingEngine()
+    panel = GameViewPanel(engine=engine)
+    monkeypatch.setattr(panel, "_game_texture_render_revision", lambda: (4, 8))
+
+    assert panel._get_game_texture_id(scene) == 201
+    assert panel._get_game_texture_id(scene) == 201
+
+    # RenderStack-driven MSAA changes replace the native target while the
+    # Scene, Camera and authored render revision can all remain unchanged.
+    engine.target_generation += 1
+    assert panel._get_game_texture_id(scene) == 202
+    assert engine.texture_queries == 2
+
+
+def test_game_view_canvas_snapshot_ignores_unrelated_scene_structure_changes(monkeypatch):
     import Infernux.engine.ui.game_view_panel as module
 
     class _Scene:
@@ -291,6 +392,7 @@ def test_game_view_retains_canvas_snapshot_until_scene_structure_changes(monkeyp
     collect_calls = []
     clear_calls = []
     canvases = [SimpleNamespace()]
+    snapshot_token = [((id(scene),), 3)]
     monkeypatch.setattr(
         module,
         "_SM",
@@ -298,8 +400,15 @@ def test_game_view_retains_canvas_snapshot_until_scene_structure_changes(monkeyp
     )
     monkeypatch.setattr(
         module,
-        "collect_sorted_canvases",
-        lambda current, **kwargs: collect_calls.append((current, kwargs)) or canvases,
+        "collect_sorted_runtime_canvas_snapshot",
+        lambda current, persistent=None: collect_calls.append(
+            (current, persistent)
+        ) or canvases,
+    )
+    monkeypatch.setattr(
+        module,
+        "runtime_canvas_snapshot_token",
+        lambda *_args: snapshot_token[0],
     )
     monkeypatch.setattr(module, "clear_rect_cache", lambda token: clear_calls.append(token))
 
@@ -310,14 +419,20 @@ def test_game_view_retains_canvas_snapshot_until_scene_structure_changes(monkeyp
     assert first_scene is second_scene is scene
     assert first_canvases == second_canvases == tuple(canvases)
     assert len(collect_calls) == 1
-    assert clear_calls == [(id(scene), 7)]
+    assert clear_calls == [snapshot_token[0]]
 
     scene.structure_version = 8
+    _, retained_canvases = panel._get_scene_and_canvases()
+
+    assert retained_canvases == tuple(canvases)
+    assert len(collect_calls) == 1
+
+    snapshot_token[0] = ((id(scene),), 4)
     _, refreshed_canvases = panel._get_scene_and_canvases()
 
     assert refreshed_canvases == tuple(canvases)
     assert len(collect_calls) == 2
-    assert clear_calls[-1] == (id(scene), 8)
+    assert clear_calls[-1] == snapshot_token[0]
 
 
 def test_game_view_invalidates_canvas_snapshot_when_scene_is_cleared(monkeypatch):
@@ -335,7 +450,11 @@ def test_game_view_invalidates_canvas_snapshot_when_scene_is_cleared(monkeypatch
             instance=lambda: SimpleNamespace(get_active_scene=lambda: active_scene[0])
         ),
     )
-    monkeypatch.setattr(module, "collect_sorted_canvases", lambda *_args, **_kwargs: [object()])
+    monkeypatch.setattr(
+        module,
+        "collect_sorted_runtime_canvas_snapshot",
+        lambda *_args, **_kwargs: [object()],
+    )
     monkeypatch.setattr(module, "clear_rect_cache", lambda *_args: None)
 
     panel = GameViewPanel(engine=_Engine())
@@ -347,7 +466,7 @@ def test_game_view_invalidates_canvas_snapshot_when_scene_is_cleared(monkeypatch
     assert panel._cached_ui_canvases == ()
 
 
-def test_game_view_retries_empty_canvas_snapshot_for_late_registration(monkeypatch):
+def test_game_view_refreshes_empty_canvas_snapshot_on_membership_revision(monkeypatch):
     import Infernux.engine.ui.game_view_panel as module
 
     class _Scene:
@@ -357,21 +476,31 @@ def test_game_view_retries_empty_canvas_snapshot_for_late_registration(monkeypat
     late_canvas = SimpleNamespace(sort_order=4)
     discovery_results = [[], [late_canvas]]
     collect_calls = []
+    snapshot_token = [((id(scene),), 7)]
     monkeypatch.setattr(
         module,
         "_SM",
         SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: scene)),
     )
 
-    def _collect(_scene, **_kwargs):
+    def _collect(_scene, _persistent=None):
         collect_calls.append(_scene)
         return discovery_results.pop(0) if discovery_results else [late_canvas]
 
-    monkeypatch.setattr(module, "collect_sorted_canvases", _collect)
+    monkeypatch.setattr(module, "collect_sorted_runtime_canvas_snapshot", _collect)
+    monkeypatch.setattr(
+        module,
+        "runtime_canvas_snapshot_token",
+        lambda *_args: snapshot_token[0],
+    )
     monkeypatch.setattr(module, "clear_rect_cache", lambda *_args: None)
 
     panel = GameViewPanel(engine=_Engine())
     assert panel._get_scene_and_canvases() == (scene, ())
+    assert panel._get_scene_and_canvases() == (scene, ())
+    assert len(collect_calls) == 1
+
+    snapshot_token[0] = ((id(scene),), 8)
     assert panel._get_scene_and_canvases() == (scene, (late_canvas,))
     assert len(collect_calls) == 2
 
@@ -392,7 +521,7 @@ def test_game_view_reorders_retained_canvases_when_sort_order_changes(monkeypatc
     )
     monkeypatch.setattr(
         module,
-        "collect_sorted_canvases",
+        "collect_sorted_runtime_canvas_snapshot",
         lambda *_args, **_kwargs: [first, second],
     )
     monkeypatch.setattr(module, "clear_rect_cache", lambda *_args: None)
@@ -404,6 +533,62 @@ def test_game_view_reorders_retained_canvases_when_sort_order_changes(monkeypatc
     second.sort_order = 0
 
     assert panel._get_scene_and_canvases()[1] == (second, first)
+
+
+def test_visible_game_panel_does_not_duplicate_runtime_screen_ui_submission(monkeypatch):
+    import Infernux.engine.ui.game_view_panel as module
+    from Infernux.ui.enums import RenderMode
+
+    class _Renderer:
+        @staticmethod
+        def is_enabled():
+            return True
+
+        @staticmethod
+        def begin_frame(*_args):
+            raise AssertionError("GameViewPanel must not own ScreenUI submission")
+
+        @staticmethod
+        def begin_frame_cached(*_args):
+            raise AssertionError("GameViewPanel must not own ScreenUI submission")
+
+    engine = _Engine()
+    engine.get_screen_ui_renderer = lambda: _Renderer()
+    panel = GameViewPanel(engine=engine)
+    panel._last_game_width = 200
+    panel._last_game_height = 100
+    element = SimpleNamespace(
+        enabled=True,
+        game_object=SimpleNamespace(active_in_hierarchy=True),
+        get_rect=lambda *_args: (0.0, 0.0, 10.0, 10.0),
+    )
+    canvas = SimpleNamespace(
+        render_mode=RenderMode.ScreenOverlay,
+        reference_width=100.0,
+        reference_height=50.0,
+        enabled=True,
+        game_object=SimpleNamespace(active_in_hierarchy=True),
+        compute_scale=lambda *_args: (2.0, 2.0, 2.0),
+        _get_elements=lambda: (element,),
+    )
+    dispatches = []
+    monkeypatch.setattr(
+        module,
+        "_ui_dispatch",
+        lambda *_args, **kwargs: dispatches.append(kwargs),
+    )
+
+    panel._render_screen_ui(
+        SimpleNamespace(semantic_capture_enabled=False),
+        0.0,
+        0.0,
+        200.0,
+        100.0,
+        scene=SimpleNamespace(),
+        canvases=(canvas,),
+    )
+
+    assert dispatches == []
 
 
 def test_game_view_resolution_and_fit_are_non_dirty_undoable_view_actions(monkeypatch):

@@ -13,6 +13,7 @@ class CloseState(str, Enum):
     IDLE: CloseState
     AWAITING_DECISION: CloseState
     WAITING_FOR_SAVE: CloseState
+    WAITING_FOR_CONFLICT: CloseState
 
 class CloseIssue(str, Enum):
     NONE: CloseIssue

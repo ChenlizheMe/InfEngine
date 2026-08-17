@@ -46,18 +46,27 @@ class Engine():
         # Native Scene remains the single lifecycle executor and does not yet
         # consume this plan, so steady frames must not prepare it.
         from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
-        self._runtime_scheduler = RuntimeExecutionScheduler(name=self._application_role)
+        self._runtime_scheduler = RuntimeExecutionScheduler(
+            name=self._application_role,
+            native_bridge=True,
+        )
+        self._runtime_scene_manager = None
+        self._last_native_transform_serial = None
         self._render_pipeline = None  # prevents GC of pybind11 trampoline
         self._last_frame_time = time.time()
+        self._render_submission_frame = 0
         self._gizmos_collector = None  # lazy-init GizmosCollector
         self._scene_view_visible = self._mode == RuntimeMode.Graphical and not _PLAYER_MODE
         self._next_reload_poll_time = 0.0
         self._next_gizmo_collect_time = 0.0
-        self._reload_poll_interval = 0.1   # 10 Hz is enough for watcher events
+        # Script candidates are prepared off-thread. Publish completed work at
+        # editor UI cadence so hot reload does not feel like a build step.
+        self._reload_poll_interval = 1.0 / 60.0
         self._gizmo_collect_interval_play = 0.0
         self._gizmo_collect_interval_edit = 1.0 / 60.0
         self._gizmos_uploaded = False
         self._resources_manager = None  # Set in init_renderer (editor only)
+        self._screen_ui_submission = None
         self._before_exit_callback = None
         self._editor_frame_sync_callback = None
         from Infernux.application import Application
@@ -119,6 +128,9 @@ class Engine():
         )
         self._apply_startup_present_mode()
         set_project_root(project_path)
+
+        from Infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
+        self._screen_ui_submission = RuntimeScreenUISubmission(self)
 
         # Synchronize C++ scene-view flag with Python's initial state.
         # C++ defaults to false; editor sets True, player keeps False.
@@ -187,15 +199,115 @@ class Engine():
         Debug.log_internal("Headless engine initialized")
 
     def _install_pre_scene_time_callback(self):
-        """Advance Python timing before native gameplay callbacks run."""
+        """Install timing and the shared Python lifecycle bridge.
+
+        SceneManager owns the real fixed/update/late boundaries. The Python
+        scheduler only captures one frame at the begin boundary and consumes
+        it from those callbacks; it is not driven from a second per-frame
+        Python traversal.
+        """
         engine_ref = weakref.ref(self)
 
         def _pre_scene_tick(delta_time):
             engine = engine_ref()
             if engine is not None:
-                engine.tick_play_mode(float(delta_time))
+                engine._render_submission_frame += 1
+                # Reload, queued scene work, and deserialization share the
+                # owner-thread safe point. Typed changes merge here and become
+                # visible when SceneManager begins the runtime frame.
+                with engine._runtime_scheduler.change_journal.transaction():
+                    engine.tick_play_mode(float(delta_time))
 
         self._engine.set_pre_scene_update_callback(_pre_scene_tick)
+
+        try:
+            from Infernux.lib import NativeRuntimeFrameBarrier, SceneManager
+            from Infernux.engine.runtime_change_journal import RuntimeFrameBarrier
+
+            scene_manager = SceneManager.instance()
+            self._runtime_scene_manager = scene_manager
+            transform_serial_getter = getattr(
+                scene_manager,
+                "get_global_transform_serial",
+                None,
+            )
+            if callable(transform_serial_getter):
+                self._last_native_transform_serial = int(transform_serial_getter())
+            setter = getattr(scene_manager, "set_runtime_lifecycle_callbacks", None)
+            if callable(setter):
+                scheduler = self._runtime_scheduler
+                setter(
+                    scheduler.begin_native_frame,
+                    lambda delta: scheduler.execute_native_phase("fixed_update", delta),
+                    lambda delta: scheduler.execute_native_phase("update", delta),
+                    lambda delta: scheduler.execute_native_phase("late_update", delta),
+                    scheduler.execute_native_editor_update,
+                    scheduler.end_native_frame,
+                )
+                barrier_setter = getattr(
+                    scene_manager,
+                    "set_runtime_frame_barrier_callback",
+                    None,
+                )
+                if callable(barrier_setter):
+                    barrier_map = {
+                        NativeRuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
+                            RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS,
+                        NativeRuntimeFrameBarrier.PHYSICS_SIMULATION:
+                            RuntimeFrameBarrier.PHYSICS_SIMULATION,
+                        NativeRuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
+                            RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM,
+                        NativeRuntimeFrameBarrier.TRANSFORM_RESOLVE:
+                            RuntimeFrameBarrier.TRANSFORM_RESOLVE,
+                        NativeRuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE:
+                            RuntimeFrameBarrier.FINAL_TRANSFORM_RESOLVE,
+                        NativeRuntimeFrameBarrier.ANIMATION_TIMELINE:
+                            RuntimeFrameBarrier.ANIMATION_TIMELINE,
+                        NativeRuntimeFrameBarrier.RENDER_EXTRACTION:
+                            RuntimeFrameBarrier.RENDER_EXTRACTION,
+                        NativeRuntimeFrameBarrier.RENDER_GRAPH:
+                            RuntimeFrameBarrier.RENDER_GRAPH,
+                        NativeRuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
+                            RuntimeFrameBarrier.SNAPSHOT_PUBLICATION,
+                        NativeRuntimeFrameBarrier.PENDING_DESTROY:
+                            RuntimeFrameBarrier.PENDING_DESTROY,
+                    }
+                    def _consume_native_barrier(barrier, _map=barrier_map):
+                        engine = engine_ref()
+                        if engine is None:
+                            return None
+                        return engine._consume_runtime_frame_barrier(_map[barrier])
+
+                    barrier_setter(_consume_native_barrier)
+                scheduler.sync_native_work_availability()
+        except Exception as exc:
+            # Older installed wheels can still start without the optional
+            # bridge. The source-side C++ binding will activate it after the
+            # matching wheel is installed.
+            Debug.log_suppressed("Engine.install_runtime_lifecycle_bridge", exc)
+
+    def _consume_runtime_frame_barrier(self, barrier):
+        from Infernux.engine.runtime_change_journal import (
+            RuntimeChangeDomain,
+            RuntimeFrameBarrier,
+        )
+
+        if RuntimeFrameBarrier(barrier) == RuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
+            scene_manager = getattr(self, "_runtime_scene_manager", None)
+            getter = getattr(scene_manager, "get_global_transform_serial", None)
+            if callable(getter):
+                current_serial = int(getter())
+                previous_serial = getattr(
+                    self,
+                    "_last_native_transform_serial",
+                    None,
+                )
+                self._last_native_transform_serial = current_serial
+                if previous_serial is not None and current_serial != previous_serial:
+                    journal = self._runtime_scheduler.change_journal
+                    journal.publish(RuntimeChangeDomain.TRANSFORM_LOCAL, broad=True)
+                    journal.publish(RuntimeChangeDomain.TRANSFORM_WORLD, broad=True)
+        return self._runtime_scheduler.consume_native_barrier(barrier)
 
     @staticmethod
     def _apply_project_settings(project_path):
@@ -275,12 +387,12 @@ class Engine():
         # any ImGui panel renders.  This prevents panels from accessing
         # destroyed pybind11 objects during play-mode Stop.
         def _pre_gui_tick():
-            from Infernux.engine.deferred_task import DeferredTaskRunner
-            try:
-                DeferredTaskRunner.instance().tick()
-            except Exception as exc:
-                Debug.log_suppressed("Engine.pre_gui_tick.DeferredTaskRunner", exc)
             if not _PLAYER_MODE:
+                from Infernux.engine.deferred_task import DeferredTaskRunner
+                try:
+                    DeferredTaskRunner.instance().tick()
+                except Exception as exc:
+                    Debug.log_suppressed("Engine.pre_gui_tick.DeferredTaskRunner", exc)
                 try:
                     from Infernux.mcp.threading import MainThreadCommandQueue
                     MainThreadCommandQueue.instance().drain()
@@ -310,14 +422,34 @@ class Engine():
         # Windows from flagging the application as "Not Responding" during long
         # scene loads that previously ran inside BuildFrame().
         #
-        # Manual GC collection also runs here at controlled intervals.
+        # Manual GC collection also runs here at controlled wall-clock
+        # intervals.  Frame-count scheduling turns into an accidental GC
+        # stress test when the editor renders at several thousand FPS.
         # Automatic GC is disabled below to prevent unpredictable ~5ms
         # pauses inside the hot UI/render path.  With 1000+ scene objects,
         # CPython's default gen0 threshold (700) triggers collections on
         # nearly every frame inside random timing windows.
-        _gc_frame = [0]  # mutable counter for closure
+        _gc_deadlines = {
+            0: time.monotonic() + 1.0,
+            1: time.monotonic() + 15.0,
+            2: time.monotonic() + 180.0,
+        }
+        _asset_import_progress = None
+        if not _PLAYER_MODE:
+            from Infernux.engine.ui.asset_import_progress import (
+                AssetImportProgressService,
+            )
+            _asset_import_progress = AssetImportProgressService.instance()
+
         def _post_draw_tick():
-            if not _PLAYER_MODE:
+            if _asset_import_progress is not None:
+                try:
+                    _asset_import_progress.post_present_tick()
+                except Exception as exc:
+                    Debug.log_suppressed(
+                        "Engine.post_draw_tick.asset_import_progress",
+                        exc,
+                    )
                 try:
                     from Infernux.engine.interaction import DocumentRegistry
                     DocumentRegistry.instance().process_deferred_saves()
@@ -327,6 +459,10 @@ class Engine():
                 from Infernux.core.assets import AssetManager
                 AssetManager.flush_pending_gpu_texture_reloads()
                 if not _PLAYER_MODE:
+                    # Asset persistence is an editor service, not a panel
+                    # rendering side effect.  Drain due debounced snapshots
+                    # even when no Inspector/Project view is visible.
+                    AssetManager.flush_scheduled_saves()
                     AssetManager.poll_pending_asset_writes()
                     from Infernux.engine.interaction import DocumentRegistry
                     DocumentRegistry.instance().process_pending_saves()
@@ -341,16 +477,36 @@ class Engine():
                         sfm.poll_deferred_load()
                     except Exception as exc:
                         Debug.log_suppressed("Engine.post_draw_tick.poll_deferred_load", exc)
-            # Periodic manual GC: gen0 every 120 frames (~1s at 120fps),
-            # gen1 every 600 frames (~5s), full every 3000 frames (~25s).
-            _gc_frame[0] += 1
-            _f = _gc_frame[0]
-            if _f % 3000 == 0:
-                gc.collect(2)
-            elif _f % 600 == 0:
-                gc.collect(1)
-            elif _f % 120 == 0:
-                gc.collect(0)
+            # Keep collection cadence independent of render FPS. At 3000 FPS
+            # the old 120/600/3000-frame policy ran at 40/200/1000 ms and a
+            # script reload's retired module graph made the following full
+            # collection visibly stall the editor.
+            now = time.monotonic()
+            generation = None
+            if now >= _gc_deadlines[2]:
+                generation = 2
+            elif now >= _gc_deadlines[1]:
+                generation = 1
+            elif now >= _gc_deadlines[0]:
+                generation = 0
+            if generation is not None:
+                gc_started = time.perf_counter()
+                collected = gc.collect(generation)
+                gc_elapsed_ms = (time.perf_counter() - gc_started) * 1000.0
+                if generation == 2:
+                    _gc_deadlines[2] = now + 180.0
+                    _gc_deadlines[1] = now + 15.0
+                    _gc_deadlines[0] = now + 1.0
+                elif generation == 1:
+                    _gc_deadlines[1] = now + 15.0
+                    _gc_deadlines[0] = now + 1.0
+                else:
+                    _gc_deadlines[0] = now + 1.0
+                if gc_elapsed_ms >= 10.0:
+                    Debug.log_internal(
+                        f"[PythonGCProfile] generation={generation} "
+                        f"elapsed={gc_elapsed_ms:.2f}ms collected={collected}"
+                    )
         self._engine.set_post_draw_callback(_post_draw_tick)
 
         # Disable automatic GC to eliminate unpredictable pauses during
@@ -565,6 +721,10 @@ class Engine():
         """Get the shared phase-plan service for diagnostics and profiling."""
         return self._runtime_scheduler
 
+    def get_runtime_change_journal(self):
+        """Return the typed invalidation stream shared by Editor and Player."""
+        return self._runtime_scheduler.change_journal
+
     def set_before_exit_callback(self, callback):
         """Register a callback invoked right before native engine cleanup."""
         self._before_exit_callback = callback
@@ -614,6 +774,15 @@ class Engine():
                 self._player_runtime.shutdown()
         else:
             self._shutdown_play_mode()
+
+        try:
+            from Infernux.lib import SceneManager
+
+            clear_bridge = getattr(SceneManager.instance(), "clear_runtime_lifecycle_callbacks", None)
+            if callable(clear_bridge):
+                clear_bridge()
+        except Exception as exc:
+            Debug.log_suppressed("Engine.clear_runtime_lifecycle_bridge", exc)
 
         try:
             self._runtime_scheduler.clear()
@@ -901,8 +1070,16 @@ class Engine():
             return self._engine.get_game_texture_id()
         return 0
 
+    def get_game_render_target_generation(self) -> int:
+        """Return the native Game target generation used by retained UI handles."""
+        if self._engine:
+            return int(self._engine.get_game_render_target_generation())
+        return 0
+
     def resize_game_render_target(self, width: int, height: int):
         """Resize the game render target to match game viewport size."""
+        if self._screen_ui_submission is not None:
+            self._screen_ui_submission.set_target_size(width, height)
         if self._engine:
             self._engine.resize_game_render_target(width, height)
 
@@ -1055,5 +1232,11 @@ class Engine():
         # gets GC'd (ref count → 0), pybind11 removes the C++ → Python mapping
         # from registered_instances, and get_override() can't find the Python
         # object → "pure virtual function" error.
-        self._render_pipeline = pipeline
-        self._engine.set_render_pipeline(pipeline)
+        from Infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline
+
+        wrapped_pipeline = RuntimeScreenUIRenderPipeline(
+            self._screen_ui_submission,
+            pipeline,
+        )
+        self._render_pipeline = wrapped_pipeline
+        self._engine.set_render_pipeline(wrapped_pipeline)

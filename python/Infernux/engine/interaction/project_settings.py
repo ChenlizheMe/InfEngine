@@ -25,6 +25,7 @@ from .documents import (
 BUILD_SETTINGS_DEFAULTS: dict[str, Any] = {
     "game_name": "",
     "scenes": [],
+    "additional_cook_roots": [],
     "output_dir": "",
     "icon_path": "",
     "display_mode": "fullscreen_borderless",
@@ -62,6 +63,22 @@ def normalize_build_settings(value: Any) -> dict[str, Any]:
         isinstance(item, str) and item for item in result["scenes"]
     ):
         raise TypeError("build settings scenes must contain non-empty strings")
+    if not isinstance(result["additional_cook_roots"], list) or not all(
+        isinstance(item, str) and item.strip()
+        for item in result["additional_cook_roots"]
+    ):
+        raise TypeError(
+            "build settings additional_cook_roots must contain non-empty strings"
+        )
+    normalized_roots: list[str] = []
+    seen_roots: set[str] = set()
+    for item in result["additional_cook_roots"]:
+        normalized = item.strip().replace("\\", "/")
+        key = normalized.casefold()
+        if key not in seen_roots:
+            normalized_roots.append(normalized)
+            seen_roots.add(key)
+    result["additional_cook_roots"] = normalized_roots
     if not isinstance(result["splash_items"], list) or not all(
         isinstance(item, dict) for item in result["splash_items"]
     ):

@@ -3,10 +3,16 @@ from __future__ import annotations
 import importlib
 import py_compile
 import sys
+import types
 
 import pytest
 
-from Infernux.components.script_loader import load_component_class_from_file
+from Infernux.components.script_loader import (
+    load_and_create_component,
+    load_all_components_from_file,
+    load_component_class_from_file,
+)
+import Infernux.components.script_loader as script_loader
 from Infernux.components import InxComponent
 from Infernux.components.component_identity import bind_asset_script_guid
 from Infernux.components.registry import get_type, get_type_by_identity
@@ -38,6 +44,78 @@ def test_script_loader_falls_back_to_sole_class_after_rename(tmp_path):
     )
     # Multi-component scripts stay strict to avoid picking the wrong class.
     assert load_component_class_from_file(str(script), "RemovedComponent") is None
+
+
+def test_script_loader_can_execute_the_captured_source_snapshot(tmp_path):
+    script = tmp_path / "captured_component.py"
+    script.write_text("def broken(:\n", encoding="utf-8")
+    captured = (
+        b"from Infernux.components import InxComponent\n"
+        b"class CapturedComponent(InxComponent):\n"
+        b"    pass\n"
+    )
+
+    loaded = load_all_components_from_file(
+        str(script),
+        register=False,
+        source=captured,
+    )
+
+    assert [component.__name__ for component in loaded] == ["CapturedComponent"]
+
+
+def test_script_loader_uses_frontend_code_without_compiling_again(tmp_path, monkeypatch):
+    script = tmp_path / "frontend_code_component.py"
+    source = (
+        b"from Infernux.components import InxComponent\n"
+        b"class FrontendCodeComponent(InxComponent):\n"
+        b"    pass\n"
+    )
+    script.write_bytes(source)
+    code = compile(source, str(script), "exec", dont_inherit=True)
+
+    def unexpected_compile(*_args, **_kwargs):
+        raise AssertionError("provided frontend code must not be compiled again")
+
+    monkeypatch.setattr(script_loader, "compile", unexpected_compile, raising=False)
+    loaded = load_all_components_from_file(
+        str(script),
+        register=False,
+        source=source,
+        code=code,
+    )
+
+    assert [component.__name__ for component in loaded] == ["FrontendCodeComponent"]
+    assert isinstance(code, types.CodeType)
+
+
+def test_script_loader_custom_frontend_without_code_falls_back_to_source_compile(
+    tmp_path, monkeypatch
+):
+    script = tmp_path / "source_fallback_component.py"
+    source = (
+        b"from Infernux.components import InxComponent\n"
+        b"class SourceFallbackComponent(InxComponent):\n"
+        b"    pass\n"
+    )
+    script.write_bytes(source)
+    compile_calls = []
+    original_compile = compile
+
+    def track_compile(*args, **kwargs):
+        compile_calls.append(args[0])
+        return original_compile(*args, **kwargs)
+
+    monkeypatch.setattr(script_loader, "compile", track_compile, raising=False)
+    loaded = load_all_components_from_file(
+        str(script),
+        register=False,
+        source=source,
+        code=None,
+    )
+
+    assert [component.__name__ for component in loaded] == ["SourceFallbackComponent"]
+    assert compile_calls == [source]
 
 
 def test_component_identity_distinguishes_same_named_classes():
@@ -85,6 +163,43 @@ def test_component_lookup_prefers_latest_hot_reloaded_class():
         "hot-reload-script-guid",
         type_guid,
     ) is second
+
+
+def test_asset_load_binds_every_component_type_in_one_script(tmp_path):
+    project = tmp_path / "project"
+    assets = project / "Assets"
+    assets.mkdir(parents=True)
+    script = assets / "SharedComponents.py"
+    script.write_text(
+        "from Infernux.components import InxComponent\n"
+        "class Target(InxComponent):\n"
+        "    pass\n"
+        "class Caller(InxComponent):\n"
+        "    def requested_guid(self):\n"
+        "        return Target._get_type_guid()\n",
+        encoding="utf-8",
+    )
+    script_guid = "same-script-asset-guid"
+    previous_root = get_project_root()
+    set_project_root(str(project))
+    try:
+        caller = load_and_create_component(
+            str(script),
+            type_name="Caller",
+            script_guid=script_guid,
+        )
+        target = get_type("Target")
+
+        assert caller is not None
+        assert target is not None
+        assert caller.requested_guid() == target._get_type_guid()
+        assert caller.requested_guid() == get_type_by_identity(
+            "Target",
+            script_guid,
+            target._get_type_guid(),
+        )._get_type_guid()
+    finally:
+        set_project_root(previous_root)
 
 
 def test_script_loader_executes_exact_pyc_with_canonical_project_module(tmp_path, monkeypatch):

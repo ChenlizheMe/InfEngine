@@ -260,6 +260,8 @@ class IGUI:
     def object_field_model(
         ctx: InxGUIContext,
         model: ObjectReferenceFieldModel,
+        *,
+        fixed_width: float = 0.0,
     ) -> bool:
         """Render an ObjectField from its shared interaction model."""
 
@@ -274,6 +276,7 @@ class IGUI:
             has_picker,
             int(picker_texture or 0),
             model.semantic_id,
+            fixed_width,
         ))
 
         # Drag/drop must bind to the ObjectField group before rendering either
@@ -317,6 +320,7 @@ class IGUI:
         transaction=None,
         alternate_compatibility: Optional[Callable[[Any], str]] = None,
         read_only: bool = False,
+        fixed_width: float = 0.0,
     ) -> bool:
         """Render an asset reference through the shared asset-field model."""
 
@@ -348,6 +352,7 @@ class IGUI:
                 alternate_compatibility=alternate_compatibility,
                 field_read_only=read_only,
             ),
+            fixed_width=fixed_width,
         )
 
     @staticmethod

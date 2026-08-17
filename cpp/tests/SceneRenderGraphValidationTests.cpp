@@ -60,6 +60,66 @@ RenderGraphDescription MakeTemporalGraph(bool completePair, bool singleSample = 
     return graph;
 }
 
+RenderGraphDescription MakeNormalGraph(rhi::PixelFormat colorFormat, bool readableDepth)
+{
+    RenderGraphDescription graph;
+    graph.textures.push_back({"Normal", colorFormat, false, false, 0, 0, 0, 1});
+    graph.textures.push_back({"Depth", rhi::PixelFormat::D32SFloat, false, true, 0, 0, 0, 1});
+
+    GraphPassDesc pass;
+    pass.name = "Normal";
+    pass.commands.push_back({GraphCommandType::DrawRenderers});
+    pass.commands.front().shaderTarget = ShaderCompileTarget::Normal;
+    pass.writeColors.push_back({0, "Normal"});
+    if (readableDepth)
+        pass.readTextures.push_back("Depth");
+    graph.passes.push_back(std::move(pass));
+    graph.outputTexture = "Normal";
+    return graph;
+}
+
+RenderGraphDescription MakeBaseColorGraph(rhi::PixelFormat colorFormat, bool readableDepth)
+{
+    RenderGraphDescription graph;
+    graph.textures.push_back({"BaseColor", colorFormat, false, false, 0, 0, 0, 1});
+    graph.textures.push_back({"Depth", rhi::PixelFormat::D32SFloat, false, true, 0, 0, 0, 1});
+
+    GraphPassDesc pass;
+    pass.name = "BaseColor";
+    pass.commands.push_back({GraphCommandType::DrawRenderers});
+    pass.commands.front().shaderTarget = ShaderCompileTarget::BaseColor;
+    pass.writeColors.push_back({0, "BaseColor"});
+    if (readableDepth)
+        pass.readTextures.push_back("Depth");
+    graph.passes.push_back(std::move(pass));
+    graph.outputTexture = "BaseColor";
+    return graph;
+}
+
+RenderGraphDescription MakeAttachmentGraph(int secondColorSlot, uint32_t readOnlyDepthCount, bool writesDepth)
+{
+    RenderGraphDescription graph;
+    graph.textures.push_back({"Color0", rhi::PixelFormat::RGBA16SFloat, false, false, 0, 0, 0, 1});
+    graph.textures.push_back({"Color1", rhi::PixelFormat::RGBA16SFloat, false, false, 0, 0, 0, 1});
+    graph.textures.push_back({"Depth0", rhi::PixelFormat::D32SFloat, false, true, 0, 0, 0, 1});
+    graph.textures.push_back({"Depth1", rhi::PixelFormat::D32SFloat, false, true, 0, 0, 0, 1});
+
+    GraphPassDesc pass;
+    pass.name = "AttachmentContract";
+    pass.commands.push_back({GraphCommandType::DrawRenderers});
+    pass.commands.front().shaderTarget = ShaderCompileTarget::Forward;
+    pass.writeColors = {{0, "Color0"}, {secondColorSlot, "Color1"}};
+    if (readOnlyDepthCount > 0)
+        pass.readTextures.push_back("Depth0");
+    if (readOnlyDepthCount > 1)
+        pass.readTextures.push_back("Depth1");
+    if (writesDepth)
+        pass.writeDepth = "Depth1";
+    graph.passes.push_back(std::move(pass));
+    graph.outputTexture = "Color0";
+    return graph;
+}
+
 } // namespace
 
 int main()
@@ -73,9 +133,19 @@ int main()
     assert(SceneRenderGraph::ValidateGraphDescription(MakeMotionGraph(rhi::PixelFormat::RG16SFloat, true), 1));
     assert(!SceneRenderGraph::ValidateGraphDescription(MakeMotionGraph(rhi::PixelFormat::RGBA8UNorm, true), 1));
     assert(!SceneRenderGraph::ValidateGraphDescription(MakeMotionGraph(rhi::PixelFormat::RG16SFloat, false), 1));
+    assert(SceneRenderGraph::ValidateGraphDescription(MakeNormalGraph(rhi::PixelFormat::RGBA16SFloat, true), 1));
+    assert(!SceneRenderGraph::ValidateGraphDescription(MakeNormalGraph(rhi::PixelFormat::RGBA8UNorm, true), 1));
+    assert(!SceneRenderGraph::ValidateGraphDescription(MakeNormalGraph(rhi::PixelFormat::RGBA16SFloat, false), 1));
+    assert(SceneRenderGraph::ValidateGraphDescription(MakeBaseColorGraph(rhi::PixelFormat::RGBA16SFloat, true), 1));
+    assert(!SceneRenderGraph::ValidateGraphDescription(MakeBaseColorGraph(rhi::PixelFormat::RGBA8UNorm, true), 1));
+    assert(!SceneRenderGraph::ValidateGraphDescription(MakeBaseColorGraph(rhi::PixelFormat::RGBA16SFloat, false), 1));
     assert(SceneRenderGraph::ValidateGraphDescription(MakeTemporalGraph(true), 1));
     assert(!SceneRenderGraph::ValidateGraphDescription(MakeTemporalGraph(false), 1));
     assert(!SceneRenderGraph::ValidateGraphDescription(MakeTemporalGraph(true, false), 1));
+    assert(SceneRenderGraph::ValidateGraphDescription(MakeAttachmentGraph(1, 1, false), 1));
+    assert(!SceneRenderGraph::ValidateGraphDescription(MakeAttachmentGraph(2, 1, false), 1));
+    assert(!SceneRenderGraph::ValidateGraphDescription(MakeAttachmentGraph(1, 2, false), 1));
+    assert(!SceneRenderGraph::ValidateGraphDescription(MakeAttachmentGraph(1, 1, true), 1));
 
     const glm::vec2 firstJitter = SceneRenderGraph::ComputeTemporalJitterNdc(0, 200, 100);
     assert(std::abs(firstJitter.x) < 1e-7f);

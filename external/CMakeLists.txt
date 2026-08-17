@@ -168,6 +168,10 @@ add_subdirectory(glm)
 add_library(stb INTERFACE)
 target_include_directories(stb INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/stb)
 
+# dr_libs (header-only declarations; implementations live in AudioDecoders.cpp)
+add_library(dr_libs INTERFACE)
+target_include_directories(dr_libs INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/dr_libs)
+
 # SDL3
 add_subdirectory(SDL)
 
@@ -196,8 +200,43 @@ set(IMGUI_CORE_SRCS
     ${IMGUI_DIR}/imgui_widgets.cpp
 )
 
+set(INFERNUX_IMGUI_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/imgui")
+set(INFERNUX_IMGUI_VULKAN_BACKEND "${INFERNUX_IMGUI_GENERATED_DIR}/imgui_impl_vulkan_infernux.cpp")
+set(INFERNUX_IMGUI_FRAGMENT_SOURCE
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/gui/backend/infernux_imgui_frag.frag")
+set(INFERNUX_IMGUI_FRAGMENT_HEADER
+    "${INFERNUX_IMGUI_GENERATED_DIR}/infernux_imgui_frag.u32")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"
+    "${CMAKE_SOURCE_DIR}/cmake/patch_imgui_vulkan_backend.py"
+    "${INFERNUX_IMGUI_FRAGMENT_SOURCE}"
+)
+file(MAKE_DIRECTORY "${INFERNUX_IMGUI_GENERATED_DIR}")
+execute_process(
+    COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}"
+        -V -x
+        -o "${INFERNUX_IMGUI_FRAGMENT_HEADER}"
+        "${INFERNUX_IMGUI_FRAGMENT_SOURCE}"
+    RESULT_VARIABLE INFERNUX_IMGUI_SHADER_RESULT
+    ERROR_VARIABLE INFERNUX_IMGUI_SHADER_ERROR
+)
+if(NOT INFERNUX_IMGUI_SHADER_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to compile the Infernux ImGui fragment shader: ${INFERNUX_IMGUI_SHADER_ERROR}")
+endif()
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_SOURCE_DIR}/cmake/patch_imgui_vulkan_backend.py"
+        --source "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"
+        --output "${INFERNUX_IMGUI_VULKAN_BACKEND}"
+    RESULT_VARIABLE INFERNUX_IMGUI_PATCH_RESULT
+    ERROR_VARIABLE INFERNUX_IMGUI_PATCH_ERROR
+)
+if(NOT INFERNUX_IMGUI_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to prepare the Infernux ImGui Vulkan backend: ${INFERNUX_IMGUI_PATCH_ERROR}")
+endif()
+
 set(IMGUI_BACKEND_SRCS
-    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+    ${INFERNUX_IMGUI_VULKAN_BACKEND}
     ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp
 )
 
@@ -210,6 +249,10 @@ add_library(imgui STATIC ${IMGUI_ALL_SRCS})
 target_include_directories(imgui PUBLIC
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
+)
+target_include_directories(imgui PRIVATE
+    ${INFERNUX_IMGUI_GENERATED_DIR}
+    ${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/gui/backend
 )
 
 target_link_libraries(imgui PUBLIC

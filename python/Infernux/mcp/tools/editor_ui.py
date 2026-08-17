@@ -658,22 +658,34 @@ def register_editor_ui_tools(mcp) -> None:
         )
         if not chord_result.get("ok"):
             return chord_result
-        text_result = input_tools.perform_text_input(
-            text,
-            timeout_seconds=timeout_seconds,
-            trace_name="editor_ui_replace_text.type",
-        )
-        if not text_result.get("ok"):
-            return text_result
+        replacement = str(text or "")
+        if replacement:
+            text_result = input_tools.perform_text_input(
+                replacement,
+                timeout_seconds=timeout_seconds,
+                trace_name="editor_ui_replace_text.type",
+            )
+            if not text_result.get("ok"):
+                return text_result
+            action_path = f"{action_path}_and_keyboard"
+        else:
+            text_result = input_tools.perform_key_chord(
+                ["Delete"],
+                timeout_seconds=timeout_seconds,
+                trace_name="editor_ui_replace_text.clear",
+            )
+            if not text_result.get("ok"):
+                return text_result
+            action_path = f"{action_path}_and_keyboard_clear"
         return ok({
             "target": resolved,
-            "text_length": len(str(text or "")),
+            "text_length": len(replacement),
             "focus": focus_result.get("data") or {},
             "focus_confirmation": focus_confirmation,
             "modifier_release": (modifier_release or {}).get("data") or {},
             "select_all": chord_result.get("data") or {},
             "input": text_result.get("data") or {},
-            "action_path": f"{action_path}_and_keyboard",
+            "action_path": action_path,
         })
 
     @mcp.tool(name="editor_ui_hover")

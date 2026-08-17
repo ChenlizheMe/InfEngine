@@ -21,6 +21,97 @@ class NavigationRequest:
 NavigationAdapter = Callable[[SelectionTarget, NavigationRequest], bool]
 
 
+@dataclass(frozen=True, slots=True)
+class DirectoryNavigationSnapshot:
+    """Immutable browser-style state for one Project/FileManager view."""
+
+    current_path: str = ""
+    back_paths: tuple[str, ...] = ()
+    forward_paths: tuple[str, ...] = ()
+
+
+class DirectoryNavigationHistory:
+    """Keep directory Back/Forward state separate from document undo history."""
+
+    def __init__(self, max_entries: int = 200) -> None:
+        self.max_entries = max(1, int(max_entries))
+        self._current = ""
+        self._back: list[str] = []
+        self._forward: list[str] = []
+
+    @property
+    def snapshot(self) -> DirectoryNavigationSnapshot:
+        return DirectoryNavigationSnapshot(
+            self._current,
+            tuple(self._back),
+            tuple(self._forward),
+        )
+
+    @property
+    def can_go_back(self) -> bool:
+        return bool(self._back)
+
+    @property
+    def can_go_forward(self) -> bool:
+        return bool(self._forward)
+
+    def sync(self, current_path: str) -> None:
+        """Adopt an external path change and invalidate stale browser state."""
+        current = str(current_path or "").strip()
+        if not self._current:
+            self._current = current
+            return
+        if current == self._current:
+            return
+        self._current = current
+        self._back.clear()
+        self._forward.clear()
+
+    def navigate(self, target_path: str, apply: Callable[[str], object]) -> bool:
+        target = str(target_path or "").strip()
+        if not target or target == self._current:
+            return False
+        if apply(target) is False:
+            return False
+        if self._current:
+            self._back.append(self._current)
+            del self._back[:-self.max_entries]
+        self._current = target
+        self._forward.clear()
+        return True
+
+    def back(self, apply: Callable[[str], object]) -> bool:
+        if not self._back:
+            return False
+        target = self._back[-1]
+        if apply(target) is False:
+            return False
+        self._back.pop()
+        if self._current:
+            self._forward.append(self._current)
+            del self._forward[:-self.max_entries]
+        self._current = target
+        return True
+
+    def forward(self, apply: Callable[[str], object]) -> bool:
+        if not self._forward:
+            return False
+        target = self._forward[-1]
+        if apply(target) is False:
+            return False
+        self._forward.pop()
+        if self._current:
+            self._back.append(self._current)
+            del self._back[:-self.max_entries]
+        self._current = target
+        return True
+
+    def clear(self) -> None:
+        self._current = ""
+        self._back.clear()
+        self._forward.clear()
+
+
 class NavigationService:
     """Locate a typed target through one panel activation and selection action."""
 
@@ -122,4 +213,10 @@ class NavigationService:
         self._adapters.clear()
 
 
-__all__ = ["NavigationAdapter", "NavigationRequest", "NavigationService"]
+__all__ = [
+    "DirectoryNavigationHistory",
+    "DirectoryNavigationSnapshot",
+    "NavigationAdapter",
+    "NavigationRequest",
+    "NavigationService",
+]

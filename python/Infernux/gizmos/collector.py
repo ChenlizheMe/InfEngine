@@ -26,7 +26,11 @@ from __future__ import annotations
 from typing import Dict, List, TYPE_CHECKING
 
 from Infernux.gizmos.gizmos import Gizmos, ICON_KIND_DEFAULT
-from Infernux.components.serialized_field import SerializedFieldDescriptor
+from Infernux.components.fields import SerializedFieldDescriptor
+from Infernux.engine.editor_visibility import (
+    component_owner_is_active_in_hierarchy,
+    game_object_is_active_in_hierarchy,
+)
 
 if TYPE_CHECKING:
     from Infernux.engine.engine import Engine
@@ -191,6 +195,8 @@ class GizmosCollector:
                 for comp in components:
                     if isinstance(comp, BuiltinComponent):
                         continue
+                    if not component_owner_is_active_in_hierarchy(comp):
+                        continue
                     if not getattr(comp, 'enabled', True):
                         continue
 
@@ -257,6 +263,12 @@ class GizmosCollector:
                 matching = scene.get_all_objects()
 
             for go in matching:
+                # Gizmos follow GameObject.activeInHierarchy, not activeSelf.
+                # Keep this gate before component lookup, icon registration,
+                # wrapper creation, and callbacks so every built-in component
+                # shares the same hierarchy visibility contract.
+                if not game_object_is_active_in_hierarchy(go):
+                    continue
                 try:
                     go_id = go.id
                     is_selected = go_id in selected_ancestors

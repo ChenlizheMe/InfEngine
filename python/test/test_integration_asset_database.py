@@ -90,7 +90,7 @@ def test_render_effect_import_tracks_group_dependencies(engine, tmp_path: Path):
                         },
                         {
                             "entry_id": "tonemapping",
-                            "asset": {"guid": "", "path_hint": str(tone)},
+                            "asset": {"guid": tone_result.guid, "path_hint": str(tone)},
                             "enabled": True,
                             "overrides": {},
                         },
@@ -112,6 +112,37 @@ def test_render_effect_import_tracks_group_dependencies(engine, tmp_path: Path):
         for path in reversed(imported_paths):
             if asset_db.contains_path(str(path)):
                 asset_db.delete_asset(str(path))
+
+
+def test_render_effect_import_rejects_path_only_dependency(engine, tmp_path: Path):
+    asset_db = engine.get_asset_database()
+    source = tmp_path / "Path Only.effectgroup"
+    source.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.render_effect_group",
+                "entries": [
+                    {
+                        "entry_id": "tone",
+                        "asset": {
+                            "guid": "",
+                            "path_hint": "Assets/Rendering/Tone.effect",
+                        },
+                        "enabled": True,
+                        "overrides": {},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = asset_db.import_asset(str(source))
+
+    assert not result
+    assert "must provide a GUID" in result.error
+    assert "path_hint is non-authoritative" in result.error
+    assert not asset_db.contains_path(str(source))
 
 
 def test_render_effect_import_rejects_mount_scope_in_asset(engine, tmp_path: Path):
@@ -140,6 +171,9 @@ def test_render_effect_import_rejects_mount_scope_in_asset(engine, tmp_path: Pat
 def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     source = tmp_path / "Smoke.particlegraph"
+    wind_guid = "a" * 32
+    collision_guid = "b" * 32
+    mesh_guid = "c" * 32
     document = ParticleGraphAsset(stable_id="integration-smoke").to_dict()
     document["emitters"][0]["stages"]["rendering"]["nodes"][1]["properties"][
         "shader"
@@ -147,11 +181,11 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
     document["emitters"][0]["data_interfaces"] = [
         VectorField(
             stable_id="wind-field",
-            texture=AssetReference(guid="wind-field-guid"),
+            texture=AssetReference(guid=wind_guid),
         ).to_dict(),
         SdfVolume(
             stable_id="collision-field",
-            texture=AssetReference(guid="collision-field-guid"),
+            texture=AssetReference(guid=collision_guid),
         ).to_dict(),
     ]
     document["parameters"].append(
@@ -160,7 +194,7 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
             "name": "Surface Mesh",
             "type": {"value_type": "mesh", "space": "none"},
             "default": {
-                "guid": "surface-mesh-guid",
+                "guid": mesh_guid,
                 "path_hint": "Assets/Models/Surface.fbx",
             },
                 "exposed": True,
@@ -187,9 +221,9 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
         assert ParticleArtifactRegistry.get(str(source)) is artifact
         assert artifact.hir["stable_id"] == "integration-smoke"
         assert AssetDependencyGraph.instance().get_dependencies(result.guid) == {
-            "collision-field-guid",
-            "surface-mesh-guid",
-            "wind-field-guid",
+            collision_guid,
+            mesh_guid,
+            wind_guid,
         }
     finally:
         if asset_db.contains_path(str(source)):
@@ -361,20 +395,15 @@ def test_vector_field_import_exposes_immutable_volume_generations(engine, tmp_pa
         np.testing.assert_allclose(texture.value_min[:3], (-4.0, 2.0, 3.0))
         np.testing.assert_allclose(texture.value_max[:3], (1.0, 5.5, 6.0))
 
-        original = texture.volume_array()
-        assert original.shape == (1, 1, 2, 4)
-        assert original.dtype == np.dtype(np.float16)
-        assert not original.flags.writeable
-        np.testing.assert_allclose(original[0, 0], [[1, 2, 3, 0], [-4, 5.5, 6, 0]])
+        assert not hasattr(texture, "volume_array")
 
         source.write_text(json.dumps(document([[7, 8, 9], [10, 11, 12]])), encoding="utf-8")
         reimported = AssetManager.reimport_asset(str(source), database=asset_db)
         assert reimported, reimported.error
 
-        current = texture.volume_array()
         assert texture.generation == initial_generation + 1
-        np.testing.assert_allclose(current[0, 0], [[7, 8, 9, 0], [10, 11, 12, 0]])
-        np.testing.assert_allclose(original[0, 0], [[1, 2, 3, 0], [-4, 5.5, 6, 0]])
+        np.testing.assert_allclose(texture.value_min[:3], (7.0, 8.0, 9.0))
+        np.testing.assert_allclose(texture.value_max[:3], (10.0, 11.0, 12.0))
     finally:
         if "result" in locals() and result.guid:
             registry.remove_asset(result.guid)
@@ -433,20 +462,15 @@ def test_signed_distance_field_import_exposes_immutable_volume_generations(engin
         assert texture.value_min[0] == pytest.approx(-0.25)
         assert texture.value_max[0] == pytest.approx(0.75)
 
-        original = texture.volume_array()
-        assert original.shape == (1, 1, 2, 4)
-        assert original.dtype == np.dtype(np.float16)
-        assert not original.flags.writeable
-        np.testing.assert_allclose(original[0, 0], [[-0.25, 0, 0, 0], [0.75, 0, 0, 0]])
+        assert not hasattr(texture, "volume_array")
 
         source.write_text(json.dumps(document([-0.5, 1.25])), encoding="utf-8")
         reimported = AssetManager.reimport_asset(str(source), database=asset_db)
         assert reimported, reimported.error
 
-        current = texture.volume_array()
         assert texture.generation == initial_generation + 1
-        np.testing.assert_allclose(current[0, 0], [[-0.5, 0, 0, 0], [1.25, 0, 0, 0]])
-        np.testing.assert_allclose(original[0, 0], [[-0.25, 0, 0, 0], [0.75, 0, 0, 0]])
+        assert texture.value_min[0] == pytest.approx(-0.5)
+        assert texture.value_max[0] == pytest.approx(1.25)
     finally:
         if "result" in locals() and result.guid:
             registry.remove_asset(result.guid)
@@ -697,6 +721,84 @@ def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
                 asset_db.delete_asset(str(path))
 
 
+def test_project_shader_move_migrates_material_reference_and_reimports(
+    engine, tmp_path: Path
+):
+    from Infernux.engine.ui import project_file_ops
+
+    asset_db = engine.get_asset_database()
+    graph = AssetDependencyGraph.instance()
+    shader_dir = tmp_path / "Shaders"
+    moved_dir = tmp_path / "Rendering"
+    shader_dir.mkdir()
+    moved_dir.mkdir()
+    vertex = shader_dir / "surface.vert"
+    fragment = shader_dir / "surface.frag"
+    material = tmp_path / "Surface.mat"
+    vertex.write_text("void main() {}", encoding="utf-8")
+    fragment.write_text("void main() {}", encoding="utf-8")
+    vertex_guid = asset_db.import_asset(str(vertex)).guid
+    fragment_guid = asset_db.import_asset(str(fragment)).guid
+    assert vertex_guid and fragment_guid
+
+    document = json.loads(InxMaterial.create_default_lit().serialize())
+    document["shaders"] = {
+        "vertex": {
+            "guid": vertex_guid,
+            "shader_id": "surface-vertex",
+            "path_hint": str(vertex),
+        },
+        "fragment": {
+            "guid": fragment_guid,
+            "shader_id": "surface-fragment",
+            "path_hint": str(fragment),
+        },
+    }
+    material.write_text(json.dumps(document), encoding="utf-8")
+    material_guid = asset_db.import_asset(str(material)).guid
+    assert material_guid
+    document["shaders"]["fragment"]["guid"] = ""
+    material.write_text(json.dumps(document), encoding="utf-8")
+    destination = moved_dir / fragment.name
+
+    try:
+        result = project_file_ops.move_path(
+            str(fragment),
+            str(destination),
+            asset_db,
+            origin="user",
+            operation_id="shader-reference-relocation",
+        )
+
+        assert same_path(result, str(destination))
+        migrated = json.loads(material.read_text(encoding="utf-8"))
+        assert migrated["shaders"]["fragment"] == {
+            "guid": fragment_guid,
+            "shader_id": "surface-fragment",
+            "path_hint": str(destination).replace("\\", "/"),
+        }
+        assert fragment_guid in set(graph.get_dependencies(material_guid))
+        assert asset_db.get_guid_from_path(str(destination)) == fragment_guid
+
+        restored = project_file_ops.move_path(
+            str(destination),
+            str(fragment),
+            asset_db,
+            origin="user",
+            operation_id="shader-reference-relocation-undo",
+        )
+        assert same_path(restored, str(fragment))
+        restored_document = json.loads(material.read_text(encoding="utf-8"))
+        assert restored_document["shaders"]["fragment"]["guid"] == fragment_guid
+        assert same_path(asset_db.get_path_from_guid(fragment_guid), str(fragment))
+    finally:
+        for path in (material, fragment, destination, vertex):
+            if asset_db.contains_path(str(path)):
+                asset_db.delete_asset(str(path))
+            path.unlink(missing_ok=True)
+            Path(f"{path}.meta").unlink(missing_ok=True)
+
+
 def test_metadata_creation_uses_the_submitted_source_bytes(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     text = tmp_path / "metadata-source.txt"
@@ -750,15 +852,19 @@ def test_material_import_artifact_commits_metadata_and_dependencies_atomically(
     fragment_guid = asset_db.import_asset(str(fragment)).guid
     assert vertex_guid and fragment_guid
 
-    def write_material(shader_paths: list[Path]) -> None:
+    def write_material(shader_paths: list[tuple[Path, str]]) -> None:
         document = json.loads(InxMaterial.create_default_lit().serialize())
         if shader_paths:
             document["shaders"]["vertex"] = {
-                "guid": "", "shader_id": "artifact-vertex", "path_hint": str(shader_paths[0]),
+                "guid": shader_paths[0][1],
+                "shader_id": "artifact-vertex",
+                "path_hint": str(shader_paths[0][0]),
             }
         if len(shader_paths) > 1:
             document["shaders"]["fragment"] = {
-                "guid": "", "shader_id": "artifact-fragment", "path_hint": str(shader_paths[1]),
+                "guid": shader_paths[1][1],
+                "shader_id": "artifact-fragment",
+                "path_hint": str(shader_paths[1][0]),
             }
         material.write_text(json.dumps(document), encoding="utf-8")
 
@@ -771,7 +877,7 @@ def test_material_import_artifact_commits_metadata_and_dependencies_atomically(
         assert failed_import.error
         assert not asset_db.contains_path(str(material))
 
-        write_material([vertex, fragment])
+        write_material([(vertex, vertex_guid), (fragment, fragment_guid)])
         material_guid = asset_db.import_asset(str(material)).guid
         assert material_guid
         assert set(graph.get_dependencies(material_guid)) == {
@@ -793,7 +899,7 @@ def test_material_import_artifact_commits_metadata_and_dependencies_atomically(
             == metadata_before
         )
 
-        write_material([vertex])
+        write_material([(vertex, vertex_guid)])
         assert asset_db.reimport_asset(str(material))
         assert set(graph.get_dependencies(material_guid)) == {vertex_guid}
     finally:
@@ -939,10 +1045,13 @@ def test_refresh_builds_import_artifacts_only_on_workers(engine):
     model = fixture / "worker.obj"
     vertex.write_text("void main() {}", encoding="utf-8")
     fragment.write_text("void main() {}", encoding="utf-8")
+    vertex_guid = asset_db.import_asset(str(vertex)).guid
+    fragment_guid = asset_db.import_asset(str(fragment)).guid
+    assert vertex_guid and fragment_guid
     material_document = json.loads(InxMaterial.create_default_lit().serialize())
     material_document["shaders"] = {
-        "vertex": {"guid": "", "shader_id": "worker-vertex", "path_hint": str(vertex)},
-        "fragment": {"guid": "", "shader_id": "worker-fragment", "path_hint": str(fragment)},
+        "vertex": {"guid": vertex_guid, "shader_id": "worker-vertex", "path_hint": str(vertex)},
+        "fragment": {"guid": fragment_guid, "shader_id": "worker-fragment", "path_hint": str(fragment)},
     }
     material.write_text(json.dumps(material_document), encoding="utf-8")
     model.write_text(
@@ -952,6 +1061,8 @@ def test_refresh_builds_import_artifacts_only_on_workers(engine):
 
     paths = (vertex, fragment, material, model)
     try:
+        vertex.write_text("void main() { /* refreshed */ }", encoding="utf-8")
+        fragment.write_text("void main() { /* refreshed */ }", encoding="utf-8")
         asset_db.refresh()
         assert asset_db.last_refresh_metadata_task_count >= len(paths)
         assert (
@@ -968,8 +1079,6 @@ def test_refresh_builds_import_artifacts_only_on_workers(engine):
             {Path(path) for path in asset_db.last_refresh_imported_paths}
         )
 
-        vertex_guid = asset_db.get_guid_from_path(str(vertex))
-        fragment_guid = asset_db.get_guid_from_path(str(fragment))
         material_guid = asset_db.get_guid_from_path(str(material))
         assert set(graph.get_dependencies(material_guid)) == {
             vertex_guid,

@@ -88,6 +88,7 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
              "Add an extra directory to scan during Refresh (e.g. Library/Resources)")
         .def("import_asset", &AssetDatabase::ImportAsset, py::arg("path"), "Import a single asset")
         .def("reimport_asset", &AssetDatabase::ReimportAsset, py::arg("path"),
+             py::call_guard<py::gil_scoped_release>(),
              "Reimport an existing asset while preserving its GUID")
         .def("delete_asset", &AssetDatabase::DeleteAsset, py::arg("path"), "Delete asset and its meta")
         .def("move_asset", &AssetDatabase::MoveAsset, py::arg("old_path"), py::arg("new_path"),

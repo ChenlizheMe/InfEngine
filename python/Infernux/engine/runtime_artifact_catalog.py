@@ -14,6 +14,8 @@ from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Any, Iterable
 
+from Infernux.core.asset_types import AUDIO_EXTENSIONS
+
 from .path_utils import relative_path, resolved_path
 
 
@@ -32,19 +34,62 @@ _DOCUMENT_TYPES = {
     ".timelinefsm": "timeline_fsm",
     ".animclip": "animation_clip",
     ".animclip2d": "animation_clip_2d",
+    ".animclip3d": "animation_clip_3d",
     ".animfsm": "animation_fsm",
+    ".animtimeline": "animation_timeline",
 }
-_AUDIO_TYPES = {
-    ".wav": "audio",
-    ".ogg": "audio",
-    ".mp3": "audio",
-    ".flac": "audio",
-    ".aiff": "audio",
-    ".aif": "audio",
-}
+
+# One source of truth for authoring documents that must be cooked into
+# Library artifacts before entering a Player package.  Keep the JSON subset
+# separate: GameBuilder may rewrite project-owned absolute paths only in
+# formats whose parser contract is JSON.
+RUNTIME_AUTHORING_DOCUMENT_SUFFIXES = frozenset(_DOCUMENT_TYPES) | frozenset(
+    {".graph", ".particlegraph"}
+)
+RUNTIME_JSON_DOCUMENT_SUFFIXES = frozenset(_DOCUMENT_TYPES) | frozenset(
+    {".graph", ".particlegraph", ".json"}
+)
+_AUDIO_TYPES = {extension: "audio" for extension in AUDIO_EXTENSIONS}
 _DIRECT_TEXTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr", ".exr"}
 _DIRECT_MODEL_SUFFIXES = {".fbx", ".obj", ".gltf", ".glb", ".dae"}
-_ARTIFACT_SUFFIXES = {".inxtex", ".inxmesh", ".inxskin", ".inxparticle"}
+_ARTIFACT_SUFFIXES = {
+    ".inxtex",
+    ".inxmesh",
+    ".inxskin",
+    ".inxparticle",
+    ".inxeffect",
+}
+
+# These reasons describe the Library artifact that a source type must produce.
+# They remain part of the build diagnostics, but no longer authorize a direct
+# authoring payload in a Player package.
+RUNTIME_ARTIFACT_REASONS = frozenset(
+    {
+        "runtime_loader_requires_serialized_document",
+        "runtime_audio_backend_requires_encoded_stream",
+        "runtime_loader_requires_opaque_project_payload",
+    }
+)
+_RUNTIME_ARTIFACT_REASON_BY_LOGICAL_TYPE = {
+    "scene": "runtime_loader_requires_serialized_document",
+    "prefab": "runtime_loader_requires_serialized_document",
+    "material": "runtime_loader_requires_serialized_document",
+    "render_effect": "runtime_loader_requires_serialized_document",
+    "render_effect_group": "runtime_loader_requires_serialized_document",
+    "timeline": "runtime_loader_requires_serialized_document",
+    "timeline_fsm": "runtime_loader_requires_serialized_document",
+    "animation_clip": "runtime_loader_requires_serialized_document",
+    "animation_clip_2d": "runtime_loader_requires_serialized_document",
+    "animation_clip_3d": "runtime_loader_requires_serialized_document",
+    "animation_fsm": "runtime_loader_requires_serialized_document",
+    "animation_timeline": "runtime_loader_requires_serialized_document",
+    "audio": "runtime_audio_backend_requires_encoded_stream",
+    "project_runtime_document": "runtime_loader_requires_opaque_project_payload",
+    "project_runtime_blob": "runtime_loader_requires_opaque_project_payload",
+}
+RUNTIME_DOCUMENT_PAYLOAD_KINDS = frozenset(
+    {"serialized_runtime_document", "direct_runtime_asset"}
+)
 
 
 class RuntimeArtifactError(RuntimeError):
@@ -183,13 +228,13 @@ def artifact_source_hash(path: str | os.PathLike[str]) -> str:
     artifact = Path(path)
     suffix = artifact.suffix.casefold()
     try:
-        if suffix == ".inxparticle":
+        if suffix in {".inxparticle", ".inxeffect"}:
             payload = json.loads(artifact.read_text(encoding="utf-8"))
             value = payload.get("source_hash")
             if not isinstance(value, str) or not value or any(
                 character not in "0123456789abcdefABCDEF" for character in value
             ):
-                raise RuntimeArtifactError(f"particle artifact has no source_hash: {artifact}")
+                raise RuntimeArtifactError(f"JSON artifact has no source_hash: {artifact}")
             return value
         raw = artifact.read_bytes()
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -225,7 +270,16 @@ def expected_artifact_source_hash(
 ) -> str:
     """Return the source hash format expected by a concrete artifact kind."""
 
-    if Path(artifact_path).suffix.casefold() != ".inxparticle":
+    suffix = Path(artifact_path).suffix.casefold()
+    if suffix == ".inxeffect":
+        source = source_path_for_entry(project_root, entry)
+        try:
+            return hashlib.sha256(Path(source).read_bytes()).hexdigest()
+        except OSError as exc:
+            raise RuntimeArtifactError(
+                f"RenderEffect source cannot be fingerprinted: {source}"
+            ) from exc
+    if suffix != ".inxparticle":
         return str(entry["content_hash"])
     source = source_path_for_entry(project_root, entry)
     try:
@@ -319,6 +373,17 @@ def logical_type_for_path(path: str) -> str:
     suffix = PurePosixPath(normalized).suffix.casefold()
     if lower.startswith("infernux/resources/shaders/"):
         return "builtin_shader"
+    if lower.startswith("infernux/resources/"):
+        return "builtin_resource"
+    if lower.startswith(("branding/", "splash/")):
+        return "player_branding"
+    if lower.startswith("library/artifacts/document/"):
+        document_type = _DOCUMENT_TYPES.get(suffix, "project_runtime_document")
+        return f"{document_type}_artifact"
+    if lower.startswith("library/artifacts/audio/"):
+        return "audio_artifact"
+    if lower.startswith("library/artifacts/blob/"):
+        return "project_runtime_blob_artifact"
     if suffix in _DOCUMENT_TYPES:
         return _DOCUMENT_TYPES[suffix]
     if suffix in _AUDIO_TYPES:
@@ -337,8 +402,14 @@ def logical_type_for_path(path: str) -> str:
         return "skinned_mesh_artifact"
     if suffix == ".inxtex":
         return "texture_artifact"
+    if suffix == ".inxeffect":
+        return "render_effect_artifact"
     if suffix in {".json", ".yaml", ".yml"}:
+        if lower.startswith("assets/"):
+            return "project_runtime_document"
         return "runtime_metadata"
+    if lower.startswith("assets/"):
+        return "project_runtime_blob"
     return "runtime_binary"
 
 
@@ -353,16 +424,28 @@ def payload_kind_for(logical_type: str) -> str:
         "timeline_fsm",
         "animation_clip",
         "animation_clip_2d",
+        "animation_clip_3d",
+        "animation_timeline",
         "animation_fsm",
     }:
         return "serialized_runtime_document"
     if logical_type == "compiled_script":
         return "compiled_script"
-    if logical_type in {"audio", "texture_source", "model_source"}:
+    if logical_type in {
+        "audio",
+        "texture_source",
+        "model_source",
+        "project_runtime_document",
+        "project_runtime_blob",
+    }:
         return "direct_runtime_asset"
     if logical_type.endswith("_artifact") or logical_type == "builtin_shader":
         return "compiled_artifact"
     return "runtime_binary"
+
+
+def runtime_artifact_reason_for(logical_type: str) -> str | None:
+    return _RUNTIME_ARTIFACT_REASON_BY_LOGICAL_TYPE.get(str(logical_type))
 
 
 def runtime_artifact_id(package: str, runtime_path: str) -> str:
@@ -384,10 +467,12 @@ def _asset_refs(value: Any) -> Iterable[tuple[str, str]]:
         if value.get("$type") == "asset_ref":
             guid = value.get("guid")
             path_hint = value.get("path_hint")
-            if isinstance(guid, str) and guid:
-                yield "guid", guid
-            if isinstance(path_hint, str) and path_hint:
-                yield "path", path_hint
+            if not isinstance(guid, str):
+                guid = ""
+            if not isinstance(path_hint, str):
+                path_hint = ""
+            if guid or path_hint:
+                yield guid, path_hint
         for item in value.values():
             yield from _asset_refs(item)
     elif isinstance(value, list):
@@ -398,6 +483,7 @@ def _asset_refs(value: Any) -> Iterable[tuple[str, str]]:
 def _dependencies(
     payload: bytes | None,
     path_index: dict[str, str],
+    guid_index: dict[str, str],
 ) -> tuple[list[str], list[dict[str, str]]]:
     if not payload:
         return [], []
@@ -407,15 +493,20 @@ def _dependencies(
         return [], []
     ids: set[str] = set()
     unresolved: set[tuple[str, str]] = set()
-    for kind, reference in _asset_refs(value):
-        normalized = reference.replace("\\", "/").lstrip("./")
-        target = path_index.get(normalized)
-        if target is None and normalized.startswith("Assets/"):
-            target = path_index.get(normalized[7:])
-        if target is None:
-            unresolved.add((kind, reference))
-        else:
+    for guid, path_hint in _asset_refs(value):
+        target = guid_index.get(guid) if guid else None
+        if target is None and path_hint:
+            normalized = path_hint.replace("\\", "/").lstrip("./").casefold()
+            target = path_index.get(normalized)
+            if target is None and normalized.startswith("assets/"):
+                target = path_index.get(normalized[7:])
+        if target is not None:
             ids.add(target)
+            continue
+        if guid:
+            unresolved.add(("guid", guid))
+        if path_hint:
+            unresolved.add(("path", path_hint))
     return sorted(ids), [
         {"kind": kind, "value": value}
         for kind, value in sorted(unresolved)
@@ -437,11 +528,20 @@ def build_catalog(
 
     prepared: list[dict[str, Any]] = []
     path_index: dict[str, str] = {}
+    guid_index: dict[str, str] = {}
+    guid_alias_candidates: dict[str, list[dict[str, Any]]] = {}
+    source_alias_candidates: dict[str, list[dict[str, Any]]] = {}
+    seen_artifact_ids: set[str] = set()
     for item in package_entries:
         package = str(item["package"]).replace("\\", "/")
         runtime_path = normalize_runtime_path(str(item["runtime_path"]))
         logical_type = logical_type_for_path(runtime_path)
         artifact_id = runtime_artifact_id(package, runtime_path)
+        if artifact_id in seen_artifact_ids:
+            raise RuntimeArtifactError(
+                f"duplicate runtime artifact identity: {package}::{runtime_path}"
+            )
+        seen_artifact_ids.add(artifact_id)
         record = {
             "runtime_artifact_id": artifact_id,
             "logical_type": logical_type,
@@ -453,6 +553,11 @@ def build_catalog(
             "dependencies": [],
             "unresolved_dependencies": [],
         }
+        if record["payload_kind"] in RUNTIME_DOCUMENT_PAYLOAD_KINDS:
+            raise RuntimeArtifactError(
+                "direct or serialized runtime payload is forbidden in the Player "
+                f"package; expected a Library artifact: {package}::{runtime_path}"
+            )
         binding = item.get("asset_binding")
         if binding is not None:
             if not isinstance(binding, dict):
@@ -462,12 +567,99 @@ def build_catalog(
             record["source_asset"] = json.loads(
                 json.dumps(binding, ensure_ascii=False, sort_keys=True)
             )
+            source_guid = binding.get("source_guid")
+            if not isinstance(source_guid, str) or not source_guid:
+                raise RuntimeArtifactError(
+                    f"asset binding for {package}::{runtime_path} has no source GUID"
+                )
+            record["asset_guid"] = source_guid
+            # One source asset may emit several artifacts, such as the mesh
+            # and skin payloads produced by a single GLB. Resolve their public
+            # GUID/path aliases after every record is known so input iteration
+            # order cannot choose a different primary artifact.
+            guid_alias_candidates.setdefault(source_guid, []).append(record)
+            reason = binding.get("runtime_artifact_reason")
+            if reason is not None:
+                raise RuntimeArtifactError(
+                    "compiled runtime payload must not declare a direct-payload reason: "
+                    f"{package}::{runtime_path}"
+                )
         prepared.append(record | {"_payload": item.get("payload")})
-        path_index[runtime_path] = artifact_id
-        path_index.setdefault(f"Assets/{runtime_path}", artifact_id)
+        runtime_key = runtime_path.casefold()
+        existing_path_artifact = path_index.get(runtime_key)
+        if existing_path_artifact is not None and existing_path_artifact != artifact_id:
+            raise RuntimeArtifactError(
+                f"runtime artifact path is ambiguous: {runtime_path}"
+            )
+        path_index[runtime_key] = artifact_id
+        if runtime_path.casefold().startswith("assets/"):
+            path_index.setdefault(runtime_path[7:].casefold(), artifact_id)
+        else:
+            path_index.setdefault(f"assets/{runtime_path.casefold()}", artifact_id)
+        if isinstance(binding, dict):
+            source_path = binding.get("source_path")
+            if isinstance(source_path, str) and source_path:
+                source_runtime_path = normalize_runtime_path(source_path)
+                source_key = source_runtime_path.casefold()
+                source_alias_candidates.setdefault(source_key, []).append(record)
+
+    def _primary_alias_record(records: list[dict[str, Any]]) -> dict[str, Any]:
+        priority = {
+            "mesh_artifact": 0,
+            "texture_artifact": 0,
+            "particle_graph_artifact": 0,
+            "render_effect_artifact": 0,
+            "skinned_mesh_artifact": 1,
+        }
+        return min(
+            records,
+            key=lambda value: (
+                priority.get(str(value["logical_type"]), 0),
+                str(value["runtime_path"]).casefold(),
+                str(value["runtime_artifact_id"]),
+            ),
+        )
+
+    for source_guid, records in guid_alias_candidates.items():
+        guid_index[source_guid] = str(
+            _primary_alias_record(records)["runtime_artifact_id"]
+        )
+
+    for source_key, records in source_alias_candidates.items():
+        source_guids = {
+            str(record.get("asset_guid", ""))
+            for record in records
+            if record.get("asset_guid")
+        }
+        if len(source_guids) != 1:
+            source_path = str(
+                records[0].get("source_asset", {}).get("source_path", source_key)
+            )
+            raise RuntimeArtifactError(
+                f"runtime source alias is ambiguous: {source_path}"
+            )
+        primary_id = str(_primary_alias_record(records)["runtime_artifact_id"])
+        existing_source_artifact = path_index.get(source_key)
+        if (
+            existing_source_artifact is not None
+            and existing_source_artifact != primary_id
+        ):
+            source_path = str(
+                records[0].get("source_asset", {}).get("source_path", source_key)
+            )
+            raise RuntimeArtifactError(
+                f"runtime source alias is ambiguous: {source_path}"
+            )
+        path_index[source_key] = primary_id
+        if source_key.startswith("assets/"):
+            path_index.setdefault(source_key[7:], primary_id)
 
     for record in prepared:
-        dependencies, unresolved = _dependencies(record.pop("_payload"), path_index)
+        dependencies, unresolved = _dependencies(
+            record.pop("_payload"),
+            path_index,
+            guid_index,
+        )
         binding = record.get("source_asset")
         if isinstance(binding, dict):
             bound_dependencies = binding.get("dependencies", [])
@@ -504,7 +696,10 @@ __all__ = [
     "normalize_runtime_path",
     "package_kind",
     "payload_kind_for",
+    "RUNTIME_ARTIFACT_REASONS",
+    "RUNTIME_DOCUMENT_PAYLOAD_KINDS",
     "runtime_artifact_id",
+    "runtime_artifact_reason_for",
     "RuntimeArtifactError",
     "source_fingerprint",
     "source_path_for_entry",

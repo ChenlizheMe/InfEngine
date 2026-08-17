@@ -78,6 +78,42 @@ void Transform::SetWorldPosition(const glm::vec3 &worldPos)
     InvalidateWorldMatrix(false);
 }
 
+void Transform::ApplyWorldPoseFromPhysics(const glm::vec3 &worldPos, const glm::quat &worldRot, bool applyRotation)
+{
+    auto &store = TransformECSStore::Instance();
+    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
+        store.SetCachedWorldPoseFromPhysics(m_ecsHandle.index, worldPos, glm::normalize(worldRot), applyRotation);
+        return;
+    }
+
+    Transform *parentTransform = GetParentTransformSafe();
+    if (!parentTransform) {
+        store.SetLocalPosition(m_ecsHandle, worldPos);
+    } else {
+        const glm::mat4 invParentWorld = glm::inverse(parentTransform->GetWorldMatrix());
+        store.SetLocalPosition(m_ecsHandle, glm::vec3(invParentWorld * glm::vec4(worldPos, 1.0f)));
+    }
+
+    if (applyRotation) {
+        const glm::quat safeWorldRot = glm::normalize(worldRot);
+        const glm::quat localRot =
+            parentTransform ? glm::inverse(parentTransform->GetWorldRotation()) * safeWorldRot : safeWorldRot;
+        store.SetLocalRotation(m_ecsHandle, localRot);
+        store.SetLocalEulerAngles(m_ecsHandle,
+                                  ExtractEulerAnglesNear(localRot, store.GetLocalEulerAngles(m_ecsHandle)));
+        if (store.GetHasCachedWorldEulerAngles(m_ecsHandle)) {
+            store.SetCachedWorldEulerAngles(
+                m_ecsHandle, ExtractEulerAnglesNear(safeWorldRot, store.GetCachedWorldEulerAngles(m_ecsHandle)));
+        } else {
+            store.SetCachedWorldEulerAngles(m_ecsHandle, ExtractEulerAngles(safeWorldRot));
+            store.SetHasCachedWorldEulerAngles(m_ecsHandle, true);
+        }
+    }
+
+    store.SetDirty(m_ecsHandle, true);
+    store.InvalidateSubtree(this, applyRotation, this);
+}
+
 // ============================================================================
 // World Matrix
 // ============================================================================

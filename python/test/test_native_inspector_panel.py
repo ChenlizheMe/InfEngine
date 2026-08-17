@@ -238,6 +238,18 @@ class TestInspectorCallbacks:
         assert "ip.set_multi_transform_data" not in bootstrap
         assert "ip.reorder_component" not in bootstrap
 
+    def test_transform_drag_publishes_one_pointer_gesture_transaction(self):
+        source = Path("cpp/infernux/function/editor/InspectorPanel.cpp").read_text(
+            encoding="utf-8"
+        )
+        wiring = Path(
+            "python/Infernux/engine/_bootstrap_wiring.py"
+        ).read_text(encoding="utf-8")
+
+        assert '"gesture_id"' in source
+        assert "UpdateTransformGesture" in source
+        assert "creates_user_action=False" in wiring
+
     def test_get_component_list(self):
         ip = InspectorPanel()
         def _get_comps(obj_id):
@@ -326,6 +338,22 @@ class TestInspectorCallbacks:
         assert "const bool insertAtStart = !allowComponentReorder;" in header
         assert '"insert_at_start"' in source
         assert "Inspector rejected script component drop" in header
+
+    def test_component_header_overlay_tracks_scroll_and_restores_layout_cursor(self):
+        source = Path("cpp/infernux/function/editor/InspectorPanel.cpp").read_text(
+            encoding="utf-8"
+        )
+        header = source[
+            source.index("InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader") :
+            source.index("bool InspectorPanel::RenderInspectorCheckbox")
+        ]
+
+        assert "const float contentCursorY = ImGui::GetCursorPosY();" in header
+        assert "const float overlayX = ImGui::GetWindowPos().x + indent;" in header
+        assert "ImGui::SetCursorScreenPos(ImVec2(overlayX, headerMin.y));" in header
+        assert "headerMin.y + (headerHeight - checkboxRowHeight) * 0.5f" in header
+        assert "(cbMin.y + cbMax.y) * 0.5f - labelH * 0.5f" in header
+        assert "ImGui::SetCursorPosY(contentCursorY);" in header
 
     def test_multi_component_enabled_toggle_is_one_batch_command(self):
         source = Path("cpp/infernux/function/editor/InspectorPanel.cpp").read_text(

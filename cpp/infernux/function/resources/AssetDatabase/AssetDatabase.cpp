@@ -33,6 +33,29 @@ namespace
 constexpr size_t kOwnerMergeEntryBudget = 256;
 constexpr auto kOwnerMergeTimeBudget = std::chrono::milliseconds(2);
 
+bool IsCanonicalAssetGuid(std::string_view value)
+{
+    return value.size() == 32 && std::all_of(value.begin(), value.end(), [](unsigned char character) {
+               return std::isdigit(character) != 0 || (character >= 'a' && character <= 'f');
+           });
+}
+
+void ValidateImportedDependencyIdentities(const ImportArtifact &artifact, const std::string &sourcePath)
+{
+    if (!artifact.dependenciesAuthoritative)
+        return;
+
+    // This is the publication boundary for the durable dependency graph.
+    // Asset identity is GUID-only: paths and path_hint values are mutable
+    // presentation metadata and must never be accepted as graph identities.
+    for (const auto &dependency : artifact.dependencies) {
+        if (!IsCanonicalAssetGuid(dependency)) {
+            throw std::runtime_error("Importer for '" + sourcePath + "' produced a non-GUID dependency identity '" +
+                                     dependency + "'");
+        }
+    }
+}
+
 bool LoadCurrentMetadataDocument(const std::string &path, InxResourceMeta &metadata, std::string &recoveredGuid,
                                  std::string &error) noexcept
 {
@@ -58,6 +81,17 @@ bool LoadCurrentMetadataDocument(const std::string &path, InxResourceMeta &metad
         error = "metadata sidecar raised a non-standard parsing exception";
     }
     return false;
+}
+
+bool HasValidContentHash(const InxResourceMeta &metadata) noexcept
+{
+    if (!metadata.HasKey("content_hash"))
+        return false;
+    try {
+        return !metadata.GetDataAs<std::string>("content_hash").empty();
+    } catch (...) {
+        return false;
+    }
 }
 
 void RemoveInvalidMetadataDocument(const std::string &path, const std::string &reason)
@@ -119,6 +153,8 @@ bool HasCurrentRuntimeArtifactHeader(const std::filesystem::path &path, Resource
 bool HasReusableRuntimeArtifact(const AssetIndexEntry &entry, ResourceType type,
                                 const std::filesystem::path &projectRoot)
 {
+    if (entry.contentHash.empty())
+        return false;
     const std::string expected = RuntimeArtifactRelativePath(entry.guid, type);
     if (expected.empty())
         return entry.artifactPath.empty();
@@ -385,6 +421,111 @@ void AssetDatabase::PublishQuerySnapshot()
         BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates, m_queryGeneration + 1));
 }
 
+void AssetDatabase::PublishQuerySnapshotForPaths(const std::vector<std::string> &paths)
+{
+    const auto previous = LoadQuerySnapshot();
+    if (!previous || !previous->catalog || paths.empty()) {
+        PublishQuerySnapshot();
+        return;
+    }
+
+    auto snapshot = std::make_shared<QuerySnapshot>(*previous);
+    snapshot->generation = m_queryGeneration + 1;
+    auto catalog = std::make_shared<AssetCatalogSnapshot>(*previous->catalog);
+    catalog->m_generation = snapshot->generation;
+
+    std::unordered_set<std::string> touchedDirectories;
+    std::unordered_set<std::string> touchedPaths;
+    touchedPaths.reserve(paths.size());
+    for (const std::string &path : paths) {
+        const std::string normalizedPath = FilesystemPathKey(path);
+        if (normalizedPath.empty() || !touchedPaths.insert(normalizedPath).second)
+            continue;
+
+        const size_t separator = normalizedPath.find_last_of('/');
+        touchedDirectories.insert(separator == std::string::npos ? std::string{} : normalizedPath.substr(0, separator));
+
+        const auto oldMapping = snapshot->pathToGuid.find(normalizedPath);
+        if (oldMapping != snapshot->pathToGuid.end()) {
+            const std::string oldGuid = oldMapping->second;
+            snapshot->pathToGuid.erase(oldMapping);
+            if (m_guidToPath.find(oldGuid) == m_guidToPath.end()) {
+                snapshot->guidToPath.erase(oldGuid);
+                snapshot->metas.erase(oldGuid);
+            }
+        }
+
+        const auto currentMapping = m_pathToGuid.find(normalizedPath);
+        if (currentMapping == m_pathToGuid.end())
+            continue;
+        const std::string &guid = currentMapping->second;
+        const auto currentPath = m_guidToPath.find(guid);
+        const auto metadata = m_metas.find(guid);
+        if (currentPath == m_guidToPath.end() || metadata == m_metas.end() || !metadata->second)
+            throw std::logic_error("Incremental query publication found an incomplete asset mapping");
+        snapshot->pathToGuid[normalizedPath] = guid;
+        snapshot->guidToPath[guid] = currentPath->second;
+        snapshot->metas[guid] = metadata->second;
+    }
+
+    for (const std::string &directory : touchedDirectories) {
+        auto &entries = catalog->m_directories[directory];
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                     [&touchedPaths](const AssetCatalogEntry &entry) {
+                                         return touchedPaths.find(FilesystemPathKey(entry.path)) != touchedPaths.end();
+                                     }),
+                      entries.end());
+    }
+
+    for (const std::string &normalizedPath : touchedPaths) {
+        const auto mapping = m_pathToGuid.find(normalizedPath);
+        if (mapping == m_pathToGuid.end())
+            continue;
+        const std::string &guid = mapping->second;
+        const auto currentPath = m_guidToPath.find(guid);
+        const auto metadata = m_metas.find(guid);
+        const auto fileState = m_fileStates.find(normalizedPath);
+        if (currentPath == m_guidToPath.end() || metadata == m_metas.end() || !metadata->second ||
+            fileState == m_fileStates.end())
+            throw std::logic_error("Incremental catalog publication found an incomplete asset mapping");
+
+        AssetCatalogEntry entry;
+        entry.guid = guid;
+        entry.path = currentPath->second;
+        entry.name = FromFsPath(ToFsPath(entry.path).filename());
+        entry.sortKey = entry.name;
+        for (char &character : entry.sortKey) {
+            if (character >= 'A' && character <= 'Z')
+                character = static_cast<char>(character + ('a' - 'A'));
+        }
+        entry.resourceType = metadata->second->GetResourceType();
+        entry.source = fileState->second.source;
+        const size_t separator = normalizedPath.find_last_of('/');
+        const std::string parent = separator == std::string::npos ? std::string{} : normalizedPath.substr(0, separator);
+        catalog->m_directories[parent].push_back(std::move(entry));
+        touchedDirectories.insert(parent);
+    }
+
+    for (const std::string &directory : touchedDirectories) {
+        auto found = catalog->m_directories.find(directory);
+        if (found == catalog->m_directories.end())
+            continue;
+        auto &entries = found->second;
+        if (entries.empty()) {
+            catalog->m_directories.erase(found);
+            continue;
+        }
+        std::sort(entries.begin(), entries.end(), [](const AssetCatalogEntry &left, const AssetCatalogEntry &right) {
+            if (left.sortKey != right.sortKey)
+                return left.sortKey < right.sortKey;
+            return left.path < right.path;
+        });
+    }
+
+    snapshot->catalog = std::move(catalog);
+    InstallQuerySnapshot(std::move(snapshot));
+}
+
 void AssetDatabase::InstallQuerySnapshot(std::shared_ptr<QuerySnapshot> snapshot) noexcept
 {
     m_queryGeneration = snapshot->generation;
@@ -452,6 +593,139 @@ void AssetDatabase::AddReadOnlyScanRoot(const std::string &path)
     AssertMutationThread("AddReadOnlyScanRoot");
     AddScanRoot(path);
     m_readOnlyScanRoots.insert(FromFsPath(ToFsPath(path)));
+}
+
+void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath)
+{
+    AssertMutationThread("InstallRuntimeAssetCatalog");
+    AssertNoPendingCommit("InstallRuntimeAssetCatalog");
+
+    std::ifstream stream(ToFsPath(catalogPath));
+    if (!stream)
+        throw std::runtime_error("runtime asset catalog cannot be opened: " + catalogPath);
+
+    const nlohmann::json document = nlohmann::json::parse(stream);
+    if (document.value("$schema", std::string{}) != "infernux.runtime_asset_records")
+        throw std::runtime_error("runtime asset catalog has an unsupported schema");
+    const auto entries = document.find("entries");
+    if (entries == document.end() || !entries->is_array())
+        throw std::runtime_error("runtime asset catalog has no entry array");
+
+    for (const auto &entry : *entries) {
+        if (!entry.is_object())
+            throw std::runtime_error("runtime asset catalog entry is not an object");
+        const std::string guid = entry.value("guid", std::string{});
+        const std::string relativePath = entry.value("runtime_path", std::string{});
+        const auto metadataDocument = entry.find("metadata");
+        if (guid.empty() || relativePath.empty() || metadataDocument == entry.end() || !metadataDocument->is_object())
+            throw std::runtime_error("runtime asset catalog entry identity is incomplete");
+
+        const std::filesystem::path relative = std::filesystem::u8path(relativePath);
+        if (relative.is_absolute() || relative.empty())
+            throw std::runtime_error("runtime asset catalog path must be project-relative: " + relativePath);
+        for (const auto &part : relative) {
+            if (part == "..")
+                throw std::runtime_error("runtime asset catalog path escapes the project: " + relativePath);
+        }
+
+        std::filesystem::path resolvedAssetPath = ToFsPath(m_projectRoot) / relative;
+        const auto runtimeArtifacts = entry.find("runtime_artifacts");
+        if (runtimeArtifacts != entry.end() && runtimeArtifacts->is_array()) {
+            const std::string primaryArtifactId = entry.value("primary_runtime_artifact_id", std::string{});
+            constexpr std::string_view builtinPrefix = "Infernux/resources/";
+            bool resolvedPrimaryArtifact = false;
+            for (const auto &artifact : *runtimeArtifacts) {
+                if (!artifact.is_object())
+                    continue;
+                const std::string artifactId = artifact.value("runtime_artifact_id", std::string{});
+                if (!primaryArtifactId.empty() && artifactId != primaryArtifactId)
+                    continue;
+                const std::string package = artifact.value("package", std::string{});
+                const std::string runtimePath = artifact.value("runtime_path", std::string{});
+                if (package == "Content.inxpkg") {
+                    const std::filesystem::path contentRelative = std::filesystem::u8path(runtimePath);
+                    if (contentRelative.empty() || contentRelative.is_absolute())
+                        throw std::runtime_error("runtime Content asset path is invalid: " + runtimePath);
+                    for (const auto &part : contentRelative) {
+                        if (part == "..")
+                            throw std::runtime_error("runtime Content asset path escapes the project: " + runtimePath);
+                    }
+                    const std::filesystem::path candidate = ToFsPath(m_projectRoot) / contentRelative;
+                    std::error_code fileError;
+                    if (!std::filesystem::is_regular_file(candidate, fileError) || fileError)
+                        throw std::runtime_error("runtime Content asset was not extracted below the project root: " +
+                                                 runtimePath);
+                    resolvedAssetPath = candidate;
+                    resolvedPrimaryArtifact = true;
+                    break;
+                }
+                if (package != "Runtime.inxrt" || runtimePath.rfind(builtinPrefix, 0) != 0)
+                    continue;
+
+                const std::filesystem::path builtinRelative =
+                    std::filesystem::u8path(runtimePath.substr(builtinPrefix.size()));
+                if (builtinRelative.empty() || builtinRelative.is_absolute())
+                    throw std::runtime_error("runtime built-in asset path is invalid: " + runtimePath);
+                for (const auto &part : builtinRelative) {
+                    if (part == "..")
+                        throw std::runtime_error("runtime built-in asset path escapes its resource root: " +
+                                                 runtimePath);
+                }
+
+                bool found = false;
+                for (const auto &root : m_readOnlyScanRoots) {
+                    const std::filesystem::path candidate = ToFsPath(root) / builtinRelative;
+                    std::error_code fileError;
+                    if (!std::filesystem::is_regular_file(candidate, fileError) || fileError)
+                        continue;
+                    resolvedAssetPath = candidate;
+                    found = true;
+                    break;
+                }
+                if (!found) {
+                    throw std::runtime_error("runtime built-in asset was not extracted below a read-only resource "
+                                             "root: " +
+                                             runtimePath);
+                }
+                resolvedPrimaryArtifact = true;
+                break;
+            }
+            if (!primaryArtifactId.empty() && !resolvedPrimaryArtifact)
+                throw std::runtime_error("runtime asset catalog primary artifact is unavailable: " + primaryArtifactId);
+        }
+
+        const std::string path = FromFsPath(resolvedAssetPath);
+        const std::string normalizedPath = FilesystemPathKey(path);
+        InxResourceMeta metadata;
+        metadata.DeserializeDocument(*metadataDocument);
+        if (metadata.GetGuid() != guid)
+            throw std::runtime_error("runtime asset catalog metadata GUID mismatch: " + guid);
+        metadata.UpdateFilePath(path);
+        metadata.AddMetadata("read_only", true);
+
+        const auto oldPathGuid = m_pathToGuid.find(normalizedPath);
+        if (oldPathGuid != m_pathToGuid.end() && oldPathGuid->second != guid) {
+            m_guidToPath.erase(oldPathGuid->second);
+            m_metas.erase(oldPathGuid->second);
+            m_importResults.erase(oldPathGuid->second);
+        }
+        const auto oldGuidPath = m_guidToPath.find(guid);
+        if (oldGuidPath != m_guidToPath.end())
+            m_pathToGuid.erase(FilesystemPathKey(oldGuidPath->second));
+
+        m_guidToPath[guid] = path;
+        m_pathToGuid[normalizedPath] = guid;
+        m_metas[guid] = std::make_shared<InxResourceMeta>(std::move(metadata));
+        m_importResults[guid] = {true, {}};
+
+        CachedFileState fileState;
+        fileState.readOnly = true;
+        (void)ReadFingerprint(ToFsPath(path), fileState.source);
+        m_fileStates[normalizedPath] = fileState;
+    }
+
+    PublishQuerySnapshot();
+    INXLOG_INFO("AssetDatabase: installed ", entries->size(), " cooked Player asset identities");
 }
 
 AssetDatabase::AssetScanRequest AssetDatabase::CaptureScanRequest() const
@@ -768,15 +1042,25 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
             std::string recoveredGuid;
             std::string loadError;
             if (LoadCurrentMetadataDocument(metaPath, loadedMetadata, recoveredGuid, loadError)) {
-                if (item.mode == WorkerMetadataPrepare::Mode::LoadExisting ||
-                    item.mode == WorkerMetadataPrepare::Mode::CreateOrLoad) {
+                if (!HasValidContentHash(loadedMetadata)) {
+                    // Early sidecars did not always persist the source hash.  They
+                    // are parseable, but cannot back a current AssetIndex entry.
+                    // Rebuild the derived fields while preserving the GUID and any
+                    // importer settings carried by the sidecar.
+                    item.mode = WorkerMetadataPrepare::Mode::Rebuild;
+                    previousMetadata = std::move(loadedMetadata);
+                    previousMetadataLoaded = true;
+                    preservedGuid = previousMetadata.GetGuid();
+                } else if (item.mode == WorkerMetadataPrepare::Mode::LoadExisting ||
+                           item.mode == WorkerMetadataPrepare::Mode::CreateOrLoad) {
                     RequireUnchangedFingerprint(item.file.path, item.file.source);
                     item.metadata = std::move(loadedMetadata);
                     return;
+                } else {
+                    previousMetadata = std::move(loadedMetadata);
+                    previousMetadataLoaded = true;
+                    preservedGuid = previousMetadata.GetGuid();
                 }
-                previousMetadata = std::move(loadedMetadata);
-                previousMetadataLoaded = true;
-                preservedGuid = previousMetadata.GetGuid();
             } else {
                 if (preservedGuid.empty())
                     preservedGuid = std::move(recoveredGuid);
@@ -1032,11 +1316,9 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         ++processed;
     }
 
-    if (state->metadataMergeCursor == state->workerMetadata.size() && !state->importPathSnapshot &&
+    if (state->metadataMergeCursor == state->workerMetadata.size() && state->importRequestCursor == 0 &&
         !state->pendingImports.empty()) {
         state->workerImports.reserve(state->pendingImports.size());
-        state->importPathSnapshot =
-            std::make_shared<const std::unordered_map<std::string, std::string>>(workingSet.pathToGuid);
     }
     while (state->metadataMergeCursor == state->workerMetadata.size() &&
            state->importRequestCursor < state->pendingImports.size() && HasOwnerMergeBudget(ownerStarted, processed)) {
@@ -1062,27 +1344,6 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         item.request.metadata = *metadata->second;
         item.request.metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(asset.path));
         item.expectedSource = asset.source;
-        item.request.resolveAssetGuid = [pathSnapshot = state->importPathSnapshot, projectRoot = m_projectRoot,
-                                         sourcePath = asset.path](const std::string &dependencyPath) {
-            if (dependencyPath.empty())
-                return std::string{};
-
-            const auto lookup = [&pathSnapshot](const std::filesystem::path &candidate) {
-                const auto dependency = pathSnapshot->find(FilesystemPathKey(FromFsPath(candidate)));
-                return dependency != pathSnapshot->end() ? dependency->second : std::string{};
-            };
-            const std::filesystem::path dependency = ToFsPath(dependencyPath);
-            if (dependency.is_absolute())
-                return lookup(dependency);
-
-            std::string guid = lookup(ToFsPath(projectRoot) / dependency);
-            if (!guid.empty())
-                return guid;
-            guid = lookup(ToFsPath(sourcePath).parent_path() / dependency);
-            if (!guid.empty())
-                return guid;
-            return lookup(dependency);
-        };
         state->workerImports.push_back(std::move(item));
         ++processed;
     }
@@ -1109,6 +1370,7 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
                 item.producerThread = std::this_thread::get_id();
                 try {
                     item.artifact = item.importer->Import(item.request);
+                    ValidateImportedDependencyIdentities(*item.artifact, item.request.sourcePath);
                     RequireUnchangedFingerprint(item.request.sourcePath, item.expectedSource);
                 } catch (const std::exception &exception) {
                     item.error = exception.what();
@@ -1303,6 +1565,8 @@ AssetIndex AssetDatabase::BuildDerivedIndexArtifact(
             entry.importSucceeded = importResult->second.succeeded;
             entry.importError = importResult->second.error;
         }
+        if (entry.importSucceeded && entry.contentHash.empty())
+            throw std::logic_error("AssetIndex build found a successful import without a content hash");
         index.Upsert(std::move(entry));
     }
     return index;
@@ -1455,18 +1719,20 @@ void AssetDatabase::FinalizePendingRefreshCommit(const std::shared_ptr<PendingRe
         state->ownerFinalizeMilliseconds +
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - finalizeStarted).count();
     restorePreviousWorkingSet.Release();
-    INXLOG_INFO("AssetDatabase.Refresh completed. Total assets: ", m_guidToPath.size(),
-                ", scanned: ", m_lastRefreshScannedCount, ", scan_ms: ", m_lastRefreshScanMilliseconds,
-                ", restore_ms: ", m_lastRefreshRestoreMilliseconds, ", import_ms: ", m_lastRefreshImportMilliseconds,
-                ", index_build_ms: ", m_lastRefreshIndexBuildMilliseconds,
-                ", index_save_ms: ", m_lastRefreshIndexSaveMilliseconds,
-                ", query_build_ms: ", m_lastRefreshQueryBuildMilliseconds,
-                ", dependency_build_ms: ", m_lastRefreshDependencyBuildMilliseconds,
-                ", owner_merge_max_slice_ms: ", m_lastRefreshOwnerMergeMaxSliceMilliseconds,
-                ", owner_merge_slices: ", m_lastRefreshOwnerMergeSliceCount,
-                ", publish_ms: ", m_lastRefreshPublishMilliseconds, ", prepare_ms: ", m_lastRefreshPrepareMilliseconds,
-                ", metadata_write_ms: ", m_lastRefreshMetadataWriteMilliseconds,
-                ", finalize_ms: ", m_lastRefreshFinalizeMilliseconds, ", commit_ms: ", m_lastRefreshCommitMilliseconds);
+    // INXLOG_INFO("AssetDatabase.Refresh completed. Total assets: ", m_guidToPath.size(),
+    //             ", scanned: ", m_lastRefreshScannedCount, ", scan_ms: ", m_lastRefreshScanMilliseconds,
+    //             ", restore_ms: ", m_lastRefreshRestoreMilliseconds, ", import_ms: ", m_lastRefreshImportMilliseconds,
+    //             ", index_build_ms: ", m_lastRefreshIndexBuildMilliseconds,
+    //             ", index_save_ms: ", m_lastRefreshIndexSaveMilliseconds,
+    //             ", query_build_ms: ", m_lastRefreshQueryBuildMilliseconds,
+    //             ", dependency_build_ms: ", m_lastRefreshDependencyBuildMilliseconds,
+    //             ", owner_merge_max_slice_ms: ", m_lastRefreshOwnerMergeMaxSliceMilliseconds,
+    //             ", owner_merge_slices: ", m_lastRefreshOwnerMergeSliceCount,
+    //             ", publish_ms: ", m_lastRefreshPublishMilliseconds, ", prepare_ms: ",
+    //             m_lastRefreshPrepareMilliseconds,
+    //             ", metadata_write_ms: ", m_lastRefreshMetadataWriteMilliseconds,
+    //             ", finalize_ms: ", m_lastRefreshFinalizeMilliseconds, ", commit_ms: ",
+    //             m_lastRefreshCommitMilliseconds);
 }
 
 bool AssetDatabase::IsReadOnlyPath(const std::string &normalizedPath) const
@@ -1557,7 +1823,14 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
     result.guid = guid;
 
     UpdateMapping(guid, path);
-    if (!RunImporter(guid, path, false, !readOnly)) {
+    // Python owns script compilation, dependency analysis, and live class
+    // publication. ScriptImporter has no artifact or dependency output, so
+    // routing a new script through the generic importer only rewrites the
+    // metadata sidecar that CreateOrLoadMetadata just persisted and commits a
+    // heavyweight filesystem transaction on the editor thread.
+    const bool imported = type == ResourceType::Script ? (m_importResults[guid] = {true, {}}, true)
+                                                       : RunImporter(guid, path, false, !readOnly);
+    if (!imported) {
         const auto importResult = m_importResults.find(guid);
         const std::string importError = importResult != m_importResults.end() && !importResult->second.error.empty()
                                             ? importResult->second.error
@@ -1571,7 +1844,7 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
     }
     UpdateCachedFileState(path, readOnly);
     m_assetIndexDirty = true;
-    PublishQuerySnapshot();
+    PublishQuerySnapshotForPaths({path});
     result.succeeded = true;
     result.databaseCommitted = true;
     result.changed = true;
@@ -1612,6 +1885,27 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path)
     }
     result.guid = guid;
 
+    if (result.resourceType == ResourceType::Script) {
+        // Python owns script parsing, dependency analysis, and live class
+        // publication. Rebuilding native script metadata here reparsed the
+        // same source with several std::regex passes on the render thread,
+        // even though a source edit cannot change this asset's identity or
+        // catalog position. Keep the source fingerprint authoritative and let
+        // explicit/full refreshes materialize the derived sidecar fields.
+        //
+        // ScriptDependencyGraph also owns Python-to-Python propagation. A
+        // second AssetDependencyGraph notification duplicated that traversal
+        // and could synchronously wake unrelated runtime callbacks before the
+        // validated script transaction was ready to publish.
+        UpdateCachedFileState(path, IsReadOnlyPath(FilesystemPathKey(path)));
+        m_assetIndexDirty = true;
+        result.succeeded = true;
+        result.databaseCommitted = true;
+        result.changed = true;
+        result.queryGeneration = GetQueryGeneration();
+        return result;
+    }
+
     const auto previousMeta = GetMetaByGuid(guid);
     if (!previousMeta)
         throw std::logic_error("Registered asset has no metadata snapshot");
@@ -1650,7 +1944,7 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path)
     }
     UpdateCachedFileState(path, IsReadOnlyPath(FilesystemPathKey(path)));
     m_assetIndexDirty = true;
-    PublishQuerySnapshot();
+    PublishQuerySnapshotForPaths({path});
     AssetDependencyGraph::Instance().NotifyEvent(guid, GetResourceTypeForPath(path), AssetEvent::Modified);
     result.succeeded = true;
     result.databaseCommitted = true;
@@ -1703,7 +1997,7 @@ AssetMutationResult AssetDatabase::DeleteAsset(const std::string &path)
         m_importResults.erase(guid);
     m_fileStates.erase(FilesystemPathKey(path));
     m_assetIndexDirty = true;
-    PublishQuerySnapshot();
+    PublishQuerySnapshotForPaths({path});
     result.succeeded = true;
     result.databaseCommitted = true;
     result.changed = !guid.empty();
@@ -1740,7 +2034,7 @@ AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const s
         m_fileStates.erase(normalizedOldPath);
         UpdateCachedFileState(newPath, IsReadOnlyPath(FilesystemPathKey(newPath)));
         m_assetIndexDirty = true;
-        PublishQuerySnapshot();
+        PublishQuerySnapshotForPaths({oldPath, newPath});
         // Notify dependents — GUID unchanged, but path changed
         ResourceType type = GetResourceTypeForPath(newPath);
         AssetDependencyGraph::Instance().NotifyEvent(guid, type, AssetEvent::Moved);
@@ -1835,7 +2129,13 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
             UpdateCachedFileState(move.newPath, IsReadOnlyPath(move.newKey));
         }
         m_assetIndexDirty = true;
-        PublishQuerySnapshot();
+        std::vector<std::string> changedPaths;
+        changedPaths.reserve(prepared.size() * 2);
+        for (const PreparedMove &move : prepared) {
+            changedPaths.push_back(move.oldPath);
+            changedPaths.push_back(move.newPath);
+        }
+        PublishQuerySnapshotForPaths(changedPaths);
     } catch (const std::exception &exc) {
         for (auto it = metadataMoved.rbegin(); it != metadataMoved.rend(); ++it) {
             try {
@@ -2114,33 +2414,12 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
     request.guid = guid;
     request.resourceType = GetResourceTypeForPath(path);
     request.metadata = *metaIt->second;
-    request.resolveAssetGuid = [this, sourcePath = path](const std::string &dependencyPath) {
-        if (dependencyPath.empty())
-            return std::string{};
-
-        const auto lookup = [this](const std::filesystem::path &candidate) {
-            return GetGuidFromPath(NormalizeFilesystemPathLexically(FromFsPath(candidate)));
-        };
-        const std::filesystem::path dependency = ToFsPath(dependencyPath);
-        if (dependency.is_absolute())
-            return lookup(dependency);
-
-        // Asset documents store portable project-relative references such as
-        // Assets/Rendering/Bloom.effect. They may also use a sibling filename
-        // for a reference local to the source document.
-        std::string guid = lookup(ToFsPath(m_projectRoot) / dependency);
-        if (!guid.empty())
-            return guid;
-        guid = lookup(ToFsPath(sourcePath).parent_path() / dependency);
-        if (!guid.empty())
-            return guid;
-        return GetGuidFromPath(dependencyPath);
-    };
     request.isReimport = isReimport;
 
     std::string error;
     try {
         ImportArtifact artifact = isReimport ? importer->Reimport(request) : importer->Import(request);
+        ValidateImportedDependencyIdentities(artifact, request.sourcePath);
         std::vector<DocumentTransactionEntry> writes;
         writes.reserve(1 + artifact.runtimeCpuArtifacts.size());
         if (persistMetadata) {

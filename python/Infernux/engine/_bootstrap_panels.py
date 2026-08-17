@@ -202,6 +202,7 @@ class BootstrapPanelsMixin:
                 self.interaction_core.project_asset_interactions,
                 self.interaction_core.navigation,
                 self.interaction_core.tree_views,
+                self.interaction_core.directory_navigation,
             ),
             replace=True,
         )
@@ -616,7 +617,7 @@ class BootstrapPanelsMixin:
             # compatibility parser that could resurrect invalid documents.
             from Infernux.debug import Debug
 
-            Debug.log_warning(f"Discarded incompatible document session: {exc}")
+            Debug.log_internal(f"Discarded incompatible document session: {exc}")
             _panel_state.delete("document_session")
         ws = _panel_state.get("window_manager")
         if ws:

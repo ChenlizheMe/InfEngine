@@ -5,7 +5,13 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from Infernux.engine.path_utils import portable_path, relative_path, resolved_path, same_path
+from Infernux.engine.path_utils import (
+    is_path_within,
+    portable_path,
+    relative_path,
+    resolved_path,
+    same_path,
+)
 from Infernux.mcp.tools.common import (
     coerce_vector3,
     find_game_object,
@@ -109,7 +115,7 @@ def _set_component_fields_through_editor_transaction(
         )
 
     return {
-        field: serialize_value(getattr(component, field))
+        field: _serialize_component_field_value(component, field)
         for field, _old_value, _new_value in changes
     }
 
@@ -201,7 +207,12 @@ def register_scene_tools(mcp) -> None:
 
     @mcp.tool(name="scene_open")
     def scene_open(path: str) -> dict:
-        """Open a .scene file under Assets/."""
+        """Open a .scene file under Assets/.
+
+        If the active scene is dirty, call ``scene_discard(force=True,
+        reason=...)`` or ``scene_save`` first.  MCP never discards scene
+        authoring data implicitly.
+        """
 
         def _open():
             from Infernux.engine.project_context import get_project_root
@@ -255,7 +266,10 @@ def register_scene_tools(mcp) -> None:
 
     @mcp.tool(name="scene_new")
     def scene_new(force: bool = False, reason: str = "") -> dict:
-        """Create a new empty scene through SceneFileManager."""
+        """Create a new empty scene through SceneFileManager.
+
+        A dirty scene must be explicitly saved or discarded first.
+        """
 
         def _new():
             from Infernux.engine.scene_manager import SceneFileManager
@@ -272,6 +286,82 @@ def register_scene_tools(mcp) -> None:
             return {"accepted": True, "loading": bool(getattr(sfm, "is_loading", False)), "status": scene_status()}
 
         return main_thread("scene_new", _new, arguments={"force": force, "reason": reason})
+
+    @mcp.tool(name="scene_discard")
+    def scene_discard(force: bool = False, reason: str = "") -> dict:
+        """Discard the active scene's dirty authoring state explicitly.
+
+        A path-backed scene is reloaded from its current durable file.  An
+        unnamed scene is replaced with a fresh, clean default scene.  The
+        operation is destructive and therefore requires both ``force=true``
+        and a non-empty ``reason``; MCP never silently throws away a scene.
+        """
+
+        def _discard():
+            from Infernux.engine.interaction import (
+                DocumentActionStatus,
+                DocumentRegistry,
+            )
+            from Infernux.engine.scene_manager import SceneFileManager
+
+            if not force:
+                raise ValueError(
+                    "scene_discard is destructive. Pass force=true and a short reason."
+                )
+            if not str(reason or "").strip():
+                raise ValueError(
+                    "scene_discard requires a reason when force=true."
+                )
+            sfm = SceneFileManager.instance()
+            if sfm is None:
+                raise RuntimeError("SceneFileManager is not available.")
+            if not getattr(sfm, "is_dirty", False):
+                return {
+                    "accepted": True,
+                    "discarded": False,
+                    "no_op": True,
+                    "status": scene_status(),
+                }
+
+            registry = DocumentRegistry.instance()
+            document_id = str(getattr(sfm, "document_id", "") or "")
+            if not document_id:
+                raise RuntimeError("The active scene is not bound to a document.")
+
+            if not getattr(sfm, "current_scene_path", None):
+                # SceneFileManager's normal new-scene transaction is the same
+                # authority used by the visible editor.  Establishing the
+                # loaded baseline afterwards makes the unnamed result
+                # explicitly clean instead of leaving a fresh default scene
+                # dirty merely because it contains the default camera/light.
+                if not bool(sfm._do_new_scene()):
+                    raise RuntimeError("The unnamed scene could not be reset.")
+                registry.establish_loaded_baseline(sfm.document_id)
+                return {
+                    "accepted": True,
+                    "discarded": True,
+                    "reset": "clean_unnamed_scene",
+                    "status": scene_status(),
+                }
+
+            result = registry.request_discard(document_id)
+            if result.status in {
+                DocumentActionStatus.FAILED,
+                DocumentActionStatus.REJECTED,
+            }:
+                raise RuntimeError(result.message or "Scene discard failed.")
+            return {
+                "accepted": True,
+                "discarded": True,
+                "reset": "durable_scene_file",
+                "status": scene_status(),
+            }
+
+        return main_thread(
+            "scene_discard",
+            _discard,
+            arguments={"force": force, "reason": reason},
+        )
 
     @mcp.tool(name="scene_serialize")
     def scene_serialize() -> dict:
@@ -353,6 +443,7 @@ def register_scene_tools(mcp) -> None:
         """Add a native, built-in wrapper, registered Python, or script component."""
 
         def _add():
+            _require_creatable_component_type(component_type)
             _require_component_knowledge(component_type, knowledge_token)
             obj = find_game_object(object_id)
             instance = None
@@ -973,7 +1064,7 @@ def register_scene_tools(mcp) -> None:
                 "object_id": int(obj.id),
                 "component": serialize_component(comp),
                 "field": field,
-                "value": serialize_value(getattr(comp, field)),
+                "value": _serialize_component_field_value(comp, field),
             }
 
         return main_thread("component_set_field", _set, arguments={"object_id": object_id, "component_type": component_type, "field": field, "knowledge_token": knowledge_token})
@@ -1008,6 +1099,7 @@ def register_scene_tools(mcp) -> None:
         """Return an existing component or add it if missing."""
 
         def _ensure():
+            _require_creatable_component_type(component_type)
             _require_component_knowledge(component_type, knowledge_token)
             obj = find_game_object(object_id)
             comp = _find_component(obj, component_type, 0)
@@ -1328,7 +1420,7 @@ def _find_component(obj, component_type: str, ordinal: int):
 def _component_snapshot(obj, comp) -> dict[str, Any]:
     fields = {}
     try:
-        from Infernux.components.serialized_field import FieldType, get_serialized_fields
+        from Infernux.components.fields import FieldType, get_serialized_fields
         from Infernux.components.value_codec import VALUE_CODECS
         from Infernux.components.value_document import make_enum
 
@@ -1353,6 +1445,12 @@ def _component_snapshot(obj, comp) -> dict[str, Any]:
                 pass
     except Exception:
         pass
+    if _is_material_slot_component(comp):
+        fields["material"] = _material_slot_document(comp, 0)
+        fields["materials"] = [
+            _material_slot_document(comp, index)
+            for index, _guid in enumerate(_material_slot_guids(comp, all_slots=True))
+        ]
     return {
         "object_id": int(obj.id),
         "object_name": str(obj.name),
@@ -1382,14 +1480,153 @@ def _coerce_property_value(field: str, value: Any, current_value: Any = None) ->
 
 
 def _component_field_value(comp, field: str) -> Any:
-    from Infernux.components.serialized_field import (
-        get_raw_field_value,
-        get_serialized_fields,
+    from Infernux.components.fields import get_raw_field_value, get_serialized_fields
+
+    if _is_material_slot_component(comp) and field in {"material", "materials"}:
+        return _material_slot_guids(comp, all_slots=field == "materials")
+
+    # CppProperty metadata is part of the serialized-field schema, but its
+    # value is owned by the native component.  get_raw_field_value() quite
+    # correctly handles Python descriptors; using it for CppProperty would
+    # instead fall back to the metadata default (often None), which later
+    # makes the shared component command compare Vector3 against None.
+    descriptor = next(
+        (cls.__dict__.get(field) for cls in type(comp).__mro__ if field in cls.__dict__),
+        None,
     )
+    if getattr(descriptor, "_is_cpp_property", False):
+        return getattr(comp, field)
 
     if field in get_serialized_fields(type(comp)):
         return get_raw_field_value(comp, field)
     return getattr(comp, field)
+
+
+def _is_material_slot_component_class(cls) -> bool:
+    """Identify the public renderer material-slot contract by capability."""
+    return callable(getattr(cls, "get_material_guids", None)) and callable(
+        getattr(cls, "set_material", None)
+    )
+
+
+def _is_material_slot_component(comp) -> bool:
+    return _is_material_slot_component_class(type(comp))
+
+
+def _material_slot_guids(comp, *, all_slots: bool) -> list[str] | str:
+    try:
+        guids = [str(value or "") for value in comp.get_material_guids() or []]
+    except Exception:
+        guids = []
+    if all_slots:
+        return guids
+    return guids[0] if guids else ""
+
+
+def _material_asset_identity(value: Any, path: str) -> tuple[str, str]:
+    """Resolve a material reference through the active AssetDatabase."""
+    if value is None:
+        return "", ""
+    if isinstance(value, dict):
+        if set(value) == {"$type", "asset_type", "guid", "path_hint"}:
+            if value.get("$type") != "asset_ref" or value.get("asset_type") != "Material":
+                raise TypeError(f"{path}: expected a Material asset reference")
+        elif set(value) != {"guid", "path_hint"}:
+            raise ValueError(f"{path}: material reference requires guid and path_hint")
+        guid = str(value.get("guid") or "").strip()
+        path_hint = str(value.get("path_hint") or "").strip()
+    elif isinstance(value, str):
+        token = value.strip()
+        if not token:
+            return "", ""
+        guid = token
+        path_hint = ""
+        if token.lower().endswith(".mat") or "/" in token or "\\" in token:
+            from Infernux.engine.project_context import get_project_root
+            from Infernux.mcp.tools.common import get_asset_database
+
+            root = get_project_root()
+            resolved = resolve_asset_path(root, token)
+            if not resolved.lower().endswith(".mat"):
+                raise TypeError(f"{path}: expected a .mat material asset")
+            database = get_asset_database()
+            guid = str(database.get_guid_from_path(resolved) or "") if database else ""
+            path_hint = _project_rel(resolved)
+        elif len(token) < 8:
+            raise ValueError(
+                f"{path}: material reference must be a GUID or Assets-relative .mat path"
+            )
+    else:
+        guid = str(getattr(value, "guid", "") or "").strip()
+        path_hint = str(getattr(value, "path_hint", "") or "").strip()
+
+    if not guid:
+        raise ValueError(f"{path}: material reference has no GUID")
+
+    from Infernux.engine.project_context import get_project_root
+    from Infernux.mcp.tools.common import get_asset_database
+
+    database = get_asset_database()
+    database_path = str(database.get_path_from_guid(guid) or "") if database else ""
+    if database is not None:
+        if database_path:
+            effective_path = resolved_path(database_path)
+        elif path_hint:
+            effective_path = resolve_asset_path(get_project_root(), path_hint)
+            resolved_guid = str(database.get_guid_from_path(effective_path) or "")
+            if resolved_guid != guid:
+                raise ValueError(
+                    f"{path}: material GUID does not match the registered asset path"
+                )
+        else:
+            raise ValueError(f"{path}: material GUID is not registered in AssetDatabase")
+    elif path_hint:
+        effective_path = resolve_asset_path(get_project_root(), path_hint)
+    else:
+        effective_path = ""
+    if effective_path:
+        assets = resolve_asset_path(get_project_root(), "")
+        if not is_path_within(effective_path, assets):
+            raise ValueError(f"{path}: material must resolve under Assets/")
+        if not effective_path.lower().endswith(".mat"):
+            raise TypeError(f"{path}: expected a .mat material asset")
+        path_hint = _project_rel(effective_path)
+    return guid, path_hint
+
+
+def _coerce_material_slot_reference(value: Any, path: str) -> str | None:
+    guid, _path_hint = _material_asset_identity(value, path)
+    return guid or None
+
+
+def _material_slot_document(comp, index: int) -> Any:
+    guids = _material_slot_guids(comp, all_slots=True)
+    if not isinstance(guids, list) or index < 0 or index >= len(guids):
+        return None
+    guid = str(guids[index] or "")
+    if not guid:
+        return None
+    from Infernux.mcp.tools.common import get_asset_database
+
+    database = get_asset_database()
+    path_hint = str(database.get_path_from_guid(guid) or "") if database else ""
+    return {
+        "$type": "asset_ref",
+        "asset_type": "Material",
+        "guid": guid,
+        "path_hint": _project_rel(path_hint) if path_hint else "",
+    }
+
+
+def _serialize_component_field_value(comp, field: str) -> Any:
+    if _is_material_slot_component(comp) and field == "material":
+        return _material_slot_document(comp, 0)
+    if _is_material_slot_component(comp) and field == "materials":
+        return [
+            _material_slot_document(comp, index)
+            for index, _guid in enumerate(_material_slot_guids(comp, all_slots=True))
+        ]
+    return serialize_value(getattr(comp, field))
 
 
 def _coerce_component_property_value(
@@ -1398,10 +1635,20 @@ def _coerce_component_property_value(
     value: Any,
     current_value: Any = None,
 ) -> Any:
-    from Infernux.components.serialized_field import (
+    from Infernux.components.fields import (
         coerce_serialized_field_input,
         get_serialized_fields,
     )
+
+    if _is_material_slot_component(comp) and field in {"material", "materials"}:
+        if field == "materials":
+            if not isinstance(value, list):
+                raise TypeError(f"{type(comp).__name__}.materials requires an array")
+            return [
+                _coerce_material_slot_reference(item, f"{type(comp).__name__}.materials[{index}]")
+                for index, item in enumerate(value)
+            ]
+        return _coerce_material_slot_reference(value, f"{type(comp).__name__}.material")
 
     metadata = get_serialized_fields(type(comp)).get(field)
     if metadata is not None:
@@ -1421,7 +1668,7 @@ def _resolved_component_field_metadata(metadata):
     """Resolve lazy built-in enum names to their public pybind enum class."""
     from dataclasses import replace
 
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     if metadata.field_type != FieldType.ENUM or not isinstance(metadata.enum_type, str):
         return metadata
@@ -1482,17 +1729,29 @@ def _component_type_entry(name: str, cls, *, builtin: bool, include_fields: bool
 
 
 def _component_field_schema(cls) -> list[dict[str, Any]]:
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
+    from Infernux.components.fields import FieldType
 
     fields = []
     for name, meta in get_serialized_fields(cls).items():
+        meta = _resolved_component_field_metadata(meta)
         enum_values = []
         enum_type = getattr(meta, "enum_type", None)
         if enum_type is not None:
             try:
+                # pybind11 enums expose ``__members__`` but are not
+                # themselves iterable like Python's Enum class.  Reading the
+                # registered members also preserves the native declaration
+                # order for the editor and MCP clients.
+                members = getattr(enum_type, "__members__", {}) or {}
+                labels = list(getattr(meta, "enum_labels", ()) or ())
                 enum_values = [
-                    {"name": str(item.name), "value": int(item.value)}
-                    for item in list(enum_type)
+                    {
+                        "name": str(name),
+                        "value": int(member.value),
+                        "label": labels[index] if index < len(labels) else str(name),
+                    }
+                    for index, (name, member) in enumerate(members.items())
                 ]
             except Exception:
                 enum_values = []
@@ -1504,20 +1763,96 @@ def _component_field_schema(cls) -> list[dict[str, Any]]:
             "tooltip": str(getattr(meta, "tooltip", "")),
             "readonly": bool(getattr(meta, "readonly", False)),
             "enum_values": enum_values,
+            "enum_type": (
+                str(getattr(enum_type, "__name__", "") or getattr(enum_type, "__qualname__", ""))
+                if enum_type is not None
+                else ""
+            ),
             "asset_type": str(getattr(meta, "asset_type", "") or ""),
             "component_type": str(getattr(meta, "component_type", "") or ""),
+            "writable": not bool(getattr(meta, "readonly", False)),
         })
+    if _is_material_slot_component_class(cls):
+        fields.extend((
+            {
+                "name": "material",
+                "type": FieldType.MATERIAL.name,
+                "default": None,
+                "range": None,
+                "tooltip": "Material assigned to slot 0",
+                "readonly": False,
+                "writable": True,
+                "enum_values": [],
+                "asset_type": "Material",
+                "component_type": "",
+                "slot": 0,
+            },
+            {
+                "name": "materials",
+                "type": FieldType.LIST.name,
+                "element_type": FieldType.MATERIAL.name,
+                "default": [],
+                "range": None,
+                "tooltip": "Materials assigned to all renderer slots",
+                "readonly": False,
+                "writable": True,
+                "enum_values": [],
+                "asset_type": "Material",
+                "component_type": "",
+            },
+        ))
     return fields
 
 
 def _require_component_knowledge(component_type: str, token: str) -> None:
     type_name = str(component_type or "")
-    audio_types = {"AudioSource", "AudioListener"}
-    ui_types = {"UICanvas", "UIText", "UIButton", "UIImage", "UISelectable", "InxUIScreenComponent", "InxUIComponent"}
-    if type_name in audio_types:
+    component_class = _component_class_for_name(type_name)
+    category = str(getattr(component_class, "_component_category_", "") or "")
+    module_name = str(getattr(component_class, "__module__", "") or "")
+    if category.casefold() == "audio":
         require_knowledge_token("audio", token, required_tool="audio_guide")
-    elif type_name in ui_types:
+    elif category.casefold() == "ui" or module_name.startswith("Infernux.ui"):
         require_knowledge_token("ui", token, required_tool="api_get")
+
+
+def _component_descendants(cls):
+    for child in cls.__subclasses__():
+        yield child
+        yield from _component_descendants(child)
+
+
+def _require_creatable_component_type(component_type: str):
+    """Return a type only when its registration describes a creatable type."""
+    cls = _component_class_for_name(component_type)
+    if cls is None:
+        raise FileNotFoundError(f"Component type '{component_type}' was not found.")
+
+    import inspect as _inspect
+    from Infernux.components.registry import get_component_constraints
+
+    registration = get_component_constraints(cls)
+    explicitly_abstract = bool(
+        getattr(cls, "_component_abstract_", False)
+        or getattr(cls, "__abstractmethods__", frozenset())
+        or _inspect.isabstract(cls)
+    )
+    menu_path = str(getattr(cls, "_component_menu_path_", "") or "")
+    has_concrete_menu_descendant = any(
+        bool(str(getattr(child, "_component_menu_path_", "") or ""))
+        and not bool(getattr(child, "_component_abstract_", False))
+        for child in _component_descendants(cls)
+    )
+    if (
+        explicitly_abstract
+        or not bool(registration.user_addable)
+        or bool(registration.intrinsic)
+        or (not menu_path and has_concrete_menu_descendant)
+    ):
+        raise TypeError(
+            f"Component type '{component_type}' is abstract or not user-creatable. "
+            "Attach a concrete registered component type instead."
+        )
+    return cls
 
 
 def _matches_scene_query(obj, criteria: dict[str, Any]) -> bool:

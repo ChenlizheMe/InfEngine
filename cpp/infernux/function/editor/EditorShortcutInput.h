@@ -23,6 +23,7 @@ class EditorShortcutInput final : public InxGUIRenderable
   private:
     int m_lastFrame = -1;
     bool m_popupActivePreviousFrame = false;
+    bool m_modalActivePreviousFrame = false;
 };
 
 } // namespace infernux

@@ -109,11 +109,11 @@ def _register(tmp_path, monkeypatch, *, recording_enabled=True, build_profile="d
     return mcp, native
 
 
-def test_capture_requires_debug_recording_opt_in(tmp_path, monkeypatch):
+def test_capture_requires_debug_but_not_continuous_recording_opt_in(tmp_path, monkeypatch):
     disabled, _ = _register(tmp_path, monkeypatch, recording_enabled=False)
     result = disabled.tools["capture_request"]("game", "")
-    assert result["ok"] is False
-    assert result["error"]["code"] == "error.recording_disabled"
+    assert result["ok"] is True
+    assert result["data"]["human_review_only"] is True
 
     release, _ = _register(tmp_path, monkeypatch, recording_enabled=True, build_profile="release_exploration")
     result = release.tools["capture_request"]("game", "")

@@ -254,6 +254,7 @@ struct GpuParticleEmitterDiagnostic
     uint32_t aliveCount = 0;
     uint32_t visibleCount = 0;
     uint32_t droppedCount = 0;
+    uint32_t initializedSpawnCount = 0;
     uint32_t collisionHitCount = 0;
     uint32_t collisionResponseCount = 0;
     uint32_t collisionTriggerCount = 0;
@@ -343,6 +344,10 @@ class ParticleGpuSystemManager
                                              std::string *error = nullptr);
     [[nodiscard]] uint64_t CollisionSceneRevision() const noexcept;
     [[nodiscard]] uint32_t CollisionSceneColliderCount() const noexcept;
+    /// True when at least one resident emitter has compiled collision work.
+    /// Scene extraction uses this to avoid rebuilding collider snapshots for
+    /// particle graphs that cannot consume them.
+    [[nodiscard]] bool RequiresCollisionScene() const noexcept;
     /// Replace only render resources that reference this live material. The
     /// simulation runtime and all surviving particles remain untouched.
     [[nodiscard]] bool RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,

@@ -171,18 +171,7 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
             m_moduleName = pyType.attr("__module__").cast<std::string>();
             m_qualifiedName = pyType.attr("__qualname__").cast<std::string>();
 
-            try {
-                py::object inxComponentType = py::module_::import("Infernux.components").attr("InxComponent");
-                m_overridesUpdate = !pyType.attr("update").is(inxComponentType.attr("update"));
-                m_overridesFixedUpdate = !pyType.attr("fixed_update").is(inxComponentType.attr("fixed_update"));
-                m_overridesLateUpdate = !pyType.attr("late_update").is(inxComponentType.attr("late_update"));
-            } catch (const py::error_already_set &e) {
-                INXLOG_WARN("[PyComponentProxy] Failed to inspect lifecycle overrides for '", m_typeName,
-                            "': ", e.what());
-                m_overridesUpdate = true;
-                m_overridesFixedUpdate = true;
-                m_overridesLateUpdate = true;
-            }
+            RefreshPythonLifecycleOverrideMask();
 
             if (py::hasattr(pyType, "_execute_in_edit_mode_")) {
                 try {
@@ -289,20 +278,23 @@ PyComponentProxy::PyComponentProxy(PyComponentProxy &&other) noexcept
     : Component(std::move(other)), m_pyComponent(std::move(other.m_pyComponent)),
       m_callAwake(std::move(other.m_callAwake)), m_callStart(std::move(other.m_callStart)),
       m_callUpdate(std::move(other.m_callUpdate)), m_callFixedUpdate(std::move(other.m_callFixedUpdate)),
-      m_callLateUpdate(std::move(other.m_callLateUpdate)),
-      m_callDisabledUpdate(std::move(other.m_callDisabledUpdate)),
+      m_callLateUpdate(std::move(other.m_callLateUpdate)), m_callDisabledUpdate(std::move(other.m_callDisabledUpdate)),
       m_callDisabledFixedUpdate(std::move(other.m_callDisabledFixedUpdate)),
       m_callDisabledLateUpdate(std::move(other.m_callDisabledLateUpdate)),
       m_callOnEnable(std::move(other.m_callOnEnable)), m_callOnDisable(std::move(other.m_callOnDisable)),
       m_callOnDestroy(std::move(other.m_callOnDestroy)), m_callOnValidate(std::move(other.m_callOnValidate)),
-      m_callReset(std::move(other.m_callReset)),
-      m_typeName(std::move(other.m_typeName)), m_typeGuid(std::move(other.m_typeGuid)),
-      m_scriptGuid(std::move(other.m_scriptGuid)), m_moduleName(std::move(other.m_moduleName)),
-      m_qualifiedName(std::move(other.m_qualifiedName)), m_constraintTypeId(std::move(other.m_constraintTypeId)),
-      m_typeConstraints(std::move(other.m_typeConstraints)), m_executeInEditMode(other.m_executeInEditMode),
-      m_overridesUpdate(other.m_overridesUpdate), m_overridesFixedUpdate(other.m_overridesFixedUpdate),
-      m_overridesLateUpdate(other.m_overridesLateUpdate), m_hasCoroutineScheduler(other.m_hasCoroutineScheduler),
-      m_updateDispatchCount(other.m_updateDispatchCount), m_updateForwardCount(other.m_updateForwardCount)
+      m_callReset(std::move(other.m_callReset)), m_typeName(std::move(other.m_typeName)),
+      m_typeGuid(std::move(other.m_typeGuid)), m_scriptGuid(std::move(other.m_scriptGuid)),
+      m_moduleName(std::move(other.m_moduleName)), m_qualifiedName(std::move(other.m_qualifiedName)),
+      m_constraintTypeId(std::move(other.m_constraintTypeId)), m_typeConstraints(std::move(other.m_typeConstraints)),
+      m_executeInEditMode(other.m_executeInEditMode), m_overridesUpdate(other.m_overridesUpdate),
+      m_overridesFixedUpdate(other.m_overridesFixedUpdate), m_overridesLateUpdate(other.m_overridesLateUpdate),
+      m_overridesCollisionEnter(other.m_overridesCollisionEnter),
+      m_overridesCollisionStay(other.m_overridesCollisionStay),
+      m_overridesCollisionExit(other.m_overridesCollisionExit), m_overridesTriggerEnter(other.m_overridesTriggerEnter),
+      m_overridesTriggerStay(other.m_overridesTriggerStay), m_overridesTriggerExit(other.m_overridesTriggerExit),
+      m_hasCoroutineScheduler(other.m_hasCoroutineScheduler), m_updateDispatchCount(other.m_updateDispatchCount),
+      m_updateForwardCount(other.m_updateForwardCount)
 {
     other.m_pyComponent = py::none();
 }
@@ -336,6 +328,12 @@ PyComponentProxy &PyComponentProxy::operator=(PyComponentProxy &&other) noexcept
         m_overridesUpdate = other.m_overridesUpdate;
         m_overridesFixedUpdate = other.m_overridesFixedUpdate;
         m_overridesLateUpdate = other.m_overridesLateUpdate;
+        m_overridesCollisionEnter = other.m_overridesCollisionEnter;
+        m_overridesCollisionStay = other.m_overridesCollisionStay;
+        m_overridesCollisionExit = other.m_overridesCollisionExit;
+        m_overridesTriggerEnter = other.m_overridesTriggerEnter;
+        m_overridesTriggerStay = other.m_overridesTriggerStay;
+        m_overridesTriggerExit = other.m_overridesTriggerExit;
         m_hasCoroutineScheduler = other.m_hasCoroutineScheduler;
         m_updateDispatchCount = other.m_updateDispatchCount;
         m_updateForwardCount = other.m_updateForwardCount;
@@ -372,8 +370,13 @@ std::size_t PyComponentProxy::ReadCoroutineSchedulerCount(const py::handle &sche
     if (scheduler.is_none())
         return 0;
 
-    const py::object countMethod = py::reinterpret_borrow<py::object>(scheduler).attr("count");
-    return countMethod().cast<std::size_t>();
+    py::object countValue = py::reinterpret_borrow<py::object>(scheduler).attr("count");
+    // CoroutineScheduler.count is a property in the current Python contract.
+    // Keep accepting the older callable shape so native proxies can inspect a
+    // scheduler across a Play-mode hot reload without manufacturing warnings.
+    if (PyCallable_Check(countValue.ptr()))
+        countValue = countValue();
+    return countValue.cast<std::size_t>();
 }
 
 void PyComponentProxy::RefreshPythonLifecycleDispatchPlan()
@@ -447,15 +450,37 @@ void PyComponentProxy::RebindPythonMirror()
     SyncPythonMirror();
 }
 
+void PyComponentProxy::ResetLifecycleForPlay()
+{
+    py::gil_scoped_acquire acquire;
+    m_wasEnabled = false;
+    m_hasAwake = false;
+    m_hasStarted = false;
+    m_hasDestroyed = false;
+    m_isBeingDestroyed = false;
+    SyncPythonMirror();
+}
+
 void PyComponentProxy::RefreshPythonLifecycleDispatch()
 {
     py::gil_scoped_acquire acquire;
     RefreshPythonLifecycleDispatchPlan();
+    RefreshPythonLifecycleOverrideMask();
+    RefreshCoroutineSchedulerFlag();
+}
+
+void PyComponentProxy::RefreshPythonLifecycleOverrideMask()
+{
     if (m_pyComponent.is_none()) {
         m_overridesUpdate = false;
         m_overridesFixedUpdate = false;
         m_overridesLateUpdate = false;
-        m_hasCoroutineScheduler = false;
+        m_overridesCollisionEnter = false;
+        m_overridesCollisionStay = false;
+        m_overridesCollisionExit = false;
+        m_overridesTriggerEnter = false;
+        m_overridesTriggerStay = false;
+        m_overridesTriggerExit = false;
         return;
     }
 
@@ -465,14 +490,25 @@ void PyComponentProxy::RefreshPythonLifecycleDispatch()
         m_overridesUpdate = !pyType.attr("update").is(inxComponentType.attr("update"));
         m_overridesFixedUpdate = !pyType.attr("fixed_update").is(inxComponentType.attr("fixed_update"));
         m_overridesLateUpdate = !pyType.attr("late_update").is(inxComponentType.attr("late_update"));
+        m_overridesCollisionEnter = !pyType.attr("on_collision_enter").is(inxComponentType.attr("on_collision_enter"));
+        m_overridesCollisionStay = !pyType.attr("on_collision_stay").is(inxComponentType.attr("on_collision_stay"));
+        m_overridesCollisionExit = !pyType.attr("on_collision_exit").is(inxComponentType.attr("on_collision_exit"));
+        m_overridesTriggerEnter = !pyType.attr("on_trigger_enter").is(inxComponentType.attr("on_trigger_enter"));
+        m_overridesTriggerStay = !pyType.attr("on_trigger_stay").is(inxComponentType.attr("on_trigger_stay"));
+        m_overridesTriggerExit = !pyType.attr("on_trigger_exit").is(inxComponentType.attr("on_trigger_exit"));
     } catch (const py::error_already_set &error) {
         INXLOG_WARN("[PyComponentProxy] Failed to refresh lifecycle override mask for '", m_typeName,
                     "': ", error.what());
         m_overridesUpdate = true;
         m_overridesFixedUpdate = true;
         m_overridesLateUpdate = true;
+        m_overridesCollisionEnter = true;
+        m_overridesCollisionStay = true;
+        m_overridesCollisionExit = true;
+        m_overridesTriggerEnter = true;
+        m_overridesTriggerStay = true;
+        m_overridesTriggerExit = true;
     }
-    RefreshCoroutineSchedulerFlag();
 }
 
 void PyComponentProxy::RefreshPythonMirrorIdentity() noexcept

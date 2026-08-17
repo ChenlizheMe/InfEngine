@@ -1,3 +1,4 @@
+#include <core/types/ShaderProgramArtifact.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <cassert>
@@ -11,6 +12,9 @@ namespace
 using infernux::InxMaterial;
 using infernux::RenderStateOverride;
 using infernux::ShaderAssetReference;
+using infernux::ShaderProgramArtifact;
+using infernux::ShaderProgramPropertyBinding;
+using infernux::ShaderProgramStageMask;
 
 void VerifyRemovedFieldRejection()
 {
@@ -203,6 +207,40 @@ void VerifyBuiltinSixWaySmokeMaterial()
     assert(state.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
 }
 
+void VerifySparseMaterialUsesLinkedShaderDefaults()
+{
+    InxMaterial material("Sparse", "Lit");
+    material.SetColor("baseColor", glm::vec4(0.25f, 0.5f, 0.75f, 1.0f));
+
+    ShaderProgramArtifact artifact;
+    ShaderProgramPropertyBinding baseColor;
+    baseColor.name = "baseColor";
+    baseColor.type = "Color";
+    baseColor.defaultValue = "[1.0,1.0,1.0,1.0]";
+    baseColor.stages = ShaderProgramStageMask::Fragment;
+    baseColor.bufferOffset = 0;
+    baseColor.byteSize = 16;
+    baseColor.byteAlignment = 16;
+    artifact.properties.push_back(baseColor);
+
+    ShaderProgramPropertyBinding smoothness;
+    smoothness.name = "smoothness";
+    smoothness.type = "Float";
+    smoothness.defaultValue = "0.5";
+    smoothness.stages = ShaderProgramStageMask::Fragment;
+    smoothness.bufferOffset = 16;
+    smoothness.byteSize = 4;
+    smoothness.byteAlignment = 4;
+    artifact.properties.push_back(smoothness);
+
+    assert(material.SynchronizeShaderPropertyDefaults(artifact));
+    assert(std::get<glm::vec4>(material.GetProperty("baseColor")->value) == glm::vec4(0.25f, 0.5f, 0.75f, 1.0f));
+    assert(std::get<float>(material.GetProperty("smoothness")->value) == 0.5f);
+    const uint64_t synchronizedVersion = material.GetVersion();
+    assert(!material.SynchronizeShaderPropertyDefaults(artifact));
+    assert(material.GetVersion() == synchronizedVersion);
+}
+
 } // namespace
 
 int main()
@@ -216,6 +254,7 @@ int main()
     VerifyShaderDefaultsReplacePreviousShaderState();
     VerifyMaterialOverridesSurviveShaderDefaults();
     VerifyBuiltinSixWaySmokeMaterial();
+    VerifySparseMaterialUsesLinkedShaderDefaults();
     std::cout << "Material document tests passed\n";
     return 0;
 }

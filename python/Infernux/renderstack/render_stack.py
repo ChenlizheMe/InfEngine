@@ -21,8 +21,8 @@ Usage::
 
     # In a scene setup script
     stack = game_object.add_component(RenderStack)
-    # Empty selection already means Default Forward. Select another built-in
-    # pipeline explicitly only when the scene needs it.
+    # Default Forward is stored explicitly. Select another built-in pipeline
+    # only when the scene needs it.
     stack.set_pipeline("Default Forward")
     stack.add_effect_slot("final", bloom_effect_ref)
 """
@@ -34,7 +34,7 @@ import warnings
 from typing import Dict, Optional, TYPE_CHECKING
 
 from Infernux.components.component import InxComponent
-from Infernux.components.serialized_field import FieldType, list_field
+from Infernux.components.fields import FieldType, list_field
 from Infernux.components.decorators import disallow_multiple, add_component_menu
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
@@ -58,8 +58,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     the current scene. At most one RenderStack can be active at a time.
 
     Attributes:
-        pipeline_class_name: Selected pipeline class name. Empty means the
-            default pipeline.
+        pipeline_class_name: Selected pipeline display name.
         effect_slots: Ordered Effect assets grouped by pipeline stage.
     """
 
@@ -69,10 +68,23 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     _active_instance: Optional["RenderStack"] = None
 
     @classmethod
-    def instance(cls) -> Optional["RenderStack"]:
-        """Return the active scene-scoped RenderStack, or None."""
+    def instance(cls, scene=None) -> Optional["RenderStack"]:
+        """Return the RenderStack owned by *scene*, or ``None``.
+
+        Scene replacement retains the previous native world until the new
+        document has been published.  During that window an old component can
+        still be valid and active, so component liveness alone is not enough
+        to authorize it for rendering the new scene.
+        """
+        if scene is None:
+            try:
+                from Infernux.lib import SceneManager as _NativeSceneManager
+
+                scene = _NativeSceneManager.instance().get_active_scene()
+            except Exception:
+                scene = None
         inst = cls._active_instance
-        if inst is not None and not cls._is_effectively_active(inst):
+        if inst is not None and not cls._is_effectively_active(inst, scene=scene):
             cls._active_instance = None
             return None
         return inst
@@ -101,7 +113,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 if (
                     isinstance(component, cls)
                     and component is not exclude
-                    and cls._is_effectively_active(component)
+                    and cls._is_effectively_active(component, scene=scene)
                 ):
                     cls._active_instance = component
                     component.invalidate_graph()
@@ -109,14 +121,25 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         return None
 
     @classmethod
-    def _is_effectively_active(cls, stack: Optional["RenderStack"]) -> bool:
+    def _is_effectively_active(
+        cls,
+        stack: Optional["RenderStack"],
+        *,
+        scene=None,
+    ) -> bool:
         if stack is None or not stack.is_valid or not stack.enabled:
             return False
         go = stack.game_object
-        return bool(go is not None and go.is_active_in_hierarchy())
+        if go is None or not go.is_active_in_hierarchy():
+            return False
+        if scene is not None and getattr(go, "scene", None) is not scene:
+            return False
+        return True
 
     # ---- Serialized fields ----
-    pipeline_class_name: str = ""
+    DEFAULT_PIPELINE_NAME = "Default Forward"
+
+    pipeline_class_name: str = DEFAULT_PIPELINE_NAME
     pipeline_params_json: str = ""  # Persisted pipeline parameter snapshot.
     effect_slots: list = list_field(
         element_type=FieldType.SERIALIZABLE_OBJECT,
@@ -259,7 +282,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         selected_pipeline = (
             self.pipeline_class_name
             if pipeline_class_name is None
-            else str(pipeline_class_name or "")
+            else str(pipeline_class_name or "").strip() or self.DEFAULT_PIPELINE_NAME
         )
         key = self._pipeline_key(selected_pipeline)
         if self._pipeline_param_store is None:
@@ -267,7 +290,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
         if selected_pipeline == self.pipeline_class_name:
             pipeline = self.pipeline
-            from Infernux.components.serialized_field import get_serialized_fields
+            from Infernux.components.fields import get_serialized_fields
 
             if field_name not in get_serialized_fields(type(pipeline)):
                 raise AttributeError(
@@ -312,6 +335,10 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
     def on_after_deserialize(self) -> None:
         """Restore the canonical pipeline and EffectStage state."""
+        # Normalize the removed empty-string sentinel at the component
+        # boundary so every public reader observes the same pipeline state.
+        if not str(self.pipeline_class_name or "").strip():
+            self.pipeline_class_name = self.DEFAULT_PIPELINE_NAME
         # Register as the active instance so that the fast-path in
         # RenderStackPipeline._find_render_stack works even in edit mode
         # (where awake() is not called).
@@ -469,8 +496,9 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     def set_pipeline(self, pipeline_class_name: str) -> None:
         """Switch the active render pipeline.
 
-        Pass an empty string to use the default pipeline.
+        An empty value is normalized to the explicit default pipeline name.
         """
+        pipeline_class_name = str(pipeline_class_name or "").strip() or self.DEFAULT_PIPELINE_NAME
         if self.pipeline_class_name == pipeline_class_name:
             return
         self._save_current_pipeline_params()
@@ -508,7 +536,11 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
         try:
             g = RenderGraph("_FullTopologyProbe")
-            self.pipeline.define_topology(g)
+            self.pipeline._defining_graph = g
+            try:
+                self.pipeline.define_topology(g)
+            finally:
+                self.pipeline._defining_graph = None
             # Keep the inspector probe consistent with build(): post-process
             # injection points are guaranteed to exist even when Screen UI is off.
             ensure_standard_post_process_points(g)
@@ -534,7 +566,12 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
             try:
                 g = RenderGraph("_SafeTopologyProbe")
-                DefaultForwardPipeline().define_topology(g)
+                fallback = DefaultForwardPipeline()
+                fallback._defining_graph = g
+                try:
+                    fallback.define_topology(g)
+                finally:
+                    fallback._defining_graph = None
                 ensure_standard_post_process_points(g)
                 return g
             except Exception as fallback_exc:
@@ -578,6 +615,23 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         compiled_effects = []
         effect_errors = []
 
+        from Infernux.renderstack.render_effect_compiler import (
+            resolve_enabled_effect_requirements,
+        )
+
+        from Infernux.renderstack.geometry_buffers import (
+            DEFAULT_GEOMETRY_BUFFERS,
+            provider_specs,
+        )
+
+        effect_requirements = resolve_enabled_effect_requirements(self.effect_slots)
+        provider_names = {
+            semantic for semantic, _phase in provider_specs(type(self.pipeline))
+        }
+        graph.set_geometry_buffer_requirements(
+            effect_requirements & (DEFAULT_GEOMETRY_BUFFERS | provider_names)
+        )
+
         def on_effect_stage(stage) -> None:
             from Infernux.renderstack.render_effect_compiler import compile_effect_slots
 
@@ -586,7 +640,11 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             # route color into the final scene output.
             bus = ResourceBus()
             self._resource_bus = bus
-            semantic_resources = graph.current_effect_resources
+            source_result = graph.current_pass_result
+            semantic_resources = (
+                source_result.snapshot if source_result is not None
+                else graph.current_effect_resources
+            )
             for resource_name in stage.contract.inputs:
                 resource = semantic_resources.get(resource_name)
                 if resource is None:
@@ -615,6 +673,15 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                         render_pass.fullscreen_quad("Fullscreen Blit")
                 bus.set(COLOR_TEXTURE, stage_color)
 
+            if source_result is not None:
+                result_buffers = source_result.snapshot | bus.snapshot()
+                effect_result = graph.derive_pass_result(
+                    f"effect:{stage.stable_id}",
+                    source_result,
+                    result_buffers,
+                )
+                graph.replace_current_pass_result(effect_result)
+
         graph._effect_stage_callback = on_effect_stage
 
         from Infernux.renderstack.render_effect_compiler import (
@@ -632,7 +699,11 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         )
 
         # Pipeline populates graph with passes + injection points
-        self.pipeline.define_topology(graph)
+        self.pipeline._defining_graph = graph
+        try:
+            self.pipeline.define_topology(graph)
+        finally:
+            self.pipeline._defining_graph = None
         from Infernux.renderstack.render_effect_compiler import (
             RenderEffectArtifactRegistry,
         )
@@ -851,15 +922,16 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     def _create_pipeline(self):  # -> RenderPipeline
         """Instantiate the pipeline selected by ``pipeline_class_name``.
 
-        Empty or unknown names fall back to ``DefaultForwardPipeline``. The
-        pipeline source file is also registered for hot-reload callbacks.
+        The explicit default name and unknown names resolve to
+        ``DefaultForwardPipeline``. The pipeline source file is also
+        registered for hot-reload callbacks.
         """
         import inspect, os
         from Infernux.renderstack.default_forward_pipeline import (
             DefaultForwardPipeline,
         )
 
-        if not self.pipeline_class_name:
+        if self.pipeline_class_name == self.DEFAULT_PIPELINE_NAME:
             self._unregister_pipeline_reload()
             return DefaultForwardPipeline()
 
@@ -872,7 +944,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 f"Falling back to DefaultForwardPipeline.",
                 stacklevel=2,
             )
-            self.pipeline_class_name = ""
+            self.pipeline_class_name = self.DEFAULT_PIPELINE_NAME
             self._unregister_pipeline_reload()
             return DefaultForwardPipeline()
 
@@ -882,7 +954,11 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         return pipeline
 
     def _pipeline_key(self, pipeline_name: str) -> str:
-        return pipeline_name if pipeline_name else "__default__"
+        return (
+            "__default__"
+            if not pipeline_name or pipeline_name == self.DEFAULT_PIPELINE_NAME
+            else pipeline_name
+        )
 
     def _save_current_pipeline_params(self) -> None:
         if self._pipeline_param_store is None:
@@ -890,7 +966,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         if self._pipeline is None:
             return
         try:
-            from Infernux.components.serialized_field import get_serialized_fields
+            from Infernux.components.fields import get_serialized_fields
             from enum import Enum
 
             key = self._pipeline_key(self.pipeline_class_name)
@@ -911,7 +987,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         if self._pipeline_param_store is None:
             self._pipeline_param_store = {}
         try:
-            from Infernux.components.serialized_field import get_serialized_fields, FieldType
+            from Infernux.components.fields import get_serialized_fields, FieldType
         except ImportError as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return

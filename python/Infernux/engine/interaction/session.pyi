@@ -20,7 +20,7 @@ from .prefabs import PrefabCommandService
 from .render_stacks import RenderStackCommandService
 from .components import ComponentCommandService
 from .saving import EditorSaveService
-from .navigation import NavigationService
+from .navigation import DirectoryNavigationHistory, NavigationService
 from .transient_interactions import TransientInteractionService
 from .panels import PanelInteractionRegistry
 from .external_drops import ExternalDropTargetService
@@ -35,6 +35,7 @@ from .command_palette import CommandPaletteService
 class EditorInteractionCore:
     selection: SelectionService
     navigation: NavigationService
+    directory_navigation: DirectoryNavigationHistory
     clipboard: ClipboardService
     scene_objects: SceneObjectCommandService
     focus: FocusService

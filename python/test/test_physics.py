@@ -169,6 +169,7 @@ class TestRigidbodyEnums:
     def test_collision_detection_mode_values(self):
         assert int(CollisionDetectionMode.Discrete) == 0
         assert int(CollisionDetectionMode.Continuous) == 1
+        assert int(CollisionDetectionMode.ContinuousDynamic) == 2
 
     def test_interpolation_values(self):
         assert int(RigidbodyInterpolation.Interpolate) == 1
@@ -182,6 +183,8 @@ class TestRigidbodyEnums:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _backend_motion_quality(mode: CollisionDetectionMode, is_kinematic: bool) -> int:
+    if mode == CollisionDetectionMode.ContinuousDynamic:
+        return 0 if is_kinematic else 2
     if mode == CollisionDetectionMode.Continuous:
         return 0 if is_kinematic else 1
     return 0
@@ -191,10 +194,12 @@ class TestCollisionDetectionMapping:
     def test_dynamic_body_modes(self):
         assert _backend_motion_quality(CollisionDetectionMode.Discrete, False) == 0
         assert _backend_motion_quality(CollisionDetectionMode.Continuous, False) == 1
+        assert _backend_motion_quality(CollisionDetectionMode.ContinuousDynamic, False) == 2
 
     def test_kinematic_body_modes(self):
         assert _backend_motion_quality(CollisionDetectionMode.Discrete, True) == 0
         assert _backend_motion_quality(CollisionDetectionMode.Continuous, True) == 0
+        assert _backend_motion_quality(CollisionDetectionMode.ContinuousDynamic, True) == 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════

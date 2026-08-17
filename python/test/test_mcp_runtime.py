@@ -101,6 +101,29 @@ def test_runtime_wait_can_wait_for_a_named_scene_after_a_transition(monkeypatch)
     assert response["data"]["state"]["scene_name"] == "results"
 
 
+def test_runtime_wait_frames_uses_paused_step_sequence(monkeypatch):
+    fake = _FakeMcp()
+    runtime.register_runtime_tools(fake)
+    cursors = iter([
+        {"source": "paused_step", "progress": 12, "engine_frame": 44},
+        {"source": "paused_step", "progress": 13, "engine_frame": 44},
+    ])
+    monkeypatch.setattr(runtime, "_runtime_frame_cursor", lambda: next(cursors))
+    monkeypatch.setattr(runtime.time, "sleep", lambda _seconds: None)
+
+    response = fake.tools["runtime_wait_frames"](1, timeout_seconds=0.1)
+
+    assert response["ok"] is True
+    assert response["data"] == {
+        "start_frame": 12,
+        "end_frame": 13,
+        "frames": 1,
+        "frame_source": "paused_step",
+        "engine_frame_start": 44,
+        "engine_frame_end": 44,
+    }
+
+
 def test_runtime_renderer_state_combines_frame_submission_and_gpu_residency(monkeypatch):
     class _Native:
         renderer_frame_snapshot = {
@@ -245,6 +268,28 @@ def test_runtime_performance_window_uses_numeric_begin_and_read_bindings(monkeyp
     assert window["data"]["sample_count"] == 2
     assert native.begin_calls == 1
     assert native.read_calls == 1
+
+
+def test_runtime_baseline_diagnostics_is_read_only(monkeypatch):
+    fake = _FakeMcp()
+    runtime.register_runtime_tools(fake)
+    calls = []
+
+    monkeypatch.setattr(
+        runtime,
+        "_runtime_baseline_state",
+        lambda: calls.append("read") or {
+            "schema_version": 1,
+            "capabilities": {"read_only": True},
+        },
+    )
+    monkeypatch.setattr(runtime, "_run_on_main", lambda _name, fn: fn())
+
+    result = fake.tools["runtime_baseline_diagnostics"]()
+
+    assert result["ok"] is True
+    assert result["data"]["capabilities"]["read_only"] is True
+    assert calls == ["read"]
 
 
 def test_runtime_physics_state_uses_public_world_and_frame_profile():
@@ -1186,3 +1231,52 @@ def test_runtime_no_errors_assertion_includes_script_loader_failures(monkeypatch
 
     assert result["passed"] is False
     assert result["actual"] == 1
+
+
+def test_runtime_read_errors_uses_authoritative_native_console(monkeypatch):
+    from Infernux.mcp.tools import console as console_tools
+
+    class NativeConsole:
+        def _get_visible_log_snapshot(self, limit):
+            assert limit == 7
+            return [
+                {
+                    "time": "12:34:56.000",
+                    "level": "ERROR",
+                    "message": "native lifecycle failure",
+                    "source_file": "runtime.cpp",
+                    "source_line": 42,
+                    "stack_trace": "",
+                },
+                {
+                    "time": "12:34:57.000",
+                    "level": "INFO",
+                    "message": "not an error",
+                    "source_file": "",
+                    "source_line": 0,
+                    "stack_trace": "",
+                },
+            ]
+
+        def get_view_option(self, _option):
+            return True
+
+        def get_search_query(self):
+            return ""
+
+        def _get_status_snapshot(self):
+            return ("", "INFO", 1, 0, 1, 0)
+
+    monkeypatch.setattr(console_tools, "_native_console", lambda: NativeConsole())
+
+    result = runtime._read_errors(limit=7)
+
+    assert result["errors"] == [
+        {
+            "time": "12:34:56.000",
+            "level": "ERROR",
+            "message": "native lifecycle failure",
+            "source_file": "runtime.cpp",
+            "source_line": 42,
+        }
+    ]

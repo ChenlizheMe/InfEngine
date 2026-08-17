@@ -389,7 +389,8 @@ std::shared_ptr<BufferUploadTicket> VkResourceManager::BeginBufferUpload(const r
     ticket->m_staging->CopyFrom(data, size, 0);
 
     std::vector<uint32_t> queueFamilies;
-    const bool canSubmitAsync = m_asyncTransfer && m_asyncTransfer->IsAsyncCapable();
+    const bool canSubmitAsync = m_asyncTransfer && m_asyncTransfer->IsAsyncCapable() &&
+                                m_asyncTransfer->GetTimelineSemaphore() != VK_NULL_HANDLE;
     if (canSubmitAsync)
         queueFamilies = {m_graphicsQueueFamily, m_asyncTransfer->GetQueueFamily()};
     ticket->m_destination =
@@ -417,6 +418,7 @@ std::shared_ptr<BufferUploadTicket> VkResourceManager::BeginBufferUpload(const r
     ticket->m_upload = m_asyncTransfer->EndAsync(commandBuffer);
     if (!ticket->m_upload.IsValid())
         throw std::runtime_error("failed to submit asynchronous GPU buffer upload");
+    ticket->m_uploadTimelineValue = ticket->m_upload.timelineValue;
     ticket->m_async = true;
     m_pendingBufferUploads.push_back(ticket);
     return ticket;
@@ -428,15 +430,23 @@ bool VkResourceManager::TryPublishBufferUpload(const std::shared_ptr<BufferUploa
         throw std::invalid_argument("GPU buffer upload ticket belongs to another resource manager");
     if (ticket->m_published)
         return true;
+    const auto publishTimelineDependency = [this, &ticket] {
+        if (ticket->m_uploadTimelineValue == 0 || !m_asyncTransfer ||
+            m_asyncTransfer->GetTimelineSemaphore() == VK_NULL_HANDLE)
+            return;
+        m_requiredUploadTimelineValue = std::max(m_requiredUploadTimelineValue, ticket->m_uploadTimelineValue);
+        ++m_timelineUploadPublicationCount;
+        ticket->m_uploadTimelineValue = 0;
+    };
     if (ticket->m_complete) {
+        publishTimelineDependency();
         ticket->m_published = true;
         return true;
     }
     if (!ticket->m_upload.IsValid() || !m_asyncTransfer)
         throw std::logic_error("GPU buffer upload ticket has no live transfer submission");
-    if (ticket->m_upload.timelineValue != 0 && m_asyncTransfer->GetTimelineSemaphore() != VK_NULL_HANDLE) {
-        m_requiredUploadTimelineValue = std::max(m_requiredUploadTimelineValue, ticket->m_upload.timelineValue);
-        ++m_timelineUploadPublicationCount;
+    if (ticket->m_uploadTimelineValue != 0 && m_asyncTransfer->GetTimelineSemaphore() != VK_NULL_HANDLE) {
+        publishTimelineDependency();
         ticket->m_published = true;
         return true;
     }
@@ -613,9 +623,11 @@ std::shared_ptr<TextureUploadTicket> VkResourceManager::BeginTextureUpload(const
         m_rhiDevice->Release(texture);
         throw std::runtime_error("failed to allocate RHI texture sampler");
     }
-    ticket->m_texture = std::make_shared<rhi::TextureResource>(*m_rhiDevice, texture, view, sampler, residentBytes);
+    ticket->m_texture = std::make_shared<rhi::TextureResource>(*m_rhiDevice, texture, view, sampler, residentBytes,
+                                                               request.texture.format, viewDesc);
 
-    const bool canSubmitAsync = m_asyncTransfer && m_asyncTransfer->IsAsyncCapable();
+    const bool canSubmitAsync = m_asyncTransfer && m_asyncTransfer->IsAsyncCapable() &&
+                                m_asyncTransfer->GetTimelineSemaphore() != VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = canSubmitAsync ? m_asyncTransfer->Begin() : BeginSingleTimeCommands();
     if (commandBuffer == VK_NULL_HANDLE)
         throw std::runtime_error("failed to begin RHI texture upload");
@@ -650,6 +662,7 @@ std::shared_ptr<TextureUploadTicket> VkResourceManager::BeginTextureUpload(const
         ticket->m_upload = m_asyncTransfer->EndAsync(commandBuffer);
         if (!ticket->m_upload.IsValid())
             throw std::runtime_error("failed to submit asynchronous RHI texture upload");
+        ticket->m_uploadTimelineValue = ticket->m_upload.timelineValue;
         ticket->m_async = true;
         m_pendingTextureUploads.push_back(ticket);
     } else {
@@ -667,15 +680,23 @@ bool VkResourceManager::TryPublishTextureUpload(const std::shared_ptr<TextureUpl
         throw std::invalid_argument("GPU texture upload ticket belongs to another resource manager");
     if (ticket->m_published)
         return true;
+    const auto publishTimelineDependency = [this, &ticket] {
+        if (ticket->m_uploadTimelineValue == 0 || !m_asyncTransfer ||
+            m_asyncTransfer->GetTimelineSemaphore() == VK_NULL_HANDLE)
+            return;
+        m_requiredUploadTimelineValue = std::max(m_requiredUploadTimelineValue, ticket->m_uploadTimelineValue);
+        ++m_timelineUploadPublicationCount;
+        ticket->m_uploadTimelineValue = 0;
+    };
     if (ticket->m_complete) {
+        publishTimelineDependency();
         ticket->m_published = true;
         return true;
     }
     if (!ticket->m_upload.IsValid() || !m_asyncTransfer)
         throw std::logic_error("GPU texture upload ticket has no live transfer submission");
-    if (ticket->m_upload.timelineValue != 0 && m_asyncTransfer->GetTimelineSemaphore() != VK_NULL_HANDLE) {
-        m_requiredUploadTimelineValue = std::max(m_requiredUploadTimelineValue, ticket->m_upload.timelineValue);
-        ++m_timelineUploadPublicationCount;
+    if (ticket->m_uploadTimelineValue != 0 && m_asyncTransfer->GetTimelineSemaphore() != VK_NULL_HANDLE) {
+        publishTimelineDependency();
         ticket->m_published = true;
         return true;
     }
@@ -1083,7 +1104,7 @@ std::unique_ptr<VkImageHandle> VkResourceManager::CreateDepthBuffer(uint32_t wid
     }
 
     // Create image view
-    if (!depthImage->CreateView(format, VK_IMAGE_ASPECT_DEPTH_BIT, 1)) {
+    if (!depthImage->CreateView(format, rhi::ToVkImageAspectMask(format), 1)) {
         return nullptr;
     }
 
@@ -1108,10 +1129,7 @@ void VkResourceManager::TransitionImageLayout(VkImage image, VkFormat format, Vk
     barrier.subresourceRange.layerCount = 1;
 
     if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        if (HasStencilComponent(format)) {
-            barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
-        }
+        barrier.subresourceRange.aspectMask = rhi::ToVkImageAspectMask(format);
     } else {
         barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     }

@@ -160,6 +160,25 @@ class _TimeMeta(type):
         """Wall-clock seconds since the engine process launched."""
         return _time_mod.time() - cls._startup_time
 
+    @property
+    def shader_time(cls) -> float:
+        """Time uploaded to the global shader ``_Time.x`` value.
+
+        Use this when CPU simulation must reproduce animated vertex
+        displacement exactly. Outside a rendered engine session it falls back
+        to :attr:`realtime_since_startup`.
+        """
+        try:
+            from Infernux.application import Application
+
+            engine = Application._current_engine()
+            native = engine.get_native_engine() if engine is not None else None
+            if native is not None and hasattr(native, "get_shader_time_seconds"):
+                return float(native.get_shader_time_seconds())
+        except (ImportError, AttributeError, RuntimeError):
+            pass
+        return cls.realtime_since_startup
+
     # -- Safety clamp -------------------------------------------------------
 
     @property
@@ -199,6 +218,7 @@ class Time(metaclass=_TimeMeta):
         Time.time_scale             # get / set  (0 = frozen, 1 = normal)
         Time.frame_count            # frame number since play started
         Time.realtime_since_startup # wall-clock since engine launch
+        Time.shader_time            # exact time used by animated shaders
     """
 
     # -- Internal state (written exclusively by the engine) -----------------

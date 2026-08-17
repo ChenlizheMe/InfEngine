@@ -157,7 +157,7 @@ class ValueCodecRegistry:
         )
 
     def _validate_builtin(self, value: Any, field_meta_or_type: Any, path: str) -> None:
-        from .serialized_field import FieldType
+        from .fields import FieldType
 
         field_type, element_type = self._field_parts(field_meta_or_type)
         ref_types = self._reference_field_types()
@@ -256,7 +256,7 @@ class ValueCodecRegistry:
         raise TypeError(f"{path}: unsupported value for {field_type.name}")
 
     def _decode_builtin(self, value: Any, field_meta_or_type: Any, path: str) -> Any:
-        from .serialized_field import FieldType, normalize_rgba
+        from .fields import FieldType, normalize_rgba
         from ._serialize_helpers import deserialize_dict_ref, make_null_ref
 
         field_type, element_type = self._field_parts(field_meta_or_type)
@@ -320,7 +320,7 @@ class ValueCodecRegistry:
 
     @staticmethod
     def _reference_field_types() -> set[Any]:
-        from .serialized_field import FieldType
+        from .fields import FieldType
         return {
             FieldType.GAME_OBJECT,
             FieldType.COMPONENT,
@@ -466,7 +466,7 @@ class ValueCodecRegistry:
         field_meta: Any,
         path: str,
     ) -> None:
-        from .serialized_field import FieldType
+        from .fields import FieldType
         from .value_document import GAME_OBJECT_REF, COMPONENT_REF, ASSET_REF
 
         if field_type == FieldType.COMPONENT:

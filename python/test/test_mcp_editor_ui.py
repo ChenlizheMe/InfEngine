@@ -1352,6 +1352,52 @@ def test_editor_ui_replace_text_accepts_native_integer_input(tmp_path, monkeypat
     ]
 
 
+def test_editor_ui_replace_text_clears_with_delete_without_empty_sdl_text(tmp_path, monkeypatch):
+    session.configure(str(tmp_path), {"profile": "global_validation", "session": {"build_profile": "debug_feedback"}})
+    _install_main_queue(monkeypatch)
+    monkeypatch.setattr(editor_ui, "set_semantic_capture_enabled", lambda enabled: True)
+    monkeypatch.setattr(editor_ui, "_read_native_snapshot", lambda: _focused_snapshot())
+    calls: list[tuple] = []
+
+    monkeypatch.setattr(
+        input_tools,
+        "perform_pointer_click",
+        lambda x, y, **kwargs: calls.append(("focus", x, y, kwargs)) or ok({"delivered": True}),
+    )
+    monkeypatch.setattr(
+        input_tools,
+        "perform_key_chord",
+        lambda keys, **kwargs: calls.append(("chord", keys, kwargs)) or ok({"delivered": True}),
+    )
+    monkeypatch.setattr(
+        input_tools,
+        "perform_text_input",
+        lambda text, **kwargs: calls.append(("text", text, kwargs)) or ok({"delivered": True}),
+    )
+
+    fake = _FakeMcp()
+    editor_ui.register_editor_ui_tools(fake)
+    response = fake.tools["editor_ui_replace_text"]("text_input:hierarchy:hierarchy.search:102", "42", "")
+
+    assert response["ok"] is True
+    assert response["data"]["action_path"] == "synthetic_sdl_pointer_and_keyboard_clear"
+    assert calls == [
+        (
+            "focus",
+            128.0,
+            45.0,
+            {
+                "button": 0,
+                "timeout_seconds": 3.0,
+                "trace_name": "editor_ui_replace_text.focus",
+                "expected_target_id": "text_input:hierarchy:hierarchy.search:102",
+            },
+        ),
+        ("chord", ["Left Ctrl", "A"], {"timeout_seconds": 3.0, "trace_name": "editor_ui_replace_text.select_all"}),
+        ("chord", ["Delete"], {"timeout_seconds": 3.0, "trace_name": "editor_ui_replace_text.clear"}),
+    ]
+
+
 def test_editor_ui_snapshot_prefers_semantic_target_when_item_id_is_zero():
     generic = {
         "target_id": "vector:inspector:Position:0",
@@ -1395,8 +1441,10 @@ def test_editor_ui_snapshot_prefers_later_domain_alias_for_same_item():
 
 
 def test_native_semantic_click_points_are_limited_to_the_child_clip_rect():
-    source = Path(
-        "cpp/infernux/function/renderer/gui/InxGUISemantics.cpp"
+    repository_root = Path(__file__).resolve().parents[2]
+    source = (
+        repository_root
+        / "cpp/infernux/function/renderer/gui/InxGUISemantics.cpp"
     ).read_text(encoding="utf-8")
     safe_click = source[
         source.index("bool FindSafeClickPoint"):
@@ -1409,8 +1457,10 @@ def test_native_semantic_click_points_are_limited_to_the_child_clip_rect():
 
 
 def test_native_semantic_reachability_resolves_dock_host_from_panel_root():
-    source = Path(
-        "cpp/infernux/function/renderer/gui/InxGUISemantics.cpp"
+    repository_root = Path(__file__).resolve().parents[2]
+    source = (
+        repository_root
+        / "cpp/infernux/function/renderer/gui/InxGUISemantics.cpp"
     ).read_text(encoding="utf-8")
     reachability = source[
         source.index("bool ReceivesPointerAt"):

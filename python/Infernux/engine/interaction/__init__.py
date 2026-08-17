@@ -114,7 +114,13 @@ from .preferences import (
 from .graph_commands import GraphCommandService
 from .authoring_documents import AuthoringAssetSnapshot, AuthoringDocumentController
 from .transient_interactions import TransientInteraction, TransientInteractionService
-from .navigation import NavigationAdapter, NavigationRequest, NavigationService
+from .navigation import (
+    DirectoryNavigationHistory,
+    DirectoryNavigationSnapshot,
+    NavigationAdapter,
+    NavigationRequest,
+    NavigationService,
+)
 from .resource_documents import (
     EditableResourceDocumentController,
     ensure_editable_resource_document,
@@ -151,7 +157,12 @@ from .asset_mutations import (
     AssetMutationService,
     iter_asset_mutations,
 )
-from .asset_content import AssetRenameContentRegistry, AssetRenameTransform
+from .asset_content import (
+    AssetReferenceContentPatch,
+    AssetReferenceRelocationPlanner,
+    AssetRenameContentRegistry,
+    AssetRenameTransform,
+)
 from .graph_authoring import (
     GraphActionDiff,
     GraphDomainAdapter,
@@ -235,6 +246,8 @@ __all__ = [
     "TransientInteraction",
     "TransientInteractionService",
     "NavigationAdapter",
+    "DirectoryNavigationHistory",
+    "DirectoryNavigationSnapshot",
     "NavigationService",
     "NavigationRequest",
     "EditableResourceDocumentController",
@@ -274,6 +287,8 @@ __all__ = [
     "iter_asset_mutations",
     "AssetRenameContentRegistry",
     "AssetRenameTransform",
+    "AssetReferenceContentPatch",
+    "AssetReferenceRelocationPlanner",
     "CloseCoordinator",
     "CloseIntent",
     "CloseIntentKind",

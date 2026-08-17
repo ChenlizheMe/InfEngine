@@ -21,6 +21,7 @@ from .scene_view_panel import TOOL_NONE, TOOL_TRANSLATE, TOOL_ROTATE, TOOL_SCALE
 
 # Gizmo handle IDs — must match C++ EditorTools constants
 from Infernux.debug import Debug
+from Infernux.engine.editor_visibility import game_object_is_active_in_hierarchy
 from Infernux.lib._Infernux import (
     GIZMO_X_AXIS_ID,
     GIZMO_Y_AXIS_ID,
@@ -103,7 +104,11 @@ class SceneViewOverlaysMixin:
 
     @staticmethod
     def _particle_component_from_object(game_object):
-        if game_object is None or not hasattr(game_object, "get_py_components"):
+        if (
+            game_object is None
+            or not game_object_is_active_in_hierarchy(game_object)
+            or not hasattr(game_object, "get_py_components")
+        ):
             return None
         from Infernux.components import ParticleSystem
 
@@ -129,7 +134,11 @@ class SceneViewOverlaysMixin:
 
     @staticmethod
     def _particle_preview_is_live(component, game_object) -> bool:
-        if component is None or game_object is None:
+        if (
+            component is None
+            or game_object is None
+            or not game_object_is_active_in_hierarchy(game_object)
+        ):
             return False
         try:
             owner = component.game_object
@@ -265,6 +274,21 @@ class SceneViewOverlaysMixin:
         component = self._particle_preview_component
         if component is None:
             return
+        if not game_object_is_active_in_hierarchy(
+            self._particle_preview_object
+        ):
+            # Hierarchy deactivation does not necessarily change selection.
+            # Stop editor simulation explicitly before dropping panel-owned
+            # handles so an inactive selected system cannot keep emitting.
+            try:
+                suspend = getattr(component, "editor_preview_suspend", None)
+                if suspend is None:
+                    suspend = component.editor_preview_pause
+                suspend()
+            except (AttributeError, ReferenceError, RuntimeError):
+                pass
+            self._forget_particle_preview_selection()
+            return
         if not self._particle_preview_is_live(
             component, self._particle_preview_object
         ):
@@ -308,7 +332,13 @@ class SceneViewOverlaysMixin:
         scene_height: float,
     ) -> bool:
         component = self._particle_preview_component
-        if component is None or not self._is_particle_preview_edit_mode():
+        if (
+            component is None
+            or not self._is_particle_preview_edit_mode()
+            or not game_object_is_active_in_hierarchy(
+                self._particle_preview_object
+            )
+        ):
             return False
 
         try:

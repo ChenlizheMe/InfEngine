@@ -18,7 +18,7 @@ import os
 from typing import Dict, Optional
 
 from Infernux.components.component import InxComponent
-from Infernux.components.serialized_field import serialized_field, FieldType
+from Infernux.components.fields import serialized_field, FieldType
 from Infernux.components.decorators import require_component, disallow_multiple, add_component_menu
 from Infernux.components.builtin.sprite_renderer import SpriteRenderer
 from Infernux.core.anim_state_machine import (
@@ -320,21 +320,21 @@ class SpiritAnimator(InxComponent):
 
             previous = getattr(self, "_asset_mutation_service", None)
             if previous is not None:
-                previous.remove_listener(self._on_asset_changed)
+                previous.remove_component_listener(self._on_asset_changed)
             service = AssetMutationService.instance()
             self._asset_mutation_service = service
             if service is not None:
-                service.add_listener(self._on_asset_changed)
-        except (AttributeError, ImportError, RuntimeError):
+                service.add_component_listener(self._on_asset_changed)
+        except (AttributeError, ImportError, RuntimeError, TypeError):
             pass
 
     def _unsubscribe_asset_events(self) -> None:
         try:
             service = getattr(self, "_asset_mutation_service", None)
             if service is not None:
-                service.remove_listener(self._on_asset_changed)
+                service.remove_component_listener(self._on_asset_changed)
             self._asset_mutation_service = None
-        except (AttributeError, ImportError, RuntimeError):
+        except (AttributeError, ImportError, RuntimeError, TypeError):
             pass
 
     @staticmethod

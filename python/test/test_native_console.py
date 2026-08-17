@@ -69,6 +69,21 @@ class TestNativeConsolePanel:
         assert panel.get_warning_count() == 0
         assert panel.get_error_count() == 0
 
+    def test_remove_entries_from_source_is_selective(self, tmp_path):
+        panel = ConsolePanel()
+        script = tmp_path / "Player.py"
+        other = tmp_path / "Other.py"
+        panel.log_from_python(LogLevel.Error, "old error", source_file=str(script))
+        panel.log_from_python(LogLevel.Warn, "old warning", source_file=str(script))
+        panel.log_from_python(LogLevel.Error, "other error", source_file=str(other))
+
+        assert panel.remove_entries_from_source(str(script)) == 2
+        assert panel.get_info_count() == 0
+        assert panel.get_warning_count() == 0
+        assert panel.get_error_count() == 1
+        visible = panel._get_visible_log_snapshot(10)
+        assert [entry["message"] for entry in visible] == ["other error"]
+
     def test_large_pending_log_counts_are_incremental(self):
         panel = ConsolePanel()
         for index in range(20000):

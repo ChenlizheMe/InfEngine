@@ -25,6 +25,7 @@ namespace infernux
 class MeshRenderer;
 class ShaderProgram;
 struct MaterialUBOLayout;
+struct ShaderProgramArtifact;
 
 /**
  * @brief Shader stage type for the material system
@@ -423,6 +424,10 @@ class InxMaterial
     {
         return m_properties;
     }
+
+    /// Fill properties omitted by a sparse material document from the linked
+    /// shader contract. Existing authored values remain authoritative.
+    bool SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact &artifact);
 
     // ========================================================================
     // Pipeline State

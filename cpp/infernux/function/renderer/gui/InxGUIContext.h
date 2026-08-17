@@ -101,6 +101,15 @@ struct MaterialTopInteraction
 class InxGUIContext
 {
   public:
+    enum EditLifecycleFlag : uint32_t
+    {
+        EditChanged = 1u << 0u,
+        EditActive = 1u << 1u,
+        EditActivated = 1u << 2u,
+        EditDeactivatedAfterEdit = 1u << 3u,
+        EditDeactivated = 1u << 4u,
+    };
+
     /* DPI scale — set by InxGUI::Init, read by Python/UI code */
     static float s_dpiScale;
     float GetDpiScale() const;
@@ -154,6 +163,10 @@ class InxGUIContext
     void Vector3Control(const std::string &label, float value[3], float speed = 0.1f, float labelWidth = 0.0f,
                         const std::string &axisSemanticBase = "");
     void Vector4Control(const std::string &label, float value[4], float speed = 0.1f, float labelWidth = 0.0f);
+    [[nodiscard]] uint32_t GetLastEditLifecycleFlags() const
+    {
+        return m_lastEditLifecycleFlags;
+    }
 
     /* combo & lists */
     bool Combo(const std::string &label, int *currentItem, const std::vector<std::string> &items,
@@ -284,6 +297,7 @@ class InxGUIContext
     bool IsVirtualizedRegionVisible(float height);
     void SetCursorPosX(float x);
     void SetCursorPosY(float y);
+    void SetCursorScreenPos(float x, float y);
     float GetWindowPosX();
     float GetWindowPosY();
     float GetWindowWidth();
@@ -439,7 +453,8 @@ class InxGUIContext
                                                     int *deactivatedAfterEditIndex = nullptr);
     uint32_t RenderObjectFieldChrome(const std::string &fieldId, const std::string &displayText,
                                      const std::string &typeHint, bool selected, bool clickable, bool hasPicker,
-                                     uint64_t pickerTextureId, const std::string &semanticId = "");
+                                     uint64_t pickerTextureId, const std::string &semanticId = "",
+                                     float fixedWidth = 0.0f);
     std::vector<ObjectFieldInteraction> RenderMeshRendererInspectorFields(const std::string &meshFieldId,
                                                                           const std::string &meshLabel,
                                                                           const std::string &meshDisplay,
@@ -474,6 +489,7 @@ class InxGUIContext
 
     bool m_dragCaptured = false;
     int m_ignoreMouseDeltaFrames = 0; // suppress N frames after SDL warp
+    uint32_t m_lastEditLifecycleFlags = 0;
     bool m_popupOwnedPointerAtFrameStart = false;
     int m_childBgTransparentCount = 0; // ChildBg transparency pushed inside popups
     std::unordered_map<std::string, SearchableComboState> m_searchableComboStates;

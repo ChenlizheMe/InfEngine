@@ -8,6 +8,41 @@
 namespace infernux::rhi
 {
 
+struct DynamicRenderingCommands final
+{
+    PFN_vkCmdBeginRendering begin = nullptr;
+    PFN_vkCmdEndRendering end = nullptr;
+
+    [[nodiscard]] constexpr bool IsValid() const noexcept
+    {
+        return begin != nullptr && end != nullptr;
+    }
+};
+
+[[nodiscard]] constexpr bool SelectDynamicRenderingPath(bool capabilityEnabled, bool corePairAvailable,
+                                                        bool extensionPairAvailable) noexcept
+{
+    return capabilityEnabled && (corePairAvailable || extensionPairAvailable);
+}
+
+[[nodiscard]] inline DynamicRenderingCommands ResolveDynamicRenderingCommands(VkDevice device) noexcept
+{
+    if (device == VK_NULL_HANDLE)
+        return {};
+
+    DynamicRenderingCommands commands;
+    commands.begin =
+        reinterpret_cast<PFN_vkCmdBeginRendering>(vkGetDeviceProcAddr(device, "vkCmdBeginRendering"));
+    commands.end = reinterpret_cast<PFN_vkCmdEndRendering>(vkGetDeviceProcAddr(device, "vkCmdEndRendering"));
+    if (commands.IsValid())
+        return commands;
+
+    commands.begin =
+        reinterpret_cast<PFN_vkCmdBeginRendering>(vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR"));
+    commands.end = reinterpret_cast<PFN_vkCmdEndRendering>(vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR"));
+    return commands.IsValid() ? commands : DynamicRenderingCommands{};
+}
+
 [[nodiscard]] inline VkShaderStageFlags ToVkShaderStages(ShaderStage stages) noexcept
 {
     VkShaderStageFlags result = 0;
@@ -142,6 +177,24 @@ namespace infernux::rhi
     }
 }
 
+[[nodiscard]] constexpr VkImageAspectFlags ToVkImageAspectMask(VkFormat format) noexcept
+{
+    switch (format) {
+    case VK_FORMAT_D16_UNORM:
+    case VK_FORMAT_X8_D24_UNORM_PACK32:
+    case VK_FORMAT_D32_SFLOAT:
+        return VK_IMAGE_ASPECT_DEPTH_BIT;
+    case VK_FORMAT_S8_UINT:
+        return VK_IMAGE_ASPECT_STENCIL_BIT;
+    case VK_FORMAT_D16_UNORM_S8_UINT:
+    case VK_FORMAT_D24_UNORM_S8_UINT:
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    default:
+        return VK_IMAGE_ASPECT_COLOR_BIT;
+    }
+}
+
 [[nodiscard]] constexpr SampleCount FromVkSampleCount(VkSampleCountFlagBits samples) noexcept
 {
     switch (samples) {
@@ -170,6 +223,31 @@ namespace infernux::rhi
         return VK_SAMPLE_COUNT_8_BIT;
     }
     return VK_SAMPLE_COUNT_1_BIT;
+}
+
+[[nodiscard]] inline bool
+BuildVkPipelineRenderingInfo(const GraphicsRenderingSignature &signature,
+                             std::array<VkFormat, GraphicsRenderingSignature::MaxColorTargets> &colorFormats,
+                             VkPipelineRenderingCreateInfo &info) noexcept
+{
+    if (!signature.IsValid())
+        return false;
+
+    colorFormats.fill(VK_FORMAT_UNDEFINED);
+    for (uint32_t index = 0; index < signature.colorFormatCount; ++index) {
+        colorFormats[index] = ToVkFormat(signature.colorFormats[index]);
+        if (colorFormats[index] == VK_FORMAT_UNDEFINED)
+            return false;
+    }
+
+    info = {};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    info.viewMask = signature.viewMask;
+    info.colorAttachmentCount = signature.colorFormatCount;
+    info.pColorAttachmentFormats = signature.colorFormatCount > 0 ? colorFormats.data() : nullptr;
+    info.depthAttachmentFormat = ToVkFormat(signature.depthFormat);
+    info.stencilAttachmentFormat = ToVkFormat(signature.stencilFormat);
+    return true;
 }
 
 [[nodiscard]] constexpr VkBufferUsageFlags ToVkBufferUsage(BufferUsage usage) noexcept

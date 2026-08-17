@@ -719,6 +719,7 @@ void RegisterGUIBindings(py::module_ &m)
              "Return whether a measured vertical region intersects the current window clip rectangle.")
         .def("set_cursor_pos_x", &InxGUIContext::SetCursorPosX)
         .def("set_cursor_pos_y", &InxGUIContext::SetCursorPosY)
+        .def("set_cursor_screen_pos", &InxGUIContext::SetCursorScreenPos, py::arg("x"), py::arg("y"))
         .def("get_window_pos_x", &InxGUIContext::GetWindowPosX)
         .def("get_window_pos_y", &InxGUIContext::GetWindowPosY)
         .def("get_window_width", &InxGUIContext::GetWindowWidth)
@@ -1025,7 +1026,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("render_object_field_chrome", &InxGUIContext::RenderObjectFieldChrome, py::arg("field_id"),
              py::arg("display_text"), py::arg("type_hint"), py::arg("selected") = false,
              py::arg("clickable") = true, py::arg("has_picker") = false, py::arg("picker_texture_id") = 0,
-             py::arg("semantic_id") = "",
+             py::arg("semantic_id") = "", py::arg("fixed_width") = 0.0f,
              "Render steady-state object-reference chrome in one native call; returns interaction flags.")
         .def(
             "render_mesh_renderer_inspector_fields",
@@ -1106,6 +1107,8 @@ void RegisterGUIBindings(py::module_ &m)
              py::arg("stack_trace") = "", py::arg("source_file") = "", py::arg("source_line") = 0,
              "Log a message originating from Python Debug.log()")
         .def("clear", &ConsolePanel::Clear, "Clear all log entries")
+        .def("remove_entries_from_source", &ConsolePanel::RemoveEntriesFromSource, py::arg("source_file"),
+             "Remove Console entries owned by one source file")
         .def("get_info_count", &ConsolePanel::GetInfoCount, "Get count of info messages")
         .def("get_warning_count", &ConsolePanel::GetWarningCount, "Get count of warning messages")
         .def("get_error_count", &ConsolePanel::GetErrorCount, "Get count of error messages")
@@ -1114,6 +1117,43 @@ void RegisterGUIBindings(py::module_ &m)
         .def("set_selection_snapshot", &ConsolePanel::SetSelectionSnapshot, py::arg("uid"))
         .def_property_readonly("_selected_uid", &ConsolePanel::GetSelectedUid)
         .def_property_readonly("_revision", &ConsolePanel::GetRevision)
+        .def(
+            "_get_visible_log_snapshot",
+            [](ConsolePanel &self, size_t limit) {
+                py::list result;
+                for (const auto &entry : self.GetVisibleLogSnapshot(limit)) {
+                    const char *level = "INFO";
+                    switch (entry.level) {
+                    case LogLevel::LOG_DEBUG:
+                        level = "DEBUG";
+                        break;
+                    case LogLevel::LOG_WARN:
+                        level = "WARN";
+                        break;
+                    case LogLevel::LOG_ERROR:
+                        level = "ERROR";
+                        break;
+                    case LogLevel::LOG_FATAL:
+                        level = "FATAL";
+                        break;
+                    default:
+                        break;
+                    }
+                    py::dict item;
+                    item["time"] = entry.timestamp;
+                    item["level"] = level;
+                    item["message"] = entry.message;
+                    item["source_file"] = entry.sourceFile;
+                    item["source_line"] = entry.sourceLine;
+                    item["stack_trace"] = entry.stackTrace;
+                    item["uid"] = entry.uid;
+                    item["latest_uid"] = entry.latestUid;
+                    item["count"] = entry.count;
+                    result.append(std::move(item));
+                }
+                return result;
+            },
+            py::arg("limit"), "Read the bounded, currently visible native Console entries")
         .def("has_selected_entry", &ConsolePanel::HasSelectedEntry)
         .def("copy_selected_entry", &ConsolePanel::CopySelectedEntry)
         .def("has_view_option", &ConsolePanel::HasViewOption, py::arg("option"))
@@ -1121,6 +1161,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("set_view_option", &ConsolePanel::SetViewOption, py::arg("option"), py::arg("enabled"))
         .def("get_search_query", &ConsolePanel::GetSearchQuery)
         .def("set_search_query", &ConsolePanel::SetSearchQuery, py::arg("query"))
+        .def("request_search_focus", &ConsolePanel::RequestSearchFocus)
         .def("get_detail_height", &ConsolePanel::GetDetailHeight)
         .def("set_detail_height", &ConsolePanel::SetDetailHeight, py::arg("height"))
         .def("_get_status_snapshot",
@@ -1306,6 +1347,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("get_ui_mode", &HierarchyPanel::GetUiMode)
         .def_property("ui_mode", &HierarchyPanel::GetUiMode, &HierarchyPanel::SetUiMode)
         .def("clear_search", &HierarchyPanel::ClearSearch)
+        .def("request_search_focus", &HierarchyPanel::RequestSearchFocus)
         .def("clear_selection_and_notify", &HierarchyPanel::ClearSelectionAndNotify)
         .def("set_selected_object_by_id", &HierarchyPanel::SetSelectedObjectById, py::arg("id"),
              py::arg("clear_search") = false)
@@ -1363,6 +1405,7 @@ void RegisterGUIBindings(py::module_ &m)
             },
             py::arg("engine"))
         .def("set_icons_directory", &ProjectPanel::SetIconsDirectory, py::arg("dir"))
+        .def("request_search_focus", &ProjectPanel::RequestSearchFocus)
         .def("clear_selection", &ProjectPanel::ClearSelection, py::arg("notify") = true)
         .def("set_selected_file", &ProjectPanel::SetSelectedFile, py::arg("path"), py::arg("notify") = true)
         .def("set_selected_files", &ProjectPanel::SetSelectedFiles, py::arg("paths"), py::arg("primary") = "",
@@ -1428,6 +1471,13 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("sy", &InspectorPanel::TransformData::sy)
         .def_readwrite("sz", &InspectorPanel::TransformData::sz);
 
+    py::class_<InspectorPanel::RevisionSnapshot>(m, "InspectorRevisionSnapshot")
+        .def(py::init<>())
+        .def_readwrite("target", &InspectorPanel::RevisionSnapshot::target)
+        .def_readwrite("schema", &InspectorPanel::RevisionSnapshot::schema)
+        .def_readwrite("value", &InspectorPanel::RevisionSnapshot::value)
+        .def_readwrite("preview", &InspectorPanel::RevisionSnapshot::preview);
+
     py::class_<InspectorPanel::AddComponentEntry>(m, "InspectorAddComponentEntry")
         .def(py::init<>())
         .def_readwrite("display_name", &InspectorPanel::AddComponentEntry::displayName)
@@ -1457,6 +1507,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("is_multi_selection", &InspectorPanel::isMultiSelection)
         .def_readwrite("get_selected_ids", &InspectorPanel::getSelectedIds)
         .def_readwrite("get_value_generation", &InspectorPanel::getValueGeneration)
+        .def_readwrite("get_revision_snapshot", &InspectorPanel::getRevisionSnapshot)
         // Object info callbacks
         .def_readwrite("get_object_info", &InspectorPanel::getObjectInfo)
         // Transform callbacks

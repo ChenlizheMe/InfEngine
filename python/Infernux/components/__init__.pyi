@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Callable, List, Optional, Tuple, Type, TypeVar
+
+_SerializedValue = TypeVar("_SerializedValue")
+
 from .component import InxComponent as InxComponent
 from .builtin_component import BuiltinComponent, CppProperty
 from .builtin import (
@@ -13,6 +17,7 @@ from .builtin import (
     BoxCollider as BoxCollider,
     SphereCollider as SphereCollider,
     CapsuleCollider as CapsuleCollider,
+    CylinderCollider as CylinderCollider,
     MeshCollider as MeshCollider,
     Rigidbody as Rigidbody,
     RigidbodyConstraints as RigidbodyConstraints,
@@ -29,8 +34,7 @@ from .value_codec import (
     ValueCodecRegistry as ValueCodecRegistry,
     VALUE_CODECS as VALUE_CODECS,
 )
-from .serialized_field import (
-    serialized_field as serialized_field,
+from .fields import (
     int_field as int_field,
     list_field as list_field,
     component_field as component_field,
@@ -48,6 +52,7 @@ from .serialized_field import (
     InfoText as InfoText,
     DragSpeed as DragSpeed,
     RequiredComponent as RequiredComponent,
+    FormerlySerializedAs as FormerlySerializedAs,
     Multiline as Multiline,
     ReadOnly as ReadOnly,
     HideInInspector as HideInInspector,
@@ -55,6 +60,35 @@ from .serialized_field import (
     HDR as HDR,
     Color as Color,
 )
+
+
+def serialized_field(
+    default: _SerializedValue = ...,
+    *,
+    field_type: Optional[FieldType] = ...,
+    element_type: Optional[FieldType] = ...,
+    element_class: Optional[Type] = ...,
+    serializable_class: Optional[Type] = ...,
+    component_type: Optional[str] = ...,
+    asset_type: Optional[str] = ...,
+    range: Optional[Tuple[float, float]] = ...,
+    tooltip: str = ...,
+    display_name_key: str = ...,
+    enum_labels: Optional[List[str]] = ...,
+    readonly: bool = ...,
+    header: str = ...,
+    space: float = ...,
+    group: str = ...,
+    info_text: str = ...,
+    multiline: bool = ...,
+    slider: bool = ...,
+    drag_speed: Optional[float] = ...,
+    required_component: Optional[str] = ...,
+    visible_when: Optional[Callable] = ...,
+    hdr: bool = ...,
+    hidden: bool = ...,
+) -> _SerializedValue: ...
+InspectorSpace = Space
 from .ref_wrappers import (
     GameObjectRef as GameObjectRef,
     MaterialRef as MaterialRef,
@@ -106,6 +140,7 @@ __all__ = [
     "BoxCollider",
     "SphereCollider",
     "CapsuleCollider",
+    "CylinderCollider",
     "MeshCollider",
     "Rigidbody",
     "RigidbodyConstraints",
@@ -121,11 +156,12 @@ __all__ = [
     "Range",
     "Tooltip",
     "Header",
-    "Space",
+    "InspectorSpace",
     "Group",
     "InfoText",
     "DragSpeed",
     "RequiredComponent",
+    "FormerlySerializedAs",
     "Multiline",
     "ReadOnly",
     "HideInInspector",

@@ -11,6 +11,10 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from Infernux.engine.engine import Engine, LogLevel
+from Infernux.engine.player_service_graph import (
+    PlayerRuntimeAssetCatalog,
+    RuntimeProductManifest,
+)
 
 
 class PlayerBootstrap:
@@ -24,6 +28,8 @@ class PlayerBootstrap:
     window_height: int
     splash_items: list
     runtime_session: Optional[object]
+    _runtime_manifest: Optional[RuntimeProductManifest]
+    _runtime_catalog: Optional[PlayerRuntimeAssetCatalog]
 
     def __init__(
         self,

@@ -30,6 +30,7 @@ class GameBuilder:
     window_height: int
     window_resizable: bool
     splash_items: list
+    additional_cook_roots: list[str]
 
     def __init__(
         self,
@@ -43,6 +44,7 @@ class GameBuilder:
         window_height: int = ...,
         window_resizable: bool = ...,
         splash_items: Optional[List[dict]] = ...,
+        additional_cook_roots: Optional[List[str]] = ...,
     ) -> None: ...
 
     def build(

@@ -64,8 +64,11 @@ bool CanonicalLightGpuBuffer::Update(uint32_t frameIndex, const CanonicalLightSn
     if (!m_device || frameIndex >= m_frames.size())
         return false;
 
-    CanonicalLightUpload upload = BuildCanonicalLightUpload(snapshot);
     auto &frame = m_frames[frameIndex];
+    if (frame.buffer.IsValid() && frame.generation == snapshot.generation &&
+        frame.directionalCount == snapshot.directionalLights.size() && frame.localCount == snapshot.localLights.size())
+        return true;
+    CanonicalLightUpload upload = BuildCanonicalLightUpload(snapshot);
     if (!frame.buffer.IsValid() || frame.capacityBytes < upload.bytes.size()) {
         const uint64_t capacity = BufferCapacity(upload.bytes.size());
         rhi::BufferDesc desc;

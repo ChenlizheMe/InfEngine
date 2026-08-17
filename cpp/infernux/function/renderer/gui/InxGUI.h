@@ -88,6 +88,11 @@ class InxGUI
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
                                    int height, VkFilter filter = VK_FILTER_LINEAR, bool pinned = false);
 
+    /// Present an already-resident engine texture in ImGui without decoding or
+    /// uploading a second CPU-authored preview texture.
+    uint64_t PublishTextureViewForImGui(const std::string &name, std::shared_ptr<const rhi::TextureGpuView> texture,
+                                        bool pinned = false);
+
     /// Invalidate queued uploads for a name without removing its currently
     /// published texture. Completed stale tickets are discarded by generation.
     void SupersedePendingImGuiTextureUploads(const std::string &name);
@@ -108,6 +113,11 @@ class InxGUI
     /// @brief Validate and mark a descriptor-backed ImGui texture as used by cached native UI commands.
     /// @return false when the descriptor is no longer owned by the live texture registry.
     bool TouchImGuiTextureId(uint64_t textureId);
+    /// Return whether the current ImDrawData publication still contains a
+    /// draw command that samples @p textureId. Render-target generations use
+    /// this to keep old image resources alive until every visible panel has
+    /// rebuilt against the replacement descriptor.
+    [[nodiscard]] bool IsTextureReferencedByCurrentDrawData(uint64_t textureId) const;
     [[nodiscard]] uint64_t GetImGuiTextureVersion(const std::string &name) const;
     [[nodiscard]] uint64_t GetFailedImGuiTextureVersion(const std::string &name) const;
 
@@ -168,6 +178,8 @@ class InxGUI
         uint64_t lastUsedFrame = 0;
         uint64_t uploadGeneration = 0;
         bool pinned = false;
+        bool requiresDisplayEncoding = false;
+        std::shared_ptr<const rhi::TextureGpuView> externalView;
     };
 
     struct DeferredTextureRelease

@@ -536,7 +536,37 @@ def _write_debug_player_output(tmp_path, project_root, *, debug_build=True, scen
     return executable
 
 
+def _write_single_entry_debug_player_output(tmp_path, project_root, *, debug_build=True):
+    output = tmp_path / "SingleEntryPlayerBuild"
+    data = output / "Pilot_Data"
+    data.mkdir(parents=True)
+    executable = output / "Pilot.exe"
+    executable.write_bytes(b"single-entry-player")
+    control = "token_authenticated" if debug_build else "disabled"
+    (data / "BuildManifest.json").write_text(json.dumps({
+        "game_name": "Pilot",
+        "debug_build": debug_build,
+        "scenes": [],
+        "build_output": {
+            "tool": "Infernux",
+            "project_identity": supervisor_module.path_fingerprint(str(project_root)),
+        },
+        "runtime_contract": {"runtime_policy": {"player_control": control}},
+    }), encoding="utf-8")
+    (data / "Player.inxmanifest").write_text(json.dumps({
+        "audit": {"passed": True},
+        "product": {
+            "layout": "infernux-single-entry-player",
+            "single_entry_point": True,
+            "entry_points": ["Pilot.exe"],
+        },
+    }), encoding="utf-8")
+    return executable
+
+
 def test_supervisor_launches_only_verified_debug_player_output(tmp_path, monkeypatch):
+    local_state = tmp_path / "LocalAppData"
+    monkeypatch.setenv("LOCALAPPDATA", str(local_state))
     project = tmp_path / "Desktop" / "PlayerPilot"
     supervisor = SupervisorSession(str(project), session_id="player-launch")
     supervisor.prepare_project()
@@ -574,8 +604,43 @@ def test_supervisor_launches_only_verified_debug_player_output(tmp_path, monkeyp
     )
     assert "_INFERNUX_PLAYER_DEBUG_BUILD" not in captured["env"]
     assert supervisor.player_runtime_log_path == str(
-        expected_runtime.parent.parent / "Logs" / "player.log"
+        local_state / "Infernux" / "Players" / "Pilot" / "Logs" / "player.log"
     )
+    supervisor._close_player_log()
+
+
+def test_supervisor_launches_current_single_entry_debug_player_output(tmp_path, monkeypatch):
+    project = tmp_path / "Desktop" / "SingleEntryPilot"
+    supervisor = SupervisorSession(str(project), session_id="single-entry-player-launch")
+    supervisor.prepare_project()
+    executable = _write_single_entry_debug_player_output(tmp_path, project)
+    captured = {}
+
+    class _PlayerProcess:
+        pid = 8449
+
+        @staticmethod
+        def poll():
+            return None
+
+    def _popen(argv, **kwargs):
+        captured.update({"argv": argv, **kwargs})
+        with open(kwargs["env"]["_INFERNUX_READY_FILE"], "w", encoding="utf-8") as stream:
+            stream.write("ENGINE_LOADED\n")
+        return _PlayerProcess()
+
+    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
+    monkeypatch.setattr(supervisor_module.subprocess, "Popen", _popen)
+
+    status = supervisor.launch_player(str(executable), timeout_seconds=1.0)
+
+    expected_data = executable.parent / "Pilot_Data"
+    assert status["player_running"] is True
+    assert status["player_ready"] is True
+    assert captured["argv"] == [str(executable)]
+    assert captured["env"]["_INFERNUX_PLAYER_RUNTIME_ROOT"] == str(executable.parent)
+    assert captured["env"]["_INFERNUX_PLAYER_DATA_ROOT"] == str(expected_data)
+    assert captured["env"]["_INFERNUX_PLAYER_MODULE_ROOT"] == str(expected_data / "RuntimeModules")
     supervisor._close_player_log()
 
 

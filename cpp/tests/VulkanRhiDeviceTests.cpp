@@ -1,13 +1,14 @@
 #include <function/renderer/vk/RhiVulkanTypes.h>
+#include <function/renderer/vk/VulkanBindlessTextureTable.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
-#include <cassert>
-#include <cstdint>
 #include <atomic>
+#include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <shared_mutex>
 #include <thread>
@@ -41,6 +42,7 @@ void EnableCompleteBindless(VkPhysicalDeviceVulkan12Features &features)
 {
     features.descriptorIndexing = VK_TRUE;
     features.runtimeDescriptorArray = VK_TRUE;
+    features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
     features.descriptorBindingPartiallyBound = VK_TRUE;
     features.descriptorBindingVariableDescriptorCount = VK_TRUE;
     features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
@@ -61,16 +63,80 @@ void EnableCompleteBindless(VkPhysicalDeviceDescriptorIndexingFeaturesEXT &featu
     features.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
 }
 
+void EnableCompleteBindless(rhi::BindlessCapabilityStatus &status)
+{
+    const rhi::DeviceCapabilityStatus enabled{true, true};
+    status.descriptorIndexing = enabled;
+    status.runtimeDescriptorArray = enabled;
+    status.shaderSampledImageArrayNonUniformIndexing = enabled;
+    status.descriptorBindingPartiallyBound = enabled;
+    status.descriptorBindingVariableDescriptorCount = enabled;
+    status.descriptorBindingSampledImageUpdateAfterBind = enabled;
+}
+
 } // namespace
 
 int main()
 {
+    rhi::DeviceCapabilityState noBindlessCapabilities{};
+    assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(noBindlessCapabilities, false));
+    assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(noBindlessCapabilities, true));
+    assert(!vk::VulkanBindlessTextureTable::IsOrphanedPublication(false, false));
+    assert(!vk::VulkanBindlessTextureTable::IsOrphanedPublication(false, true));
+    assert(!vk::VulkanBindlessTextureTable::IsOrphanedPublication(true, true));
+    assert(vk::VulkanBindlessTextureTable::IsOrphanedPublication(true, false));
+    rhi::DeviceCapabilityState completeBindlessCapabilities{};
+    EnableCompleteBindless(completeBindlessCapabilities.bindless);
+    assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(completeBindlessCapabilities, false));
+    assert(vk::VulkanBindlessTextureTable::CanUseShaderABI(completeBindlessCapabilities, true));
+
+    rhi::DeviceLimits bindlessLimits{};
+    bindlessLimits.maxUpdateAfterBindDescriptors = 32768;
+    bindlessLimits.maxUpdateAfterBindResourcesPerStage = 24576;
+    bindlessLimits.maxUpdateAfterBindSamplersPerStage = 16384;
+    bindlessLimits.maxUpdateAfterBindSampledTexturesPerStage = 12000;
+    bindlessLimits.maxUpdateAfterBindSamplersPerSet = 8192;
+    bindlessLimits.maxUpdateAfterBindSampledTexturesPerSet = 10000;
+    assert(vk::VulkanBindlessTextureTable::SelectCapacity(bindlessLimits) == 8192);
+    assert(vk::VulkanBindlessTextureTable::SelectCapacity(bindlessLimits, 4096) == 4096);
+    bindlessLimits.maxUpdateAfterBindSamplersPerSet = 1;
+    assert(vk::VulkanBindlessTextureTable::SelectCapacity(bindlessLimits) == 0);
+
+    vk::VulkanGraphicsCommandContext graphicsState;
+    graphicsState.boundPipeline = {1, 1};
+    graphicsState.boundGroups[0] = {2, 1};
+    graphicsState.ResetBindingState();
+    assert(!graphicsState.boundPipeline.IsValid());
+    assert(!graphicsState.boundGroups[0].IsValid());
+
+    vk::VulkanComputeCommandContext computeState;
+    computeState.boundPipeline = {3, 1};
+    computeState.boundGroups[7] = {4, 1};
+    computeState.ResetBindingState();
+    assert(!computeState.boundPipeline.IsValid());
+    assert(!computeState.boundGroups[7].IsValid());
+
     static_assert(rhi::ToVkFormat(rhi::PixelFormat::RG32UInt) == VK_FORMAT_R32G32_UINT);
     static_assert(rhi::FromVkFormat(VK_FORMAT_R32G32_UINT) == rhi::PixelFormat::RG32UInt);
     static_assert(rhi::ToVkFormat(rhi::PixelFormat::BC5UNorm) == VK_FORMAT_BC5_UNORM_BLOCK);
     static_assert(rhi::FromVkFormat(VK_FORMAT_BC7_SRGB_BLOCK) == rhi::PixelFormat::BC7Srgb);
     static_assert(rhi::ToVkFormat(rhi::PixelFormat::RGBA4UNormPack16) == VK_FORMAT_R4G4B4A4_UNORM_PACK16);
     static_assert(rhi::ToVkFormat(rhi::PixelFormat::RGBA16UNorm) == VK_FORMAT_R16G16B16A16_UNORM);
+
+    rhi::GraphicsRenderingSignature renderingSignature;
+    renderingSignature.colorFormats[0] = rhi::PixelFormat::RGBA16SFloat;
+    renderingSignature.colorFormatCount = 1;
+    renderingSignature.depthFormat = rhi::PixelFormat::D32SFloat;
+    renderingSignature.samples = rhi::SampleCount::Four;
+    std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> renderingFormats{};
+    VkPipelineRenderingCreateInfo renderingInfo{};
+    assert(rhi::BuildVkPipelineRenderingInfo(renderingSignature, renderingFormats, renderingInfo));
+    assert(renderingInfo.sType == VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO);
+    assert(renderingInfo.colorAttachmentCount == 1);
+    assert(renderingInfo.pColorAttachmentFormats == renderingFormats.data());
+    assert(renderingInfo.pColorAttachmentFormats[0] == VK_FORMAT_R16G16B16A16_SFLOAT);
+    assert(renderingInfo.depthAttachmentFormat == VK_FORMAT_D32_SFLOAT);
+    assert(renderingInfo.stencilAttachmentFormat == VK_FORMAT_UNDEFINED);
 
     vk::VulkanRhiDevice device;
     vk::VulkanRhiDevice secondDevice;

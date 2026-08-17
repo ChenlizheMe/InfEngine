@@ -168,7 +168,7 @@ def register_renderstack_tools(mcp, project_path: str = "") -> None:
         """Set one exposed parameter on the active RenderStack pipeline."""
 
         def _set_parameter():
-            from Infernux.components.serialized_field import get_serialized_fields
+            from Infernux.components.fields import get_serialized_fields
             from Infernux.engine.interaction import CommandSource, submit_renderstack_command
 
             stack = _require_stack()
@@ -307,6 +307,107 @@ def register_renderstack_tools(mcp, project_path: str = "") -> None:
             arguments={"stage_id": stage_id, "index": index, "enabled": enabled},
         )
 
+    @mcp.tool(name="renderstack_set_effect_parameter")
+    def renderstack_set_effect_parameter(
+        stage_id: str,
+        index: int,
+        field: str,
+        value: Any,
+        effect_index: int = 0,
+    ) -> dict:
+        """Edit one mounted Effect parameter through its authoritative document."""
+
+        def _set_effect_parameter():
+            from Infernux.components.fields import (
+                coerce_serialized_field_input,
+                get_serialized_fields,
+            )
+            from Infernux.engine.interaction import ActionOrigin
+            from Infernux.engine.ui.inspector_renderstack import (
+                _resolve_effect_document_controller,
+                _resolve_effect_group_document_controller,
+            )
+            from Infernux.engine.ui.render_effect_inspector import (
+                apply_render_effect_parameter_edit,
+            )
+            from Infernux.renderstack.render_effect_compiler import (
+                expand_render_effect_reference,
+                get_render_effect_feature,
+            )
+
+            stack = _require_stack()
+            slots = tuple(stack.get_effect_stage_slots(str(stage_id)))
+            slot_index = int(index)
+            if slot_index < 0 or slot_index >= len(slots):
+                raise IndexError(
+                    f"EffectStage '{stage_id}' has {len(slots)} slots; "
+                    f"index {slot_index} is invalid."
+                )
+            slot = slots[slot_index]
+            effects = tuple(expand_render_effect_reference(slot.effect_ref))
+            child_index = int(effect_index)
+            if child_index < 0 or child_index >= len(effects):
+                raise IndexError(
+                    f"EffectStage '{stage_id}' slot {slot_index} expands to "
+                    f"{len(effects)} effects; effect_index {child_index} is invalid."
+                )
+            effect = effects[child_index]
+            feature = get_render_effect_feature(effect.feature_type)
+            field_name = str(field)
+            metadata = get_serialized_fields(feature.effect_class).get(field_name)
+            if metadata is None:
+                raise AttributeError(
+                    f"Effect '{effect.name}' has no exposed parameter {field_name!r}"
+                )
+            if metadata.readonly:
+                raise AttributeError(
+                    f"Effect parameter '{effect.name}.{field_name}' is readonly"
+                )
+            coerced = coerce_serialized_field_input(
+                value,
+                metadata,
+                f"{effect.name}.{field_name}",
+            )
+            controller = _resolve_effect_group_document_controller(effect)
+            bind = getattr(effect, "bind_group_document_controller", None)
+            if controller is not None and callable(bind):
+                bind(controller)
+            if controller is None:
+                controller = _resolve_effect_document_controller(effect)
+            if controller is None:
+                raise RuntimeError(
+                    "Mounted RenderEffect has no authoritative editable document"
+                )
+            changed = apply_render_effect_parameter_edit(
+                effect,
+                field_name,
+                coerced,
+                resource_controller=controller,
+                origin=ActionOrigin.AUTOMATION,
+            )
+            return {
+                "changed": bool(changed),
+                "stage_id": str(stage_id),
+                "slot_index": slot_index,
+                "effect_index": child_index,
+                "effect": str(effect.name),
+                "field": field_name,
+                "value": serialize_value(effect.get_param(field_name)),
+                "revision": int(effect.revision),
+                "stack": _stack_snapshot(stack),
+            }
+
+        return main_thread(
+            "renderstack_set_effect_parameter",
+            _set_effect_parameter,
+            arguments={
+                "stage_id": stage_id,
+                "index": index,
+                "effect_index": effect_index,
+                "field": field,
+            },
+        )
+
 def _find_stack():
     try:
         from Infernux.renderstack import RenderStack
@@ -357,7 +458,7 @@ def _stack_snapshot(stack, *, include_catalog: bool = False) -> dict[str, Any]:
     data = {
         "object_id": int(go.id),
         "object_name": str(go.name),
-        "pipeline": str(getattr(stack, "pipeline_class_name", "") or ""),
+        "pipeline": str(stack.pipeline_class_name),
         "active": bool(stack is type(stack).instance()),
         "enabled": bool(getattr(stack, "enabled", True)),
         "effect_stages": _effect_stages(stack),
@@ -371,7 +472,7 @@ def _stack_snapshot(stack, *, include_catalog: bool = False) -> dict[str, Any]:
 
 
 def _pipeline_parameters(stack) -> list[dict[str, Any]]:
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
 
     pipeline = stack.pipeline
     parameters = []
@@ -395,7 +496,7 @@ def _serialize_pipeline_parameter(value: Any) -> Any:
 
 
 def _coerce_pipeline_parameter(value: Any, metadata, path: str) -> Any:
-    from Infernux.components.serialized_field import (
+    from Infernux.components.fields import (
         FieldType,
         coerce_serialized_field_input,
     )
@@ -487,7 +588,7 @@ def _pipeline_entry(name: str, cls) -> dict[str, Any]:
 
 
 def _field_schema(cls) -> list[dict[str, Any]]:
-    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.components.fields import get_serialized_fields
     fields = []
     for name, meta in get_serialized_fields(cls).items():
         fields.append({
@@ -513,6 +614,7 @@ def _register_metadata() -> None:
         "renderstack_add_effect": "Mount a RenderEffect or EffectGroup asset in an EffectStage.",
         "renderstack_remove_effect": "Remove one mounted EffectStage asset slot.",
         "renderstack_set_effect_enabled": "Enable or disable one mounted EffectStage asset slot.",
+        "renderstack_set_effect_parameter": "Edit one mounted Effect parameter through its authoritative document.",
     }.items():
         category = "renderstack/pipeline" if "pipeline" in name or name.endswith(("inspect", "find_or_create")) else "renderstack/effects"
         register_tool_metadata(

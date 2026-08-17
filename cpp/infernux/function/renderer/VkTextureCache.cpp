@@ -77,7 +77,9 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::Insert(const std::strin
             throw std::overflow_error("GPU texture residency byte counter overflow");
         if (existing != m_textures.end()) {
             slot = existing->second.slot;
-            auto previous = slot->Publish(publication);
+            std::shared_ptr<const rhi::TextureGpuView> previous;
+            if (!slot->TryPublish(publication, &previous))
+                return slot;
             if (!previous)
                 throw std::logic_error("GPU texture slot rejected a valid publication");
             RetirePublicationLocked(std::move(previous), existing->second.residentBytes);
@@ -87,8 +89,9 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::Insert(const std::strin
             existing->second.runtimeVersion = runtimeVersion;
         } else {
             slot = std::make_shared<rhi::TextureGpuViewSlot>(key);
-            if (slot->Publish(publication))
-                throw std::logic_error("new GPU texture slot unexpectedly replaced a publication");
+            std::shared_ptr<const rhi::TextureGpuView> previous;
+            if (!slot->TryPublish(publication, &previous) || previous)
+                throw std::logic_error("new GPU texture slot rejected its initial publication");
             m_textures.emplace(key, Entry{slot, residentBytes, lastUsedFrame, permanentlyPinned, std::move(assetGuid),
                                           runtimeVersion});
         }
@@ -108,7 +111,8 @@ std::shared_ptr<rhi::TextureGpuViewSlot> VkTextureCache::FindAsset(const std::st
     auto entry = m_textures.find(key);
     if (entry == m_textures.end())
         return {};
-    if (entry->second.assetGuid != assetGuid || entry->second.runtimeVersion != runtimeVersion) {
+    if (entry->second.assetGuid != assetGuid || entry->second.runtimeVersion != runtimeVersion || !entry->second.slot ||
+        entry->second.slot->NeedsRefresh()) {
         return {};
     }
     entry->second.lastUsedFrame = frame;

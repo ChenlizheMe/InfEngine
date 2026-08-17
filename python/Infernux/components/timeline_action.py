@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Optional
 
 from Infernux.components.component import InxComponent
-from Infernux.components.serialized_field import serialized_field
+from Infernux.components.fields import serialized_field
 from Infernux.components.decorators import disallow_multiple, add_component_menu
 from Infernux.core.asset_ref import TimelineFSMRef
 from Infernux.core.timeline_fsm_runtime import TimelineFSMRuntime

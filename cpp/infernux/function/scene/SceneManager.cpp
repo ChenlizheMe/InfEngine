@@ -98,11 +98,17 @@ SceneManager &SceneManager::Instance()
 
 SceneManager::SceneManager()
 {
-    TransformECSStore::Instance().SetInvalidationObserver([](Transform *transform) {
+    TransformECSStore::Instance().SetInvalidationObserver([this](Transform *transform) {
         auto *gameObject = transform ? transform->GetGameObject() : nullptr;
         if (!gameObject)
             return;
         PhysicsECSStore::Instance().MarkGameObjectDirty(gameObject);
+        Scene *scene = gameObject->GetScene();
+        if (scene && IsRuntimeScene(scene)) {
+            ++m_renderTransformRevision;
+            if (m_renderTransformRevision == 0)
+                m_renderTransformRevision = 1;
+        }
     });
 
     // Create editor camera
@@ -112,9 +118,15 @@ SceneManager::SceneManager()
     m_editorCamera.Reset(); // Set default position
 }
 
+uint64_t SceneManager::GetGlobalTransformSerial() const
+{
+    return TransformECSStore::Instance().GetGlobalTransformSerial();
+}
+
 Scene *SceneManager::CreateScene(const std::string &name)
 {
     auto scene = std::make_unique<Scene>(name);
+    scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
     Scene *ptr = scene.get();
     m_scenes.push_back(std::move(scene));
 
@@ -132,28 +144,13 @@ Scene *SceneManager::CreateScene(const std::string &name)
 
 void SceneManager::SetActiveScene(Scene *scene)
 {
+    if (m_isPlaying)
+        FlushPersistentPromotions();
+
     m_activeScene = scene;
-
-    // ── Migrate DontDestroyOnLoad objects to the new scene ──
-    if (scene && !m_persistentObjects.empty()) {
-        for (auto &obj : m_persistentObjects) {
-            if (!obj)
-                continue;
-            GameObject *raw = obj.get();
-            scene->AttachRootObject(std::move(obj)); // sets scene ptr on tree
-
-            // Re-register MeshRenderers and Lights that were cleared
-            // when the old scene was unloaded (ClearComponentRegistries).
-            for (auto *mr : raw->GetComponentsInChildren<MeshRenderer>()) {
-                if (mr && mr->IsEnabled())
-                    RegisterMeshRenderer(mr);
-            }
-            for (auto *lt : raw->GetComponentsInChildren<Light>()) {
-                if (lt && lt->IsEnabled())
-                    RegisterLight(lt);
-            }
-        }
-        m_persistentObjects.clear();
+    if (m_activeScene) {
+        m_activeScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+        m_activeScene->SetPlaying(m_isPlaying);
     }
 
     // Note: We do NOT auto-assign the editor camera as mainCamera.
@@ -167,17 +164,26 @@ void SceneManager::UnloadScene(Scene *scene)
     if (!scene)
         return;
 
-    // ── Extract persistent (DontDestroyOnLoad) root objects before unload ──
-    ExtractPersistentObjects(scene);
+    if (m_isPlaying)
+        FlushPersistentPromotions();
+
+    const bool wasActive = m_activeScene == scene;
+    Scene *replacement = nullptr;
+    if (wasActive) {
+        for (const auto &candidate : m_scenes) {
+            if (candidate && candidate.get() != scene) {
+                replacement = candidate.get();
+                break;
+            }
+        }
+        // Every active-scene transition goes through the same publication
+        // path. Never leave registries and lifecycle flags behind by assigning
+        // m_activeScene directly.
+        SetActiveScene(replacement);
+    }
 
     if (m_onSceneUnloaded) {
         m_onSceneUnloaded(scene);
-    }
-
-    // If this was the active scene, clear registry and pointer
-    if (m_activeScene == scene) {
-        ClearComponentRegistries();
-        m_activeScene = nullptr;
     }
 
     auto it = std::find_if(m_scenes.begin(), m_scenes.end(),
@@ -185,11 +191,6 @@ void SceneManager::UnloadScene(Scene *scene)
 
     if (it != m_scenes.end()) {
         m_scenes.erase(it);
-    }
-
-    // Set a new active scene if available
-    if (!m_activeScene && !m_scenes.empty()) {
-        m_activeScene = m_scenes[0].get();
     }
 }
 
@@ -203,9 +204,9 @@ void SceneManager::Shutdown()
     m_isPlaying = false;
     m_isPaused = false;
 
-    // Persistent roots live outside any scene; destroy them first so their
-    // colliders release Jolt bodies while PhysicsWorld is still initialized.
-    m_persistentObjects.clear();
+    // Destroy the runtime-only persistent Scene first so its colliders release
+    // Jolt bodies while PhysicsWorld is still initialized.
+    ClearRuntimePersistentScene();
 
     // Destroy all scenes (GameObjects → Components → Colliders → bodies).
     UnloadAllScenes();
@@ -224,12 +225,10 @@ void SceneManager::Shutdown()
 
 void SceneManager::UnloadAllScenes()
 {
-    // ── Extract persistent objects from all scenes before unload ──
-    for (auto &scene : m_scenes) {
-        ExtractPersistentObjects(scene.get());
-    }
+    if (m_isPlaying)
+        FlushPersistentPromotions();
 
-    ClearComponentRegistries();
+    SetActiveScene(nullptr);
 
     for (auto &scene : m_scenes) {
         if (m_onSceneUnloaded) {
@@ -238,7 +237,6 @@ void SceneManager::UnloadAllScenes()
     }
 
     m_scenes.clear();
-    m_activeScene = nullptr;
 }
 
 Scene *SceneManager::GetScene(const std::string &name) const
@@ -256,6 +254,66 @@ void SceneManager::Start()
     if (m_activeScene) {
         m_activeScene->Start();
     }
+    if (m_runtimePersistentScene)
+        m_runtimePersistentScene->Start();
+}
+
+void SceneManager::SetRuntimeLifecycleCallbacks(RuntimeLifecycleBeginCallback beginFrame,
+                                                RuntimeLifecyclePhaseCallback fixedUpdate,
+                                                RuntimeLifecyclePhaseCallback update,
+                                                RuntimeLifecyclePhaseCallback lateUpdate,
+                                                RuntimeLifecyclePhaseCallback editorUpdate,
+                                                RuntimeLifecycleEndCallback endFrame)
+{
+    m_runtimeLifecycleBegin = std::move(beginFrame);
+    m_runtimeLifecycleFixedUpdate = std::move(fixedUpdate);
+    m_runtimeLifecycleUpdate = std::move(update);
+    m_runtimeLifecycleLateUpdate = std::move(lateUpdate);
+    m_runtimeLifecycleEditorUpdate = std::move(editorUpdate);
+    m_runtimeLifecycleEnd = std::move(endFrame);
+    m_runtimeLifecycleSchedulerEnabled =
+        static_cast<bool>(m_runtimeLifecycleBegin) && static_cast<bool>(m_runtimeLifecycleFixedUpdate) &&
+        static_cast<bool>(m_runtimeLifecycleUpdate) && static_cast<bool>(m_runtimeLifecycleLateUpdate) &&
+        static_cast<bool>(m_runtimeLifecycleEditorUpdate) && static_cast<bool>(m_runtimeLifecycleEnd);
+    for (const auto &scene : m_scenes) {
+        if (scene)
+            scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+    }
+    if (m_runtimePersistentScene)
+        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+}
+
+void SceneManager::SetRuntimeFrameBarrierCallback(RuntimeFrameBarrierCallback callback)
+{
+    m_runtimeFrameBarrier = std::move(callback);
+}
+
+void SceneManager::EmitRuntimeFrameBarrier(RuntimeFrameBarrier barrier) const
+{
+    if (m_runtimeLifecycleFrameOpen && m_runtimeFrameBarrier)
+        m_runtimeFrameBarrier(barrier);
+}
+
+void SceneManager::ClearRuntimeLifecycleCallbacks()
+{
+    if (m_runtimeLifecycleFrameOpen && m_runtimeLifecycleEnd)
+        m_runtimeLifecycleEnd();
+    m_runtimeLifecycleBegin = nullptr;
+    m_runtimeLifecycleFixedUpdate = nullptr;
+    m_runtimeLifecycleUpdate = nullptr;
+    m_runtimeLifecycleLateUpdate = nullptr;
+    m_runtimeLifecycleEditorUpdate = nullptr;
+    m_runtimeLifecycleEnd = nullptr;
+    m_runtimeFrameBarrier = nullptr;
+    m_runtimeLifecycleSchedulerEnabled = false;
+    m_runtimeLifecycleWorkAvailable = false;
+    m_runtimeLifecycleFrameOpen = false;
+    for (const auto &scene : m_scenes) {
+        if (scene)
+            scene->SetRuntimeLifecycleSchedulerEnabled(false);
+    }
+    if (m_runtimePersistentScene)
+        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(false);
 }
 
 void SceneManager::Update(float deltaTime)
@@ -267,16 +325,34 @@ void SceneManager::Update(float deltaTime)
     m_lastFrameProfile.editorCameraMs += ProfileMsSince(t0);
 
     if (!m_isPlaying && m_activeScene) {
+        const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
+        if (useRuntimeScheduler) {
+            m_runtimeLifecycleBegin();
+            m_runtimeLifecycleFrameOpen = true;
+        }
+
         t0 = ProfileClock::now();
         m_activeScene->EditorUpdate(deltaTime);
         m_lastFrameProfile.editorUpdateMs += ProfileMsSince(t0);
+
+        if (useRuntimeScheduler)
+            m_runtimeLifecycleEditorUpdate(deltaTime);
     }
 
     // Update active scene if playing
-    if (m_isPlaying && !m_isPaused && m_activeScene) {
+    if (m_isPlaying && !m_isPaused && (m_activeScene || m_runtimePersistentScene)) {
         t0 = ProfileClock::now();
-        m_activeScene->ProcessPendingStarts();
+        if (m_activeScene)
+            m_activeScene->ProcessPendingStarts();
+        if (m_runtimePersistentScene)
+            m_runtimePersistentScene->ProcessPendingStarts();
         m_lastFrameProfile.pendingStartsMs += ProfileMsSince(t0);
+
+        const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
+        if (useRuntimeScheduler) {
+            m_runtimeLifecycleBegin();
+            m_runtimeLifecycleFrameOpen = true;
+        }
 
         // Keep gameplay and physics on the same scaled clock. The raw frame
         // delta is clamped once before scaling so long frames cannot create an
@@ -287,72 +363,31 @@ void SceneManager::Update(float deltaTime)
         // ---- Fixed-update accumulator (Unity-style) ----
         m_fixedTimeAccumulator += m_lastScaledDeltaTime;
         while (m_fixedTimeAccumulator >= m_fixedTimeStep) {
-            m_lastFrameProfile.fixedSteps += 1.0;
-
-            m_fixedTime += static_cast<double>(m_fixedTimeStep);
-            if (m_timeScale > 0.0f)
-                m_fixedUnscaledTime += static_cast<double>(m_fixedTimeStep / m_timeScale);
-
-            // Flush deferred broadphase additions (Unity-style batch add)
-            FlushPendingBroadphase();
-
-            auto &physicsStore = PhysicsECSStore::Instance();
-            bool hasRigidbodies = physicsStore.GetAliveRigidbodyCount() > 0;
-            if (hasRigidbodies) {
-                // Collider-only scenes have no dynamic/static or kinematic/static
-                // pairs to solve. Keep their dirty poses queued until a scene
-                // query needs current broadphase state.
-                t0 = ProfileClock::now();
-                SyncCollidersToPhysics(m_fixedTimeStep);
-                m_lastFrameProfile.syncCollidersMs += ProfileMsSince(t0);
-            }
-
-            t0 = ProfileClock::now();
-            m_activeScene->FixedUpdate(m_fixedTimeStep);
-            m_lastFrameProfile.fixedUpdateMs += ProfileMsSince(t0);
-
-            // FixedUpdate may rotate/move kinematic colliders or instantiate
-            // new physics objects. Flush those changes before the Jolt step.
-            FlushPendingBroadphase();
-            hasRigidbodies = physicsStore.GetAliveRigidbodyCount() > 0;
-            if (hasRigidbodies) {
-                t0 = ProfileClock::now();
-                SyncCollidersToPhysics(m_fixedTimeStep);
-                m_lastFrameProfile.syncCollidersMs += ProfileMsSince(t0);
-
-                // Step Jolt only when at least one Rigidbody can participate.
-                t0 = ProfileClock::now();
-                PhysicsWorld::Instance().Step(m_fixedTimeStep);
-                m_lastFrameProfile.physicsStepMs += ProfileMsSince(t0);
-                m_lastFrameProfile.dynamicCCDSplits +=
-                    static_cast<double>(PhysicsWorld::Instance().GetLastDynamicCCDSplitCount());
-
-                t0 = ProfileClock::now();
-                m_lastFrameProfile.contactEvents +=
-                    static_cast<double>(PhysicsWorld::Instance().DispatchContactEvents());
-                m_lastFrameProfile.physicsEventsMs += ProfileMsSince(t0);
-
-                t0 = ProfileClock::now();
-                SyncRigidbodiesToTransform();
-                m_lastFrameProfile.syncRigidbodiesMs += ProfileMsSince(t0);
-            }
-
+            RunFixedSimulationStep(useRuntimeScheduler);
             m_fixedTimeAccumulator -= m_fixedTimeStep;
         }
 
         t0 = ProfileClock::now();
         ApplyInterpolatedRigidbodies(m_fixedTimeAccumulator / m_fixedTimeStep);
         m_lastFrameProfile.interpolationMs += ProfileMsSince(t0);
+        EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
 
         t0 = ProfileClock::now();
-        m_activeScene->Update(m_lastScaledDeltaTime);
+        if (useRuntimeScheduler)
+            m_runtimeLifecycleUpdate(m_lastScaledDeltaTime);
+        if (m_activeScene)
+            m_activeScene->Update(m_lastScaledDeltaTime);
+        if (m_runtimePersistentScene)
+            m_runtimePersistentScene->Update(m_lastScaledDeltaTime);
+        if (!TransformECSStore::Instance().IsFrameCacheActive())
+            FlushPersistentPromotions();
         m_lastFrameProfile.gameplayUpdateMs += ProfileMsSince(t0);
     }
 }
 
 void SceneManager::EnsurePhysicsQueriesCurrent()
 {
-    if (!m_activeScene)
+    if (!m_activeScene && !m_runtimePersistentScene)
         return;
     FlushPendingBroadphase();
     // Outside play mode nothing steps the simulation, so moved bodies must be
@@ -371,13 +406,23 @@ void SceneManager::FixedUpdate()
 
 void SceneManager::LateUpdate(float deltaTime)
 {
-    if (m_isPlaying && !m_isPaused && m_activeScene) {
+    if (m_isPlaying && !m_isPaused && (m_activeScene || m_runtimePersistentScene)) {
         auto t0 = ProfileClock::now();
-        m_activeScene->ProcessPendingStarts();
+        if (m_activeScene)
+            m_activeScene->ProcessPendingStarts();
+        if (m_runtimePersistentScene)
+            m_runtimePersistentScene->ProcessPendingStarts();
         m_lastFrameProfile.pendingStartsMs += ProfileMsSince(t0);
 
         t0 = ProfileClock::now();
-        m_activeScene->LateUpdate(m_lastScaledDeltaTime);
+        if (m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable)
+            m_runtimeLifecycleLateUpdate(m_lastScaledDeltaTime);
+        if (m_activeScene)
+            m_activeScene->LateUpdate(m_lastScaledDeltaTime);
+        if (m_runtimePersistentScene)
+            m_runtimePersistentScene->LateUpdate(m_lastScaledDeltaTime);
+        if (!TransformECSStore::Instance().IsFrameCacheActive())
+            FlushPersistentPromotions();
         m_lastFrameProfile.lateUpdateMs += ProfileMsSince(t0);
     }
 
@@ -389,10 +434,20 @@ void SceneManager::LateUpdate(float deltaTime)
 
 void SceneManager::EndFrame()
 {
-    if (m_activeScene) {
+    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PendingDestroy);
+    if (m_activeScene || m_runtimePersistentScene) {
         auto t0 = ProfileClock::now();
-        m_activeScene->ProcessPendingDestroys();
+        if (m_activeScene)
+            m_activeScene->ProcessPendingDestroys();
+        if (m_runtimePersistentScene)
+            m_runtimePersistentScene->ProcessPendingDestroys();
+        FlushPersistentPromotions();
         m_lastFrameProfile.endFrameMs += ProfileMsSince(t0);
+    }
+    if (m_runtimeLifecycleFrameOpen) {
+        if (m_runtimeLifecycleEnd)
+            m_runtimeLifecycleEnd();
+        m_runtimeLifecycleFrameOpen = false;
     }
 }
 
@@ -400,6 +455,7 @@ void SceneManager::Play()
 {
     // Only reset accumulator on initial play, not on resume-from-pause
     if (!m_isPlaying) {
+        ClearRuntimePersistentScene();
         m_fixedTimeAccumulator = 0.0f;
         m_fixedTime = 0.0;
         m_fixedUnscaledTime = 0.0;
@@ -435,6 +491,7 @@ void SceneManager::StartActiveSceneForPlay()
 
     phaseStart = ProfileClock::now();
     m_activeScene->Start();
+    FlushPersistentPromotions();
     const double startMs = ProfileMsSince(phaseStart);
 
     // Start callbacks may author transforms. Publish those edits before shape
@@ -462,9 +519,10 @@ void SceneManager::StartActiveSceneForPlay()
 
     const double totalMs = ProfileMsSince(transitionStart);
     if (totalMs > 25.0) {
-        INXLOG_INFO("[Perf] StartActiveSceneForPlay: total=", totalMs, "ms transform=", initialTransformMs,
-                    "ms lifecycle=", startMs, "ms postTransform=", postStartTransformMs,
-                    "ms colliderSync=", colliderSyncMs, "ms broadphase=", flushMs, "ms activate=", activationMs, "ms");
+        // INXLOG_INFO("[Perf] StartActiveSceneForPlay: total=", totalMs, "ms transform=", initialTransformMs,
+        //             "ms lifecycle=", startMs, "ms postTransform=", postStartTransformMs,
+        //             "ms colliderSync=", colliderSyncMs, "ms broadphase=", flushMs, "ms activate=", activationMs,
+        //             "ms");
     }
 }
 
@@ -482,12 +540,10 @@ void SceneManager::Stop()
     if (m_onPlayStateChanged)
         m_onPlayStateChanged(false);
 
-    // Discard any persistent objects — play session is over.
-    m_persistentObjects.clear();
-
-    if (m_activeScene) {
-        m_activeScene->SetPlaying(false);
-    }
+    // Runtime persistence ends exactly at the Play boundary. Python restores
+    // the authored scene snapshot after this native graph has been destroyed.
+    ClearRuntimePersistentScene();
+    UpdateRuntimeScenePlayingState(false);
 
     // Scene state restore is handled by Python PlayModeManager
     // (serialize on Play, deserialize on Stop)
@@ -504,68 +560,194 @@ void SceneManager::Pause()
 
 void SceneManager::Step(float deltaTime)
 {
-    if (!m_isPaused || !m_isPlaying || !m_activeScene)
+    if (!m_isPaused || !m_isPlaying || (!m_activeScene && !m_runtimePersistentScene))
         return;
 
     m_lastFrameProfile = {};
-    m_activeScene->ProcessPendingStarts();
+    if (m_activeScene)
+        m_activeScene->ProcessPendingStarts();
+    if (m_runtimePersistentScene)
+        m_runtimePersistentScene->ProcessPendingStarts();
+    const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled;
+    if (useRuntimeScheduler) {
+        m_runtimeLifecycleBegin();
+        m_runtimeLifecycleFrameOpen = true;
+    }
 
-    FlushPendingBroadphase();
-    SyncCollidersToPhysics(m_fixedTimeStep);
-    m_fixedTime += static_cast<double>(m_fixedTimeStep);
-    if (m_timeScale > 0.0f)
-        m_fixedUnscaledTime += static_cast<double>(m_fixedTimeStep / m_timeScale);
-    m_activeScene->FixedUpdate(m_fixedTimeStep);
-    FlushPendingBroadphase();
-    SyncCollidersToPhysics(m_fixedTimeStep);
-    PhysicsWorld::Instance().Step(m_fixedTimeStep);
-    m_lastFrameProfile.dynamicCCDSplits += static_cast<double>(PhysicsWorld::Instance().GetLastDynamicCCDSplitCount());
-    m_lastFrameProfile.contactEvents += static_cast<double>(PhysicsWorld::Instance().DispatchContactEvents());
-    SyncRigidbodiesToTransform();
+    RunFixedSimulationStep(useRuntimeScheduler);
     ApplyInterpolatedRigidbodies(1.0f);
-    m_activeScene->Update(deltaTime);
-    m_activeScene->ProcessPendingStarts();
-    m_activeScene->LateUpdate(deltaTime);
-    m_activeScene->ProcessPendingDestroys();
+    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
+    if (useRuntimeScheduler)
+        m_runtimeLifecycleUpdate(deltaTime);
+    if (m_activeScene)
+        m_activeScene->Update(deltaTime);
+    if (m_runtimePersistentScene)
+        m_runtimePersistentScene->Update(deltaTime);
+    if (!TransformECSStore::Instance().IsFrameCacheActive())
+        FlushPersistentPromotions();
+    if (m_activeScene)
+        m_activeScene->ProcessPendingStarts();
+    if (m_runtimePersistentScene)
+        m_runtimePersistentScene->ProcessPendingStarts();
+    if (useRuntimeScheduler)
+        m_runtimeLifecycleLateUpdate(deltaTime);
+    if (m_activeScene)
+        m_activeScene->LateUpdate(deltaTime);
+    if (m_runtimePersistentScene)
+        m_runtimePersistentScene->LateUpdate(deltaTime);
+    if (!TransformECSStore::Instance().IsFrameCacheActive())
+        FlushPersistentPromotions();
+    if (m_activeScene)
+        TransformECSStore::Instance().SyncSceneWorldMatrices(m_activeScene);
+    if (m_runtimePersistentScene)
+        TransformECSStore::Instance().SyncSceneWorldMatrices(m_runtimePersistentScene.get());
+    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::FinalTransformResolve);
+    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::AnimationTimeline);
+    // Keep the lifecycle frame open. The renderer still has to publish
+    // RenderExtraction, RenderGraph and Snapshot before EndFrame owns pending
+    // destruction and retirement, exactly like an ordinary Play frame.
 }
 
 void SceneManager::DontDestroyOnLoad(GameObject *gameObject)
 {
-    if (!gameObject)
+    // DontDestroyOnLoad is runtime residency, not an authored flag. Ignoring
+    // Edit Mode calls prevents a script/tool invocation from leaking an object
+    // across project or play-session boundaries.
+    if (!m_isPlaying || !gameObject)
         return;
 
-    // Walk up to root if called on a child
-    if (gameObject->GetParent() != nullptr) {
-        GameObject *root = gameObject;
-        while (root->GetParent()) {
-            root = root->GetParent();
-        }
-        gameObject = root;
-    }
+    while (gameObject->GetParent())
+        gameObject = gameObject->GetParent();
+    if (gameObject->GetScene() == m_runtimePersistentScene.get())
+        return;
+    if (!gameObject->GetScene())
+        return;
 
-    // Just mark as persistent — the object stays in its scene normally.
-    // When a scene is unloaded, persistent roots are migrated to the new scene.
     gameObject->SetPersistent(true);
+    if (m_pendingPersistentRootIdSet.insert(gameObject->GetID()).second)
+        m_pendingPersistentRootIds.push_back(gameObject->GetID());
 }
 
-void SceneManager::ExtractPersistentObjects(Scene *scene)
+Scene *SceneManager::EnsureRuntimePersistentScene()
 {
-    if (!scene)
+    if (!m_isPlaying)
+        return nullptr;
+    if (!m_runtimePersistentScene) {
+        m_runtimePersistentScene = std::make_unique<Scene>("DontDestroyOnLoad");
+        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+        m_runtimePersistentScene->SetPlaying(true);
+        // Start the empty Scene once. Trees transferred into it already own
+        // their lifecycle state and must never replay Awake/Start/OnEnable.
+        m_runtimePersistentScene->Start();
+    }
+    return m_runtimePersistentScene.get();
+}
+
+GameObject *SceneManager::FindRuntimeObjectByID(uint64_t id) const
+{
+    if (id == 0)
+        return nullptr;
+    if (m_activeScene) {
+        if (GameObject *object = m_activeScene->FindByID(id))
+            return object;
+    }
+    if (m_runtimePersistentScene) {
+        if (GameObject *object = m_runtimePersistentScene->FindByID(id))
+            return object;
+    }
+    for (const auto &scene : m_scenes) {
+        if (!scene || scene.get() == m_activeScene)
+            continue;
+        if (GameObject *object = scene->FindByID(id))
+            return object;
+    }
+    return nullptr;
+}
+
+void SceneManager::FlushPersistentPromotions()
+{
+    if (!m_isPlaying || m_pendingPersistentRootIds.empty())
         return;
 
-    // Collect persistent roots — iterate by index since DetachRootObject
-    // modifies the vector.
-    std::vector<GameObject *> toExtract;
-    for (const auto &root : scene->GetRootObjects()) {
-        if (root && root->IsPersistent())
-            toExtract.push_back(root.get());
-    }
+    std::vector<uint64_t> requests;
+    requests.swap(m_pendingPersistentRootIds);
+    m_pendingPersistentRootIdSet.clear();
+    Scene *persistentScene = EnsureRuntimePersistentScene();
+    if (!persistentScene)
+        return;
 
-    for (GameObject *go : toExtract) {
-        auto owned = scene->DetachRootObject(go);
-        if (owned) {
-            owned->SetScene(nullptr);
-            m_persistentObjects.push_back(std::move(owned));
+    for (uint64_t id : requests) {
+        GameObject *root = FindRuntimeObjectByID(id);
+        if (!root)
+            continue;
+        while (root->GetParent())
+            root = root->GetParent();
+        Scene *source = root->GetScene();
+        if (!source || source == persistentScene)
+            continue;
+        if (!source->TransferRootObjectTo(root, *persistentScene)) {
+            root->SetPersistent(false);
+            INXLOG_WARN("DontDestroyOnLoad could not promote root '", root->GetName(), "' (id=", root->GetID(), ")");
+        }
+    }
+}
+
+void SceneManager::PrepareActiveSceneReplacement()
+{
+    if (m_isPlaying) {
+        FlushPersistentPromotions();
+        // Scene commit clears pending physics queues belonging to the dying
+        // active graph. Publish persistent bodies first so no queued creation
+        // or broadphase add is accidentally discarded with that graph.
+        FlushPendingBroadphase();
+    }
+}
+
+void SceneManager::UpdateRuntimeScenePlayingState(bool playing)
+{
+    if (m_activeScene)
+        m_activeScene->SetPlaying(playing);
+    if (m_runtimePersistentScene)
+        m_runtimePersistentScene->SetPlaying(playing);
+}
+
+void SceneManager::ClearRuntimePersistentScene()
+{
+    for (uint64_t id : m_pendingPersistentRootIds) {
+        if (GameObject *root = FindRuntimeObjectByID(id))
+            root->SetPersistent(false);
+    }
+    m_pendingPersistentRootIds.clear();
+    m_pendingPersistentRootIdSet.clear();
+    if (m_runtimePersistentScene)
+        m_runtimePersistentScene->SetPlaying(false);
+    m_runtimePersistentScene.reset();
+}
+
+void SceneManager::RestorePersistentComponentRegistries()
+{
+    if (!m_runtimePersistentScene)
+        return;
+
+    for (GameObject *object : m_runtimePersistentScene->GetAllObjects()) {
+        if (!object || !object->IsActiveInHierarchy())
+            continue;
+        for (MeshRenderer *renderer : object->GetComponents<MeshRenderer>()) {
+            if (renderer && renderer->IsEnabled())
+                RegisterMeshRenderer(renderer);
+        }
+        for (Light *light : object->GetComponents<Light>()) {
+            if (light && light->IsEnabled())
+                RegisterLight(light);
+        }
+        auto colliders = object->GetComponents<Collider>();
+        if (!colliders.empty()) {
+            Collider *primary = colliders.front();
+            if (primary && primary->IsEnabled()) {
+                if (primary->GetBodyId() == 0xFFFFFFFF)
+                    primary->RegisterBody();
+                primary->RestoreSceneResidency();
+            }
         }
     }
 }
@@ -587,20 +769,96 @@ void SceneManager::SyncCollidersToPhysics(float fixedDeltaTime)
         if (!col || !col->IsEnabled())
             continue;
         auto *go = col->GetGameObject();
-        if (!go || go->GetScene() != m_activeScene)
+        if (!go || !IsRuntimeScene(go->GetScene()))
             continue;
-        col->SyncTransformToPhysics(fixedDeltaTime, &staticPoseBatch);
         const auto actorHandle = data.actorHandle;
         if (!store.IsValid(actorHandle))
             throw std::logic_error("dirty Collider references a stale PhysicsActor");
-        auto &actor = store.GetActor(actorHandle);
-        if (actor.rigidbody && actor.rigidbody->IsEnabled() && !actor.rigidbody->IsKinematic()) {
-            auto t0 = ProfileClock::now();
-            actor.rigidbody->SyncExternalMovesToPhysics();
-            m_lastFrameProfile.syncExternalMovesMs += ProfileMsSince(t0);
-        }
+        const auto &actor = store.GetActor(actorHandle);
+        const bool profilesRigidbodySync = actor.rigidbody && actor.rigidbody->IsEnabled();
+        const auto syncStart = profilesRigidbodySync ? ProfileClock::now() : ProfileClock::time_point{};
+        col->SyncTransformToPhysics(fixedDeltaTime, &staticPoseBatch);
+        if (profilesRigidbodySync)
+            m_lastFrameProfile.syncExternalMovesMs += ProfileMsSince(syncStart);
     }
     PhysicsWorld::Instance().SetBodyPositionsBatch(staticPoseBatch);
+}
+
+void SceneManager::PublishAuthoredTransformsToPhysics()
+{
+    // Runtime persistence is committed only after the Transform frame cache
+    // has flushed. Moving a root while that cache still names the authored
+    // Scene would otherwise make EndFrameCache skip its dirty slots.
+    FlushPersistentPromotions();
+    if (m_runtimePersistentScene)
+        TransformECSStore::Instance().SyncSceneWorldMatrices(m_runtimePersistentScene.get());
+
+    auto &store = PhysicsECSStore::Instance();
+    if ((!m_activeScene && !m_runtimePersistentScene) || !store.HasDirtyColliders())
+        return;
+
+    // Transform writes performed by Update/LateUpdate are collected by the
+    // frame cache. Publish them once, after the cache commits, instead of
+    // synchronizing on every property setter. This preserves high-FPS editor
+    // performance while preventing Rigidbody interpolation from restoring an
+    // older pose on the following frame.
+    FlushPendingBroadphase();
+    SyncCollidersToPhysics(0.0f);
+}
+
+void SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler)
+{
+    m_lastFrameProfile.fixedSteps += 1.0;
+    m_fixedTime += static_cast<double>(m_fixedTimeStep);
+    if (m_timeScale > 0.0f)
+        m_fixedUnscaledTime += static_cast<double>(m_fixedTimeStep / m_timeScale);
+
+    // Publish bodies created before this fixed step so FixedUpdate queries see
+    // the authoritative previous state. Transform writes from FixedUpdate are
+    // synchronized only once, at the explicit TransformToPhysics boundary.
+    FlushPendingBroadphase();
+
+    auto phaseStart = ProfileClock::now();
+    if (useRuntimeScheduler)
+        m_runtimeLifecycleFixedUpdate(m_fixedTimeStep);
+    if (m_activeScene)
+        m_activeScene->FixedUpdate(m_fixedTimeStep);
+    if (m_runtimePersistentScene)
+        m_runtimePersistentScene->FixedUpdate(m_fixedTimeStep);
+    if (!TransformECSStore::Instance().IsFrameCacheActive())
+        FlushPersistentPromotions();
+    m_lastFrameProfile.fixedUpdateMs += ProfileMsSince(phaseStart);
+
+    FlushPendingBroadphase();
+    auto &physicsStore = PhysicsECSStore::Instance();
+    const bool hasRigidbodies = physicsStore.GetAliveRigidbodyCount() > 0;
+
+    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformToPhysics);
+    if (hasRigidbodies) {
+        phaseStart = ProfileClock::now();
+        SyncCollidersToPhysics(m_fixedTimeStep);
+        m_lastFrameProfile.syncCollidersMs += ProfileMsSince(phaseStart);
+    }
+
+    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PhysicsSimulation);
+    if (hasRigidbodies) {
+        phaseStart = ProfileClock::now();
+        PhysicsWorld::Instance().Step(m_fixedTimeStep);
+        m_lastFrameProfile.physicsStepMs += ProfileMsSince(phaseStart);
+        m_lastFrameProfile.dynamicCCDSplits +=
+            static_cast<double>(PhysicsWorld::Instance().GetLastDynamicCCDSplitCount());
+
+        phaseStart = ProfileClock::now();
+        m_lastFrameProfile.contactEvents += static_cast<double>(PhysicsWorld::Instance().DispatchContactEvents());
+        m_lastFrameProfile.physicsEventsMs += ProfileMsSince(phaseStart);
+    }
+
+    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PhysicsToTransform);
+    if (hasRigidbodies) {
+        phaseStart = ProfileClock::now();
+        SyncRigidbodiesToTransform();
+        m_lastFrameProfile.syncRigidbodiesMs += ProfileMsSince(phaseStart);
+    }
 }
 
 void SceneManager::FlushPendingBroadphase()
@@ -737,7 +995,7 @@ void SceneManager::ActivateAllDynamicBodies()
         if (!rb || !rb->IsEnabled() || rb->IsKinematic())
             return;
         auto *go = rb->GetGameObject();
-        if (!go || go->GetScene() != m_activeScene)
+        if (!go || !IsRuntimeScene(go->GetScene()))
             return;
         rb->WakeUp();
     });
@@ -760,7 +1018,7 @@ void SceneManager::SyncRigidbodiesToTransform()
         if (!rb || !rb->IsEnabled())
             continue;
         auto *go = rb->GetGameObject();
-        if (go && go->GetScene() == m_activeScene)
+        if (go && IsRuntimeScene(go->GetScene()))
             rb->ApplyInterpolatedTransform(1.0f);
     }
     m_posePresentationBodyIds.assign(bodyIds.begin(), bodyIds.end());
@@ -771,7 +1029,7 @@ void SceneManager::SyncRigidbodiesToTransform()
         if (!rb || !rb->IsEnabled())
             continue;
         auto *go = rb->GetGameObject();
-        if (!go || go->GetScene() != m_activeScene)
+        if (!go || !IsRuntimeScene(go->GetScene()))
             continue;
         rb->SyncPhysicsToTransform();
     }
@@ -779,7 +1037,7 @@ void SceneManager::SyncRigidbodiesToTransform()
 
 void SceneManager::ApplyInterpolatedRigidbodies(float alpha)
 {
-    if (!m_activeScene)
+    if (!m_activeScene && !m_runtimePersistentScene)
         return;
 
     auto &physics = PhysicsWorld::Instance();
@@ -790,7 +1048,7 @@ void SceneManager::ApplyInterpolatedRigidbodies(float alpha)
         if (!rb || !rb->IsEnabled())
             continue;
         auto *go = rb->GetGameObject();
-        if (!go || go->GetScene() != m_activeScene)
+        if (!go || !IsRuntimeScene(go->GetScene()))
             continue;
         rb->ApplyInterpolatedTransform(alpha);
     }
@@ -817,6 +1075,11 @@ void SceneManager::ClearComponentRegistries()
     // created, leading to invisible collisions/missing rigidbodies post-load.
     PhysicsECSStore::Instance().ClearPendingQueues();
     m_posePresentationBodyIds.clear();
+
+    // Scene document replacement clears process-wide renderer registries.
+    // The runtime-only persistent Scene is outside that transaction, so put
+    // its still-live components back immediately. Registration is idempotent.
+    RestorePersistentComponentRegistries();
 }
 
 // ========================================================================
@@ -829,13 +1092,41 @@ void SceneManager::ReserveRendererCapacity(size_t count)
     m_activeMeshRendererSet.reserve(m_activeMeshRendererSet.size() + count);
 }
 
+void SceneManager::BeginRendererRegistryTransaction()
+{
+    ++m_rendererRegistryTransactionDepth;
+}
+
+void SceneManager::EndRendererRegistryTransaction()
+{
+    if (m_rendererRegistryTransactionDepth == 0)
+        throw std::logic_error("renderer registry transaction underflow");
+    --m_rendererRegistryTransactionDepth;
+    if (m_rendererRegistryTransactionDepth == 0 && m_rendererRegistryTransactionDirty) {
+        m_rendererRegistryTransactionDirty = false;
+        ++m_meshRendererVersion;
+    }
+}
+
+namespace
+{
+void MarkRendererRegistryChanged(uint32_t transactionDepth, bool &transactionDirty, uint64_t &version)
+{
+    if (transactionDepth != 0)
+        transactionDirty = true;
+    else
+        ++version;
+}
+} // namespace
+
 void SceneManager::RegisterMeshRenderer(MeshRenderer *renderer)
 {
     if (!renderer)
         return;
     if (m_activeMeshRendererSet.insert(renderer).second) {
         m_activeMeshRenderers.push_back(renderer);
-        ++m_meshRendererVersion;
+        MarkRendererRegistryChanged(m_rendererRegistryTransactionDepth, m_rendererRegistryTransactionDirty,
+                                    m_meshRendererVersion);
     }
 }
 
@@ -843,7 +1134,8 @@ void SceneManager::UnregisterMeshRenderer(MeshRenderer *renderer)
 {
     if (!m_activeMeshRendererSet.erase(renderer))
         return;
-    ++m_meshRendererVersion;
+    MarkRendererRegistryChanged(m_rendererRegistryTransactionDepth, m_rendererRegistryTransactionDirty,
+                                m_meshRendererVersion);
     // Swap-and-pop for O(1) removal from vector
     for (size_t i = 0; i < m_activeMeshRenderers.size(); ++i) {
         if (m_activeMeshRenderers[i] == renderer) {
@@ -859,7 +1151,8 @@ void SceneManager::NotifyMeshRendererChanged(MeshRenderer *renderer)
     if (!renderer)
         return;
     if (m_activeMeshRendererSet.find(renderer) != m_activeMeshRendererSet.end())
-        ++m_meshRendererVersion;
+        MarkRendererRegistryChanged(m_rendererRegistryTransactionDepth, m_rendererRegistryTransactionDirty,
+                                    m_meshRendererVersion);
 }
 
 void SceneManager::MarkMeshRenderersDirtyForAsset(const std::string &meshGuid, const std::string &meshPath)

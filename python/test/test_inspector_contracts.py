@@ -268,7 +268,7 @@ def test_inline_material_document_binding_is_not_repeated_for_stable_state(monke
 
 
 def test_serialized_bool_and_vector_fields_keep_stable_widget_ids(monkeypatch):
-    from Infernux.components.serialized_field import FieldMetadata, FieldType
+    from Infernux.components.fields import FieldMetadata, FieldType
 
     checkbox_calls = []
     monkeypatch.setattr(
@@ -369,7 +369,7 @@ class _FakeObjectFieldContext(_FakeSemanticContext):
 
     def render_object_field_chrome(
         self, _field_id, display_text, _type_hint, _selected, clickable,
-        has_picker, _picker_texture_id, semantic_id,
+        has_picker, _picker_texture_id, semantic_id, _fixed_width,
     ):
         if semantic_id:
             self.record_semantic_item(
@@ -416,7 +416,7 @@ def test_inspector_semantics_skip_component_identity_work_outside_snapshot():
 
 
 def test_scalar_batch_descriptor_keeps_its_semantic_identity():
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     from Infernux.engine.ui.inspector_utils import build_scalar_desc
 
     metadata = SimpleNamespace(
@@ -441,7 +441,7 @@ def test_scalar_batch_descriptor_keeps_its_semantic_identity():
 
 
 def test_scalar_batch_descriptor_preserves_full_int32_range_as_integers():
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     from Infernux.engine.ui.inspector_utils import build_scalar_desc
 
     metadata = SimpleNamespace(
@@ -713,7 +713,7 @@ def test_inspector_property_edit_fails_closed_without_transaction_authority():
 
 
 def test_multi_builtin_inspector_edit_is_one_global_action():
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     from Infernux.engine.ui.inspector_components import _apply_multi_builtin_change
     from Infernux.engine.undo import UndoManager
 
@@ -737,7 +737,7 @@ def test_multi_builtin_inspector_edit_is_one_global_action():
 
 def test_python_asset_reference_field_uses_component_semantic(monkeypatch):
     import Infernux.engine.ui._inspector_references as module
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     captured = {}
     monkeypatch.setattr(module, "field_label", lambda *_args, **_kwargs: None)
@@ -763,7 +763,7 @@ def test_python_asset_reference_field_uses_component_semantic(monkeypatch):
 def test_python_generic_asset_field_uses_unified_reference_widget(monkeypatch):
     import Infernux.engine.ui.inspector_components as module
     from Infernux.components.particle_system import ParticleSystem
-    from Infernux.components.serialized_field import FieldType, get_serialized_fields
+    from Infernux.components.fields import FieldType, get_serialized_fields
 
     metadata = get_serialized_fields(ParticleSystem)["graph"]
     rendered = []
@@ -873,7 +873,7 @@ def test_scene_reference_fields_use_hierarchy_ping_contract(monkeypatch):
 
 def test_builtin_asset_reference_field_records_native_property(monkeypatch):
     import Infernux.engine.ui._inspector_references as module
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
     from Infernux.core.asset_ref import PhysicMaterialRef
 
     captured = {}
@@ -1807,6 +1807,7 @@ def test_texture_import_fields_publish_stable_semantics(monkeypatch):
         "asset.texture.import.filter_mode",
         "asset.texture.import.wrap_mode",
         "asset.texture.import.generate_mipmaps",
+        "asset.texture.import.aniso_level",
         "asset.texture.import.format",
         "asset.texture.import.compression",
         "asset.texture.import.compression_quality",
@@ -1846,9 +1847,15 @@ def test_sprite_slice_controls_are_distinct_and_report_values(monkeypatch):
     state.settings = settings
     state.disk_settings = settings.copy()
     applied = []
+    save_requests = []
     state.exec_layer = SimpleNamespace(
         apply_import_settings=lambda value: applied.append(value.copy()) or True,
         refresh_binding=lambda _category, _path: None,
+    )
+    monkeypatch.setattr(
+        details,
+        "_auto_save_sprite",
+        lambda current: save_requests.append(current.settings.copy()) or True,
     )
     previous_manager = UndoManager._instance
     UndoManager()
@@ -1870,9 +1877,11 @@ def test_sprite_slice_controls_are_distinct_and_report_values(monkeypatch):
         (64, 0, 64, 64),
         (128, 0, 64, 64),
     ]
-    assert len(applied) == 1
-    assert applied[0].sprite_frames == state.settings.sprite_frames
-    assert state.disk_settings == state.settings
+    assert applied == []
+    assert len(save_requests) == 1
+    assert save_requests[0].sprite_frames == state.settings.sprite_frames
+    assert state.disk_settings != state.settings
+    assert state.is_dirty()
 
 
 def test_sprite_auto_slice_preserves_ids_for_unchanged_rectangles():

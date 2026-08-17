@@ -18,8 +18,6 @@ from Infernux.lib import InxGUIRenderable, InxGUIContext, TextureLoader, Texture
 from Infernux.debug import Debug
 from Infernux import resources as _resources
 from .engine import Engine, LogLevel
-from .play_mode import PlayModeManager, PlayModeState
-from .scene_manager import SceneFileManager
 from .path_utils import resolved_path
 
 from .headless import run_headless
@@ -32,10 +30,19 @@ _EDITOR_UI_EXPORTS = {
     "PanelRegistry", "editor_panel",
 }
 
+_EDITOR_SERVICE_EXPORTS = {
+    "PlayModeManager": (".play_mode", "PlayModeManager"),
+    "PlayModeState": (".play_mode", "PlayModeState"),
+    "SceneFileManager": (".scene_manager", "SceneFileManager"),
+}
+
 
 def __getattr__(name: str):
     if name == "ResourcesManager":
         value = importlib.import_module(".resources_manager", __name__).ResourcesManager
+    elif name in _EDITOR_SERVICE_EXPORTS:
+        module_name, export_name = _EDITOR_SERVICE_EXPORTS[name]
+        value = getattr(importlib.import_module(module_name, __name__), export_name)
     elif name in _EDITOR_UI_EXPORTS:
         value = getattr(importlib.import_module(".ui", __name__), name)
     else:
@@ -307,9 +314,6 @@ __all__ = [
     "LogLevel",
     "InxGUIRenderable",
     "InxGUIContext",
-    "PlayModeManager",
-    "PlayModeState",
-    "SceneFileManager",
     "TextureLoader",
     "TextureData",
     "release_engine",
@@ -319,6 +323,9 @@ __all__ = [
 
 if not _PLAYER_MODE:
     __all__ += [
+        "PlayModeManager",
+        "PlayModeState",
+        "SceneFileManager",
         "ResourcesManager",
         "MenuBarPanel",
         "ToolbarPanel",

@@ -703,6 +703,22 @@ def test_native_panel_adapters_leave_focus_to_the_native_publisher():
     assert "SelectionService.instance().select" not in console_navigation
 
 
+def test_hierarchy_pointer_commands_use_the_originating_view_context():
+    from pathlib import Path
+
+    source = Path(
+        "python/Infernux/engine/bootstrap_hierarchy/_wire.py"
+    ).read_text(encoding="utf-8")
+    start = source.index("    def _execute_hierarchy_command")
+    end = source.index("    def _render_context_menu", start)
+    command_bridge = source[start:end]
+
+    assert 'active_panel_id="hierarchy"' in command_bridge
+    assert 'active_view_id="hierarchy"' in command_bridge
+    assert "command_registry.execute_context(" in command_bridge
+    assert "hp.execute_command = _execute_hierarchy_command" in source
+
+
 def test_project_subresource_click_keeps_typed_row_identity():
     from types import SimpleNamespace
 
@@ -875,6 +891,10 @@ def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch):
     objects = {value: SimpleNamespace(id=value) for value in (41, 42)}
 
     class _Scene:
+        world_id = 73
+        structure_version = 1
+        temporal_discontinuity_revision = 0
+
         @staticmethod
         def find_by_id(object_id):
             return objects.get(object_id)
@@ -1204,6 +1224,10 @@ def test_ui_editor_component_is_a_revision_cached_global_selection_projection(
     }
 
     class _Scene:
+        world_id = 73
+        structure_version = 1
+        temporal_discontinuity_revision = 0
+
         @staticmethod
         def find_by_id(object_id):
             return objects.get(object_id)
@@ -1228,6 +1252,7 @@ def test_ui_editor_component_is_a_revision_cached_global_selection_projection(
     panel = UIEditorPanel.__new__(UIEditorPanel)
     panel._selected_element_cache_revision = -1
     panel._selected_element_cache_object_id = 0
+    panel._selected_element_cache_scene_key = None
     panel._selected_element_cache = None
 
     service.select_scene_object(
@@ -1238,6 +1263,9 @@ def test_ui_editor_component_is_a_revision_cached_global_selection_projection(
     assert panel._selected_element_comp is first_component
     objects[41] = SimpleNamespace(id=41, get_py_components=lambda: [second_component])
     assert panel._selected_element_comp is first_component
+
+    _Scene.temporal_discontinuity_revision += 1
+    assert panel._selected_element_comp is second_component
 
     service.select_scene_object(
         42,

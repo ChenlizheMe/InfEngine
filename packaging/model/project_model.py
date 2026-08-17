@@ -475,13 +475,20 @@ def _wheel_matches_python(wheel_path: str, python_tag: str) -> bool:
 
 
 def _find_dev_wheel(python_exe: str = "", *, strict: bool = False) -> str:
-    """Find the Infernux wheel in the dist/ directory next to the engine source.
+    """Find the newest compatible wheel produced by the local source tree.
 
     Only used in dev mode (non-frozen).
     """
     engine_root = _engine_root()
-    dist_dir = os.path.join(engine_root, "dist")
-    wheels = glob.glob(os.path.join(dist_dir, "infernux-*.whl"))
+    wheel_dirs = (
+        os.path.join(engine_root, "out", "build", "python_wheel"),
+        os.path.join(engine_root, "dist"),
+    )
+    wheels = [
+        wheel
+        for wheel_dir in wheel_dirs
+        for wheel in glob.glob(os.path.join(wheel_dir, "infernux-*.whl"))
+    ]
     if wheels:
         python_tag = _python_cp_tag(python_exe)
         compatible = [wheel for wheel in wheels if _wheel_matches_python(wheel, python_tag)]
@@ -495,6 +502,19 @@ def _find_dev_wheel(python_exe: str = "", *, strict: bool = False) -> str:
                 f"Available wheels: {available}"
             )
     return ""
+
+
+def _wheel_install_fingerprint(wheel_path: str) -> str:
+    try:
+        stat = os.stat(wheel_path)
+    except OSError:
+        return ""
+    return f"{os.path.abspath(wheel_path)}\n{stat.st_size}\n{stat.st_mtime_ns}\n"
+
+
+def _project_wheel_marker(project_dir: str) -> str:
+    runtime_name = ".runtime" if is_frozen() else ".venv"
+    return os.path.join(project_dir, runtime_name, ".infernux-wheel")
 
 
 def _wheel_version_from_path(wheel_path: str) -> str:
@@ -843,7 +863,14 @@ class ProjectModel:
             on_status(f"Creating project virtual environment with {os.path.basename(source_python)}...")
         _run_hidden([source_python, "-m", "venv", "--copies", "--system-site-packages", venv_path], timeout=600)
 
-    def _install_infernux_in_runtime(self, project_dir: str, engine_version: str = "", *, on_status=None):
+    def _install_infernux_in_runtime(
+        self,
+        project_dir: str,
+        engine_version: str = "",
+        *,
+        on_status=None,
+        validate_current: bool = True,
+    ):
         """Install the Infernux wheel into the project's Python environment.
 
         In frozen (packaged Hub) mode, the wheel is installed into the project's
@@ -862,11 +889,10 @@ class ProjectModel:
 
         wheel = ""
 
-        if engine_version and self.version_manager is not None:
-            wheel = self.version_manager.get_wheel_path(engine_version) or ""
-
-        if not wheel and not is_frozen():
+        if not is_frozen():
             wheel = _find_dev_wheel(project_python, strict=True)
+        elif engine_version and self.version_manager is not None:
+            wheel = self.version_manager.get_wheel_path(engine_version) or ""
 
         if not wheel:
             if is_frozen():
@@ -881,12 +907,38 @@ class ProjectModel:
 
         target_version = _wheel_version_from_path(wheel)
         if on_status:
-            on_status("Installing Infernux into the project runtime...")
-        installed_version = ""
+            on_status("Checking the project runtime...")
         site_packages = ProjectModel._get_site_packages(project_dir)
-        if _distribution_files_present(site_packages, "Infernux"):
+        distribution_present = _distribution_files_present(site_packages, "Infernux")
+        marker_path = _project_wheel_marker(project_dir)
+        expected_fingerprint = _wheel_install_fingerprint(wheel)
+        installed_fingerprint = ""
+        try:
+            with open(marker_path, "r", encoding="utf-8") as marker:
+                installed_fingerprint = marker.read()
+        except OSError:
+            pass
+        wheel_is_current = bool(
+            expected_fingerprint and installed_fingerprint == expected_fingerprint
+        )
+        if distribution_present and wheel_is_current:
+            if not validate_current:
+                return
+            try:
+                ProjectModel.validate_python_runtime(project_python)
+                return
+            except RuntimeError as _exc:
+                logging.getLogger(__name__).debug(
+                    "[Suppressed] %s: %s", type(_exc).__name__, _exc
+                )
+
+        installed_version = ""
+        if distribution_present:
             installed_version = _installed_distribution_version(project_python, "Infernux")
-        if target_version and installed_version == target_version:
+        version_is_current = bool(target_version and installed_version == target_version)
+        if version_is_current and (is_frozen() or wheel_is_current):
+            if not validate_current:
+                return
             try:
                 ProjectModel.validate_python_runtime(project_python)
                 return
@@ -900,6 +952,9 @@ class ProjectModel:
             if on_status:
                 on_status("Validating project runtime...")
             ProjectModel.validate_python_runtime(project_python)
+            os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+            with open(marker_path, "w", encoding="utf-8", newline="\n") as marker:
+                marker.write(expected_fingerprint)
             return
 
         _PIP_FLAGS = [
@@ -915,7 +970,12 @@ class ProjectModel:
         pip_args.append("--force-reinstall")
         pip_args.append(wheel)
 
+        if on_status:
+            on_status("Installing Infernux into the project runtime...")
         _run_hidden(pip_args, timeout=600)
+        os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+        with open(marker_path, "w", encoding="utf-8", newline="\n") as marker:
+            marker.write(expected_fingerprint)
         if on_status:
             on_status("Validating project runtime...")
         ProjectModel.validate_python_runtime(project_python)
@@ -957,12 +1017,10 @@ class ProjectModel:
         os.makedirs(vscode_dir, exist_ok=True)
 
         # ── settings.json ───────────────────────────────────────────────
-        project_python = ProjectModel._get_project_python(project_dir)
         site_packages = ProjectModel._get_site_packages(project_dir)
         vscode_python = ProjectModel._vscode_python_path(project_dir)
         settings = {
             "python.defaultInterpreterPath": vscode_python,
-            "python.pythonPath": vscode_python,
             "python.terminal.activateEnvironment": True,
             "python.analysis.typeCheckingMode": "basic",
             "python.analysis.autoImportCompletions": True,
@@ -1002,7 +1060,6 @@ class ProjectModel:
         # in dev mode, use the classic venvPath/venv convention.
         if is_frozen():
             pyright_config = {
-                "pythonPath": ProjectModel._get_project_python(project_dir),
                 "pythonVersion": "3.12",
                 "typeCheckingMode": "basic",
                 "reportMissingModuleSource": False,
@@ -1014,7 +1071,6 @@ class ProjectModel:
             pyright_config = {
                 "venvPath": ".",
                 "venv": ".venv",
-                "pythonPath": ProjectModel._vscode_python_path(project_dir),
                 "pythonVersion": "3.12",
                 "typeCheckingMode": "basic",
                 "reportMissingModuleSource": False,

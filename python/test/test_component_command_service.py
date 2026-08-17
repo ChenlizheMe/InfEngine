@@ -1,6 +1,62 @@
 from __future__ import annotations
 
 
+def test_component_add_resolves_engine_python_and_native_targets(monkeypatch):
+    import Infernux.components.registry as component_registry
+    import Infernux.engine.undo as undo_module
+    from Infernux.components.spirit_animator import SpiritAnimator
+    from Infernux.engine.interaction import ComponentCommandService
+
+    captured = []
+
+    class FakeGameObject:
+        id = 17
+
+        @staticmethod
+        def get_py_components():
+            return []
+
+        @staticmethod
+        def get_add_component_blockers(_type_name):
+            return []
+
+    class FakeAddCommand:
+        def __init__(self, _object_id, type_name, **kwargs):
+            python_instance = kwargs.get("python_instance")
+            self.result_component = (
+                python_instance if python_instance is not None else object()
+            )
+            captured.append((type_name, python_instance))
+
+    monkeypatch.setattr(
+        undo_module,
+        "AddComponentTransactionCommand",
+        FakeAddCommand,
+    )
+    monkeypatch.setattr(
+        component_registry,
+        "ensure_engine_component_catalog_loaded",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        component_registry,
+        "get_type",
+        lambda type_name: SpiritAnimator if type_name == "SpiritAnimator" else None,
+    )
+    service = ComponentCommandService()
+    monkeypatch.setattr(service, "_execute", lambda *_args, **_kwargs: None)
+    try:
+        python_component = service.add(FakeGameObject(), "SpiritAnimator")
+        native_component = service.add(FakeGameObject(), "MeshRenderer")
+
+        assert isinstance(python_component, SpiritAnimator)
+        assert isinstance(captured[0][1], SpiritAnimator)
+        assert captured[1] == ("MeshRenderer", None)
+        assert native_component is not None
+    finally:
+        service.shutdown()
+
+
 def test_component_document_edit_is_atomic_and_replayable():
     from Infernux.engine.interaction import ComponentCommandService
     from Infernux.engine.undo import UndoManager

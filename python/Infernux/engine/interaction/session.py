@@ -18,7 +18,7 @@ from .asset_mutations import AssetMutationService
 from .asset_content import AssetRenameContentRegistry
 from .windows import WindowLocator
 from .continuous_edits import ContinuousEditService
-from .navigation import NavigationService
+from .navigation import DirectoryNavigationHistory, NavigationService
 from .transient_interactions import TransientInteractionService
 from .panels import PanelInteractionRegistry
 from .external_drops import ExternalDropTargetService
@@ -50,6 +50,7 @@ class EditorInteractionCore:
     def __init__(self) -> None:
         self.selection = SelectionService()
         self.navigation = NavigationService(self.selection)
+        self.directory_navigation = DirectoryNavigationHistory()
         self.clipboard = ClipboardService()
         self.scene_objects = SceneObjectCommandService(
             self.selection,
@@ -146,6 +147,7 @@ class EditorInteractionCore:
         self.authoring_mutations.shutdown()
         self.document_open.clear()
         self.navigation.clear()
+        self.directory_navigation.clear()
         self.asset_mutations.shutdown()
         self.prefabs.shutdown()
         self.project_asset_interactions.shutdown()

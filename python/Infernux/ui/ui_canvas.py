@@ -82,6 +82,30 @@ class UICanvas(InxUIComponent):
         slider=False,
     )
 
+    @staticmethod
+    def _publish_canvas_membership_change() -> None:
+        from .ui_canvas_utils import invalidate_canvas_cache
+
+        invalidate_canvas_cache()
+
+    def _set_game_object(self, game_object):
+        previous = self.__dict__.get("_game_object")
+        super()._set_game_object(game_object)
+        if previous is not game_object:
+            self._publish_canvas_membership_change()
+
+    def _invalidate_native_binding(self):
+        was_bound = self.__dict__.get("_game_object") is not None
+        super()._invalidate_native_binding()
+        if was_bound:
+            self._publish_canvas_membership_change()
+
+    def _call_on_destroy(self):
+        was_bound = self.__dict__.get("_game_object") is not None
+        super()._call_on_destroy()
+        if was_bound:
+            self._publish_canvas_membership_change()
+
     def __setattr__(self, name, value):
         unchanged = is_unchanged_ui_scalar(self, name, value)
         super().__setattr__(name, value)
@@ -169,6 +193,9 @@ class UICanvas(InxUIComponent):
                 if ver != self._cached_elements_version:
                     self._cached_elements = None
                     self._cached_elements_version = ver
+                    from .inx_ui_screen_component import _invalidate_rect_cache
+
+                    _invalidate_rect_cache()
         if self._cached_elements is None:
             self._cached_elements = list(self.iter_ui_elements())
         return self._cached_elements

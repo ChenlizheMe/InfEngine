@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -132,6 +133,43 @@ def test_snapshot_property_transaction_merges_continuous_same_target_edits():
 
         assert state["value"] == 3.0
         assert len(manager.action_journal.applied_entries()) == 1
+        manager.undo()
+        assert state["value"] == 1.0
+    finally:
+        UndoManager._instance = previous
+
+
+def test_snapshot_property_gesture_merges_until_pointer_release_boundary():
+    from Infernux.engine.interaction import SnapshotPropertyTransaction
+    from Infernux.engine.undo import UndoManager
+
+    state = {"value": 1.0}
+    previous = UndoManager._instance
+    manager = UndoManager()
+    try:
+        def commit(value, gesture_id):
+            SnapshotPropertyTransaction(
+                "Transform:17",
+                lambda: state["value"],
+                lambda candidate: state.__setitem__("value", candidate),
+                "Edit Transform",
+                gesture_id=gesture_id,
+            ).commit_or_raise(value)
+
+        commit(2.0, "pointer-drag:1")
+        # Gesture identity, rather than an arbitrary timing window, owns the
+        # edit. Simulate a drag held longer than MERGE_WINDOW.
+        manager.action_journal.entries[0].action.timestamp -= 10.0
+        commit(3.0, "pointer-drag:1")
+        assert len(manager.action_journal.applied_entries()) == 1
+
+        # Releasing and pressing again creates a new undo step even when the
+        # second drag starts immediately.
+        manager.action_journal.entries[0].action.timestamp = time.monotonic()
+        commit(4.0, "pointer-drag:2")
+        assert len(manager.action_journal.applied_entries()) == 2
+        manager.undo()
+        assert state["value"] == 3.0
         manager.undo()
         assert state["value"] == 1.0
     finally:
@@ -295,7 +333,7 @@ def test_serialized_field_layer_has_no_editor_undo_or_dirty_hook():
     import importlib
     from pathlib import Path
 
-    module = importlib.import_module("Infernux.components.serialized_field")
+    module = importlib.import_module("Infernux.components.fields")
     bootstrap_module = importlib.import_module("Infernux.engine.bootstrap")
 
     serialized_source = Path(module.__file__).read_text(encoding="utf-8")

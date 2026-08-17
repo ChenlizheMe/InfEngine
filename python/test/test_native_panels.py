@@ -1,5 +1,6 @@
 """Tests for native StatusBarPanel, ToolbarPanel, MenuBarPanel, and HierarchyPanel."""
 from pathlib import Path
+import re
 
 import pytest
 from Infernux.lib import (
@@ -152,7 +153,10 @@ class TestConsolePanel:
             encoding="utf-8"
         )
 
-        assert 'ExecuteEditorCommand("console.open_source"' in source
+        assert re.search(
+            r'ExecuteEditorCommand\s*\(\s*"console\.open_source"',
+            source,
+        )
         assert "onDoubleClickEntry" not in source + header + binding
         assert "on_double_click_entry" not in binding
 
@@ -379,6 +383,29 @@ class TestEditorShortcutInput:
         assert "popupActiveNow || m_popupActivePreviousFrame" in source
         assert "m_popupActivePreviousFrame = popupActiveNow" in source
 
+    def test_undo_redo_cross_transient_popups_but_not_true_modals(self):
+        root = Path(__file__).parents[2] / "cpp" / "infernux" / "function" / "editor"
+        source = (root / "EditorShortcutInput.cpp").read_text(encoding="utf-8")
+        header = (root / "EditorShortcutInput.h").read_text(encoding="utf-8")
+
+        assert "ImGui::GetTopMostPopupModal()" in source
+        assert "m_modalActivePreviousFrame" in header
+        assert 'dispatch(shift ? "Ctrl+Shift+Z" : "Ctrl+Z", true)' in source
+        assert 'dispatch("Ctrl+Y", true)' in source
+
+    def test_find_and_align_with_view_have_distinct_global_chords(self):
+        root = Path(__file__).parents[2] / "cpp" / "infernux" / "function" / "editor"
+        source = (root / "EditorShortcutInput.cpp").read_text(encoding="utf-8")
+
+        assert 'dispatch(shift ? "Ctrl+Shift+F" : "Ctrl+F")' in source
+
+    def test_project_history_alt_chords_reach_the_shortcut_router(self):
+        root = Path(__file__).parents[2] / "cpp" / "infernux" / "function" / "editor"
+        source = (root / "EditorShortcutInput.cpp").read_text(encoding="utf-8")
+
+        assert 'dispatch("Alt+Left")' in source
+        assert 'dispatch("Alt+Right")' in source
+
     def test_default_dock_layout_does_not_bypass_window_focus_core(self):
         source = (
             Path(__file__).parents[2]
@@ -391,6 +418,23 @@ class TestEditorShortcutInput:
         ).read_text(encoding="utf-8")
 
         assert 'SetWindowFocus("###scene_view")' not in source
+
+
+def test_native_search_panels_expose_deferred_focus_requests():
+    root = Path(__file__).parents[2] / "cpp" / "infernux"
+    editor = root / "function" / "editor"
+    binding = (root / "tools" / "pybinding" / "BindingGUI.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    for panel_name in ("HierarchyPanel", "ProjectPanel", "ConsolePanel"):
+        header = (editor / f"{panel_name}.h").read_text(encoding="utf-8")
+        source = (editor / f"{panel_name}.cpp").read_text(encoding="utf-8")
+        assert "RequestSearchFocus" in header
+        assert "m_focusSearchNextFrame" in header
+        assert "m_focusSearchNextFrame" in source
+
+    assert binding.count('.def("request_search_focus"') == 3
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -452,6 +496,11 @@ class TestHierarchyPanel:
         # Hierarchy has one authoritative flat-tree render path.  The removed
         # recursive renderer must not leave a second interaction entry point.
         assert source.count('ExecuteEditorCommand("scene.frame_selected"') == 1
+        assert "const bool toggledOpen" in source
+        assert (
+            "if (!toggledOpen && ctx->IsMouseDoubleClicked(0) && "
+            "ctx->IsItemHovered())"
+        ) in source
         assert "onDoubleClickFocus" not in source + header + binding
         assert "on_double_click_focus" not in binding
 

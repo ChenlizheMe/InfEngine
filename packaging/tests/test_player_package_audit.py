@@ -36,10 +36,17 @@ from Infernux.engine.player_package_audit import (
 )
 import Infernux.engine.player_package_audit as player_package_audit
 from Infernux.engine.player_package_native import read_entry, read_manifest, set_test_backend, write_pack
+from Infernux.engine.player_service_graph import (
+    RuntimeFeatureSet,
+    RuntimeFlavor,
+    player_runtime_contract_sections,
+    runtime_service_graph_for,
+)
 from Infernux.engine.runtime_artifact_catalog import (
     RuntimeArtifactError,
     WINDOWS_FILETIME_EPOCH_OFFSET_TICKS,
     build_catalog,
+    runtime_artifact_id,
     unix_ns_to_filetime_ticks,
     validate_artifact,
 )
@@ -70,17 +77,27 @@ def test_runtime_catalog_ids_are_stable_and_output_is_deterministic():
     entries = [
         {
             "package": "Game_Data/Content.inxpkg",
-            "runtime_path": "Assets/B.scene",
+            "runtime_path": "Library/Artifacts/Document/scene-b.scene",
             "bytes": 1,
             "sha256": "1" * 64,
             "payload": b"{\"name\":\"B\"}",
+            "asset_binding": {
+                "source_guid": "scene-b",
+                "dependencies": [],
+                "source_path": "Assets/B.scene",
+            },
         },
         {
             "package": "Game_Data/Content.inxpkg",
-            "runtime_path": "Assets/A.scene",
+            "runtime_path": "Library/Artifacts/Document/scene-a.scene",
             "bytes": 1,
             "sha256": "2" * 64,
             "payload": b"{\"name\":\"A\"}",
+            "asset_binding": {
+                "source_guid": "scene-a",
+                "dependencies": [],
+                "source_path": "Assets/A.scene",
+            },
         },
     ]
     kwargs = {
@@ -121,6 +138,188 @@ def test_runtime_catalog_records_compiled_library_source_binding():
     artifact = catalog["artifacts"][0]
     assert artifact["payload_kind"] == "compiled_artifact"
     assert artifact["source_asset"] == binding
+
+
+def test_runtime_catalog_uses_mesh_as_deterministic_alias_for_mesh_and_skin():
+    source_path = "Assets/Models/Character.glb"
+    source_guid = "character-guid"
+    mesh_path = "Library/Artifacts/Mesh/character-guid.inxmesh"
+    skin_path = "Library/Artifacts/SkinnedMesh/character-guid.inxskin"
+    scene_payload = json.dumps(
+        {
+            "mesh": {
+                "$type": "asset_ref",
+                "guid": "",
+                "path_hint": source_path,
+            }
+        }
+    ).encode("utf-8")
+    entries = [
+        {
+            "package": "Game_Data/Content.inxpkg",
+            "runtime_path": skin_path,
+            "bytes": 7,
+            "sha256": "1" * 64,
+            "asset_binding": {
+                "source_guid": source_guid,
+                "source_path": source_path,
+                "dependencies": [],
+            },
+        },
+        {
+            "package": "Game_Data/Content.inxpkg",
+            "runtime_path": mesh_path,
+            "bytes": 7,
+            "sha256": "2" * 64,
+            "asset_binding": {
+                "source_guid": source_guid,
+                "source_path": source_path,
+                "dependencies": [],
+            },
+        },
+        {
+            "package": "Game_Data/Content.inxpkg",
+            "runtime_path": "Library/Artifacts/Document/main.scene",
+            "bytes": len(scene_payload),
+            "sha256": "3" * 64,
+            "payload": scene_payload,
+            "asset_binding": {
+                "source_guid": "scene-guid",
+                "source_path": "Assets/Main.scene",
+                "dependencies": [],
+            },
+        },
+    ]
+    kwargs = {
+        "player_host": {"executable": "Game.exe", "sha256": "4" * 64},
+        "package_records": [],
+    }
+
+    first = build_catalog(entries, **kwargs)
+    second = build_catalog(list(reversed(entries)), **kwargs)
+
+    assert first == second
+    scene = next(
+        artifact
+        for artifact in first["artifacts"]
+        if artifact["runtime_path"].endswith("main.scene")
+    )
+    assert scene["dependencies"] == [
+        runtime_artifact_id("Game_Data/Content.inxpkg", mesh_path)
+    ]
+    assert scene["unresolved_dependencies"] == []
+
+
+def test_runtime_catalog_rejects_source_alias_shared_by_different_guids():
+    source_path = "Assets/Models/Ambiguous.glb"
+    entries = [
+        {
+            "package": "Game_Data/Content.inxpkg",
+            "runtime_path": "Library/Artifacts/Mesh/a.inxmesh",
+            "bytes": 1,
+            "sha256": "1" * 64,
+            "asset_binding": {
+                "source_guid": "guid-a",
+                "source_path": source_path,
+                "dependencies": [],
+            },
+        },
+        {
+            "package": "Game_Data/Content.inxpkg",
+            "runtime_path": "Library/Artifacts/Mesh/b.inxmesh",
+            "bytes": 1,
+            "sha256": "2" * 64,
+            "asset_binding": {
+                "source_guid": "guid-b",
+                "source_path": source_path,
+                "dependencies": [],
+            },
+        },
+    ]
+
+    with pytest.raises(RuntimeArtifactError, match="runtime source alias is ambiguous"):
+        build_catalog(
+            entries,
+            player_host={"executable": "Game.exe", "sha256": "3" * 64},
+            package_records=[],
+        )
+
+
+def test_runtime_catalog_resolves_asset_guid_before_stale_path_hint():
+    material_id = runtime_artifact_id(
+        "Game_Data/Content.inxpkg",
+        "Library/Artifacts/Document/material-guid.mat",
+    )
+    catalog = build_catalog(
+        [
+            {
+                "package": "Game_Data/Content.inxpkg",
+                "runtime_path": "Library/Artifacts/Document/scene-guid.scene",
+                "bytes": 2,
+                "sha256": "1" * 64,
+                "payload": json.dumps(
+                    {
+                        "$type": "asset_ref",
+                        "guid": "material-guid",
+                        "path_hint": "Assets/Materials/Old.mat",
+                    }
+                ).encode("utf-8"),
+                "asset_binding": {
+                    "source_guid": "scene-guid",
+                    "dependencies": [material_id],
+                    "source_path": "Assets/Main.scene",
+                },
+            },
+            {
+                "package": "Game_Data/Content.inxpkg",
+                "runtime_path": "Library/Artifacts/Document/material-guid.mat",
+                "bytes": 2,
+                "sha256": "2" * 64,
+                "payload": b"{}",
+                "asset_binding": {
+                    "source_guid": "material-guid",
+                    "dependencies": [],
+                    "source_path": "Assets/Materials/Current.mat",
+                },
+            },
+        ],
+        player_host={"executable": "Game.exe", "sha256": "3" * 64},
+        package_records=[],
+    )
+
+    scene = next(
+        artifact
+        for artifact in catalog["artifacts"]
+        if artifact["logical_type"] == "scene_artifact"
+    )
+    assert scene["dependencies"] == [material_id]
+    assert scene["unresolved_dependencies"] == []
+
+
+def test_runtime_catalog_rejects_ambiguous_runtime_paths_across_packages():
+    entries = [
+        {
+            "package": "Game_Data/Runtime.inxrt",
+            "runtime_path": "Library/Shared.bin",
+            "bytes": 1,
+            "sha256": "1" * 64,
+            "payload": b"a",
+        },
+        {
+            "package": "Game_Data/Content.inxpkg",
+            "runtime_path": "library/shared.bin",
+            "bytes": 1,
+            "sha256": "2" * 64,
+            "payload": b"b",
+        },
+    ]
+
+    with pytest.raises(RuntimeArtifactError, match="runtime artifact path is ambiguous"):
+        build_catalog(
+            entries,
+            player_host={"executable": "Game.exe", "sha256": "3" * 64},
+            package_records=[],
+        )
 
 
 def test_unix_ns_to_filetime_ticks_uses_windows_epoch_units():
@@ -281,7 +480,21 @@ def _valid_player(tmp_path: Path) -> Path:
         source_path = source / name.replace("/", "_")
         source_path.write_bytes(payload)
         bootstrap_sources.append((name, source_path))
-    (data / "BuildManifest.json").write_text("{}", encoding="utf-8")
+    features = RuntimeFeatureSet()
+    runtime_contract = player_runtime_contract_sections(
+        RuntimeFlavor.PLAYER_RELEASE,
+        features,
+    )
+    (data / "BuildManifest.json").write_text(
+        json.dumps(
+            {
+                "debug_build": False,
+                "runtime_contract": runtime_contract,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     (data / "Library" / "RuntimeAssetCatalog.json").parent.mkdir(parents=True)
     (source / "runtime.bin").write_bytes(b"runtime payload")
     (source / "content.bin").write_bytes(b"content payload")
@@ -294,13 +507,41 @@ def _valid_player(tmp_path: Path) -> Path:
             else f"native-{relative}".encode("ascii")
         )
         runtime_sources.append((relative, native_source))
+    for index, service in enumerate(
+        runtime_service_graph_for(RuntimeFlavor.PLAYER_RELEASE, features).services
+    ):
+        if service.module.startswith("Modules/"):
+            continue
+        service_source = source / f"service-{index}.bin"
+        service_source.write_bytes(f"service:{service.module}".encode("utf-8"))
+        runtime_sources.append((service.module, service_source))
+    type_registry = source / "runtime-type-registry.json"
+    type_registry.write_text(
+        json.dumps({"$schema": "infernux.runtime_type_registry", "types": []}),
+        encoding="utf-8",
+    )
+    asset_records = source / "runtime-asset-records.json"
+    asset_records.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.runtime_asset_records",
+                "records_version": 2,
+                "entries": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     write_pack(bootstrap_sources, data / "Bootstrap.inxrt")
     write_pack(
         runtime_sources,
         data / "Runtime.inxrt",
     )
     write_pack(
-        (("RuntimeAssets/Balance.bin", source / "content.bin"),),
+        (
+            ("RuntimeAssets/Balance.bin", source / "content.bin"),
+            ("Library/RuntimeTypeRegistry.json", type_registry),
+            ("Library/RuntimeAssetRecords.json", asset_records),
+        ),
         data / "Content.inxpkg",
     )
     _write_catalog(root)
@@ -327,15 +568,27 @@ def _write_catalog(root: Path) -> None:
             }
         )
         for entry in package_manifest["files"]:
-            package_entries.append(
-                {
-                    "package": package_relative,
-                    "runtime_path": entry["path"],
-                    "bytes": entry["raw_bytes"],
-                    "sha256": entry["sha256"],
-                    "payload": read_entry(package_path, entry["path"]),
+            record = {
+                "package": package_relative,
+                "runtime_path": entry["path"],
+                "bytes": entry["raw_bytes"],
+                "sha256": entry["sha256"],
+                "payload": read_entry(package_path, entry["path"]),
+            }
+            if str(entry["path"]).casefold().endswith(".wav"):
+                record["asset_binding"] = {
+                    "source_guid": "test-audio-guid",
+                    "source_path": entry["path"],
+                    "source_fingerprint": {
+                        "size": entry["raw_bytes"],
+                        "modified_ns": 1,
+                    },
+                    "dependencies": [],
+                    "runtime_artifact_reason": (
+                        "runtime_audio_backend_requires_encoded_stream"
+                    ),
                 }
-            )
+            package_entries.append(record)
     catalog = build_catalog(
         package_entries,
         player_host={
@@ -350,6 +603,32 @@ def _write_catalog(root: Path) -> None:
     )
 
 
+def _append_package_entries(
+    root: Path,
+    package_name: str,
+    additions: tuple[tuple[str, bytes], ...],
+) -> None:
+    data = root / "Balance_Data"
+    package = data / package_name
+    source_root = root.parent / f"{package_name}-rewrite"
+    source_root.mkdir(exist_ok=True)
+    entries = []
+    for index, record in enumerate(read_manifest(package)["files"]):
+        source = source_root / f"existing-{index}.bin"
+        source.write_bytes(read_entry(package, record["path"]))
+        entries.append((record["path"], source))
+    for index, (runtime_path, payload) in enumerate(additions):
+        extra = source_root / f"extra-{index}.bin"
+        extra.write_bytes(payload)
+        entries.append((runtime_path, extra))
+    write_pack(entries, package)
+    _write_catalog(root)
+
+
+def _append_content_entry(root: Path, runtime_path: str, payload: bytes) -> None:
+    _append_package_entries(root, "Content.inxpkg", ((runtime_path, payload),))
+
+
 def test_audit_writes_current_player_manifest(tmp_path: Path):
     root = _valid_player(tmp_path)
 
@@ -358,17 +637,84 @@ def test_audit_writes_current_player_manifest(tmp_path: Path):
     assert manifest["$schema"] == "infernux.player_runtime_manifest"
     assert manifest["product"]["single_entry_point"] is True
     declared_services = manifest["services"]["declared"]
-    assert declared_services == [
-        "player_bootstrap",
-        "engine",
-        "player_runtime_session",
-        "player_gui",
-        "game_camera",
-    ]
+    assert declared_services == list(
+        runtime_service_graph_for(RuntimeFlavor.PLAYER_RELEASE).service_ids
+    )
     assert "scene_file_manager" not in declared_services
     assert "play_mode_manager" not in declared_services
+
+
+def test_audit_rejects_runtime_contract_service_graph_drift(tmp_path: Path):
+    root = _valid_player(tmp_path)
+    build_manifest_path = root / "Balance_Data" / "BuildManifest.json"
+    build_manifest = json.loads(build_manifest_path.read_text(encoding="utf-8"))
+    build_manifest["runtime_contract"]["services"]["graph"][0]["module"] = (
+        "Infernux/engine/undo/_manager.pyc"
+    )
+    build_manifest_path.write_text(
+        json.dumps(build_manifest, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="authoritative service graph"):
+        audit_player_package(root)
+
+
+def test_audit_rejects_unknown_project_settings_document(tmp_path: Path):
+    root = _valid_player(tmp_path)
+    _append_content_entry(
+        root,
+        "ProjectSettings/FutureEditorService.json",
+        b"{}",
+    )
+
+    with pytest.raises(RuntimeError, match="unknown authoring document path"):
+        audit_player_package(root)
+
+
+def test_audit_rejects_unowned_parallel_module(tmp_path: Path):
+    root = _valid_player(tmp_path)
+    source = tmp_path / "parallel.bin"
+    source.write_bytes(b"undeclared parallel module")
+    module = root / "Balance_Data" / "Modules" / "Parallel.inxmod"
+    module.parent.mkdir(parents=True)
+    write_pack((("numba/runtime.bin", source),), module)
+
+    with pytest.raises(RuntimeError, match="Parallel.inxmod presence disagrees"):
+        audit_player_package(root)
+
+
+def test_audit_manifest_replace_failure_preserves_previous_evidence(
+    tmp_path: Path,
+    monkeypatch,
+):
+    root = _valid_player(tmp_path)
+    manifest_path = root / "Balance_Data" / "Player.inxmanifest"
+    manifest_path.write_text("previous evidence\n", encoding="utf-8")
+    native_replace = player_package_audit.os.replace
+
+    def reject_manifest_replace(source, destination):
+        if Path(destination) == manifest_path:
+            raise PermissionError("read-only audit destination")
+        return native_replace(source, destination)
+
+    monkeypatch.setattr(player_package_audit.os, "replace", reject_manifest_replace)
+
+    with pytest.raises(PermissionError, match="read-only"):
+        audit_player_package(root, write_manifest=True)
+
+    assert manifest_path.read_text(encoding="utf-8") == "previous evidence\n"
+    assert not list(manifest_path.parent.glob(".Player.inxmanifest.*.tmp"))
+
+
+def test_audit_supports_unicode_product_paths(tmp_path: Path):
+    unicode_root = tmp_path / "发布" / "最终游戏"
+    unicode_root.parent.mkdir()
+    root = _valid_player(unicode_root)
+
+    manifest = audit_player_package(root, write_manifest=True)
+
     assert manifest["audit"]["passed"] is True
-    assert (root / "Balance_Data" / "Player.inxmanifest").is_file()
 
 
 def test_audit_does_not_read_binary_entries_individually(tmp_path: Path, monkeypatch):
@@ -379,8 +725,11 @@ def test_audit_does_not_read_binary_entries_individually(tmp_path: Path, monkeyp
         source = tmp_path / f"content-binary-{index}.bin"
         source.write_bytes(f"binary-{index}".encode("ascii"))
         binary_sources.append((f"RuntimeAssets/binary/{index:03d}.bin", source))
-    write_pack(binary_sources, data / "Content.inxpkg")
-    _write_catalog(root)
+    _append_package_entries(
+        root,
+        "Content.inxpkg",
+        tuple((runtime_path, source.read_bytes()) for runtime_path, source in binary_sources),
+    )
 
     calls = []
     original_read_entry = player_package_audit.read_entry
@@ -394,7 +743,8 @@ def test_audit_does_not_read_binary_entries_individually(tmp_path: Path, monkeyp
     manifest = audit_player_package(root, write_manifest=False)
 
     assert manifest["audit"]["passed"] is True
-    assert calls == []
+    assert calls
+    assert all(not entry.startswith("RuntimeAssets/binary/") for _, entry in calls)
 
 
 def test_audit_still_reads_text_entries_for_absolute_path_checks(
@@ -487,17 +837,13 @@ def test_audit_requires_ctypes_abi_startup_closure(tmp_path: Path, required_name
 
 def test_audit_tracks_zlib_only_when_present_in_runtime_closure(tmp_path: Path):
     root = _valid_player(tmp_path)
-    data = root / "Balance_Data"
-    runtime_sources = []
-    for index, relative in enumerate(sorted(RUNTIME_REQUIRED_NATIVE_FILES)):
-        native_source = tmp_path / f"required-zlib-case-{index}.bin"
-        native_source.write_bytes(relative.encode("ascii"))
-        runtime_sources.append((relative, native_source))
     zlib_source = tmp_path / "zlib.dll"
     zlib_source.write_bytes(b"runtime zlib")
-    runtime_sources.append(("Infernux/lib/zlib.dll", zlib_source))
-    write_pack(runtime_sources, data / "Runtime.inxrt")
-    _write_catalog(root)
+    _append_package_entries(
+        root,
+        "Runtime.inxrt",
+        (("Infernux/lib/zlib.dll", zlib_source.read_bytes()),),
+    )
 
     manifest = audit_player_package(root, write_manifest=False)
 
@@ -599,7 +945,9 @@ def test_audit_rejects_tampered_runtime_catalog_package_summary(tmp_path: Path):
         audit_player_package(root, write_manifest=False)
 
 
-def test_audit_reports_residual_direct_runtime_assets(tmp_path: Path):
+def test_catalog_rejects_direct_runtime_asset_before_audit(
+    tmp_path: Path,
+):
     root = _valid_player(tmp_path)
     source = tmp_path / "sound.wav"
     source.write_bytes(b"direct audio payload")
@@ -612,13 +960,11 @@ def test_audit_reports_residual_direct_runtime_assets(tmp_path: Path):
         ),
         root / "Balance_Data" / "Content.inxpkg",
     )
-    _write_catalog(root)
-
-    manifest = audit_player_package(root, write_manifest=False)
-
-    assert manifest["audit"]["passed"] is True
-    assert len(manifest["audit"]["residual_direct_assets"]) == 1
-    assert manifest["reachability"]["residual_direct_assets"] == manifest["audit"]["residual_direct_assets"]
+    with pytest.raises(
+        RuntimeArtifactError,
+        match="direct or serialized runtime payload",
+    ):
+        _write_catalog(root)
 
 
 def test_audit_rejects_duplicate_native_payload(tmp_path: Path):
@@ -686,25 +1032,19 @@ def test_audit_allows_only_controlled_runtime_builtin_shaders(tmp_path: Path):
         source = tmp_path / f"builtin.{suffix}.bin"
         source.write_bytes(f"builtin {suffix} payload".encode("ascii"))
         sources[suffix] = source
-    required_sources = []
-    for index, relative in enumerate(sorted(RUNTIME_REQUIRED_NATIVE_FILES)):
-        native_source = tmp_path / f"required-native-{index}.bin"
-        native_source.write_bytes(relative.encode("ascii"))
-        required_sources.append((relative, native_source))
-    write_pack(
+    _append_package_entries(
+        root,
+        "Runtime.inxrt",
         (
-            *required_sources,
-            ("Infernux/resources/shaders/builtin.glsl", sources["glsl"]),
-            ("Infernux/resources/shaders/builtin.vert", sources["vert"]),
-            ("Infernux/resources/shaders/builtin.frag", sources["frag"]),
+            ("Infernux/resources/shaders/builtin.glsl", sources["glsl"].read_bytes()),
+            ("Infernux/resources/shaders/builtin.vert", sources["vert"].read_bytes()),
+            ("Infernux/resources/shaders/builtin.frag", sources["frag"].read_bytes()),
             (
                 "Infernux/resources/shaders/builtin.shadingmodel",
-                sources["shadingmodel"],
+                sources["shadingmodel"].read_bytes(),
             ),
         ),
-        root / "Balance_Data" / "Runtime.inxrt",
     )
-    _write_catalog(root)
 
     manifest = audit_player_package(root, write_manifest=False)
 
@@ -778,11 +1118,7 @@ def test_audit_allows_compiled_script_inside_content_package(tmp_path: Path):
     root = _valid_player(tmp_path)
     source = tmp_path / "compiled.pyc"
     source.write_bytes(b"compiled bytecode")
-    write_pack(
-        (("Assets/Scripts/Player.pyc", source),),
-        root / "Balance_Data" / "Content.inxpkg",
-    )
-    _write_catalog(root)
+    _append_content_entry(root, "Assets/Scripts/Player.pyc", source.read_bytes())
 
     manifest = audit_player_package(root, write_manifest=False)
 
@@ -830,12 +1166,14 @@ def test_audit_rejects_corrupted_binary_package_via_manifest_validation(
 def test_audit_rejects_unsafe_native_entry_path(tmp_path: Path):
     set_test_backend(_FakeNativeInxPack)
     root = _valid_player(tmp_path)
+    _append_content_entry(root, "RuntimeAssets/unsafe-path-probe.bin", b"probe")
     archive = root / "Balance_Data" / "Content.inxpkg"
     archive_key = _FakeNativeInxPack._key(archive)
     manifest = _FakeNativeInxPack.manifests[archive_key]
-    original_path = str(manifest["files"][0]["path"])
+    original_path = "RuntimeAssets/unsafe-path-probe.bin"
+    record = next(item for item in manifest["files"] if item["path"] == original_path)
     payload = _FakeNativeInxPack.entries.pop((archive_key, original_path))
-    manifest["files"][0]["path"] = "../escape.bin"
+    record["path"] = "../escape.bin"
     _FakeNativeInxPack.entries[(archive_key, "../escape.bin")] = payload
 
     with pytest.raises(RuntimeError, match="unsafe_entry_paths"):

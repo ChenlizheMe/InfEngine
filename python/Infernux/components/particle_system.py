@@ -44,11 +44,11 @@ from Infernux.particle import (
     pack_gpu_particle_parameters,
 )
 from Infernux.particle.data_interface import MeshResourceBinding
-from Infernux.gizmos.gizmos import ICON_KIND_PARTICLE
+from Infernux.components._gizmo_ids import ICON_KIND_PARTICLE
 from Infernux.lib import Vector3
 from .component import InxComponent
 from .decorators import add_component_menu, disallow_multiple
-from .serialized_field import get_raw_field_value, serialized_field
+from .fields import get_raw_field_value, serialized_field
 from .value_document import is_component_ref_document
 
 
@@ -375,6 +375,10 @@ class ParticleSystem(InxComponent):
         playing = bool(getattr(self, "_playing", False))
         if int(getattr(self, "_batch_id", 0)) > 0:
             return playing
+        from Infernux.application import Application
+
+        if Application.is_player():
+            return bool(get_raw_field_value(self, "play_on_awake"))
         try:
             from Infernux.engine.play_mode import PlayModeManager
 
@@ -1064,6 +1068,12 @@ class ParticleSystem(InxComponent):
         runtime = self._runtime_at(emitter_index)
         if runtime is None:
             return False
+        # A graph containing one emitter has no sibling timeline to preserve.
+        # Reset its authoritative clock together with the emitter so a burst at
+        # t=0 cannot be advanced back to the graph's old elapsed time on the
+        # next frame. This is the common pooled impact-effect path.
+        if len(getattr(self, "_gpu_controllers", ())) == 1:
+            self._graph_simulation_time_ticks = 0
         runtime.reset(playing=True)
         self._playing = True
         self._gpu_update_dirty = True
@@ -2464,6 +2474,10 @@ class ParticleSystem(InxComponent):
     @staticmethod
     def _editor_preview_controls_allowed() -> bool:
         """Keep Scene preview controls completely outside Play Mode."""
+        from Infernux.application import Application
+
+        if Application.is_player():
+            return False
         try:
             from Infernux.engine.play_mode import PlayModeManager
 
@@ -3351,6 +3365,11 @@ class ParticleSystem(InxComponent):
 
     @staticmethod
     def _native_engine():
+        from Infernux.application import Application
+
+        engine = Application._current_engine()
+        if engine is not None:
+            return engine.get_native_engine()
         try:
             from Infernux.engine.play_mode import PlayModeManager
 

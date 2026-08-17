@@ -19,21 +19,25 @@ from Infernux.engine.interaction import (
 from Infernux.input import Input, KeyCode
 from Infernux.timing import Time
 from Infernux.engine.play_mode import PlayModeManager
+from Infernux.engine.runtime_change_journal import (
+    RuntimeChangeDomain,
+    runtime_change_journal,
+)
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.project_view_settings import (
     load_project_view_settings,
     write_project_view_settings_section,
 )
 from Infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
-from Infernux.ui.ui_render_dispatch import (
-    dispatch as _ui_dispatch,
-    runtime_ui_revision as _runtime_ui_revision,
-)
+from Infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
 from Infernux.ui.ui_event_system import UIEventProcessor
-from Infernux.ui.ui_canvas_utils import collect_sorted_canvases
 from Infernux.ui.ui_button import UIButton
 from Infernux.ui.inx_ui_screen_component import clear_rect_cache
 from .game_input_policy import should_process_game_ui_events, should_route_game_input
+from .runtime_canvas_snapshot import (
+    collect_sorted_runtime_canvas_snapshot,
+    runtime_canvas_snapshot_token,
+)
 from .editor_panel import EditorPanel
 from .closable_panel import ClosablePanel
 from .panel_registry import editor_panel
@@ -94,6 +98,12 @@ class GameViewPanel(EditorPanel):
         self._last_game_width = 0
         self._last_game_height = 0
         self._game_camera_was_enabled = False
+        self._cached_game_texture_id = 0
+        self._cached_game_texture_scene = None
+        self._cached_game_camera_signature = None
+        self._cached_game_texture_render_revision = None
+        self._cached_game_texture_target_generation = -1
+        self._game_texture_refresh_required = True
 
         # Retain the active scene's screen-space canvases across GUI builds.
         # The shared collector already caches its DFS, but asking it on every
@@ -102,7 +112,7 @@ class GameViewPanel(EditorPanel):
         # or structure_version; visual field changes are handled by the UI
         # render revision and do not require rediscovering canvases.
         self._cached_ui_scene = None
-        self._cached_ui_scene_structure_version = None
+        self._cached_ui_snapshot_token = None
         self._cached_ui_canvases = ()
         self._cached_ui_sort_signature = ()
 
@@ -158,6 +168,7 @@ class GameViewPanel(EditorPanel):
     
     def set_engine(self, engine):
         self._engine = engine
+        self._invalidate_game_texture_cache()
         if self._engine:
             self._play_mode_manager = self._engine.get_play_mode_manager()
     
@@ -357,6 +368,7 @@ class GameViewPanel(EditorPanel):
         self._last_game_width = 0
         self._last_game_height = 0
         self._game_camera_was_enabled = False
+        self._invalidate_game_texture_cache()
         self._invalidate_ui_scene_cache()
 
     def on_disable(self):
@@ -393,38 +405,127 @@ class GameViewPanel(EditorPanel):
     def _invalidate_ui_scene_cache(self) -> None:
         """Drop retained scene/UI discovery state after a panel reset."""
         self._cached_ui_scene = None
-        self._cached_ui_scene_structure_version = None
+        self._cached_ui_snapshot_token = None
         self._cached_ui_canvases = ()
         self._cached_ui_sort_signature = ()
+
+    def _invalidate_game_texture_cache(self) -> None:
+        """Refresh the editor texture handle at the next visible frame."""
+        self._cached_game_texture_id = 0
+        self._cached_game_texture_scene = None
+        self._cached_game_camera_signature = None
+        self._cached_game_texture_render_revision = None
+        self._cached_game_texture_target_generation = -1
+        self._game_texture_refresh_required = True
+
+    @staticmethod
+    def _game_camera_signature(scene):
+        if scene is None:
+            return None
+        try:
+            camera = scene.main_camera
+        except (AttributeError, RuntimeError):
+            camera = None
+        if camera is None:
+            return None
+        try:
+            owner = camera.game_object
+        except (AttributeError, RuntimeError):
+            owner = None
+        return (
+            int(getattr(camera, "component_id", 0) or id(camera)),
+            bool(getattr(camera, "enabled", True)),
+            int(getattr(owner, "id", 0) or 0),
+            bool(getattr(owner, "active_in_hierarchy", True)),
+        )
+
+    @staticmethod
+    def _game_texture_render_revision() -> tuple[int, int]:
+        journal = runtime_change_journal()
+        return (
+            journal.domain_revision(RuntimeChangeDomain.RENDER_STACK),
+            journal.domain_revision(RuntimeChangeDomain.RENDER_STATE),
+        )
+
+    def _get_game_texture_id(self, scene) -> int:
+        """Return the retained ImGui handle for the current Game target.
+
+        The native getter resolves the active camera stack. Native camera
+        discovery is deliberately frame-local, so calling it from the editor
+        panel every UI frame turns a large scene into an O(object-count) panel
+        cost. The render target handle itself is stable until resize or render
+        configuration replacement, and camera availability has a cheap stable
+        signature exposed by Scene.main_camera.
+        """
+        camera_signature = self._game_camera_signature(scene)
+        render_revision = self._game_texture_render_revision()
+        generation_getter = getattr(
+            self._engine,
+            "get_game_render_target_generation",
+            None,
+        )
+        target_generation = (
+            int(generation_getter() or 0) if callable(generation_getter) else 0
+        )
+        refresh = (
+            self._game_texture_refresh_required
+            or scene is not self._cached_game_texture_scene
+            or camera_signature != self._cached_game_camera_signature
+            or render_revision != self._cached_game_texture_render_revision
+            or target_generation != self._cached_game_texture_target_generation
+        )
+        if refresh:
+            self._cached_game_texture_id = int(
+                self._engine.get_game_texture_id() or 0
+            )
+            self._cached_game_texture_scene = scene
+            self._cached_game_camera_signature = camera_signature
+            self._cached_game_texture_render_revision = render_revision
+            self._cached_game_texture_target_generation = target_generation
+            # A configured camera can precede lazy render-target readiness by
+            # one frame. Retry only that bounded startup case.
+            self._game_texture_refresh_required = (
+                self._cached_game_texture_id == 0
+                and camera_signature is not None
+            )
+        return self._cached_game_texture_id
 
     def _get_scene_and_canvases(self):
         """Return the active scene and its sorted screen-space canvases.
 
         Game View is rebuilt at the editor UI cadence, while canvas discovery
-        only changes when the active scene or its hierarchy structure changes.
+        only changes with the active scene epoch or Canvas membership revision.
         Keeping this snapshot at the panel boundary avoids repeated scene and
         canvas queries without hiding any UI updates: property changes are
         still observed by the runtime UI revision and input uses the current
         cached canvas objects.
         """
-        scene = _SM.instance().get_active_scene()
+        scene_manager = _SM.instance()
+        scene = scene_manager.get_active_scene()
+        get_persistent_scene = getattr(
+            scene_manager, "get_runtime_persistent_scene", None
+        )
+        persistent_scene = (
+            get_persistent_scene() if callable(get_persistent_scene) else None
+        )
         if scene is None:
             if self._cached_ui_scene is not None:
                 self._invalidate_ui_scene_cache()
             return None, ()
 
-        structure_version = int(getattr(scene, "structure_version", 0))
+        scene_identity = (scene, persistent_scene)
+        snapshot_token = runtime_canvas_snapshot_token(scene, persistent_scene)
         if (
-            scene is not self._cached_ui_scene
-            or structure_version != self._cached_ui_scene_structure_version
+            scene_identity != self._cached_ui_scene
+            or snapshot_token != self._cached_ui_snapshot_token
         ):
-            canvases = collect_sorted_canvases(scene, allow_stale_empty=True)
+            canvases = collect_sorted_runtime_canvas_snapshot(scene, persistent_scene)
             # Rectangles are retained by the UI components themselves.  Only
             # clear them when the scene snapshot changes; doing this every GUI
             # build defeats the cache and needlessly invalidates layout work.
-            clear_rect_cache((id(scene), structure_version))
-            self._cached_ui_scene = scene
-            self._cached_ui_scene_structure_version = structure_version
+            clear_rect_cache(snapshot_token)
+            self._cached_ui_scene = scene_identity
+            self._cached_ui_snapshot_token = snapshot_token
             # The shared collector owns initial ordering and already promises
             # a sorted result. Retain it directly instead of sorting twice.
             self._cached_ui_canvases = tuple(canvases)
@@ -433,20 +534,7 @@ class GameViewPanel(EditorPanel):
                 for canvas in self._cached_ui_canvases
             )
 
-        elif not self._cached_ui_canvases:
-            # A Python canvas can appear after the scene has been loaded while
-            # structure_version is unchanged.  The shared collector's
-            # allow_stale_empty path performs an exponentially backed-off
-            # retry, so this is cheap on ordinary frames and still discovers
-            # late registrations instead of retaining an empty result forever.
-            canvases = collect_sorted_canvases(scene, allow_stale_empty=True)
-            if canvases:
-                self._cached_ui_canvases = tuple(canvases)
-                self._cached_ui_sort_signature = tuple(
-                    _canvas_sort_order(canvas)
-                    for canvas in self._cached_ui_canvases
-                )
-        else:
+        elif self._cached_ui_canvases:
             # Canvas.sort_order is a visual ordering property, not a scene
             # structure mutation.  Re-read only the existing bounded list and
             # re-sort locally when it changes; no hierarchy traversal is
@@ -689,15 +777,16 @@ class GameViewPanel(EditorPanel):
         draw_h = float(target_h) * self._display_scale
 
         if target_w != self._last_game_width or target_h != self._last_game_height:
+            self._game_texture_refresh_required = True
             self._engine.resize_game_render_target(target_w, target_h)
             self._last_game_width = target_w
             self._last_game_height = target_h
 
-        game_texture_id = self._engine.get_game_texture_id()
-
         # Pre-fetch scene + canvases once (used by both render and events).
-        # This snapshot is retained until the scene hierarchy changes.
+        # Canvas membership has its own revision and is unrelated to ordinary
+        # 3D scene topology changes.
         _scene, _canvases = self._get_scene_and_canvases()
+        game_texture_id = self._get_game_texture_id(_scene)
 
         viewport_hovered = False
         viewport_clicked = False
@@ -777,25 +866,13 @@ class GameViewPanel(EditorPanel):
                           clip_min_x: float = 0.0, clip_min_y: float = 0.0,
                           clip_max_x: float = 1e9, clip_max_y: float = 1e9,
                           scene=None, canvases=None):
-        """Push screen-space UI commands to the GPU ScreenUI renderer.
+        """Present UI semantics and the disabled-renderer fallback.
 
-        Commands are accumulated during BuildFrame and rendered inside the
-        scene render graph as proper Vulkan passes:
-        - CameraOverlay elements go to the Camera list (before post-process)
-        - ScreenOverlay elements go to the Overlay list (after post-process)
-
-        When the renderer is disabled (e.g. UI editor using the game texture
-        as a clean background), falls back to ImGui overlay drawing so the
-        Game panel still shows canvas UI on top of the game image.
+        GPU ScreenUI command submission is owned by
+        :class:`RuntimeScreenUISubmission` at camera render submission.
+        This panel only maps the resulting game image to editor interaction.
         """
-        from Infernux.lib import ScreenUIList
-        from Infernux.ui.enums import RenderMode
-
-        if not self._engine:
-            return
-
-        renderer = self._engine.get_screen_ui_renderer()
-        if renderer is None or scene is None:
+        if not self._engine or scene is None:
             return
 
         game_w = self._last_game_width
@@ -803,49 +880,42 @@ class GameViewPanel(EditorPanel):
         if game_w < 1 or game_h < 1:
             return
 
-        use_overlay = not renderer.is_enabled()
-
         if canvases is None:
-            canvases = collect_sorted_canvases(scene)
-
-        texture_cache = _get_tex_cache()
-        semantic_capture_enabled = bool(getattr(ctx, "semantic_capture_enabled", False))
-        reused_commands = False
-        if use_overlay or texture_cache.has_pending:
-            renderer.begin_frame(game_w, game_h)
-        else:
-            revision = _runtime_ui_revision(
-                scene, canvases, game_w, game_h, texture_cache.generation,
+            scene_manager = _SM.instance()
+            get_persistent_scene = getattr(
+                scene_manager, "get_runtime_persistent_scene", None
             )
-            reused_commands = bool(renderer.begin_frame_cached(game_w, game_h, revision))
-
-        if not canvases or (reused_commands and not semantic_capture_enabled):
+            canvases = collect_sorted_runtime_canvas_snapshot(
+                scene,
+                get_persistent_scene() if callable(get_persistent_scene) else None,
+            )
+        if not canvases:
             return
 
-        _get_tid = texture_cache.get_bound(self._engine)
+        renderer = self._engine.get_screen_ui_renderer()
+        use_overlay = renderer is not None and not renderer.is_enabled()
+        get_texture_id = None
+        if use_overlay:
+            get_texture_id = _get_tex_cache().get_bound(self._engine)
 
         for canvas in canvases:
             self._render_canvas_screen_ui(
-                ctx, canvas, renderer, use_overlay, _get_tid,
+                ctx, canvas, use_overlay, get_texture_id,
                 game_w, game_h, vp_x, vp_y, vp_w, vp_h,
-                ScreenUIList, RenderMode, reused_commands)
+            )
 
-    def _render_canvas_screen_ui(self, ctx, canvas, renderer, use_overlay,
-                                 _get_tid, game_w, game_h,
-                                  vp_x, vp_y, vp_w, vp_h,
-                                  ScreenUIList, RenderMode, reused_commands=False):
-        """Render all elements of one canvas to the screen UI renderer."""
+    def _render_canvas_screen_ui(self, ctx, canvas, use_overlay,
+                                 get_texture_id, game_w, game_h,
+                                 vp_x, vp_y, vp_w, vp_h):
+        """Present one canvas without mutating native ScreenUI commands."""
+        from Infernux.ui.enums import RenderMode
+
         canvas_go = canvas.game_object
         if canvas_go is not None and not canvas_go.active_in_hierarchy:
             return
         if not getattr(canvas, 'enabled', True):
             return
-
-        if canvas.render_mode == RenderMode.CameraOverlay:
-            ui_list = ScreenUIList.Camera
-        elif canvas.render_mode == RenderMode.ScreenOverlay:
-            ui_list = ScreenUIList.Overlay
-        else:
+        if canvas.render_mode not in (RenderMode.CameraOverlay, RenderMode.ScreenOverlay):
             return
 
         ref_w = float(canvas.reference_width)
@@ -853,7 +923,7 @@ class GameViewPanel(EditorPanel):
         if ref_w < 1 or ref_h < 1:
             return
 
-        scale_x, scale_y, text_scale = canvas.compute_scale(float(game_w), float(game_h))
+        scale_x, scale_y, _ = canvas.compute_scale(float(game_w), float(game_h))
         offset_x = (float(game_w) - ref_w * scale_x) * 0.5
         offset_y = (float(game_h) - ref_h * scale_y) * 0.5
         semantic_capture_enabled = bool(getattr(ctx, "semantic_capture_enabled", False))
@@ -888,23 +958,7 @@ class GameViewPanel(EditorPanel):
                     base_sw=ew * ovl_scale_x,
                     base_sh=eh * ovl_scale_y,
                     zoom=min(ovl_scale_x, ovl_scale_y),
-                    get_tex_id=_get_tid,
-                )
-            else:
-                if reused_commands:
-                    continue
-                _ui_dispatch(
-                    elem, "runtime",
-                    renderer=renderer,
-                    ui_list=ui_list,
-                    sx=offset_x + ex * scale_x,
-                    sy=offset_y + ey * scale_y,
-                    sw=ew * scale_x,
-                    sh=eh * scale_y,
-                    ref_w=ref_w, ref_h=ref_h,
-                    scale_x=scale_x, scale_y=scale_y,
-                    text_scale=text_scale,
-                    get_tex_id=_get_tid,
+                    get_tex_id=get_texture_id,
                 )
 
     def _record_game_ui_button_semantic(self, ctx, elem, x, y, width, height):
@@ -939,10 +993,17 @@ class GameViewPanel(EditorPanel):
         """Convert Input mouse state to per-canvas pointer events."""
         if canvases is None:
             from Infernux.lib import SceneManager
-            scene = SceneManager.instance().get_active_scene()
+            scene_manager = SceneManager.instance()
+            scene = scene_manager.get_active_scene()
             if scene is None:
                 return
-            canvases = collect_sorted_canvases(scene, allow_stale_empty=True)
+            get_persistent_scene = getattr(
+                scene_manager, "get_runtime_persistent_scene", None
+            )
+            canvases = collect_sorted_runtime_canvas_snapshot(
+                scene,
+                get_persistent_scene() if callable(get_persistent_scene) else None,
+            )
         if not canvases:
             return
 

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from Infernux.core.asset_types import SpriteFrame, TextureImportSettings, TextureType
 from Infernux.engine.interaction import AuthoringMutationService, DocumentRegistry
+from Infernux.engine.interaction import EditorInteractionCore
+from Infernux.engine.interaction.modals import ModalService
 from Infernux.engine.undo import UndoManager
 from Infernux.engine.ui import asset_details_renderer as details
+from Infernux.engine.ui.asset_import_progress import AssetImportProgressService
 
 
 class _ExecutionLayer:
@@ -19,12 +22,25 @@ class _ExecutionLayer:
         return True
 
 
-def test_import_settings_are_document_backed_and_undoable():
+def test_import_settings_are_document_backed_and_undoable(monkeypatch):
     previous_registry = DocumentRegistry._instance
     previous_manager = UndoManager._instance
     previous_mutations = AuthoringMutationService._instance
+    previous_core = EditorInteractionCore._instance
+    previous_progress = AssetImportProgressService._instance
     registry = DocumentRegistry()
     manager = UndoManager()
+    core = type("_TestInteractionCore", (), {"modals": ModalService()})()
+    EditorInteractionCore._instance = core
+    AssetImportProgressService._instance = None
+    monkeypatch.setattr(
+        "Infernux.core.assets.AssetManager.flush_pending_gpu_texture_reloads",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "Infernux.engine.ui.asset_resource_preview.ensure_imported_texture_preview",
+        lambda _path: True,
+    )
     try:
         details._ensure_categories()
         state = details._State()
@@ -62,7 +78,26 @@ def test_import_settings_are_document_backed_and_undoable():
 
         result = registry.request_save(state.document_id)
         assert result.accepted
+        progress = AssetImportProgressService.instance()
+        assert progress._transaction is not None
+        progress.post_present_tick()
+        assert not state.exec_layer.applied
+
+        progress._transaction.presented_phase = "opening"
+        progress.post_present_tick()
+        assert progress._transaction.phase == "importing"
+        assert not state.exec_layer.applied
+
+        progress.post_present_tick()
+        assert not state.exec_layer.applied
+        progress._transaction.presented_phase = "importing"
+        progress.post_present_tick()
         assert state.exec_layer.applied[-1].srgb is False
+        assert progress._transaction.phase == "complete"
+        assert registry.require(state.document_id).is_dirty
+
+        progress._transaction.presented_phase = "complete"
+        progress.post_present_tick()
         assert not registry.require(state.document_id).is_dirty
 
         manager.undo()
@@ -77,6 +112,8 @@ def test_import_settings_are_document_backed_and_undoable():
         DocumentRegistry._instance = previous_registry
         UndoManager._instance = previous_manager
         AuthoringMutationService._instance = previous_mutations
+        EditorInteractionCore._instance = previous_core
+        AssetImportProgressService._instance = previous_progress
 
 
 def test_import_settings_edit_fails_closed_without_a_document():

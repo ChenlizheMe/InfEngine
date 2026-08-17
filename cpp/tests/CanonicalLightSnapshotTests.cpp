@@ -51,6 +51,7 @@ struct FakeDevice final : infernux::rhi::Device
     uint32_t next = 1;
     uint32_t releasedBuffers = 0;
     uint32_t releasedGroups = 0;
+    uint32_t bufferWrites = 0;
 
     infernux::rhi::BufferHandle CreateBuffer(const infernux::rhi::BufferDesc &desc) override
     {
@@ -95,6 +96,7 @@ struct FakeDevice final : infernux::rhi::Device
     }
     bool WriteBuffer(infernux::rhi::BufferHandle, uint64_t, const void *, uint64_t) override
     {
+        ++bufferWrites;
         return true;
     }
     void Release(infernux::rhi::BufferHandle handle) noexcept override
@@ -371,8 +373,23 @@ int main()
     std::memcpy(&packedDirectional, upload.bytes.data() + sizeof(CanonicalLightGpuHeader), sizeof(CanonicalLightData));
     assert(packedDirectional.metadata.w == (CanonicalLightAffectsGeometry | CanonicalLightAffectsParticles));
 
-    snapshot.Clear(42);
-    assert(snapshot.generation == 42);
+    {
+        FakeDevice uploadDevice;
+        infernux::lighting::CanonicalLightGpuBuffer gpuLights;
+        assert(gpuLights.Initialize(uploadDevice, 2));
+        assert(uploadDevice.bufferWrites == 2);
+        assert(gpuLights.Update(0, snapshot));
+        assert(uploadDevice.bufferWrites == 3);
+        assert(gpuLights.Update(0, snapshot));
+        assert(uploadDevice.bufferWrites == 3);
+        snapshot.generation = 42;
+        assert(gpuLights.Update(0, snapshot));
+        assert(uploadDevice.bufferWrites == 4);
+        gpuLights.Shutdown();
+    }
+
+    snapshot.Clear(43);
+    assert(snapshot.generation == 43);
     assert(snapshot.Size() == 0);
     assert(snapshot.directionalLights.capacity() >= 1);
     assert(snapshot.localLights.capacity() >= 1000);

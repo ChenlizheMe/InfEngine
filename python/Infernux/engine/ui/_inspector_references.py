@@ -19,9 +19,9 @@ from ._inspector_undo import (
 def _tooltip_and_info(ctx, metadata):
     """Show tooltip on hover and info text below the field if available."""
     if metadata.tooltip and ctx.is_item_hovered():
-        ctx.set_tooltip(metadata.tooltip)
+        ctx.set_tooltip(t(metadata.tooltip))
     if metadata.info_text:
-        render_info_text(ctx, metadata.info_text)
+        render_info_text(ctx, t(metadata.info_text))
 
 
 # ── GUID / path resolution ──
@@ -148,7 +148,7 @@ def _resolve_guid_and_path(payload):
 
 
 def _create_reference_value_from_payload(element_type, payload, required_component: str = None, metadata=None):
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     if element_type == FieldType.GAME_OBJECT:
         # String payload = prefab drag (GUID or file path)
@@ -247,7 +247,7 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
 
 
 def _get_reference_display_name(element_type, value) -> str:
-    from Infernux.components.serialized_field import FieldType
+    from Infernux.components.fields import FieldType
 
     if value is None:
         return "None"
@@ -290,7 +290,7 @@ def _render_serializable_object_field(
 ):
     """Render a SerializableObject field as an inline collapsible section."""
     import copy as _copy
-    from Infernux.components.serialized_field import get_serialized_fields, FieldType
+    from Infernux.components.fields import get_serialized_fields, FieldType
 
     so_class = type(current_value) if current_value is not None else getattr(metadata, 'serializable_class', None)
     if so_class is None:
@@ -335,7 +335,7 @@ def _render_nested_so(
 ):
     """Render a nested SerializableObject sub-field and collect changes."""
     import copy as _copy
-    from Infernux.components.serialized_field import get_serialized_fields, FieldType
+    from Infernux.components.fields import get_serialized_fields, FieldType
 
     so_class = type(so_val) if so_val is not None else getattr(so_meta, 'serializable_class', None)
     if so_class is None:
@@ -382,7 +382,7 @@ def _get_asset_ref_config():
     """
     global _ASSET_REF_CONFIG
     if _ASSET_REF_CONFIG is None:
-        from Infernux.components.serialized_field import FieldType
+        from Infernux.components.fields import FieldType
         from Infernux.core.asset_reference_types import asset_type_registry
 
         material = asset_type_registry.require("Material")
@@ -455,7 +455,7 @@ def _render_asset_reference_field(
     *, builtin_attr=None,
 ):
     """Render a MATERIAL / TEXTURE / SHADER / ASSET reference field."""
-    from Infernux.components.serialized_field import FieldType as _FT
+    from Infernux.components.fields import FieldType as _FT
 
     # For ASSET fields, resolve config from registry using metadata.asset_type
     if field_type == _FT.ASSET:
@@ -535,7 +535,7 @@ def _render_asset_reference_field(
 def _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw):
     """Render a FieldType.COMPONENT reference field."""
     from Infernux.components.ref_wrappers import ComponentRef
-    from Infernux.components.serialized_field import get_raw_field_value, FieldType
+    from Infernux.components.fields import get_raw_field_value, FieldType
     _comp_ref = get_raw_field_value(py_comp, field_name)
     if not isinstance(_comp_ref, ComponentRef):
         _comp_ref = ComponentRef()
@@ -634,9 +634,9 @@ def _apply_reference_drop(field_type, comp, field_name: str, payload, required_c
         ref = _create_reference_value_from_payload(field_type, payload, required_component)
         if ref is None:
             return
-        from Infernux.components.serialized_field import FieldType
+        from Infernux.components.fields import FieldType
         if field_type == FieldType.COMPONENT:
-            from Infernux.components.serialized_field import get_raw_field_value
+            from Infernux.components.fields import get_raw_field_value
             old_val = get_raw_field_value(comp, field_name)
         else:
             old_val = getattr(comp, field_name, None)
@@ -659,7 +659,7 @@ def _apply_gameobject_or_prefab_drop(comp, field_name: str, payload, required_co
             from Infernux.debug import Debug
             Debug.log_error(f"Prefab drop failed: {e}")
     else:
-        from Infernux.components.serialized_field import FieldType
+        from Infernux.components.fields import FieldType
         _apply_reference_drop(FieldType.GAME_OBJECT, comp, field_name, payload, required_component)
 
 

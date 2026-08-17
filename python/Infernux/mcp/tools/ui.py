@@ -139,14 +139,21 @@ def register_ui_tools(mcp) -> None:
 
         def _inspect():
             from Infernux.lib import SceneManager
-            scene = SceneManager.instance().get_active_scene()
+            scene_manager = SceneManager.instance()
+            scene = scene_manager.get_active_scene()
             if not scene:
                 raise RuntimeError("No active scene.")
             elements = []
-            for obj in scene.get_all_objects() or []:
-                comp = _find_ui_component(obj)
-                if comp is not None:
-                    elements.append(_ui_snapshot(obj, comp))
+            for runtime_scene in (
+                scene,
+                scene_manager.get_runtime_persistent_scene(),
+            ):
+                if runtime_scene is None:
+                    continue
+                for obj in runtime_scene.get_all_objects() or []:
+                    comp = _find_ui_component(obj)
+                    if comp is not None:
+                        elements.append(_ui_snapshot(obj, comp))
             return {"elements": elements}
 
         return main_thread("ui_inspect", _inspect)
@@ -157,18 +164,25 @@ def register_ui_tools(mcp) -> None:
 
         def _find():
             from Infernux.lib import SceneManager
-            scene = SceneManager.instance().get_active_scene()
+            scene_manager = SceneManager.instance()
+            scene = scene_manager.get_active_scene()
             if not scene:
                 raise RuntimeError("No active scene.")
             needle = str(text).lower()
             matches = []
-            for obj in scene.get_all_objects() or []:
-                comp = _find_named_component(obj, {"UIText", "UIButton"})
-                if comp is None:
+            for runtime_scene in (
+                scene,
+                scene_manager.get_runtime_persistent_scene(),
+            ):
+                if runtime_scene is None:
                     continue
-                visible = str(getattr(comp, "label", getattr(comp, "text", "")))
-                if needle in visible.lower():
-                    matches.append(_ui_snapshot(obj, comp))
+                for obj in runtime_scene.get_all_objects() or []:
+                    comp = _find_named_component(obj, {"UIText", "UIButton"})
+                    if comp is None:
+                        continue
+                    visible = str(getattr(comp, "label", getattr(comp, "text", "")))
+                    if needle in visible.lower():
+                        matches.append(_ui_snapshot(obj, comp))
             return {"matches": matches}
 
         return main_thread("ui_find_by_text", _find)

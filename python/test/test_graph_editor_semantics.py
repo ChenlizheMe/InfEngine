@@ -339,6 +339,10 @@ class _TransitionDetailContext:
         return value
 
     @staticmethod
+    def checkbox(_label, value):
+        return value
+
+    @staticmethod
     def combo(_label, index, *_args):
         return index
 
@@ -440,7 +444,7 @@ def test_animfsm_toolbar_exposes_stable_semantic_ids():
     assert by_id["animfsm.toolbar.name"][6] == "Locomotion"
     assert by_id["animfsm.toolbar.mode"][6] == "3d"
     assert by_id["animfsm.document.path"][6] == "Assets/Locomotion.animfsm"
-    assert by_id["animfsm.document.dirty"][4] is True
+    assert by_id["animfsm.document.dirty"][4] is False
 
 
 def test_animfsm_parameter_add_exposes_stable_semantic_id():
@@ -625,6 +629,18 @@ def test_node_graph_inline_enum_records_combo_semantics():
             pass
 
         @staticmethod
+        def set_window_font_scale(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def push_style_color(*_args) -> None:
+            pass
+
+        @staticmethod
+        def pop_style_color(_count: int = 1) -> None:
+            pass
+
+        @staticmethod
         def combo(_label: str, index: int, _items: list[str], _count: int) -> int:
             return index
 
@@ -638,6 +654,22 @@ def test_node_graph_inline_enum_records_combo_semantics():
 
         def record_semantic_item(self, *args, **kwargs) -> None:
             self.semantic_items.append((args, kwargs))
+
+        @staticmethod
+        def draw_text_aligned(*_args) -> None:
+            pass
+
+        @staticmethod
+        def draw_filled_rect(*_args) -> None:
+            pass
+
+        @staticmethod
+        def get_mouse_pos_x() -> float:
+            return -1.0
+
+        @staticmethod
+        def get_mouse_pos_y() -> float:
+            return -1.0
 
     node = SimpleNamespace(uid="sprite", data={"alignment": "camera_plane"})
     layout = SimpleNamespace(node=node, sx=0.0, w=200.0)
@@ -696,6 +728,18 @@ def test_node_graph_inline_scalar_tolerates_stale_vector_without_mutating_docume
         def set_next_item_width(_value: float) -> None:
             pass
 
+        @staticmethod
+        def set_window_font_scale(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def push_style_color(*_args) -> None:
+            pass
+
+        @staticmethod
+        def pop_style_color(_count: int = 1) -> None:
+            pass
+
         def drag_float(self, _label: str, value: float, *_args) -> float:
             self.received = value
             return value
@@ -710,6 +754,22 @@ def test_node_graph_inline_scalar_tolerates_stale_vector_without_mutating_docume
 
         def record_semantic_item(self, *args, **kwargs) -> None:
             self.semantic_items.append((args, kwargs))
+
+        @staticmethod
+        def draw_text_aligned(*_args) -> None:
+            pass
+
+        @staticmethod
+        def draw_filled_rect(*_args) -> None:
+            pass
+
+        @staticmethod
+        def get_mouse_pos_x() -> float:
+            return -1.0
+
+        @staticmethod
+        def get_mouse_pos_y() -> float:
+            return -1.0
 
     original = [2.5, 4.0, 8.0]
     node = SimpleNamespace(uid="dynamic", data={"value": list(original)})
@@ -770,6 +830,18 @@ def test_node_graph_inline_u32_accepts_full_unsigned_range():
         def set_next_item_width(_value: float) -> None:
             pass
 
+        @staticmethod
+        def set_window_font_scale(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def push_style_color(*_args) -> None:
+            pass
+
+        @staticmethod
+        def pop_style_color(_count: int = 1) -> None:
+            pass
+
         def input_uint(self, _label: str, value: int) -> int:
             self.received = value
             return value
@@ -785,6 +857,22 @@ def test_node_graph_inline_u32_accepts_full_unsigned_range():
         @staticmethod
         def record_semantic_item(*_args, **_kwargs) -> None:
             pass
+
+        @staticmethod
+        def draw_text_aligned(*_args) -> None:
+            pass
+
+        @staticmethod
+        def draw_filled_rect(*_args) -> None:
+            pass
+
+        @staticmethod
+        def get_mouse_pos_x() -> float:
+            return -1.0
+
+        @staticmethod
+        def get_mouse_pos_y() -> float:
+            return -1.0
 
     node = SimpleNamespace(uid="collision", data={"layer_mask": 0xFFFFFFFF})
     layout = SimpleNamespace(node=node, sx=0.0, w=200.0)
@@ -825,6 +913,7 @@ def test_particle_sprite_canvas_preserves_enum_and_conditional_field_metadata():
 
 
 def test_animfsm_dirty_mode_switch_uses_global_document_replacement(monkeypatch):
+    from Infernux.engine.interaction import DocumentRegistry
     from Infernux.engine.ui.dirty_panel_confirmation import (
         DirtyPanelConfirmationCoordinator,
     )
@@ -855,6 +944,10 @@ def test_animfsm_dirty_mode_switch_uses_global_document_replacement(monkeypatch)
     )
     panel = AnimFSMEditorPanel()
     original = panel._fsm
+    DocumentRegistry.instance().mark_changed(
+        panel.document_id,
+        view_id=panel.window_id,
+    )
 
     assert panel.command_switch_mode("3d")
 
@@ -1175,7 +1268,7 @@ def test_node_graph_drop_on_occupied_input_requests_atomic_replacement():
     assert replaced == [(original.uid, second.uid, "out", target.uid, "in")]
 
 
-def test_node_graph_cancelled_reconnect_preserves_original_link():
+def test_node_graph_reconnect_released_on_empty_requests_disconnect():
     from Infernux.core.node_graph import NodeGraph
     from Infernux.core.node_graph import NodeTypeDef, PinDef, PinKind
 
@@ -1212,7 +1305,7 @@ def test_node_graph_cancelled_reconnect_preserves_original_link():
     view._try_complete_link(100.0, 100.0)
 
     assert graph.find_link(original.uid) is original
-    assert deleted == []
+    assert deleted == [original.uid]
     assert replaced == []
 
 
@@ -1483,9 +1576,14 @@ def test_animfsm_new_document_and_dirty_draft_round_trip_through_registry_sessio
     from Infernux.engine.interaction import DocumentRegistry
 
     panel = AnimFSMEditorPanel()
-    assert panel._document_is_dirty() is True
+    assert panel._document_is_dirty() is False
     panel._fsm.name = "Recovered FSM"
     panel._fsm.parameters.append(AnimParameter(name="speed"))
+    DocumentRegistry.instance().mark_changed(
+        panel.document_id,
+        view_id=panel.window_id,
+    )
+    assert panel._document_is_dirty() is True
     view_state = panel.save_state()
     session_state = DocumentRegistry.instance().capture_session_state()
 
@@ -1501,9 +1599,15 @@ def test_animfsm_new_document_and_dirty_draft_round_trip_through_registry_sessio
 
 
 def test_animfsm_entering_play_does_not_implicitly_save_dirty_draft(monkeypatch):
+    from Infernux.engine.interaction import DocumentRegistry
+
     panel = AnimFSMEditorPanel()
     save_calls = []
     monkeypatch.setattr(panel, "_do_save", lambda: save_calls.append(True))
+    DocumentRegistry.instance().mark_changed(
+        panel.document_id,
+        view_id=panel.window_id,
+    )
 
     panel._on_play_mode_changed(SimpleNamespace(new_state="playing"))
 

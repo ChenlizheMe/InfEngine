@@ -17,15 +17,8 @@ from typing import Dict, List, Optional
 from Infernux.lib import InxGUIRenderable, InxGUIContext
 from Infernux.input import Input, KeyCode
 from Infernux.engine.ui.viewport_utils import capture_viewport_info
-from Infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
-from Infernux.ui.ui_render_dispatch import (
-    dispatch as _ui_dispatch,
-    runtime_ui_revision as _runtime_ui_revision,
-)
 from Infernux.ui.ui_event_system import UIEventProcessor
-from Infernux.ui.ui_canvas_utils import collect_sorted_canvases
-from Infernux.ui.inx_ui_screen_component import clear_rect_cache
-from Infernux.engine.player_control import PlayerControlChannel
+from Infernux.ui.ui_canvas_utils import collect_sorted_runtime_canvases
 
 
 class PlayerGUI(InxGUIRenderable):
@@ -33,14 +26,15 @@ class PlayerGUI(InxGUIRenderable):
 
     def __init__(self, engine, *,
                  splash_items: Optional[List[Dict]] = None,
-                 data_root: str = ""):
+                 data_root: str = "",
+                 control_channel=None):
         super().__init__()
         self._engine = engine
         self._last_w = 0
         self._last_h = 0
         self._ui_event_processor = UIEventProcessor()
         self._last_frame_time = time.time()
-        self._control = PlayerControlChannel.from_environment()
+        self._control = control_channel
 
         # Splash
         self._splash = None
@@ -111,7 +105,10 @@ class PlayerGUI(InxGUIRenderable):
         Input.set_game_focused(True)
 
         if self._engine:
-            if self._control.poll(self._engine) == "shutdown":
+            if (
+                self._control is not None
+                and self._control.poll(self._engine) == "shutdown"
+            ):
                 self._engine.request_exit()
                 return
 
@@ -140,10 +137,6 @@ class PlayerGUI(InxGUIRenderable):
         vp = capture_viewport_info(ctx)
         Input.set_game_viewport_origin(vp.image_min_x, vp.image_min_y)
 
-        # Screen-space UI overlay
-        self._render_screen_ui(ctx, vp.image_min_x, vp.image_min_y,
-                               float(target_w), float(target_h))
-
         # Input: always game-focused in player mode.
         # Cursor lock is script-driven (Input.set_cursor_locked).
         game_hovered = ctx.is_window_hovered()
@@ -161,102 +154,6 @@ class PlayerGUI(InxGUIRenderable):
         else:
             self._ui_event_processor.reset()
 
-    # ------------------------------------------------------------------
-    # Screen-space UI (same as GameViewPanel but simplified)
-    # ------------------------------------------------------------------
-
-    def _render_screen_ui(self, ctx: InxGUIContext, vp_x: float, vp_y: float,
-                          vp_w: float, vp_h: float):
-        from Infernux.lib import SceneManager, ScreenUIList
-        from Infernux.ui.enums import RenderMode
-
-        if not self._engine:
-            return
-
-        renderer = self._engine.get_screen_ui_renderer()
-        if renderer is None:
-            return
-
-        scene = SceneManager.instance().get_active_scene()
-        if scene is None:
-            return
-
-        game_w = self._last_w
-        game_h = self._last_h
-        if game_w < 1 or game_h < 1:
-            return
-
-        canvases = collect_sorted_canvases(scene, allow_stale_empty=True)
-        if canvases:
-            clear_rect_cache((id(scene), int(scene.structure_version)))
-
-        use_overlay = not renderer.is_enabled()
-        texture_cache = _get_tex_cache()
-        if use_overlay or texture_cache.has_pending:
-            renderer.begin_frame(game_w, game_h)
-        else:
-            revision = _runtime_ui_revision(
-                scene, canvases, game_w, game_h, texture_cache.generation,
-            )
-            if renderer.begin_frame_cached(game_w, game_h, revision):
-                return
-        if not canvases:
-            return
-
-        for canvas in canvases:
-            if canvas.render_mode == RenderMode.CameraOverlay:
-                ui_list = ScreenUIList.Camera
-            elif canvas.render_mode == RenderMode.ScreenOverlay:
-                ui_list = ScreenUIList.Overlay
-            else:
-                continue
-
-            ref_w = float(canvas.reference_width)
-            ref_h = float(canvas.reference_height)
-            if ref_w < 1 or ref_h < 1:
-                continue
-
-            scale_x = float(game_w) / ref_w
-            scale_y = float(game_h) / ref_h
-
-            _get_tid = texture_cache.get_bound(self._engine)
-
-            for elem in canvas._get_elements():
-                ex, ey, ew, eh = elem.get_rect(ref_w, ref_h)
-
-                if use_overlay:
-                    ovl_scale_x = vp_w / ref_w
-                    ovl_scale_y = vp_h / ref_h
-                    base_sx = vp_x + ex * ovl_scale_x
-                    base_sy = vp_y + ey * ovl_scale_y
-                    base_sw = ew * ovl_scale_x
-                    base_sh = eh * ovl_scale_y
-                    ovl_zoom = min(ovl_scale_x, ovl_scale_y)
-                    _ui_dispatch(
-                        elem, "editor",
-                        ctx=ctx,
-                        base_sx=base_sx, base_sy=base_sy,
-                        base_sw=base_sw, base_sh=base_sh,
-                        zoom=ovl_zoom,
-                        get_tex_id=_get_tid,
-                    )
-                else:
-                    sx = ex * scale_x
-                    sy = ey * scale_y
-                    sw = ew * scale_x
-                    sh = eh * scale_y
-                    text_scale = min(scale_x, scale_y)
-                    _ui_dispatch(
-                        elem, "runtime",
-                        renderer=renderer,
-                        ui_list=ui_list,
-                        sx=sx, sy=sy, sw=sw, sh=sh,
-                        ref_w=ref_w, ref_h=ref_h,
-                        scale_x=scale_x, scale_y=scale_y,
-                        text_scale=text_scale,
-                        get_tex_id=_get_tid,
-                    )
-
     def _process_ui_events(self, game_w: int, game_h: int):
         """Convert Input mouse state to per-canvas pointer events."""
         from Infernux.lib import SceneManager
@@ -265,7 +162,10 @@ class PlayerGUI(InxGUIRenderable):
         if scene is None:
             return
 
-        canvases = collect_sorted_canvases(scene, allow_stale_empty=True)
+        persistent_scene = SceneManager.instance().get_runtime_persistent_scene()
+        canvases = collect_sorted_runtime_canvases(
+            scene, persistent_scene, allow_stale_empty=True
+        )
         if not canvases:
             self._ui_event_processor.reset()
             return

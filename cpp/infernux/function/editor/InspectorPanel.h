@@ -79,6 +79,17 @@ class InspectorPanel : public EditorPanel
     std::function<std::vector<uint64_t>()> getSelectedIds;
     std::function<uint64_t()> getValueGeneration;
 
+    struct RevisionSnapshot
+    {
+        uint64_t target = 0;
+        uint64_t schema = 0;
+        uint64_t value = 0;
+        uint64_t preview = 0;
+    };
+    /// One immutable revision packet is captured at the start of a visible
+    /// Inspector frame. The fallback generation remains for older hosts.
+    std::function<RevisionSnapshot()> getRevisionSnapshot;
+
     // ── Object info callbacks ────────────────────────────────────────
 
     /// Returns (name, active, tag, layer, prefabGuid, hideTransform)
@@ -229,9 +240,17 @@ class InspectorPanel : public EditorPanel
     uint64_t m_cachedComponentListObjId = 0;
     std::vector<ComponentInfo> m_cachedComponents;
     std::unordered_map<uint64_t, float> m_cachedComponentBodyHeights;
-    uint64_t m_cachedValueGeneration = 0;
-    float m_cachedValueRefreshTime = 0.0f;
-    static constexpr float VALUE_CACHE_TTL = 0.20f;
+    RevisionSnapshot m_frameRevisions;
+    bool m_revisionSnapshotErrorReported = false;
+    uint64_t m_cachedObjectTargetRevision = 0;
+    uint64_t m_cachedObjectValueRevision = 0;
+    uint64_t m_cachedComponentTargetRevision = 0;
+    uint64_t m_cachedComponentSchemaRevision = 0;
+    uint64_t m_cachedTransformObjId = 0;
+    uint64_t m_cachedTransformValueRevision = 0;
+    TransformData m_cachedTransformData;
+    std::array<std::string, 3> m_transformGestureIds;
+    uint64_t m_transformGestureSerial = 0;
 
     struct CommonComponent
     {
@@ -249,14 +268,14 @@ class InspectorPanel : public EditorPanel
     bool m_cachedMultiComponentsValid = false;
     std::vector<uint64_t> m_cachedMultiComponentIds;
     std::vector<CommonComponent> m_cachedMultiCommonComponents;
-    uint64_t m_cachedMultiComponentValueGeneration = 0;
-    float m_cachedMultiComponentRefreshTime = 0.0f;
+    uint64_t m_cachedMultiComponentTargetRevision = 0;
+    uint64_t m_cachedMultiComponentSchemaRevision = 0;
 
     bool m_cachedMultiTransformValid = false;
     std::vector<uint64_t> m_cachedMultiTransformIds;
     MultiTransformSnapshot m_cachedMultiTransformSnapshot;
-    uint64_t m_cachedMultiTransformValueGeneration = 0;
-    float m_cachedMultiTransformRefreshTime = 0.0f;
+    uint64_t m_cachedMultiTransformTargetRevision = 0;
+    uint64_t m_cachedMultiTransformValueRevision = 0;
 
     // ── Cached icon IDs ──────────────────────────────────────────────
     uint64_t m_cachedTransformIconId = 0;
@@ -277,6 +296,8 @@ class InspectorPanel : public EditorPanel
     void RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const ObjectInfo &info);
     void RenderTransform(InxGUIContext *ctx, uint64_t objId);
     void RenderMultiTransform(InxGUIContext *ctx, const std::vector<uint64_t> &ids);
+    std::string UpdateTransformGesture(size_t rowIndex, uint32_t lifecycleFlags);
+    void FinishTransformGesture(size_t rowIndex, uint32_t lifecycleFlags);
     void RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, const PrefabInfo &pinfo);
 
     struct ComponentHeaderResult

@@ -127,7 +127,7 @@ def _try_get_cpp_texture_preview(native: Any, norm_path: str,
             int(bool(getattr(texture_settings, "generate_mipmaps", True))),
             int(srgb),
             max_size,
-            int(getattr(texture_settings, "aniso_level", 1)),
+            int(getattr(texture_settings, "aniso_level", -1)),
             getattr(format_value, "value", 0),
             getattr(getattr(texture_settings, "compression", None), "value", 0),
             getattr(getattr(texture_settings, "compression_quality", None), "value", 0),
@@ -152,6 +152,33 @@ def _try_get_cpp_texture_preview(native: Any, norm_path: str,
     except Exception as exc:
         Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
     return (0, 0, 0)
+
+
+def ensure_imported_texture_preview(file_path: str) -> bool:
+    """Advance and verify publication of the final imported GPU texture."""
+    native = _resolve_native_engine(None)
+    if native is None or not file_path:
+        return False
+    norm_path = resolved_path(file_path)
+    try:
+        if hasattr(native, "poll_gpu_completions"):
+            native.poll_gpu_completions()
+        texture_id, _, _ = native.query_or_schedule_texture_preview(
+            f"tex|{norm_path}",
+            norm_path,
+            0,
+            nearest=False,
+            srgb=False,
+            max_size=65536,
+            texture_format="auto",
+            texture_type="default",
+            authoring=True,
+            pump=True,
+        )
+        return int(texture_id or 0) != 0
+    except Exception as exc:
+        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+        return False
 
 
 def _try_get_cpp_material_preview_texture(native: Any, norm_path: str,
@@ -310,6 +337,9 @@ def invalidate_resource_preview(file_path: str) -> None:
         return
 
     norm = resolved_path(file_path)
+    from .inspector_support import invalidate_inspector_preview
+
+    invalidate_inspector_preview(norm)
     _invalidate_mtime_cache(norm)
     native = _resolve_native_engine(None)
     if native is None:
@@ -327,6 +357,10 @@ def invalidate_resource_preview(file_path: str) -> None:
 
 def invalidate_live_texture_preview(file_path: str) -> None:
     """Release Inspector ownership of the shared texture preview."""
+    if file_path:
+        from .inspector_support import invalidate_inspector_preview
+
+        invalidate_inspector_preview(file_path, domain="texture")
     native = _resolve_native_engine(None)
     if native is None or not file_path:
         return
@@ -340,6 +374,10 @@ def invalidate_live_texture_preview(file_path: str) -> None:
 
 def invalidate_live_material_preview(file_path: str) -> None:
     """Release Inspector ownership of the shared material preview."""
+    if file_path:
+        from .inspector_support import invalidate_inspector_preview
+
+        invalidate_inspector_preview(file_path, domain="material")
     native = _resolve_native_engine(None)
     if native is None or not file_path:
         return

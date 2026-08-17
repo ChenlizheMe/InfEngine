@@ -31,6 +31,11 @@ class _PendingResourceWrite:
 class EditableResourceDocumentController:
     """Own one live resource and its last durable serialized document."""
 
+    # These resources persist every accepted edit.  A close transaction must
+    # drain that persistence work instead of presenting the short interval
+    # between the edit revision and its IO completion as an unsaved document.
+    autosave_on_close = True
+
     def __init__(
         self,
         category: str,
@@ -67,7 +72,11 @@ class EditableResourceDocumentController:
         registry = DocumentRegistry.instance()
         document = registry.get(self.document_id)
         if document is not None and document.is_dirty and resource is not self.resource:
-            raise RuntimeError("cannot replace an editable resource with pending local changes")
+            # Inspector/Project views may independently resolve the same asset
+            # while its authoritative document still has an asynchronous local
+            # write in flight.  Keep the existing live resource; replacing it
+            # here would regress the preview and discard the newer edit.
+            resource = self.resource
         self.file_path = str(file_path or "")
         self.resource = resource
         self.exec_layer = exec_layer
@@ -76,6 +85,9 @@ class EditableResourceDocumentController:
             self.exec_layer.refresh_binding(self.category, self.file_path)
         if document is None or not document.is_dirty:
             self._saved_document = self.capture_document()
+        if self.state is not None:
+            self.state.resource_controller = self
+            self.state.settings = self.resource
 
     def restore_document(
         self,
@@ -132,7 +144,31 @@ class EditableResourceDocumentController:
                     else None
                 ),
             )
-        if self.exec_layer is not None:
+        effect_asset = getattr(self.resource, "to_asset", None)
+        if self.category == "render_effect" and self.file_path and callable(effect_asset):
+            from Infernux.renderstack.render_effect_asset import (
+                dump_render_effect_document,
+            )
+
+            snapshot = dump_render_effect_document(effect_asset())
+            AssetManager.set_render_effect_save_snapshot(
+                self.file_path,
+                snapshot,
+                edit_revision=(
+                    editor_document.edit_revision
+                    if editor_document is not None
+                    else 0
+                ),
+                document_id=self.document_id,
+                expected_file_state=(
+                    editor_document.durable_file_state
+                    if editor_document is not None
+                    else None
+                ),
+            )
+        if self.exec_layer is not None and not bool(
+            getattr(self.exec_layer, "view_scoped_persistence", False)
+        ):
             self.exec_layer.schedule_rw_save(self.resource)
             return
         AssetManager.schedule_asset_save(
@@ -213,7 +249,9 @@ class EditableResourceDocumentController:
         )
 
     def _flush_submission(self, *, force: bool = False):
-        if self.exec_layer is not None:
+        if self.exec_layer is not None and not bool(
+            getattr(self.exec_layer, "view_scoped_persistence", False)
+        ):
             return self.exec_layer.flush_rw_autosave(force=force)
         from Infernux.core.assets import AssetManager
 
@@ -379,7 +417,11 @@ class EditableResourceDocumentController:
         editor_document = registry.require(self.document_id)
         draft_document = self.capture_document()
         had_submitted_writes = bool(self._pending_writes)
-        cancel = getattr(self.exec_layer, "cancel_rw_autosave", None)
+        cancel = (
+            getattr(self.exec_layer, "cancel_rw_autosave", None)
+            if not bool(getattr(self.exec_layer, "view_scoped_persistence", False))
+            else None
+        )
         if callable(cancel):
             cancel()
         else:
@@ -413,7 +455,11 @@ class EditableResourceDocumentController:
         target = str(resource_path or self.file_path or "").strip()
         if not target:
             return False
-        cancel = getattr(self.exec_layer, "cancel_rw_autosave", None)
+        cancel = (
+            getattr(self.exec_layer, "cancel_rw_autosave", None)
+            if not bool(getattr(self.exec_layer, "view_scoped_persistence", False))
+            else None
+        )
         if callable(cancel):
             cancel()
         else:
