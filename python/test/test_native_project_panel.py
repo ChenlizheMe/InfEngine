@@ -83,7 +83,7 @@ class TestProjectPanelCreation:
         path = tmp_path / "Ice.physicMaterial"
         assert database.paths == [str(path)]
         assert json.loads(path.read_text(encoding="utf-8")) == {
-            "friction": 0.4,
+            "friction": 0.6,
             "bounciness": 0.0,
             "friction_combine": 0,
             "bounce_combine": 0,

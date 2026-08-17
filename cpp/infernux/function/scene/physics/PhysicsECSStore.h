@@ -78,7 +78,7 @@ struct RigidbodyECSData
     bool isKinematic = false;
     int constraints = 0;
     int collisionDetectionMode = 0;
-    int interpolation = 1;
+    int interpolation = 0;
     float maxAngularVelocity = 7.0f;
     float maxLinearVelocity = 500.0f;
 

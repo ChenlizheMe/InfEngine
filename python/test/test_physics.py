@@ -210,9 +210,13 @@ class TestPhysicsSettings:
     def test_defaults(self):
         assert DEFAULT_PHYSICS_SETTINGS["gravity"] == [0.0, -9.81, 0.0]
         assert DEFAULT_PHYSICS_SETTINGS["fixed_delta_time"] == 0.02
-        assert DEFAULT_PHYSICS_SETTINGS["min_velocity_for_restitution"] == 1.0
+        assert DEFAULT_PHYSICS_SETTINGS["max_fixed_delta_time"] == pytest.approx(1.0 / 3.0)
+        assert DEFAULT_PHYSICS_SETTINGS["collision_steps"] == 1
+        assert DEFAULT_PHYSICS_SETTINGS["velocity_steps"] == 10
+        assert DEFAULT_PHYSICS_SETTINGS["position_steps"] == 3
+        assert DEFAULT_PHYSICS_SETTINGS["min_velocity_for_restitution"] == 2.0
         assert DEFAULT_PHYSICS_SETTINGS["time_before_sleep"] == 0.5
-        assert DEFAULT_PHYSICS_SETTINGS["point_velocity_sleep_threshold"] == 0.03
+        assert DEFAULT_PHYSICS_SETTINGS["point_velocity_sleep_threshold"] == 0.1
 
     def test_load_missing_project(self):
         result = load_physics_settings("")

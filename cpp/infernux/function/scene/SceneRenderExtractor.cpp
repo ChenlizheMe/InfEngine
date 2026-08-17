@@ -49,6 +49,10 @@ void CaptureOrReferenceInlineMesh(const MeshRenderer &renderer, const std::vecto
 
 size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool useActiveCameraCulling)
 {
+    // Extraction is deliberately camera-neutral. Scene, Game, previews, and
+    // future stacked Game cameras all consume this same immutable world and
+    // derive their own visible lists in SceneRenderer.
+    (void)useActiveCameraCulling;
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
     const auto prepareStart = Clock::now();
@@ -65,17 +69,12 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
     const bool fastPath =
         frame.MatchesSource(currentWorldId, currentVersion) && frame.m_proxies.size() == m_sceneSources.size();
     if (fastPath) {
-        // Fast path: renderer set unchanged — fuse transform/bounds/culling/draw-call patch.
+        // Fast path: renderer set unchanged — fuse transform/bounds/draw-call patch.
 #if INFERNUX_FRAME_PROFILE
         const auto t0 = Clock::now();
 #endif
-        const bool useFrustum = useActiveCameraCulling && m_frustumCulling && frame.m_primaryView.valid;
-        const bool viewUnchanged = m_hasLastFrameState && useFrustum == m_lastUsedFrustum &&
-                                   (!useFrustum || (frame.m_primaryView.cullingMask == m_lastCullingMask &&
-                                                    std::memcmp(&frame.m_primaryView.viewProjection,
-                                                                &m_lastViewProjection, sizeof(glm::mat4)) == 0));
-        if (!(m_allRenderersStatic && currentTransformRevision == m_lastTransformRevision && viewUnchanged))
-            UpdateCachedRenderableTransforms(frame, useActiveCameraCulling);
+        if (!(m_allRenderersStatic && currentTransformRevision == m_lastTransformRevision))
+            UpdateCachedRenderableTransforms(frame);
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         m_profileSnapshot.prepareFastCalls += 1.0;
@@ -89,16 +88,6 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.collectMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         m_profileSnapshot.prepareSlowCalls += 1.0;
-#endif
-    }
-
-    if (!fastPath && useActiveCameraCulling && m_frustumCulling) {
-#if INFERNUX_FRAME_PROFILE
-        const auto t0 = Clock::now();
-#endif
-        PerformCulling(frame);
-#if INFERNUX_FRAME_PROFILE
-        m_profileSnapshot.cullMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
     }
 
@@ -123,10 +112,6 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
     frame.m_structuralRevision = currentVersion;
     frame.m_transformRevision = currentTransformRevision;
     m_lastTransformRevision = currentTransformRevision;
-    m_lastViewProjection = frame.m_primaryView.viewProjection;
-    m_lastCullingMask = frame.m_primaryView.cullingMask;
-    m_lastUsedFrustum = useActiveCameraCulling && m_frustumCulling && frame.m_primaryView.valid;
-    m_hasLastFrameState = true;
     world.Publish();
     return m_visibleCount;
 }
@@ -159,13 +144,8 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
 #if INFERNUX_FRAME_PROFILE
         const auto t0 = Clock::now();
 #endif
-        const bool useFrustum = m_frustumCulling && frame.m_primaryView.valid;
-        const bool viewUnchanged = m_hasLastFrameState && useFrustum == m_lastUsedFrustum &&
-                                   (!useFrustum || (frame.m_primaryView.cullingMask == m_lastCullingMask &&
-                                                    std::memcmp(&frame.m_primaryView.viewProjection,
-                                                                &m_lastViewProjection, sizeof(glm::mat4)) == 0));
-        if (!(m_allRenderersStatic && currentTransformRevision == m_lastTransformRevision && viewUnchanged))
-            UpdateCachedRenderableTransforms(frame, true);
+        if (!(m_allRenderersStatic && currentTransformRevision == m_lastTransformRevision))
+            UpdateCachedRenderableTransforms(frame);
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         m_profileSnapshot.prepareFastCalls += 1.0;
@@ -178,16 +158,6 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.collectMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         m_profileSnapshot.prepareSlowCalls += 1.0;
-#endif
-    }
-
-    if (!fastPath && m_frustumCulling) {
-#if INFERNUX_FRAME_PROFILE
-        const auto t0 = Clock::now();
-#endif
-        PerformCulling(frame);
-#if INFERNUX_FRAME_PROFILE
-        m_profileSnapshot.cullMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
     }
 
@@ -212,10 +182,6 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
     frame.m_structuralRevision = currentVersion;
     frame.m_transformRevision = currentTransformRevision;
     m_lastTransformRevision = currentTransformRevision;
-    m_lastViewProjection = frame.m_primaryView.viewProjection;
-    m_lastCullingMask = frame.m_primaryView.cullingMask;
-    m_lastUsedFrustum = m_frustumCulling && frame.m_primaryView.valid;
-    m_hasLastFrameState = true;
     world.Publish();
     return m_visibleCount;
 }
@@ -308,7 +274,9 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
         glm::vec3 boundsMin, boundsMax;
         renderer->ComputeWorldBounds(renderable.frame.worldMatrix, boundsMin, boundsMax);
         renderable.frame.worldBounds = AABB(boundsMin, boundsMax);
-        renderable.frame.visible = true; // Will be set by culling
+        // RenderWorld is shared by every camera. Visibility is intentionally
+        // not stored here; each camera derives and caches its own renderer list.
+        renderable.frame.visible = true;
 
         frame.m_proxies.push_back(std::move(renderable));
         m_sceneSources.push_back(std::move(source));
@@ -317,26 +285,12 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
     m_visibleCount = frame.m_proxies.size();
 }
 
-void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &frame, bool useActiveCameraCulling)
+void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &frame)
 {
-    // Fast path: renderer set unchanged. Refresh transforms, bounds, culling,
-    // and cached draw calls in one O(N) pass.
+    // Fast path: renderer set unchanged. Refresh transforms, bounds, and
+    // cached draw calls in one O(N) pass. Culling is per-camera downstream.
     // Optimization: skip bounds recomputation and heavy draw-call patching
     // for objects whose world transform has not changed since last frame.
-    Frustum frustum;
-    const bool useFrustum = useActiveCameraCulling && m_frustumCulling && frame.m_primaryView.valid;
-    if (useFrustum) {
-        frustum.ExtractFromMatrix(frame.m_primaryView.viewProjection);
-        m_frustumVisibilityDirty = true;
-    } else if (m_frustumVisibilityDirty) {
-        // Transition from frustum-culled → non-frustum: sweep all draw calls
-        // to mark visible, since some may have been marked invisible last frame.
-        for (auto &dc : frame.m_drawCalls.drawCalls) {
-            dc.frustumVisible = true;
-        }
-        m_frustumVisibilityDirty = false;
-    }
-
     m_visibleCount = 0;
 
     for (size_t renderableIndex = 0; renderableIndex < frame.m_proxies.size(); ++renderableIndex) {
@@ -376,11 +330,7 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
             }
         }
 
-        if (useFrustum) {
-            frameData.visible = frustum.IntersectsAABB(frameData.worldBounds);
-        } else {
-            frameData.visible = true;
-        }
+        frameData.visible = true;
 
         if (cache.drawCallCount > 0) {
             const size_t drawCallEnd =
@@ -430,50 +380,20 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
                     DrawCall &dc = frame.m_drawCalls.drawCalls[drawCallIndex];
                     dc.worldMatrix = drawWorldMatrix;
                     dc.worldBounds = frameData.worldBounds;
-                    dc.frustumVisible = frameData.visible;
+                    dc.frustumVisible = true;
                     dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
                     patchSkinPalette(dc);
                     firstDirty = false;
-                }
-            } else if (useFrustum) {
-                // Light patch: only update frustumVisible (camera may have moved).
-                for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
-                    DrawCall &dc = frame.m_drawCalls.drawCalls[drawCallIndex];
-                    dc.frustumVisible = frameData.visible;
-                    patchSkinPalette(dc);
                 }
             } else if (isSkinnedRenderer) {
                 for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                     patchSkinPalette(frame.m_drawCalls.drawCalls[drawCallIndex]);
                 }
             }
-            // else: !transformChanged && !useFrustum → draw calls already correct, skip.
+            // else: unchanged static draw calls are already correct.
         }
 
         if (frameData.visible) {
-            ++m_visibleCount;
-        }
-    }
-}
-
-void SceneRenderExtractor::PerformCulling(RenderWorldFrame &frame)
-{
-    if (!frame.m_primaryView.valid) {
-        // No camera, mark all as visible
-        m_visibleCount = frame.m_proxies.size();
-        return;
-    }
-
-    // Extract frustum from view-projection matrix
-    Frustum frustum;
-    frustum.ExtractFromMatrix(frame.m_primaryView.viewProjection);
-
-    // Test each object against frustum
-    m_visibleCount = 0;
-    for (auto &renderable : frame.m_proxies) {
-        // Use AABB-frustum intersection test
-        renderable.frame.visible = frustum.IntersectsAABB(renderable.frame.worldBounds);
-        if (renderable.frame.visible) {
             ++m_visibleCount;
         }
     }

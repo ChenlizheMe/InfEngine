@@ -31,6 +31,15 @@ struct SceneRendererProfileSnapshot
     double renderables = 0.0;
     double visible = 0.0;
     double drawCalls = 0.0;
+    double cameraCacheHits = 0.0;
+    double cameraCacheMisses = 0.0;
+    double cameraMissWorld = 0.0;
+    double cameraMissStructural = 0.0;
+    double cameraMissTransform = 0.0;
+    double cameraMissMask = 0.0;
+    double cameraMissFrustum = 0.0;
+    double cameraMissViewProjection = 0.0;
+    double conservativeFullListUses = 0.0;
 };
 
 struct CameraDrawCallResult
@@ -147,12 +156,27 @@ class SceneRenderer
         glm::mat4 viewProjection{1.0f};
         uint32_t cullingMask = 0xFFFFFFFFu;
         bool frustumCulling = true;
+        bool usesWorldDrawCalls = false;
         std::vector<DrawCall> visibleDrawCalls;
         size_t visibleCount = 0;
         uint64_t visibleListRevision = 0;
         std::shared_ptr<const RenderWorldFrame> worldOwner;
     };
+    struct CoarseCullGroup
+    {
+        size_t proxyStart = 0;
+        size_t proxyCount = 0;
+        AABB worldBounds;
+        uint32_t layerMask = 0;
+    };
+
+    void RebuildCoarseCullGroups(const RenderWorldFrame &world);
+
     std::unordered_map<uint64_t, CameraCullCache> m_cameraCullCaches;
+    std::vector<CoarseCullGroup> m_coarseCullGroups;
+    uint64_t m_coarseCullWorldId = 0;
+    uint64_t m_coarseCullStructuralRevision = 0;
+    uint64_t m_coarseCullTransformRevision = 0;
     uint64_t m_nextCameraCullRevision = 1;
 #if INFERNUX_FRAME_PROFILE
     ProfileSnapshot m_profileSnapshot;

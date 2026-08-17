@@ -48,6 +48,32 @@ desktop.ini
 imgui.ini
 """
 
+_FALLBACK_PROJECT_GITATTRIBUTES = """# Keep project text deterministic across platforms
+* text=auto
+*.py text eol=lf
+*.scene text eol=lf
+*.prefab text eol=lf
+*.mat text eol=lf
+*.effect text eol=lf
+*.effectgroup text eol=lf
+*.particlegraph text eol=lf
+*.meta text eol=lf
+
+# Binary assets must never receive line-ending conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.tga binary
+*.dds binary
+*.ktx binary
+*.ktx2 binary
+*.fbx binary
+*.glb binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+"""
+
 
 def _engine_component_type_id(module_name: str, qualified_name: str) -> str:
     """Return the stable scene identity used by engine-owned Python components."""
@@ -729,6 +755,10 @@ class ProjectModel:
                 os.path.join(staging_dir, ".gitignore"),
                 engine_version,
             )
+            self._copy_bundled_project_gitattributes(
+                os.path.join(staging_dir, ".gitattributes"),
+                engine_version,
+            )
 
             req_path = os.path.join(staging_dir, "ProjectSettings", "requirements.txt")
             self._copy_bundled_requirements(req_path, engine_version)
@@ -817,6 +847,16 @@ class ProjectModel:
             return
         with open(dest_path, "w", encoding="utf-8", newline="\n") as stream:
             stream.write(_FALLBACK_PROJECT_GITIGNORE)
+
+    def _copy_bundled_project_gitattributes(
+        self, dest_path: str, engine_version: str
+    ) -> None:
+        if self._copy_bundled_support_file(
+            "project.gitattributes.txt", dest_path, engine_version
+        ):
+            return
+        with open(dest_path, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(_FALLBACK_PROJECT_GITATTRIBUTES)
 
     def _copy_bundled_requirements(self, dest_path: str, engine_version: str) -> None:
         """Copy the default requirements.txt to *dest_path*.

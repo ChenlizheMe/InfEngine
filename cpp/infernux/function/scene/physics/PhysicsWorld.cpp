@@ -630,8 +630,35 @@ void PhysicsWorld::Step(float deltaTime)
     JPH::BodyIDVector activeBefore;
     m_physicsSystem->GetActiveBodies(JPH::EBodyType::RigidBody, activeBefore);
 
-    if (m_contactListener)
+    if (m_contactListener) {
+        uint8_t eventInterestMask = 0;
+        std::unordered_set<GameObject *> visitedObjects;
+        visitedObjects.reserve(m_bodyToCollider.size());
+        for (const auto &[bodyId, collider] : m_bodyToCollider) {
+            (void)bodyId;
+            GameObject *gameObject = collider ? collider->GetGameObject() : nullptr;
+            if (!gameObject || !gameObject->IsActiveInHierarchy() || !visitedObjects.insert(gameObject).second)
+                continue;
+            for (const auto &component : gameObject->GetAllComponents()) {
+                if (!component || !component->IsEnabled() || !component->WantsPhysicsCallbacks())
+                    continue;
+                if (component->WantsCollisionEnterCallbacks())
+                    eventInterestMask |= CollisionEnterInterest;
+                if (component->WantsCollisionStayCallbacks())
+                    eventInterestMask |= CollisionStayInterest;
+                if (component->WantsCollisionExitCallbacks())
+                    eventInterestMask |= CollisionExitInterest;
+                if (component->WantsTriggerEnterCallbacks())
+                    eventInterestMask |= TriggerEnterInterest;
+                if (component->WantsTriggerStayCallbacks())
+                    eventInterestMask |= TriggerStayInterest;
+                if (component->WantsTriggerExitCallbacks())
+                    eventInterestMask |= TriggerExitInterest;
+            }
+        }
+        m_contactListener->SetEventInterestMask(eventInterestMask);
         m_contactListener->PreStep();
+    }
 
     // Jolt's LinearCast narrow phase handles relative target motion, but its
     // broad-phase cast only spans the source body's own displacement. Two fast
@@ -711,15 +738,6 @@ size_t PhysicsWorld::DispatchContactEvents()
     receiversA.reserve(8);
     receiversB.reserve(8);
 
-    enum PhysicsCallbackBit : uint8_t {
-        CollisionEnterBit = 1u << 0u,
-        CollisionStayBit = 1u << 1u,
-        CollisionExitBit = 1u << 2u,
-        TriggerEnterBit = 1u << 3u,
-        TriggerStayBit = 1u << 4u,
-        TriggerExitBit = 1u << 5u,
-    };
-
     std::unordered_map<GameObject *, uint8_t> callbackMasks;
     callbackMasks.reserve(std::min(events.size() * 2u, m_bodyToCollider.size()));
 
@@ -733,38 +751,20 @@ size_t PhysicsWorld::DispatchContactEvents()
             if (!comp || !comp->IsEnabled() || !comp->WantsPhysicsCallbacks())
                 continue;
             if (comp->WantsCollisionEnterCallbacks())
-                mask |= CollisionEnterBit;
+                mask |= CollisionEnterInterest;
             if (comp->WantsCollisionStayCallbacks())
-                mask |= CollisionStayBit;
+                mask |= CollisionStayInterest;
             if (comp->WantsCollisionExitCallbacks())
-                mask |= CollisionExitBit;
+                mask |= CollisionExitInterest;
             if (comp->WantsTriggerEnterCallbacks())
-                mask |= TriggerEnterBit;
+                mask |= TriggerEnterInterest;
             if (comp->WantsTriggerStayCallbacks())
-                mask |= TriggerStayBit;
+                mask |= TriggerStayInterest;
             if (comp->WantsTriggerExitCallbacks())
-                mask |= TriggerExitBit;
+                mask |= TriggerExitInterest;
         }
         callbackMasks.emplace(go, mask);
         return mask;
-    };
-
-    auto eventBit = [](ContactEventType type) -> uint8_t {
-        switch (type) {
-        case ContactEventType::CollisionEnter:
-            return CollisionEnterBit;
-        case ContactEventType::CollisionStay:
-            return CollisionStayBit;
-        case ContactEventType::CollisionExit:
-            return CollisionExitBit;
-        case ContactEventType::TriggerEnter:
-            return TriggerEnterBit;
-        case ContactEventType::TriggerStay:
-            return TriggerStayBit;
-        case ContactEventType::TriggerExit:
-            return TriggerExitBit;
-        }
-        return 0;
     };
 
     auto wantsEvent = [](const Component &comp, ContactEventType type) {
@@ -825,7 +825,7 @@ size_t PhysicsWorld::DispatchContactEvents()
                 continue;
         }
 
-        const uint8_t requiredBit = eventBit(type);
+        const uint8_t requiredBit = ContactEventInterestBit(type);
         const bool wantsA = (callbackMask(goA) & requiredBit) != 0;
         const bool wantsB = (callbackMask(goB) & requiredBit) != 0;
         if (!wantsA && !wantsB)

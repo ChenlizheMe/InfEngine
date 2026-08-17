@@ -129,6 +129,13 @@ class ScriptableRenderContext
         double borrowedRendererListSubmits = 0.0;
         double ownedRendererListSubmits = 0.0;
         double materializedDrawCalls = 0.0;
+        double cachedSubmissionReuses = 0.0;
+        double submissionRejectEditorAppenders = 0.0;
+        double submissionRejectOwnedVisibleList = 0.0;
+        double submissionRejectOwnedShadowList = 0.0;
+        double submissionRejectMissingGraph = 0.0;
+        double submissionRejectPendingUploads = 0.0;
+        double submissionRejectSignature = 0.0;
     };
 
     [[nodiscard]] static ProfileSnapshot GetProfileSnapshot();

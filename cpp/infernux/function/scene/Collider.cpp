@@ -13,6 +13,7 @@
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
 #include <InxLog.h>
+#include <core/config/EngineConfig.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 
@@ -358,13 +359,13 @@ void Collider::OnPhysicMaterialAssetEvent(AssetEvent event)
 float Collider::GetFriction() const
 {
     const auto material = m_physicMaterial.Get();
-    return material ? material->GetFriction() : 0.4f;
+    return material ? material->GetFriction() : EngineConfig::Get().defaultColliderFriction;
 }
 
 float Collider::GetBounciness() const
 {
     const auto material = m_physicMaterial.Get();
-    return material ? material->GetBounciness() : 0.0f;
+    return material ? material->GetBounciness() : EngineConfig::Get().defaultColliderBounciness;
 }
 
 PhysicsMaterialCombine Collider::GetFrictionCombine() const

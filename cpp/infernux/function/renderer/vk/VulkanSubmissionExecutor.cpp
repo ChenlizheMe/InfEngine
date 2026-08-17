@@ -265,30 +265,6 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     tickets.reserve(plan.batches.size() + (needsTerminalJoin ? 1u : 0u));
     commands.reserve(plan.batches.size());
 
-    for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
-        const rhi::SubmissionBatch &batch = plan.batches[batchIndex];
-        if (batch.device != m_deviceContext->GetDeviceId()) {
-            INXLOG_ERROR("VulkanSubmissionExecutor rejected a batch for another device");
-            CancelReservations(tickets, 0);
-            return output;
-        }
-        rhi::SubmissionTicket ticket = m_queues->Reserve(batch.queue);
-        if (!ticket.IsValid()) {
-            CancelReservations(tickets, 0);
-            return output;
-        }
-        tickets.push_back(ticket);
-    }
-    if (needsTerminalJoin) {
-        const auto joinTicket = m_queues->Reserve(rhi::QueueRole::Graphics);
-        if (!joinTicket.IsValid()) {
-            CancelReservations(tickets, 0);
-            return output;
-        }
-        tickets.push_back(joinTicket);
-    }
-    output.completionTicket = tickets.back();
-
     FrameDiagnostic &diagnostic = m_frameDiagnostics[frameSlot];
     diagnostic = {};
     diagnostic.previousTimeline = sync.previousFrameTimeline;
@@ -320,12 +296,10 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
                 return output;
             }
 
-            const rhi::SubmissionTicket ticket = tickets[batchIndex];
             vkdebug::DescriptorRecordingScope descriptorRecording(
                 &m_deviceContext->GetRhiDevice().GetDescriptorManager(), sync.completionEpoch);
             if (!recorder(static_cast<uint32_t>(batchIndex), commandBuffer) ||
                 vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-                CancelReservations(tickets, 0);
                 return output;
             }
             const uint32_t lane = m_queues->GetSnapshot(batch.queue).nativeLane;
@@ -339,9 +313,37 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             diagnostic.batchNames.push_back(batch.diagnosticName);
         }
     } catch (...) {
-        CancelReservations(tickets, 0);
         throw;
     }
+
+    // Recording may publish asynchronous resource uploads. Reserve frame
+    // submissions only after every recorder has finished so those uploads
+    // are ordered before any batch that waits on the upload timeline. If a
+    // transfer role aliases a compute lane, reserving first would put the
+    // consumer ahead of its producer and create a same-queue timeline
+    // deadlock during generation-prime particle work.
+    for (const rhi::SubmissionBatch &batch : plan.batches) {
+        if (batch.device != m_deviceContext->GetDeviceId()) {
+            INXLOG_ERROR("VulkanSubmissionExecutor rejected a batch for another device");
+            CancelReservations(tickets, 0);
+            return output;
+        }
+        rhi::SubmissionTicket ticket = m_queues->Reserve(batch.queue);
+        if (!ticket.IsValid()) {
+            CancelReservations(tickets, 0);
+            return output;
+        }
+        tickets.push_back(ticket);
+    }
+    if (needsTerminalJoin) {
+        const auto joinTicket = m_queues->Reserve(rhi::QueueRole::Graphics);
+        if (!joinTicket.IsValid()) {
+            CancelReservations(tickets, 0);
+            return output;
+        }
+        tickets.push_back(joinTicket);
+    }
+    output.completionTicket = tickets.back();
 
     size_t firstGraphicsBatch = plan.batches.size();
     size_t lastGraphicsBatch = plan.batches.size();

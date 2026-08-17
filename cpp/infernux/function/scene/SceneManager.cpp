@@ -104,7 +104,12 @@ SceneManager::SceneManager()
             return;
         PhysicsECSStore::Instance().MarkGameObjectDirty(gameObject);
         Scene *scene = gameObject->GetScene();
-        if (scene && IsRuntimeScene(scene)) {
+        // A moving camera, light, audio source, or UI element must not force
+        // the renderer to rescan every geometry proxy. Invalidate the shared
+        // RenderWorld only for objects that actually contribute geometry.
+        // Transform invalidation walks descendants, so moving a plain parent
+        // still reaches and invalidates every child MeshRenderer correctly.
+        if (scene && IsRuntimeScene(scene) && gameObject->GetComponent<MeshRenderer>()) {
             ++m_renderTransformRevision;
             if (m_renderTransformRevision == 0)
                 m_renderTransformRevision = 1;
@@ -121,6 +126,13 @@ SceneManager::SceneManager()
 uint64_t SceneManager::GetGlobalTransformSerial() const
 {
     return TransformECSStore::Instance().GetGlobalTransformSerial();
+}
+
+void SceneManager::PublishPhysicsTransformsToRenderer() noexcept
+{
+    ++m_renderTransformRevision;
+    if (m_renderTransformRevision == 0)
+        m_renderTransformRevision = 1;
 }
 
 Scene *SceneManager::CreateScene(const std::string &name)
@@ -144,10 +156,16 @@ Scene *SceneManager::CreateScene(const std::string &name)
 
 void SceneManager::SetActiveScene(Scene *scene)
 {
-    if (m_isPlaying)
+    const bool activeSceneChanged = scene != m_activeScene;
+    if (activeSceneChanged && m_isPlaying)
         FlushPersistentPromotions();
 
     m_activeScene = scene;
+    if (activeSceneChanged) {
+        m_fixedTimeAccumulator = 0.0f;
+        m_lastScaledDeltaTime = 0.0f;
+        m_resetDeltaTimeOnNextFrame = true;
+    }
     if (m_activeScene) {
         m_activeScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
         m_activeScene->SetPlaying(m_isPlaying);
@@ -157,6 +175,14 @@ void SceneManager::SetActiveScene(Scene *scene)
     // mainCamera == nullptr means "no game camera assigned" — the Game View
     // will show a placeholder. Scene View always uses the editor camera
     // via SceneRenderBridge / EditorCameraController, independent of mainCamera.
+}
+
+float SceneManager::ConsumeFrameDeltaTime(float deltaTime) noexcept
+{
+    if (!m_resetDeltaTimeOnNextFrame)
+        return deltaTime;
+    m_resetDeltaTimeOnNextFrame = false;
+    return 0.0f;
 }
 
 void SceneManager::UnloadScene(Scene *scene)
@@ -694,6 +720,13 @@ void SceneManager::FlushPersistentPromotions()
 
 void SceneManager::PrepareActiveSceneReplacement()
 {
+    // SceneDocumentTransaction replaces the active graph in place, so the
+    // Scene pointer does not change and SetActiveScene cannot publish this
+    // boundary. Discard both wall-clock loading time and old-scene fixed-step
+    // remainder before the new graph is allowed to tick.
+    m_fixedTimeAccumulator = 0.0f;
+    m_lastScaledDeltaTime = 0.0f;
+    m_resetDeltaTimeOnNextFrame = true;
     if (m_isPlaying) {
         FlushPersistentPromotions();
         // Scene commit clears pending physics queues belonging to the dying
@@ -928,10 +961,18 @@ void SceneManager::FlushPendingBroadphase()
 
     double addBodiesMs = ProfileMsSince(t1);
 
-    // Rebuild broad-phase tree once after batch-adding all new bodies.
-    auto t2 = ProfileClock::now();
-    pw.OptimizeBroadPhase();
-    double optimizeMs = ProfileMsSince(t2);
+    // Jolt incrementally maintains its broad phase when bodies are added.
+    // Rebuilding the complete tree for one or two runtime spawns creates a
+    // periodic main-thread spike (particularly visible in continuous physics
+    // piles) without improving the query structure. Reserve the explicit
+    // optimization for genuinely large scene-import batches.
+    double optimizeMs = 0.0;
+    constexpr size_t kBroadphaseRebuildBatchThreshold = 128;
+    if (pending.size() >= kBroadphaseRebuildBatchThreshold) {
+        auto t2 = ProfileClock::now();
+        pw.OptimizeBroadPhase();
+        optimizeMs = ProfileMsSince(t2);
+    }
 
     // if (bodyCount >= 100) {
     //     INXLOG_INFO("[Perf] FlushPendingBroadphase: ", bodyCount, " bodies — "

@@ -35,6 +35,11 @@ int main()
     assert(observed.empty());
 
     manager.CreateScene("RuntimeFrameBarrierTests");
+    assert(manager.ConsumeFrameDeltaTime(0.25f) == 0.0f);
+    assert(manager.ConsumeFrameDeltaTime(0.25f) == 0.25f);
+    manager.PrepareActiveSceneReplacement();
+    assert(manager.ConsumeFrameDeltaTime(0.25f) == 0.0f);
+    assert(manager.ConsumeFrameDeltaTime(0.25f) == 0.25f);
     manager.SetRuntimeLifecycleCallbacks(
         [&beginCount] { ++beginCount; }, [&fixedUpdateCount](float) { ++fixedUpdateCount; },
         [&updateCount](float) { ++updateCount; }, [&lateUpdateCount](float) { ++lateUpdateCount; },
@@ -113,13 +118,17 @@ int main()
     transforms.SetCachedWorldPoseFromPhysics(root->GetTransform()->GetECSHandle().index,
                                              glm::vec3(1.0f, 2.0f, 3.0f),
                                              glm::quat(1.0f, 0.0f, 0.0f, 0.0f), true);
-    transforms.EndFrameCache();
+    const uint64_t revisionBeforePhysicsPose = manager.GetRenderTransformRevision();
+    const bool publishedPhysicsPose = transforms.EndFrameCache();
+    assert(publishedPhysicsPose);
+    manager.PublishPhysicsTransformsToRenderer();
+    assert(manager.GetRenderTransformRevision() != revisionBeforePhysicsPose);
     assert((invalidated == std::vector<Transform *>{child->GetTransform()}));
 
     invalidated.clear();
     transforms.BeginFrameCache(scene);
     root->GetTransform()->SetPosition(glm::vec3(2.0f, 3.0f, 4.0f));
-    transforms.EndFrameCache();
+    assert(!transforms.EndFrameCache());
     assert((invalidated ==
             std::vector<Transform *>{root->GetTransform(), child->GetTransform()}));
 
@@ -130,7 +139,7 @@ int main()
     transforms.BeginFrameCache(scene);
     GameObject *runtimeCreated = scene->CreateGameObject("CreatedDuringFrameCache");
     runtimeCreated->GetTransform()->SetPosition(glm::vec3(7.0f, 8.0f, 9.0f));
-    transforms.EndFrameCache();
+    assert(!transforms.EndFrameCache());
     assert(runtimeCreated->GetTransform()->GetPosition() == glm::vec3(7.0f, 8.0f, 9.0f));
     assert((invalidated == std::vector<Transform *>{runtimeCreated->GetTransform()}));
 

@@ -532,6 +532,8 @@ void InxVkCoreModular::ReleaseActiveDrawLists() noexcept
 
     m_eligibleScratch.clear();
     m_shadowDrawScratch.clear();
+    m_shadowCullGroups.clear();
+    m_shadowAllVisible.clear();
     m_shadowScratchValid = false;
     m_shadowScratchStatic = false;
     m_shadowScratchUniformBatch = false;
@@ -644,8 +646,6 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     }
     const bool reusedStaticFilter = staticFilterCache != m_staticFilteredListCaches.end();
     uint64_t staticFilteredSequenceKey = reusedStaticFilter ? staticFilterCache->sequenceKey : 0;
-    if (reusedStaticFilter)
-        m_eligibleScratch = staticFilterCache->draws;
     const bool hasListMetadata = m_drawListMetadataSource == m_drawCallsPtr &&
                                  m_drawListMetadata.size() == activeDrawCalls.size() &&
                                  m_drawListBufferRevision == m_objectBufferRevision;
@@ -746,12 +746,19 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         m_eligibleScratch.push_back({&dc, sortKey, matHash, vb, ib, materialOwner, material});
     }
 
+    // A stable static publication already owns a sorted, fully resolved list.
+    // Read it in place instead of copying tens of thousands of entries back
+    // into the frame scratch on every pass. The scratch remains the mutable
+    // source while a cache is built for the first time.
+    const std::vector<SortableDrawCall> &eligibleDraws =
+        reusedStaticFilter ? staticFilterCache->draws : m_eligibleScratch;
+
     // Diagnostic: log per-call eligible count with queue range
     if (s_filterDiagFrames < 3) {
         INXLOG_DEBUG("[DrawSceneFiltered] queue=[", queueMin, ",", queueMax, "] totalDC=", drawCalls().size(),
-                     " eligible=", m_eligibleScratch.size());
-        if (!m_eligibleScratch.empty()) {
-            for (const auto &entry : m_eligibleScratch) {
+                     " eligible=", eligibleDraws.size());
+        if (!eligibleDraws.empty()) {
+            for (const auto &entry : eligibleDraws) {
                 INXLOG_DEBUG("  -> objId=", entry.dc->objectId, " mat='", entry.material->GetName(),
                              "' queue=", entry.material->GetRenderQueue());
             }
@@ -763,29 +770,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     auto stageNow = Clock::now();
     m_drawSubMs[9] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
     stageStart = stageNow;
-    m_drawSceneFilteredEligible += static_cast<uint64_t>(m_eligibleScratch.size());
+    m_drawSceneFilteredEligible += static_cast<uint64_t>(eligibleDraws.size());
 #endif
 
-    // One-shot diagnostic: log icon draw calls that pass filtering
-    {
-        static int s_iconDiagCount = 0;
-        if (s_iconDiagCount < 5) {
-            for (const auto &entry : m_eligibleScratch) {
-                const std::string &matName = entry.material->GetName();
-                if (matName.find("GizmoIcon") != std::string::npos || matName.find("Gizmo") != std::string::npos) {
-                    const bool hasBuf = entry.vertexBuf != VK_NULL_HANDLE && entry.indexBuf != VK_NULL_HANDLE;
-                    VkPipeline pip = entry.material->GetPassPipeline(ShaderCompileTarget::Forward);
-                    VkDescriptorSet ds = entry.material->GetPassDescriptorSet(ShaderCompileTarget::Forward);
-                    (void)hasBuf;
-                    (void)pip;
-                    (void)ds;
-                    ++s_iconDiagCount;
-                }
-            }
-        }
-    }
-
-    if (m_eligibleScratch.empty()) {
+    if (eligibleDraws.empty()) {
         if (skyboxPass) {
             static int s_emptySkyboxDiagCount = 0;
             if (s_emptySkyboxDiagCount < 8) {
@@ -905,10 +893,15 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     ResetPerFrameGpuStreamOffsets();
 
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
-    const size_t totalEligible = m_eligibleScratch.size();
+    const size_t totalEligible = eligibleDraws.size();
     uint32_t writeBase = m_instanceWriteOffset;
     const bool needsInstanceAuxiliary = ShaderCompileTargetUsesInstanceAuxiliary(activePass.target);
-    const bool staticUnskinnedSequence = !needsInstanceAuxiliary && staticFilteredSequenceKey != 0;
+    // InstanceAuxBuffer contents are just as immutable as model matrices for a
+    // static, unskinned publication. Keep one uploaded copy in every
+    // frame-in-flight buffer instead of excluding Forward/Forward+/GBuffer
+    // from the static range cache merely because they consume object identity,
+    // layer mask, or transform history.
+    const bool staticUnskinnedSequence = staticFilteredSequenceKey != 0;
     bool reusedStaticRange = false;
     if (staticUnskinnedSequence) {
         for (const StaticInstanceRange &range : m_staticInstanceRanges) {
@@ -923,7 +916,13 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 frameIndex < m_skinInstanceBuffers.size() && m_skinInstanceBuffers[frameIndex].buffer
                     ? m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()
                     : VK_NULL_HANDLE;
+            const VkBuffer activeInstanceAuxBuffer =
+                frameIndex < m_instanceAuxBuffers.size() && m_instanceAuxBuffers[frameIndex].buffer
+                    ? m_instanceAuxBuffers[frameIndex].buffer->GetBuffer()
+                    : VK_NULL_HANDLE;
             if (range.instanceBuffer != activeInstanceBuffer || range.skinInstanceBuffer != activeSkinInstanceBuffer)
+                continue;
+            if (needsInstanceAuxiliary && range.instanceAuxBuffer != activeInstanceAuxBuffer)
                 continue;
             writeBase = range.firstInstance;
             reusedStaticRange = true;
@@ -937,7 +936,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     if (!reusedStaticRange && totalEligible > 0 && frameIndex < m_instanceBuffers.size()) {
         const bool needsPreviousSkinPalette = activePass.target == ShaderCompileTarget::Motion;
         size_t requiredBoneMatrices = m_skinPaletteWriteOffset;
-        for (const auto &entry : m_eligibleScratch) {
+        for (const auto &entry : eligibleDraws) {
             if (entry.dc->skinBoneMatrices)
                 requiredBoneMatrices += entry.dc->skinBoneMatrices->size();
             if (needsPreviousSkinPalette && entry.dc->previousSkinBoneMatrices)
@@ -964,10 +963,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
               previousSkinInstanceBuffer != m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()) ||
              (m_skinPaletteBuffers[frameIndex].buffer &&
               previousSkinPaletteBuffer != m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()));
-        if (instanceBufferChanged)
-            UpdateInstanceBufferDescriptor(frameIndex);
-        if (skinBufferChanged)
-            UpdateSkinBufferDescriptors(frameIndex);
+        if (instanceBufferChanged || skinBufferChanged)
+            (void)PublishGlobalsDescriptorRevision(frameIndex);
 
         auto &instFrame = m_instanceBuffers[frameIndex];
         auto &skinInstFrame = m_skinInstanceBuffers[frameIndex];
@@ -982,18 +979,21 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             if (mapped) {
                 glm::mat4 *matrices = static_cast<glm::mat4 *>(mapped);
                 for (size_t i = 0; i < totalEligible; ++i) {
-                    matrices[writeBase + i] = m_eligibleScratch[i].dc->worldMatrix;
+                    matrices[writeBase + i] = eligibleDraws[i].dc->worldMatrix;
                 }
                 instanceMatricesWritten = true;
             }
         }
 
+        bool instanceAuxiliaryWritten = !needsInstanceAuxiliary;
         if (needsInstanceAuxiliary) {
+            instanceAuxiliaryWritten = true;
             for (size_t i = 0; i < totalEligible; ++i) {
-                const DrawCall &draw = *m_eligibleScratch[i].dc;
+                const DrawCall &draw = *eligibleDraws[i].dc;
                 const uint64_t pickingId = draw.pickingObjectId != 0 ? draw.pickingObjectId : draw.objectId;
-                (void)WriteInstanceAuxiliary(frameIndex, writeBase + static_cast<uint32_t>(i), draw.identity,
-                                             draw.worldMatrix, pickingId, draw.layerMask);
+                instanceAuxiliaryWritten &=
+                    WriteInstanceAuxiliary(frameIndex, writeBase + static_cast<uint32_t>(i), draw.identity,
+                                           draw.worldMatrix, pickingId, draw.layerMask);
             }
         }
 
@@ -1046,13 +1046,13 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 };
 
                 for (size_t i = 0; i < totalEligible; ++i) {
-                    skinInstances[writeBase + i] = resolveSkinData(*m_eligibleScratch[i].dc);
+                    skinInstances[writeBase + i] = resolveSkinData(*eligibleDraws[i].dc);
                 }
                 skinInstancesWritten = true;
             }
         }
         m_instanceWriteOffset += static_cast<uint32_t>(totalEligible);
-        if (staticUnskinnedSequence && instanceMatricesWritten && skinInstancesWritten) {
+        if (staticUnskinnedSequence && instanceMatricesWritten && skinInstancesWritten && instanceAuxiliaryWritten) {
             const auto staleRange = std::remove_if(
                 m_staticInstanceRanges.begin(), m_staticInstanceRanges.end(), [&](const StaticInstanceRange &range) {
                     return range.drawListActivation == m_drawListActivation &&
@@ -1071,6 +1071,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             range.skinInstanceBuffer = m_skinInstanceBuffers[frameIndex].buffer
                                            ? m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()
                                            : VK_NULL_HANDLE;
+            range.instanceAuxBuffer = m_instanceAuxBuffers[frameIndex].buffer
+                                          ? m_instanceAuxBuffers[frameIndex].buffer->GetBuffer()
+                                          : VK_NULL_HANDLE;
             range.lastUsedFrame = m_ensureFrameCounter;
             m_staticInstanceRanges.push_back(std::move(range));
         }
@@ -1285,7 +1288,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             glm::mat4 normalMat;
         };
         PushConstants pushData;
-        pushData.model = m_eligibleScratch[batchFirstInstance].dc->worldMatrix;
+        pushData.model = eligibleDraws[batchFirstInstance].dc->worldMatrix;
         pushData.normalMat = glm::mat4(1.0f); // normalMat computed in shader from SSBO model
         vkCmdPushConstants(cmdBuf, batchPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants),
                            &pushData);
@@ -1299,14 +1302,14 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     };
 
     for (size_t idx = 0; idx < totalEligible; ++idx) {
-        const auto &entry = m_eligibleScratch[idx];
+        const auto &entry = eligibleDraws[idx];
         const DrawCall &dc = *entry.dc;
 
         // Once a batch has established valid Vulkan state, subsequent
         // consecutive instances with the same material/mesh can extend it
         // without repeating material-pipeline and descriptor validation.
         if (batchInstanceCount > 0) {
-            const DrawCall &batchFirst = *m_eligibleScratch[batchFirstInstance].dc;
+            const DrawCall &batchFirst = *eligibleDraws[batchFirstInstance].dc;
             const bool batchingAllowed =
                 allowBatching || (batchFirst.allowTransparentInstancing && dc.allowTransparentInstancing);
             if (batchingAllowed && entry.material == currentMaterialRaw && entry.vertexBuf == currentVertexBuffer &&
@@ -1411,7 +1414,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         // instancing is opt-in so normal alpha surfaces retain per-object draws.
         bool canExtendBatch = false;
         if (batchInstanceCount > 0) {
-            const DrawCall &batchFirst = *m_eligibleScratch[batchFirstInstance].dc;
+            const DrawCall &batchFirst = *eligibleDraws[batchFirstInstance].dc;
             const bool batchingAllowed =
                 allowBatching || (batchFirst.allowTransparentInstancing && dc.allowTransparentInstancing);
             canExtendBatch = batchingAllowed && pipeline == currentPipeline && descriptorSet == currentDescriptorSet &&
@@ -1749,6 +1752,44 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         if (!std::is_sorted(m_shadowDrawScratch.begin(), m_shadowDrawScratch.end(), shadowDrawLess))
             std::sort(m_shadowDrawScratch.begin(), m_shadowDrawScratch.end(), shadowDrawLess);
 
+        // Build a lightweight hierarchy over the stable, batch-sorted caster
+        // list. It is deliberately independent of scene type: any large static
+        // renderer publication benefits, while intersecting boundary groups
+        // still fall back to exact per-object tests.
+        constexpr uint32_t kShadowCullGroupSize = 64;
+        m_shadowCullGroups.clear();
+        m_shadowCullGroups.reserve((m_shadowDrawScratch.size() + kShadowCullGroupSize - 1) / kShadowCullGroupSize);
+        for (uint32_t first = 0; first < m_shadowDrawScratch.size(); first += kShadowCullGroupSize) {
+            ShadowCullGroup group;
+            group.first = first;
+            group.count =
+                std::min<uint32_t>(kShadowCullGroupSize, static_cast<uint32_t>(m_shadowDrawScratch.size()) - first);
+            group.layerMaskIntersection = UINT32_MAX;
+            group.allBoundsValid = true;
+            bool haveBounds = false;
+            for (uint32_t offset = 0; offset < group.count; ++offset) {
+                const ShadowDraw &draw = m_shadowDrawScratch[first + offset];
+                group.layerMaskUnion |= draw.dc->layerMask;
+                group.layerMaskIntersection &= draw.dc->layerMask;
+                if (!draw.worldBounds.IsValid()) {
+                    group.allBoundsValid = false;
+                    continue;
+                }
+                if (!haveBounds) {
+                    group.worldBounds = draw.worldBounds;
+                    haveBounds = true;
+                } else {
+                    group.worldBounds.min = glm::min(group.worldBounds.min, draw.worldBounds.min);
+                    group.worldBounds.max = glm::max(group.worldBounds.max, draw.worldBounds.max);
+                }
+            }
+            group.allBoundsValid &= haveBounds;
+            m_shadowCullGroups.push_back(group);
+        }
+        m_shadowAllVisible.resize(m_shadowDrawScratch.size());
+        for (uint32_t index = 0; index < m_shadowAllVisible.size(); ++index)
+            m_shadowAllVisible[index] = index;
+
         m_shadowScratchStatic =
             !m_shadowDrawScratch.empty() &&
             std::all_of(m_shadowDrawScratch.begin(), m_shadowDrawScratch.end(), [](const ShadowDraw &draw) {
@@ -1843,6 +1884,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             staticShadowCache.draws.push_back(captureState(draw));
         for (auto &view : staticShadowCache.views) {
             view.valid = false;
+            view.fullSequence = false;
             view.visibleIndices.clear();
         }
         staticShadowCache.valid = true;
@@ -1937,29 +1979,74 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             cachedView.type == shadowView.type &&
             std::memcmp(&cachedView.viewProjection, &shadowView.viewProjection, sizeof(glm::mat4)) == 0;
         if (cachedVisibility) {
-            visibleIndices = &cachedView.visibleIndices;
+            visibleIndices = cachedView.fullSequence ? &m_shadowAllVisible : &cachedView.visibleIndices;
         } else {
             m_shadowViewVisible.clear();
             m_shadowViewVisible.reserve(m_shadowDrawScratch.size());
-            for (size_t si = 0; si < m_shadowDrawScratch.size(); ++si) {
-                const auto &sd = m_shadowDrawScratch[si];
-                if ((sd.dc->layerMask & shadowView.cullingMask) == 0u)
+            for (const ShadowCullGroup &group : m_shadowCullGroups) {
+                if ((group.layerMaskUnion & shadowView.cullingMask) == 0u)
                     continue;
-                if (sd.worldBounds.IsValid() && !shadowFrustum.IntersectsAABB(sd.worldBounds, ignoreNearPlane))
+
+                const Frustum::AABBRelation relation =
+                    group.allBoundsValid ? shadowFrustum.ClassifyAABB(group.worldBounds, ignoreNearPlane)
+                                         : Frustum::AABBRelation::Intersecting;
+                if (relation == Frustum::AABBRelation::Outside)
                     continue;
-                m_shadowViewVisible.push_back(static_cast<uint32_t>(si));
+
+                const bool everyLayerAccepted = (group.layerMaskIntersection & shadowView.cullingMask) != 0u;
+                if (relation == Frustum::AABBRelation::Inside && everyLayerAccepted) {
+                    for (uint32_t offset = 0; offset < group.count; ++offset)
+                        m_shadowViewVisible.push_back(group.first + offset);
+                    continue;
+                }
+
+                for (uint32_t offset = 0; offset < group.count; ++offset) {
+                    const uint32_t drawIndex = group.first + offset;
+                    const ShadowDraw &draw = m_shadowDrawScratch[drawIndex];
+                    if ((draw.dc->layerMask & shadowView.cullingMask) == 0u)
+                        continue;
+                    if (relation == Frustum::AABBRelation::Intersecting && draw.worldBounds.IsValid() &&
+                        !shadowFrustum.IntersectsAABB(draw.worldBounds, ignoreNearPlane))
+                        continue;
+                    m_shadowViewVisible.push_back(drawIndex);
+                }
             }
-            visibleIndices = &m_shadowViewVisible;
+            const bool everyCasterLayerAccepted =
+                std::all_of(m_shadowCullGroups.begin(), m_shadowCullGroups.end(), [&](const ShadowCullGroup &group) {
+                    return (group.layerMaskIntersection & shadowView.cullingMask) != 0u;
+                });
+            // Compacting and uploading a list that already contains nearly all
+            // static casters costs more CPU than letting fixed-function clipping
+            // reject the small outside tail. Canonicalizing dense views to the
+            // full sequence also makes their per-frame-in-flight uploads stable.
+            const bool useFullStaticSequence = staticShadowSubmission && everyCasterLayerAccepted &&
+                                               !m_shadowAllVisible.empty() &&
+                                               m_shadowViewVisible.size() * 5 >= m_shadowAllVisible.size() * 4;
+            visibleIndices = useFullStaticSequence ? &m_shadowAllVisible : &m_shadowViewVisible;
             if (staticShadowSubmission) {
+                // Adaptive CSM may move the light-space matrix by tiny amounts
+                // while selecting the exact same static casters. Preserve the
+                // visibility generation in that case so every frame-in-flight
+                // stream can reuse its already uploaded matrix range.
+                const bool sameVisibility = cachedView.valid && cachedView.cullingMask == shadowView.cullingMask &&
+                                            cachedView.type == shadowView.type &&
+                                            cachedView.fullSequence == useFullStaticSequence &&
+                                            (useFullStaticSequence || cachedView.visibleIndices == m_shadowViewVisible);
                 cachedView.viewProjection = shadowView.viewProjection;
                 cachedView.cullingMask = shadowView.cullingMask;
                 cachedView.type = shadowView.type;
-                cachedView.visibleIndices = m_shadowViewVisible;
-                cachedView.generation = staticShadowCache.nextGeneration++;
-                if (staticShadowCache.nextGeneration == 0)
-                    staticShadowCache.nextGeneration = 1;
+                if (!sameVisibility) {
+                    cachedView.fullSequence = useFullStaticSequence;
+                    if (useFullStaticSequence)
+                        cachedView.visibleIndices.clear();
+                    else
+                        cachedView.visibleIndices = m_shadowViewVisible;
+                    cachedView.generation = staticShadowCache.nextGeneration++;
+                    if (staticShadowCache.nextGeneration == 0)
+                        staticShadowCache.nextGeneration = 1;
+                }
                 cachedView.valid = true;
-                visibleIndices = &cachedView.visibleIndices;
+                visibleIndices = cachedView.fullSequence ? &m_shadowAllVisible : &cachedView.visibleIndices;
             }
         }
 

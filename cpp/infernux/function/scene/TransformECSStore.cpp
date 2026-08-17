@@ -576,15 +576,16 @@ void TransformECSStore::BeginFrameCache(Scene *scene)
         m_frameCacheSerial = 1;
     }
     m_fcDirtyIndices.clear();
+    m_fcPublishedPhysicsPose = false;
 
     m_frameCacheActive = true;
     m_fcScene = scene;
 }
 
-void TransformECSStore::EndFrameCache()
+bool TransformECSStore::EndFrameCache()
 {
     if (!m_frameCacheActive) {
-        return;
+        return false;
     }
 
     m_frameCacheActive = false;
@@ -669,6 +670,9 @@ void TransformECSStore::EndFrameCache()
         SyncSceneWorldMatrices(m_fcScene);
     }
     m_fcScene = nullptr;
+    const bool publishedPhysicsPose = m_fcPublishedPhysicsPose;
+    m_fcPublishedPhysicsPose = false;
+    return publishedPhysicsPose;
 }
 
 void TransformECSStore::EnsureFrameCacheSlot(uint32_t slotIndex)
@@ -723,6 +727,7 @@ void TransformECSStore::SetCachedWorldPoseFromPhysics(uint32_t slotIndex, const 
                                                       const glm::quat &rotation, bool applyRotation)
 {
     EnsureFrameCacheSlot(slotIndex);
+    m_fcPublishedPhysicsPose = true;
     m_fcWorldPositions[slotIndex] = position;
     MarkFrameCacheDirty(slotIndex, 0x01);
     if (applyRotation) {

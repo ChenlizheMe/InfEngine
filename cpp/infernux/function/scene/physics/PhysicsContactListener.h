@@ -66,6 +66,35 @@ enum class ContactEventType : uint8_t
     TriggerExit,
 };
 
+enum ContactEventInterest : uint8_t
+{
+    CollisionEnterInterest = 1u << 0u,
+    CollisionStayInterest = 1u << 1u,
+    CollisionExitInterest = 1u << 2u,
+    TriggerEnterInterest = 1u << 3u,
+    TriggerStayInterest = 1u << 4u,
+    TriggerExitInterest = 1u << 5u,
+};
+
+[[nodiscard]] constexpr uint8_t ContactEventInterestBit(ContactEventType type)
+{
+    switch (type) {
+    case ContactEventType::CollisionEnter:
+        return CollisionEnterInterest;
+    case ContactEventType::CollisionStay:
+        return CollisionStayInterest;
+    case ContactEventType::CollisionExit:
+        return CollisionExitInterest;
+    case ContactEventType::TriggerEnter:
+        return TriggerEnterInterest;
+    case ContactEventType::TriggerStay:
+        return TriggerStayInterest;
+    case ContactEventType::TriggerExit:
+        return TriggerExitInterest;
+    }
+    return 0;
+}
+
 struct ContactEvent
 {
     ContactEventType type;
@@ -85,6 +114,10 @@ struct ContactEvent
 class InxContactListener : public JPH::ContactListener
 {
   public:
+    /// Publish only event classes requested by live components. Contact
+    /// material resolution remains active regardless of this mask.
+    void SetEventInterestMask(uint8_t mask);
+
     /// Reset per-step buffers. Call before PhysicsWorld::Step().
     void PreStep();
 
@@ -125,6 +158,7 @@ class InxContactListener : public JPH::ContactListener
                    const JPH::ContactManifold *manifold);
     void PushRawEvent(ContactEvent event);
     void MergeRawEvents();
+    [[nodiscard]] bool Wants(ContactEventType type) const;
 
     struct ContactPairKey
     {
@@ -165,6 +199,7 @@ class InxContactListener : public JPH::ContactListener
         ContactEvent lastEvent{};
     };
     std::unordered_map<ContactPairKey, PairState, ContactPairKeyHash> m_contactPairs;
+    uint8_t m_eventInterestMask = 0;
 
     // m_contactPairs and m_events are main-thread only. Jolt worker callbacks
     // write exclusively to m_eventShards.

@@ -116,13 +116,15 @@ struct EngineConfig
     /// Maximum contact constraints.
     uint32_t physicsMaxContactConstraints = 65536;
 
-    /// Number of collision substeps per physics step.
-    /// 2 substeps halve the effective delta per collision check, preventing
-    /// tunneling for fast-moving objects and improving contact precision for
-    /// thin colliders.  Cost is ~1.5× one step (broadphase is shared).
-    int physicsCollisionSteps = 2;
+    /// Number of collision substeps per fixed physics step.
+    /// Unity-compatible default: one simulation step per 0.02-second tick.
+    /// Fast bodies should opt into continuous collision detection instead of
+    /// charging every body for a second global substep.
+    int physicsCollisionSteps = 1;
 
-    /// Jolt solver and contact-generation tuning.
+    /// Backend-native Jolt solver defaults. These are not numerically
+    /// interchangeable with PhysX/Unity iteration counts: one Jolt velocity
+    /// step does not provide a usable friction solve for stacked contacts.
     int physicsVelocitySteps = 10;
     int physicsPositionSteps = 3;
     float physicsPenetrationSlop = 0.002f;
@@ -133,13 +135,15 @@ struct EngineConfig
     float physicsLinearCastThreshold = 0.5f;
 
     /// Relative normal speed below which restitution is suppressed (m/s).
-    float physicsMinVelocityForRestitution = 1.0f;
+    float physicsMinVelocityForRestitution = 2.0f;
 
     /// Minimum quiet time before a dynamic body may enter sleep (seconds).
     float physicsTimeBeforeSleep = 0.5f;
 
     /// Maximum tracked point velocity for sleep eligibility (m/s).
-    float physicsPointVelocitySleepThreshold = 0.03f;
+    // Unity exposes a mass-normalized energy threshold of 0.005. Jolt uses a
+    // point-velocity threshold, whose translational equivalent is sqrt(2E)=0.1 m/s.
+    float physicsPointVelocitySleepThreshold = 0.1f;
 
     /// Default gravity vector.
     glm::vec3 physicsGravity{0.0f, -9.81f, 0.0f};
@@ -152,7 +156,7 @@ struct EngineConfig
     // ========================================================================
 
     /// Default dynamic friction for new colliders [0..1].
-    float defaultColliderFriction = 0.4f;
+    float defaultColliderFriction = 0.6f;
 
     /// Default bounciness (restitution) for new colliders [0..1].
     float defaultColliderBounciness = 0.0f;

@@ -943,8 +943,8 @@ void InxRenderer::DrawFrame()
     m_lastFrameTime = currentTime;
 
     // Clamp delta time to avoid huge jumps
-    if (m_deltaTime > 0.1f)
-        m_deltaTime = 0.1f;
+    if (m_deltaTime > 1.0f / 3.0f)
+        m_deltaTime = 1.0f / 3.0f;
 
     // ========================================================================
     // Frame Profiler - aggregates per-phase timings and reports at a bounded cadence.
@@ -1109,14 +1109,16 @@ void InxRenderer::DrawFrame()
     auto _scenePhaseT0 = std::chrono::high_resolution_clock::now();
     if (m_preSceneUpdateCallback)
         m_preSceneUpdateCallback(m_deltaTime);
-    TransformECSStore::Instance().BeginFrameCache(SceneManager::Instance().GetActiveScene());
+    SceneManager &sceneManager = SceneManager::Instance();
+    const float sceneDeltaTime = sceneManager.ConsumeFrameDeltaTime(m_deltaTime);
+    TransformECSStore::Instance().BeginFrameCache(sceneManager.GetActiveScene());
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.frameCacheBeginMs =
         std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _scenePhaseT0).count();
 #endif
 
     _scenePhaseT0 = std::chrono::high_resolution_clock::now();
-    SceneManager::Instance().Update(m_deltaTime);
+    sceneManager.Update(sceneDeltaTime);
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.sceneUpdateCallMs =
         std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _scenePhaseT0).count();
@@ -1127,15 +1129,16 @@ void InxRenderer::DrawFrame()
     // results are picked up by the same frame's render pass.  This matches
     // Unity's execution order: FixedUpdate → Update → LateUpdate → Render.
     _scenePhaseT0 = std::chrono::high_resolution_clock::now();
-    SceneManager::Instance().LateUpdate(m_deltaTime);
+    sceneManager.LateUpdate(sceneDeltaTime);
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.lateUpdateCallMs =
         std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _scenePhaseT0).count();
 #endif
 
     _scenePhaseT0 = std::chrono::high_resolution_clock::now();
-    TransformECSStore::Instance().EndFrameCache();
-    SceneManager &sceneManager = SceneManager::Instance();
+    const bool publishedPhysicsPose = TransformECSStore::Instance().EndFrameCache();
+    if (publishedPhysicsPose)
+        sceneManager.PublishPhysicsTransformsToRenderer();
     if (Scene *activeScene = sceneManager.GetActiveScene())
         TransformECSStore::Instance().SyncSceneWorldMatrices(activeScene);
     sceneManager.PublishAuthoredTransformsToPhysics();
@@ -1560,6 +1563,12 @@ void InxRenderer::DrawFrame()
                     << (bridgeProfile.prepareCalls ? bridgeProfile.renderables / bridgeProfile.prepareCalls : 0.0)
                     << " visible/frame="
                     << (bridgeProfile.prepareCalls ? bridgeProfile.visible / bridgeProfile.prepareCalls : 0.0)
+                    << " cameraCache=" << bridgeProfile.cameraCacheHits << "/" << bridgeProfile.cameraCacheMisses
+                    << " miss(world/structure/transform/mask/frustum/vp)=" << bridgeProfile.cameraMissWorld << "/"
+                    << bridgeProfile.cameraMissStructural << "/" << bridgeProfile.cameraMissTransform << "/"
+                    << bridgeProfile.cameraMissMask << "/" << bridgeProfile.cameraMissFrustum << "/"
+                    << bridgeProfile.cameraMissViewProjection
+                    << " conservative=" << bridgeProfile.conservativeFullListUses
                     << "\n  SRC: cull=" << (srcProfile.cullCalls ? srcProfile.cullMs / srcProfile.cullCalls : 0.0)
                     << "ms editorCull="
                     << (srcProfile.cullEditorCalls ? srcProfile.cullEditorMs / srcProfile.cullEditorCalls : 0.0)
@@ -1579,6 +1588,12 @@ void InxRenderer::DrawFrame()
                     << " listBorrowed=" << srcProfile.borrowedRendererListSubmits
                     << " listOwned=" << srcProfile.ownedRendererListSubmits << " materialized/frame="
                     << (srcProfile.submitCalls ? srcProfile.materializedDrawCalls / srcProfile.submitCalls : 0.0)
+                    << " reuse=" << srcProfile.cachedSubmissionReuses
+                    << " reject(editor/visible/shadow/graph/upload/signature)="
+                    << srcProfile.submissionRejectEditorAppenders << "/" << srcProfile.submissionRejectOwnedVisibleList
+                    << "/" << srcProfile.submissionRejectOwnedShadowList << "/"
+                    << srcProfile.submissionRejectMissingGraph << "/" << srcProfile.submissionRejectPendingUploads
+                    << "/" << srcProfile.submissionRejectSignature
                     << "\n  CleanupDetail: collectIds=" << (_detailAccum.cleanupCollectIdsMs / kWindow)
                     << "ms release=" << (_detailAccum.cleanupReleaseMs / kWindow)
                     << "ms activeIds/frame=" << (_detailAccum.cleanupActiveIds / kWindow)

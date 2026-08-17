@@ -1504,6 +1504,7 @@ class InxVkCoreModular
         uint32_t instanceCount = 0;
         VkBuffer instanceBuffer = VK_NULL_HANDLE;
         VkBuffer skinInstanceBuffer = VK_NULL_HANDLE;
+        VkBuffer instanceAuxBuffer = VK_NULL_HANDLE;
         uint64_t lastUsedFrame = 0;
     };
     uint64_t m_drawListActivation = 0;
@@ -1526,6 +1527,17 @@ class InxVkCoreModular
     };
     std::vector<ShadowDraw> m_shadowDrawScratch;
     std::vector<uint32_t> m_shadowViewVisible; ///< Per-view visible indices into m_shadowDrawScratch
+    std::vector<uint32_t> m_shadowAllVisible;  ///< Stable full sequence for dense static shadow views
+    struct ShadowCullGroup
+    {
+        uint32_t first = 0;
+        uint32_t count = 0;
+        uint32_t layerMaskUnion = 0;
+        uint32_t layerMaskIntersection = 0;
+        AABB worldBounds;
+        bool allBoundsValid = false;
+    };
+    std::vector<ShadowCullGroup> m_shadowCullGroups;
     uint64_t m_shadowScratchDrawListActivation = 0;
     uint64_t m_shadowScratchMaterialPublicationGeneration = 0;
     VkRenderPass m_shadowScratchRenderPass = VK_NULL_HANDLE;
@@ -1575,6 +1587,7 @@ class InxVkCoreModular
             lighting::ShadowViewType type = lighting::ShadowViewType::DirectionalCascade;
             uint64_t generation = 0;
             std::vector<uint32_t> visibleIndices;
+            bool fullSequence = false;
             bool valid = false;
         };
 
@@ -1755,7 +1768,14 @@ class InxVkCoreModular
     /// @brief Ensure the current frame's instance buffer can hold at least \p instanceCount matrices.
     /// Preserves existing data when growing.
     void EnsureInstanceBufferCapacity(uint32_t frameIndex, size_t instanceCount);
-    /// @brief Update the globals descriptor set binding 1 with the current frame's instance buffer.
+    /// @brief Publish an immutable descriptor revision for all globals bindings.
+    ///
+    /// Vulkan invalidates command buffers when a descriptor set they already
+    /// reference is updated. Buffer growth can happen between passes, so the
+    /// globals set is replaced wholesale and its previous lease is retired by
+    /// submission serial instead of being mutated in place.
+    bool PublishGlobalsDescriptorRevision(uint32_t frameIndex);
+    /// @brief Publish the current frame's instance buffer through a new globals descriptor revision.
     void UpdateInstanceBufferDescriptor(uint32_t frameIndex);
     void EnsureSkinBuffersCapacity(uint32_t frameIndex, size_t skinInstanceCount, size_t boneMatrixCount);
     void EnsureInstanceAuxBufferCapacity(uint32_t frameIndex, size_t instanceCount);

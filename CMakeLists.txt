@@ -958,6 +958,21 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.runtime_persistent_scene COMMAND infernux_runtime_persistent_scene_tests)
 
+    add_executable(infernux_camera_culling_isolation_tests
+        cpp/tests/CameraCullingIsolationTests.cpp
+    )
+    target_include_directories(infernux_camera_culling_isolation_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_camera_culling_isolation_tests PRIVATE InfernuxRuntime)
+    if(MSVC)
+        target_compile_options(infernux_camera_culling_isolation_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_camera_culling_isolation_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.camera_culling_isolation COMMAND infernux_camera_culling_isolation_tests)
+
     add_executable(infernux_particle_gpu_runtime_tests
         cpp/tests/ParticleGpuRuntimeTests.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuBillboardRenderer.cpp

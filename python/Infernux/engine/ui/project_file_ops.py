@@ -125,7 +125,7 @@ MATERIAL_TEMPLATE = '''{{
 '''
 
 PHYSIC_MATERIAL_TEMPLATE = '''{
-  "friction": 0.4,
+  "friction": 0.6,
   "bounciness": 0.0,
   "friction_combine": 0,
   "bounce_combine": 0

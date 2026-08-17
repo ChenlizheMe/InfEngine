@@ -47,7 +47,8 @@ void SceneRenderBridge::OnWindowResize(uint32_t width, uint32_t height)
 
 void SceneRenderBridge::PrepareFrame(bool useActiveCameraCulling)
 {
-    m_extractor.SetFrustumCullingEnabled(m_sceneRenderer.IsFrustumCullingEnabled());
+    // Kept in the public call shape for now; extraction no longer culls by the
+    // active camera. Every camera culls independently in CullAndBuildForCamera.
     const size_t visible =
         m_extractor.ExtractEditorFrame(m_sceneRenderer.WritableRenderWorld(), useActiveCameraCulling);
     m_sceneRenderer.m_visibleCount.store(visible, std::memory_order_relaxed);
@@ -58,10 +59,26 @@ DrawCallResult SceneRenderBridge::PrepareAndBuildForCamera(Camera *camera)
     SceneRenderExtractor extractor;
     SceneRenderer renderer;
     renderer.SetFrustumCullingEnabled(m_sceneRenderer.IsFrustumCullingEnabled());
-    extractor.SetFrustumCullingEnabled(renderer.IsFrustumCullingEnabled());
     const size_t visible = extractor.ExtractCameraFrame(renderer.WritableRenderWorld(), camera);
     renderer.m_visibleCount.store(visible, std::memory_order_relaxed);
-    return renderer.BuildDrawCalls();
+
+    RenderViewData view;
+    if (camera) {
+        view.view = camera->GetViewMatrix();
+        view.projection = camera->GetProjectionMatrix();
+        view.viewProjection = camera->GetViewProjectionMatrix();
+        view.cullingMask = camera->GetCullingMask();
+        view.cameraId = camera->GetComponentID();
+        view.valid = true;
+    }
+
+    CameraDrawCallResult cameraResult = renderer.BuildDrawCallsForCamera(view, false);
+    DrawCallResult result;
+    if (cameraResult.visibleDrawCallsRef)
+        result.drawCalls = *cameraResult.visibleDrawCallsRef;
+    else
+        result.drawCalls = std::move(cameraResult.visibleDrawCalls);
+    return result;
 }
 
 CameraDrawCallResult SceneRenderBridge::CullAndBuildForCamera(Camera *camera, bool includeShadowDrawCalls)

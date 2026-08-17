@@ -237,6 +237,8 @@ class PlayerSceneService:
         scene = scene_manager.get_active_scene()
         self._active_scene_path = path
         self._last_error = ""
+        from Infernux.timing import Time
+        Time._reset_frame_delta()
         if start_for_play:
             scene_manager._start_active_scene_for_play()
         Debug.log_internal(

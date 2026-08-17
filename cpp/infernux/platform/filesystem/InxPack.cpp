@@ -657,36 +657,12 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
         throw std::invalid_argument("InxPack cannot be empty");
 
     Manifest manifest;
-    std::vector<std::vector<uint8_t>> storedData;
-    storedData.reserve(sources.size());
+    manifest.entries.reserve(sources.size());
     std::vector<std::string> strings;
     strings.reserve(sources.size());
     for (const auto &source : sources) {
-        const auto raw = ReadBytes(source.source);
-        const auto rawHash = HashBytes(raw.data(), raw.size());
-        std::vector<uint8_t> compressed(ZSTD_compressBound(raw.size()));
-        const size_t compressedBytes =
-            ZSTD_compress(compressed.data(), compressed.size(), raw.data(), raw.size(), compressionLevel);
-        if (ZSTD_isError(compressedBytes))
-            throw std::runtime_error(std::string("InxPack zstd compression failed: ") +
-                                     ZSTD_getErrorName(compressedBytes));
-        compressed.resize(compressedBytes);
-
         Entry entry;
         entry.path = source.path;
-        entry.rawBytes = raw.size();
-        entry.hash = rawHash;
-        if (compressed.size() + 16 < raw.size()) {
-            entry.codec = Codec::Zstandard;
-            storedData.push_back(std::move(compressed));
-        } else {
-            entry.codec = Codec::Store;
-            storedData.push_back(raw);
-        }
-        entry.storedBytes = storedData.back().size();
-        entry.storedHash = HashBytes(storedData.back().data(), storedData.back().size());
-        manifest.rawBytes += entry.rawBytes;
-        manifest.storedBytes += entry.storedBytes;
         manifest.entries.push_back(std::move(entry));
         strings.push_back(source.path);
     }
@@ -698,12 +674,54 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
         AlignUp(sizeof(TocPrefixDisk) + manifest.entries.size() * sizeof(EntryDisk) + stringBytes, kAlignment);
     const uint64_t tocOffset = sizeof(HeaderDisk);
     const uint64_t payloadOffset = AlignUp(tocOffset + tocBytes, kAlignment);
-    uint64_t payloadCursor = 0;
-    for (auto &entry : manifest.entries) {
-        entry.offset = payloadCursor;
-        payloadCursor = AlignUp(payloadCursor + entry.storedBytes, kAlignment);
+    const std::filesystem::path destinationPath = destination;
+    if (!destinationPath.parent_path().empty())
+        std::filesystem::create_directories(destinationPath.parent_path());
+    // Keep the temporary output as a filesystem::path so Unicode Windows paths
+    // stay wide all the way through the exclusive reservation and publish.
+    const auto temporaryOutputPath = MakeUniqueTemporaryPath(destinationPath);
+    TemporaryOutputGuard temporaryGuard(temporaryOutputPath);
+    {
+        std::ofstream output(temporaryOutputPath, std::ios::binary | std::ios::trunc);
+        if (!output)
+            throw std::runtime_error("InxPack cannot create output: " + FromFsPath(destination));
+        HeaderDisk placeholder{};
+        WriteExact(output, &placeholder, sizeof(placeholder));
+        WriteZeros(output, tocBytes);
+        WriteZeros(output, payloadOffset - tocOffset - tocBytes);
+
+        uint64_t cursor = 0;
+        for (size_t index = 0; index < sources.size(); ++index) {
+            const auto raw = ReadBytes(sources[index].source);
+            std::vector<uint8_t> compressed(ZSTD_compressBound(raw.size()));
+            const size_t compressedBytes =
+                ZSTD_compress(compressed.data(), compressed.size(), raw.data(), raw.size(), compressionLevel);
+            if (ZSTD_isError(compressedBytes))
+                throw std::runtime_error(std::string("InxPack zstd compression failed: ") +
+                                         ZSTD_getErrorName(compressedBytes));
+            compressed.resize(compressedBytes);
+
+            auto &entry = manifest.entries[index];
+            entry.offset = cursor;
+            entry.rawBytes = raw.size();
+            entry.hash = HashBytes(raw.data(), raw.size());
+            const std::vector<uint8_t> &stored = compressed.size() + 16 < raw.size() ? compressed : raw;
+            entry.codec = &stored == &compressed ? Codec::Zstandard : Codec::Store;
+            entry.storedBytes = stored.size();
+            entry.storedHash = HashBytes(stored.data(), stored.size());
+            manifest.rawBytes += entry.rawBytes;
+            manifest.storedBytes += entry.storedBytes;
+
+            WriteExact(output, stored.data(), stored.size());
+            cursor = AlignUp(cursor + stored.size(), kAlignment);
+            const uint64_t written = entry.offset + stored.size();
+            WriteZeros(output, cursor - written);
+        }
+        manifest.payloadBytes = cursor;
+        output.flush();
+        if (!output)
+            throw std::runtime_error("InxPack failed to flush output: " + FromFsPath(destination));
     }
-    manifest.payloadBytes = payloadCursor;
 
     std::vector<uint8_t> toc(static_cast<size_t>(tocBytes));
     TocPrefixDisk prefix{};
@@ -713,7 +731,7 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
     prefix.entryCount = manifest.entries.size();
     prefix.stringBytes = stringBytes;
     std::memcpy(toc.data(), &prefix, sizeof(prefix));
-    uint64_t stringOffset = sizeof(TocPrefixDisk) + manifest.entries.size() * sizeof(EntryDisk);
+    const uint64_t stringOffset = sizeof(TocPrefixDisk) + manifest.entries.size() * sizeof(EntryDisk);
     uint64_t pathOffset = 0;
     for (size_t index = 0; index < manifest.entries.size(); ++index) {
         EntryDisk disk{};
@@ -733,33 +751,15 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
     }
 
     const auto tocHash = HashBytes(toc.data(), toc.size());
-    const std::filesystem::path destinationPath = destination;
-    if (!destinationPath.parent_path().empty())
-        std::filesystem::create_directories(destinationPath.parent_path());
-    // Keep the temporary output as a filesystem::path so Unicode Windows paths
-    // stay wide all the way through the exclusive reservation and publish.
-    const auto temporaryOutputPath = MakeUniqueTemporaryPath(destinationPath);
-    TemporaryOutputGuard temporaryGuard(temporaryOutputPath);
     {
-        std::ofstream output(temporaryOutputPath, std::ios::binary | std::ios::trunc);
+        std::fstream output(temporaryOutputPath, std::ios::binary | std::ios::in | std::ios::out);
         if (!output)
-            throw std::runtime_error("InxPack cannot create output: " + FromFsPath(destination));
-        HeaderDisk header = MakeHeader(manifest, tocOffset, tocBytes, payloadOffset, stringBytes, tocHash,
-                                       HashBytes(nullptr, 0), HashBytes(nullptr, 0));
-        WriteExact(output, &header, sizeof(header));
+            throw std::runtime_error("InxPack cannot reopen output: " + FromFsPath(destination));
+        output.seekp(static_cast<std::streamoff>(tocOffset));
         WriteExact(output, toc.data(), toc.size());
-        WriteZeros(output, payloadOffset - tocOffset - tocBytes);
-        uint64_t cursor = 0;
-        for (size_t index = 0; index < storedData.size(); ++index) {
-            const uint64_t pad = manifest.entries[index].offset - cursor;
-            WriteZeros(output, pad);
-            WriteExact(output, storedData[index].data(), storedData[index].size());
-            cursor = manifest.entries[index].offset + storedData[index].size();
-        }
-        WriteZeros(output, manifest.payloadBytes - cursor);
         output.flush();
         if (!output)
-            throw std::runtime_error("InxPack failed to flush output: " + FromFsPath(destination));
+            throw std::runtime_error("InxPack failed to write its table of contents: " + FromFsPath(destination));
     }
 
     const auto payloadHash = HashFileRange(temporaryOutputPath, payloadOffset, manifest.payloadBytes);

@@ -124,6 +124,12 @@ class SceneManager
     /// @brief Call every frame
     void Update(float deltaTime);
 
+    /// Consume the one-frame timing boundary published by a scene replacement.
+    /// The first frame of a newly committed scene receives zero delta so asset
+    /// preparation and graph construction time cannot leak into gameplay,
+    /// animation, particles, or the fixed-step accumulator.
+    [[nodiscard]] float ConsumeFrameDeltaTime(float deltaTime) noexcept;
+
     /// Flush deferred body creation and dirty static Collider poses before a
     /// scene query. Static-only scenes otherwise defer this work because they
     /// have no dynamics or contacts to simulate.
@@ -149,6 +155,10 @@ class SceneManager
     /// Publish the Transform writes collected during the current frame to
     /// physics. Called once after TransformECSStore::EndFrameCache().
     void PublishAuthoredTransformsToPhysics();
+
+    /// Invalidate render-view caches after a batch of physics-owned Transform
+    /// poses is committed. This intentionally does not dirty colliders.
+    void PublishPhysicsTransformsToRenderer() noexcept;
 
     [[nodiscard]] const FrameProfile &GetLastFrameProfile() const
     {
@@ -492,9 +502,10 @@ class SceneManager
     // Fixed-update timing
     float m_fixedTimeStep = 1.0f / 50.0f; // 50 Hz default (Unity default)
     float m_fixedTimeAccumulator = 0.0f;
-    float m_maxFixedDeltaTime = 0.1f; // cap to avoid spiral-of-death
+    float m_maxFixedDeltaTime = 1.0f / 3.0f; // Unity Maximum Allowed Timestep default
     float m_timeScale = 1.0f;
     float m_lastScaledDeltaTime = 0.0f;
+    bool m_resetDeltaTimeOnNextFrame = true;
     double m_fixedTime = 0.0;
     double m_fixedUnscaledTime = 0.0;
 

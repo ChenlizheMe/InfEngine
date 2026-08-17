@@ -662,6 +662,9 @@ class SceneManager:
         if sfm is not None:
             sfm._finish_open_scene(path, runtime_load=True)
 
+        from Infernux.timing import Time
+        Time._reset_frame_delta()
+
         sm = _NativeSceneManager.instance()
         scene = sm.get_active_scene()
         if scene:

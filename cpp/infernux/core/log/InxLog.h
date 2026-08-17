@@ -106,9 +106,10 @@ class InxLog
     void LogImpl(LogLevel level, const char *file, int line, bool internalOnly, Args &&...args)
     {
 #if INFERNUX_COMPILE_OUT_DEBUG_LOGS
-        // Shipping builds must not forward C++ debug diagnostics to any sink,
-        // even when a caller bypasses INXLOG_DEBUG and invokes Log directly.
-        if (level == LOG_DEBUG)
+        // Shipping builds expose only actionable native failures. Python
+        // diagnostics use ConsolePanel::LogFromPython and deliberately remain
+        // unaffected by this native logger policy.
+        if (level < LOG_ERROR)
             return;
 #endif
         if (logLevel.load(std::memory_order_relaxed) > level)
@@ -296,19 +297,23 @@ class InxLog
     } while (false)
 
 #if INFERNUX_COMPILE_OUT_DEBUG_LOGS
-// Do not evaluate debug-log arguments in shipping builds. Besides keeping the
-// editor Console clean, this removes formatting and helper-call overhead.
+// Do not evaluate non-error native log arguments in shipping builds. Besides
+// keeping Player output clean, this removes formatting and helper-call work.
 #define INXLOG_DEBUG(...) ((void)0)
 #define INXLOG_DEBUG_INTERNAL(...) ((void)0)
+#define INXLOG_INFO(...) ((void)0)
+#define INXLOG_WARN(...) ((void)0)
+#define INXLOG_INFO_INTERNAL(...) ((void)0)
+#define INXLOG_WARN_INTERNAL(...) ((void)0)
 #else
 #define INXLOG_DEBUG(...) INXLOG_INTERNAL(LOG_DEBUG, __VA_ARGS__)
 #define INXLOG_DEBUG_INTERNAL(...) INXLOG_FILE_ONLY(LOG_DEBUG, __VA_ARGS__)
-#endif
 #define INXLOG_INFO(...) INXLOG_INTERNAL(LOG_INFO, __VA_ARGS__)
 #define INXLOG_WARN(...) INXLOG_INTERNAL(LOG_WARN, __VA_ARGS__)
-#define INXLOG_ERROR(...) INXLOG_INTERNAL(LOG_ERROR, __VA_ARGS__)
 #define INXLOG_INFO_INTERNAL(...) INXLOG_FILE_ONLY(LOG_INFO, __VA_ARGS__)
 #define INXLOG_WARN_INTERNAL(...) INXLOG_FILE_ONLY(LOG_WARN, __VA_ARGS__)
+#endif
+#define INXLOG_ERROR(...) INXLOG_INTERNAL(LOG_ERROR, __VA_ARGS__)
 #define INXLOG_ERROR_INTERNAL(...) INXLOG_FILE_ONLY(LOG_ERROR, __VA_ARGS__)
 #define INXLOG_FATAL(...)                                                                                              \
     do {                                                                                                               \

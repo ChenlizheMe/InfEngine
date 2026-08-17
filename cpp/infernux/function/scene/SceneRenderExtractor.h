@@ -21,14 +21,6 @@ class SceneRenderExtractor final
     [[nodiscard]] size_t ExtractEditorFrame(RenderWorldSnapshot &world, bool useActiveCameraCulling);
     [[nodiscard]] size_t ExtractCameraFrame(RenderWorldSnapshot &world, Camera *camera);
 
-    void SetFrustumCullingEnabled(bool enabled)
-    {
-        m_frustumCulling = enabled;
-    }
-    [[nodiscard]] bool IsFrustumCullingEnabled() const
-    {
-        return m_frustumCulling;
-    }
     void SetAspectRatio(float aspect);
 
 #if INFERNUX_FRAME_PROFILE
@@ -55,9 +47,8 @@ class SceneRenderExtractor final
 
     void CollectRenderables(RenderWorldFrame &frame);
     void CapturePrimaryView(RenderWorldFrame &frame, Camera *camera);
-    void PerformCulling(RenderWorldFrame &frame);
     void SortRenderables(RenderWorldFrame &frame);
-    void UpdateCachedRenderableTransforms(RenderWorldFrame &frame, bool useActiveCameraCulling);
+    void UpdateCachedRenderableTransforms(RenderWorldFrame &frame);
     void EmitDrawCallsForRenderable(DrawCallResult &result, const RenderProxy &renderable, SceneRenderSource &source,
                                     bool visible, bool bufferDirty) const;
     void RebuildDrawCalls(RenderWorldFrame &frame);
@@ -66,13 +57,7 @@ class SceneRenderExtractor final
     std::vector<SceneRenderSource> m_sceneSources;
     size_t m_visibleCount = 0;
     uint64_t m_lastTransformRevision = 0;
-    glm::mat4 m_lastViewProjection{1.0f};
-    uint32_t m_lastCullingMask = 0xFFFFFFFFu;
-    bool m_hasLastFrameState = false;
     bool m_allRenderersStatic = false;
-    bool m_lastUsedFrustum = false;
-    bool m_frustumCulling = true;
-    bool m_frustumVisibilityDirty = false;
 
 #if INFERNUX_FRAME_PROFILE
     SceneRendererProfileSnapshot m_profileSnapshot;

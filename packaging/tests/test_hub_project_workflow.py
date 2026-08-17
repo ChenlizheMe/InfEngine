@@ -257,6 +257,10 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     assert "/.venv/" in gitignore
     assert "/.runtime/" in gitignore
     assert "*.meta\n" not in gitignore
+    gitattributes = (Path(result) / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.scene text eol=lf" in gitattributes
+    assert "*.meta text eol=lf" in gitattributes
+    assert "*.fbx binary" in gitattributes
     assert not (Path(result) / "Assets" / "README.md").exists()
     assert (Path(result) / "Assets" / "Scenes" / "Start.scene").is_file()
     assert (Path(result) / "Assets" / "Rendering" / "Bloom.effect").is_file()

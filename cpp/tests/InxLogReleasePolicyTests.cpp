@@ -15,16 +15,20 @@ int main()
         receivedLevels.push_back(level);
     });
 
-    int evaluatedDebugArgument = 0;
-    INXLOG_DEBUG(++evaluatedDebugArgument);
+    int evaluatedNonErrorArgument = 0;
+    INXLOG_DEBUG(++evaluatedNonErrorArgument);
+    INXLOG_INFO(++evaluatedNonErrorArgument);
+    INXLOG_WARN(++evaluatedNonErrorArgument);
     log.Log(LOG_DEBUG, __FILE__, __LINE__, "direct debug call");
-    INXLOG_INFO("release policy info probe");
+    log.Log(LOG_INFO, __FILE__, __LINE__, "direct info call");
+    log.Log(LOG_WARN, __FILE__, __LINE__, "direct warning call");
+    INXLOG_ERROR("release policy error probe");
 
     log.RemoveSink(sinkId);
 
-    if (evaluatedDebugArgument != 0)
+    if (evaluatedNonErrorArgument != 0)
         return EXIT_FAILURE;
-    if (receivedLevels.size() != 1 || receivedLevels.front() != LOG_INFO)
+    if (receivedLevels.size() != 1 || receivedLevels.front() != LOG_ERROR)
         return EXIT_FAILURE;
     return EXIT_SUCCESS;
 }

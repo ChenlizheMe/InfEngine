@@ -693,7 +693,7 @@ void Infernux::Run()
         auto previous = std::chrono::steady_clock::now();
         while (!m_exitRequested.load(std::memory_order_acquire)) {
             const auto now = std::chrono::steady_clock::now();
-            const float deltaTime = std::min(std::chrono::duration<float>(now - previous).count(), 0.1f);
+            const float deltaTime = std::min(std::chrono::duration<float>(now - previous).count(), 1.0f / 3.0f);
             previous = now;
             Tick(deltaTime);
 
@@ -740,14 +740,15 @@ void Infernux::Tick(float deltaTime)
         throw std::invalid_argument("delta_time must be finite and non-negative");
     }
 
+    auto &sceneManager = SceneManager::Instance();
     if (m_preSceneUpdateCallback)
         m_preSceneUpdateCallback(deltaTime);
-
-    auto &sceneManager = SceneManager::Instance();
+    const float sceneDeltaTime = sceneManager.ConsumeFrameDeltaTime(deltaTime);
     TransformECSStore::Instance().BeginFrameCache(sceneManager.GetActiveScene());
-    sceneManager.Update(deltaTime);
-    sceneManager.LateUpdate(deltaTime);
-    TransformECSStore::Instance().EndFrameCache();
+    sceneManager.Update(sceneDeltaTime);
+    sceneManager.LateUpdate(sceneDeltaTime);
+    if (TransformECSStore::Instance().EndFrameCache())
+        sceneManager.PublishPhysicsTransformsToRenderer();
     sceneManager.PublishAuthoredTransformsToPhysics();
     sceneManager.EndFrame();
 }
@@ -3330,8 +3331,7 @@ void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
             // extension inference classifies the physical artifact as text.
             const auto metadata = adb->GetMetaByPath(assetPath);
             const ResourceType resourceType =
-                metadata ? metadata->GetResourceType()
-                         : adb->GetResourceTypeForPath(assetPath);
+                metadata ? metadata->GetResourceType() : adb->GetResourceTypeForPath(assetPath);
             if (resourceType == ResourceType::Shader)
                 processPath(ToFsPath(assetPath));
         }

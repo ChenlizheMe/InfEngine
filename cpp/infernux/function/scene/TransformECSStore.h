@@ -313,7 +313,10 @@ class TransformECSStore
     // The cache also covers local properties for write-tracking consistency.
 
     void BeginFrameCache(Scene *scene);
-    void EndFrameCache();
+    /// Commit cached writes. Returns true when at least one physics-authored
+    /// pose was published; callers use this to invalidate render-only caches
+    /// once per frame without feeding those poses back into physics.
+    [[nodiscard]] bool EndFrameCache();
 
     [[nodiscard]] bool IsFrameCacheActive() const
     {
@@ -401,6 +404,7 @@ class TransformECSStore
     uint64_t m_frameCacheSerial = 0;
     bool m_frameCacheActive = false;
     Scene *m_fcScene = nullptr; // scene pointer for EndFrameCache sync
+    bool m_fcPublishedPhysicsPose = false;
     InvalidationObserver m_invalidationObserver;
 };
 
