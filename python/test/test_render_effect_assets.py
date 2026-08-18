@@ -142,6 +142,31 @@ def test_render_effect_asset_does_not_encode_mount_scope():
     assert "queue" not in serialized
 
 
+def test_effect_reference_stamps_guid_from_adjacent_meta(tmp_path):
+    target = tmp_path / "Style Comic Fisheye.effect"
+    target.write_text("{}", encoding="utf-8")
+    (tmp_path / "Style Comic Fisheye.effect.meta").write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "guid": {
+                        "type": "string",
+                        "value": "472285e708b5659d12e27eb9138c313a",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stamped = EffectAssetReference(path_hint=str(target))
+    kept = EffectAssetReference(guid="already-authored", path_hint=str(target))
+
+    assert stamped.guid == "472285e708b5659d12e27eb9138c313a"
+    assert stamped.path_hint
+    assert kept.guid == "already-authored"
+
+
 def test_direct_construction_rejects_untyped_dependency_values():
     with pytest.raises(TypeError, match="EffectAssetReference"):
         RenderEffectAsset(

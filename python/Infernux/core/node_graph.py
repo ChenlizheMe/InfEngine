@@ -104,6 +104,7 @@ class NodeInlineFieldDef:
     enum_labels: tuple[str, ...] = ()
     visible_when_field: str = ""
     visible_when_value: Any = None
+    hdr: bool = False
 
     def __post_init__(self) -> None:
         if self.enum_labels and len(self.enum_labels) != len(self.enum_values):

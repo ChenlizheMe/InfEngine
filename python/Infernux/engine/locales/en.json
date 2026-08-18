@@ -90,6 +90,7 @@
   "particle_graph_editor.parameter_writable": "Runtime writable",
   "particle_graph_editor.parameter_category": "Category",
   "particle_graph_editor.parameter_tooltip": "Tooltip",
+  "particle_graph_editor.parameter_hdr": "HDR",
   "particle_graph_editor.type_bool": "Boolean",
   "particle_graph_editor.type_i32": "Integer",
   "particle_graph_editor.type_u32": "Unsigned Integer",

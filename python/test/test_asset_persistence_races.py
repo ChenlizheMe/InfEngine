@@ -543,3 +543,22 @@ def test_registered_and_unregistered_imports_share_external_publish(monkeypatch,
     ResourceChangeHandler(_Engine())._commit_modified(resolved)
 
     assert published == [resolved]
+
+
+def test_inspector_asset_write_replaces_a_changed_target(tmp_path):
+    from Infernux.core.document_store import DocumentStore, capture_document_file_state
+
+    path = tmp_path / "world.effectgroup"
+    path.write_text("before", encoding="utf-8")
+    expected = capture_document_file_state(str(path))
+    AssetManager.set_document_save_expected_state(str(path), expected)
+    state = AssetManager._asset_revision_state(path_key(str(path)))
+    state.persisted_file_state = expected
+    path.write_text("extern", encoding="utf-8")
+
+    ticket = AssetManager._submit_document_snapshot(str(path), "inspector")
+    ticket.wait()
+
+    assert ticket.status == "succeeded"
+    assert path.read_text(encoding="utf-8") == "inspector"
+    DocumentStore.shutdown()

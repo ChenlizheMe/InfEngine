@@ -759,6 +759,40 @@ def test_initial_script_scan_publishes_artifact_for_main_thread(monkeypatch, tmp
     manager.cleanup()
 
 
+def test_prepare_startup_finishes_refresh_before_the_watcher_loop(monkeypatch, tmp_path):
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    (assets / "valid.py").write_text("value = 1\n", encoding="utf-8")
+    (assets / "broken.py").write_text("def broken(:\n", encoding="utf-8")
+
+    manager = ResourcesManager(str(tmp_path), _EngineProbe(_AssetDatabaseProbe()))
+    published = []
+    monkeypatch.setattr(
+        "Infernux.components.script_loader.set_script_error",
+        lambda path, message: published.append(("set", path, message)),
+    )
+    monkeypatch.setattr(
+        "Infernux.components.script_loader._clear_script_error",
+        lambda path: published.append(("clear", path)),
+    )
+    started = []
+    monkeypatch.setattr(
+        manager,
+        "start",
+        lambda **kwargs: started.append(kwargs.get("skip_initial_scan")),
+    )
+
+    manager.prepare_startup()
+
+    assert started == [True]
+    assert manager._startup_prepared is True
+    assert manager._event_handler is not None
+    assert manager._event_handler._initial_scan_transaction_id is None
+    assert manager.process_pending_reloads(force=True) == 0
+    assert {entry[0] for entry in published} == {"set"}
+    manager.cleanup()
+
+
 def test_initial_scan_supersede_restarts_barrier_with_current_sources(
     monkeypatch, tmp_path
 ):

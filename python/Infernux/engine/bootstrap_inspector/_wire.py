@@ -1436,6 +1436,7 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
     from Infernux.engine.ui.inspector_snapshot import (
         InspectorSnapshotService,
         InspectorTarget,
+        sync_selected_transforms_from_native_serial,
     )
     from Infernux.components.component import InxComponent
 
@@ -1566,12 +1567,22 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
             "editor-inspector-snapshot",
             start_at_current=True,
         )
+        inspector_transform_serial = [None]
 
         def _get_revision_snapshot():
             snapshot_service.consume_changes(
                 inspector_journal.consume(inspector_change_cursor, flush=False)
             )
             object_ids = tuple(int(value) for value in selection.scene_object_ids())
+            getter = getattr(SceneManager.instance(), "get_global_transform_serial", None)
+            if callable(getter):
+                inspector_transform_serial[0] = (
+                    sync_selected_transforms_from_native_serial(
+                        int(getter()),
+                        object_ids,
+                        previous_serial=inspector_transform_serial[0],
+                    )
+                )
             selected_file = str(ip.get_selected_file() or "")
             if len(object_ids) == 1:
                 target = InspectorTarget.scene_object(object_ids[0])

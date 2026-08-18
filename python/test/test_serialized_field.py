@@ -122,6 +122,7 @@ class TestBuildField:
         meta = build_field_from_annotation(Color, default=_UNSET)
         assert meta.field_type == FieldType.COLOR
         assert tuple(meta.default) == (1.0, 1.0, 1.0, 1.0)
+        assert meta.hdr is False
 
     def test_color_string_annotation(self):
         meta = build_field_from_annotation("Color", default=_UNSET)
@@ -243,6 +244,7 @@ class TestV2Showcase:
         meta = self.fields['tint']
         assert meta.field_type == FieldType.COLOR
         assert tuple(meta.default)[:3] == (1.0, 0.0, 0.0)
+        assert meta.hdr is False
 
     def test_hidden_field_serialized(self):
         assert 'secret' in self.fields
@@ -338,6 +340,52 @@ class TestStrictSerializationFailures:
 
         with pytest.raises(TypeError, match=r"UnsupportedField\.payload"):
             component._serialize_fields()
+
+    def test_non_finite_vector_falls_back_to_field_default(self):
+        from Infernux.math import Vector3
+
+        class CameraRig(InxComponent):
+            speed: float = serialized_field(default=2.4)
+            sway: Vector3 = serialized_field(default=Vector3(0.1, 0.2, 0.3))
+
+        component = CameraRig()
+        component.speed = 5.0
+        # C++ Vector3 rejects NaN at construction. Bypass CDS so encode sees
+        # the leftover non-finite payload the way a stale Python store would.
+        component._cds_slot = None
+        type(component).__dict__["speed"]._values[id(component)] = 5.0
+        type(component).__dict__["sway"]._values[id(component)] = [
+            float("nan"),
+            0.0,
+            0.0,
+        ]
+
+        document = component._serialize_fields_document()
+        assert document["speed"] == 5.0
+        assert document["sway"] == pytest.approx([0.1, 0.2, 0.3])
+
+    def test_repair_keeps_editor_defaults_for_stale_scene_data(self):
+        class ShowcaseDirector(InxComponent):
+            style_interval: float = serialized_field(default=3.5)
+            camera_name: str = serialized_field(default="Main Camera")
+
+        component = ShowcaseDirector()
+        component._deserialize_fields_document(
+            {
+                "__type_name__": "ShowcaseDirector",
+                "style_interval": "broken",
+                "camera_name": "Hero Camera",
+                "camera_position_sway": [0.1, 0.2, 0.3],
+            },
+            repair=True,
+        )
+
+        assert component.style_interval == 3.5
+        assert component.camera_name == "Hero Camera"
+        healed = component._serialize_fields_document()
+        assert "camera_position_sway" not in healed
+        assert healed["style_interval"] == 3.5
+        assert healed["camera_name"] == "Hero Camera"
 
     @pytest.mark.parametrize(
         "mutate, error",
@@ -484,3 +532,17 @@ class TestColorClass:
         assert isinstance(snap, list)
         assert snap == [0.2, 0.4, 0.6, 1.0]
         assert snap is not src
+
+
+class TestEffectColorFieldsAllowHdr:
+    def test_mixin_color_annotation_keeps_hdr(self):
+        from Infernux.renderstack._serialized_field_mixin import (
+            SerializedFieldCollectorMixin,
+        )
+
+        class BloomTint(SerializedFieldCollectorMixin):
+            tint: Annotated[Color, HDR] = Color(1.0, 1.0, 1.0, 1.0)
+
+        meta = get_serialized_fields(BloomTint)["tint"]
+        assert meta.field_type == FieldType.COLOR
+        assert meta.hdr is True

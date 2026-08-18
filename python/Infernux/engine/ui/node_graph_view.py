@@ -224,8 +224,8 @@ class _NodeLayout:
     h: float = 60.0
     input_pins: List[_PinLayout] = field(default_factory=list)
     output_pins: List[_PinLayout] = field(default_factory=list)
-    # Pixels of space reserved on the node's left for compact pin value boxes
-    # that hang outside the node body (Unity Shader Graph style).
+    # Shared canvas pad so hanging pin value boxes stay in the clip region.
+    # Must not depend on which pins are currently wired.
     left_reserve: float = 0.0
 
 
@@ -885,6 +885,43 @@ class NodeGraphView:
             width = max(width, input_width + output_width + pin_reserve * 2.0)
         return width
 
+    def _pin_hug_field_width(self, data_type) -> float:
+        data_type_str = str(data_type)
+        if data_type_str in {"asset_ref", "texture2d", "mesh"}:
+            return _PIN_ASSET_HUG_W
+        if data_type_str in {"vec2", "vec3", "vec4", "color"}:
+            return _PIN_VEC_HUG_W
+        return _PIN_VALUE_HUG_W
+
+    def _stable_pin_hug_pad(self) -> float:
+        """Left padding for hanging pin value boxes.
+
+        The pad is constant for a given graph topology of field types. It
+        must not shrink when a pin is wired, or the node body would slide.
+        """
+        graph = self.graph
+        if graph is None:
+            return 0.0
+        max_field_w = 0.0
+        for node in graph.nodes:
+            typedef = self._node_type(graph, node)
+            if typedef is None:
+                continue
+            fields = getattr(typedef, "inline_fields", ())
+            if not fields:
+                continue
+            pin_ids = {pin.id for pin in typedef.input_pins()}
+            for field in fields:
+                if field.id in pin_ids:
+                    max_field_w = max(
+                        max_field_w, self._pin_hug_field_width(field.data_type)
+                    )
+        if max_field_w <= 0.0:
+            return 0.0
+        return (
+            max_field_w + _PIN_RADIUS + _PIN_VALUE_HUG_GAP + _NODE_PAD_X
+        ) * self.zoom
+
     def _compute_layouts(self) -> None:
         self._layouts.clear()
         graph = self.graph
@@ -892,6 +929,7 @@ class NodeGraphView:
             return
 
         z = self.zoom
+        hug_pad = self._stable_pin_hug_pad()
         for node in graph.nodes:
             typedef = self._node_type(graph, node)
             if typedef is None:
@@ -918,33 +956,11 @@ class NodeGraphView:
                 + extra_pad
             ) * z
 
-            # Reserve space on the left for compact pin value boxes that hang
-            # outside unconnected input pins. Shift the whole node right so the
-            # boxes stay inside the canvas child's clip region.
-            left_reserve = 0.0
-            if getattr(typedef, "inline_fields", ()):
-                pin_ids = {pin.id for pin in in_pins}
-                for field_def in typedef.inline_fields:
-                    if field_def.id not in pin_ids:
-                        continue
-                    if self._inline_field_is_hidden(node, field_def):
-                        continue
-                    if self._input_has_link(node.uid, field_def.id):
-                        continue
-                    vec = str(field_def.data_type) in {"vec2", "vec3", "vec4", "color"}
-                    field_w = (_PIN_VEC_HUG_W if vec else _PIN_VALUE_HUG_W) * z
-                    left_reserve = max(
-                        left_reserve,
-                        field_w + _PIN_RADIUS * z + _PIN_VALUE_HUG_GAP * z,
-                    )
-                if left_reserve > 0.0:
-                    left_reserve += _NODE_PAD_X * z
-
-            sx = self._origin_x + node.pos_x * z + self.pan_x + left_reserve
+            sx = self._origin_x + node.pos_x * z + self.pan_x + hug_pad
             sy = self._origin_y + node.pos_y * z + self.pan_y
 
             layout = _NodeLayout(node=node, typedef=typedef, sx=sx, sy=sy, w=w, h=h,
-                                 left_reserve=left_reserve)
+                                 left_reserve=hug_pad)
 
             hdr_h = self._header_height(typedef) * z
             row_h = _NODE_PIN_ROW_H * z
@@ -1336,13 +1352,7 @@ class NodeGraphView:
             # edge; the minimum also scales, otherwise zoomed-out nodes overflow.
             field_w = max(24.0 * self.zoom, layout.w * 0.52 - _NODE_PAD_X * self.zoom)
         else:
-            data_type_str = str(field_def.data_type)
-            if data_type_str in {"asset_ref", "texture2d", "mesh"}:
-                field_w = _PIN_ASSET_HUG_W * self.zoom
-            elif data_type_str in {"vec2", "vec3", "vec4", "color"}:
-                field_w = _PIN_VEC_HUG_W * self.zoom
-            else:
-                field_w = _PIN_VALUE_HUG_W * self.zoom
+            field_w = self._pin_hug_field_width(field_def.data_type) * self.zoom
             # Right-align the box so its right edge meets the pin circle with a
             # small gap, hanging into the reserved left-of-node space.
             field_x = local_x - _PIN_RADIUS * self.zoom - _PIN_VALUE_HUG_GAP * self.zoom - field_w
@@ -1497,12 +1507,13 @@ class NodeGraphView:
             elif data_type == "color":
                 value_shape_matches = self._inline_vector_shape_matches(value, 4)
                 components = self._inline_vector_value(value, field_def.default, 4)
+                allow_hdr = bool(getattr(field_def, "hdr", True))
                 new_value = render_color_value_bar(
                     ctx,
                     f"##value_{layout.node.uid}_{field_def.id}",
                     components,
-                    allow_hdr=True,
-                    default_hdr_enabled=True,
+                    allow_hdr=allow_hdr,
+                    default_hdr_enabled=allow_hdr,
                     width=field_w,
                     height=(_NODE_PIN_ROW_H - _PIN_VALUE_BOX_INSET) * self.zoom,
                 )

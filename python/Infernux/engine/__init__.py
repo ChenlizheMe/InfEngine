@@ -226,8 +226,9 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
 
     Opens the project's first scene from BuildSettings.json, applies the
     display mode from BuildManifest.json (fullscreen borderless or windowed
-    with a custom resolution), plays the splash sequence if configured, then
-    enters play mode and runs until the window is closed.
+    with a custom resolution), shows the window (a black loading cover is
+    allowed), then starts Play only after that load — and any splash — has
+    finished.
     """
     import json
     import time

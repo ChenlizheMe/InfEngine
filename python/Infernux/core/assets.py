@@ -1417,22 +1417,13 @@ class AssetManager:
             state.preview_dependency_revision += 1
             state.content_token = content_token
 
-        expected = cls._document_save_expected_states.pop(normalized, None)
-        if state.persisted_file_state is not None:
-            expected = state.persisted_file_state
-        elif (latest := cls._latest_committed_file_state(normalized)) is not None:
-            expected = latest
-        elif expected is None:
-            expected = metadata.get("expected_file_state")
-        elif metadata.get("expected_file_state") is not None:
-            expected = metadata["expected_file_state"]
-        if expected is None:
-            try:
-                from Infernux.core.document_store import capture_document_file_state
-
-                expected = capture_document_file_state(file_path)
-            except (OSError, RuntimeError, ValueError):
-                expected = None
+        cls._document_save_expected_states.pop(normalized, None)
+        # Inspector and other editor asset writes replace the current target.
+        # A stale CAS baseline (slider drag after a disk edit, a mtime bump,
+        # or the last commit in this document chain) must not reject the
+        # user's in-memory values. Explicit callers that still want
+        # protection pass expected_file_state to submit_document_text.
+        expected = None
 
         state.requested_write_revision += 1
         requested_revision = state.requested_write_revision

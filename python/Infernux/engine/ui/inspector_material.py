@@ -429,7 +429,8 @@ def render_material_property(
         field_label(ctx, prop_name, plw)
         allow_hdr = bool(prop.get("hdr", False))
         nr, ng, nb, na = _render_color_bar(
-            ctx, wid, float(x), float(y), float(z), float(w), allow_hdr=allow_hdr)
+            ctx, wid, float(x), float(y), float(z), float(w),
+            allow_hdr=allow_hdr, default_hdr_enabled=allow_hdr)
         if (nr, ng, nb, na) != (x, y, z, w):
             prop["value"] = [nr, ng, nb, na]
             changed = True

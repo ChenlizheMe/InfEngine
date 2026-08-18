@@ -23,6 +23,7 @@ from Infernux.graph.document import (
     GraphNodeRecord,
     GraphSourceLocation,
 )
+from Infernux.graph.parameters import graph_parameter_allows_hdr
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 
 from .asset import (
@@ -411,6 +412,7 @@ class ParticleParameterHIR:
     slot: int
     category: str
     tooltip: str
+    hdr: bool = False
 
     @classmethod
     def from_asset(cls, parameter: ParticleParameter, slot: int) -> "ParticleParameterHIR":
@@ -424,6 +426,7 @@ class ParticleParameterHIR:
             slot,
             parameter.category,
             parameter.tooltip,
+            graph_parameter_allows_hdr(parameter),
         )
 
 

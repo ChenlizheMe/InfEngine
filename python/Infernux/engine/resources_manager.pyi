@@ -29,8 +29,11 @@ class ResourcesManager:
 
     def __init__(self, project_path: str, engine: object) -> None: ...
 
-    def start(self) -> None:
+    def start(self, *, skip_initial_scan: bool = ...) -> None:
         """Start the file-system observer thread."""
+        ...
+    def prepare_startup(self, on_progress: Callable[[str], None] | None = ...) -> None:
+        """Finish the startup script refresh before the engine window is shown."""
         ...
 
     def stop(self) -> None:

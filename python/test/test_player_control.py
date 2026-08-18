@@ -114,6 +114,71 @@ def test_standalone_player_enables_input_before_game_texture_exists(monkeypatch)
     assert focused == [True]
 
 
+def _player_gui_for_play_gate(session):
+    player = PlayerGUI.__new__(PlayerGUI)
+    player._engine = type("_PlayerEngine", (), {
+        "get_player_runtime": lambda self: session,
+    })()
+    player._splash = None
+    player._play_started = False
+    player._play_start_failed = False
+    return player
+
+
+def test_player_gui_does_not_start_play_during_splash():
+    activated = []
+
+    class Session:
+        is_playing = False
+
+        def activate(self):
+            activated.append(True)
+            return True
+
+    player = _player_gui_for_play_gate(Session())
+    player._splash = type("_Splash", (), {"is_finished": False})()
+
+    assert player.begin_play_when_ready() is False
+    assert activated == []
+    assert player._play_started is False
+
+
+def test_player_gui_starts_play_after_splash_finishes():
+    activated = []
+
+    class Session:
+        is_playing = False
+
+        def activate(self):
+            activated.append(True)
+            self.is_playing = True
+            return True
+
+    player = _player_gui_for_play_gate(Session())
+    player._splash = type("_Splash", (), {"is_finished": True})()
+
+    assert player.begin_play_when_ready() is True
+    assert activated == [True]
+    assert player._play_started is True
+
+
+def test_player_gui_starts_play_only_after_loading_cover():
+    activated = []
+
+    class Session:
+        is_playing = False
+
+        def activate(self):
+            activated.append(True)
+            self.is_playing = True
+            return True
+
+    player = _player_gui_for_play_gate(Session())
+
+    assert player.begin_play_when_ready() is True
+    assert activated == [True]
+
+
 def test_player_control_observation_is_token_authenticated(tmp_path, monkeypatch):
     request, response, channel = _configure(tmp_path, monkeypatch)
     engine = _Engine()

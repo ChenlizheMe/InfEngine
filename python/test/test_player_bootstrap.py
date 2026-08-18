@@ -146,6 +146,41 @@ def test_player_bootstrap_uses_boot_validated_archive_summary(monkeypatch):
     ) == (digest, 4096)
 
 
+def test_player_run_loads_scene_without_starting_play():
+    from Infernux.engine.player_bootstrap import PlayerBootstrap
+
+    calls = []
+
+    class Engine:
+        def prepare_startup_refresh(self):
+            calls.append("prepare")
+
+    bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
+    bootstrap.engine = Engine()
+    bootstrap._force_player_mode = lambda: calls.append("force")
+    bootstrap._load_runtime_contract = lambda: calls.append("contract")
+    bootstrap._init_engine = lambda: calls.append("engine")
+    bootstrap._create_managers = lambda: calls.append("managers")
+    bootstrap._setup_game_camera = lambda: calls.append("camera")
+    bootstrap._register_player_gui = lambda: calls.append("gui")
+    bootstrap._load_initial_scene = lambda: calls.append("scene")
+    bootstrap._enter_play_mode = lambda: calls.append("play")
+
+    bootstrap.run()
+
+    assert "play" not in calls
+    assert calls == [
+        "force",
+        "contract",
+        "engine",
+        "managers",
+        "camera",
+        "gui",
+        "scene",
+        "prepare",
+    ]
+
+
 def test_player_bootstrap_does_not_discover_project_requirements(monkeypatch):
     from Infernux.engine.player_bootstrap import PlayerBootstrap
 

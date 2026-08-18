@@ -421,6 +421,7 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
             field_type=field_types[kind],
             default=parameter["default"],
             tooltip=str(parameter.get("tooltip") or ""),
+            hdr=bool(parameter.get("hdr")),
         )
         current = _particle_parameter_ui_value(kind, parameter["value"])
         changed = render_serialized_field(

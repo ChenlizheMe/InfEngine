@@ -1,7 +1,13 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from Infernux.core.node_graph import NodeGraph, NodeTypeDef, PinDef, PinKind
+from Infernux.core.node_graph import (
+    NodeGraph,
+    NodeInlineFieldDef,
+    NodeTypeDef,
+    PinDef,
+    PinKind,
+)
 from Infernux.engine.interaction import (
     CommandSource,
     EditorCommand,
@@ -156,6 +162,39 @@ def test_node_inline_color_uses_color_bar_instead_of_xyzw(monkeypatch):
         )
     ]
     ctx.drag_float.assert_not_called()
+
+
+def test_node_inline_color_follows_field_hdr_flag(monkeypatch):
+    import Infernux.engine.ui.node_graph_view as node_graph_view
+
+    calls = []
+
+    def render_color(ctx, widget_id, value, **kwargs):
+        calls.append(kwargs)
+        return list(value)
+
+    monkeypatch.setattr(node_graph_view, "render_color_value_bar", render_color)
+    view = NodeGraphView()
+    ctx = MagicMock()
+    ctx.get_mouse_pos_x.return_value = 0.0
+    ctx.get_mouse_pos_y.return_value = 0.0
+    ctx.is_item_active.return_value = False
+    ctx.is_item_hovered.return_value = False
+    node = SimpleNamespace(uid="color-node", data={"color": [0.2, 0.4, 0.6, 0.8]})
+    layout = SimpleNamespace(node=node, sx=240.0, sy=80.0, w=180.0)
+    field = SimpleNamespace(
+        id="color",
+        label="Color",
+        data_type="color",
+        default=[1.0, 1.0, 1.0, 1.0],
+        enum_values=(),
+        hdr=False,
+    )
+
+    view._draw_inline_field(ctx, layout, field, 120.0)
+
+    assert calls[0]["allow_hdr"] is False
+    assert calls[0]["default_hdr_enabled"] is False
 
 
 def test_node_click_selection_replaces_without_modifier():
@@ -1069,3 +1108,42 @@ def test_completed_node_drag_releases_global_transient_before_commit() -> None:
     assert transients.active is None
     assert panel._node_graph_drag_cancel_token == ""
     assert len(panel.committed) == 1
+
+
+def test_wiring_an_inline_input_does_not_move_the_node_body():
+    graph = NodeGraph()
+    graph.register_type(
+        NodeTypeDef(
+            "source",
+            "Source",
+            pins=[PinDef("out", "Out", PinKind.OUTPUT, data_type="float")],
+        )
+    )
+    graph.register_type(
+        NodeTypeDef(
+            "target",
+            "Target",
+            pins=[PinDef("value", "Value", PinKind.INPUT, data_type="float")],
+            inline_fields=[
+                NodeInlineFieldDef("value", "Value", "float", default=0.0),
+            ],
+        )
+    )
+    source = graph.add_node("source", 40.0, 80.0, uid="source")
+    target = graph.add_node("target", 220.0, 80.0, uid="target")
+    view = NodeGraphView()
+    view.bind_graph(graph, preserve_selection=False)
+    view._origin_x = 0.0
+    view._origin_y = 0.0
+    view._compute_layouts()
+    before = view.get_layout(target.uid)
+    assert before is not None
+    assert before.left_reserve > 0.0
+
+    graph.add_link(source.uid, "out", target.uid, "value")
+    view._compute_layouts()
+    after = view.get_layout(target.uid)
+    assert after is not None
+    assert (after.sx, after.sy) == (before.sx, before.sy)
+    assert after.left_reserve == before.left_reserve
+    assert (target.pos_x, target.pos_y) == (220.0, 80.0)

@@ -421,6 +421,7 @@ def _prepare_python_component_records(
                 instance._deserialize_fields_document(
                     live_fields,
                     _skip_on_after_deserialize=True,
+                    repair=True,
                 )
             except Exception as exc:
                 instance._call_on_destroy()
@@ -670,6 +671,7 @@ def _publish_prepared_scene_python_components(
                 item.instance._deserialize_fields_document(
                     remapped_fields,
                     _skip_on_after_deserialize=True,
+                    repair=True,
                 )
         except (KeyError, TypeError, ValueError) as exc:
             raise PythonComponentRestoreError(

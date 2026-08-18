@@ -12,6 +12,7 @@ from Infernux.engine.ui.inspector_snapshot import (
     InspectorTarget,
     invalidate_rebuilt_scene,
     invalidate_scene_transforms,
+    sync_selected_transforms_from_native_serial,
     target_for_component,
 )
 

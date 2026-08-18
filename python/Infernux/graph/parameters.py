@@ -9,6 +9,35 @@ import uuid
 
 from .types import CoordinateSpace, TypeRef, ValueType
 
+GRAPH_PARAMETER_HDR_ATTRIBUTE = "hdr"
+
+
+def graph_parameter_allows_hdr(parameter: "GraphParameterDefinition") -> bool:
+    """True when a Color parameter is authored to use an HDR picker."""
+    value_type = getattr(parameter, "value_type", None)
+    attributes = getattr(parameter, "attributes", ())
+    return (
+        isinstance(value_type, TypeRef)
+        and value_type.value_type is ValueType.COLOR
+        and GRAPH_PARAMETER_HDR_ATTRIBUTE in attributes
+    )
+
+
+def graph_parameter_attributes_with_hdr(
+    attributes: Iterable[str],
+    *,
+    hdr: bool,
+) -> tuple[str, ...]:
+    """Return attributes with the Color HDR flag added or removed."""
+    values = [
+        str(item)
+        for item in attributes
+        if str(item) != GRAPH_PARAMETER_HDR_ATTRIBUTE
+    ]
+    if hdr:
+        values.append(GRAPH_PARAMETER_HDR_ATTRIBUTE)
+    return tuple(values)
+
 
 @dataclass(frozen=True, slots=True)
 class GraphParameterDefinition:
@@ -477,8 +506,11 @@ class GraphParameterAuthoringPolicy:
 
 
 __all__ = [
+    "GRAPH_PARAMETER_HDR_ATTRIBUTE",
     "GraphParameterAuthoringPolicy",
     "GraphParameterCollection",
     "GraphParameterDefinition",
     "GraphParameterEdit",
+    "graph_parameter_allows_hdr",
+    "graph_parameter_attributes_with_hdr",
 ]

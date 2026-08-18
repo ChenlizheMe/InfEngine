@@ -2266,7 +2266,16 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             raise KeyError(f"Particle parameter not found: {parameter_id!r}")
         if not math.isfinite(float(x)) or not math.isfinite(float(y)):
             raise ValueError("Particle Graph node position must be finite")
-        target_stage = str(stage) if stage else self._model.stage_nearest_y(float(y))
+        if stage:
+            target_stage = str(stage)
+        else:
+            # Use the same lane picker as add_node. stage_nearest_y used to
+            # include inactive collision bands, so a drop on empty canvas
+            # requested collision_enter and then failed the stage check.
+            self._model.prepare_node_creation("")
+            target_stage = self._model.stage_for_new_node(
+                "particle.parameter", float(y)
+            )
         valid_stages = set(_STAGES) | {
             f"event.{flow.stable_id}" for flow in self._selected_emitter().event_flows
         }
@@ -3840,6 +3849,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             exposed_label=t("particle_graph_editor.parameter_exposed"),
             writable_label=t("particle_graph_editor.parameter_writable"),
             tooltip_label=t("particle_graph_editor.parameter_tooltip"),
+            hdr_label=t("particle_graph_editor.parameter_hdr"),
             semantic_prefix="particle_graph.parameter",
             value_type_label=lambda kind: t(
                 f"particle_graph_editor.type_{kind.value}"
@@ -3868,6 +3878,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         *,
         label: str,
         semantic_prefix: str,
+        allow_hdr: bool | None = None,
     ):
         if value_type in {ValueType.TEXTURE2D, ValueType.MESH}:
             default = value
@@ -3941,6 +3952,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             value,
             label=label,
             semantic_prefix=semantic_prefix,
+            allow_hdr=allow_hdr,
         )
 
     def _render_event_type_properties(self, ctx: InxGUIContext) -> None:

@@ -319,18 +319,29 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             self.invalidate_graph()
 
     def _deserialize_fields_document(
-        self, data: dict, *, _skip_on_after_deserialize: bool = False
+        self,
+        data: dict,
+        *,
+        _skip_on_after_deserialize: bool = False,
+        repair: bool = False,
     ) -> None:
         if not isinstance(data, dict):
             raise TypeError("RenderStack fields document must be an object")
         obsolete = {"effect_stage_bindings_json", "mounted_passes_json"}.intersection(data)
-        if obsolete:
+        if obsolete and not repair:
             raise ValueError(
                 "RenderStack contains removed fields: " + ", ".join(sorted(obsolete))
             )
+        if obsolete and repair:
+            data = {
+                key: value
+                for key, value in data.items()
+                if key not in obsolete
+            }
         super()._deserialize_fields_document(
             data,
             _skip_on_after_deserialize=_skip_on_after_deserialize,
+            repair=repair,
         )
 
     def on_after_deserialize(self) -> None:

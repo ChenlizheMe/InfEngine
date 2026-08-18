@@ -33,6 +33,7 @@ from Infernux.graph.registry import (
     PortDirection,
     PortKind,
 )
+from Infernux.graph.parameters import graph_parameter_allows_hdr
 from Infernux.graph.types import CoordinateSpace, PORTABLE_TYPE_SYSTEM, TypeRef, ValueType
 
 
@@ -107,12 +108,14 @@ def _canvas_definition(
     display_name_override: str = "",
     hidden_property_ids=(),
     hidden_port_ids=(),
+    inline_field_hdr=None,
 ) -> NodeTypeDef:
     port_type_overrides = dict(port_type_overrides or {})
     inline_type_overrides = dict(inline_type_overrides or {})
     property_enum_entries = dict(property_enum_entries or {})
     hidden_property_ids = frozenset(hidden_property_ids or ())
     hidden_port_ids = frozenset(hidden_port_ids or ())
+    inline_field_hdr = dict(inline_field_hdr or {})
     pins = []
     for port in definition.ports:
         if port.id in hidden_port_ids:
@@ -187,6 +190,10 @@ def _canvas_definition(
             ),
             visible_when_field=_PROPERTY_VISIBILITY.get(item.id, ("", None))[0],
             visible_when_value=_PROPERTY_VISIBILITY.get(item.id, ("", None))[1],
+            hdr=inline_field_hdr.get(
+                item.id,
+                item.value_type.value_type.value == "color",
+            ),
         )
         for item in definition.properties
         if item.id not in hidden_property_ids | {"composition"}
@@ -210,12 +217,19 @@ def _canvas_definition(
                 in {ValueType.CURVE, ValueType.GRADIENT}
             ):
                 continue
+            resolved_type_name = (
+                resolved_type.value_type.value if resolved_type is not None else "f32"
+            )
             inline_fields.append(
                 NodeInlineFieldDef(
                     port.id,
                     port.display_name or port.id.replace("_", " ").title(),
-                    resolved_type.value_type.value if resolved_type is not None else "f32",
+                    resolved_type_name,
                     copy.deepcopy(port.default),
+                    hdr=inline_field_hdr.get(
+                        port.id,
+                        resolved_type_name == "color",
+                    ),
                 )
             )
     input_ids = {
@@ -887,8 +901,28 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             return False, "This collision lifecycle root already exists"
         return True, ""
 
+    def _visible_stage_ids(self) -> tuple[str, ...]:
+        collision_stages = {"collision_enter", "collision_stay", "collision_exit"}
+        visible = []
+        for stage in self._stages:
+            if stage in collision_stages and (
+                not self._collision_enabled
+                or not any(
+                    node.type_id == f"particle.root.{stage}" for node in self.nodes
+                )
+            ):
+                continue
+            visible.append(stage)
+        return tuple(visible) or tuple(self._stages)
+
     def stage_nearest_y(self, y: float) -> str:
-        return min(self._stages, key=lambda stage: abs(float(y) - self._stage_y[stage]))
+        return min(
+            self._visible_stage_ids(),
+            key=lambda stage: abs(float(y) - self._stage_y[stage]),
+        )
+
+    def stage_for_new_node(self, type_id: str, canvas_y: float) -> str:
+        return self._stage_for_new_node(type_id, float(canvas_y))
 
     def registered_types(self) -> list[NodeTypeDef]:
         definitions = []
@@ -1187,17 +1221,21 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 for link in self.links
             )
         )
-        cache_key = (
-            f"{node.type_id}:{property_id}:{selected_id}:sampled={int(sampled)}"
-        )
-        cached = self._dynamic_type_cache.get(cache_key)
-        if cached is not None:
-            return with_lifecycle_state(cached)
         selected = (
             self._parameter_catalog.get(selected_id)
             if is_parameter
             else self._attribute_catalog.get(selected_id)
         )
+        parameter_hdr = bool(
+            is_parameter and selected is not None and graph_parameter_allows_hdr(selected)
+        )
+        cache_key = (
+            f"{node.type_id}:{property_id}:{selected_id}:sampled={int(sampled)}"
+            f":hdr={int(parameter_hdr)}"
+        )
+        cached = self._dynamic_type_cache.get(cache_key)
+        if cached is not None:
+            return with_lifecycle_state(cached)
         definition = self._definitions.get(node.type_id)
         if selected is None or definition is None:
             return with_lifecycle_state(base)
@@ -1224,6 +1262,12 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 {"parameter"} if is_parameter and not is_parameter_store else ()
             ),
             hidden_port_ids={"out"} if not is_parameter and not sampled else (),
+            inline_field_hdr=(
+                {"value": parameter_hdr}
+                if is_parameter_store
+                and selected.value_type.value_type is ValueType.COLOR
+                else None
+            ),
         )
         self._dynamic_type_cache[cache_key] = resolved
         return with_lifecycle_state(resolved)

@@ -2959,20 +2959,21 @@ class TestSceneSerialization:
         assert first.get_component("Rigidbody") is first_rb
         assert first_rb.mass == pytest.approx(6.5)
 
-    def test_python_field_preflight_runs_before_native_scene_commit(self, scene):
+    def test_python_field_preflight_repairs_invalid_scene_value(self, scene):
         existing = scene.create_game_object("PythonPreflightExisting")
-        existing.add_py_component(_StrictSceneComponent())
-        alive_before = _cds_alive_count(_StrictSceneComponent)
+        component = _StrictSceneComponent()
+        component.value = 19
+        existing.add_py_component(component)
         original_document = scene.serialize_document()
         candidate = json.loads(json.dumps(original_document))
         _python_records(candidate["objects"][0])[0]["data"]["value"] = "not-an-int"
 
-        with pytest.raises(PythonComponentRestoreError, match="INT field requires an integer"):
-            deserialize_scene_document_transactionally(scene, candidate)
-
-        assert scene.serialize_document() == original_document
-        assert scene.find("PythonPreflightExisting") is existing
-        assert _cds_alive_count(_StrictSceneComponent) == alive_before
+        assert deserialize_scene_document_transactionally(scene, candidate) is True
+        restored = scene.find("PythonPreflightExisting").get_py_component(
+            _StrictSceneComponent
+        )
+        assert restored.value == 7
+        assert restored._serialize_fields_document()["value"] == 7
 
     def test_python_publish_callback_failure_rolls_back_committed_native_scene(self, scene):
         existing = scene.create_game_object("RollbackSource")
@@ -3140,14 +3141,20 @@ class TestSceneSerialization:
         assert restored.value == 19
         assert restored.label == "default"
 
-    def test_scene_restore_rejects_removed_python_field(self, scene):
+    def test_scene_restore_ignores_unknown_python_field(self, scene):
         root = scene.create_game_object("RemovedPythonField")
-        root.add_py_component(_StrictSceneComponent())
+        component = _StrictSceneComponent()
+        component.value = 19
+        root.add_py_component(component)
         document = json.loads(json.dumps(scene.serialize_document()))
         _python_records(document["objects"][0])[0]["data"]["removed_field"] = 1
 
-        with pytest.raises(PythonComponentRestoreError, match="serialized fields mismatch"):
-            deserialize_scene_document_transactionally(scene, document)
+        assert deserialize_scene_document_transactionally(scene, document) is True
+        restored = scene.find("RemovedPythonField").get_py_component(
+            _StrictSceneComponent
+        )
+        assert restored.value == 19
+        assert "removed_field" not in restored._serialize_fields_document()
 
     def test_python_component_document_uses_stable_script_and_type_guids(self, scene):
         root = scene.create_game_object("StablePythonIdentity")
@@ -3330,20 +3337,20 @@ class TestSceneSerialization:
 
         assert scene.serialize_document() == original_document
 
-    def test_game_object_python_preflight_preserves_live_subtree(self, scene):
+    def test_game_object_python_preflight_repairs_invalid_field(self, scene):
         root = scene.create_game_object("ObjectPreflightExisting")
         component = _StrictSceneComponent()
+        component.value = 19
         root.add_py_component(component)
         original_document = root.serialize_document()
         candidate = json.loads(json.dumps(original_document))
         _python_records(candidate)[0]["data"]["value"] = "not-an-int"
 
-        with pytest.raises(PythonComponentRestoreError, match="INT field requires an integer"):
-            deserialize_game_object_document_transactionally(root, candidate)
-
+        assert deserialize_game_object_document_transactionally(root, candidate) is True
+        restored = root.get_py_component(_StrictSceneComponent)
         assert scene.find("ObjectPreflightExisting") is root
-        assert root.serialize_document() == original_document
-        assert root.get_py_component(_StrictSceneComponent) is component
+        assert restored.value == 7
+        assert restored._serialize_fields_document()["value"] == 7
 
     def test_prefab_conversion_rejects_reference_outside_subtree(self, scene):
         external = scene.create_game_object("ExternalReferenceTarget")

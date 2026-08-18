@@ -1623,13 +1623,14 @@ def validate_serialized_field_document(
     owner_name: str,
     metadata_keys: set[str] | frozenset[str] = frozenset(),
     allow_missing: bool = False,
+    allow_unknown: bool = False,
 ) -> None:
     """Require a serialized document to match the current field declaration."""
     expected = set(fields).union(metadata_keys)
     actual = set(document)
     missing = sorted(expected - actual)
     unknown = sorted(actual - expected)
-    if unknown or (missing and not allow_missing):
+    if (unknown and not allow_unknown) or (missing and not allow_missing):
         raise ValueError(
             f"{owner_name}: serialized fields mismatch; "
             f"missing={missing}, unknown={unknown}"

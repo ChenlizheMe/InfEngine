@@ -37,7 +37,7 @@ from Infernux.engine.ui import panel_state as _panel_state
 _log = logging.getLogger("Infernux.bootstrap")
 
 _LAYOUT_VERSION = 6
-_TOTAL_STEPS = 13
+_TOTAL_STEPS = 14
 
 
 def _iter_project_material_paths(project_path: str):
@@ -150,6 +150,10 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         self._report_progress("Prewarming material previews\u2026")
         self._prewarm_material_previews()
+
+        self._report_progress("Refreshing project resources\u2026")
+        if self.engine:
+            self.engine.prepare_startup_refresh()
 
         self._start_mcp_http_server()
 

@@ -4,9 +4,11 @@ PlayerGUI — fullscreen-borderless ImGui GUI for standalone game playback.
 Registered as a single InxGUIRenderable that fills the entire window with
 the game camera render target.  No editor chrome, no docking, no menus.
 
-Optionally shows a **splash sequence** before revealing the game.  During
-splash the game scene loads and starts in the background; when the sequence
-finishes the game view is made visible instantly.
+Optionally shows a **splash sequence** before revealing the game.  The
+scene may finish loading while the window is black or showing splash;
+Play starts only after that loading is done and the splash (if any) has
+finished.  The game must not already be running when the player first
+sees it.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 import time
 from typing import Dict, List, Optional
 
+from Infernux.debug import Debug
 from Infernux.lib import InxGUIRenderable, InxGUIContext
 from Infernux.input import Input, KeyCode
 from Infernux.engine.ui.viewport_utils import capture_viewport_info
@@ -35,6 +38,8 @@ class PlayerGUI(InxGUIRenderable):
         self._ui_event_processor = UIEventProcessor()
         self._last_frame_time = time.time()
         self._control = control_channel
+        self._play_started = False
+        self._play_start_failed = False
 
         # Splash
         self._splash = None
@@ -47,8 +52,6 @@ class PlayerGUI(InxGUIRenderable):
     # ------------------------------------------------------------------
 
     def on_render(self, ctx: InxGUIContext):
-        # Per-frame tick (play-mode timing + deferred tasks) — always run,
-        # even during splash so the game world initialises behind the scenes.
         self._tick(ctx)
 
         # Full main viewport
@@ -86,6 +89,7 @@ class PlayerGUI(InxGUIRenderable):
             return
 
         # ── Normal game mode ──────────────────────────────────────────
+        self.begin_play_when_ready()
         visible = ctx.begin_window("##PlayerFullscreen", True, flags)
         if visible:
             self._render_game(ctx, vp_w, vp_h)
@@ -94,11 +98,38 @@ class PlayerGUI(InxGUIRenderable):
 
     # ------------------------------------------------------------------
 
-    def _tick(self, ctx):
-        """Drive play-mode timing and deferred tasks each frame."""
-        # DeferredTaskRunner is now ticked by InxRenderer's pre-GUI callback
-        # (before BuildFrame) so scene mutations complete before panels render.
+    def begin_play_when_ready(self) -> bool:
+        """Start Play only after loading is done and splash (if any) has finished."""
+        if self._play_started:
+            return True
+        if self._play_start_failed:
+            return False
+        if self._splash is not None and not self._splash.is_finished:
+            return False
+        getter = getattr(self._engine, "get_player_runtime", None)
+        session = getter() if callable(getter) else None
+        if session is None:
+            self._play_start_failed = True
+            Debug.log_error("Player cannot start Play: runtime session is unavailable")
+            return False
+        if getattr(session, "is_playing", False):
+            self._play_started = True
+            return True
+        activate = getattr(session, "activate", None)
+        if not callable(activate) or not activate():
+            self._play_start_failed = True
+            Debug.log_error("Player cannot start Play: initial scene is not ready")
+            return False
+        self._play_started = True
+        return True
 
+    def _tick(self, ctx):
+        """Handle Player window input and debug-control polling.
+
+        Play timing is owned by ``Engine.tick_play_mode``. This must not start
+        the session: splash and the first visible frames are a loading cover,
+        not a hidden gameplay head-start.
+        """
         # Standalone Players have no competing Editor viewport.  Establish the
         # gameplay-input contract before any early return caused by splash,
         # camera startup, a missing GUI texture, or background rendering.

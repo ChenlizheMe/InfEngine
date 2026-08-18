@@ -379,7 +379,7 @@ class Engine():
             self.exit()
             return
 
-        if self._resources_manager:
+        if self._resources_manager and not self._resources_manager.is_running():
             self._resources_manager.start()
 
         # Install a pre-GUI callback so that DeferredTaskRunner steps
@@ -966,6 +966,18 @@ class Engine():
         """Clear ImGui docking layout (in-memory + on disk)."""
         self._engine.reset_imgui_layout()
     
+    def prepare_startup_refresh(self, on_progress=None) -> None:
+        """Finish the startup resource refresh before the window is shown.
+
+        The editor file watcher used to start inside ``run()``, after
+        ``show()``. That left a long script-refresh barrier on the first
+        frames. The Player has no watcher; this is then a no-op.
+        """
+        manager = self._resources_manager
+        if manager is None:
+            return
+        manager.prepare_startup(on_progress=on_progress)
+
     def show(self):
         self._engine.show()
 

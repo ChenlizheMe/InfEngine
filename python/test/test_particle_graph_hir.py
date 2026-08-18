@@ -1586,6 +1586,42 @@ def test_graph_parameters_have_stable_slots_and_default_only_hot_updates():
     assert kernel.to_dict() == type(kernel).from_dict(kernel.to_dict()).to_dict()
 
 
+def test_color_parameter_hdr_is_runtime_metadata_not_behavior():
+    from Infernux.graph.parameters import GRAPH_PARAMETER_HDR_ATTRIBUTE
+    from Infernux.particle.artifact import _program_to_dict
+
+    parameter = ParticleParameter(
+        "tint",
+        "Tint",
+        TypeRef(ValueType.COLOR),
+        [1.0, 1.0, 1.0, 1.0],
+    )
+    hdr_parameter = replace(parameter, attributes=(GRAPH_PARAMETER_HDR_ATTRIBUTE,))
+    asset = ParticleGraphAsset(
+        parameters=(parameter,),
+        emitters=(ParticleEmitterAsset(),),
+    )
+    program = ParticleGraphCompiler().compile(asset)
+    hdr_program = ParticleGraphCompiler().compile(
+        replace(asset, parameters=(hdr_parameter,))
+    )
+    metadata = decode_particle_runtime_metadata(program)
+    hdr_metadata = decode_particle_runtime_metadata(hdr_program)
+    encoded = _program_to_dict(hdr_program)
+
+    assert program.parameters[0].hdr is False
+    assert hdr_program.parameters[0].hdr is True
+    assert program.behavior_hash == hdr_program.behavior_hash
+    assert metadata.parameters[0].hdr is False
+    assert hdr_metadata.parameters[0].hdr is True
+    assert encoded["parameters"][0]["hdr"] is True
+    assert decode_particle_runtime_metadata(encoded).parameters[0].hdr is True
+
+    legacy = copy.deepcopy(encoded)
+    del legacy["parameters"][0]["hdr"]
+    assert decode_particle_runtime_metadata(legacy).parameters[0].hdr is False
+
+
 def test_writable_graph_parameter_lowers_to_one_typed_shared_store():
     update = GraphDocument(
         "particle.update",

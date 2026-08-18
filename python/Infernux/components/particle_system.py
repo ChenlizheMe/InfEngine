@@ -389,6 +389,13 @@ class ParticleSystem(InxComponent):
             pass
         return playing
 
+    def on_before_serialize(self) -> None:
+        """Persist live instance overrides before clone, save, or undo snapshots."""
+        if hasattr(self, "_parameter_overrides"):
+            self._store_parameter_overrides()
+        if hasattr(self, "_emitter_overrides"):
+            self._store_emitter_overrides()
+
     def on_after_deserialize(self) -> None:
         """Reconcile serialized authoring state after load, undo, or redo."""
         self._ensure_runtime_state(playing=self._deserialized_play_state())
@@ -512,6 +519,7 @@ class ParticleSystem(InxComponent):
                     "value": copy.deepcopy(value),
                     "category": parameter.category,
                     "tooltip": parameter.tooltip,
+                    "hdr": bool(getattr(parameter, "hdr", False)),
                 }
             )
         return result
@@ -3208,6 +3216,11 @@ class ParticleSystem(InxComponent):
 
     def _reconcile_parameter_overrides(self, parameters) -> None:
         self._ensure_runtime_state(playing=bool(getattr(self, "_playing", False)))
+        parameters = tuple(parameters or ())
+        if not parameters:
+            # Instantiated copies can load before the graph schema is available.
+            # An empty list is "unknown", not "this graph has no parameters".
+            return
         by_id = {
             parameter.stable_id: parameter
             for parameter in parameters
@@ -3230,6 +3243,9 @@ class ParticleSystem(InxComponent):
 
     def _reconcile_emitter_overrides(self, emitters) -> None:
         self._ensure_runtime_state(playing=bool(getattr(self, "_playing", False)))
+        emitters = tuple(emitters or ())
+        if not emitters:
+            return
         valid_ids = {str(emitter.stable_id) for emitter in emitters}
         reconciled = {
             stable_id: options

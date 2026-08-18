@@ -5,6 +5,7 @@ from itertools import permutations
 import pytest
 
 from Infernux.graph import (
+    GRAPH_PARAMETER_HDR_ATTRIBUTE,
     CoordinateSpace,
     GraphParameterAuthoringPolicy,
     GraphParameterCollection,
@@ -13,6 +14,8 @@ from Infernux.graph import (
     GraphParameterTransaction,
     TypeRef,
     ValueType,
+    graph_parameter_allows_hdr,
+    graph_parameter_attributes_with_hdr,
 )
 
 
@@ -23,6 +26,37 @@ def _parameter(stable_id: str, name: str) -> GraphParameterDefinition:
         value_type=TypeRef(ValueType.F32),
         default=1.0,
     )
+
+
+def test_graph_parameter_color_hdr_is_an_attribute_not_a_schema_key():
+    color = GraphParameterDefinition(
+        stable_id="tint",
+        name="Tint",
+        value_type=TypeRef(ValueType.COLOR),
+        default=[1.0, 1.0, 1.0, 1.0],
+    )
+
+    assert "hdr" not in color.to_dict()
+    assert color.to_dict()["attributes"] == []
+    assert graph_parameter_allows_hdr(color) is False
+
+    enabled = color.with_updates(
+        {
+            "attributes": list(
+                graph_parameter_attributes_with_hdr(color.attributes, hdr=True)
+            )
+        }
+    )
+    encoded = enabled.to_dict()
+    assert enabled.attributes == (GRAPH_PARAMETER_HDR_ATTRIBUTE,)
+    assert graph_parameter_allows_hdr(enabled) is True
+    assert "hdr" not in encoded
+    assert encoded["attributes"] == ["hdr"]
+    assert graph_parameter_attributes_with_hdr(enabled.attributes, hdr=False) == ()
+    assert graph_parameter_allows_hdr(_parameter("a", "A")) is False
+    assert graph_parameter_allows_hdr(
+        _parameter("a", "A").with_updates({"attributes": ["hdr"]})
+    ) is False
 
 
 def test_graph_parameter_round_trip_uses_the_complete_current_schema():

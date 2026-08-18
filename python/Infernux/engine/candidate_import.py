@@ -38,6 +38,7 @@ _TRUSTED_MODULE_PREFIXES = frozenset(
         "typing",
         "math",
         "enum",
+        "os",
         "pathlib",
         "collections",
         "collections.abc",

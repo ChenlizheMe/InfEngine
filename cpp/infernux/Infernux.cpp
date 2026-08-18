@@ -12,6 +12,7 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -2706,13 +2707,23 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         if (!builtinResourcePath.empty())
             registry.GetAssetDatabase()->AddReadOnlyScanRoot(builtinResourcePath);
 
-        registry.GetAssetDatabase()->Refresh();
-
+        const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
+        const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
         const std::string runtimeAssetCatalog = JoinPath({projectPath, "Library", "RuntimeAssetRecords.json"});
         std::error_code runtimeCatalogError;
-        if (std::filesystem::is_regular_file(ToFsPath(runtimeAssetCatalog), runtimeCatalogError) &&
-            !runtimeCatalogError) {
+        const bool hasRuntimeCatalog =
+            std::filesystem::is_regular_file(ToFsPath(runtimeAssetCatalog), runtimeCatalogError) &&
+            !runtimeCatalogError;
+        if (playerMode && hasRuntimeCatalog) {
+            // A cooked Player already has an immutable catalog. Walking Assets
+            // and the engine resource tree here re-imports every builtin
+            // texture/icon on launch and is the dominant enter-game stall.
+            // Builtin shaders still import on demand in LoadAndRegisterShaders.
             registry.GetAssetDatabase()->InstallRuntimeAssetCatalog(runtimeAssetCatalog);
+        } else {
+            registry.GetAssetDatabase()->Refresh();
+            if (hasRuntimeCatalog)
+                registry.GetAssetDatabase()->InstallRuntimeAssetCatalog(runtimeAssetCatalog);
         }
 
         RegisterPhysicMaterialAssetCallback();

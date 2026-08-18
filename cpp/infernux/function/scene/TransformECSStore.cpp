@@ -223,10 +223,7 @@ void TransformECSStore::InvalidateSubtree(Transform *root, bool clearWorldEulerE
     // const_cast: cache invalidation is logically const — it only marks
     // cached data as stale.
     auto &self = const_cast<TransformECSStore &>(*this);
-    if (!self.m_worldMatrixDirty[idx]) {
-        self.MarkWorldMatrixDirty(idx);
-        ++self.m_globalTransformSerial;
-    }
+    self.MarkWorldMatrixDirty(idx);
     if (clearWorldEulerExact) {
         self.m_worldEulerExact[idx] = 0;
         self.m_fcRotationValid[idx] = 0;
@@ -700,12 +697,18 @@ void TransformECSStore::MarkWorldMatrixDirty(uint32_t slotIndex)
 {
     if (slotIndex >= m_worldMatrixDirty.size())
         return;
+    const bool newlyDirty = m_worldMatrixDirty[slotIndex] == 0;
     m_worldMatrixDirty[slotIndex] = 1;
     if (!m_worldMatrixDirtyListed[slotIndex]) {
         m_worldMatrixDirtyListed[slotIndex] = 1;
         m_worldMatrixDirtyIndices.push_back(slotIndex);
     }
     m_anyWorldMatrixDirty = true;
+    // Inspector and physics consumers key off this serial. Batch scatter and
+    // frame-cache writes mark dirty here without going through InvalidateSubtree
+    // while already dirty, so the bump belongs at this chokepoint.
+    if (newlyDirty)
+        ++m_globalTransformSerial;
 }
 
 void TransformECSStore::SetCachedWorldPosition(uint32_t slotIndex, const glm::vec3 &v)

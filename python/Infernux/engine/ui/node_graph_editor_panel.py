@@ -49,6 +49,9 @@ from Infernux.engine.interaction import (
 )
 from Infernux.debug import Debug
 from Infernux.graph.parameters import (
+    GRAPH_PARAMETER_HDR_ATTRIBUTE,
+    graph_parameter_allows_hdr,
+    graph_parameter_attributes_with_hdr,
     GraphParameterAuthoringPolicy,
     GraphParameterCollection,
     GraphParameterDefinition,
@@ -262,6 +265,7 @@ class GraphParameterDetailConfig:
     exposed_label: str = "Exposed"
     writable_label: str = "Writable"
     tooltip_label: str = "Tooltip"
+    hdr_label: str = "HDR"
     semantic_prefix: str = "node_graph.parameter"
     show_exposed: bool = True
     show_writable: bool = True
@@ -1558,6 +1562,7 @@ class NodeGraphEditorPanel(EditorPanel):
         *,
         label: str,
         semantic_prefix: str,
+        allow_hdr: bool | None = None,
     ):
         """Render portable scalar/vector defaults shared by every graph."""
         widget_id = (
@@ -1574,13 +1579,18 @@ class NodeGraphEditorPanel(EditorPanel):
                 value,
             )
         if value_type is ValueType.COLOR:
+            hdr_enabled = (
+                graph_parameter_allows_hdr(parameter)
+                if allow_hdr is None
+                else bool(allow_hdr)
+            )
             return preserve_ui_float_precision(
                 render_color_value_bar(
                     ctx,
                     widget_id,
                     value,
-                    allow_hdr=True,
-                    default_hdr_enabled=True,
+                    allow_hdr=hdr_enabled,
+                    default_hdr_enabled=hdr_enabled,
                 ),
                 value,
             )
@@ -1683,6 +1693,25 @@ class NodeGraphEditorPanel(EditorPanel):
         if edited_type != parameter.value_type:
             changes["value_type"] = edited_type
 
+        allow_hdr = graph_parameter_allows_hdr(parameter)
+        if selected_kind is ValueType.COLOR:
+            allow_hdr = bool(
+                ctx.checkbox(
+                    f"{config.hdr_label}##{self.window_id}_graph_parameter_hdr",
+                    allow_hdr,
+                )
+            )
+            if allow_hdr != graph_parameter_allows_hdr(parameter):
+                changes["attributes"] = graph_parameter_attributes_with_hdr(
+                    parameter.attributes,
+                    hdr=allow_hdr,
+                )
+        elif GRAPH_PARAMETER_HDR_ATTRIBUTE in parameter.attributes:
+            changes["attributes"] = graph_parameter_attributes_with_hdr(
+                parameter.attributes,
+                hdr=False,
+            )
+
         default = (
             copy.deepcopy(policy.default_for_type(selected_kind))
             if selected_kind is not current_kind
@@ -1696,6 +1725,7 @@ class NodeGraphEditorPanel(EditorPanel):
             default,
             label=config.default_label,
             semantic_prefix=f"{config.semantic_prefix}.{parameter.stable_id}.default",
+            allow_hdr=allow_hdr if selected_kind is ValueType.COLOR else None,
         )
         if edited_default != default:
             changes["default"] = edited_default

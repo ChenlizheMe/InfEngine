@@ -53,6 +53,9 @@ class Engine:
     def reset_imgui_layout(self) -> None:
         """Reset the ImGui docking layout to defaults."""
         ...
+    def prepare_startup_refresh(self, on_progress: Any = ...) -> None:
+        """Finish the startup resource refresh before the window is shown."""
+        ...
     def show(self) -> None:
         """Show the engine window."""
         ...

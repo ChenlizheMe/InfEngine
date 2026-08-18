@@ -631,6 +631,26 @@ def invalidate_component_schema(component) -> int:
     )
 
 
+def sync_selected_transforms_from_native_serial(
+    serial: int,
+    object_ids: Iterable[int],
+    *,
+    previous_serial: int | None,
+) -> int:
+    """Invalidate visible Transform projections when the native serial advances.
+
+    Scene Update writes (including ``batch_write``) bump the store serial
+    before the Inspector draws.  Snapshot publication happens after GUI, so
+    the visible selection must observe the serial directly instead of waiting
+    for a later journal flush — especially in large Play scenes where many
+    objects move every frame but only the inspected ones are on screen.
+    """
+    current = int(serial)
+    if previous_serial is not None and current != int(previous_serial):
+        invalidate_scene_transforms(object_ids)
+    return current
+
+
 def invalidate_scene_transforms(object_ids: Iterable[int]) -> int:
     """Invalidate live Transform projections for the supplied scene objects.
 
@@ -673,5 +693,6 @@ __all__ = [
     "invalidate_component_schema",
     "invalidate_rebuilt_scene",
     "invalidate_scene_transforms",
+    "sync_selected_transforms_from_native_serial",
     "target_for_component",
 ]

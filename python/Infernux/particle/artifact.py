@@ -1019,6 +1019,7 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                 "slot": parameter.slot,
                 "category": parameter.category,
                 "tooltip": parameter.tooltip,
+                "hdr": bool(parameter.hdr),
             }
             for parameter in program.parameters
         ],

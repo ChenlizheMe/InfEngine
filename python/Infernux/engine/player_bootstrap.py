@@ -8,8 +8,8 @@ Replaces :class:`EditorBootstrap` with a stripped-down path that:
   4. Enables the game camera
   5. Registers the fullscreen PlayerGUI (with optional splash sequence)
   6. Loads the first scene from BuildSettings.json (or a Supervisor-approved Debug validation scene)
-  7. Enters play mode
-  8. Runs the main loop
+  7. Leaves the scene loaded but not playing — Play starts only after the
+     window is visible and PlayerGUI confirms loading (and splash) are done
 
 No undo, no selection, no hierarchy, no inspector, no docking layout.
 """
@@ -93,7 +93,12 @@ class PlayerBootstrap:
         self._setup_game_camera()
         self._register_player_gui()
         self._load_initial_scene()
-        self._enter_play_mode()
+        # Do not activate Play here. The window is still hidden, so starting
+        # the session would let Awake/Start/Update run before the player can
+        # see anything. PlayerGUI starts Play after the window is shown and
+        # loading (plus any splash) has finished.
+        if self.engine is not None:
+            self.engine.prepare_startup_refresh()
 
     @staticmethod
     def _force_player_mode() -> None:
@@ -492,7 +497,7 @@ class PlayerBootstrap:
             )
 
     def _enter_play_mode(self):
-        """Activate the loaded Player scene before entering the main loop."""
+        """Activate the loaded Player scene once the window can present it."""
         if not self._activate_initial_scene_for_play():
             raise RuntimeError("Cannot activate the initial Player scene")
 

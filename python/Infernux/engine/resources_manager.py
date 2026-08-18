@@ -1289,6 +1289,20 @@ class ResourceChangeHandler(FileSystemEventHandler):
             raise _AssetImportNotReady(str(exc)) from exc
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
             self._check_script(path, catalog_event="created")
+        elif path.lower().endswith((".vert", ".frag")):
+            # First import only writes metadata. Shader GPU modules are
+            # published by reimport, the same edge effect dependencies use.
+            published = AssetManager.reimport_asset(
+                path,
+                database=self._asset_database,
+                suppress_watcher_echo=False,
+            )
+            if not published:
+                detail = str(
+                    getattr(published, "error", "") or "unknown reimport error"
+                )
+                raise _AssetImportNotReady(f"shader publish failed: {path}: {detail}")
+            self._notify_shader_reloaded(path)
 
     def _commit_modified(self, path: str) -> None:
         if not os.path.isfile(path):
@@ -1645,6 +1659,8 @@ class ResourcesManager:
         self._script_catalog_callbacks = []  # [callback(file_path, event_type)]
         self._initial_scan_lock = threading.Lock()
         self._initial_scan_artifact = None
+        self._startup_prepared = False
+        self._skip_initial_scan = False
 
     def _shutdown_observer(self, *, join_timeout: float = 5.0) -> bool:
         """Stop and join the currently published watchdog observer."""
@@ -1677,7 +1693,7 @@ class ResourcesManager:
             return False
         return True
 
-    def start(self):
+    def start(self, *, skip_initial_scan: bool = False):
         """
         Start to scan the project directory for resources in a sub-thread.
         """
@@ -1686,7 +1702,7 @@ class ResourcesManager:
         if self._thread and self._thread.is_alive():
             Debug.log_warning("ResourcesManager is already running")
             return
-            
+        self._skip_initial_scan = bool(skip_initial_scan or self._startup_prepared)
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._scan_resources,
@@ -1694,6 +1710,68 @@ class ResourcesManager:
             name="InfernuxResourceWatcher",
         )
         self._thread.start()
+
+    def _ensure_event_handler(self):
+        if self._event_handler is None:
+            self._event_handler = ResourceChangeHandler(
+                self._engine,
+                project_path=self._project_path,
+                frontend_wake=self._frontend_wake_event.set,
+            )
+        return self._event_handler
+
+    def _startup_work_pending(self) -> bool:
+        handler = self._event_handler
+        if handler is None:
+            return False
+        if getattr(handler, "_initial_scan_transaction_id", None):
+            return True
+        if handler.pending_count:
+            return True
+        collector = getattr(handler, "_script_change_collector", None)
+        if collector is not None and (
+            collector.pending_count or collector.completed_count
+        ):
+            return True
+        return False
+
+    def _wait_for_startup_idle(self) -> None:
+        deadline = time.monotonic() + 180.0
+        idle_rounds = 0
+        while time.monotonic() < deadline:
+            processed = self.process_pending_reloads(force=True)
+            if not self._startup_work_pending() and processed == 0:
+                idle_rounds += 1
+                if idle_rounds >= 2:
+                    return
+            else:
+                idle_rounds = 0
+            time.sleep(0)
+        raise RuntimeError(
+            "startup resource refresh did not finish before the engine window opened"
+        )
+
+    def prepare_startup(self, on_progress=None) -> None:
+        """Finish the startup script refresh before the engine window is shown.
+
+        ``start()`` used to run this scan after ``Engine.show()``. The owner
+        thread then published the barrier one poll at a time and the first
+        minutes of the session hitch. The window must not appear until the
+        ready-barrier has been published.
+        """
+        if self._startup_prepared:
+            if not self.is_running():
+                self.start(skip_initial_scan=True)
+            return
+        if on_progress:
+            on_progress("Scanning project scripts...")
+        self._ensure_event_handler()
+        self._initial_script_scan()
+        if on_progress:
+            on_progress("Publishing project scripts...")
+        self._wait_for_startup_idle()
+        self._startup_prepared = True
+        self.start(skip_initial_scan=True)
 
     def _scan_resources(self):
         """
@@ -1705,13 +1783,9 @@ class ResourcesManager:
         if self._stop_event.is_set():
             return
 
-        self._event_handler = ResourceChangeHandler(
-            self._engine,
-            project_path=self._project_path,
-            frontend_wake=self._frontend_wake_event.set,
-        )
+        handler = self._ensure_event_handler()
         self._frontend_worker_running = True
-        self._event_handler.set_frontend_worker_running(True)
+        handler.set_frontend_worker_running(True)
         observer = Observer()
         try:
             observer.daemon = False
@@ -1719,7 +1793,7 @@ class ResourcesManager:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
 
         try:
-            observer.schedule(self._event_handler, self._assets_path, recursive=True)
+            observer.schedule(handler, self._assets_path, recursive=True)
             with self._observer_lock:
                 if self._stop_event.is_set():
                     return
@@ -1731,13 +1805,15 @@ class ResourcesManager:
                     raise
 
             # Initial full scan submits exact snapshots to the same collector
-            # used by watchdog events.  The watcher owns the frontend budget.
-            self._initial_script_scan()
+            # used by watchdog events.  The watcher owns the frontend budget
+            # unless prepare_startup() already published that barrier.
+            if not self._skip_initial_scan:
+                self._initial_script_scan()
 
             while not self._stop_event.is_set():
                 self._frontend_wake_event.wait(timeout=1.0)
                 self._frontend_wake_event.clear()
-                self._event_handler.process_script_worker(max_items=32)
+                handler.process_script_worker(max_items=32)
         finally:
             self._frontend_worker_running = False
             if self._event_handler is not None:
@@ -1747,16 +1823,11 @@ class ResourcesManager:
     def _initial_script_scan(self):
         """Walk Assets/ and syntax-check every .py file.
 
-        Called once from the watchdog thread right after the observer
-        starts so that errors present *before* the engine was opened
-        are detected immediately.
+        ``prepare_startup()`` runs this on the owner thread before the
+        engine window is shown. The watcher thread only repeats it when
+        that barrier was not already published.
         """
-        if self._event_handler is None:
-            self._event_handler = ResourceChangeHandler(
-                self._engine,
-                project_path=self._project_path,
-                frontend_wake=self._frontend_wake_event.set,
-            )
+        self._ensure_event_handler()
         script_paths = []
         for root, dirs, files in os.walk(self._assets_path):
             if self._stop_event.is_set():
@@ -1952,6 +2023,8 @@ class ResourcesManager:
         self._engine = None
         self._event_handler = None
         self._frontend_worker_running = False
+        self._startup_prepared = False
+        self._skip_initial_scan = False
         self._script_reload_callbacks.clear()
         self._script_catalog_callbacks.clear()
         if ResourcesManager._instance is self:

@@ -44,6 +44,7 @@ class ParticleParameterRuntimeMetadata:
     slot: int
     category: str
     tooltip: str
+    hdr: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ def decode_particle_runtime_metadata(
                 parameter.slot,
                 parameter.category,
                 parameter.tooltip,
+                bool(parameter.hdr),
             )
             for parameter in hir.parameters
         )
@@ -177,12 +179,16 @@ def _decode_parameter(value: Any, index: int) -> ParticleParameterRuntimeMetadat
         "category",
         "tooltip",
     }
-    if type(value) is not dict or set(value) != expected:
+    fields = set(value) if type(value) is dict else set()
+    if type(value) is not dict or (
+        fields != expected and fields != expected | {"hdr"}
+    ):
         raise ParticleRuntimeMetadataError(f"{location} does not match the schema")
     try:
         value_type = TypeRef.from_dict(value["type"])
     except (TypeError, ValueError) as exc:
         raise ParticleRuntimeMetadataError(f"{location} type is invalid") from exc
+    hdr = value.get("hdr", False)
     if (
         type(value["stable_id"]) is not str
         or not value["stable_id"]
@@ -194,6 +200,7 @@ def _decode_parameter(value: Any, index: int) -> ParticleParameterRuntimeMetadat
         or value["slot"] < 0
         or type(value["category"]) is not str
         or type(value["tooltip"]) is not str
+        or type(hdr) is not bool
     ):
         raise ParticleRuntimeMetadataError(f"{location} identity is invalid")
     return ParticleParameterRuntimeMetadata(
@@ -206,6 +213,7 @@ def _decode_parameter(value: Any, index: int) -> ParticleParameterRuntimeMetadat
         value["slot"],
         value["category"],
         value["tooltip"],
+        hdr,
     )
 
 

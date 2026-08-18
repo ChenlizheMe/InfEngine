@@ -997,6 +997,15 @@ def test_player_shader_scan_uses_catalog_metadata_for_opaque_artifacts() -> None
     )
 
 
+def test_player_init_skips_full_asset_refresh_when_runtime_catalog_exists() -> None:
+    source = (ROOT / "cpp" / "infernux" / "Infernux.cpp").read_text(encoding="utf-8")
+    body = _function_body(source, "void Infernux::InitRenderer")
+    catalog_install = body.index("InstallRuntimeAssetCatalog(runtimeAssetCatalog)")
+    refresh = body.index("->Refresh()")
+    player_guard = body.index("playerMode && hasRuntimeCatalog")
+    assert player_guard < catalog_install < refresh
+
+
 def test_native_pack_writers_release_the_gil_during_compression() -> None:
     """Background Player packing must not freeze editor Python/UI ticks."""
 

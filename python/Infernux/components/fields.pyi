@@ -231,6 +231,7 @@ def validate_serialized_field_document(
     owner_name: str,
     metadata_keys: set[str] | frozenset[str] = ...,
     allow_missing: bool = False,
+    allow_unknown: bool = False,
 ) -> None: ...
 
 

@@ -586,6 +586,106 @@ def test_set_parameter_only_offers_writable_parameters_and_uses_typed_input():
     assert parameter_field.enum_values == ("shared-velocity",)
 
 
+def test_set_parameter_color_inline_follows_hdr_attribute():
+    from Infernux.graph.parameters import GRAPH_PARAMETER_HDR_ATTRIBUTE
+
+    def value_field(attributes=()):
+        asset = ParticleGraphAsset(
+            parameters=(
+                ParticleParameter(
+                    "paper",
+                    "Paper",
+                    TypeRef(ValueType.COLOR),
+                    [1.0, 1.0, 1.0, 1.0],
+                    writable=True,
+                    attributes=attributes,
+                ),
+            )
+        )
+        model = ParticleEmitterGraphAuthoringModel(
+            asset.emitters[0],
+            definition_set=particle_graph_node_definitions(asset),
+        )
+        model.prepare_node_creation("update")
+        node = model.add_node("particle.parameter.set", 200.0, 230.0)
+        return next(
+            field
+            for field in model.get_node_type(node).inline_fields
+            if field.id == "value"
+        )
+
+    assert value_field().hdr is False
+    assert value_field((GRAPH_PARAMETER_HDR_ATTRIBUTE,)).hdr is True
+
+
+def test_color_parameter_hdr_toggle_writes_the_hdr_attribute(monkeypatch):
+    from Infernux.engine.interaction import GraphElementKind, GraphElementRef
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from Infernux.graph.parameters import GRAPH_PARAMETER_HDR_ATTRIBUTE
+
+    captured = {}
+    monkeypatch.setattr(
+        "Infernux.engine.ui.node_graph_editor_panel.render_color_value_bar",
+        lambda _ctx, _widget_id, value, **kwargs: captured.update(kwargs) or list(value),
+    )
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    parameter = panel.add_authoring_parameter(
+        "Paper", "color", [0.97, 0.93, 0.84, 1.0]
+    )
+    panel._graph_selection.select(
+        (GraphElementRef(GraphElementKind.PARAMETER, parameter["stable_id"]),),
+        reason="test",
+        record_history=False,
+    )
+
+    class Context:
+        @staticmethod
+        def label(*_args):
+            pass
+
+        @staticmethod
+        def separator():
+            pass
+
+        @staticmethod
+        def set_next_item_width(*_args):
+            pass
+
+        @staticmethod
+        def text_input(_label, value, _length):
+            return value
+
+        @staticmethod
+        def combo(_label, index, *_args):
+            return index
+
+        @staticmethod
+        def checkbox(label, value):
+            return True if "graph_parameter_hdr" in label else value
+
+        @staticmethod
+        def begin_disabled(_disabled=True):
+            pass
+
+        @staticmethod
+        def end_disabled():
+            pass
+
+    assert panel._render_node_graph_parameter_detail(Context())
+    stored = next(
+        item
+        for item in panel.asset.parameters
+        if item.stable_id == parameter["stable_id"]
+    )
+    encoded = stored.to_dict()
+    assert stored.attributes == (GRAPH_PARAMETER_HDR_ATTRIBUTE,)
+    assert "hdr" not in encoded
+    assert encoded["attributes"] == ["hdr"]
+    assert captured["allow_hdr"] is True
+    assert captured["default_hdr_enabled"] is True
+
+
 def test_set_emitter_playing_dropdown_excludes_the_owning_emitter():
     asset = ParticleGraphAsset(
         emitters=(
@@ -987,6 +1087,35 @@ def test_particle_parameter_canvas_drop_creates_the_selected_parameter_node():
         and node.data["parameter"] == parameter["stable_id"]
     )
     assert panel._model.get_node_type(canvas_node).label == "Wind"
+
+
+def test_particle_parameter_canvas_drop_ignores_inactive_collision_lanes():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    parameter = panel.add_authoring_parameter(
+        "Paper Color", "color", [0.97, 0.93, 0.84, 1.0]
+    )
+
+    panel._on_canvas_drop(
+        "PARTICLE_PARAMETER", parameter["stable_id"], 320.0, 460.0
+    )
+
+    nodes = [
+        node
+        for node in panel.asset.emitters[0].update.nodes
+        if node.type_id == "particle.parameter"
+    ]
+    assert len(nodes) == 1
+    assert nodes[0].properties["parameter"] == parameter["stable_id"]
+    assert not any(
+        node.type_id == "particle.parameter"
+        for stage in ("collision_enter", "collision_stay", "collision_exit")
+        for document in (getattr(panel.asset.emitters[0], stage),)
+        if document is not None
+        for node in document.nodes
+    )
 
 
 def test_particle_vector_parameter_adopts_fixed_attribute_space_and_compiles():

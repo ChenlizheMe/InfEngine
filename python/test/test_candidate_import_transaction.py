@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import sys
 from pathlib import Path
 
@@ -32,6 +33,20 @@ def _broker(assets: Path, name: str, source: str) -> CandidateImportTransaction:
     broker = CandidateImportTransaction()
     broker.register(name, str(path), source=source)
     return broker
+
+
+def test_os_is_a_trusted_stdlib_import(candidate_project):
+    broker = _broker(
+        candidate_project,
+        "os_candidate",
+        "import os\nVALUE = os.path.join('a', 'b')\n",
+    )
+
+    module = broker.load("os_candidate")
+
+    assert module.VALUE == os.path.join("a", "b")
+    assert "os_candidate" not in sys.modules
+    broker.rollback()
 
 
 def test_trusted_import_bypasses_project_descendant_scan(candidate_project, monkeypatch):

@@ -1462,6 +1462,45 @@ def test_particle_parameter_renderer_adapts_vector_storage(monkeypatch):
     assert updates == [("wind-id", [4.0, 5.0, 6.0])]
 
 
+def test_particle_color_parameter_inspector_uses_schema_hdr(monkeypatch):
+    import Infernux.engine.ui._inspector_extra_renderers as module
+
+    captured = []
+    monkeypatch.setattr(module, "max_label_w", lambda *_args, **_kwargs: 120.0)
+    monkeypatch.setattr(
+        module, "render_compact_section_header", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        module,
+        "render_serialized_field",
+        lambda _ctx, _wid, _label, metadata, current, _lw: captured.append(metadata)
+        or current,
+    )
+    ctx = SimpleNamespace(separator=lambda: None, is_item_hovered=lambda: False)
+
+    for hdr in (False, True):
+        captured.clear()
+        module._render_particle_system_parameters(
+            ctx,
+            SimpleNamespace(
+                exposed_parameter_schema=lambda _hdr=hdr: [
+                    {
+                        "stable_id": "tint-id",
+                        "name": "Tint",
+                        "type": "color",
+                        "default": [1.0, 1.0, 1.0, 1.0],
+                        "value": [1.0, 1.0, 1.0, 1.0],
+                        "category": "",
+                        "tooltip": "",
+                        "hdr": _hdr,
+                    }
+                ],
+                set_parameter=lambda *_args, **_kwargs: None,
+            ),
+        )
+        assert captured[0].hdr is hdr
+
+
 def test_particle_texture_parameter_renders_in_the_parameter_section(monkeypatch):
     import Infernux.engine.ui._inspector_extra_renderers as module
     import Infernux.lib as lib
@@ -1954,3 +1993,40 @@ def test_only_categories_with_shared_document_contract_are_read_write():
     }
     assert details._categories["prefab"].access_mode == details.AssetAccessMode.READ_ONLY_RESOURCE
     assert details._categories["animfsm"].access_mode == details.AssetAccessMode.READ_ONLY_RESOURCE
+
+
+def test_color_inspector_respects_field_hdr_metadata(monkeypatch):
+    from Infernux.components.fields import FieldMetadata, FieldType
+
+    calls = []
+
+    def capture_color_bar(*_args, **kwargs):
+        calls.append(kwargs)
+        return [1.0, 1.0, 1.0, 1.0]
+
+    monkeypatch.setattr(inspector_utils, "render_color_value_bar", capture_color_bar)
+
+    def render(hdr: bool):
+        calls.clear()
+        inspector_utils.render_serialized_field(
+            SimpleNamespace(),
+            "##tint",
+            "Tint",
+            FieldMetadata(
+                name="tint",
+                field_type=FieldType.COLOR,
+                default=[1.0, 1.0, 1.0, 1.0],
+                hdr=hdr,
+            ),
+            [1.0, 1.0, 1.0, 1.0],
+            80.0,
+        )
+        return calls[0]
+
+    disabled = render(False)
+    assert disabled["allow_hdr"] is False
+    assert disabled["default_hdr_enabled"] is False
+
+    enabled = render(True)
+    assert enabled["allow_hdr"] is True
+    assert enabled["default_hdr_enabled"] is True

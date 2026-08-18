@@ -414,12 +414,13 @@ def _render_color_sf(ctx, wid, display_name, metadata, current_value, lw, has_vi
     else:
         r, g, b, a = 1.0, 1.0, 1.0, 1.0
     _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
-    allow_hdr = getattr(metadata, 'hdr', False)
+    allow_hdr = getattr(metadata, "hdr", False)
     nr, ng, nb, na = render_color_value_bar(
         ctx,
         wid,
         (r, g, b, a),
         allow_hdr=allow_hdr,
+        default_hdr_enabled=allow_hdr,
     )
     if (nr, ng, nb, na) != (r, g, b, a):
         return [nr, ng, nb, na]

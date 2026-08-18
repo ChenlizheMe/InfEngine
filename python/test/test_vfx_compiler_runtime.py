@@ -48,7 +48,7 @@ from Infernux.particle import (
     VectorField,
     default_event_graph,
 )
-from Infernux.lib import AssetRegistry
+from Infernux.lib import AssetRegistry, GameObject
 
 
 particle_system_module = importlib.import_module("Infernux.components.particle_system")
@@ -634,6 +634,7 @@ def test_particle_system_exposed_parameter_updates_live_gpu_block(
             "value": 0.75,
             "category": "Smoke",
             "tooltip": "Controls the smoke density.",
+            "hdr": False,
         }
     ]
     assert component.runtime_diagnostics()["parameters"][0]["value"] == 0.75
@@ -647,6 +648,164 @@ def test_particle_system_exposed_parameter_updates_live_gpu_block(
     assert words[1:] == [0, 0, 0]
     with pytest.raises(TypeError, match="not vec3"):
         component.set_vector3("Density", 1.0, 2.0, 3.0)
+
+
+def _instantiate_particle_graph(tmp_path, name="InstantiateParameters"):
+    source = tmp_path / f"{name}.particlegraph"
+    ParticleGraphAsset(
+        stable_id=name.lower(),
+        parameters=(
+            ParticleParameter(
+                "smoke-density",
+                "Density",
+                TypeRef(ValueType.F32),
+                1.0,
+                True,
+            ),
+            ParticleParameter(
+                "impact-scale",
+                "ImpactScale",
+                TypeRef(ValueType.F32),
+                1.0,
+                True,
+            ),
+        ),
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="impact",
+                name="Impact",
+                settings=EmitterSettings(capacity=8),
+            ),
+        ),
+    ).save(str(source))
+    return source
+
+
+def test_particle_system_serialize_flushes_live_instance_overrides(
+    scene, monkeypatch, tmp_path
+):
+    source = _instantiate_particle_graph(tmp_path, "SerializeFlush")
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    scene.create_game_object("SerializeFlush").add_py_component(component)
+    component.awake()
+    component.start()
+    component.set_float("Density", 0.75)
+    component.set_emitter_options("Impact", play_on_start=False)
+    component._parameter_overrides["impact-scale"] = 0.2
+    component._emitter_overrides["impact"] = {
+        "enabled": True,
+        "play_on_start": False,
+    }
+
+    document = component._serialize_fields_document()
+
+    assert json.loads(document["_parameter_overrides_json"]) == {
+        "impact-scale": 0.2,
+        "smoke-density": 0.75,
+    }
+    assert json.loads(document["_emitter_overrides_json"]) == {
+        "impact": {"enabled": True, "play_on_start": False}
+    }
+
+
+def test_particle_system_keeps_instance_overrides_when_runtime_schema_is_empty(
+    scene, monkeypatch, tmp_path
+):
+    source = _instantiate_particle_graph(tmp_path, "EmptySchema")
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    scene.create_game_object("EmptySchema").add_py_component(component)
+    component.awake()
+    component._parameter_overrides = {"impact-scale": 0.2}
+    component._emitter_overrides = {
+        "impact": {"enabled": True, "play_on_start": False}
+    }
+    component._store_parameter_overrides()
+    component._store_emitter_overrides()
+
+    component._reconcile_parameter_overrides(())
+    component._reconcile_emitter_overrides(())
+
+    assert component._parameter_overrides == {"impact-scale": 0.2}
+    assert component._emitter_overrides == {
+        "impact": {"enabled": True, "play_on_start": False}
+    }
+    assert json.loads(component._parameter_overrides_json) == {"impact-scale": 0.2}
+
+
+def test_game_object_instantiate_copies_particle_instance_state(
+    scene, monkeypatch, tmp_path
+):
+    source = _instantiate_particle_graph(tmp_path)
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    game_object = scene.create_game_object("ImpactSparkTemplate")
+    game_object.add_py_component(component)
+    component.awake()
+    component.start()
+    component.play_on_awake = False
+    component.simulation_speed = 2.5
+    component.set_float("Density", 0.75)
+    component.set_float("ImpactScale", 0.2)
+    component.set_emitter_options("Impact", play_on_start=False)
+    component.stop()
+    game_object.active = False
+
+    parent = scene.create_game_object("ImpactSparkPool")
+    clone = GameObject.instantiate(
+        game_object,
+        parent=parent,
+        instantiate_in_world_space=False,
+    )
+
+    assert clone is not None
+    assert clone.get_parent() is parent
+    assert clone.active is False
+    restored = clone.get_py_component(ParticleSystem)
+    assert restored is not None
+    assert restored is not component
+    assert restored.play_on_awake is False
+    assert restored.simulation_speed == pytest.approx(2.5)
+    assert restored.get_float("Density") == pytest.approx(0.75)
+    assert restored.get_float("ImpactScale") == pytest.approx(0.2)
+    assert json.loads(restored._parameter_overrides_json) == {
+        "impact-scale": 0.2,
+        "smoke-density": 0.75,
+    }
+    assert json.loads(restored._emitter_overrides_json) == {
+        "impact": {"enabled": True, "play_on_start": False}
+    }
+    assert restored.emitter_instance_schema()[0]["play_on_start"] is False
+    assert getattr(restored, "_playing", False) is False
+
+
+def test_game_object_instantiate_copies_live_overrides_ahead_of_json(
+    scene, monkeypatch, tmp_path
+):
+    source = _instantiate_particle_graph(tmp_path, "LiveAhead")
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    game_object = scene.create_game_object("LiveAheadTemplate")
+    game_object.add_py_component(component)
+    component.awake()
+    component.start()
+    component.set_float("ImpactScale", 1.0)
+    component._parameter_overrides["impact-scale"] = 0.2
+
+    clone = GameObject.instantiate(game_object)
+    restored = clone.get_py_component(ParticleSystem)
+
+    assert restored.get_float("ImpactScale") == pytest.approx(0.2)
+    assert json.loads(restored._parameter_overrides_json) == {"impact-scale": 0.2}
 
 
 def test_particle_system_deserialize_repairs_missing_runtime_override_cache(
@@ -941,6 +1100,7 @@ def test_particle_system_exposes_texture2d_as_a_typed_parameter(scene):
             "value": default.to_dict(),
             "category": "Smoke",
             "tooltip": "Smoke sprite sheet.",
+            "hdr": False,
         }
     ]
     component.set_texture("Smoke Texture", override)
@@ -951,6 +1111,41 @@ def test_particle_system_exposes_texture2d_as_a_typed_parameter(scene):
     assert component.reset_parameter("Smoke Texture")
     assert component.get_texture("smoke-texture") == default
     assert component._parameter_overrides_json == "{}"
+
+
+def test_particle_system_exposes_color_parameter_hdr(scene):
+    metadata = SimpleNamespace(
+        parameters=(
+            SimpleNamespace(
+                stable_id="paper-color",
+                name="Paper",
+                value_type=TypeRef(ValueType.COLOR),
+                default=[1.0, 1.0, 1.0, 1.0],
+                exposed=True,
+                category="",
+                tooltip="",
+                hdr=True,
+            ),
+        ),
+        emitters=(),
+    )
+    component = ParticleSystem()
+    scene.create_game_object("ColorParameter").add_py_component(component)
+    component.awake()
+    component._particle_metadata = metadata
+
+    assert component.exposed_parameter_schema() == [
+        {
+            "stable_id": "paper-color",
+            "name": "Paper",
+            "type": "color",
+            "default": [1.0, 1.0, 1.0, 1.0],
+            "value": [1.0, 1.0, 1.0, 1.0],
+            "category": "",
+            "tooltip": "",
+            "hdr": True,
+        }
+    ]
 
 
 def test_live_texture_parameter_rebuilds_binding_and_rolls_back_on_failure(
