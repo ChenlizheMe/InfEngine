@@ -225,3 +225,15 @@ def test_mcp_component_mutations_do_not_own_private_undo_paths():
     assert all(token not in scene_source for token in forbidden)
     assert "_notify_scene_modified" not in particle_source
     assert "core.components.edit_document(" in particle_source
+
+
+def test_light_cpp_properties_are_not_python_document_fields():
+    from Infernux.components.builtin.light import Light
+    from Infernux.engine.interaction.components import ComponentCommandService
+
+    light = Light()
+    assert ComponentCommandService._is_python_component(light) is False
+    assert ComponentCommandService._is_cpp_property_field(light, "intensity") is True
+    assert ComponentCommandService._is_python_serialized_field(light, "intensity") is False
+    assert ComponentCommandService._is_python_serialized_field(light, "range") is False
+    assert ComponentCommandService._is_python_serialized_field(light, "enabled") is False

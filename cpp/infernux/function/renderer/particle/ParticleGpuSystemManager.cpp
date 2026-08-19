@@ -362,7 +362,7 @@ struct ParticleGpuSystemManager::Impl
 
     [[nodiscard]] bool RecordCollisionUpload(VkCommandBuffer commandBuffer)
     {
-        if (!collisionScene || !collisionScene->HasPendingUpload())
+        if (!requiresCollisionScene || !collisionScene || !collisionScene->HasPendingUpload())
             return true;
         vk::VulkanTransferCommandContext transferContext;
         const auto transfer = context->GetRhiDevice().MakeTransferCommandEncoder(transferContext, commandBuffer);
@@ -1696,6 +1696,12 @@ struct ParticleGpuSystemManager::Impl
             state->schedulerById.emplace(id, scheduler.get());
             state->schedulers.push_back(std::move(scheduler));
         }
+        // Do not add complete-bipartite RenderExport→SimulationTail edges
+        // across graph instances. Spawn-domain versioning already requires an
+        // earlier emitter's Rendering (after export) to finish before a later
+        // sibling's Init. Linking every other instance's Update to every
+        // RenderReset closes a cycle as soon as two multi-emitter graphs share
+        // one compile. Mixed sim/export batches are reported as unsplit.
         if (!candidateEmitters.empty() && !state->graph->Compile()) {
             SetError(error, "failed to compile the GPU particle simulation graph");
             return {};
@@ -2506,7 +2512,7 @@ bool ParticleGpuSystemManager::HasPendingGpuWork() const noexcept
     if (!m_impl || !m_impl->graphState || m_impl->emitters.empty())
         return false;
 
-    if (m_impl->collisionScene && m_impl->collisionScene->HasPendingUpload())
+    if (m_impl->requiresCollisionScene && m_impl->collisionScene && m_impl->collisionScene->HasPendingUpload())
         return true;
     if (!m_impl->pendingDiagnostics.empty() || m_impl->HasQueuedFrameRequests())
         return true;

@@ -406,6 +406,8 @@ class NodeGraph:
 
     _DEFAULT_TYPE_COMPATIBILITY = {
         ("int", "float"),
+        ("i32", "f32"),
+        ("u32", "f32"),
         ("vec3", "color"),
         ("color", "vec3"),
         ("vec4", "color"),

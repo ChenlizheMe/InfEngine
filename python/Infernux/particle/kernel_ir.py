@@ -1939,6 +1939,7 @@ class ParticleKernelLowerer:
             parameters,
             attribute_types[stable_id],
             source,
+            space_semantic=_attribute_space_semantic(stable_id),
         )
         if degrees_input:
             value = builder.emit(
@@ -1991,6 +1992,7 @@ class ParticleKernelLowerer:
             parameters,
             vector_type,
             source,
+            space_semantic="position",
         )
         controls = tuple(
             builder.operation_value(
@@ -3551,6 +3553,8 @@ class _KernelBuilder:
         parameters: Mapping[str, Any],
         expected_type: TypeRef,
         source: KernelSourceRef,
+        *,
+        space_semantic: str = "direction",
     ) -> str:
         expression_id = bindings.get(property_id, "")
         if expression_id:
@@ -3561,39 +3565,24 @@ class _KernelBuilder:
             actual = self._value_types[value]
             if actual == expected_type:
                 return value
-            if actual.value_type == expected_type.value_type:
-                if (
-                    actual.space is not CoordinateSpace.NONE
-                    and expected_type.space is not CoordinateSpace.NONE
-                    and actual.space is not expected_type.space
+            try:
+                for opcode, result_type, immediates in PORTABLE_TYPE_SYSTEM.adaptation_ops(
+                    actual,
+                    expected_type,
+                    semantic=space_semantic,
                 ):
-                    raise KernelCompileError(
-                        f"operation {property_id!r} cannot implicitly convert "
-                        f"{actual.space.value} to {expected_type.space.value}; use an "
-                        "explicit Transform Position or Transform Direction node"
+                    value = self.emit(
+                        opcode,
+                        result_type,
+                        (value,),
+                        immediates,
+                        source,
                     )
-                return self.emit(
-                    "convert_space",
-                    expected_type,
-                    (value,),
-                    {
-                        "from": actual.space.value,
-                        "to": expected_type.space.value,
-                        "semantic": "direction",
-                    },
-                    source,
-                )
-            if PORTABLE_TYPE_SYSTEM.can_resize_numeric(actual, expected_type):
-                return self.emit(
-                    "numeric_resize",
-                    expected_type,
-                    (value,),
-                    {},
-                    source,
-                )
-            raise KernelCompileError(
-                f"operation {property_id!r} expected {expected_type}, got {actual}"
-            )
+                return value
+            except TypeError as exc:
+                raise KernelCompileError(
+                    f"operation {property_id!r} expected {expected_type}, got {actual}"
+                ) from exc
         return self.constant(expected_type, parameters[property_id], source)
 
     def finish(self) -> ParticleKernelFunction:
@@ -3652,6 +3641,12 @@ def _lower_event_abi(events: ParticleEventSchedule) -> KernelEventABI:
             for event_type in events.event_types
         ),
     )
+
+
+def _attribute_space_semantic(stable_id: str) -> str:
+    if str(stable_id) in {"builtin.position", "builtin.collision_point"}:
+        return "position"
+    return "direction"
 
 
 def _kernel_semantic_hash(

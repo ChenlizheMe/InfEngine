@@ -254,21 +254,28 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         m_residentState = std::make_shared<ResidentState>();
         m_residentState->device = &device;
         const auto storage = rhi::BufferUsageFlags::Storage;
-        // State snapshots are copied asynchronously into a readback buffer by
-        // ParticleGpuSystemManager diagnostics. Keep the transfer capability
-        // on the resident allocation itself; the copy source cannot acquire
-        // usage flags retroactively when a diagnostic request arrives.
-        m_residentState->states = device.CreateBuffer({stateBytes, storage | rhi::BufferUsageFlags::TransferSource});
-        m_residentState->freeList =
-            device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
-        m_residentState->counters =
-            device.CreateBuffer({CounterBufferByteSize(), storage | rhi::BufferUsageFlags::TransferSource});
-        const auto createRenderExport = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
+        const auto createSharedStorage = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
             rhi::BufferDesc bufferDesc;
             bufferDesc.byteSize = bytes;
             bufferDesc.usage = usage;
             bufferDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
             return device.CreateBuffer(bufferDesc);
+        };
+        // State snapshots are copied asynchronously into a readback buffer by
+        // ParticleGpuSystemManager diagnostics. Keep the transfer capability
+        // on the resident allocation itself; the copy source cannot acquire
+        // usage flags retroactively when a diagnostic request arrives.
+        // Simulation records on the independent compute family. Default
+        // Graphics-only exclusive buffers hang that queue the first time
+        // Game-only preview or a newly selected six-way system touches them.
+        m_residentState->states =
+            createSharedStorage(stateBytes, storage | rhi::BufferUsageFlags::TransferSource);
+        m_residentState->freeList =
+            createSharedStorage(static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage);
+        m_residentState->counters =
+            createSharedStorage(CounterBufferByteSize(), storage | rhi::BufferUsageFlags::TransferSource);
+        const auto createRenderExport = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
+            return createSharedStorage(bytes, usage);
         };
         m_residentState->instances = createRenderExport(instanceBytes, storage);
         m_residentState->visibility = createRenderExport(visibilityBytes, storage);
@@ -284,6 +291,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         transformDesc.byteSize = sizeof(GpuParticleTransforms);
         transformDesc.usage = rhi::BufferUsageFlags::Uniform;
         transformDesc.memory = rhi::BufferMemory::Upload;
+        transformDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
         m_residentState->transforms = device.CreateBuffer(transformDesc);
         rhi::BufferDesc simulationControlDesc;
         simulationControlDesc.byteSize = sizeof(GpuParticleSimulationControl);
@@ -455,6 +463,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
                 influenceDesc.byteSize = sizeof(dummyInfluence);
                 influenceDesc.usage = rhi::BufferUsageFlags::Storage;
                 influenceDesc.memory = rhi::BufferMemory::Upload;
+                influenceDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
                 influenceDesc.initialData = dummyInfluence.data();
                 influenceDesc.initialDataBytes = influenceDesc.byteSize;
                 runtimeMesh.influences = device.CreateBuffer(influenceDesc);
@@ -468,6 +477,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
             paletteDesc.byteSize = paletteBytes;
             paletteDesc.usage = rhi::BufferUsageFlags::Storage;
             paletteDesc.memory = rhi::BufferMemory::Upload;
+            paletteDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
             paletteDesc.initialData = paletteData;
             paletteDesc.initialDataBytes = paletteBytes;
             runtimeMesh.palette = device.CreateBuffer(paletteDesc);
@@ -499,6 +509,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         metadataBufferDesc.byteSize = dataInterfaces->metadataWords.size() * sizeof(uint32_t);
         metadataBufferDesc.usage = rhi::BufferUsageFlags::Storage;
         metadataBufferDesc.memory = rhi::BufferMemory::Upload;
+        metadataBufferDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
         metadataBufferDesc.initialData = dataInterfaces->metadataWords.data();
         metadataBufferDesc.initialDataBytes = metadataBufferDesc.byteSize;
         dataInterfaces->metadataBuffer = device.CreateBuffer(metadataBufferDesc);
@@ -592,6 +603,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         metadataDesc.byteSize = vectorFields->metadataWords.size() * sizeof(uint32_t);
         metadataDesc.usage = rhi::BufferUsageFlags::Storage;
         metadataDesc.memory = rhi::BufferMemory::Upload;
+        metadataDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
         metadataDesc.initialData = vectorFields->metadataWords.data();
         metadataDesc.initialDataBytes = metadataDesc.byteSize;
         vectorFields->metadataBuffer = device.CreateBuffer(metadataDesc);

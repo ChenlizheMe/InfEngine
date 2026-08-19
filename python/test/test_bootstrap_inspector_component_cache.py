@@ -20,9 +20,11 @@ class _RawComponent:
 
 class _GameObject:
     id = 7
+    handle = None
 
-    def __init__(self, raw):
+    def __init__(self, raw, scene=None):
         self.raw = raw
+        self.scene = scene
 
     def get_components(self):
         return [self.raw]
@@ -106,6 +108,50 @@ def test_invalidated_builtin_wrapper_is_rebound_from_live_object(monkeypatch):
     assert isinstance(rebound, _CacheProbeBuiltin)
     assert rebound is not first
     assert rebound._get_bound_native_component() is raw
+
+
+def test_scene_structure_bump_rebinds_live_looking_builtin_wrapper(monkeypatch):
+    raw = _RawComponent()
+    scene = _Scene(None)
+    game_object = _GameObject(raw, scene)
+    scene.game_object = game_object
+    _SceneManager.current = _SceneManagerInstance(scene)
+    monkeypatch.setitem(
+        BuiltinComponent._builtin_registry,
+        _RawComponent.type_name,
+        _CacheProbeBuiltin,
+    )
+    BuiltinComponent._wrapper_cache.clear()
+
+    ctx = SimpleNamespace(
+        SceneManager=_SceneManager,
+        InspectorComponentInfo=_InspectorComponentInfo,
+        InxComponent=__import__(
+            "Infernux.components.component", fromlist=["InxComponent"]
+        ).InxComponent,
+        _inspector_support=SimpleNamespace(
+            get_component_structure_version=lambda: 1,
+        ),
+        get_component_icon_id=lambda *_args: 0,
+        ip=SimpleNamespace(),
+    )
+    _wire_cache_init(ctx)
+    _wire_component_list(ctx)
+
+    first = ctx.resolve_component(game_object.id, raw.component_id, True)
+    assert isinstance(first, _CacheProbeBuiltin)
+    assert first._get_bound_native_component() is raw
+    assert not first._is_native_binding_stale()
+
+    replacement = _RawComponent()
+    replacement.component_id = raw.component_id
+    game_object.raw = replacement
+    scene.structure_version += 1
+
+    rebound = ctx.resolve_component(game_object.id, raw.component_id, True)
+    assert isinstance(rebound, _CacheProbeBuiltin)
+    assert rebound is first
+    assert rebound._get_bound_native_component() is replacement
 
 
 def test_python_script_error_lookup_runs_only_when_diagnostics_change(monkeypatch, tmp_path):

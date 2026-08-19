@@ -7311,7 +7311,32 @@ def _space_conversion(expression: str, result_type: TypeRef | None, immediate: d
         raise GpuParticleCompileError(
             f"GPU space conversion {source.value} -> {target.value} is not portable yet"
         )
-    w = "1.0" if immediate["semantic"] == "position" else "0.0"
+    semantic = str(immediate.get("semantic") or "direction")
+    if semantic == "direction":
+        # One source→target linear map, then drop scale. Applying emitter and
+        # simulation rotations as two separate multiplies can re-apply the
+        # same parent euler when those uniforms are not a true inverse pair.
+        def _rotation(matrix: str) -> str:
+            return (
+                f"mat3(normalize({matrix}[0].xyz), "
+                f"normalize({matrix}[1].xyz), "
+                f"normalize({matrix}[2].xyz))"
+            )
+
+        if source is CoordinateSpace.EMITTER_LOCAL and target is CoordinateSpace.WORLD:
+            matrix = "transforms.emitter_to_world"
+        elif source is CoordinateSpace.WORLD and target is CoordinateSpace.EMITTER_LOCAL:
+            matrix = "transforms.world_to_emitter"
+        elif source is CoordinateSpace.SIMULATION and target is CoordinateSpace.WORLD:
+            matrix = "transforms.simulation_to_world"
+        elif source is CoordinateSpace.WORLD and target is CoordinateSpace.SIMULATION:
+            matrix = "transforms.world_to_simulation"
+        elif source is CoordinateSpace.EMITTER_LOCAL and target is CoordinateSpace.SIMULATION:
+            matrix = "(transforms.world_to_simulation * transforms.emitter_to_world)"
+        else:
+            matrix = "(transforms.world_to_emitter * transforms.simulation_to_world)"
+        return f"({_rotation(matrix)} * ({expression}))"
+    w = "1.0" if semantic == "position" else "0.0"
     world = expression
     if source is CoordinateSpace.EMITTER_LOCAL:
         world = f"(transforms.emitter_to_world * vec4({expression}, {w})).xyz"

@@ -75,10 +75,12 @@ def _has_mesh_pick_geometry(object_id: int) -> bool:
 
 
 def _is_icon_only_pick_target(object_id: int) -> bool:
-    """True for light/camera/etc. icons with no mesh geometry of their own."""
+    """True for icon-picked objects that have no mesh AABB of their own.
+
+    Particle systems use the same Scene icon path as lights and cameras. They
+    must stay in that set so a mesh behind the spray cannot steal the click.
+    """
     if object_id <= 0:
-        return False
-    if _owns_particle_system(object_id):
         return False
     return not _has_mesh_pick_geometry(object_id)
 
@@ -156,7 +158,8 @@ class SceneViewPickingMixin:
         icons, colliders and depth cycling. Its mesh test is necessarily based on
         AABBs, though, so imported characters can contain large empty regions.
         The one-frame-late GPU result corrects those mesh false positives and also
-        makes GPU-only particle output clickable. Icon-only targets keep priority.
+        makes GPU-only particle output clickable. Icon-only targets — including
+        particle systems without mesh geometry — keep the click they already won.
         """
         self._pending_scene_pick = None
         # Additive picking builds a multi-selection; a deferred correction would
@@ -311,9 +314,20 @@ class SceneViewPickingMixin:
         self._pick_cycle_last_mouse = (pending["x"], pending["y"])
         self._pick_cycle_last_viewport = (int(pending["width"]), int(pending["height"]))
 
-        # Icon billboards (lights, cameras, …) stay on top of rendered geometry
-        # at the same pixel. Mesh AABB hits are corrected to the visible owner.
+        # Icon billboards (lights, cameras, particle systems, …) stay on top of
+        # rendered geometry at the same pixel. Mesh AABB hits are still
+        # corrected to the visible owner; a mesh behind a particle must not
+        # replace the particle click.
         if cpu_id > 0 and _is_icon_only_pick_target(cpu_id):
+            self._pick_cycle_index = merged.index(cpu_id) if cpu_id in merged else 0
+            return
+        if (
+            cpu_id > 0
+            and gpu_id > 0
+            and cpu_id != gpu_id
+            and _owns_particle_system(cpu_id)
+            and not _owns_particle_system(gpu_id)
+        ):
             self._pick_cycle_index = merged.index(cpu_id) if cpu_id in merged else 0
             return
 
@@ -347,12 +361,24 @@ class SceneViewPickingMixin:
             index = (self._pick_cycle_index + 1) % len(ids)
         else:
             index = 0
+            current_id = self._current_scene_pick_id()
+            if current_id in ids:
+                # Particle and mesh hits are equal candidates. A first click on
+                # an already-selected particle must not jump to a mesh that only
+                # won the AABB sort.
+                index = ids.index(current_id)
 
         self._pick_cycle_candidates = ids
         self._pick_cycle_index = index
         self._pick_cycle_last_mouse = (local_x, local_y)
         self._pick_cycle_last_viewport = viewport
         return ids[index]
+
+    @staticmethod
+    def _current_scene_pick_id() -> int:
+        from Infernux.engine.interaction import SelectionService
+
+        return int(SelectionService.instance().primary_scene_object_id() or 0)
 
     def _finalize_box_select(self, ctx: InxGUIContext, vp: ViewportInfo):
         """Complete a box-select drag: find objects inside the rectangle."""

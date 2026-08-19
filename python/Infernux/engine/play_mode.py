@@ -897,6 +897,8 @@ class PlayModeManager(PlayModeSerializationMixin):
             restore_ok = self._rebuild_active_scene(
                 self._scene_backup, for_play=False, restore_scene_path=True
             )
+            from Infernux.components.builtin_component import BuiltinComponent
+            BuiltinComponent._clear_cache()
             self._invalidate_native_gpu_view_state()
             rebuild_ms = (time.perf_counter() - rebuild_started) * 1000.0
             if not restore_ok:

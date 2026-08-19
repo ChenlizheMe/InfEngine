@@ -957,6 +957,7 @@ void RenderGraph::Reset()
     // that reference transient views retire together with those views.
     FreeResources();
     m_passes.clear();
+    m_explicitPassDependencies.clear();
     m_resources.clear();
     m_resourceVersions.clear();
     m_executionOrder.clear();
@@ -1056,6 +1057,7 @@ void RenderGraph::Destroy()
     m_structuralCacheMisses = 0;
 
     m_passes.clear();
+    m_explicitPassDependencies.clear();
     m_resources.clear();
     m_resourceVersions.clear();
     m_executionOrder.clear();
@@ -1125,6 +1127,22 @@ void RenderGraph::SetSubmissionBoundaryBefore(PassHandle pass)
         return;
     }
     m_passes[pass.id].forceSubmissionBoundary = true;
+}
+
+void RenderGraph::AddPassDependency(PassHandle later, PassHandle earlier)
+{
+    if (!Owns(later) || !Owns(earlier) || later.id >= m_passes.size() || earlier.id >= m_passes.size()) {
+        INXLOG_ERROR("RenderGraph::AddPassDependency rejected a foreign pass handle");
+        return;
+    }
+    if (later.id == earlier.id) {
+        INXLOG_ERROR("RenderGraph::AddPassDependency rejected a self-dependency on pass ", later.id);
+        return;
+    }
+    const auto dependency = std::make_pair(later.id, earlier.id);
+    if (std::find(m_explicitPassDependencies.begin(), m_explicitPassDependencies.end(), dependency) ==
+        m_explicitPassDependencies.end())
+        m_explicitPassDependencies.push_back(dependency);
 }
 
 PassHandle RenderGraph::AddTransferPass(const std::string &name, PassSetupCallback setup)
@@ -1506,6 +1524,14 @@ ResourceHandle RenderGraph::AdvanceResourceVersion(ResourceHandle handle)
     return handle;
 }
 
+bool RenderGraph::CompileExecutionOrder()
+{
+    if (m_passes.empty())
+        return true;
+    CullPasses();
+    return TopologicalSort();
+}
+
 bool RenderGraph::Compile()
 {
     if (m_passes.empty()) {
@@ -1531,11 +1557,7 @@ bool RenderGraph::Compile()
 
     const auto structuralSignature = BuildStructuralSignature();
     if (!RestoreStructuralCompilation(structuralSignature)) {
-        // Step 1: Cull unused passes
-        CullPasses();
-
-        // Step 2: Topological sort via Kahn's algorithm
-        if (!TopologicalSort()) {
+        if (!CompileExecutionOrder()) {
             return false;
         }
 

@@ -601,6 +601,7 @@ def _vector_field_sample() -> NodeDef:
                 PortDirection.INPUT,
                 value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
                 required=True,
+                dimension_policy=PortDimensionPolicy.FIXED,
             ),
             PortDef(
                 "value",
@@ -623,6 +624,7 @@ def _sdf_sample_distance() -> NodeDef:
                 PortDirection.INPUT,
                 value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
                 required=True,
+                dimension_policy=PortDimensionPolicy.FIXED,
             ),
             PortDef(
                 "distance",
@@ -645,6 +647,7 @@ def _sdf_sample_gradient() -> NodeDef:
                 PortDirection.INPUT,
                 value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
                 required=True,
+                dimension_policy=PortDimensionPolicy.FIXED,
             ),
             PortDef(
                 "gradient",
@@ -699,6 +702,7 @@ def _mesh_sample() -> NodeDef:
                 required=False,
                 default=[0.5, 0.5, 0.5],
                 display_name="Sample",
+                dimension_policy=PortDimensionPolicy.FIXED,
             ),
             PortDef(
                 "position",

@@ -138,14 +138,24 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         m_frameSubmission.Reset();
         const rhi::DeviceId device = m_backend.Device().GetDeviceId();
         std::vector<uint32_t> setupDependencies;
+        if (m_framePreSetupBuilder && !m_framePreSetupBuilder(m_frameSubmission, setupDependencies)) {
+            INXLOG_ERROR("Failed to publish pre-setup queue ownership releases");
+            return;
+        }
+
+        uint32_t particleComputeWork = 0;
         const bool splitParticleCompute = primeAsyncCompute || (separateComputeBatch && partitionedCompute);
         if (splitParticleCompute) {
+            // OwnershipRelease must be submitted before PrimeSimulation waits
+            // on it. The previous order queued compute first; when Scene/Game
+            // views were hidden that frame, the release never existed and the
+            // compute acquire sat on exclusive Graphics-owned buffers.
             const uint32_t primeSimulation = m_frameSubmission.AddWork(
                 device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
-                rhi::PipelineStage::ComputeShader, {},
+                rhi::PipelineStage::ComputeShader, setupDependencies,
                 [this](VkCommandBuffer commandBuffer) { return m_frameAsyncSimulationExecutor(commandBuffer); },
                 "GpuParticle/PrimeSimulation");
-            const uint32_t primeExport = m_frameSubmission.AddWork(
+            particleComputeWork = m_frameSubmission.AddWork(
                 device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
                 rhi::PipelineStage::ComputeShader, {primeSimulation},
                 [this](VkCommandBuffer commandBuffer) { return m_frameAsyncExportExecutor(commandBuffer); },
@@ -155,19 +165,21 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
             // one GpuParticle/Simulation buffer. That erased the compiled
             // sim/export boundary and tripped the 1000 ms frame watchdog.
             // Keep the same two-submission split as async prime.
-            setupDependencies.push_back(primeExport);
         } else if (separateComputeBatch) {
-            const uint32_t compute = m_frameSubmission.AddWork(
+            particleComputeWork = m_frameSubmission.AddWork(
                 device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
-                rhi::PipelineStage::ComputeShader, {},
+                rhi::PipelineStage::ComputeShader, setupDependencies,
                 [this](VkCommandBuffer commandBuffer) {
                     m_frameComputeExecutor(commandBuffer);
                     return true;
                 },
                 "GpuParticle/Simulation");
-            setupDependencies.push_back(compute);
         }
 
+        // Frame/Setup only updates globals. Waiting here for Simulation plus
+        // queuing OwnershipRelease after Setup deadlocks the independent
+        // compute family when a newly selected emitter first touches exclusive
+        // Graphics buffers (Game-only six-way preview).
         const uint32_t setupWork = m_frameSubmission.AddWork(
             device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, m_presentationView.id,
             rhi::PipelineStage::AllGraphics, std::move(setupDependencies),
@@ -180,7 +192,7 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
             },
             "Frame/Setup");
 
-        if (!m_frameSubmissionBuilder(m_frameSubmission, setupWork)) {
+        if (!m_frameSubmissionBuilder(m_frameSubmission, setupWork, particleComputeWork)) {
             INXLOG_ERROR("Failed to compose frame RenderGraph submissions");
             return;
         }

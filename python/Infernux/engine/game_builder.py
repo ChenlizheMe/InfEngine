@@ -2972,6 +2972,169 @@ finally:
                 # A non-empty or concurrently used directory is retained.
                 continue
 
+    @classmethod
+    def _is_retained_player_content_entry(cls, name: str) -> bool:
+        """Return whether a Data-root entry must survive content packing."""
+
+        folded = name.casefold()
+        if folded in {
+            cls._CONTENT_ARCHIVE_FILENAME.casefold(),
+            cls._RUNTIME_ARCHIVE_FILENAME.casefold(),
+            cls._PLAYER_MANIFEST_FILENAME.casefold(),
+            cls.OUTPUT_MARKER_FILENAME.casefold(),
+            "bootstrap.inxrt",
+            "buildmanifest.json",
+            "logs",
+            "modules",
+        }:
+            return True
+        return os.path.splitext(folded)[1] in _NATIVE_PLAYER_ARCHIVE_SUFFIXES
+
+    @staticmethod
+    def _remove_directory_tree(path: str) -> None:
+        """Delete one staged directory without a Python-side unlink loop.
+
+        Player content finalize used to ``os.remove`` every packed file. That
+        keeps the GIL almost continuously, so the editor tick cannot run even
+        though the worker is a background thread. Windows ``rd /s /q`` (and
+        ``shutil.rmtree`` elsewhere) release the GIL for the whole tree.
+        """
+
+        if not os.path.isdir(path):
+            return
+        if sys.platform == "win32":
+            subprocess.run(
+                ["cmd", "/c", "rd", "/s", "/q", path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+        if os.path.exists(path):
+            Debug.log_internal(f"Failed to remove packed content tree: {path}")
+
+    @staticmethod
+    def _park_player_paths(paths: list[str], park_root: str) -> list[tuple[str, str]]:
+        """Move retained leftovers out of trees that are about to be deleted."""
+
+        os.makedirs(park_root, exist_ok=True)
+        parked: list[tuple[str, str]] = []
+        for index, path in enumerate(paths):
+            if not os.path.lexists(path):
+                continue
+            destination = os.path.join(park_root, f"{index:04d}")
+            os.replace(path, destination)
+            parked.append((path, destination))
+        return parked
+
+    @staticmethod
+    def _restore_parked_player_paths(parked: list[tuple[str, str]]) -> None:
+        for original, parked_path in parked:
+            if not os.path.lexists(parked_path):
+                continue
+            parent = os.path.dirname(original)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            if os.path.lexists(original):
+                continue
+            os.replace(parked_path, original)
+
+    def _strip_authoring_from_module_root(self, modules_root: str) -> None:
+        """Keep native module archives and drop any staged authoring leftovers."""
+
+        for root, _dirs, filenames in os.walk(modules_root):
+            for filename in filenames:
+                if (
+                    os.path.splitext(filename)[1].casefold()
+                    in _NATIVE_PLAYER_ARCHIVE_SUFFIXES
+                ):
+                    continue
+                path = os.path.join(root, filename)
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+        self._remove_empty_directory_tree(modules_root)
+
+    def _finalize_packed_content_sources(
+        self,
+        data_root: str,
+        retained_paths: list[str],
+        *,
+        on_progress: Optional[Callable[[str, float], None]],
+        cancel_event: Optional[threading.Event],
+    ) -> None:
+        """Remove staged authoring trees after Content.inxpkg has been written."""
+
+        leftover_dirs: list[str] = []
+        leftover_files: list[str] = []
+        modules_root = ""
+        with os.scandir(data_root) as entries:
+            for entry in entries:
+                if self._is_retained_player_content_entry(entry.name):
+                    if (
+                        entry.name.casefold() == "modules"
+                        and entry.is_dir(follow_symlinks=False)
+                    ):
+                        modules_root = entry.path
+                    continue
+                if entry.is_dir(follow_symlinks=False) and not entry.is_symlink():
+                    leftover_dirs.append(entry.path)
+                else:
+                    leftover_files.append(entry.path)
+
+        leftover_dirs.sort()
+        leftover_files.sort()
+        park_targets = [
+            path
+            for path in retained_paths
+            if any(
+                is_path_within(path, directory, allow_root=False)
+                for directory in leftover_dirs
+            )
+        ]
+        steps = len(leftover_dirs) + (1 if leftover_files else 0)
+        completed = 0
+        park_root = ""
+        parked: list[tuple[str, str]] = []
+        try:
+            if park_targets:
+                park_root = os.path.join(
+                    os.path.dirname(data_root),
+                    f".infernux-packkeep-{os.getpid()}-{time.time_ns()}",
+                )
+                parked = self._park_player_paths(park_targets, park_root)
+            for directory in leftover_dirs:
+                completed += 1
+                self._report_content_pack_progress(
+                    on_progress,
+                    cancel_event,
+                    f"Finalizing packed project content ({os.path.basename(directory)})",
+                    0.9834 + (completed / max(1, steps)) * 0.0005,
+                )
+                self._remove_directory_tree(directory)
+            if leftover_files:
+                completed += 1
+                self._report_content_pack_progress(
+                    on_progress,
+                    cancel_event,
+                    "Finalizing packed project content",
+                    0.9834 + (completed / max(1, steps)) * 0.0005,
+                )
+                for path in leftover_files:
+                    try:
+                        os.remove(path)
+                    except FileNotFoundError:
+                        pass
+            self._restore_parked_player_paths(parked)
+            parked = []
+        finally:
+            self._restore_parked_player_paths(parked)
+            if park_root:
+                shutil.rmtree(park_root, ignore_errors=True)
+        if modules_root:
+            self._strip_authoring_from_module_root(modules_root)
+
     def _pack_core_runtime_archive(self, final_dir: str) -> None:
         """Write the always-required runtime payload as Runtime.inxrt."""
 
@@ -3243,7 +3406,7 @@ finally:
 
         archive_path = os.path.join(data_root, self._CONTENT_ARCHIVE_FILENAME)
         files: list[tuple[str, str]] = []
-        excluded_files: list[str] = []
+        retained_paths: list[str] = []
         source_bytes = 0
         forbidden_plaintext: list[str] = []
         forbidden_direct_payloads: list[str] = []
@@ -3251,6 +3414,9 @@ finally:
         last_report = 0.0
 
         for root, dirs, filenames in os.walk(data_root):
+            for directory in dirs:
+                if directory == "Logs":
+                    retained_paths.append(os.path.join(root, directory))
             dirs[:] = [directory for directory in dirs if directory != "Logs"]
             for filename in filenames:
                 path = os.path.join(root, filename)
@@ -3260,22 +3426,19 @@ finally:
                     continue
                 source_paths = getattr(self, "_runtime_artifact_source_paths", set())
                 if portable_relative.casefold() in source_paths:
-                    excluded_files.append(path)
                     continue
                 if (
                     os.path.splitext(portable_relative)[1].casefold()
                     in _NATIVE_PLAYER_ARCHIVE_SUFFIXES
                 ):
+                    retained_paths.append(path)
                     continue
                 if self._is_player_editor_path(portable_relative):
-                    excluded_files.append(path)
                     continue
                 if self._is_particle_authoring_payload(relative):
-                    excluded_files.append(path)
                     continue
                 suffix = os.path.splitext(filename)[1].lower()
                 if suffix == ".meta":
-                    excluded_files.append(path)
                     continue
                 if suffix in {
                     ".py", ".pyi", ".pyx", ".lua", ".cpp", ".c", ".cc",
@@ -3333,25 +3496,12 @@ finally:
             "Finalizing packed project content",
             0.9834,
         )
-        for index, (_relative, source_path) in enumerate(files, start=1):
-            os.remove(source_path)
-            if index % 32 == 0:
-                _yield_editor_thread()
-        for excluded_path in excluded_files:
-            try:
-                os.remove(excluded_path)
-            except FileNotFoundError:
-                pass
-        for root, dirs, _files in os.walk(data_root, topdown=False):
-            for directory in dirs:
-                path = os.path.join(root, directory)
-                if os.path.basename(path) == "Logs":
-                    continue
-                try:
-                    os.rmdir(path)
-                except OSError:
-                    pass
-            _yield_editor_thread()
+        self._finalize_packed_content_sources(
+            data_root,
+            retained_paths,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
+        )
 
         ratio = native_manifest["archive_bytes"] / max(1, source_bytes)
         Debug.log_internal(

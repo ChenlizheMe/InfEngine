@@ -802,6 +802,14 @@ class RenderGraph
     /// domain match the previous pass. Used for explicit async phase joins.
     void SetSubmissionBoundaryBefore(PassHandle pass);
 
+    /// Require `later` to run after `earlier` even when they do not share a
+    /// resource version. Do not use this to force a global sim-before-export
+    /// cut across particle graphs: versioned spawn-domain writes already
+    /// serialize Rendering before a sibling Init, and a complete bipartite
+    /// Update→RenderReset cut closes a cycle once two multi-emitter graphs
+    /// compile together.
+    void AddPassDependency(PassHandle later, PassHandle earlier);
+
     /**
      * @brief Add a transfer pass to the graph (copy/blit operations, no render pass)
      */
@@ -900,6 +908,10 @@ class RenderGraph
      * @return true if compilation succeeded
      */
     bool Compile();
+
+    /// Cull unused passes and produce a cycle-free execution order without
+    /// allocating GPU resources. Compile() uses this as its structural step.
+    [[nodiscard]] bool CompileExecutionOrder();
 
     /**
      * @brief Execute the render graph
@@ -1191,6 +1203,7 @@ class RenderGraph
 
     // Graph data
     std::vector<RenderPassData> m_passes;
+    std::vector<std::pair<uint32_t, uint32_t>> m_explicitPassDependencies;
     std::vector<ResourceData> m_resources;
     std::vector<uint32_t> m_resourceVersions;
     std::vector<uint32_t> m_executionOrder;

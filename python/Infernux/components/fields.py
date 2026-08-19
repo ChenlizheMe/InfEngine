@@ -937,6 +937,8 @@ def get_raw_field_value(component: 'InxComponent', field_name: str) -> Any:
         desc = cls.__dict__.get(field_name)
         if isinstance(desc, SerializedFieldDescriptor):
             return desc.get_raw(component)
+        if getattr(desc, "_is_cpp_property", False):
+            return getattr(component, field_name)
     fields = getattr(type(component), '_serialized_fields_', {})
     if field_name in fields and hasattr(component, '__dict__'):
         return component.__dict__.get(field_name, fields[field_name].default)

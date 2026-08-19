@@ -398,6 +398,7 @@ class TestEditorShortcutInput:
         source = (root / "EditorShortcutInput.cpp").read_text(encoding="utf-8")
 
         assert 'dispatch(shift ? "Ctrl+Shift+F" : "Ctrl+F")' in source
+        assert 'dispatch("F")' in source
 
     def test_project_history_alt_chords_reach_the_shortcut_router(self):
         root = Path(__file__).parents[2] / "cpp" / "infernux" / "function" / "editor"

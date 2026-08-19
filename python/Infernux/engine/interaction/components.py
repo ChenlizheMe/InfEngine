@@ -497,8 +497,18 @@ class ComponentCommandService:
             and not callable(getattr(component, "serialize_document", None))
         )
 
+    @staticmethod
+    def _is_cpp_property_field(component: Any, field: str) -> bool:
+        for klass in type(component).__mro__:
+            desc = klass.__dict__.get(field)
+            if desc is not None:
+                return bool(getattr(desc, "_is_cpp_property", False))
+        return False
+
     @classmethod
     def _is_python_serialized_field(cls, component: Any, field: str) -> bool:
+        if cls._is_cpp_property_field(component, field):
+            return False
         if not cls._is_python_component(component):
             return False
         from Infernux.components.fields import get_serialized_fields

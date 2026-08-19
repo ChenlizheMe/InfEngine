@@ -836,6 +836,59 @@ def test_particle_emitter_authoring_combines_stages_but_keeps_chains_isolated():
     ]
 
 
+def test_transform_position_connects_to_set_position_without_matching_target_space():
+    model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
+    model.prepare_node_creation("update")
+    transform = model.add_node("common.space.transform_position", 240.0, 180.0)
+    setter = model.add_node("particle.attribute.position", 480.0, 180.0)
+    constant = model.add_node("common.constant.vec3", 40.0, 180.0)
+
+    assert transform.data.get("target_space", "world") == "world"
+    assert model.validate_link(constant.uid, "value", transform.uid, "input")
+    assert model.validate_link(transform.uid, "value", setter.uid, "value")
+    assert model.add_link(constant.uid, "value", transform.uid, "input") is not None
+    assert model.add_link(transform.uid, "value", setter.uid, "value") is not None
+
+
+def test_numeric_ports_accept_convertible_shapes_across_common_and_set_nodes():
+    model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
+    model.prepare_node_creation("update")
+    scalar = model.add_node("common.constant.f32", 40.0, 180.0)
+    integer = model.add_node("common.constant.i32", 40.0, 260.0)
+    vector = model.add_node("common.constant.vec3", 40.0, 340.0)
+    position = model.add_node("particle.attribute.position", 480.0, 180.0)
+    size = model.add_node("particle.attribute.size", 480.0, 260.0)
+    compare = model.add_node("common.compare.less_than", 480.0, 340.0)
+
+    assert model.validate_link(scalar.uid, "value", position.uid, "value")
+    assert model.validate_link(vector.uid, "value", size.uid, "value")
+    assert model.validate_link(integer.uid, "value", size.uid, "value")
+    assert model.validate_link(integer.uid, "value", compare.uid, "a")
+    assert model.validate_link(vector.uid, "value", compare.uid, "b")
+    assert model.add_link(scalar.uid, "value", position.uid, "value") is not None
+    assert model.add_link(vector.uid, "value", size.uid, "value") is not None
+    assert model.add_link(integer.uid, "value", compare.uid, "a") is not None
+
+
+def test_transform_position_palette_can_create_set_position_from_its_output():
+    from Infernux.core.node_graph import PinKind
+
+    model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
+    model.prepare_node_creation("update")
+    transform = model.add_node("common.space.transform_position", 240.0, 180.0)
+    pin = model.compatible_creation_pin(
+        "particle.attribute.position",
+        {
+            "source_node": transform.uid,
+            "source_pin": "value",
+            "source_kind": PinKind.OUTPUT,
+        },
+    )
+
+    assert pin is not None
+    assert pin.id == "value"
+
+
 def test_particle_common_node_creation_keeps_the_requested_stage():
     model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
     model.prepare_node_creation("update")
@@ -1242,8 +1295,48 @@ def test_world_direction_transform_uses_vector_semantics_without_translation():
     )
     assert conversion.result_type == TypeRef(ValueType.VEC3, CoordinateSpace.WORLD)
     update_glsl = GpuParticleGlslLowerer().lower(kernel).emitters[0].update
-    assert "simulation_to_world * vec4(" in update_glsl
-    assert ", 0.0)).xyz" in update_glsl
+    assert "normalize(transforms.simulation_to_world[0].xyz)" in update_glsl
+
+
+def test_direction_space_conversion_does_not_apply_emitter_scale():
+    from Infernux.particle.gpu_glsl_backend import _space_conversion
+
+    glsl = _space_conversion(
+        "local_velocity",
+        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+        {
+            "from": CoordinateSpace.EMITTER_LOCAL.value,
+            "to": CoordinateSpace.SIMULATION.value,
+            "semantic": "direction",
+        },
+    )
+    assert "transforms.world_to_simulation * transforms.emitter_to_world" in glsl
+    assert "vec4(" not in glsl
+
+
+def test_position_and_vector_space_conversion_keep_affine_semantics():
+    from Infernux.particle.gpu_glsl_backend import _space_conversion
+
+    position = _space_conversion(
+        "local_point",
+        TypeRef(ValueType.VEC3, CoordinateSpace.WORLD),
+        {
+            "from": CoordinateSpace.EMITTER_LOCAL.value,
+            "to": CoordinateSpace.WORLD.value,
+            "semantic": "position",
+        },
+    )
+    vector = _space_conversion(
+        "local_offset",
+        TypeRef(ValueType.VEC3, CoordinateSpace.WORLD),
+        {
+            "from": CoordinateSpace.EMITTER_LOCAL.value,
+            "to": CoordinateSpace.WORLD.value,
+            "semantic": "vector",
+        },
+    )
+    assert "transforms.emitter_to_world * vec4(local_point, 1.0)" in position
+    assert "transforms.emitter_to_world * vec4(local_offset, 0.0)" in vector
 
 
 def test_particle_compose4_connects_directly_to_color_attribute_and_compiles():
@@ -1684,6 +1777,42 @@ def test_particle_graph_save_publishes_view_state_without_global_session_flush(t
     assert "dirty" not in persisted_view
     assert "draft" not in persisted_view
     assert panel_state.get("document_session") == sentinel_session
+
+
+def test_particle_graph_save_surfaces_compile_errors(tmp_path, monkeypatch):
+    import Infernux.engine.ui.particle_graph_editor_panel as module
+    from Infernux.particle.artifact import ParticleArtifactError
+
+    panel = module.ParticleGraphEditorPanel()
+    target = tmp_path / "Broken.particlegraph"
+
+    def boom(*_args, **_kwargs):
+        raise ParticleArtifactError(
+            "particle graph AOT compile failed: kernel space conversion metadata does not match its types"
+        )
+
+    monkeypatch.setattr(module.ParticleArtifactRegistry, "prepare_graph_asset", boom)
+    with pytest.raises(ParticleArtifactError, match="kernel space conversion"):
+        panel.capture_authoring_save_snapshot(str(target))
+    assert "kernel space conversion" in panel._draft_compile_error
+
+
+def test_particle_graph_save_compiles_untyped_transform_direction(tmp_path):
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    compose = panel.add_authoring_node("init", "common.vector.compose3", 180.0, 360.0)
+    transform = panel.add_authoring_node(
+        "init", "common.space.transform_direction", 360.0, 360.0
+    )
+    panel.set_node_property(transform["uid"], "target_space", "simulation")
+    panel.connect_value(compose["uid"], "value", transform["uid"], "input")
+    panel.connect_value(transform["uid"], "value", "init::init.velocity", "value")
+
+    snapshot = panel.capture_authoring_save_snapshot(str(tmp_path / "Aim.particlegraph"))
+    assert snapshot.source_text
+    assert panel._draft_compile_error == ""
 
 
 def test_particle_graph_scalar_properties_publish_stable_semantic_ids():

@@ -381,6 +381,13 @@ bool RenderGraph::TopologicalSort()
         }
     }
 
+    for (const auto &[later, earlier] : m_explicitPassDependencies) {
+        if (inDegree.find(later) == inDegree.end() || inDegree.find(earlier) == inDegree.end())
+            continue;
+        adjacency[earlier].push_back(later);
+        m_passes[later].dependsOn.push_back(earlier);
+    }
+
     // Deduplicate edges
     for (auto &[passId, deps] : adjacency) {
         std::sort(deps.begin(), deps.end());
@@ -436,6 +443,10 @@ bool RenderGraph::TopologicalSort()
             if (inDegree[passId] != 0) {
                 INXLOG_ERROR("  unresolved pass [", passId, "] '", m_passes[passId].name, "' has remaining in-degree ",
                              inDegree[passId]);
+                for (const uint32_t predecessor : m_passes[passId].dependsOn) {
+                    if (predecessor < m_passes.size() && inDegree[predecessor] != 0)
+                        INXLOG_ERROR("    waits on unresolved [", predecessor, "] '", m_passes[predecessor].name, "'");
+                }
             }
         }
         m_executionOrder.clear();
@@ -715,6 +726,13 @@ std::vector<uint64_t> RenderGraph::BuildStructuralSignature() const
         appendHandle(pass.depthOutput);
         appendHandle(pass.depthInput);
         appendHandle(pass.resolveOutput);
+    }
+
+    signature.push_back(0x4558504445505300ull); // "EXPDPS"
+    signature.push_back(m_explicitPassDependencies.size());
+    for (const auto &[later, earlier] : m_explicitPassDependencies) {
+        signature.push_back(later);
+        signature.push_back(earlier);
     }
 
     return signature;

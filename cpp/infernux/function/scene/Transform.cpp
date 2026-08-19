@@ -46,17 +46,11 @@ glm::vec3 Transform::GetWorldDirection(const glm::vec3 &localAxis) const
 glm::vec3 Transform::GetWorldPosition() const
 {
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
+    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle)) {
         return store.GetCachedWorldPosition(m_ecsHandle.index);
     }
 
-    Transform *parentTransform = GetParentTransformSafe();
-    if (!parentTransform) {
-        return GetLocalPosition();
-    }
-
-    glm::mat4 parentWorld = parentTransform->GetWorldMatrix();
-    return glm::vec3(parentWorld * glm::vec4(GetLocalPosition(), 1.0f));
+    return glm::vec3(GetWorldMatrix()[3]);
 }
 
 void Transform::SetWorldPosition(const glm::vec3 &worldPos)
@@ -121,6 +115,9 @@ void Transform::ApplyWorldPoseFromPhysics(const glm::vec3 &worldPos, const glm::
 const glm::mat4 &Transform::GetWorldMatrix() const
 {
     auto &store = TransformECSStore::Instance();
+    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle)) {
+        return store.ComposeFrameCacheWorldMatrix(m_ecsHandle, this);
+    }
     if (!store.GetWorldMatrixDirty(m_ecsHandle)) {
         return store.GetCachedWorldMatrix(m_ecsHandle);
     }
@@ -153,7 +150,7 @@ void Transform::InvalidateWorldMatrix(bool clearWorldEulerExact) const
 glm::quat Transform::GetWorldRotation() const
 {
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
+    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle)) {
         return store.GetCachedWorldRotation(m_ecsHandle.index);
     }
 
@@ -254,7 +251,8 @@ void Transform::SetWorldEulerAngles(const glm::vec3 &euler)
 }
 
 // ============================================================================
-// World-space Scale (approximate lossyScale)
+// World-space Scale (lossyScale). Particles use GetWorldMatrix() instead of
+// this vector: direction conversion must not inherit authoring scale.
 // ============================================================================
 
 glm::vec3 Transform::GetWorldScale() const

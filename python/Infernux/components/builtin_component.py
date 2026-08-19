@@ -267,17 +267,45 @@ class BuiltinComponent(InxComponent):
 
         The cache is keyed by the C++ component's stable ``component_id``
         so the same Python object is returned on repeated lookups.
+
+        Play Mode rebuilds preserve those IDs while allocating new native
+        instances.  A still-valid cache entry must therefore rebind when the
+        incoming C++ object is a replacement, not merely a new pybind view
+        of the same handle.
         """
         comp_id = cpp_component.component_id
         existing = BuiltinComponent._wrapper_cache.get(comp_id)
-        if existing is not None and existing.is_valid:
-            return existing
         if existing is not None:
-            existing._invalidate_native_binding()
+            destroyed = bool(getattr(existing, "_is_destroyed", False))
+            if destroyed and getattr(existing, "_cpp_component", None) is None:
+                BuiltinComponent._wrapper_cache.pop(comp_id, None)
+            else:
+                # Scripts cache this wrapper (SmokeRangeDirector._body).  A
+                # Play rebuild or inspector refresh must rebind the same
+                # object so gameplay still writes to a live native body.
+                if (
+                    existing._is_native_binding_stale()
+                    or not cls._is_same_native_instance(existing, cpp_component)
+                ):
+                    existing._bind_cpp(cpp_component, game_object)
+                return existing
 
         wrapper = cls()
         wrapper._bind_cpp(cpp_component, game_object)
         return wrapper
+
+    @staticmethod
+    def _is_same_native_instance(existing, cpp_component) -> bool:
+        bound = getattr(existing, "_cpp_component", None)
+        if bound is cpp_component:
+            return True
+        existing_handle = getattr(existing, "_native_handle", None)
+        incoming_handle = getattr(cpp_component, "handle", None)
+        return (
+            existing_handle is not None
+            and incoming_handle is not None
+            and existing_handle == incoming_handle
+        )
 
     @classmethod
     def _clear_cache(cls) -> None:
@@ -289,6 +317,14 @@ class BuiltinComponent(InxComponent):
                 from Infernux.debug import Debug
                 Debug.log_warning(f"[BuiltinComponent] cache clear failed: {exc}")
         BuiltinComponent._wrapper_cache.clear()
+        try:
+            from Infernux.engine.ui.inspector_components import (
+                clear_component_value_cache,
+            )
+
+            clear_component_value_cache()
+        except ImportError:
+            pass
 
     @classmethod
     def _invalidate_component_ids(cls, component_ids) -> None:

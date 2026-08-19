@@ -14,6 +14,7 @@
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
 #include <function/renderer/particle/ParticleRenderGraph.h>
+#include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/rhi/GpuRetirementQueue.h>
 #include <function/renderer/rhi/RhiBuffer.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -28,6 +29,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -944,6 +946,10 @@ int main()
         assert(migrator.Create(migrationDevice, migrationDesc));
         assert(migrator.IsValid() && !migrator.WasRecorded());
         assert(migrationDevice.buffers.size() == 2 && migrationDevice.writes == 2);
+        assert(migrationDevice.buffers[0].queueAccess ==
+                   (rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute) &&
+               migrationDevice.buffers[1].queueAccess ==
+                   (rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute));
         assert(migrator.Constants().sourceStrideWords == 16 && migrator.Constants().destinationStrideWords == 20 &&
                migrator.Constants().copyRangeCount == 2 && migrator.Constants().invocationCount == 512);
 
@@ -986,6 +992,12 @@ int main()
         assert(collisionScene.IsValid() && collisionScene.Capacity() == 2 && collisionScene.PublishedRevision() == 0 &&
                collisionScene.HasPendingUpload());
         assert(collisionDevice.buffers.size() == 21 && collisionDevice.writes == 2);
+        const auto collisionQueueAccess =
+            rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
+        assert(std::all_of(collisionDevice.buffers.begin(), collisionDevice.buffers.end(),
+                           [collisionQueueAccess](const rhi::BufferDesc &buffer) {
+                               return buffer.queueAccess == collisionQueueAccess;
+                           }));
 
         particle::GpuParticleCollisionSceneSnapshot collisionSnapshot;
         collisionSnapshot.revision = 2;
@@ -1409,6 +1421,9 @@ int main()
     assert(device.buffers[0].byteSize == 64000);
     assert(rhi::HasBufferUsage(device.buffers[0].usage, rhi::BufferUsageFlags::Storage) &&
            rhi::HasBufferUsage(device.buffers[0].usage, rhi::BufferUsageFlags::TransferSource));
+    assert(device.buffers[0].queueAccess == (rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute) &&
+           device.buffers[1].queueAccess == (rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute) &&
+           device.buffers[2].queueAccess == (rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute));
     assert(device.buffers[2].byteSize == 112);
     assert(rhi::HasBufferUsage(device.buffers[2].usage, rhi::BufferUsageFlags::TransferSource));
     assert(device.buffers[3].byteSize ==
@@ -1423,10 +1438,13 @@ int main()
            device.buffers[9].usage == (rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect));
     assert(device.buffers[10].byteSize == 16 && device.buffers[10].usage == rhi::BufferUsageFlags::Storage);
     assert(device.buffers[11].byteSize == sizeof(particle::GpuParticleTransforms) &&
-           device.buffers[11].memory == rhi::BufferMemory::Upload);
+           device.buffers[11].memory == rhi::BufferMemory::Upload &&
+           device.buffers[11].queueAccess == (rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute));
     assert(device.buffers[12].byteSize == sizeof(particle::GpuParticleSimulationControl) &&
            device.buffers[12].usage == (rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferSource) &&
-           device.buffers[12].memory == rhi::BufferMemory::DeviceLocal && device.initialBufferBytes[12].empty());
+           device.buffers[12].memory == rhi::BufferMemory::DeviceLocal &&
+           device.buffers[12].queueAccess == (rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute) &&
+           device.initialBufferBytes[12].empty());
     assert(runtime.AliveIndexBuffer(0).IsValid() && runtime.AliveIndexBuffer(1).IsValid() &&
            runtime.AliveIndexBuffer(0) != runtime.AliveIndexBuffer(1) && runtime.AliveDispatchBuffer().IsValid() &&
            runtime.AliveControlBuffer().IsValid() && !runtime.IsAliveListReady());
@@ -1546,9 +1564,11 @@ int main()
            boundsDevice.buffers[0].byteSize == particle::ParticleGpuBounds::BoundsBufferBytes &&
            rhi::HasBufferUsage(boundsDevice.buffers[0].usage, rhi::BufferUsageFlags::Storage) &&
            rhi::HasBufferUsage(boundsDevice.buffers[0].usage, rhi::BufferUsageFlags::TransferSource) &&
+           boundsDevice.buffers[0].queueAccess == (rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute) &&
            boundsDevice.buffers[1].byteSize == particle::ParticleGpuBounds::DispatchBufferBytes &&
            rhi::HasBufferUsage(boundsDevice.buffers[1].usage, rhi::BufferUsageFlags::Storage) &&
-           rhi::HasBufferUsage(boundsDevice.buffers[1].usage, rhi::BufferUsageFlags::Indirect));
+           rhi::HasBufferUsage(boundsDevice.buffers[1].usage, rhi::BufferUsageFlags::Indirect) &&
+           boundsDevice.buffers[1].queueAccess == (rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute));
     assert(boundsDevice.layouts.size() == 1 && boundsDevice.layouts[0].entryCount == 6 &&
            boundsDevice.bindGroups.size() == 1 && boundsDevice.bindGroups[0].bufferCount == 6 &&
            boundsDevice.shaderCreates == 3 && boundsDevice.shaderReleases == 3 && boundsDevice.pipelineCreates == 3);
@@ -2736,6 +2756,79 @@ int main()
     assert(device.shaderReleases == shaderReleasesBeforeRuntimeDestroy);
     assert(device.textureReleases == textureReleasesBeforeRuntimeDestroy);
     assert(device.samplerReleases == samplerReleasesBeforeRuntimeDestroy);
+
+    {
+        using infernux::rhi::PipelineStage;
+        using infernux::vk::PassBuilder;
+        using infernux::vk::PassHandle;
+        using infernux::vk::RenderGraph;
+        using infernux::vk::ResourceHandle;
+
+        struct EmitterPasses {
+            uint64_t graphInstanceId = 0;
+            PassHandle update{};
+            PassHandle renderReset{};
+            ResourceHandle counters{};
+        };
+
+        const auto buildTwoMultiEmitterGraphs = [](RenderGraph &graph, bool linkCrossGraphExportToSim) {
+            std::array<EmitterPasses, 4> emitters{};
+            ResourceHandle spawn[2]{};
+            for (uint32_t graphIndex = 0; graphIndex < 2; ++graphIndex) {
+                const uint64_t graphInstanceId = 100 + graphIndex;
+                const std::string graphPrefix = "G" + std::to_string(graphIndex);
+                graph.AddComputePass(graphPrefix + "/Advance", [&spawn, graphIndex, graphPrefix](PassBuilder &builder) {
+                    spawn[graphIndex] =
+                        builder.ImportBuffer(graphPrefix + "/Spawn", static_cast<VkBuffer>(VK_NULL_HANDLE), 16);
+                    spawn[graphIndex] = builder.ReadWrite(spawn[graphIndex], PipelineStage::ComputeShader);
+                    return [](infernux::vk::RenderContext &) {};
+                });
+                for (uint32_t emitterIndex = 0; emitterIndex < 2; ++emitterIndex) {
+                    const uint32_t slot = graphIndex * 2 + emitterIndex;
+                    const std::string prefix = graphPrefix + "/E" + std::to_string(emitterIndex);
+                    emitters[slot].graphInstanceId = graphInstanceId;
+                    emitters[slot].update =
+                        graph.AddComputePass(prefix + "/Update", [&spawn, graphIndex](PassBuilder &builder) {
+                            spawn[graphIndex] = builder.ReadWrite(spawn[graphIndex], PipelineStage::ComputeShader);
+                            return [](infernux::vk::RenderContext &) {};
+                        });
+                    emitters[slot].renderReset =
+                        graph.AddComputePass(prefix + "/RenderReset", [&emitters, slot, prefix](PassBuilder &builder) {
+                            emitters[slot].counters =
+                                builder.ImportBuffer(prefix + "/Counters", static_cast<VkBuffer>(VK_NULL_HANDLE), 16);
+                            emitters[slot].counters =
+                                builder.ReadWrite(emitters[slot].counters, PipelineStage::ComputeShader);
+                            return [](infernux::vk::RenderContext &) {};
+                        });
+                    graph.AddComputePass(prefix + "/Rendering",
+                                         [&spawn, &emitters, graphIndex, slot](PassBuilder &builder) {
+                                             spawn[graphIndex] =
+                                                 builder.ReadWrite(spawn[graphIndex], PipelineStage::ComputeShader);
+                                             emitters[slot].counters =
+                                                 builder.ReadWrite(emitters[slot].counters, PipelineStage::ComputeShader);
+                                             return [](infernux::vk::RenderContext &) {};
+                                         });
+                }
+            }
+            if (!linkCrossGraphExportToSim)
+                return;
+            for (const auto &later : emitters) {
+                for (const auto &earlier : emitters) {
+                    if (later.graphInstanceId == earlier.graphInstanceId)
+                        continue;
+                    graph.AddPassDependency(later.renderReset, earlier.update);
+                }
+            }
+        };
+
+        RenderGraph acyclic;
+        buildTwoMultiEmitterGraphs(acyclic, false);
+        assert(acyclic.CompileExecutionOrder());
+
+        RenderGraph cyclic;
+        buildTwoMultiEmitterGraphs(cyclic, true);
+        assert(!cyclic.CompileExecutionOrder());
+    }
 
     fusedRuntime.Destroy();
     assert(!fusedRuntime.IsValid() && fusedRuntime.StateStride() == 0);

@@ -250,12 +250,18 @@ bool ParticleGpuBounds::Create(rhi::Device &device, const GpuParticleBoundsDesc 
     m_sourceIndirectArguments = desc.sourceIndirectArguments;
     m_simulationControl = desc.simulationControl;
     const auto storage = rhi::BufferUsageFlags::Storage;
-    rhi::BufferDesc boundsDesc;
-    boundsDesc.byteSize = BoundsBufferBytes;
-    boundsDesc.usage = storage | rhi::BufferUsageFlags::TransferSource;
-    boundsDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
-    m_bounds = device.CreateBuffer(boundsDesc);
-    m_dispatchArguments = device.CreateBuffer({DispatchBufferBytes, storage | rhi::BufferUsageFlags::Indirect});
+    const auto createSharedStorage = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
+        rhi::BufferDesc bufferDesc;
+        bufferDesc.byteSize = bytes;
+        bufferDesc.usage = usage;
+        // Prepare/Reset run inside GpuParticle/Simulation on the independent
+        // compute family. A Graphics-only exclusive dispatch buffer hangs that
+        // queue the first time Game-only preview creates a new emitter.
+        bufferDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
+        return device.CreateBuffer(bufferDesc);
+    };
+    m_bounds = createSharedStorage(BoundsBufferBytes, storage | rhi::BufferUsageFlags::TransferSource);
+    m_dispatchArguments = createSharedStorage(DispatchBufferBytes, storage | rhi::BufferUsageFlags::Indirect);
     if (!m_bounds.IsValid() || !m_dispatchArguments.IsValid()) {
         Destroy();
         return false;

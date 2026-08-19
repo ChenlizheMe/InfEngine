@@ -12,6 +12,7 @@ from Infernux.engine.ui.inspector_snapshot import (
     InspectorTarget,
     invalidate_rebuilt_scene,
     invalidate_scene_transforms,
+    refresh_visible_play_transforms,
     sync_selected_transforms_from_native_serial,
     target_for_component,
 )
@@ -236,6 +237,48 @@ def test_transform_change_maps_to_only_its_scene_object() -> None:
     assert service.snapshot(other).value_revision == other_before.value_revision
 
 
+def test_play_mode_refreshes_only_the_visible_transform_selection() -> None:
+    service = _service()
+    selected = InspectorTarget.scene_object(71)
+    other = InspectorTarget.scene_object(72)
+    selected_before = service.snapshot(selected)
+    other_before = service.snapshot(other)
+
+    refresh_visible_play_transforms((71, 0, 71), playing=False)
+    assert service.snapshot(selected).value_revision == selected_before.value_revision
+    assert service.snapshot(other).value_revision == other_before.value_revision
+
+    refresh_visible_play_transforms((71, 0, 71), playing=True)
+    assert service.snapshot(selected).value_revision > selected_before.value_revision
+    assert service.snapshot(other).value_revision == other_before.value_revision
+
+
+def test_native_transform_serial_invalidates_only_the_visible_selection() -> None:
+    service = _service()
+    selected = InspectorTarget.scene_object(61)
+    other = InspectorTarget.scene_object(62)
+    selected_before = service.snapshot(selected)
+    other_before = service.snapshot(other)
+
+    remembered = sync_selected_transforms_from_native_serial(
+        10,
+        (61, 0, 61),
+        previous_serial=None,
+    )
+    assert remembered == 10
+    assert service.snapshot(selected).value_revision == selected_before.value_revision
+    assert service.snapshot(other).value_revision == other_before.value_revision
+
+    remembered = sync_selected_transforms_from_native_serial(
+        11,
+        (61, 0, 61),
+        previous_serial=remembered,
+    )
+    assert remembered == 11
+    assert service.snapshot(selected).value_revision > selected_before.value_revision
+    assert service.snapshot(other).value_revision == other_before.value_revision
+
+
 def test_immediate_transform_invalidation_targets_only_changed_objects() -> None:
     service = _service()
     first = InspectorTarget.scene_object(51)
@@ -266,6 +309,58 @@ def test_scene_rebuild_invalidates_schema_and_values() -> None:
     assert after.preview_revision == before.preview_revision
 
 
+def test_scene_rebuild_drops_inspector_value_cache_and_structure() -> None:
+    from Infernux.engine.ui import inspector_components as components_ui
+    from Infernux.engine.ui.inspector_support import get_component_structure_version
+
+    components_ui._COMPONENT_VALUE_CACHE[("builtin", "probe", 61)] = {
+        "values": {"intensity": 3.0},
+    }
+    before_structure = get_component_structure_version()
+
+    invalidate_rebuilt_scene()
+
+    assert components_ui._COMPONENT_VALUE_CACHE == {}
+    assert get_component_structure_version() > before_structure
+
+
+def test_builtin_batch_replay_feeds_live_cached_values() -> None:
+    from types import SimpleNamespace
+
+    from Infernux.components.fields import FieldType
+    from Infernux.engine.ui import inspector_components as components_ui
+
+    captured: dict[str, list] = {}
+
+    class _Ctx:
+        def render_property_batch_plan_values(self, _plan, values, _label_width):
+            captured["values"] = list(values)
+            return {}
+
+        def render_property_batch_plan(self, _plan, _label_width):
+            raise AssertionError("stale baked-plan replay must not be used")
+
+    meta = SimpleNamespace(field_type=FieldType.FLOAT)
+    cache_entry = {
+        "values": {"intensity": 7.5},
+        "field_revisions": {"intensity": 3},
+        "field_revision": lambda _field: 3,
+    }
+    plan = {
+        "lw": 80.0,
+        "ops": [
+            {
+                "kind": "batch",
+                "plan": object(),
+                "info": [("intensity", "intensity", meta, 1.0, None)],
+            }
+        ],
+    }
+
+    components_ui._replay_builtin_cached_plan(_Ctx(), object(), plan, cache_entry)
+    assert captured["values"] == [7.5]
+
+
 def test_selection_advances_only_target_layer() -> None:
     service = _service()
     target = InspectorTarget.scene_object(15)
@@ -277,6 +372,82 @@ def test_selection_advances_only_target_layer() -> None:
     assert after.schema_revision == before.schema_revision
     assert after.value_revision == before.value_revision
     assert after.preview_revision == before.preview_revision
+
+
+def test_value_cache_follows_replaced_wrapper_after_play_rebuild(monkeypatch) -> None:
+    from Infernux.engine.ui import inspector_components as components_ui
+
+    service = _service()
+    first = _Component(11, 505)
+    first.speed = 1.0
+    components_ui._COMPONENT_VALUE_CACHE.clear()
+    monkeypatch.setattr(components_ui, "_is_in_play_mode", lambda: False)
+
+    entry, rebuild, refresh_all = components_ui._begin_component_value_cache(
+        "builtin", first
+    )
+    assert rebuild and refresh_all
+    assert components_ui._get_cached_component_value(
+        entry, refresh_all, "speed", lambda: first.speed
+    ) == 1.0
+
+    # Play stop keeps object/component IDs.  The retired wrapper loses its
+    # owner, so a captured field_revision lambda would miss live edits.
+    first.game_object = None
+    replacement = _Component(11, 505)
+    replacement.speed = 1.0
+    entry, rebuild, refresh_all = components_ui._begin_component_value_cache(
+        "builtin", replacement
+    )
+    assert rebuild and refresh_all
+    assert components_ui._get_cached_component_value(
+        entry, refresh_all, "speed", lambda: replacement.speed
+    ) == 1.0
+
+    replacement.speed = 8.0
+    service.invalidate_value(
+        InspectorTarget.scene_object(11),
+        component_id=505,
+        field_id="speed",
+    )
+    entry, rebuild, refresh_all = components_ui._begin_component_value_cache(
+        "builtin", replacement
+    )
+    assert rebuild and not refresh_all
+    assert components_ui._get_cached_component_value(
+        entry, refresh_all, "speed", lambda: replacement.speed
+    ) == 8.0
+
+
+def test_value_cache_refreshes_when_wrapper_rebinding_bumps_native_generation(
+    monkeypatch,
+) -> None:
+    from Infernux.engine.ui import inspector_components as components_ui
+
+    service = _service()
+    component = _Component(12, 606)
+    component.speed = 1.0
+    component._native_generation = 1
+    components_ui._COMPONENT_VALUE_CACHE.clear()
+    monkeypatch.setattr(components_ui, "_is_in_play_mode", lambda: False)
+
+    entry, _rebuild, refresh_all = components_ui._begin_component_value_cache(
+        "builtin", component
+    )
+    assert components_ui._get_cached_component_value(
+        entry, refresh_all, "speed", lambda: component.speed
+    ) == 1.0
+
+    component.speed = 4.0
+    component._native_generation = 2
+    entry, rebuild, refresh_all = components_ui._begin_component_value_cache(
+        "builtin", component
+    )
+    assert rebuild and refresh_all
+    assert components_ui._get_cached_component_value(
+        entry, refresh_all, "speed", lambda: component.speed
+    ) == 4.0
+    assert service.component_snapshot(component).value_revision >= 0
 
 
 def test_component_value_cache_skips_unchanged_getters(monkeypatch) -> None:
@@ -476,6 +647,9 @@ def test_play_compatibility_poll_is_scoped_to_visible_component_bodies() -> None
         bootstrap.index("ip.get_revision_snapshot = _get_revision_snapshot")
     ]
     assert "monotonic" not in snapshot_callback
+    assert "refresh_visible_play_transforms" in snapshot_callback
+    assert "sync_selected_transforms_from_native_serial" in snapshot_callback
+    assert "get_global_transform_serial" in snapshot_callback
     assert "_RUNTIME_VISIBLE_VALUE_POLL_S = 1.0 / 60.0" in components
     assert native.index("if (header.open)") < native.index(
         "renderComponentBody(ctx, objId", native.index("if (header.open)")

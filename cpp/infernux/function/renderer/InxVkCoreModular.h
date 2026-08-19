@@ -601,11 +601,28 @@ class InxVkCoreModular
 
     /// Publish Scene/Game/Preview graph batches into the same frame submission
     /// contract used by async particle compute and presentation.
+    /// particleComputeWorkItem is the unsplit Simulation / PrimeExport batch
+    /// that exported instance buffers this frame. Scene graphs must wait on it
+    /// directly; Frame/Setup must not, or a later graphics ownership release
+    /// deadlocks against Simulation.
     using FrameSubmissionBuildCallback =
-        std::function<bool(vk::VulkanFrameSubmission &submission, uint32_t frameSetupWorkItem)>;
+        std::function<bool(vk::VulkanFrameSubmission &submission, uint32_t frameSetupWorkItem,
+                           uint32_t particleComputeWorkItem)>;
     void SetFrameSubmissionBuilder(FrameSubmissionBuildCallback builder)
     {
         m_frameSubmissionBuilder = std::move(builder);
+    }
+
+    /// Publish queue-family releases before Frame/Setup and before
+    /// GpuParticle/PrimeSimulation. Selecting a Game-only particle creates
+    /// exclusive cull/sort buffers whose acquire sits in Simulation; those
+    /// releases used to wait for Setup, which already waited for Simulation.
+    /// Hidden Scene/Game views must still emit last frame's releases.
+    using FramePreSetupCallback =
+        std::function<bool(vk::VulkanFrameSubmission &submission, std::vector<uint32_t> &extraSetupDependencies)>;
+    void SetFramePreSetupBuilder(FramePreSetupCallback builder)
+    {
+        m_framePreSetupBuilder = std::move(builder);
     }
 
     [[nodiscard]] const FrameSubmissionTelemetry &GetFrameSubmissionTelemetry() const noexcept
@@ -1404,6 +1421,7 @@ class InxVkCoreModular
     // Render callbacks (RenderGraph-based)
     std::function<void(VkCommandBuffer cmdBuf)> m_renderGraphExecutor;
     FrameSubmissionBuildCallback m_frameSubmissionBuilder;
+    FramePreSetupCallback m_framePreSetupBuilder;
     std::function<void(VkCommandBuffer cmdBuf)> m_frameComputeExecutor;
     std::function<bool()> m_frameComputeWorkPredicate;
     std::function<bool(VkCommandBuffer cmdBuf)> m_frameAsyncSimulationExecutor;

@@ -323,6 +323,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         self._cpp_component = None  # Native lifecycle authority (PyComponentProxy or built-in C++ component)
         self._native_handle = None
         self._native_scene = None
+        self._bound_structure_version = None
         self._native_game_object_handle = None
         self._enabled = True
         self._execution_order = 0

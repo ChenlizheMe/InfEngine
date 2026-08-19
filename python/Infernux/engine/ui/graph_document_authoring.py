@@ -70,6 +70,43 @@ def _value_port_accepts(source_type: TypeRef, target_type: TypeRef, target_port)
         return False
     return False
 
+
+def _compatible_creation_pin(
+    model,
+    type_id: str,
+    request: dict,
+    *,
+    source_definition,
+    source_port_type,
+):
+    """Return the first palette pin that a live drag source can feed."""
+    if source_definition is None:
+        return None
+    source_port = source_definition.port(str(request.get("source_pin", "")))
+    target_def = model.definition_for_type(str(type_id))
+    canvas = model.get_type(str(type_id))
+    if source_port is None or target_def is None or canvas is None:
+        return None
+    want_input = request.get("source_kind") != CanvasPinKind.INPUT
+    for port in target_def.ports:
+        if port.kind is not source_port.kind:
+            continue
+        if want_input and port.direction is not PortDirection.INPUT:
+            continue
+        if not want_input and port.direction is not PortDirection.OUTPUT:
+            continue
+        if (
+            source_port.kind is PortKind.VALUE
+            and source_port_type is not None
+            and port.value_type is not None
+            and not _value_port_accepts(source_port_type, port.value_type, port)
+        ):
+            continue
+        pin = next((item for item in canvas.pins if item.id == port.id), None)
+        if pin is not None:
+            return pin
+    return None
+
 _PARTICLE_COLLISION_ROOT_TYPES = frozenset(
     {
         "particle.root.collision_enter",
@@ -369,6 +406,37 @@ class GraphDocumentAuthoringModel(NodeGraph):
     def definition_for_type(self, type_id: str) -> NodeDef | None:
         return self._definitions.get(type_id)
 
+    def _effective_port_type(self, node, port):
+        if port is None or port.kind is not PortKind.VALUE:
+            return None
+        if port.value_type is not None:
+            return port.value_type
+        if port.type_property and node is not None:
+            selected = str(node.data.get(port.type_property, "") or "")
+            if port.type_property == "target_space":
+                try:
+                    return TypeRef(ValueType.VEC3, CoordinateSpace(selected or "world"))
+                except ValueError:
+                    return None
+        return None
+
+    def compatible_creation_pin(self, type_id: str, request: dict):
+        """Return the first palette pin that the live drag source can feed."""
+        if not request.get("source_node"):
+            return None
+        source_node = self.find_node(str(request.get("source_node", "")))
+        source_def = (
+            self._definitions.get(source_node.type_id) if source_node is not None else None
+        )
+        source_port = source_def.port(str(request.get("source_pin", ""))) if source_def else None
+        return _compatible_creation_pin(
+            self,
+            type_id,
+            request,
+            source_definition=source_def,
+            source_port_type=self._effective_port_type(source_node, source_port),
+        )
+
     def add_node(
         self, type_id: str, canvas_x=0.0, canvas_y=0.0, uid=None, **data
     ):
@@ -406,7 +474,7 @@ class GraphDocumentAuthoringModel(NodeGraph):
             dst_pin,
             ignore_link_uid=ignore_link_uid,
         )
-        if not basic:
+        if not basic and basic.code != "type_mismatch":
             return basic
 
         source = self.find_node(src_node)
@@ -423,9 +491,14 @@ class GraphDocumentAuthoringModel(NodeGraph):
             source_port.kind is PortKind.VALUE
             and source_port.value_type is not None
             and target_port.value_type is not None
-            and not _value_port_accepts(source_port.value_type, target_port.value_type, target_port)
         ):
+            if _value_port_accepts(
+                source_port.value_type, target_port.value_type, target_port
+            ):
+                return LinkValidationResult(True)
             return LinkValidationResult(False, "type_mismatch", "Graph value types do not match")
+        if not basic:
+            return basic
         return LinkValidationResult(True)
 
     def to_document(self) -> GraphDocument:
@@ -938,6 +1011,21 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
     def definition_for_type(self, type_id: str) -> NodeDef | None:
         return self._definitions.get(type_id)
 
+    def compatible_creation_pin(self, type_id: str, request: dict):
+        """Return the first palette pin that the live drag source can feed."""
+        if not request.get("source_node"):
+            return None
+        source_node = self.find_node(str(request.get("source_node", "")))
+        source_def = self.definition_for_node(source_node)
+        source_port = source_def.port(str(request.get("source_pin", ""))) if source_def else None
+        return _compatible_creation_pin(
+            self,
+            type_id,
+            request,
+            source_definition=source_def,
+            source_port_type=self._effective_port_type(source_node, source_port),
+        )
+
     def event_entries(self) -> tuple[tuple[str, str], ...]:
         return (("None", ""),) + tuple(
             (item.name, item.stable_id) for item in self._event_catalog.values()
@@ -1412,7 +1500,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             "common.space.transform_direction",
         }:
             if port.id == "input":
-                return None
+                return TypeRef(ValueType.VEC3)
             if port.id == "value":
                 try:
                     return TypeRef(
@@ -1470,15 +1558,15 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             dst_pin,
             ignore_link_uid=ignore_link_uid,
         )
-        if not basic:
-            inference_target = self.find_node(dst_node)
-            if not (
-                basic.code == "type_mismatch"
-                and inference_target is not None
-                and inference_target.type_id == "particle.attribute.cache"
-                and dst_pin == "value"
-            ):
-                return basic
+        inference_target = self.find_node(dst_node)
+        cache_type_inference = (
+            basic.code == "type_mismatch"
+            and inference_target is not None
+            and inference_target.type_id == "particle.attribute.cache"
+            and dst_pin == "value"
+        )
+        if not basic and basic.code != "type_mismatch" and not cache_type_inference:
+            return basic
         source = self.find_node(src_node)
         target = self.find_node(dst_node)
         source_def = self.definition_for_node(source)
@@ -1501,21 +1589,17 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             and dst_pin == "input"
         ):
             supported_spaces = {
+                CoordinateSpace.NONE,
                 CoordinateSpace.EMITTER_LOCAL,
                 CoordinateSpace.SIMULATION,
                 CoordinateSpace.WORLD,
             }
-            if (
-                source_type is None
-                or source_type.value_type is not ValueType.VEC3
-                or source_type.space not in supported_spaces
-            ):
+            if source_type is not None and source_type.space not in supported_spaces:
                 return LinkValidationResult(
                     False,
                     "type_mismatch",
                     "Space transforms require a spatial Vector3 input",
                 )
-            return LinkValidationResult(True)
         cache_type_inference = (
             target is not None
             and target.type_id == "particle.attribute.cache"

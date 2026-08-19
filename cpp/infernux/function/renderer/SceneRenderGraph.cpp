@@ -2855,9 +2855,11 @@ void SceneRenderGraph::BuildRenderGraph()
                                                        ? rhi::PipelineStage::VertexShader
                                                        : rhi::PipelineStage::ComputeShader;
                 m_renderGraph->SetResourceInitialState(resources.renderIndices, rhi::TextureLayout::Undefined,
-                                                       rhi::Access::ShaderRead, visibleIndexLastStage);
+                                                       rhi::Access::ShaderRead, visibleIndexLastStage,
+                                                       rhi::QueueRole::Compute);
                 m_renderGraph->SetResourceInitialState(resources.indirectArguments, rhi::TextureLayout::Undefined,
-                                                       rhi::Access::IndirectRead, rhi::PipelineStage::DrawIndirect);
+                                                       rhi::Access::IndirectRead, rhi::PipelineStage::DrawIndirect,
+                                                       rhi::QueueRole::Compute);
                 const auto sortDispatchLastAccess = entry.semantics.sortMode == particle::ParticleSortMode::None
                                                         ? rhi::Access::ShaderWrite
                                                         : rhi::Access::IndirectRead;
@@ -2865,7 +2867,8 @@ void SceneRenderGraph::BuildRenderGraph()
                                                        ? rhi::PipelineStage::ComputeShader
                                                        : rhi::PipelineStage::DrawIndirect;
                 m_renderGraph->SetResourceInitialState(resources.sortDispatchArguments, rhi::TextureLayout::Undefined,
-                                                       sortDispatchLastAccess, sortDispatchLastStage);
+                                                       sortDispatchLastAccess, sortDispatchLastStage,
+                                                       rhi::QueueRole::Compute);
                 builder.ReadStorageBuffer(resources.sourceIndirectArguments);
                 builder.ReadStorageBuffer(resources.bounds);
                 resources.simulationControl =

@@ -44,6 +44,10 @@ def render_builtin_via_setters(
     """Generic renderer for C++ components with Python property wrappers."""
     ...
 
+def clear_component_value_cache() -> None:
+    """Drop cached Inspector field plans after a scene-graph replacement."""
+    ...
+
 def render_cpp_component_generic(ctx: InxGUIContext, comp: object) -> None:
     """Fallback renderer for C++ components without a custom renderer."""
     ...

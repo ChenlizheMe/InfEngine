@@ -945,6 +945,13 @@ def test_hierarchy_and_scene_edit_shortcuts_share_command_handlers():
     assert calls == ["focus_search"]
 
     calls.clear()
+    aligned_from_hierarchy = core.shortcuts.route(
+        ShortcutEvent(KeyChord.parse("Ctrl+Shift+F"))
+    )
+    assert aligned_from_hierarchy.status is ShortcutRouteStatus.EXECUTED
+    assert calls == ["align_with_view"]
+
+    calls.clear()
     core.focus.activate_panel("scene_view", view_id="scene_view")
     aligned = core.shortcuts.route(
         ShortcutEvent(KeyChord.parse("Ctrl+Shift+F"))
@@ -1008,6 +1015,21 @@ def test_hierarchy_and_scene_edit_shortcuts_share_command_handlers():
         payload={"object_id": 42},
     ).accepted
     assert calls[-1] == ("frame_selected", 42)
+    aligned_from_project = core.shortcuts.route(
+        ShortcutEvent(KeyChord.parse("Ctrl+Shift+F"))
+    )
+    assert aligned_from_project.status is ShortcutRouteStatus.EXECUTED
+    assert calls[-1] == "align_with_view"
+    core.selection.clear(reason="test", record_history=False)
+    unselected = core.shortcuts.route(
+        ShortcutEvent(KeyChord.parse("Ctrl+Shift+F"))
+    )
+    assert unselected.status is ShortcutRouteStatus.DISABLED
+    core.selection.select(
+        SelectionTarget.scene_object(42),
+        owner_id="hierarchy",
+        record_history=False,
+    )
     assert core.focus.snapshot.active_view_id == "project"
 
     core.focus.activate_panel("hierarchy", view_id="hierarchy")

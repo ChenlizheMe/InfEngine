@@ -814,7 +814,38 @@ void InxRenderer::PreparePipeline()
 #endif
         });
 
-        m_vkCore->SetFrameSubmissionBuilder([this](vk::VulkanFrameSubmission &submission, uint32_t frameSetupWorkItem) {
+        m_vkCore->SetFramePreSetupBuilder([this](vk::VulkanFrameSubmission &submission,
+                                                 std::vector<uint32_t> &extraSetupDependencies) {
+            const auto collectOwnershipReleases = [&](SceneRenderGraph *graph) {
+                if (!graph || !graph->GetCompiledRenderGraph())
+                    return;
+                vk::RenderGraph *compiled = graph->GetCompiledRenderGraph();
+                const auto &viewContext = graph->GetRenderViewContext();
+                for (const rhi::QueueRole sourceQueue :
+                     {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer}) {
+                    if (!compiled->HasExternalQueueOwnershipReleases(sourceQueue))
+                        continue;
+                    extraSetupDependencies.push_back(submission.AddWork(
+                        viewContext.device, sourceQueue, rhi::SubmissionDomain::Frame, viewContext.id,
+                        rhi::PipelineStage::AllCommands, {},
+                        [compiled, sourceQueue](VkCommandBuffer commandBuffer) {
+                            return compiled->RecordExternalQueueOwnershipReleases(sourceQueue, commandBuffer);
+                        },
+                        "SceneGraph/OwnershipRelease"));
+                }
+            };
+            // AlwaysSimulate particles keep submitting compute after the user
+            // hides Scene/Game. Those compiled graphs still owe last frame's
+            // Graphics→Compute releases; skipping them hangs PrimeSimulation.
+            collectOwnershipReleases(m_sceneRenderGraph.get());
+            for (auto &[cameraId, graph] : m_gameRenderGraphs) {
+                (void)cameraId;
+                collectOwnershipReleases(graph.get());
+            }
+            return true;
+        });
+        m_vkCore->SetFrameSubmissionBuilder([this](vk::VulkanFrameSubmission &submission, uint32_t frameSetupWorkItem,
+                                                  uint32_t particleComputeWorkItem) {
             const bool sceneViewActive = ((m_sceneViewVisible || HasPendingCapture(CaptureSource::Scene) ||
                                            (m_scenePickingService && m_scenePickingService->HasPendingRecord())) &&
                                           m_sceneRenderTarget && m_sceneRenderTarget->IsReady() &&
@@ -837,23 +868,9 @@ void InxRenderer::PreparePipeline()
                 graph->SetDrawViewMatrix(view);
                 vk::RenderGraph *compiled = graph->GetCompiledRenderGraph();
                 const auto &viewContext = graph->GetRenderViewContext();
-                std::vector<uint32_t> graphDependencies;
-                for (const rhi::QueueRole sourceQueue :
-                     {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer}) {
-                    if (!compiled->HasExternalQueueOwnershipReleases(sourceQueue))
-                        continue;
-                    std::vector<uint32_t> releaseDependencies;
-                    releaseDependencies.push_back(predecessor);
-                    graphDependencies.push_back(submission.AddWork(
-                        viewContext.device, sourceQueue, rhi::SubmissionDomain::Frame, viewContext.id,
-                        rhi::PipelineStage::AllCommands, std::move(releaseDependencies),
-                        [compiled, sourceQueue](VkCommandBuffer commandBuffer) {
-                            return compiled->RecordExternalQueueOwnershipReleases(sourceQueue, commandBuffer);
-                        },
-                        "SceneGraph/OwnershipRelease"));
-                }
-                if (graphDependencies.empty())
-                    graphDependencies.push_back(predecessor);
+                std::vector<uint32_t> graphDependencies{predecessor};
+                if (particleComputeWorkItem != 0)
+                    graphDependencies.push_back(particleComputeWorkItem);
                 const auto range = submission.AppendRenderGraph(
                     *compiled, graphDependencies, [graph, activateView](uint32_t batchIndex, VkCommandBuffer) {
                         activateView(graph);

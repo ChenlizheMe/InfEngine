@@ -785,6 +785,13 @@ def test_game_object_instantiate_copies_particle_instance_state(
     assert restored.emitter_instance_schema()[0]["play_on_start"] is False
     assert getattr(restored, "_playing", False) is False
 
+    native.playing_updates.clear()
+    clone.active = True
+    restored.update(1.0 / 60.0)
+    assert restored.play_on_awake is False
+    assert restored._playing is False
+    assert not any(playing for _emitter_id, playing in native.playing_updates)
+
 
 def test_game_object_instantiate_copies_live_overrides_ahead_of_json(
     scene, monkeypatch, tmp_path

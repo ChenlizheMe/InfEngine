@@ -61,6 +61,8 @@ void EditorShortcutInput::OnRender(InxGUIContext *ctx)
     }
 
     if (!ctrl && !shift && !alt && !super) {
+        if (pressedOnce(ImGuiKey_F))
+            dispatch("F");
         if (pressedOnce(ImGuiKey_F2))
             dispatch("F2");
         if (pressedOnce(ImGuiKey_Delete))

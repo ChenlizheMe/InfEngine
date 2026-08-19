@@ -1316,13 +1316,13 @@ class BootstrapWiringMixin:
             ),
             EditorCommand(
                 "scene.align_to_camera",
-                lambda context: _invoke_panel_command(
-                    context, "scene.align_to_camera"
+                lambda context: _invoke_target_panel_command(
+                    context, "scene_view", "scene.align_to_camera"
                 ),
                 display_name="Align With View",
                 category="Scene",
-                can_execute=lambda context: _can_panel_command(
-                    context, "scene.align_to_camera"
+                can_execute=lambda context: _can_target_panel_command(
+                    context, "scene_view", "scene.align_to_camera"
                 ),
                 default_shortcut="Ctrl+Shift+F",
             ),
@@ -1519,6 +1519,11 @@ class BootstrapWiringMixin:
                 "command_palette.open",
                 "Ctrl+Shift+P",
                 "default.command_palette.open",
+            ),
+            (
+                "scene.align_to_camera",
+                "Ctrl+Shift+F",
+                "default.scene.align_to_camera",
             ),
         )
         default_shortcuts = [

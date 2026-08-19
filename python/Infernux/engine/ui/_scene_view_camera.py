@@ -357,13 +357,19 @@ class SceneViewCameraMixin:
         if cam:
             cam.reset()
 
-    def _align_object_to_camera(self) -> bool:
+    def _align_object_to_camera(self, object_id: int = 0) -> bool:
         """Align the selected object's world transform to the editor camera."""
         if not self._engine:
             return False
 
-        obj_id = self._engine.get_selected_object_id()
-        if not obj_id:
+        obj_id = int(object_id or 0)
+        if obj_id <= 0:
+            from Infernux.engine.interaction import SelectionService
+
+            obj_id = int(SelectionService.instance().primary_scene_object_id() or 0)
+        if obj_id <= 0:
+            obj_id = int(self._engine.get_selected_object_id() or 0)
+        if obj_id <= 0:
             return False
 
         from Infernux.lib import SceneManager

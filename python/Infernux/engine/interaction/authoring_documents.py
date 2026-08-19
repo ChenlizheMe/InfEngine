@@ -101,12 +101,16 @@ class AuthoringDocumentController:
         try:
             snapshot = self._call("capture_authoring_save_snapshot", target)
         except Exception as exc:
+            message = str(exc) or f"{type(exc).__name__} during authoring save"
+            from Infernux.debug import Debug
+
+            Debug.log_error(f"[AuthoringSave] {message}")
             registry.complete_save(
                 ticket.ticket_id,
                 success=False,
-                message=str(exc),
+                message=message,
             )
-            return DocumentActionResult(DocumentActionStatus.FAILED, str(exc))
+            return DocumentActionResult(DocumentActionStatus.FAILED, message)
         if not isinstance(snapshot, AuthoringAssetSnapshot):
             raise TypeError(
                 "capture_authoring_save_snapshot() must return AuthoringAssetSnapshot"

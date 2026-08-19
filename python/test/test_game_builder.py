@@ -3051,7 +3051,98 @@ def test_pack_content_archive_yields_the_editor_thread(tmp_path, monkeypatch):
     assert len(yields) >= 12
     assert any("Packing project content" in message for message, _fraction in reports)
     assert any(message == "Compressing project content" for message, _fraction in reports)
+    assert any(
+        message.startswith("Finalizing packed project content")
+        for message, _fraction in reports
+    )
     assert (final_dir / "TestGame_Data" / "Content.inxpkg").is_file()
+
+
+def test_pack_content_archive_finalizes_staged_trees_in_bulk(tmp_path, monkeypatch):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    final_dir = tmp_path / "dist"
+    data = final_dir / "TestGame_Data"
+    assets = data / "Assets" / "Art"
+    library = data / "Library" / "Artifacts"
+    nested_logs = data / "Assets" / "Logs"
+    assets.mkdir(parents=True)
+    library.mkdir(parents=True)
+    nested_logs.mkdir(parents=True)
+    (data / "Logs").mkdir()
+    (data / "Modules").mkdir()
+    (assets / "a.inxtex").write_bytes(b"asset")
+    (library / "b.inxtex").write_bytes(b"library")
+    (library / "keep.inxpkg").write_bytes(b"nested-pack")
+    (nested_logs / "keep.txt").write_text("nested-log", encoding="utf-8")
+    (data / "Logs" / "build.log").write_text("ok", encoding="utf-8")
+    (data / "Modules" / "Parallel.inxmod").write_bytes(b"mod")
+    (data / "Modules" / "leftover.bin").write_bytes(b"drop")
+    (data / "Runtime.inxrt").write_bytes(b"runtime")
+    (data / "BuildManifest.json").write_text("{}", encoding="utf-8")
+    (data / builder.OUTPUT_MARKER_FILENAME).write_text("marker", encoding="utf-8")
+
+    removed: list[str] = []
+    real_remove = os.remove
+
+    def track_remove(path):
+        removed.append(os.fspath(path))
+        return real_remove(path)
+
+    monkeypatch.setattr(os, "remove", track_remove)
+    reports: list[str] = []
+
+    builder._pack_content_archive(
+        str(final_dir),
+        on_progress=lambda message, _fraction: reports.append(message),
+    )
+
+    assert (data / "Content.inxpkg").is_file()
+    assert not (data / "Assets" / "Art").exists()
+    assert not (library / "b.bin").exists()
+    assert (data / "Assets" / "Logs" / "keep.txt").read_text(encoding="utf-8") == "nested-log"
+    assert (data / "Library" / "Artifacts" / "keep.inxpkg").read_bytes() == b"nested-pack"
+    assert (data / "Logs" / "build.log").read_text(encoding="utf-8") == "ok"
+    assert (data / "Modules" / "Parallel.inxmod").read_bytes() == b"mod"
+    assert not (data / "Modules" / "leftover.bin").exists()
+    assert (data / "Runtime.inxrt").read_bytes() == b"runtime"
+    assert (data / "BuildManifest.json").read_text(encoding="utf-8") == "{}"
+    assert (data / builder.OUTPUT_MARKER_FILENAME).read_text(encoding="utf-8") == "marker"
+    assert any(message == "Finalizing packed project content (Assets)" for message in reports)
+    assert any(message == "Finalizing packed project content (Library)" for message in reports)
+    packed_unlinks = [
+        path
+        for path in removed
+        if path.endswith(
+            (os.path.join("Art", "a.inxtex"), os.path.join("Artifacts", "b.inxtex"))
+        )
+    ]
+    assert packed_unlinks == []
+
+
+def test_pack_content_archive_finalize_honors_cancel(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    final_dir = tmp_path / "dist"
+    data = final_dir / "TestGame_Data"
+    (data / "Assets").mkdir(parents=True)
+    (data / "Library").mkdir(parents=True)
+    (data / "Assets" / "a.inxtex").write_bytes(b"asset")
+    (data / "Library" / "b.inxtex").write_bytes(b"library")
+    cancel_event = threading.Event()
+
+    def _progress(message, _fraction):
+        if message == "Finalizing packed project content":
+            cancel_event.set()
+
+    with pytest.raises(BuildCancelled):
+        builder._pack_content_archive(
+            str(final_dir),
+            on_progress=_progress,
+            cancel_event=cancel_event,
+        )
+
+    assert (data / "Content.inxpkg").is_file()
+    assert (data / "Assets" / "a.inxtex").is_file()
+    assert (data / "Library" / "b.inxtex").is_file()
 
 
 def _write_scene_material_audio_reachability_fixture(

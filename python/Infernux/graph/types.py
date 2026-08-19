@@ -136,12 +136,118 @@ class TypeSystem:
             ValueType.COLOR,
         }
     )
+    _SPATIAL_SPACES = frozenset(
+        {
+            CoordinateSpace.EMITTER_LOCAL,
+            CoordinateSpace.SIMULATION,
+            CoordinateSpace.WORLD,
+        }
+    )
+
+    def spaces_compatible(self, source: TypeRef, target: TypeRef) -> bool:
+        """Return whether two types can share or convert coordinate spaces.
+
+        Untyped (``none``) vectors are raw numbers and may enter any spatial
+        slot. Emitter-local, simulation, and world ``vec3`` values convert
+        through the IR. View/billboard/bake spaces stay explicit.
+        """
+        if source.space is target.space:
+            return True
+        if source.space is CoordinateSpace.NONE or target.space is CoordinateSpace.NONE:
+            return True
+        return (
+            source.space in self._SPATIAL_SPACES
+            and target.space in self._SPATIAL_SPACES
+        )
+
+    def needs_space_conversion(self, source: TypeRef, target: TypeRef) -> bool:
+        return (
+            source.space is not target.space
+            and source.space is not CoordinateSpace.NONE
+            and target.space is not CoordinateSpace.NONE
+            and source.space in self._SPATIAL_SPACES
+            and target.space in self._SPATIAL_SPACES
+        )
+
+    def adaptation_ops(
+        self,
+        source: TypeRef,
+        target: TypeRef,
+        *,
+        semantic: str = "direction",
+    ) -> tuple[tuple[str, TypeRef, dict[str, str]], ...]:
+        """Return IR steps that adapt *source* onto *target*.
+
+        Combining two spatial vectors in one math node still requires matching
+        spaces. Wiring a world position into Set Position (simulation) inserts
+        ``convert_space`` instead of rejecting the link.
+        """
+        if source == target:
+            return ()
+        if source.value_type not in self._NUMERIC or target.value_type not in self._NUMERIC:
+            raise TypeError(f"cannot adapt {source} to {target}")
+        if not self.spaces_compatible(source, target):
+            raise TypeError(
+                f"cannot convert {source.space.value} to {target.space.value}"
+            )
+        if semantic not in {"position", "direction", "vector"}:
+            raise ValueError(f"unsupported space conversion semantic {semantic!r}")
+        steps: list[tuple[str, TypeRef, dict[str, str]]] = []
+        current = source
+        if (
+            self.needs_space_conversion(current, target)
+            and current.value_type is ValueType.VEC3
+        ):
+            converted = TypeRef(ValueType.VEC3, target.space)
+            steps.append(
+                (
+                    "convert_space",
+                    converted,
+                    {
+                        "from": current.space.value,
+                        "to": target.space.value,
+                        "semantic": semantic,
+                    },
+                )
+            )
+            current = converted
+        if current.value_type is not target.value_type:
+            if not self.can_resize_numeric(current, target):
+                raise TypeError(f"cannot resize numeric input {current} to {target}")
+            steps.append(
+                (
+                    "numeric_resize",
+                    TypeRef(target.value_type, target.space),
+                    {},
+                )
+            )
+        elif current.space is not target.space:
+            if (
+                current.value_type is ValueType.VEC3
+                and target.value_type is ValueType.VEC3
+            ):
+                steps.append(
+                    (
+                        "convert_space",
+                        target,
+                        {
+                            "from": current.space.value,
+                            "to": target.space.value,
+                            "semantic": semantic,
+                        },
+                    )
+                )
+            else:
+                steps.append(("numeric_resize", target, {}))
+        return tuple(steps)
 
     def can_connect(self, source: TypeRef, target: TypeRef) -> bool:
         if source == target:
             return True
-        if source.space != target.space:
+        if not self.spaces_compatible(source, target):
             return False
+        if source.value_type is target.value_type:
+            return True
         if {source.value_type, target.value_type} == {
             ValueType.VEC4,
             ValueType.COLOR,
@@ -159,11 +265,7 @@ class TypeSystem:
         """Return whether prefix truncation/zero extension can reach *target*."""
         if source.value_type not in self._NUMERIC or target.value_type not in self._NUMERIC:
             return False
-        if (
-            source.space is not CoordinateSpace.NONE
-            and target.space is not CoordinateSpace.NONE
-            and source.space != target.space
-        ):
+        if not self.spaces_compatible(source, target):
             return False
         if target.value_type in {ValueType.I32, ValueType.U32}:
             return source.value_type is target.value_type

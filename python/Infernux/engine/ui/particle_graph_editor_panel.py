@@ -114,7 +114,7 @@ from .node_graph_editor_panel import (
 )
 from .node_graph_view import NodeCreationEntry
 from .panel_registry import editor_panel
-from .theme import Theme
+from .theme import ImGuiCol, Theme
 from ._inspector_references import (
     _asset_guid_from_path,
     _portable_asset_path_hint,
@@ -3116,6 +3116,9 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         )
         if result.accepted:
             self._pending_save_ticket_id = ""
+            self._draft_compile_error = ""
+        elif result.message:
+            self._report_save_failure(result.message)
         return result.accepted
 
     def _show_save_as_dialog(self) -> bool:
@@ -3143,10 +3146,13 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         document = self._particle_document()
         if document is None:
             return False
-        return DocumentRegistry.instance().request_save(
+        result = DocumentRegistry.instance().request_save(
             document.document_id,
             save_as=save_as,
-        ).accepted
+        )
+        if not result.accepted and result.message:
+            self._report_save_failure(result.message)
+        return result.accepted
 
     def request_authoring_save_as(self, ticket):
         from Infernux.engine.interaction import (
@@ -3179,9 +3185,14 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         asset = ParticleGraphAsset.from_dict(document)
         from Infernux.core.asset_types import read_meta_guid
 
-        prepared = ParticleArtifactRegistry.prepare_graph_asset(
-            asset, normalized, guid=read_meta_guid(normalized)
-        )
+        try:
+            prepared = ParticleArtifactRegistry.prepare_graph_asset(
+                asset, normalized, guid=read_meta_guid(normalized)
+            )
+        except Exception as exc:
+            self._report_save_failure(str(exc))
+            raise
+        self._draft_compile_error = ""
         return AuthoringAssetSnapshot(
             normalized,
             prepared.source_text,
@@ -3215,7 +3226,14 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 )
         except Exception as exc:
             publication_error = str(exc)
+        if publication_error:
+            self._report_save_failure(publication_error)
         return publication_error
+
+    def _report_save_failure(self, message: str) -> None:
+        text = str(message or "").strip() or "Particle Graph save failed"
+        self._draft_compile_error = text
+        Debug.log_error(f"[ParticleGraphEditor] {text}")
 
     def current_authoring_content_token(self) -> str:
         from Infernux.engine.interaction import document_content_token
@@ -5230,7 +5248,18 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         ctx.label(self._asset.name)
         if self._draft_compile_error:
             ctx.same_line(0, 12)
-            ctx.label(t("particle_graph_editor.draft_invalid"))
+            ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
+            ctx.label(t("particle_graph_editor.save_failed"))
+            ctx.pop_style_color()
+            if ctx.is_item_hovered():
+                ctx.set_tooltip(self._draft_compile_error)
+            ctx.same_line(0, 8)
+            preview = " ".join(self._draft_compile_error.split())
+            if len(preview) > 140:
+                preview = preview[:137] + "..."
+            ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
+            ctx.label(preview)
+            ctx.pop_style_color()
             if ctx.is_item_hovered():
                 ctx.set_tooltip(self._draft_compile_error)
         self._record_document_semantics(ctx)

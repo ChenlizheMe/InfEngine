@@ -75,6 +75,7 @@
   "panel.history": "历史记录",
   "particle_graph_editor.save": "保存",
   "particle_graph_editor.draft_invalid": "草稿无效",
+  "particle_graph_editor.save_failed": "保存失败",
   "particle_graph_editor.parameters": "参数",
   "particle_graph_editor.add_parameter": "添加参数",
   "particle_graph_editor.remove_parameter": "移除",

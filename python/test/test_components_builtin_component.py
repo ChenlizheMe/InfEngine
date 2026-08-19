@@ -150,6 +150,92 @@ class TestBuiltinComponent:
         assert "raw" in fields
         assert "locked" in fields
 
+    def test_raw_field_value_reads_live_cpp_not_metadata_default(self):
+        from Infernux.components.fields import get_raw_field_value
+
+        cpp = DemoCpp()
+        cpp.intensity = 4.5
+        demo = DemoBuiltin()
+        demo._cpp_component = cpp
+        assert "intensity" not in demo.__dict__
+        assert get_raw_field_value(demo, "intensity") == 4.5
+
+    def test_scene_rebuild_marks_wrapper_stale_without_clearing_pointer(self):
+        class _Scene:
+            structure_version = 4
+
+            def resolve_component(self, _handle):
+                return None
+
+        class _GameObject:
+            id = 9
+            handle = None
+
+            def __init__(self, scene):
+                self.scene = scene
+
+        scene = _Scene()
+        cpp = DemoCpp()
+        demo = DemoBuiltin()
+        demo._bind_cpp(cpp, _GameObject(scene))
+        assert demo._get_bound_native_component() is cpp
+        assert not demo._is_native_binding_stale()
+
+        scene.structure_version += 1
+        assert demo._is_native_binding_stale()
+        assert demo._get_bound_native_component() is cpp
+        assert demo._require_cpp_component() is cpp
+        assert demo._cpp_component is cpp
+        assert not demo._is_destroyed
+
+    def test_structure_bump_does_not_unbind_cached_rigidbody_wrapper(self):
+        class _Scene:
+            structure_version = 4
+
+            def resolve_component(self, _handle):
+                return cpp
+
+        class _GameObject:
+            id = 9
+            handle = 3
+
+            def __init__(self, scene):
+                self.scene = scene
+
+        scene = _Scene()
+        cpp = DemoCpp()
+        cpp.handle = 17
+        demo = DemoBuiltin()
+        demo._bind_cpp(cpp, _GameObject(scene))
+        scene.structure_version += 1
+
+        assert demo._require_cpp_component() is cpp
+        assert not demo._is_destroyed
+        assert not demo._is_native_binding_stale()
+
+    def test_dead_handle_still_invalidates_builtin_wrapper(self):
+        class _Scene:
+            structure_version = 4
+
+            def resolve_component(self, _handle):
+                return None
+
+        class _GameObject:
+            id = 9
+            handle = 3
+
+            def __init__(self, scene):
+                self.scene = scene
+
+        scene = _Scene()
+        cpp = DemoCpp()
+        cpp.handle = 17
+        demo = DemoBuiltin()
+        demo._bind_cpp(cpp, _GameObject(scene))
+
+        assert demo._get_bound_native_component() is None
+        assert demo._is_destroyed
+
     def test_repr_unbound(self):
         demo = DemoBuiltin()
         r = repr(demo)
@@ -202,6 +288,44 @@ class TestBuiltinComponent:
         BuiltinComponent._wrapper_cache.clear()
         BuiltinComponent._clear_cache()
         assert len(BuiltinComponent._wrapper_cache) == 0
+
+    def test_wrapper_rebinds_when_native_instance_is_replaced(self):
+        BuiltinComponent._wrapper_cache.clear()
+        game_object = type("FakeGO", (), {"id": 1})()
+        first_cpp = DemoCpp()
+        first_cpp.component_id = 42
+        first_cpp.handle = 1001
+        first_cpp.intensity = 1.0
+        wrapper = DemoBuiltin._get_or_create_wrapper(first_cpp, game_object)
+
+        replacement = DemoCpp()
+        replacement.component_id = 42
+        replacement.handle = 2002
+        replacement.intensity = 1.0
+        rebound = DemoBuiltin._get_or_create_wrapper(replacement, game_object)
+
+        assert rebound is wrapper
+        assert rebound._get_bound_native_component() is replacement
+        rebound.intensity = 8.0
+        assert replacement.intensity == 8.0
+        assert first_cpp.intensity == 1.0
+
+    def test_wrapper_keeps_identity_for_same_native_handle(self):
+        BuiltinComponent._wrapper_cache.clear()
+        game_object = type("FakeGO", (), {"id": 1})()
+        first_cpp = DemoCpp()
+        first_cpp.component_id = 42
+        first_cpp.handle = 1001
+        wrapper = DemoBuiltin._get_or_create_wrapper(first_cpp, game_object)
+
+        same_native = DemoCpp()
+        same_native.component_id = 42
+        same_native.handle = 1001
+        same_native.intensity = 3.0
+        again = DemoBuiltin._get_or_create_wrapper(same_native, game_object)
+
+        assert again is wrapper
+        assert again._get_bound_native_component() is first_cpp
 
     def test_sprite_renderer_invalidation_releases_event_and_material_refs(self):
         import gc
@@ -455,3 +579,59 @@ class TestBuiltinComponent:
         wrapper.sprite = None
         assert wrapper._cpp_component.sprite_guid == ""
         assert wrapper._cpp_component.frame_id == ""
+
+
+class TestInxComponentSceneMutation:
+    def test_prefab_instantiate_structure_bump_keeps_script_game_object(self, monkeypatch):
+        """Ordinary scene mutations must not unbind user scripts before start().
+
+        Prefab instantiate / activate bumps Scene.structure_version.  That
+        signal is only for BuiltinComponent inspector wrappers after a Play
+        rebuild, not for live InxComponents such as CoinCollisionReporter.
+        """
+        from Infernux.components.component import InxComponent
+
+        class CoinStartProbe(InxComponent):
+            _uses_component_data_store = False
+
+            def start(self):
+                self.seen_id = int(self.game_object.id)
+
+        class _Scene:
+            structure_version = 4
+
+            def resolve_component(self, _handle):
+                return cpp
+
+        class _GameObject:
+            id = 88
+            handle = 9
+
+            def __init__(self, scene):
+                self.scene = scene
+
+        scene = _Scene()
+        game_object = _GameObject(scene)
+        cpp = DemoCpp()
+        cpp.handle = 17
+        cpp.game_object = game_object
+        cpp.enabled = True
+        cpp.execution_order = 0
+
+        monkeypatch.setattr(
+            InxComponent,
+            "_is_native_game_object_alive",
+            staticmethod(lambda go: go is not None and int(getattr(go, "id", 0)) > 0),
+        )
+
+        probe = CoinStartProbe()
+        probe._bind_native_component(cpp, game_object)
+        scene.structure_version += 1
+
+        assert not probe._is_native_binding_stale()
+        assert probe._get_bound_native_component() is cpp
+        assert not probe._is_destroyed
+
+        probe.start()
+        assert probe.seen_id == 88
+        assert probe.game_object is game_object

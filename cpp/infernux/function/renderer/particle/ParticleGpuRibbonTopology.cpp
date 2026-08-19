@@ -276,10 +276,10 @@ bool ParticleGpuRibbonTopology::Create(rhi::Device &device, const GpuParticleRib
     for (auto &buffer : m_indices)
         buffer = createRenderExport(elementBytes, storage);
     m_drawIndirectArguments = createRenderExport(16, storageIndirect);
-    m_dispatchArguments = device.CreateBuffer({12, storageIndirect});
-    m_histograms = device.CreateBuffer({blockBytes, storage});
-    m_blockOffsets = device.CreateBuffer({blockBytes, storage});
-    m_globalOffsets = device.CreateBuffer({Radix * sizeof(uint32_t), storage});
+    m_dispatchArguments = createRenderExport(12, storageIndirect);
+    m_histograms = createRenderExport(blockBytes, storage);
+    m_blockOffsets = createRenderExport(blockBytes, storage);
+    m_globalOffsets = createRenderExport(Radix * sizeof(uint32_t), storage);
     if (!std::all_of(m_indices.begin(), m_indices.end(), [](auto value) { return value.IsValid(); }) ||
         !m_drawIndirectArguments.IsValid() || !m_dispatchArguments.IsValid() || !m_histograms.IsValid() ||
         !m_blockOffsets.IsValid() || !m_globalOffsets.IsValid()) {

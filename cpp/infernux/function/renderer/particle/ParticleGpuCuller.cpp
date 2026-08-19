@@ -298,12 +298,19 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
     m_simulationControl = desc.simulationControl;
     m_mode = desc.mode;
     const auto storage = rhi::BufferUsageFlags::Storage;
-    m_visibleIndices = device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
+    const auto createSharedStorage = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
+        rhi::BufferDesc bufferDesc;
+        bufferDesc.byteSize = bytes;
+        bufferDesc.usage = usage;
+        bufferDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
+        return device.CreateBuffer(bufferDesc);
+    };
+    m_visibleIndices = createSharedStorage(static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage);
     m_drawIndirectArguments =
-        device.CreateBuffer({16, storage | rhi::BufferUsageFlags::Indirect | rhi::BufferUsageFlags::TransferSource});
+        createSharedStorage(16, storage | rhi::BufferUsageFlags::Indirect | rhi::BufferUsageFlags::TransferSource);
     m_sortDispatchArguments =
-        device.CreateBuffer({sizeof(GpuParticleCullDispatchState),
-                             storage | rhi::BufferUsageFlags::Indirect | rhi::BufferUsageFlags::TransferSource});
+        createSharedStorage(sizeof(GpuParticleCullDispatchState),
+                            storage | rhi::BufferUsageFlags::Indirect | rhi::BufferUsageFlags::TransferSource);
     if (!m_visibleIndices.IsValid() || !m_drawIndirectArguments.IsValid() || !m_sortDispatchArguments.IsValid()) {
         Destroy();
         return false;

@@ -326,6 +326,13 @@ bool ParticleGpuSorter::Create(rhi::Device &device, const GpuParticleSorterDesc 
         return false;
     const uint64_t blockBytes = static_cast<uint64_t>(blockCount) * Radix * sizeof(uint32_t);
     const auto storage = rhi::BufferUsageFlags::Storage;
+    const auto createSharedStorage = [&](uint64_t bytes) {
+        rhi::BufferDesc bufferDesc;
+        bufferDesc.byteSize = bytes;
+        bufferDesc.usage = storage;
+        bufferDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
+        return device.CreateBuffer(bufferDesc);
+    };
 
     m_device = &device;
     m_capacity = desc.capacity;
@@ -335,12 +342,12 @@ bool ParticleGpuSorter::Create(rhi::Device &device, const GpuParticleSorterDesc 
     m_sourceIndices = desc.sourceIndices;
     m_dispatchArguments = desc.dispatchArguments;
     for (auto &buffer : m_keys)
-        buffer = device.CreateBuffer({keyBytes, storage});
+        buffer = createSharedStorage(keyBytes);
     for (auto &buffer : m_indices)
-        buffer = device.CreateBuffer({elementBytes, storage});
-    m_histograms = device.CreateBuffer({blockBytes, storage});
-    m_blockOffsets = device.CreateBuffer({blockBytes, storage});
-    m_globalOffsets = device.CreateBuffer({Radix * sizeof(uint32_t), storage});
+        buffer = createSharedStorage(elementBytes);
+    m_histograms = createSharedStorage(blockBytes);
+    m_blockOffsets = createSharedStorage(blockBytes);
+    m_globalOffsets = createSharedStorage(Radix * sizeof(uint32_t));
     if (!std::all_of(m_keys.begin(), m_keys.end(), [](auto value) { return value.IsValid(); }) ||
         !std::all_of(m_indices.begin(), m_indices.end(), [](auto value) { return value.IsValid(); }) ||
         !m_histograms.IsValid() || !m_blockOffsets.IsValid() || !m_globalOffsets.IsValid()) {

@@ -198,8 +198,9 @@ class TransformECSStore
         return m_anyWorldMatrixDirty;
     }
 
-    /// Monotonically increasing counter bumped whenever any transform is invalidated.
-    /// Physics can compare against a cached serial to skip sync when nothing moved.
+    /// Monotonically increasing counter bumped when a world matrix becomes dirty.
+    /// Physics and Inspector compare against a cached serial to skip work when
+    /// nothing moved, including batch scatter and frame-cache writes.
     [[nodiscard]] uint64_t GetGlobalTransformSerial() const
     {
         return m_globalTransformSerial;
@@ -336,6 +337,15 @@ class TransformECSStore
         EnsureFrameCacheSlot(slotIndex);
         return m_fcWorldRotations[slotIndex];
     }
+
+    /// Physics or scripts wrote world position/rotation this frame. Children
+    /// must keep using parent*local so T/R/S stay a single hierarchy.
+    [[nodiscard]] bool HasFrameCacheWorldPoseOverride(Handle h) const
+    {
+        return IsValid(h) && h.index < m_fcDirty.size() && (m_fcDirty[h.index] & 0x03) != 0;
+    }
+
+    const glm::mat4 &ComposeFrameCacheWorldMatrix(Handle h, const Transform *owner);
 
     // Cached world-space write — marks slot dirty, defers flush to EndFrameCache.
     void SetCachedWorldPosition(uint32_t slotIndex, const glm::vec3 &v);

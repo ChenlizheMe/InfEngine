@@ -252,6 +252,8 @@ class ParticleSystem(InxComponent):
     _serialized_parameter_overrides_cache: str
     _serialized_emitter_overrides_cache: str
     _playing: bool = False
+    _explicit_playback: bool = False
+    _playback_policy_ready: bool = False
     _editor_preview_active: bool = False
     _editor_preview_play_requested: bool = True
     _editor_preview_muted_emitters: set[str]
@@ -279,7 +281,12 @@ class ParticleSystem(InxComponent):
     def awake(self):
         if hasattr(self, "_gpu_controllers"):
             self._remove_native_batch()
-        self._initialize_runtime_state(bool(self.play_on_awake))
+        # Instantiated copies can deserialize and bind before Awake. Auto-play
+        # must wait until the copied play_on_awake value is the live policy.
+        self._explicit_playback = False
+        self._sync_authored_playback_policy()
+        self._initialize_runtime_state(bool(self._playing))
+        self._playback_policy_ready = True
 
     def _initialize_runtime_state(self, playing: bool) -> None:
         self._gpu_controllers = []
@@ -409,15 +416,30 @@ class ParticleSystem(InxComponent):
             self._clear_runtime_state()
         super()._detach_native_binding_for_replacement()
 
+    def _authored_should_autoplay(self) -> bool:
+        return bool(get_raw_field_value(self, "play_on_awake"))
+
+    def _sync_authored_playback_policy(self) -> None:
+        if getattr(self, "_explicit_playback", False):
+            return
+        self._playing = self._authored_should_autoplay()
+
     def start(self):
+        self._sync_authored_playback_policy()
+        if not getattr(self, "_playback_policy_ready", False):
+            return
         if not self._has_runtime():
             self._load_saved_artifact()
 
     def on_enable(self):
+        self._sync_authored_playback_policy()
+        if not getattr(self, "_playback_policy_ready", False):
+            return
         if hasattr(self, "_gpu_controllers") and not self._has_runtime():
             self._load_saved_artifact()
 
     def play(self, emitter: int | str | None = None) -> bool:
+        self._explicit_playback = True
         if not self._has_runtime() and not self._load_saved_artifact(force=True):
             return False
         if emitter is None:
@@ -466,6 +488,7 @@ class ParticleSystem(InxComponent):
 
     def stop(self, emitter: int | str | None = None) -> bool:
         if emitter is None:
+            self._explicit_playback = False
             self._playing = False
             self._gpu_update_dirty = True
             self._graph_simulation_time_ticks = 0
@@ -1049,6 +1072,7 @@ class ParticleSystem(InxComponent):
         *,
         honor_play_on_start: bool = False,
     ) -> bool:
+        self._explicit_playback = True
         if emitter is None:
             self._playing = True
             self._gpu_update_dirty = True
@@ -1196,6 +1220,8 @@ class ParticleSystem(InxComponent):
         if not self._editor_preview_controls_allowed():
             return False
         self._ensure_runtime_state(playing=True)
+        self._explicit_playback = True
+        self._playback_policy_ready = True
         self._editor_preview_active = True
         if self._editor_preview_play_requested:
             self._playing = True
@@ -1232,6 +1258,8 @@ class ParticleSystem(InxComponent):
         if not self._editor_preview_controls_allowed():
             return False
         self._ensure_runtime_state(playing=True)
+        self._explicit_playback = True
+        self._playback_policy_ready = True
         self._editor_preview_active = True
         self._editor_preview_play_requested = True
         self._playing = True
@@ -2525,8 +2553,11 @@ class ParticleSystem(InxComponent):
             return False
         emitter = emitters[emitter_index]
         options = self._emitter_instance_options(emitter.stable_id)
+        playing = bool(self._playing)
+        if not getattr(self, "_explicit_playback", False):
+            playing = playing and self._authored_should_autoplay()
         return bool(
-            self._playing
+            playing
             and (options["play_on_start"] or not honor_play_on_start)
         )
 

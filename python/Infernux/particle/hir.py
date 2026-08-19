@@ -1163,6 +1163,8 @@ class ParticleGraphCompiler:
             for operation in stage_hir.flow.iter_operations():
                 if operation.opcode == "attribute.modify_cache":
                     allocate(str(operation.parameter_dict()["attribute"]))
+                if operation.opcode == "attribute.capture":
+                    allocate(str(operation.parameter_dict()["snapshot"]))
             for instruction in stage_hir.expressions.instructions:
                 if instruction.opcode == "load_attribute":
                     allocate(str(instruction.immediate_dict()["attribute"]))
@@ -1380,6 +1382,24 @@ class ParticleGraphCompiler:
             mesh_parameter,
         )
 
+    @staticmethod
+    def _reachable_exec_nodes(document, root_uid: str) -> set[str]:
+        """Return Exec-reachable nodes so unused value graphs cannot fail a stage."""
+        outgoing: dict[str, list[str]] = {}
+        for link in document.links:
+            if link.kind is not PortKind.EXEC:
+                continue
+            outgoing.setdefault(link.source_node, []).append(link.target_node)
+        reachable = set()
+        pending = [root_uid]
+        while pending:
+            uid = pending.pop(0)
+            if uid in reachable:
+                continue
+            reachable.add(uid)
+            pending.extend(outgoing.get(uid, ()))
+        return reachable
+
     def _compile_stage(
         self,
         stage: ParticleStage,
@@ -1402,8 +1422,13 @@ class ParticleGraphCompiler:
         registry = definitions.registry
         root_type = root_type or f"particle.root.{stage.value}"
         root = next(node for node in document.nodes if node.type_id == root_type)
+        reachable = self._reachable_exec_nodes(document, root.uid)
         value_links = sorted(
-            (link for link in document.links if link.kind is PortKind.VALUE),
+            (
+                link
+                for link in document.links
+                if link.kind is PortKind.VALUE and link.target_node in reachable
+            ),
             key=lambda link: (
                 link.target_node,
                 link.target_port,

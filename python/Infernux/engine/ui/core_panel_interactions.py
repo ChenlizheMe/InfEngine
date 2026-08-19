@@ -1226,7 +1226,6 @@ def scene_view_panel_interaction(
                 ("scene.tool.move", "W"),
                 ("scene.tool.rotate", "E"),
                 ("scene.tool.scale", "R"),
-                ("scene.align_to_camera", "Ctrl+Shift+F"),
                 ("scene.frame_selected", "F"),
             )
         ),

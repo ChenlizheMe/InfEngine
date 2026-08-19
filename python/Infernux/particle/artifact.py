@@ -380,9 +380,9 @@ class ParticleArtifactRegistry:
         else:
             try:
                 compiled = cls._compile_graph_asset(asset, source_path)
-            except (TypeError, ValueError) as exc:
+            except Exception as exc:
                 raise ParticleArtifactError(
-                    f"particle graph AOT compile failed: {exc}"
+                    f"particle graph AOT compile failed: {type(exc).__name__}: {exc}"
                 ) from exc
 
         owner = cls._resolve_source_guid(source_path, guid)

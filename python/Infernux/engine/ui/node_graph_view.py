@@ -2600,12 +2600,16 @@ class NodeGraphView:
     def _compatible_pin_for_type(self, typedef: NodeTypeDef, request: dict):
         if self.graph is None or not request.get("source_node"):
             return None
+        resolver = getattr(self.graph, "compatible_creation_pin", None)
+        if resolver is not None:
+            return resolver(typedef.type_id, request)
         source_kind = request["source_kind"]
         candidates = (
             typedef.input_pins()
             if source_kind == PinKind.OUTPUT
             else typedef.output_pins()
         )
+        numeric_types = {"i32", "u32", "f32", "vec2", "vec3", "vec4", "color"}
         for pin in candidates:
             # The graph cannot validate a node that does not exist yet.  Pin
             # category/type checks provide the palette filter; full domain
@@ -2634,6 +2638,10 @@ class NodeGraphView:
                     source_pin.data_type in {"i32", "u32"}
                     and pin.data_type == "f32"
                     and source_kind == PinKind.OUTPUT
+                )
+                and not (
+                    source_pin.data_type in numeric_types
+                    and pin.data_type in numeric_types
                 )
             ):
                 continue

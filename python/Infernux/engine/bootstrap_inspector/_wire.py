@@ -131,12 +131,14 @@ def _wire_component_list(ctx):
         local fields are sufficient to decide whether the cached map must be
         rebuilt.
         """
+        if not bool(getattr(component, "_is_builtin_component_wrapper", False)):
+            return False
+        stale = getattr(component, "_is_native_binding_stale", None)
+        if callable(stale):
+            return bool(stale())
         return (
-            bool(getattr(component, "_is_builtin_component_wrapper", False))
-            and (
-                getattr(component, "_cpp_component", None) is None
-                or bool(getattr(component, "_is_destroyed", False))
-            )
+            getattr(component, "_cpp_component", None) is None
+            or bool(getattr(component, "_is_destroyed", False))
         )
 
     def _is_py_entry(component):
@@ -1436,6 +1438,7 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
     from Infernux.engine.ui.inspector_snapshot import (
         InspectorSnapshotService,
         InspectorTarget,
+        refresh_visible_play_transforms,
         sync_selected_transforms_from_native_serial,
     )
     from Infernux.components.component import InxComponent
@@ -1569,20 +1572,32 @@ def wire_inspector_callbacks(bs: EditorBootstrap) -> None:
         )
         inspector_transform_serial = [None]
 
+        def _inspector_is_playing():
+            try:
+                from Infernux.engine.play_mode import PlayModeManager
+
+                play_manager = PlayModeManager.instance()
+                return play_manager is not None and bool(play_manager.is_playing)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError):
+                return False
+
         def _get_revision_snapshot():
             snapshot_service.consume_changes(
                 inspector_journal.consume(inspector_change_cursor, flush=False)
             )
             object_ids = tuple(int(value) for value in selection.scene_object_ids())
-            getter = getattr(SceneManager.instance(), "get_global_transform_serial", None)
-            if callable(getter):
-                inspector_transform_serial[0] = (
-                    sync_selected_transforms_from_native_serial(
-                        int(getter()),
-                        object_ids,
-                        previous_serial=inspector_transform_serial[0],
+            if _inspector_is_playing():
+                refresh_visible_play_transforms(object_ids, playing=True)
+            else:
+                getter = getattr(SceneManager.instance(), "get_global_transform_serial", None)
+                if callable(getter):
+                    inspector_transform_serial[0] = (
+                        sync_selected_transforms_from_native_serial(
+                            int(getter()),
+                            object_ids,
+                            previous_serial=inspector_transform_serial[0],
+                        )
                     )
-                )
             selected_file = str(ip.get_selected_file() or "")
             if len(object_ids) == 1:
                 target = InspectorTarget.scene_object(object_ids[0])

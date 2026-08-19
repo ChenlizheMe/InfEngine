@@ -631,6 +631,20 @@ def invalidate_component_schema(component) -> int:
     )
 
 
+def refresh_visible_play_transforms(object_ids: Iterable[int], *, playing: bool) -> int:
+    """Keep the inspected Transform live while Play is moving many objects.
+
+    Native Transform widgets cache by value revision and have no Play TTL.
+    Large scenes write through batch/frame-cache paths that historically
+    failed to publish a journal revision in the same GUI frame.  Refresh only
+    the visible selection so the Inspector tracks the object the user is
+    watching without invalidating the rest of the scene.
+    """
+    if not playing:
+        return InspectorSnapshotService.instance().revision()
+    return invalidate_scene_transforms(object_ids)
+
+
 def sync_selected_transforms_from_native_serial(
     serial: int,
     object_ids: Iterable[int],
@@ -679,6 +693,21 @@ def invalidate_scene_transforms(object_ids: Iterable[int]) -> int:
 
 def invalidate_rebuilt_scene() -> int:
     """Invalidate every Inspector projection after replacing a scene graph."""
+    from Infernux.engine.ui.inspector_support import bump_component_structure_version
+
+    bump_component_structure_version()
+    try:
+        from Infernux.components.builtin_component import BuiltinComponent
+
+        BuiltinComponent._clear_cache()
+    except ImportError:
+        pass
+    try:
+        from Infernux.engine.ui.inspector_components import clear_component_value_cache
+
+        clear_component_value_cache()
+    except ImportError:
+        pass
     service = InspectorSnapshotService.instance()
     service.invalidate_schema()
     return service.invalidate_value()
@@ -693,6 +722,7 @@ __all__ = [
     "invalidate_component_schema",
     "invalidate_rebuilt_scene",
     "invalidate_scene_transforms",
+    "refresh_visible_play_transforms",
     "sync_selected_transforms_from_native_serial",
     "target_for_component",
 ]

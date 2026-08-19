@@ -139,11 +139,20 @@ def _begin_component_value_cache(kind: str, comp):
     service = InspectorSnapshotService.instance()
     snapshot = service.component_snapshot(comp)
     key = (kind, snapshot.target, _get_component_cache_id(comp))
+    wrapper_token = id(comp)
+    native_generation = int(getattr(comp, "_native_generation", 0) or 0)
     entry = _COMPONENT_VALUE_CACHE.get(key)
     missing = entry is None
     schema_changed = (
         not missing
         and entry.get("schema_revision", -1) != snapshot.schema_revision
+    )
+    wrapper_changed = (
+        not missing
+        and (
+            entry.get("wrapper_token") != wrapper_token
+            or entry.get("native_generation") != native_generation
+        )
     )
     value_changed = (
         not missing
@@ -164,15 +173,18 @@ def _begin_component_value_cache(kind: str, comp):
             "refreshed_at": now,
             "values": {},
             "field_revisions": {},
-            "field_revision": lambda field_id, _service=service, _comp=comp: (
-                _service.field_revision(_comp, str(field_id))
-            ),
+            "wrapper_token": wrapper_token,
+            "native_generation": native_generation,
         }
         if len(_COMPONENT_VALUE_CACHE) >= _COMPONENT_VALUE_CACHE_MAX:
             _COMPONENT_VALUE_CACHE.clear()
         _COMPONENT_VALUE_CACHE[key] = entry
-    elif schema_changed:
-        _record_profile_count(f"{kind}Cache_missSchema_count")
+    elif schema_changed or wrapper_changed:
+        _record_profile_count(
+            f"{kind}Cache_missSchema_count"
+            if schema_changed
+            else f"{kind}Cache_missWrapper_count"
+        )
         entry["values"] = {}
         entry["field_revisions"] = {}
         entry.pop("builtin_plan", None)
@@ -186,10 +198,21 @@ def _begin_component_value_cache(kind: str, comp):
     else:
         _record_profile_count(f"{kind}Cache_hit_count")
 
-    rebuild_plan = missing or schema_changed or value_changed or runtime_poll
-    refresh_all_values = missing or schema_changed or runtime_poll
+    rebuild_plan = (
+        missing or schema_changed or wrapper_changed or value_changed or runtime_poll
+    )
+    refresh_all_values = missing or schema_changed or wrapper_changed or runtime_poll
     entry["schema_revision"] = snapshot.schema_revision
     entry["value_revision"] = snapshot.value_revision
+    entry["wrapper_token"] = wrapper_token
+    entry["native_generation"] = native_generation
+    # Play stop keeps authored IDs but replaces the Python wrapper.  A lambda
+    # captured on the retired instance looks up InspectorTarget.none() and
+    # misses live field invalidation, so the next draw replays the pre-edit
+    # value and writes it back into C++.
+    entry["field_revision"] = lambda field_id, _service=service, _comp=comp: (
+        _service.field_revision(_comp, str(field_id))
+    )
     if rebuild_plan:
         entry["refreshed_at"] = now
     return entry, rebuild_plan, refresh_all_values
@@ -222,6 +245,52 @@ def _invalidate_component_render_cache(cache_entry) -> None:
     # so the next frame does not cross Python/native getters unnecessarily.
     cache_entry.pop("builtin_plan", None)
     cache_entry.pop("py_plan", None)
+
+
+def clear_component_value_cache() -> None:
+    """Drop every Builtin/Python Inspector value plan after a scene rebuild."""
+    _COMPONENT_VALUE_CACHE.clear()
+
+
+def _pack_builtin_batch_widget_value(meta, enum_members, current):
+    """Encode one cached CppProperty value for ``render_property_batch_plan_values``."""
+    from Infernux.components.fields import FieldType
+
+    field_type = meta.field_type
+    if field_type == FieldType.FLOAT:
+        return float(current or 0.0)
+    if field_type == FieldType.INT:
+        return int(current or 0)
+    if field_type == FieldType.BOOL:
+        return bool(current)
+    if field_type == FieldType.STRING:
+        return str(current or "")
+    if field_type == FieldType.ENUM:
+        if enum_members:
+            return _find_enum_index(enum_members, current)
+        try:
+            return int(current)
+        except (TypeError, ValueError):
+            return 0
+    if field_type in (FieldType.VEC2, FieldType.VEC3, FieldType.VEC4):
+        count = 2 if field_type == FieldType.VEC2 else 3 if field_type == FieldType.VEC3 else 4
+        axes = ("x", "y", "z", "w")
+        packed = []
+        for index in range(count):
+            if current is None:
+                packed.append(0.0)
+                continue
+            try:
+                packed.append(float(getattr(current, axes[index])))
+                continue
+            except (AttributeError, TypeError, ValueError):
+                pass
+            try:
+                packed.append(float(current[index]))
+            except (TypeError, ValueError, IndexError):
+                packed.append(0.0)
+        return packed
+    return current
 
 
 _PROFILE_ENABLED = _inspector_support.is_inspector_profile_enabled()
@@ -374,14 +443,35 @@ def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entr
         kind = op["kind"]
 
         if kind == "batch":
-            changes = ctx.render_property_batch_plan(op["plan"], lw)
+            values = []
+            for _py_name, cpp_attr, meta, _old_value, enum_members in op["info"]:
+                current = _get_cached_component_value(
+                    cache_entry,
+                    False,
+                    cpp_attr,
+                    lambda _attr=cpp_attr: getattr(comp, _attr),
+                )
+                values.append(
+                    _pack_builtin_batch_widget_value(meta, enum_members, current)
+                )
+            renderer = getattr(ctx, "render_property_batch_plan_values", None)
+            if callable(renderer):
+                changes = renderer(op["plan"], values, lw)
+            else:
+                changes = ctx.render_property_batch_plan(op["plan"], lw)
             if changes:
                 _apply_batch_changes_builtin(comp, changes, op["info"])
                 edited = True
             continue
 
         if kind == "readonly":
-            ctx.label(f"{op['py_name']}: {op['current']}")
+            current = _get_cached_component_value(
+                cache_entry,
+                False,
+                op.get("cpp_attr", op["py_name"]),
+                lambda _attr=op.get("cpp_attr", op["py_name"]): getattr(comp, _attr, op["current"]),
+            )
+            ctx.label(f"{op['py_name']}: {current}")
             continue
 
         if kind == "asset_clip":
@@ -423,15 +513,21 @@ def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entr
                 ctx.label(op["header"])
             if op["space"] > 0:
                 ctx.dummy(0, op["space"])
+            current = _get_cached_component_value(
+                cache_entry,
+                False,
+                op["cpp_attr"],
+                lambda _attr=op["cpp_attr"]: getattr(comp, _attr),
+            )
             new_value = render_serialized_field(
                 ctx, f"##{op['py_name']}", _serialized_field_label(op["py_name"], op["meta"]),
-                op["meta"], op["current"], lw,
+                op["meta"], current, lw,
             )
             record_inspector_component_item(
                 ctx, comp, op["py_name"], "inspector_field", pretty_field_name(op["py_name"]),
             )
-            if has_field_changed(op["meta"].field_type, op["current"], new_value):
-                _record_builtin_property(comp, op["cpp_attr"], op["current"], new_value,
+            if has_field_changed(op["meta"].field_type, current, new_value):
+                _record_builtin_property(comp, op["cpp_attr"], current, new_value,
                                          f"Set {op['py_name']}")
                 edited = True
 

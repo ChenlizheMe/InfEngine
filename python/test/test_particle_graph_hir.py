@@ -498,6 +498,67 @@ def test_exec_bound_get_attribute_samples_before_later_attribute_writes():
     assert capture_store < lifetime_store < sampled_read
 
 
+def test_exec_bound_get_attribute_allocates_capture_without_value_reuse():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "sample-position",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.position"},
+            ),
+            GraphNodeRecord(
+                "seek",
+                "particle.motion.target_position",
+                properties={
+                    "target": [0.0, 4.4, 0.0],
+                    "speed": 0.48,
+                    "responsiveness": 0.18,
+                    "arrival_radius": 1.4,
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-sample",
+                "root.update",
+                "out",
+                "sample-position",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "sample-seek",
+                "sample-position",
+                "out",
+                "seek",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    capture_id = particle_attribute_capture_id("update", "sample-position")
+    emitter = program.emitters[0]
+
+    assert any(attribute.stable_id == capture_id for attribute in emitter.attributes)
+    assert [operation.opcode for operation in _operations(emitter.update)] == [
+        "attribute.capture",
+        "motion.target_position",
+    ]
+    kernel = ParticleKernelLowerer().lower(program)
+    capture_store = next(
+        instruction
+        for instruction in kernel.emitters[0].update.instructions
+        if instruction.opcode == "store_attribute"
+        and instruction.immediate_dict()["attribute"] == capture_id
+    )
+    assert capture_store is not None
+
+
 def test_unbound_get_attribute_reads_live_at_its_consumer():
     update = GraphDocument(
         "particle.update",
@@ -3134,6 +3195,248 @@ def test_particle_update_can_author_color_and_size_over_lifetime():
         "store_attribute",
     }
     assert {"builtin.color", "builtin.size"} <= set(kernel.update.written_attributes)
+
+
+def test_transform_position_to_set_position_inserts_position_space_conversion():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "get-position",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.position"},
+            ),
+            GraphNodeRecord(
+                "to-world",
+                "common.space.transform_position",
+                properties={"target_space": "world"},
+            ),
+            GraphNodeRecord("set-position", "particle.attribute.position"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream",
+                "root.update",
+                "out",
+                "set-position",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord("get-transform", "get-position", "value", "to-world", "input"),
+            GraphLinkRecord("transform-set", "to-world", "value", "set-position", "value"),
+        ),
+    )
+
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    kernel = ParticleKernelLowerer().lower(program).emitters[0]
+    conversion = next(
+        instruction
+        for instruction in kernel.update.instructions
+        if instruction.opcode == "convert_space"
+        and instruction.immediate_dict().get("to") == "simulation"
+    )
+    assert conversion.immediate_dict() == {
+        "from": "world",
+        "to": "simulation",
+        "semantic": "position",
+    }
+    assert conversion.result_type == TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+    assert "builtin.position" in kernel.update.written_attributes
+
+
+def test_transform_direction_treats_untyped_vector_as_emitter_local():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "local-velocity",
+                "common.vector.compose3",
+                properties={"x": 0.0, "y": 0.0, "z": 1.25},
+            ),
+            GraphNodeRecord(
+                "to-simulation",
+                "common.space.transform_direction",
+                properties={"target_space": "simulation"},
+            ),
+            GraphNodeRecord("set-velocity", "particle.attribute.velocity"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream",
+                "root.init",
+                "out",
+                "set-velocity",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "compose-transform",
+                "local-velocity",
+                "value",
+                "to-simulation",
+                "input",
+            ),
+            GraphLinkRecord(
+                "transform-set",
+                "to-simulation",
+                "value",
+                "set-velocity",
+                "value",
+            ),
+        ),
+    )
+
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(init=init),))
+        )
+    ).emitters[0]
+    conversions = [
+        instruction.immediate_dict()
+        for instruction in kernel.init.instructions
+        if instruction.opcode == "convert_space"
+        and instruction.immediate_dict().get("semantic") == "direction"
+    ]
+    assert {
+        "from": "none",
+        "to": "emitter_local",
+        "semantic": "direction",
+    } in conversions
+    assert {
+        "from": "emitter_local",
+        "to": "simulation",
+        "semantic": "direction",
+    } in conversions
+    assert "builtin.velocity" in kernel.init.written_attributes
+
+
+def test_unused_broken_value_graph_does_not_drop_chained_attribute_writes():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("set-velocity", "particle.attribute.velocity"),
+            GraphNodeRecord("set-size", "particle.attribute.size"),
+            GraphNodeRecord("orphan-size", "particle.attribute.size"),
+            GraphNodeRecord("length", "common.vector.length"),
+            GraphNodeRecord(
+                "speed",
+                "common.constant.vec3",
+                properties={"value": [0.0, 2.0, 0.0]},
+            ),
+            GraphNodeRecord(
+                "size",
+                "common.constant.f32",
+                properties={"value": 3.5},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "exec-velocity",
+                "root.update",
+                "out",
+                "set-velocity",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "exec-size",
+                "set-velocity",
+                "out",
+                "set-size",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord("bind-velocity", "speed", "value", "set-velocity", "value"),
+            GraphLinkRecord("bind-size", "size", "value", "set-size", "value"),
+            GraphLinkRecord(
+                "orphan-value",
+                "length",
+                "result",
+                "orphan-size",
+                "value",
+            ),
+        ),
+    )
+
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    hir = program.emitters[0]
+    opcodes = [operation.opcode for operation in _operations(hir.update)]
+    assert opcodes.count("attribute.modify_size") == 1
+    assert "attribute.modify_velocity" in opcodes
+    kernel = ParticleKernelLowerer().lower(program).emitters[0]
+    assert {"builtin.velocity", "builtin.size"} <= set(kernel.update.written_attributes)
+
+
+def test_set_velocity_then_set_size_keeps_both_attribute_writes():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("set-velocity", "particle.attribute.velocity"),
+            GraphNodeRecord("set-size", "particle.attribute.size"),
+            GraphNodeRecord(
+                "speed",
+                "common.constant.vec3",
+                properties={"value": [0.0, 2.0, 0.0]},
+            ),
+            GraphNodeRecord(
+                "size",
+                "common.constant.f32",
+                properties={"value": 3.5},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "exec-velocity",
+                "root.update",
+                "out",
+                "set-velocity",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "exec-size",
+                "set-velocity",
+                "out",
+                "set-size",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord("bind-velocity", "speed", "value", "set-velocity", "value"),
+            GraphLinkRecord("bind-size", "size", "value", "set-size", "value"),
+        ),
+    )
+
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    hir = program.emitters[0]
+    kernel = ParticleKernelLowerer().lower(program).emitters[0]
+    opcodes = [operation.opcode for operation in _operations(hir.update)]
+    velocity_index = opcodes.index("attribute.modify_velocity")
+    size_index = opcodes.index("attribute.modify_size")
+    assert velocity_index < size_index
+    stored = [
+        instruction.immediate_dict()["attribute"]
+        for instruction in kernel.update.instructions
+        if instruction.opcode == "store_attribute"
+    ]
+    assert stored.index("builtin.velocity") < stored.index("builtin.size")
+    assert {"builtin.velocity", "builtin.size"} <= set(kernel.update.written_attributes)
+    literals = [
+        instruction.immediate_dict().get("value")
+        for instruction in kernel.update.instructions
+        if instruction.opcode == "constant"
+    ]
+    assert [0.0, 2.0, 0.0] in literals
+    assert 3.5 in literals
 
 
 def test_particle_behavior_hash_ignores_graph_identity_layout_and_record_order():

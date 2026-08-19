@@ -45,6 +45,27 @@ glm::vec3 QuatToEulerYXZ(const glm::quat &rotation)
     }
     return glm::degrees(glm::vec3(x, y, z));
 }
+
+glm::quat RotationFromAffine(const glm::mat4 &world)
+{
+    // World matrices include authoring scale. quat_cast() on a scaled 3x3
+    // does not recover the hierarchical rotation, so a 0.16 grenade with a
+    // non-zero parent/local euler would drift between edit preview (TRS
+    // matrix) and Play (frame-cache / physics writeback).
+    glm::vec3 axisX(world[0]);
+    glm::vec3 axisY(world[1]);
+    glm::vec3 axisZ(world[2]);
+    const float lengthX = glm::length(axisX);
+    const float lengthY = glm::length(axisY);
+    const float lengthZ = glm::length(axisZ);
+    if (lengthX > 1.0e-8f)
+        axisX /= lengthX;
+    if (lengthY > 1.0e-8f)
+        axisY /= lengthY;
+    if (lengthZ > 1.0e-8f)
+        axisZ /= lengthZ;
+    return glm::normalize(glm::quat_cast(glm::mat3(axisX, axisY, axisZ)));
+}
 } // namespace
 
 TransformECSStore &TransformECSStore::Instance()
@@ -328,14 +349,10 @@ void TransformECSStore::SyncObjectWorldMatrices(GameObject *obj)
                 GameObject *parent = obj->GetParent();
                 if (!parent) {
                     m_cachedWorldMatrices[idx] = local;
+                } else if (Transform *pt = parent->GetTransform()) {
+                    m_cachedWorldMatrices[idx] = pt->GetWorldMatrix() * local;
                 } else {
-                    Transform *pt = parent->GetTransform();
-                    auto parentHandle = pt->GetECSHandle();
-                    if (IsValid(parentHandle)) {
-                        m_cachedWorldMatrices[idx] = m_cachedWorldMatrices[parentHandle.index] * local;
-                    } else {
-                        m_cachedWorldMatrices[idx] = local;
-                    }
+                    m_cachedWorldMatrices[idx] = local;
                 }
                 m_worldMatrixDirty[idx] = 0;
             }
@@ -680,7 +697,7 @@ void TransformECSStore::EnsureFrameCacheSlot(uint32_t slotIndex)
     const glm::mat4 &world = m_cachedWorldMatrices[slotIndex];
     m_fcWorldPositions[slotIndex] = glm::vec3(world[3]);
     if (!m_fcRotationValid[slotIndex]) {
-        m_fcWorldRotations[slotIndex] = glm::quat_cast(glm::mat3(world));
+        m_fcWorldRotations[slotIndex] = RotationFromAffine(world);
         m_fcRotationValid[slotIndex] = 1;
     }
     m_fcStamp[slotIndex] = m_frameCacheSerial;
@@ -709,6 +726,17 @@ void TransformECSStore::MarkWorldMatrixDirty(uint32_t slotIndex)
     // while already dirty, so the bump belongs at this chokepoint.
     if (newlyDirty)
         ++m_globalTransformSerial;
+}
+
+const glm::mat4 &TransformECSStore::ComposeFrameCacheWorldMatrix(Handle h, const Transform *owner)
+{
+    EnsureFrameCacheSlot(h.index);
+    const glm::vec3 scale = owner ? owner->GetWorldScale() : m_localScales[h.index];
+    m_cachedWorldMatrices[h.index] =
+        glm::translate(glm::mat4(1.0f), m_fcWorldPositions[h.index]) *
+        glm::mat4_cast(glm::normalize(m_fcWorldRotations[h.index])) *
+        glm::scale(glm::mat4(1.0f), scale);
+    return m_cachedWorldMatrices[h.index];
 }
 
 void TransformECSStore::SetCachedWorldPosition(uint32_t slotIndex, const glm::vec3 &v)

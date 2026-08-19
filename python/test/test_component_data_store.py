@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -110,6 +112,38 @@ def test_scene_batch_handle_filters_in_native_code(scene):
     np.testing.assert_allclose(
         positions,
         np.asarray([[1.0, 2.0, 3.0], [7.0, 8.0, 9.0]], dtype=np.float32),
+    )
+
+
+def test_transform_store_bumps_serial_when_a_world_matrix_becomes_dirty():
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "cpp/infernux/function/scene/TransformECSStore.cpp"
+    ).read_text(encoding="utf-8")
+    marker = source.index("void TransformECSStore::MarkWorldMatrixDirty")
+    body = source[marker : source.index("void TransformECSStore::SetCachedWorldPosition")]
+    assert "newlyDirty" in body
+    assert "++m_globalTransformSerial" in body
+
+
+def test_transform_batch_write_bumps_global_transform_serial(scene):
+    first = scene.create_game_object("serial_a")
+    second = scene.create_game_object("serial_b")
+    manager = lib.SceneManager.instance()
+    before = int(manager.get_global_transform_serial())
+
+    batch_write(
+        [first.transform, second.transform],
+        np.asarray([[0.0, 15.0, 0.0], [0.0, 45.0, 0.0]], dtype=np.float32),
+        "local_euler_angles",
+    )
+
+    after = int(manager.get_global_transform_serial())
+    assert after > before
+    np.testing.assert_allclose(
+        batch_read([first.transform, second.transform], "local_euler_angles"),
+        np.asarray([[0.0, 15.0, 0.0], [0.0, 45.0, 0.0]], dtype=np.float32),
+        atol=1e-4,
     )
 
 
