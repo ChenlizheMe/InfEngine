@@ -383,7 +383,11 @@ if(TARGET zlibstatic)
         ${CMAKE_SOURCE_DIR}/external/assimp/contrib/zlib
         ${CMAKE_BINARY_DIR}/external/assimp/contrib/zlib
     )
-elseif(TARGET ZLIB::zlib)
+else()
+    find_package(ZLIB QUIET)
+endif()
+
+if(TARGET ZLIB::zlib)
     set(INFERNUX_ZLIB_TARGET ZLIB::zlib)
 elseif(TARGET ZLIB::ZLIB)
     set(INFERNUX_ZLIB_TARGET ZLIB::ZLIB)
